@@ -226,8 +226,55 @@ def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
     return tuple(sorted(found))
 
 
+#: Bump when the normalization below changes; it is part of the disk memo key.
+_FINGERPRINT_ALGORITHM_VERSION = 1
+
+
+def _fingerprint_memo_path(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> Path | None:
+    """Where this exact set of source signatures memoizes its fingerprint.
+
+    Parsing and normalizing the closure of parser sources costs tens of
+    seconds of CPU per process; every test worker and every CLI start paid
+    it. The signatures already encode path, mtime and size, so a memo keyed
+    by them is invalidated by any edit. Returns None where no cache
+    directory can exist (installed packages), which falls back to computing.
+    """
+    root = _SOURCE_ROOT / ".cache" / "source-fingerprints"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+    digest = hashlib.sha256(
+        json.dumps(
+            {"version": _FINGERPRINT_ALGORITHM_VERSION, "namespace": namespace, "signatures": signatures},
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    return root / f"{digest}.txt"
+
+
 @lru_cache(maxsize=128)
 def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+    memo = _fingerprint_memo_path(signatures, namespace)
+    if memo is not None:
+        try:
+            cached = memo.read_text(encoding="utf-8").strip()
+        except OSError:
+            cached = ""
+        if len(cached) == 64:
+            return cached
+    fingerprint = _fingerprint_sources_compute(signatures, namespace)
+    if memo is not None:
+        try:
+            scratch = memo.with_name(f"{memo.name}.{id(signatures)}.tmp")
+            scratch.write_text(fingerprint, encoding="utf-8")
+            scratch.replace(memo)
+        except OSError:
+            pass
+    return fingerprint
+
+
+def _fingerprint_sources_compute(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
     for path_string, _mtime_ns, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
