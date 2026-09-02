@@ -11,8 +11,9 @@ does only the checkout boundary work that the plugin cannot do itself:
 * report the current checkout's graph state without borrowing mutable state
   from a sibling worktree.
 
-The graph stays local to this checkout. An absent graph is reported to the
-caller. Only an explicitly requested complete-corpus run may build a new
+The graph stays local to this checkout. A linked worktree without a graph
+takes a snapshot of the main checkout's graph when that graph is valid for
+the same environment; otherwise an absent graph is reported to the caller. Only an explicitly requested complete-corpus run may build a new
 environment; plain verification reuses a compatible graph or refuses before
 pytest starts.
 """
@@ -25,11 +26,14 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import os
 import platform
 import sqlite3
 import stat
+import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -814,6 +818,105 @@ def remove_invalid_native_testmon_state(repo_root: Path) -> tuple[Path, ...]:
     return tuple(removed)
 
 
+def main_checkout_root(repo_root: Path) -> Path | None:
+    """Return the main checkout of a linked worktree, or None for the main checkout itself."""
+    root = repo_root.resolve()
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir", "--git-common-dir"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = result.stdout.splitlines()
+    if len(lines) != 2:
+        return None
+    git_dir, common = ((root / line.strip()).resolve() for line in lines)
+    if git_dir == common:
+        return None
+    main = common.parent
+    if main == root or not (main / ".git").exists():
+        return None
+    return main
+
+
+def seed_native_testmon_from_main_checkout(
+    repo_root: Path,
+    *,
+    environment_name: str,
+    required_executable_paths: Sequence[str] = (),
+    deadline_monotonic: float | None = None,
+) -> NativeTestmonState | None:
+    """Copy the main checkout's graph into a linked worktree lacking this environment.
+
+    Provisioning copies the graph once, when the worktree is created; a graph
+    the nightly corpus run publishes later never reaches an older worktree.
+    The copy is a consistent SQLite snapshot, so the worktree still owns its
+    own state afterwards. Returns None when there is nothing to copy: the
+    checkout is the main one, or the main graph is not valid for this exact
+    environment. The caller decides that the local graph lacks it.
+    """
+    root = repo_root.resolve()
+    local_data = root / TESTMON_DATA_RELPATH
+    main = main_checkout_root(root)
+    if main is None:
+        return None
+    main_data = main / TESTMON_DATA_RELPATH
+    main_state = inspect_native_testmon_environment(
+        main_data,
+        environment_name=environment_name,
+        required_executable_paths=required_executable_paths,
+        deadline_monotonic=deadline_monotonic,
+    )
+    if not main_state.valid:
+        return None
+    _ensure_deadline(deadline_monotonic)
+    _validate_owned_state_parents(root)
+    local_data.parent.mkdir(parents=True, exist_ok=True)
+    # A local database that lacks this environment (another digest's graph,
+    # or the empty row an interrupted bootstrap leaves) is replaced whole:
+    # the snapshot carries every environment the main checkout holds. Its
+    # sidecars go first, so a stale WAL is never replayed onto the snapshot.
+    validate_native_testmon_state_ownership(root)
+    for sidecar in (Path(f"{local_data}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES):
+        with contextlib.suppress(FileNotFoundError):
+            sidecar.unlink()
+    staging = local_data.with_name(f"{local_data.name}.seed-{uuid.uuid4().hex}.tmp")
+    created = False
+    try:
+        descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(descriptor)
+        created = True
+        state = staging.lstat()
+        if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"staging path is not a fresh regular file: {staging}")
+        source = sqlite3.connect(_readonly_uri(main_data), uri=True, timeout=_remaining_timeout(deadline_monotonic, 10))
+        try:
+            target = sqlite3.connect(staging)
+            try:
+                source.backup(target)
+            finally:
+                target.close()
+        finally:
+            source.close()
+        os.replace(staging, local_data)
+    except (sqlite3.Error, OSError) as exc:
+        if created:
+            with contextlib.suppress(OSError):
+                staging.unlink()
+        raise NativeTestmonRepairError(f"cannot seed native testmon graph from {main_data}: {exc}") from exc
+    return inspect_native_testmon_environment(
+        local_data,
+        environment_name=environment_name,
+        required_executable_paths=required_executable_paths,
+        deadline_monotonic=deadline_monotonic,
+    )
+
+
 def prepare_native_testmon_environment(
     repo_root: Path,
     *,
@@ -845,6 +948,18 @@ def prepare_native_testmon_environment(
         )
     if local.valid:
         return NativeTestmonPreparation(environment_name, "affected", local, ())
+
+    if local.status == "absent":
+        seeded = seed_native_testmon_from_main_checkout(
+            root,
+            environment_name=environment_name,
+            required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
+        )
+        if seeded is not None:
+            local = seeded
+            if local.valid:
+                return NativeTestmonPreparation(environment_name, "affected", local, ())
 
     # Retain a merely incomplete graph. An interrupted bootstrap leaves a
     # sound database that simply has not fingerprinted every changed module
@@ -890,7 +1005,9 @@ __all__ = [
     "classify_native_testmon_changes",
     "executable_python_paths",
     "inspect_native_testmon_environment",
+    "main_checkout_root",
     "prepare_native_testmon_environment",
+    "seed_native_testmon_from_main_checkout",
     "remove_invalid_native_testmon_state",
     "testmon_environment_digest",
     "validate_native_testmon_state_ownership",
