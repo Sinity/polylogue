@@ -104,7 +104,18 @@ INSERT INTO raw_session_memberships__040 SELECT raw_id, logical_source_key, prov
 DROP TABLE raw_session_memberships;
 ALTER TABLE raw_session_memberships__040 RENAME TO raw_session_memberships;
 
-CREATE INDEX idx_history_sidecars_path_hash ON history_sidecars(origin, source_path, content_hash);
+CREATE TABLE raw_failure_disposition_receipts__040 (raw_id TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE, artifact_id TEXT NOT NULL UNIQUE REFERENCES raw_artifacts(artifact_id), origin TEXT NOT NULL, source_path TEXT NOT NULL, source_index INTEGER NOT NULL, blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32), blob_size INTEGER NOT NULL CHECK(blob_size >= 0), previous_parse_error TEXT NOT NULL, previous_validation_status TEXT, previous_artifact_kind TEXT NOT NULL, previous_support_status TEXT NOT NULL, previous_classification_reason TEXT NOT NULL, disposition_kind TEXT NOT NULL CHECK(disposition_kind IN ('terminal_corrupt_input', 'terminal_unsupported_shape')), manifest_sha256 TEXT NOT NULL CHECK(length(manifest_sha256) = 64), disposed_at_ms INTEGER NOT NULL CHECK(disposed_at_ms >= 0), tool_version TEXT NOT NULL, backup_manifest_path TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '') STRICT;
+INSERT INTO raw_failure_disposition_receipts__040 SELECT raw_id, artifact_id, origin, source_path, source_index, blob_hash, blob_size, previous_parse_error, previous_validation_status, previous_artifact_kind, previous_support_status, previous_classification_reason, disposition_kind, manifest_sha256, disposed_at_ms, tool_version, backup_manifest_path, detail FROM raw_failure_disposition_receipts;
+DROP TABLE raw_failure_disposition_receipts;
+ALTER TABLE raw_failure_disposition_receipts__040 RENAME TO raw_failure_disposition_receipts;
+
+CREATE TABLE source_items__040 (source_generation_id TEXT NOT NULL REFERENCES source_generations(source_generation_id) ON DELETE CASCADE, source_item_id TEXT NOT NULL, logical_coordinate TEXT NOT NULL CHECK(length(trim(logical_coordinate)) > 0), addressing_mode TEXT NOT NULL CHECK(length(trim(addressing_mode)) > 0), origin TEXT, source_path TEXT, source_index INTEGER CHECK(source_index >= 0), disposition TEXT NOT NULL CHECK(disposition IN ('pending', 'admitted', 'non_session', 'empty', 'unsupported', 'corrupt', 'unknown_blocking')), outcome_code TEXT NOT NULL CHECK(outcome_code IN ('success', 'validation_rejected', 'unsupported_shape', 'corrupt_input', 'transient_error', 'parser_defect', 'downstream_failure', 'canceled', 'interrupted', 'legacy_unknown')), stage TEXT NOT NULL CHECK(length(trim(stage)) > 0), retryable INTEGER CHECK(retryable IN (0, 1)), diagnostic TEXT CHECK(diagnostic IS NULL OR length(diagnostic) <= 4096), evidence_ref TEXT, content_fingerprint TEXT, source_fingerprint TEXT, parser_fingerprint TEXT, policy_fingerprint TEXT, raw_id TEXT REFERENCES raw_sessions(raw_id) ON DELETE SET NULL, blob_hash BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32), revision INTEGER NOT NULL DEFAULT 0 CHECK(revision >= 0), request_id TEXT, observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0), updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= 0), PRIMARY KEY(source_generation_id, source_item_id), UNIQUE(source_generation_id, logical_coordinate, addressing_mode)) STRICT;
+INSERT INTO source_items__040 SELECT source_generation_id, source_item_id, logical_coordinate, addressing_mode, origin, source_path, source_index, disposition, outcome_code, stage, retryable, diagnostic, evidence_ref, content_fingerprint, source_fingerprint, parser_fingerprint, policy_fingerprint, raw_id, blob_hash, revision, request_id, observed_at_ms, updated_at_ms FROM source_items;
+DROP VIEW source_item_reconciliation;
+DROP TABLE source_items;
+ALTER TABLE source_items__040 RENAME TO source_items;
+
+CREATE UNIQUE INDEX idx_history_sidecars_path_hash ON history_sidecars(origin, source_path, content_hash);
 CREATE INDEX idx_otlp_spans_session ON otlp_spans(origin, session_native_id, started_at_ms DESC) WHERE session_native_id IS NOT NULL;
 CREATE INDEX idx_otlp_spans_trace ON otlp_spans(trace_id, started_at_ms DESC);
 CREATE INDEX idx_raw_append_chain_backfill_receipts_compared_at ON raw_append_chain_backfill_receipts(compared_at_ms);
@@ -113,6 +124,7 @@ CREATE INDEX idx_raw_artifacts_raw_id ON raw_artifacts(raw_id);
 CREATE UNIQUE INDEX idx_raw_artifacts_source_identity ON raw_artifacts(origin, source_path, source_index) WHERE artifact_kind NOT IN ('deferred_hot_jsonl_capture', 'deferred_claude_code_partial_jsonl', 'deferred_cas_frontier', 'deferred_codex_cas_frontier', 'terminal_corrupt_input', 'terminal_superseded_deferred_cas_frontier', 'terminal_unknown_json_decode', 'terminal_unknown_export_no_session', 'terminal_unsupported_shape');
 CREATE INDEX idx_raw_authority_verdicts_logical_source ON raw_authority_verdicts(logical_source_key);
 CREATE INDEX idx_raw_capture_observations_raw_id ON raw_capture_observations(raw_id);
+CREATE INDEX idx_raw_failure_disposition_receipts_disposed_at ON raw_failure_disposition_receipts(disposed_at_ms);
 CREATE INDEX idx_raw_hook_events_session ON raw_hook_events(origin, session_native_id, observed_at_ms);
 CREATE INDEX idx_raw_hook_events_source_hash ON raw_hook_events(source_path, blob_hash);
 CREATE INDEX idx_raw_live_source_reconciliation_receipts_compared_at ON raw_live_source_reconciliation_receipts(compared_at_ms);
@@ -127,6 +139,47 @@ CREATE INDEX idx_raw_sessions_origin_native ON raw_sessions(origin, native_id) W
 CREATE INDEX idx_raw_sessions_parse_ready ON raw_sessions(raw_id) WHERE parsed_at_ms IS NULL AND validated_at_ms IS NOT NULL AND (validation_status IS NULL OR validation_status != 'failed');
 CREATE INDEX idx_raw_sessions_raw_authority_census_candidates ON raw_sessions(revision_authority, parse_error);
 CREATE INDEX idx_raw_sessions_source_path ON raw_sessions(source_path, source_index);
+CREATE INDEX idx_source_items_disposition ON source_items(source_generation_id, disposition);
+CREATE INDEX idx_source_items_raw_id ON source_items(raw_id);
+
+CREATE VIEW source_item_reconciliation AS
+WITH item_counts AS (
+    SELECT source_generation_id,
+           COUNT(*) AS manifested,
+           SUM(disposition = 'pending') AS pending,
+           SUM(disposition = 'admitted') AS admitted,
+           SUM(disposition IN ('non_session','empty','unsupported','corrupt')) AS deliberate,
+           SUM(disposition = 'unknown_blocking') AS unknown_blocking,
+           SUM(raw_id IS NULL AND disposition = 'admitted') AS admitted_without_raw,
+           COUNT(DISTINCT source_item_id) AS distinct_items
+      FROM source_items GROUP BY source_generation_id
+), raw_counts AS (
+    SELECT si.source_generation_id,
+           COUNT(si.raw_id) AS linked_raw,
+           COUNT(DISTINCT si.raw_id) AS distinct_raw
+      FROM source_items si WHERE si.raw_id IS NOT NULL
+     GROUP BY si.source_generation_id
+)
+SELECT g.source_generation_id, g.item_count AS manifest_items,
+       COALESCE(i.manifested, 0) AS manifested,
+       COALESCE(i.pending, 0) AS pending,
+       COALESCE(i.admitted, 0) AS admitted,
+       COALESCE(i.deliberate, 0) AS deliberate,
+       COALESCE(i.unknown_blocking, 0) AS unknown_blocking,
+       COALESCE(i.admitted_without_raw, 0) AS admitted_without_raw,
+       COALESCE(i.distinct_items, 0) AS distinct_items,
+       COALESCE(r.linked_raw, 0) AS linked_raw,
+       COALESCE(r.distinct_raw, 0) AS distinct_raw,
+       (g.item_count - COALESCE(i.manifested, 0)) AS missing,
+       (COALESCE(i.manifested, 0) - COALESCE(i.distinct_items, 0)) AS duplicate,
+       (g.item_count = COALESCE(i.manifested, 0)
+        AND COALESCE(i.manifested, 0) = COALESCE(i.distinct_items, 0)
+        AND COALESCE(i.pending, 0) = 0
+        AND COALESCE(i.unknown_blocking, 0) = 0
+        AND COALESCE(i.admitted_without_raw, 0) = 0) AS sealable
+  FROM source_generations g
+  LEFT JOIN item_counts i USING(source_generation_id)
+  LEFT JOIN raw_counts r USING(source_generation_id);
 
 CREATE TRIGGER invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete
 BEFORE DELETE ON raw_sessions

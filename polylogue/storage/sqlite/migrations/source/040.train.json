@@ -12,36 +12,33 @@
     "slot": 40,
     "path": "040_raw_acquisition_shape.sql",
     "owner_ref": "polylogue-8bz0l",
-    "requires_backup": true,
-    "sql_sha256": "f4d2305aa31486861e7b24e38d1c7934218e6fbd319d852fc41636da279f92e7"
+    "sql_sha256": "80bb51a7b73741c4c82bc0820ade6ecc88585e38c17b1976937ecc03a7b4b82a",
+    "requires_backup": true
   },
-  "riders": [
-    {
-      "rider_id": "rider:raw-acquisition-shape",
-      "owner_ref": "polylogue-8bz0l",
-      "schema_objects": [
-        "table:history_sidecars", "table:otlp_spans", "table:raw_append_chain_backfill_receipts", "table:raw_artifacts", "table:raw_authority_verdicts", "table:raw_capture_observations", "table:raw_hook_events", "table:raw_live_source_reconciliation_receipts", "table:raw_membership_writeback_receipts", "table:raw_session_memberships", "table:raw_sessions",
-        "index:idx_history_sidecars_path_hash", "index:idx_otlp_spans_session", "index:idx_otlp_spans_trace", "index:idx_raw_append_chain_backfill_receipts_compared_at", "index:idx_raw_artifacts_failure_identity", "index:idx_raw_artifacts_raw_id", "index:idx_raw_artifacts_source_identity", "index:idx_raw_authority_verdicts_logical_source", "index:idx_raw_capture_observations_raw_id", "index:idx_raw_hook_events_session", "index:idx_raw_hook_events_source_hash", "index:idx_raw_live_source_reconciliation_receipts_compared_at", "index:idx_raw_membership_writeback_receipts_promoted_at", "index:idx_raw_session_memberships_logical", "index:idx_raw_session_memberships_pending", "index:idx_raw_sessions_blob_hash", "index:idx_raw_sessions_blob_hash_raw_id", "index:idx_raw_sessions_logical_revision", "index:idx_raw_sessions_origin", "index:idx_raw_sessions_origin_native", "index:idx_raw_sessions_parse_ready", "index:idx_raw_sessions_raw_authority_census_candidates", "index:idx_raw_sessions_source_path",
-        "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete"
-      ],
-      "runtime_consumers": [
-        {"consumer_id": "raw-acquisition-writes", "production_ref": "polylogue.storage.sqlite.queries.raw_writes", "behavior_proof_ref": "proof:source-v40:preserve-raw-acquisition", "roles": ["read", "write"]},
-        {"consumer_id": "raw-session-reads", "production_ref": "polylogue.storage.sqlite.queries.raw_reads", "behavior_proof_ref": "proof:source-v40:preserve-raw-acquisition", "roles": ["read"]}
-      ],
-      "behavior_proof_refs": ["proof:source-v40:preserve-raw-acquisition"],
-      "after_rider_ids": [],
-      "trust_floor_exception_ref": null
-    },
-    {
-      "rider_id": "rider:legacy-append-resynthesis-receipts",
-      "owner_ref": "polylogue-aex0",
-      "schema_objects": ["table:raw_legacy_append_resynthesis_receipts", "index:idx_raw_legacy_append_resynthesis_receipts_observed_at"],
-      "runtime_consumers": [{"consumer_id": "live-append-resynthesis", "production_ref": "polylogue.storage.sqlite.archive_tiers.revision_governance:promote_reconstructed_legacy_append_revisions", "behavior_proof_ref": "proof:source-v40:legacy-append-resynthesis", "roles": ["write"]}],
-      "behavior_proof_refs": ["proof:source-v40:legacy-append-resynthesis"],
-      "after_rider_ids": [],
-      "trust_floor_exception_ref": "proof:source-v40:writer-only-receipt"
-    }
-  ],
+  "riders": [{
+    "rider_id": "rider:raw-acquisition-shape",
+    "owner_ref": "polylogue-8bz0l",
+    "schema_objects": [
+      "table:history_sidecars", "table:otlp_spans", "table:raw_append_chain_backfill_receipts", "table:raw_artifacts", "table:raw_authority_verdicts", "table:raw_capture_observations", "table:raw_failure_disposition_receipts", "table:raw_hook_events", "table:raw_live_source_reconciliation_receipts", "table:raw_membership_writeback_receipts", "table:raw_session_memberships", "table:raw_sessions", "table:source_items", "view:source_item_reconciliation",
+      "index:idx_history_sidecars_path_hash", "index:idx_otlp_spans_session", "index:idx_otlp_spans_trace", "index:idx_raw_append_chain_backfill_receipts_compared_at", "index:idx_raw_artifacts_failure_identity", "index:idx_raw_artifacts_raw_id", "index:idx_raw_artifacts_source_identity", "index:idx_raw_authority_verdicts_logical_source", "index:idx_raw_capture_observations_raw_id", "index:idx_raw_failure_disposition_receipts_disposed_at", "index:idx_raw_hook_events_session", "index:idx_raw_hook_events_source_hash", "index:idx_raw_live_source_reconciliation_receipts_compared_at", "index:idx_raw_membership_writeback_receipts_promoted_at", "index:idx_raw_session_memberships_logical", "index:idx_raw_session_memberships_pending", "index:idx_raw_sessions_blob_hash", "index:idx_raw_sessions_blob_hash_raw_id", "index:idx_raw_sessions_logical_revision", "index:idx_raw_sessions_origin", "index:idx_raw_sessions_origin_native", "index:idx_raw_sessions_parse_ready", "index:idx_raw_sessions_raw_authority_census_candidates", "index:idx_raw_sessions_source_path", "index:idx_source_items_disposition", "index:idx_source_items_raw_id",
+      "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete"
+    ],
+    "runtime_consumers": [
+      {"consumer_id": "raw-acquisition-writes", "production_ref": "polylogue.storage.sqlite.queries.raw_writes", "behavior_proof_ref": "proof:source-v40:preserve-raw-acquisition", "roles": ["read", "write"]},
+      {"consumer_id": "raw-session-reads", "production_ref": "polylogue.storage.sqlite.queries.raw_reads", "behavior_proof_ref": "proof:source-v40:preserve-raw-acquisition", "roles": ["read"]}
+    ],
+    "behavior_proof_refs": ["proof:source-v40:preserve-raw-acquisition"],
+    "after_rider_ids": [],
+    "trust_floor_exception_ref": null
+  }, {
+    "rider_id": "rider:legacy-append-resynthesis-receipts",
+    "owner_ref": "polylogue-aex0",
+    "schema_objects": ["table:raw_legacy_append_resynthesis_receipts", "index:idx_raw_legacy_append_resynthesis_receipts_observed_at"],
+    "runtime_consumers": [{"consumer_id": "live-append-resynthesis", "production_ref": "polylogue.storage.sqlite.archive_tiers.revision_governance:promote_reconstructed_legacy_append_revisions", "behavior_proof_ref": "proof:source-v40:legacy-append-resynthesis", "roles": ["write"]}],
+    "behavior_proof_refs": ["proof:source-v40:legacy-append-resynthesis"],
+    "after_rider_ids": [],
+    "trust_floor_exception_ref": "proof:source-v40:writer-only-receipt"
+  }],
   "ordering_constraints": [],
   "drop_constraints": [
     {"object_ref": "table:history_sidecars", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
@@ -50,11 +47,13 @@
     {"object_ref": "table:raw_artifacts", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_authority_verdicts", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_capture_observations", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
+    {"object_ref": "table:raw_failure_disposition_receipts", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_hook_events", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_live_source_reconciliation_receipts", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_membership_writeback_receipts", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
     {"object_ref": "table:raw_session_memberships", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
-    {"object_ref": "table:raw_sessions", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"}
+    {"object_ref": "table:raw_sessions", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"},
+    {"object_ref": "table:source_items", "after_rider_ids": [], "copy_forward_proof_ref": "proof:source-v40:preserve-raw-acquisition", "consent_ref": "polylogue-8bz0l"}
   ],
   "row_change_allowances": [],
   "backup_plan_ref": "backup-profile:source-tier",
@@ -63,11 +62,15 @@
   "declared_at_ms": 0,
   "admitted_at_ms": null,
   "admission_evidence_ref": null,
+  "fresh_ddl_parity": null,
+  "reservation": null,
+  "backup_authorization": null,
+  "pre_apply_evidence": null,
   "apply_evidence": null,
   "proof": null,
   "failure": null,
   "released_at_ms": null,
   "release_evidence_ref": null,
   "proof_refs": [],
-  "manifest_sha256": "c3a9d43413d9d2749c09d4ac4e0cd83a6fd7df9e22b7a937715f1b4b05c03b84"
+  "manifest_sha256": "5072531f761060472bd6bab9dbe8f68796931377df7b4a50ce889506fe923327"
 }
