@@ -1426,7 +1426,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert {item["status"] for item in recent if isinstance(item, dict)} == {"failed", "deferred"}
     lines = format_daemon_status_lines(payload)
     assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
-    assert "  insights: 1 failed, 0 deferred, 0 retry due" in lines
+    assert "  derived: 1 failed, 0 deferred, 0 retry due" in lines
     assert "  fts: 0 failed, 1 deferred, 0 retry due" in lines
 
 

@@ -55,6 +55,7 @@ from polylogue.storage.derived.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
     session_profile_stale_predicate,
 )
+from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RAW_REPLAY_NO_PROGRESS_REASON,
@@ -79,6 +80,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
@@ -5376,8 +5378,16 @@ def _targeted_session_insight_rebuild_ids(
 ) -> tuple[str, ...] | None:
     if conn is None or _session_insight_requires_archive_wide_rebuild(status):
         return None
-    profile_stale_predicate = session_profile_stale_predicate("s", "p")
-    latency_stale_predicate = session_profile_stale_predicate("s", "lp")
+    profile_stale_predicate = session_profile_stale_predicate(
+        "s",
+        "p",
+        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
+    )
+    latency_stale_predicate = session_profile_stale_predicate(
+        "s",
+        "lp",
+        include_content_hash=_column_exists(conn, "session_latency_profiles", "input_content_hash"),
+    )
     rows = conn.execute(
         f"""
         SELECT DISTINCT session_id
@@ -5391,7 +5401,8 @@ def _targeted_session_insight_rebuild_ids(
             SELECT s.session_id
             FROM sessions AS s
             JOIN session_profiles AS p ON p.session_id = s.session_id
-            WHERE {profile_stale_predicate}
+            WHERE p.materializer_version != ?
+               OR {profile_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5403,7 +5414,8 @@ def _targeted_session_insight_rebuild_ids(
             SELECT lp.session_id
             FROM session_latency_profiles AS lp
             JOIN sessions AS s ON s.session_id = lp.session_id
-            WHERE {latency_stale_predicate}
+            WHERE lp.materializer_version != ?
+               OR {latency_stale_predicate}
             UNION
             SELECT p.session_id
             FROM session_profiles AS p
@@ -5419,7 +5431,10 @@ def _targeted_session_insight_rebuild_ids(
         )
         ORDER BY session_id
         """,
-        (),
+        (
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+            SESSION_INSIGHT_MATERIALIZER_VERSION,
+        ),
     ).fetchall()
     return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
 
