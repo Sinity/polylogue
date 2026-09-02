@@ -34,7 +34,14 @@ def test_selector_is_deterministic_and_records_the_sealed_cohort(tmp_path: Path)
     with sqlite3.connect(empty) as db:
         db.execute("CREATE TABLE sessions(session_id TEXT, origin TEXT, raw_id TEXT, sort_key_ms INTEGER)")
     with pytest.raises(CanarySelectionError, match="empty"):
-        select_canary_sessions(empty)
+        select_canary_sessions(empty, source_manifest_digest=seal)
+
+
+def test_selector_requires_a_sealed_source_manifest(tmp_path: Path) -> None:
+    path = tmp_path / "index.db"
+    _index(path, "stable")
+    with pytest.raises(CanarySelectionError, match="sealed source manifest"):
+        select_canary_sessions(path)
 
 
 def test_selector_rejects_missing_origins_and_duplicate_raw_members(tmp_path: Path) -> None:
@@ -43,10 +50,11 @@ def test_selector_rejects_missing_origins_and_duplicate_raw_members(tmp_path: Pa
     with sqlite3.connect(path) as db:
         db.execute("INSERT INTO sessions VALUES ('codex:b', 'codex', 'raw-a', 2)")
 
+    seal = "a" * 64
     with pytest.raises(CanarySelectionError, match="gemini"):
-        select_canary_sessions(path, required_origins=("codex", "gemini"))
+        select_canary_sessions(path, source_manifest_digest=seal, required_origins=("codex", "gemini"))
     with pytest.raises(CanarySelectionError, match="duplicate"):
-        select_canary_sessions(path, sessions_per_origin=2)
+        select_canary_sessions(path, source_manifest_digest=seal, sessions_per_origin=2)
 
 
 def test_comparison_is_forensic_and_reports_real_row_mutation(tmp_path: Path) -> None:

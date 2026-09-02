@@ -179,10 +179,10 @@ def select_canary_sessions(
     """Select a deterministic cohort from the sealed source-backed index."""
     if sessions_per_origin <= 0:
         raise CanarySelectionError("sessions_per_origin must be positive")
-    # Standalone forensic callers lack an archive root; bind them to the
-    # immutable input file. Production callers provide the sealed source
-    # snapshot explicitly.
-    seal = _require_digest(source_manifest_digest or hashlib.sha256(Path(index_path).read_bytes()).hexdigest())
+    # Selection is an authorization-bound projection. Deriving a seal from
+    # the index would let damaged or substituted derived state choose the
+    # cohort that is supposed to audit it.
+    seal = _require_digest(source_manifest_digest)
     with _open_read_only(Path(index_path)) as connection:
         rows = connection.execute(
             "SELECT session_id, origin, raw_id, sort_key_ms FROM sessions WHERE raw_id IS NOT NULL ORDER BY origin, (sort_key_ms IS NULL), sort_key_ms DESC, session_id"
@@ -248,10 +248,19 @@ def run_reindex_canary(
     from polylogue.storage.index_generation import rebuild_source_evidence_snapshot
 
     source_seal = rebuild_source_evidence_snapshot(root)
+    # The source tier defines the origin denominator. The active index is
+    # consulted only for replayable session identities, never for deciding
+    # which origins the sealed cohort must cover.
+    source_path = root / "source.db"
+    with _open_read_only(source_path) as source:
+        required_origins = tuple(
+            str(row[0]) for row in source.execute("SELECT DISTINCT origin FROM raw_sessions ORDER BY origin")
+        )
     selection = select_canary_sessions(
         current.resolved_path,
         sessions_per_origin=sessions_per_origin,
         source_manifest_digest=source_seal,
+        required_origins=required_origins,
     )
     from polylogue.daemon.bulk_rebuild import run_daemon_canary_rebuild
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
