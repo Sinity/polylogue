@@ -15,6 +15,7 @@ from devtools.testmon_bootstrap import (
     classify_source_ast,
     executable_python_paths,
     inspect_native_testmon_environment,
+    main_checkout_root,
     prepare_native_testmon_environment,
     remove_invalid_native_testmon_state,
     validate_native_testmon_state_ownership,
@@ -692,3 +693,75 @@ def test_canonical_test_nodeid_strips_only_loadgroup_suffix(nodeid: str, canonic
     # comparing across shapes without one canonical form invented 509 phantom
     # missing tests and a permanent re-execution treadmill.
     assert canonical_test_nodeid(nodeid) == canonical
+
+
+def _linked_worktree(root: Path) -> tuple[Path, Path]:
+    """Return (main checkout, linked worktree) sharing one commit."""
+    import subprocess
+
+    main = root / "main"
+    main.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x"}
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=main, check=True, capture_output=True, env={**os.environ, **env})
+
+    run("init", "-q", "-b", "master")
+    (main / "polylogue").mkdir()
+    (main / "polylogue" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    run("add", ".")
+    run("commit", "-q", "-m", "seed")
+    lane = root / "lane"
+    run("worktree", "add", "-q", str(lane), "-b", "lane")
+    return main, lane
+
+
+def test_main_checkout_root_names_only_linked_worktrees(tmp_path: Path) -> None:
+    main, lane = _linked_worktree(tmp_path)
+
+    assert main_checkout_root(lane) == main.resolve()
+    assert main_checkout_root(main) is None
+    assert main_checkout_root(tmp_path / "nowhere") is None
+
+
+def test_linked_worktree_seeds_its_graph_from_a_valid_main_graph(tmp_path: Path) -> None:
+    """Removing the seed step in prepare_native_testmon_environment makes this refuse."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    assert environment_name == _testmon_environment_digest(main)
+    main_data = _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    main_bytes = main_data.read_bytes()
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "affected"
+    assert preparation.local_state.valid
+    lane_data = lane / TESTMON_DATA_RELPATH
+    assert lane_data.is_file()
+    assert lane_data.lstat().st_nlink == 1
+    assert not list(lane_data.parent.glob("*.tmp"))
+    assert main_data.read_bytes() == main_bytes, "seeding is a snapshot, never a borrow"
+
+
+def test_linked_worktree_does_not_seed_from_a_foreign_environment(tmp_path: Path) -> None:
+    main, lane = _linked_worktree(tmp_path)
+    _seed_partial_native_graph(main, environment_name="polylogue-other", fingerprinted="polylogue/module.py")
+
+    preparation = prepare_native_testmon_environment(lane)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert not (lane / TESTMON_DATA_RELPATH).exists()
+
+
+def test_linked_worktree_keeps_its_own_graph_over_the_main_one(tmp_path: Path) -> None:
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    lane_data = _seed_partial_native_graph(lane, environment_name=environment_name, fingerprinted="polylogue/other.py")
+    before = lane_data.read_bytes()
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "affected", "an incomplete local graph is resumable, not replaced"
+    assert preparation.local_state.status == "incomplete"
+    assert lane_data.read_bytes() == before
