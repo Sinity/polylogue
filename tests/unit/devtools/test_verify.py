@@ -12,8 +12,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import tomllib
 
 from devtools import gate, required_gate, verify, verify_runs, why
+from devtools.testmon_bootstrap import NativeTestmonRepairError
+from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     VerifyRun,
@@ -266,6 +269,21 @@ def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyP
 
     assert verify._declared_agentctl_operation(["--quick"]) == "verify_quick"
     assert verify._declared_agentctl_operation([]) is None
+
+
+def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
+    descriptor = tomllib.loads((verify.ROOT / ".agentctl/project.toml").read_text(encoding="utf-8"))
+
+    operation = descriptor["operations"]["verify_quick"]
+    projection = declared_verification_result(
+        {"exit_code": 0, "status": "success", "verification_scope": "non-test"},
+        operation="verify_quick",
+    )
+
+    assert operation["exec"] == ["devtools", "verify", "--quick"]
+    assert operation["result"] == "json"
+    assert projection["kind"] == "polylogue.verification-result"
+    assert projection["operation"] == "verify_quick"
 
 
 def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
