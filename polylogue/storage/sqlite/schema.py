@@ -111,6 +111,17 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             ) from exc
 
 
+def _readable_without_fts(conn: sqlite3.Connection) -> bool:
+    """Allow read-only structured access when only message FTS is missing."""
+    rows = conn.execute("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").fetchall()
+    names = {(str(kind), str(name)) for kind, name in rows}
+    expected = canonical_schema_manifest(ArchiveTier.INDEX).objects
+    missing = {(kind, name) for kind, name, _ in expected} - names
+    return bool(missing) and all(
+        name.startswith("messages_fts") or name.startswith("blocks_command_trigram") for _kind, name in missing
+    )
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure the database is at the current schema version.
 
