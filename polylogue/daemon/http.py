@@ -5181,6 +5181,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.config import load_polylogue_config
         from polylogue.operations.daemon_protocol import (
             MAX_OPERATION_BODY_BYTES,
+            MAX_OPERATION_RESULT_BYTES,
             DaemonOperationEnvelope,
             DaemonOperationRequest,
             archive_identity,
@@ -5412,6 +5413,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             result=result,
             request_id=request.request_id,
         )
+        encoded = _json_bytes(envelope.to_dict())
+        if len(encoded) > MAX_OPERATION_RESULT_BYTES:
+            self._send_operation_error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                request,
+                archive,
+                generation,
+                readiness,
+                "result_too_large",
+                "operation result exceeds the bounded result size",
+            )
+            return
         self._send_json(HTTPStatus.OK, envelope.to_dict())
 
     def _send_operation_error(

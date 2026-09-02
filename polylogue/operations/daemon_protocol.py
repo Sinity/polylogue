@@ -129,6 +129,8 @@ class DaemonOperationRequest:
             raise ValueError("payload must be an object")
         if protocol != DAEMON_OPERATION_PROTOCOL:
             raise ValueError("unsupported daemon operation protocol")
+        if daemon_operation_spec(operation) is None:
+            raise ValueError(f"operation is not declared: {operation}")
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
@@ -136,11 +138,11 @@ class DaemonOperationRequest:
         deadline_ms = raw.get("deadline_ms")
         if archive_root is not None and not isinstance(archive_root, str):
             raise ValueError("archive_root must be a string")
-        if schema is not None and not isinstance(schema, int):
+        if schema is not None and (not isinstance(schema, int) or isinstance(schema, bool)):
             raise ValueError("index_schema_version must be an integer")
         if version is not None and not isinstance(version, str):
             raise ValueError("daemon_version must be a string")
-        if request_id is not None and (not isinstance(request_id, str) or not request_id.strip()):
+        if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a non-empty string")
         if deadline_ms is not None and (not isinstance(deadline_ms, int) or deadline_ms <= 0):
             raise ValueError("deadline_ms must be a positive integer")

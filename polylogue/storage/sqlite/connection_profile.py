@@ -63,6 +63,9 @@ class SQLiteConnectionProfile:
     journal_size_limit_bytes: int | None = None
     query_only: bool = False
     locking_mode: str | None = None
+    generation_identity: Literal["live", "sealed"] = "live"
+    max_snapshot_age_s: float | None = None
+    cancellation_supported: bool = False
 
     @property
     def pragma_statements(self) -> tuple[str, ...]:
@@ -245,7 +248,30 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     # rejects accidental writes via the same connection at SQL parse
     # time instead of waiting for the write lock.
     query_only=True,
+    generation_identity="live",
+    max_snapshot_age_s=30.0,
+    cancellation_supported=True,
 )
+
+# Named timeout classes are the only profiles production readers and writers
+# should select.  Keeping the values in one table makes queue and snapshot
+# policy inspectable without duplicating connection factories.
+TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
+    "interactive-read": READ_CONNECTION_PROFILE,
+    "background-read": SQLiteConnectionProfile(
+        role="read",
+        timeout_seconds=DB_TIMEOUT,
+        busy_timeout_ms=DB_TIMEOUT * 1000,
+        cache_size_kib=READ_CACHE_SIZE_KIB,
+        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+        query_only=True,
+        generation_identity="live",
+        max_snapshot_age_s=30.0,
+        cancellation_supported=True,
+    ),
+    "publication": WRITE_CONNECTION_PROFILE,
+    "offline-bulk": BULK_BUILD_WRITE_CONNECTION_PROFILE,
+}
 
 DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS = DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
 WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
@@ -745,6 +771,36 @@ def open_readonly_connection(
     return conn
 
 
+def open_profiled_connection(
+    path: str | Path,
+    *,
+    profile: SQLiteConnectionProfile,
+    timeout: float | None = None,
+    immutable: bool = False,
+    opened_main_fd: int | None = None,
+    tier: ArchiveTier | None = None,
+) -> sqlite3.Connection:
+    """Open a connection from an explicit named profile.
+
+    Read profiles are always enforced at SQLite's boundary.  Write profiles
+    use the existing writer factory so attachment and schema checks remain
+    identical to ordinary archive writes.
+    """
+    if profile.role == "read":
+        if not profile.query_only:
+            raise ValueError("read profiles must enable query_only")
+        return open_readonly_connection(
+            path,
+            timeout=profile.timeout_seconds if timeout is None else timeout,
+            immutable=immutable,
+            opened_main_fd=opened_main_fd,
+            tier=tier,
+        )
+    if immutable or opened_main_fd is not None:
+        raise ValueError("writer profiles cannot use immutable or descriptor-bound reads")
+    return open_connection(path, timeout=profile.timeout_seconds if timeout is None else timeout, tier=tier)
+
+
 @contextmanager
 def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
     """Context manager for a single-use read-write connection.
@@ -781,6 +837,7 @@ __all__ = [
     "READ_DB_TIMEOUT",
     "READ_MMAP_SIZE_BYTES",
     "SQLiteConnectionProfile",
+    "TIMEOUT_PROFILES",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",
@@ -795,4 +852,5 @@ __all__ = [
     "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",
+    "open_profiled_connection",
 ]
