@@ -73,10 +73,20 @@ class TokenLanes(ArchiveInsightModel):
 
 
 class CostMetric(ArchiveInsightModel):
-    """Aggregate spend with labelled token lanes (#2380 AC4)."""
+    """Aggregate spend with labelled token lanes (#2380 AC4).
+
+    ``unpriced_session_count`` is how many of the analyzed sessions carried no
+    usage evidence to price (``cost_provenance == "unknown"``). Those sessions
+    contribute 0.0 to ``total_cost_usd`` because absent evidence is not a bill,
+    so without this count "$12.40 across 200 sessions" reads identically
+    whether none or most of them were unpriced. It is required, not defaulted:
+    a caller that cannot say how much of its total is unpriced would be
+    reporting the absence as a known zero.
+    """
 
     total_cost_usd: float
     cost_is_estimated: bool
+    unpriced_session_count: int
     tokens: TokenLanes
     evidence_refs: tuple[EvidenceRef, ...]
 
@@ -261,9 +271,12 @@ def compile_postmortem_bundle(
     any_estimated = False
     input_tokens = output_tokens = cache_read = cache_write = 0
     cost_bearing_refs: list[EvidenceRef] = []
+    unpriced = 0
     for profile in profiles:
         total_cost += float(profile.total_cost_usd)
         any_estimated = any_estimated or bool(profile.cost_is_estimated)
+        if profile.cost_provenance == "unknown":
+            unpriced += 1
         input_tokens += int(profile.total_input_tokens)
         output_tokens += int(profile.total_output_tokens)
         cache_read += int(profile.total_cache_read_tokens)
@@ -274,6 +287,7 @@ def compile_postmortem_bundle(
     estimated_cost = CostMetric(
         total_cost_usd=round(total_cost, 6),
         cost_is_estimated=any_estimated,
+        unpriced_session_count=unpriced,
         tokens=TokenLanes(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
