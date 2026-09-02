@@ -128,3 +128,16 @@ def test_derived_schema_identity_missing_is_refused_at_profile_seam(tmp_path: Pa
 
     assert excinfo.value.tier == DerivedTier.INDEX.value
     assert excinfo.value.found is None
+
+
+def test_connection_context_passes_explicit_tier_to_profile_seam(tmp_path: Path) -> None:
+    db_path = tmp_path / "generation.sqlite"
+    initialize_archive_database(db_path, ArchiveTier.SOURCE)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("PRAGMA user_version = 0")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        with connection_profile.connection_context(db_path, tier=ArchiveTier.SOURCE):
+            pass
+
+    assert excinfo.value.tier == ArchiveTier.SOURCE.value

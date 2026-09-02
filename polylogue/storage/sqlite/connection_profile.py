@@ -678,12 +678,17 @@ def open_readonly_connection(
 
 
 @contextmanager
-def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
+def connection_context(
+    path: str | Path,
+    *,
+    timeout: float = DB_TIMEOUT,
+    tier: ArchiveTier | None = None,
+) -> Iterator[sqlite3.Connection]:
     """Context manager for a single-use read-write connection.
 
     Opens a connection with write pragmas, yields it, and closes on exit.
     """
-    conn = open_connection(path, timeout=timeout)
+    conn = open_connection(path, timeout=timeout, tier=tier)
     try:
         yield conn
     finally:
