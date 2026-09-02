@@ -331,12 +331,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "evidence",
     ),
     _entry(
-        "Visual Tape Examples",
-        "examples/visual-tapes/README.md",
-        "Reader-evidence and visual-tape artifact catalog.",
-        "evidence",
-    ),
-    _entry(
         "Reader-Comprehension Test Harness",
         "examples/reader-comprehension-test/README.md",
         "Single-blind N-arm cold-reader test harness for README/positioning candidates.",

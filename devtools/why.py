@@ -3,8 +3,8 @@
 The receipts already record enough to answer this, but answering it meant
 knowing which of ~500 run directories was the relevant one, which of two dozen
 fields carried the cause, and what a diagnosis token implies. This session spent
-several passes doing exactly that by hand -- reading step JSON to find a failing
-lane, then opening the pytest-testmon SQLite to learn why a bootstrap happened.
+several passes doing exactly that by hand, reading step JSON to find a failing
+lane.
 
 So this renders rather than reconstructs: every diagnosis is mapped to a plain
 cause and a concrete next command, and anything not in that table is reported
@@ -48,7 +48,7 @@ _EXPLANATIONS: dict[str, Explanation] = {
     ),
     "pytest_interrupted": Explanation(
         "The run was interrupted before finishing, so its result is not a verdict on the suite.",
-        "Re-run. If it was interrupted mid-bootstrap, the graph is retained and the next run resumes from it.",
+        "Re-run.",
     ),
     "pytest_report_incomplete": Explanation(
         "Pytest selected tests but did not record a terminal result for each one.",
@@ -82,33 +82,13 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "This gate was recorded but was not enforced.",
         "Enable the gate's enforcement option before relying on it as a check.",
     ),
+    "graph_unusable": Explanation(
+        "The testmon datafile is corrupt or was written by an incompatible version, so selection cannot be trusted.",
+        "Delete .cache/testmon/testmondata and rerun; the next run reseeds it.",
+    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",
-    ),
-    "render_feeder_failed": Explanation(
-        "A declared documentation feeder returned a nonzero result, so the site was not assembled.",
-        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
-    ),
-    "render_feeder_exception": Explanation(
-        "A declared documentation feeder raised an exception before it completed.",
-        "Fix the feeder renderer named in the render output, then run devtools render pages again.",
-    ),
-    "render_feeder_system_exit": Explanation(
-        "A declared documentation feeder terminated through its command boundary.",
-        "Read the feeder message, then run that feeder and devtools render pages again.",
-    ),
-    "render_feeder_invalid_result": Explanation(
-        "A declared documentation feeder returned a non-integer result, so the site was not assembled.",
-        "Fix the feeder renderer to return an integer status, then run devtools render pages again.",
-    ),
-    "render_pages_build_exception": Explanation(
-        "The documentation site could not be assembled because its page build raised an exception.",
-        "Read the recorded build error, fix the pages builder input or code, then run devtools render pages again.",
-    ),
-    "render_pagefind_failed": Explanation(
-        "The declared Pagefind search-index output was not generated.",
-        "Install or repair Pagefind, then run devtools render pages again.",
     ),
     "render_input_missing": Explanation(
         "A declared render input is missing, so freshness cannot be established.",
@@ -192,26 +172,10 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
 
     selection = payload.get("testmon_selection")
     if isinstance(selection, dict):
-        print(f"\nselection: {selection.get('selection_mode')} ({selection.get('state_status')})", file=stream)
-        reason = selection.get("state_reason")
+        print(f"\nselection: {selection.get('selection_mode')}", file=stream)
+        reason = selection.get("graph_reason")
         if reason:
-            print(f"  reason: {reason}", file=stream)
-        missing = selection.get("missing_executable_paths") or []
-        if missing:
-            print(f"  {len(missing)} changed file(s) not covered by the graph:", file=stream)
-            for path in list(missing)[:10]:
-                print(f"    - {path}", file=stream)
-            if len(missing) > 10:
-                print(f"    ... and {len(missing) - 10} more", file=stream)
-        runtime_data = selection.get("runtime_data_paths") or []
-        if runtime_data:
-            # Recorded exposure, not an escalation: untraceable changes no
-            # longer force the complete corpus (operator decision 2026-08-18).
-            print(
-                f"  {len(runtime_data)} changed non-Python runtime file(s) are outside Python tracing"
-                " (recorded exposure; only re-execution after an environment change covers them)",
-                file=stream,
-            )
+            print(f"  graph: {reason}", file=stream)
 
     aggregate = payload.get("pytest_aggregate")
     if isinstance(aggregate, dict):
@@ -237,23 +201,6 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
                 for line in tail:
                     print(f"      {line}", file=stream)
 
-    # Graph fate matters more than any single step: a deleted graph means the
-    # NEXT run pays a ~9.5x complete-corpus bootstrap, and until this line
-    # existed the only evidence was a buried receipt field.
-    for step in payload.get("steps") or []:
-        if not isinstance(step, dict):
-            continue
-        cleanup_paths = step.get("testmon_cleanup_paths")
-        if cleanup_paths:
-            print("\nthis run DELETED the testmon graph (next run will bootstrap the complete corpus):", file=stream)
-            for path in cleanup_paths:
-                print(f"  - {path}", file=stream)
-        if step.get("testmon_graph_retained"):
-            print(
-                f"\ntestmon graph retained despite receipt invalidation: {step['testmon_graph_retained']}",
-                file=stream,
-            )
-
     artifact_dir = payload.get("artifact_dir")
     if artifact_dir:
         print(f"\nartifacts: {artifact_dir}", file=stream)
@@ -270,16 +217,13 @@ def _history_projection(entry: Mapping[str, Any]) -> dict[str, Any]:
     selection = entry.get("testmon_selection")
     selection = selection if isinstance(selection, Mapping) else {}
     aggregate = _aggregate(entry)
-    missing = selection.get("missing_executable_paths")
     return {
         "run_id": entry.get("run_id"),
         "started_at": entry.get("started_at"),
         "tier": entry.get("tier"),
-        "graph_state": selection.get("state_status"),
-        "selection_reason": selection.get("state_reason"),
+        "graph_status": selection.get("graph_status"),
         "selection_mode": selection.get("selection_mode") or aggregate.get("selection_mode"),
         "selected_count": aggregate.get("selected_union_count"),
-        "uncovered_executable_paths": list(missing) if isinstance(missing, list) else [],
         "wall_time_s": entry.get("duration_s"),
         "outcome": entry.get("status"),
         "diagnosis": entry.get("diagnosis"),
@@ -335,15 +279,13 @@ def _render_history(hours: float, stream: Any) -> int:
     # -- which in practice means the long bootstraps someone gave up waiting on
     # -- is absent. Measured 2026-08-18: a lane that burned 48 minutes on a
     # single terminated bootstrap contributed 0.04h to this view.
-    print("(killed runs never reach this record, so long bootstraps are under-counted)\n", file=stream)
+    print("(killed runs never reach this record, so the longest runs are under-counted)\n", file=stream)
     print("receipt columns:", file=stream)
     for entry in rows:
         projection = _history_projection(entry)
         print(
-            f"  {projection['run_id']} graph={projection['graph_state'] or '-'} "
-            f"reason={projection['selection_reason'] or '-'} "
+            f"  {projection['run_id']} tier={projection['tier'] or '-'} "
             f"selected={projection['selected_count'] if projection['selected_count'] is not None else '-'} "
-            f"uncovered={','.join(projection['uncovered_executable_paths']) or '-'} "
             f"wall={projection['wall_time_s'] if projection['wall_time_s'] is not None else '-'}s "
             f"outcome={projection['outcome'] or '-'}",
             file=stream,

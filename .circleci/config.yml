@@ -12,12 +12,12 @@ version: 2.1
 #     every other check added to that block over time never ran in real CI
 #     even though `.github/workflows/ci.yml` referenced them -- that GHA
 #     workflow does not execute, only CircleCI does). No pytest; the test
-#     suite's pre-merge gate remains local `devtools verify` (testmon), same
+#     suite's pre-merge gate remains local `devtools verify`, same
 #     as the repo's GitHub-era policy where the heavy suite ran post-merge
 #     only.
 #   - policy-checks (scheduled pipeline named "nightly"): policy checks that
-#     are not cheap/deterministic enough for every push (timestamp-doctrine,
-#     insight-honesty). Runs nightly so a policy that fails continuously is at
+#     are not cheap/deterministic enough for every push (timestamp-doctrine).
+#     Runs nightly so a policy that fails continuously is at
 #     least visible somewhere, per polylogue-ze5i AC2.
 #   - full-suite (scheduled pipeline named "nightly"): full coverage suite +
 #     dependency audit on a larger executor.
@@ -83,10 +83,6 @@ jobs:
       - run:
           name: policy timestamp-doctrine
           command: ~/.local/bin/uv run devtools verify timestamp-doctrine
-          when: always
-      - run:
-          name: policy insight-honesty
-          command: ~/.local/bin/uv run devtools verify insight-honesty
           when: always
   full-suite:
     docker:

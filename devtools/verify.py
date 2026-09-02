@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -19,38 +18,24 @@ from typing import Any
 
 from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
-from devtools.pytest_collection_contract import (
+from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
-    PARALLEL_MARKER_EXPRESSION,
     PROGRESS_PLUGIN_NAME,
-    SERIAL_MARKER_EXPRESSION,
-    STORAGE_SCALE_MARKER_EXPRESSION,
 )
 from devtools.required_gate import executable_gate_result
-from devtools.testmon_bootstrap import (
+from devtools.testmon_provision import (
     TESTMON_DATA_RELPATH,
-    NativeTestmonDeadlineError,
-    NativeTestmonRepairError,
-    classify_native_testmon_changes,
-    installed_packages_digest,
-    prepare_native_testmon_environment,
+    TESTMON_ENVIRONMENT,
+    TestmonGraphStatus,
+    inspect_testmon_graph,
 )
 from devtools.toolchain import venv_bin, venv_python
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
-from devtools.verification_ledger import (
-    append_failure_ledger,
-    ledger_records,
-    policy_diagnostics,
-    read_failure_ledger,
-    read_verify_history,
-)
 from devtools.verification_result import declared_verification_result
-from devtools.verify_js_tests import _STAMP_NAME as JS_INSTALL_STAMP
-from devtools.verify_js_tests import JS_PACKAGES, available_cpus, extension_test_workers
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
@@ -60,7 +45,6 @@ from devtools.verify_runs import (
     canonical_verification_receipt,
     copy_current_pytest_artifacts,
     env_for_pytest_step,
-    git_dirty,
     git_head,
     prune_successful_verify_runs,
 )
@@ -75,7 +59,6 @@ from polylogue.scenarios import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-TESTMON_DATA = TESTMON_DATA_RELPATH
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
@@ -85,8 +68,9 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-SERIAL_LANE_MAX_WORKERS = 4
-STORAGE_SCALE_LANE_MAX_WORKERS = 1
+#: The corpus runs unpartitioned, so load-sensitive and storage-scale tests
+#: share it; the cap is what those tests tolerated in their own lane.
+CORPUS_MAX_WORKERS = 4
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
@@ -185,25 +169,14 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["--dist=loadgroup", "-n", str(workers)]
 
 
-def _native_pytest_steps(
-    *,
-    testmon_mode: str,
-    testmon_environment: str,
-    parallel_worker_args: Sequence[str],
-    serial_worker_args: Sequence[str],
-    storage_scale_worker_args: Sequence[str],
-) -> list[tuple[str, list[str]]]:
-    if testmon_mode == "affected":
-        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-forceselect"]
-    elif testmon_mode == "all":
-        # The complete corpus is what publishes the dependency graph that
-        # affected verification selects from, so it always traces. It runs as
-        # one collection: testmon deletes every recorded test a run did not
-        # collect, so a partitioned run keeps only its last partition.
-        testmon_args = ["--testmon", f"--testmon-env={testmon_environment}", "--testmon-noselect"]
-    else:
-        raise ValueError(f"unsupported native testmon mode: {testmon_mode}")
-    base = [
+def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
+    """The corpus runs as ONE collection.
+
+    testmon drops every recorded test a run did not collect, so a partitioned
+    run keeps only its last partition's edges. One run, always tracing: the
+    graph is advanced by every managed run rather than recomputed.
+    """
+    command = [
         venv_python(root=ROOT),
         "-m",
         "pytest",
@@ -219,90 +192,37 @@ def _native_pytest_steps(
         PROGRESS_PLUGIN_NAME,
         *MANAGED_PLUGIN_ARGS,
         *CLOSED_WORLD_COLLECTION_ARGS,
-        *testmon_args,
+        "--testmon",
+        f"--testmon-env={TESTMON_ENVIRONMENT}",
+        # `all` runs every test and still updates fingerprints; the default
+        # tier selects from what the datafile records, and an empty datafile
+        # selects everything, which is how it seeds.
+        "--testmon-noselect" if selection == "all" else "--testmon-forceselect",
+        "-p",
+        "no:randomly",
+        *worker_args,
     ]
-
-    def lane_command(lane: str, marker: str, workers: Sequence[str]) -> list[str]:
-        command = [
-            f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest-{lane}.xml"
-            if item.startswith("--junitxml=")
-            else f"--json-report-file={PYTEST_REPORT_DIR / f'last-pytest-{lane}.json'}"
-            if item.startswith("--json-report-file=")
-            else item
-            for item in base
-        ]
-        return [*command, "-m", marker, "-p", "no:randomly", *workers]
-
-    parallel_steps = [
-        (
-            f"pytest native parallel ({testmon_mode})",
-            lane_command("parallel", PARALLEL_MARKER_EXPRESSION, parallel_worker_args),
-        )
-    ]
-    return [
-        *parallel_steps,
-        (
-            f"pytest native serial ({testmon_mode})",
-            lane_command("serial", SERIAL_MARKER_EXPRESSION, serial_worker_args),
-        ),
-        (
-            f"pytest native storage-scale ({testmon_mode})",
-            lane_command("storage-scale", STORAGE_SCALE_MARKER_EXPRESSION, storage_scale_worker_args),
-        ),
-    ]
+    return [(f"pytest ({selection})", command)]
 
 
-def build_verify_steps(
-    *,
-    quick: bool,
-    commit: bool = False,
-    testmon_mode: str = "affected",
-    testmon_environment: str = "",
-) -> list[tuple[str, list[str]]]:
+def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str, list[str]]]:
     steps = [
         ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
         ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
         ("mypy", _mypy_cmd()),
+        ("render all", _devtools_cmd("render all", "--check")),
+        ("verify layering", _devtools_cmd("verify layering", "--json")),
+        ("verify patterns", _devtools_cmd("verify patterns", "--json")),
+        ("verify doc-commands", _devtools_cmd("verify doc-commands")),
+        ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
+        ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
+        ("verify consumer-reachability", _devtools_cmd("verify consumer-reachability", "--json")),
+        ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
+        ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
     ]
-    if not commit:
-        steps += [
-            ("render all", _devtools_cmd("render all", "--check")),
-            ("verify layering", _devtools_cmd("verify layering", "--json")),
-            ("verify patterns", _devtools_cmd("verify patterns", "--json")),
-            ("verify ci-commands", _devtools_cmd("verify ci-commands", "--json")),
-            ("verify js-tests", _devtools_cmd("verify js-tests", "--json")),
-            ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-            ("verify schema-roundtrip", _devtools_cmd("verify schema-roundtrip", "--all")),
-            ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
-            ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
-            ("verify consumer-reachability", _devtools_cmd("verify consumer-reachability", "--json")),
-            ("verify definition-closure", _devtools_cmd("verify definition-closure", "--json")),
-            ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
-            ("verify insight-honesty", _devtools_cmd("verify insight-honesty")),
-            (
-                "schema promotion audit",
-                [
-                    venv_python(root=ROOT),
-                    "-m",
-                    "polylogue.schemas.promotion_audit",
-                    "polylogue/schemas",
-                    "--output",
-                    str(PYTEST_REPORT_DIR / "schema-promotion-audit.json"),
-                ],
-            ),
-            ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
-        ]
-    if not quick and not commit:
-        if testmon_mode not in {"affected", "all"} or not testmon_environment:
-            raise ValueError("a valid native testmon selection and environment are required")
+    if not quick:
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        steps += _native_pytest_steps(
-            testmon_mode=testmon_mode,
-            testmon_environment=testmon_environment,
-            parallel_worker_args=_pytest_worker_args(),
-            serial_worker_args=_pytest_worker_args(maximum=SERIAL_LANE_MAX_WORKERS),
-            storage_scale_worker_args=_pytest_worker_args(maximum=STORAGE_SCALE_LANE_MAX_WORKERS),
-        )
+        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
     return steps
 
 
@@ -310,11 +230,8 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    # Every managed pytest run writes the shared dependency graph: testmon
-    # replaces the edges of each test it executes. A run under a reduced
-    # Hypothesis budget records fewer edges for its property tests, and every
-    # later affected selection inherits the blind spot, so all graph writers
-    # trace under one full profile.
+    # Property tests run under one full profile so a reduced Hypothesis budget
+    # cannot quietly narrow what a recorded green stands for.
     env["HYPOTHESIS_PROFILE"] = "default"
     env.pop("POLYLOGUE_CI", None)
 
@@ -590,227 +507,10 @@ def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> d
     return {**metadata, "duration_s": round(time.monotonic() - started, 2), "exit": 127}
 
 
-def _changed_paths(base_commit: str, head_commit: str) -> tuple[str, ...]:
-    try:
-        result = subprocess.run(
-            ["git", "diff", "--no-renames", "--name-only", "-z", f"{base_commit}...{head_commit}", "--"],
-            cwd=ROOT,
-            capture_output=True,
-            timeout=5,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
-        raise NativeTestmonRepairError("cannot determine changed paths for testmon selection") from exc
-    return tuple(sorted(os.fsdecode(path) for path in result.stdout.split(b"\0") if path))
-
-
-def _git_commit(ref: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--verify", ref],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=True,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
-    return result.stdout.strip() or None
-
-
-def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
-    del all_tests
-    if quick or commit:
+def _scope(*, quick: bool, selection: str) -> VerificationScope:
+    if quick:
         return VerificationScope.NON_TEST
-    return VerificationScope.AFFECTED
-
-
-def _execution_plan_digest() -> str:
-    """Inputs of the whole verification plan beyond Python collection: worker
-    count, the JavaScript toolchain and installed package trees the js-tests
-    gate runs against, and whether each required Python gate executable can
-    be launched."""
-    node = shutil.which("node")
-    node_version = ""
-    if node:
-        try:
-            node_version = subprocess.run(
-                [node, "--version"], capture_output=True, text=True, timeout=10, check=False
-            ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            node_version = "unavailable"
-    npm = shutil.which("npm")
-    npm_version = ""
-    if npm:
-        try:
-            npm_version = subprocess.run(
-                [npm, "--version"], capture_output=True, text=True, timeout=10, check=False
-            ).stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            npm_version = "unavailable"
-    payload = {
-        "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
-        "js_workers": os.environ.get("POLYLOGUE_EXTENSION_TEST_WORKERS")
-        or str(extension_test_workers(available_cpus())),
-        # Gates that read an authority override from the environment run a
-        # different plan under it.
-        "consumer_reachability": {
-            name: os.environ.get(name, "") for name in ("CONSUMER_REACHABILITY_BASE", "CONSUMER_REACHABILITY_HEAD")
-        },
-        # Gates that compare against master read the tracking ref; a fetch
-        # that moves it is a different plan at the same head.
-        "master": _git_commit("origin/master") or "",
-        "merge_base": _merge_base_with_master(),
-        # A stored Hypothesis counterexample is replayed by a real run; the
-        # example database is part of what the corpus executes.
-        "hypothesis_examples": _tree_listing(ROOT / ".cache" / "hypothesis" / "examples"),
-        "node": node_version,
-        "npm": npm_version,
-        # The Python gate executables the plan requires: a missing or
-        # unlaunchable one turns a real run red, so its availability is part
-        # of the plan a recorded green stands for.
-        "gates": {name: _executable_identity(venv_bin(name, root=ROOT)) for name in ("ruff", "mypy", "dmypy")},
-        # Every step of the complete plan names an executable; tools a gate
-        # resolves at run time are listed here.
-        "steps": {
-            label: _executable_identity(command[0])
-            for label, command in build_verify_steps(quick=False, testmon_mode="all", testmon_environment="plan")
-            if command
-        },
-        "tools": {name: _executable_identity(name) for name in ("ast-grep", "node", "npm")},
-        # The js-tests gate runs against each package's installed tree; the
-        # lockfile, the install stamp and the installed binaries identify
-        # what a green run executed.
-        "js": {
-            package: {
-                "lock": _file_digest(ROOT / package / "package-lock.json"),
-                "installed": _file_digest(ROOT / package / "node_modules" / JS_INSTALL_STAMP),
-                "binaries": _tree_listing(ROOT / package / "node_modules" / ".bin"),
-            }
-            for package in JS_PACKAGES
-        },
-    }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
-
-
-def _reuse_inputs_still_hold(packages: str, plan: str) -> bool:
-    """Recompute the reuse inputs at the decision; anything unreadable means run."""
-    try:
-        return installed_packages_digest() == packages and _execution_plan_digest() == plan
-    except (NativeTestmonRepairError, OSError):
-        return False
-
-
-def _merge_base_with_master() -> str:
-    try:
-        result = subprocess.run(
-            ["git", "merge-base", "HEAD", "origin/master"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-            cwd=ROOT,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    return result.stdout.strip()
-
-
-def _executable_identity(executable: str) -> str:
-    """Where an executable resolves and what it is, or "absent"."""
-    if not executable_gate_result([executable], gate="plan").executable_available:
-        return "absent"
-    resolved = executable if os.path.dirname(executable) else shutil.which(executable)
-    if resolved is None:
-        return "absent"
-    try:
-        real = os.path.realpath(resolved)
-        state = os.stat(real)
-    except OSError:
-        return "absent"
-    return f"{real}:{state.st_size}:{int(state.st_mtime)}"
-
-
-def _tree_listing(root: Path) -> str:
-    """A digest of the names and sizes of the files directly under a directory."""
-    try:
-        entries = sorted((entry.name, entry.stat().st_size) for entry in root.iterdir() if not entry.is_dir())
-    except OSError:
-        return "absent"
-    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
-
-
-def _file_digest(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return "absent"
-
-
-def _packages_drift(packages: str) -> bool:
-    """Whether the installed set differs from the newest complete run's.
-
-    A dependency version does not rename the environment (testmon cannot see
-    inside site-packages), so this is recorded on the receipt rather than
-    used to discard the graph; the next complete run re-traces under the new
-    set because its skip rule keys on packages_digest.
-    """
-    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
-        if row.get("tier") != "all":
-            continue
-        selection = row.get("testmon_selection")
-        recorded = selection.get("packages_digest") if isinstance(selection, Mapping) else None
-        if isinstance(recorded, str):
-            return recorded != packages
-    return False
-
-
-def _corpus_already_verified(*, head: str, environment: str, packages: str, plan: str) -> str | None:
-    """The run id of the newest complete-corpus attempt at this head, environment,
-    package set, and execution plan, if that attempt was a clean-tree success."""
-    for row in reversed(read_verify_history(ROOT / ".cache/verify/history.jsonl")):
-        receipt = row.get("semantic_receipt")
-        selection = row.get("testmon_selection")
-        aggregate = row.get("pytest_aggregate")
-        if not (isinstance(receipt, Mapping) and isinstance(selection, Mapping) and isinstance(aggregate, Mapping)):
-            continue
-        if aggregate.get("covered_by_run"):
-            # A skip is not an attempt; the attempt it reused is older.
-            continue
-        if row.get("tier") != "all":
-            # Any traced run since, at any head, rewrote the shared graph's
-            # edges; the complete run on record no longer describes the
-            # graph on disk.
-            return None
-        # The newest complete attempt anywhere is the graph on disk. If it
-        # ran at another head, environment, package set or plan, this
-        # invocation's corpus is not what is recorded, so it runs.
-        if (
-            receipt.get("source_revision") != head
-            or selection.get("environment_digest") != environment
-            or selection.get("packages_digest") != packages
-            or selection.get("plan_digest") != plan
-        ):
-            return None
-        # The newest attempt decides: a later failed recompute must not be
-        # hidden behind an older green.
-        if (
-            row.get("status") == "success"
-            and row.get("git_dirty") is False
-            and row.get("git_head") == head
-            and aggregate.get("complete_corpus_covered") is True
-        ):
-            run_id = row.get("run_id")
-            artifact_dir = row.get("artifact_dir")
-            # Coverage is only reusable while its evidence still exists; a
-            # run whose detail retention pruned is history, not a receipt.
-            if isinstance(run_id, str) and isinstance(artifact_dir, str) and (ROOT / artifact_dir).is_dir():
-                return run_id
-            return None
-        return None
-    return None
+    return VerificationScope.AFFECTED if selection == "affected" else VerificationScope.COMPLETE
 
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
@@ -822,19 +522,6 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
-
-
-def _emit_native_testmon_refusal(*, preparation: Any, reason: str, stream: Any | None = None) -> None:
-    """Explain why affected verification refused to measure this checkout."""
-    if stream is None:
-        stream = sys.stderr
-    stream.write(
-        "verify: refusing to measure affected verification; no compatible native testmon graph is available.\n"
-        "  selection: affected\n"
-        f"  environment: '{preparation.environment_name}' ({preparation.local_state.status})\n"
-        f"  reason: {reason}\n"
-        "  remedy: run 'devtools verify --all' to produce a compatible graph, then rerun 'devtools verify'.\n"
-    )
 
 
 def _verification_workload_receipt(
@@ -903,7 +590,7 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "all" if args.all_tests else "affected",
+            "selection_mode": "quick" if args.quick else "all" if args.all_tests else "affected",
             "outcomes": {},
             "terminal_green": False,
             "complete_corpus_covered": False,
@@ -935,14 +622,6 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
-    existing = read_failure_ledger(ROOT / ".cache/verify/failure-ledger.jsonl")
-    verify_history = read_verify_history(ROOT / ".cache/verify/history.jsonl")
-    records = ledger_records(payload, history=verify_history)
-    if records:
-        append_failure_ledger(records, path=ROOT / ".cache/verify/failure-ledger.jsonl")
-        payload["failure_ledger"] = policy_diagnostics((*existing, *records))
-        run._payload["failure_ledger"] = payload["failure_ledger"]
-        run.write()
     append_verify_history(payload)
     append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
@@ -993,22 +672,22 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         sys.stderr.write(refusal + "\n")
         return 2
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
-    parser.add_argument("--quick", action="store_true")
-    parser.add_argument("--commit", action="store_true")
-    parser.add_argument("--all", "--full", dest="all_tests", action="store_true")
+    parser.add_argument("--quick", action="store_true", help="run the static gates only")
     parser.add_argument(
-        "--recompute",
+        "--all",
+        "--full",
+        dest="all_tests",
         action="store_true",
-        help="run the complete corpus even when this head and environment already have a successful complete run",
+        help="explicit form of the default: the static gates plus the complete corpus",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    if args.recompute and not args.all_tests:
-        parser.error("--recompute applies to the complete corpus; pass --all")
     _anchor_verification_paths()
     validate_authority_matrix()
     started = time.monotonic()
-    scope = _scope(quick=args.quick, commit=args.commit, all_tests=args.all_tests)
+    graph = inspect_testmon_graph(ROOT)
+    selection = "all" if args.all_tests else "affected"
+    scope = _scope(quick=args.quick, selection=selection)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
     except CheckoutImportMismatchError as exc:
@@ -1023,7 +702,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         sys.stderr.write(f"verify: {exc}\n")
         return 125
     head = git_head(ROOT)
-    tier = "quick" if args.quick else "commit" if args.commit else "all" if args.all_tests else "affected"
+    tier = "quick" if args.quick else selection
     run = VerifyRun(
         tier=tier,
         argv=list(argv or []),
@@ -1032,99 +711,27 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
-    try:
-        preparation = None
-        mode = "all" if args.all_tests else "affected"
-        if not args.quick and not args.commit:
-            if head is None:
-                raise RuntimeError("cannot resolve current Git head")
-            base = _git_commit("origin/master") or head
-            try:
-                impact = classify_native_testmon_changes(ROOT, _changed_paths(base, head))
-                preparation = prepare_native_testmon_environment(
-                    ROOT,
-                    required_executable_paths=impact.executable_paths,
-                )
-                packages = installed_packages_digest()
-                plan = _execution_plan_digest()
-            except (NativeTestmonDeadlineError, NativeTestmonRepairError) as exc:
-                payload = _finish_and_record_verification(
-                    run=run,
-                    exit_code=125,
-                    duration_s=time.monotonic() - started,
-                    diagnosis="native_testmon_preparation_failed",
-                    verification_scope=scope.value,
-                    final_git_head=git_head(ROOT),
-                )
-                _emit(payload, use_json=args.json, operation=agentctl_operation)
-                sys.stderr.write(f"verify: {exc}\n")
-                return 125
-            run.record_selection(
-                selection_mode=mode,
-                state_status=preparation.local_state.status,
-                state_reason=preparation.local_state.reason,
-                missing_executable_paths=preparation.local_state.missing_executable_paths,
-                runtime_data_paths=impact.runtime_data_paths,
-                environment_digest=preparation.environment_name,
-                packages_digest=packages,
-                plan_digest=plan,
-                packages_drift=_packages_drift(packages),
+    if not args.quick:
+        run.record_selection(selection_mode=selection, graph_status=str(graph.status), graph_reason=graph.reason)
+        if graph.status is TestmonGraphStatus.UNUSABLE:
+            payload = _finish_and_record_verification(
+                run=run,
+                exit_code=2,
+                duration_s=time.monotonic() - started,
+                diagnosis="graph_unusable",
+                verification_scope=scope.value,
+                final_git_head=git_head(ROOT),
             )
-            if args.all_tests and not args.recompute and preparation.local_state.valid:
-                # A graph that needs bootstrapping is itself a reason to run:
-                # the skip covers verification, not the graph.
-                covered = _corpus_already_verified(
-                    head=head, environment=preparation.environment_name, packages=packages, plan=plan
-                )
-                if (
-                    covered is not None
-                    and not git_dirty(ROOT)
-                    and git_head(ROOT) == head
-                    # The inputs are recomputed at the decision: an
-                    # environment sync between capture and here is a new plan.
-                    and _reuse_inputs_still_hold(packages, plan)
-                ):
-                    # The corpus at this head under this environment is already
-                    # a recorded fact; rerunning it changes nothing but the
-                    # electricity bill. A different head, a moved dependency
-                    # set, a dirty tree, or a head that moved while this run
-                    # prepared runs in full.
-                    payload = _finish_and_record_verification(
-                        run=run,
-                        exit_code=0,
-                        duration_s=time.monotonic() - started,
-                        diagnosis="corpus_already_verified",
-                        verification_scope=scope.value,
-                        final_git_head=head,
-                        pytest_aggregate={
-                            "selection_mode": "all",
-                            "outcomes": {},
-                            "terminal_green": True,
-                            "complete_corpus_covered": False,
-                            "covered_by_run": covered,
-                        },
-                    )
-                    sys.stderr.write(f"verify: complete corpus already verified at {head[:12]} by run {covered}\n")
-                    _emit(payload, use_json=args.json, operation=agentctl_operation)
-                    return 0
-            if preparation.selection_mode == "bootstrap" and not args.all_tests:
-                payload = _finish_and_record_verification(
-                    run=run,
-                    exit_code=2,
-                    duration_s=time.monotonic() - started,
-                    diagnosis="native_testmon_graph_unavailable",
-                    verification_scope=scope.value,
-                    final_git_head=git_head(ROOT),
-                )
-                _emit_native_testmon_refusal(preparation=preparation, reason=preparation.local_state.reason)
-                _emit(payload, use_json=args.json, operation=agentctl_operation)
-                return 2
-        steps = build_verify_steps(
-            quick=args.quick,
-            commit=args.commit,
-            testmon_mode=mode,
-            testmon_environment=preparation.environment_name if preparation else "",
-        )
+            sys.stderr.write(
+                f"verify: {graph.reason}.\n"
+                f"  remedy: delete {TESTMON_DATA_RELPATH} and rerun; the next run reseeds it.\n"
+            )
+            _emit(payload, use_json=args.json, operation=agentctl_operation)
+            return 2
+        if graph.status is TestmonGraphStatus.ABSENT:
+            sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
+    steps = build_verify_steps(quick=args.quick, selection=selection)
+    try:
         results: list[dict[str, Any]] = []
         exit_code = 0
         for label, command in steps:
@@ -1132,11 +739,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
             if rc:
                 exit_code = exit_code or rc
-                if not args.all_tests:
+                if args.quick:
                     break
-                # A complete-corpus run reports the whole corpus and finishes
-                # publishing the graph; stopping at the first red step would
-                # leave both partial.
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
             run=run,
@@ -1160,7 +764,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     aggregate = _aggregate_pytest_results(
         results,
         expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
-        mode=mode,
+        mode="quick" if args.quick else selection,
         exit_code=exit_code,
     )
     # The retained exit code is the first failure's; its diagnosis must be too.

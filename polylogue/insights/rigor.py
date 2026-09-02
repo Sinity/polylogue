@@ -963,8 +963,8 @@ _RIGOR_MATRIX: tuple[RigorContract, ...] = (
 #: because they carry no number-bearing/quantitative fields at all (37t.15
 #: sibling, 9e5.28). Every entry needs an inline justification string; a
 #: number-bearing product belongs in ``_RIGOR_MATRIX`` above, not here --
-#: ``devtools verify insight-honesty`` fails on any registered insight
-#: that is in neither set.
+#: ``tests/unit/insights/test_rigor_contract_coverage.py`` fails on any
+#: registered insight that is in neither set.
 RIGOR_EXEMPT: dict[str, str] = {}
 
 _METADATA_FIELD_NAMES = frozenset(

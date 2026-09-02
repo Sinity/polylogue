@@ -45,15 +45,13 @@ These are the commands worth remembering during normal repo work:
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
 - `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
-  Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-testmon-2709409-d5c6e72c`.
+  Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
 - `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
   Common forms: `devtools render all`, `devtools render all --check`.
 - `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
   Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
-- `devtools bench mutation`: Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.
-  Common forms: `devtools bench mutation list`, `devtools bench mutation run filters`.
 
 ### Core
 
@@ -73,9 +71,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
 | `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
 | `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
-| `devtools render pages` | Build the GitHub Pages documentation site into .cache/site/. |
 | `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
-| `devtools render visual-tapes` | Write VHS tape files and optionally capture GIFs for the default visual evidence specs. |
 | `devtools render webui-client` | Render the committed WebUI TypeScript client from docs/openapi/search.yaml. |
 | `devtools render webui-design-system` | Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence. |
 
@@ -96,31 +92,18 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify atlas` | Check atlas citation anchors and verification-commit freshness. |
 | `devtools verify blob-conservation` | Verify both directions of blob/reference conservation without mutation. |
-| `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
 | `devtools verify consumer-reachability` | Require newly added modules, tables, and tools to have production consumers. |
-| `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |
 | `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools verify definition-closure` | Evaluate representative definition-to-production closure policies as a bounded JSON matrix. |
 | `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
-| `devtools verify falsification` | Run the bounded four-slice falsification gate after explicit rebuild-safety consent. |
-| `devtools verify insight-honesty` | Verify every registered insight product is rigor-contracted or exempt. |
 | `devtools verify js-tests` | Run the JavaScript test suites of the browser-extension and webui packages. |
 | `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
-| `devtools verify mutation-freshness` | Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds. |
 | `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
 | `devtools verify patterns` | Enforce AST-shape defect-family rules with shrinking grandfathered baselines. |
-| `devtools verify portfolio-frontier` | Validate complete Beads ambition, active-set, and execution-focus views. |
-| `devtools verify provider-completeness` | Report provider/importer package completeness by origin and capture mode. |
-| `devtools verify read-surface` | Capture and compare archive read-surface snapshots. |
-| `devtools verify reindex-packets` | Validate the current reindex execution packets from the external Beads blocks graph. |
-| `devtools verify runtime` | Verify the CPython 3.14 free-threaded runtime and required native extensions. |
-| `devtools verify runtime-census` | Census production concurrency boundaries and classify every discovered item. |
 | `devtools verify scenario` | Run a named archive verification scenario. |
 | `devtools verify schema-audit` | Run committed provider schema package quality checks. |
 | `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
 | `devtools verify schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
 | `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
-| `devtools verify semantic-fidelity` | Run the bounded production-route semantic contradiction and construct-flow census. |
 | `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
 | `devtools verify webui` | Run the declared typed WebUI generation, contract, unit, and build checks. |
 | `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
@@ -141,7 +124,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
-| `devtools bench mutation` | Run focused mutation campaigns with isolated execution and JSON artifacts. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 
 ### Workspace
@@ -152,7 +134,6 @@ These are the commands worth remembering during normal repo work:
 | `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace physical-identity-census` | Census raw evidence hidden by origin/native session identity collapse. |
 | `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 
 <!-- END GENERATED: devtools-command-catalog -->

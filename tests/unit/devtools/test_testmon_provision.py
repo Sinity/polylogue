@@ -1,106 +1,79 @@
+"""The datafile decides whether a run selects, seeds, or stops.
+
+Anti-vacuity: reporting a corrupt or foreign-format datafile as usable lets
+`devtools verify` select against a graph that cannot answer, which silently
+skips tests. Reporting an absent one as unusable stops a lane that should just
+seed.
+"""
+
 from __future__ import annotations
 
-import json
+import sqlite3
 from pathlib import Path
 
-import testmon.db
+import pytest
 
-from devtools.testmon_provision import main
-
-
-def _seed_graph(root: Path, environment_name: str) -> None:
-    data = root / ".cache" / "testmon" / "testmondata"
-    data.parent.mkdir(parents=True)
-    database = testmon.db.DB(str(data))
-    try:
-        database.con.execute(
-            "INSERT INTO environment (environment_name, system_packages, python_version) VALUES (?, '', '')",
-            (environment_name,),
-        )
-        execution = database.con.execute(
-            "INSERT INTO test_execution (environment_id, test_name, duration, failed, forced) "
-            "VALUES (last_insert_rowid(), 'tests/unit/test_sample.py::test_sample', 0, 0, 0)"
-        )
-        assert execution.rowcount == 1
-        fingerprint = database.con.execute(
-            "INSERT INTO file_fp (filename, method_checksums, mtime, fsha) "
-            "VALUES ('tests/unit/test_sample.py', '', 0, '')"
-        )
-        assert fingerprint.rowcount == 1
-        database.con.execute(
-            "INSERT INTO test_execution_file_fp (test_execution_id, fingerprint_id) VALUES (?, ?)",
-            (execution.lastrowid, fingerprint.lastrowid),
-        )
-        database.con.commit()
-    finally:
-        database.con.close()
+from devtools import testmon_provision
+from devtools.testmon_provision import (
+    TestmonGraphStatus,
+    discard_testmon_graph,
+    inspect_testmon_graph,
+)
 
 
-def test_stale_provisioned_graph_is_discarded_not_inherited(
-    tmp_path: Path, capsys: object, monkeypatch: object
-) -> None:
-    """A copied graph for another environment is dropped during provisioning.
-
-    Anti-vacuity: keeping the file makes this red. Failing the command instead
-    would fail every lane, because the seed a workspace copies is routinely
-    older than the environment it is provisioned into.
-    """
-    _seed_graph(tmp_path, "polylogue-stale-environment")
-    sidecar = tmp_path / ".cache" / "testmon" / "testmondata-wal"
-    sidecar.write_bytes(b"")
-    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
-
-    assert main([]) == 0
-    assert not (tmp_path / ".cache" / "testmon" / "testmondata").exists()
-    # A surviving sidecar reads as damaged state and refuses the lane's
-    # verification, which is worse than the stale seed it came with.
-    assert not sidecar.exists()
-    assert "discarded" in capsys.readouterr().out  # type: ignore[attr-defined]
+def _seed(root: Path, *, tables: tuple[str, ...]) -> Path:
+    path = testmon_provision.testmon_datafile(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(path)
+    for table in tables:
+        connection.execute(f"CREATE TABLE {table} (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    return path
 
 
-def test_current_provisioned_graph_passes_with_json_result(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
-    from devtools.testmon_bootstrap import testmon_environment_digest
-
-    _seed_graph(tmp_path, testmon_environment_digest(tmp_path))
-    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
-
-    assert main(["--json"]) == 0
-    payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert payload["state"] == "valid"
-    assert payload["discarded"] is False
-    assert (tmp_path / ".cache" / "testmon" / "testmondata").exists()
+def test_absent_datafile_is_a_seed_not_a_failure(tmp_path: Path) -> None:
+    state = inspect_testmon_graph(tmp_path)
+    assert state.status is TestmonGraphStatus.ABSENT
+    assert not state.usable
 
 
-def test_absent_graph_provisions_without_a_seed(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
-    """A workspace with no seeded graph provisions.
-
-    The cache is untracked, so a fresh checkout has no graph to copy; refusing
-    here fails every lane before it starts.
-    """
-    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
-
-    assert main([]) == 0
-    assert "absent" in capsys.readouterr().out  # type: ignore[attr-defined]
+def test_a_complete_datafile_is_usable(tmp_path: Path) -> None:
+    _seed(tmp_path, tables=("environment", "node"))
+    assert inspect_testmon_graph(tmp_path).status is TestmonGraphStatus.USABLE
 
 
-def test_seed_removal_failure_is_a_typed_error_result(tmp_path: Path, capsys: object, monkeypatch: object) -> None:
-    """A seed that cannot be removed reports state error, never a traceback.
+def test_a_datafile_from_another_testmon_version_is_unusable(tmp_path: Path) -> None:
+    _seed(tmp_path, tables=("environment",))
+    state = inspect_testmon_graph(tmp_path)
+    assert state.status is TestmonGraphStatus.UNUSABLE
+    assert "incompatible testmon version" in state.reason
 
-    Anti-vacuity: letting the repair error escape leaves lane provisioning
-    with no JSON result to classify.
-    """
-    _seed_graph(tmp_path, "polylogue-stale-environment")
-    monkeypatch.chdir(tmp_path)  # type: ignore[attr-defined]
 
-    def refuse(_root: Path) -> tuple[Path, ...]:
-        from devtools.testmon_bootstrap import NativeTestmonRepairError
+def test_a_corrupt_datafile_is_unusable(tmp_path: Path) -> None:
+    path = testmon_provision.testmon_datafile(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"not a database at all")
+    assert inspect_testmon_graph(tmp_path).status is TestmonGraphStatus.UNUSABLE
 
-        raise NativeTestmonRepairError("refusing to remove hard-linked owned SQLite path")
 
-    monkeypatch.setattr("devtools.testmon_provision.remove_invalid_native_testmon_state", refuse)  # type: ignore[attr-defined]
+def test_provision_discards_only_an_unusable_datafile(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = _seed(tmp_path, tables=("environment",))
+    monkeypatch.chdir(tmp_path)
 
-    assert main(["--json"]) == 1
-    payload = json.loads(capsys.readouterr().out)  # type: ignore[attr-defined]
-    assert payload["state"] == "error"
-    assert payload["discarded"] is False
-    assert "hard-linked" in payload["reason"]
+    assert testmon_provision.main([]) == 0
+    assert not path.exists()
+
+    _seed(tmp_path, tables=("environment", "node"))
+    assert testmon_provision.main([]) == 0
+    assert path.exists()
+
+
+def test_discard_removes_the_datafile_and_its_sidecars(tmp_path: Path) -> None:
+    path = _seed(tmp_path, tables=("environment", "node"))
+    path.with_name(path.name + "-wal").write_bytes(b"")
+
+    discard_testmon_graph(tmp_path)
+
+    assert not path.exists()
+    assert not path.with_name(path.name + "-wal").exists()

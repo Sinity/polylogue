@@ -258,8 +258,8 @@ API.
 Every insight product registered in
 `polylogue/insights/registry.py:INSIGHT_REGISTRY` must appear above or in
 `polylogue/insights/rigor.py:RIGOR_EXEMPT` with an inline justification
-(genuinely non-number-bearing products only). `devtools verify
-insight-honesty` enforces this statically; the audit runner reports an
+(genuinely non-number-bearing products only).
+`tests/unit/insights/test_rigor_contract_coverage.py` enforces this; the audit runner reports an
 uncovered product's `coverage_status` as `"uncovered"` rather than
 silently omitting it (9e5.28).
 

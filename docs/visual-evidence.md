@@ -29,31 +29,6 @@ Screenshots, screencasts, and
 store-listing images are useful only when they point back to one of those run
 artifacts; standalone mockups belong in design notes, not release evidence.
 
-## Public Screencast Tapes
-
-`devtools render visual-tapes` writes the public VHS tape inventory. With
-`--capture`, it also asks `vhs` to render GIFs when the binary is installed.
-The default specs are deliberately self-contained and private-data-free:
-
-- `demo-tour` runs `polylogue demo tour --out-dir demo-tour --force`, then
-  shows the compact evidence transcript followed by the bounded proof report.
-- `evidence-receipt` prepares a deterministic archive off-camera, then shows
-  one assistant success claim resolved against a failed test receipt, its later
-  successful rerun, and a prose-only negative control.
-- `reader-evidence-tour` runs the browserless reader smoke lane and renders the
-  JSON report header.
-
-These are product evidence specs, not ad hoc recordings. If the command flow
-changes, update the spec and regenerate the media rather than editing a GIF by
-hand.
-
-Current example renders:
-
-- [`demo-tour.gif`](examples/demo-tour/demo-tour.gif)
-- [`evidence-receipt.png`](examples/visual-tapes/evidence-receipt.png) — the
-  static README frame; regenerate the tape when the underlying flow changes.
-- [`reader-evidence-tour.gif`](examples/visual-tapes/reader-evidence-tour.gif)
-
 ## Running the lane
 
 From the devshell:

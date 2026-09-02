@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 
 from devtools import run_tests
-from devtools.pytest_collection_contract import (
+from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,

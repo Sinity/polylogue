@@ -37,11 +37,12 @@ from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
 )
-from devtools.pytest_collection_contract import (
+from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.testmon_provision import TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
@@ -311,6 +312,12 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
         *collection_args,
+        # A focused run traces into the one checkout datafile and writes back,
+        # so the graph is advanced by every managed run. It never selects: the
+        # caller already named what to run.
+        "--testmon",
+        f"--testmon-env={TESTMON_ENVIRONMENT}",
+        "--testmon-noselect",
         *selection,
         *worker_args,
         *_xdist_distribution_args(selection, worker_args),

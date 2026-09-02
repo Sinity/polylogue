@@ -67,33 +67,23 @@ CI runs this journey in the `web-first-party-auth` job. Local NixOS development
 uses the system Chrome path discovered by `webui/playwright.config.ts`, so the
 browser install step is normally unnecessary after `npm ci`.
 
-`devtools verify` uses only the checkout-local pytest-testmon graph. Plain
-verification reuses a compatible graph or refuses before pytest starts; an
-explicit `devtools verify --all` is the route that builds a missing graph.
+`devtools verify` runs the static gates and then pytest, selecting from the
+checkout's single pytest-testmon datafile at `.cache/testmon/testmondata` under
+the fixed environment name `polylogue`. Every managed run traces into that
+datafile and writes back, `devtools test <selection>` included, so the graph is
+advanced rather than recomputed; a worktree is provisioned by copying master's
+datafile, which is valid immediately because paths are repo-relative and
+fingerprints are by content.
 
-The native environment key includes the Python version, project and pytest
-configuration, the repository-root `conftest.py` sentinel, the collection
-contract, and collection-active local pytest plugins. Installed distributions
-and `uv.lock` are not part of it: a dependency change cannot be traced, so it
-is recorded on the receipt as package drift and re-traced by the next complete
-run rather than discarding the graph. Ordinary
-`tests/infra` helpers stay incremental: import
-them from an executing fixture or test when their module initialization is
-dependency-bearing, so pytest-testmon observes that initialization and helper
-execution instead of forcing a complete-corpus bootstrap for every helper edit.
-Product source changes likewise stay incremental. A genuine collection or
-dependency-semantics change starts a fresh native environment.
-The 2026-08-13 audit reduced this key from all 83 `tests/infra` Python files to
-23 actual inputs (configuration, conftests, and active plugins); discovery took
-0.95s. A real isolated mutation of a runtime-imported helper retained the same
-environment and selected both owning tests through native dependency edges.
+A checkout with no datafile is not an error: the run says so, seeds the
+datafile, and runs every test. A datafile that cannot be opened, or that no
+compatible testmon wrote, stops the run with a typed `graph_unusable` result
+naming the remedy — delete it and rerun. `--all` runs every test and still
+updates fingerprints; `--quick` runs the static gates alone. A selected run
+reports only the tests it executed.
 
-
-The default path does not replay cached verify results. Every invocation runs
-the static gates and then invokes pytest-testmon over the selected scope.
-Affected selection runs changed-dependency, never-recorded, and previously
-failing tests. A selected result reports only the tests it executed. There is
-no seed, repair, shard, or registry command.
+The corpus runs as ONE collection. testmon drops every recorded test a run did
+not collect, so a partitioned run would keep only its last partition's edges.
 
 A focused `devtools test` step gets a run directory under
 `.cache/verify/runs/<run-id>/` with progress, selection, summary, merged
@@ -139,21 +129,9 @@ or after a run, inspect
 `.cache/verify/current-pytest-output.log` to see selected/deselected node IDs,
 collection duration, slowest setup/call/teardown phases, and captured output.
 
-Optional lane, mutation-campaign, and benchmark commands remain discoverable
+Optional lane and benchmark commands remain discoverable
 through `devtools --help`; pytest and the concrete commands are the behavioral
 authority.
-
-### Native graph validation for collection-time imports
-
-`pytest-testmon` records dependencies only while a specific test is running.
-A product import executed at test-module or `conftest.py` collection time can
-therefore be absent from every test's native dependency graph.
-
-Changed Python modules are classified from their AST. Executable modules must
-occur in the native `file_fp` graph; if one is missing, plain verify refuses
-affected selection. Run the explicit complete-corpus route, then move a
-collection-time import into an executing fixture or test so testmon can observe
-the dependency.
 
 Declaration-only modules need no cohort or allowlist. Their structural
 contracts remain protected by `mypy --strict`, which runs in every verify.
@@ -314,19 +292,6 @@ uv run devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_de
 Browser or deployment media remains local operator evidence unless the run is
 backed by an explicit command artifact. The fast visual lane is browserless and
 checks HTTP/DOM/API contracts rather than screenshots.
-
-## Mutation Testing
-
-```bash
-devtools bench mutation list
-devtools bench mutation run <campaign>
-```
-
-Policy:
-
-- keep the committed mutmut configuration broad; narrow work happens through
-  focused campaigns
-- write per-run JSON artifacts under `.local/mutation-campaigns/`
 
 ## Protected Files
 

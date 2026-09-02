@@ -134,48 +134,6 @@
       "path": "tests/unit/sources/test_assembly.py"
     },
     {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.daemon.event_bus",
-      "fingerprint": "certifies_dead_code:tests/unit/daemon/test_event_bus.py:0094525965e44a00:0",
-      "path": "tests/unit/daemon/test_event_bus.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.judgment.experiments",
-      "fingerprint": "certifies_dead_code:tests/unit/insights/judgment/test_experiments.py:30f1daccd947022f:0",
-      "path": "tests/unit/insights/judgment/test_experiments.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.alert_budget",
-      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_alert_budget.py:3587d5dff72636b6:0",
-      "path": "tests/unit/insights/measurement/test_alert_budget.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.evidence_ancestry",
-      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_evidence_ancestry.py:fda25e8d18180ee6:0",
-      "path": "tests/unit/insights/measurement/test_evidence_ancestry.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.registration",
-      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_registration.py:56b1bf5b4258475f:0",
-      "path": "tests/unit/insights/measurement/test_registration.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.insights.measurement.uncertainty",
-      "fingerprint": "certifies_dead_code:tests/unit/insights/measurement/test_uncertainty.py:4167fdf8e3fb4e22:0",
-      "path": "tests/unit/insights/measurement/test_uncertainty.py"
-    },
-    {
-      "code": "certifies_dead_code",
-      "detail": "every production symbol this module imports is unreachable from a production entrypoint: polylogue.sources.atomic_read",
-      "fingerprint": "certifies_dead_code:tests/unit/sources/test_atomic_read.py:391f771aae9ad69d:0",
-      "path": "tests/unit/sources/test_atomic_read.py"
-    },
-    {
       "code": "import_time_home_capture",
       "detail": "line 106: module-level constant captures an ambient location via Path.home()",
       "fingerprint": "import_time_home_capture:polylogue/schemas/observation_models.py:e210ef8d7f6a912f:0",
@@ -205,6 +163,6 @@
     }
   ],
   "generated_by": "devtools verify oracle-integrity --write-baseline",
-  "purpose": "Pre-existing oracle-integrity findings, exempted as a ratchet so the gate is adoptable today. Each entry is a WS-F deletion-sweep worklist item, not an endorsement. Removing entries is the goal.",
+  "purpose": "Pre-existing hermeticity findings, exempted as a ratchet. Removing entries is the goal.",
   "schema_version": 1
 }

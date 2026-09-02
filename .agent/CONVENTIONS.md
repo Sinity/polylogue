@@ -61,7 +61,7 @@ managed workspace.
   temp DBs (`/realm/tmp/polylogue-pytest`) or the archive DB; parallel tool
   calls are for reads/searches only.
 - **Proof ladder.** Narrowest proof while iterating (`devtools test` with
-  testmon affected-selection or a targeted `-k` filter); the broad suite once
+  a targeted `-k` filter); the broad suite once
   per publishable phase. Never blanket `pytest tests/unit` as an iteration
   step (see CLAUDE.md).
 

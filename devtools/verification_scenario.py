@@ -23,7 +23,6 @@ from devtools.rebuild_safety_scenario import (
     run_rebuild_differential,
     run_rebuild_safety,
 )
-from devtools.safety_case_scenario import SAFETY_CASE_SCENARIO_NAME, run_safety_case
 from devtools.storage_correctness_scenario import (
     STORAGE_CORRECTNESS_SCENARIO_NAME,
     run_storage_correctness,
@@ -37,7 +36,6 @@ _SCENARIO_NAMES = (
     "reader-visual-smoke",
     STORAGE_CORRECTNESS_SCENARIO_NAME,
     REBUILD_SAFETY_SCENARIO_NAME,
-    SAFETY_CASE_SCENARIO_NAME,
 )
 _ARCHIVE_SMOKE_TIER = 0
 _READER_VISUAL_SMOKE_PYTEST_ARGS: tuple[str, ...] = ("-m", "pytest", "-q", "tests/visual")
@@ -260,7 +258,6 @@ def list_scenarios(*, as_json: bool) -> int:
             "kind": "derived-tier-differential",
             "checks": [REBUILD_SAFETY_SCENARIO_NAME, REBUILD_DIFFERENTIAL_SCENARIO_NAME],
         },
-        {"name": SAFETY_CASE_SCENARIO_NAME, "kind": "lifecycle-safety-case", "artifact": "docs/safety-case-v1.json"},
     ]
     payload = {"scenarios": scenarios}
     if as_json:
@@ -276,9 +273,6 @@ def list_scenarios(*, as_json: bool) -> int:
             continue
         if name == REBUILD_SAFETY_SCENARIO_NAME:
             print(f"{name:<20s}  checks: rebuild safety + differential")
-            continue
-        if name == SAFETY_CASE_SCENARIO_NAME:
-            print(f"{name:<20s}  artifact: docs/safety-case-v1.json")
             continue
         print(f"{name:<20s}  tier-0 checks: {entry['tier_0_check_count']}")
     return 0
@@ -487,8 +481,6 @@ def main(argv: list[str] | None = None) -> int:
         result = run_storage_correctness(report_dir=args.report_dir)
     elif args.scenario == REBUILD_SAFETY_SCENARIO_NAME:
         result = RebuildSafetyResult(report_dir=args.report_dir)
-    elif args.scenario == SAFETY_CASE_SCENARIO_NAME:
-        result = run_safety_case(report_dir=args.report_dir)
     else:
         result = run_archive_smoke(
             tier=args.tier,

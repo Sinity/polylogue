@@ -39,7 +39,7 @@ def test_latest_run_is_the_most_recently_written(tmp_path: Path) -> None:
 def test_unknown_diagnosis_is_reported_verbatim_without_invented_advice() -> None:
     stream = io.StringIO()
 
-    _render({"tier": "testmon", "status": "failed", "diagnosis": "some_unmapped_token"}, stream)
+    _render({"tier": "all", "status": "failed", "diagnosis": "some_unmapped_token"}, stream)
 
     output = stream.getvalue()
     assert "some_unmapped_token" in output
@@ -52,7 +52,7 @@ def test_failing_steps_are_surfaced() -> None:
 
     _render(
         {
-            "tier": "testmon",
+            "tier": "all",
             "status": "failed",
             "exit_code": 1,
             "steps": [
@@ -77,10 +77,6 @@ def test_failing_steps_are_surfaced() -> None:
         ("gate_missing_executable", "make it available on PATH"),
         ("gate_missing_input", "Restore the input"),
         ("gate_unreadable_input", "Make the input"),
-        ("render_feeder_exception", "Fix the feeder renderer"),
-        ("render_feeder_invalid_result", "return an integer status"),
-        ("render_pages_build_exception", "fix the pages builder"),
-        ("render_pagefind_failed", "Install or repair Pagefind"),
         ("render_input_missing", "Restore the declared input"),
         ("render_input_unreadable", "Make the declared input readable"),
         ("render_input_invalid", "Fix the declared input"),
@@ -124,7 +120,7 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
             for entry in (
                 {
                     "started_at": recent,
-                    "tier": "testmon",
+                    "tier": "all",
                     "duration_s": 2700.0,
                     "diagnosis": "pytest_failed",
                     "pytest_aggregate": {"selected_union_count": 0, "terminal_union_count": 20000},
@@ -153,32 +149,25 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
     assert "under-counted" in output, "the record omits killed runs and must say so"
 
 
-def test_history_projection_preserves_selection_and_uncovered_paths() -> None:
+def test_history_projection_carries_the_receipt_columns() -> None:
     projection = _history_projection(
         {
             "run_id": "run-1",
-            "tier": "affected",
+            "tier": "all",
             "status": "failed",
             "duration_s": 12.5,
-            "testmon_selection": {
-                "selection_mode": "affected",
-                "state_status": "incomplete",
-                "state_reason": "changed executable modules are absent from the native dependency graph",
-                "missing_executable_paths": ["polylogue/example.py"],
-            },
-            "pytest_aggregate": {"selected_union_count": 7},
+            "testmon_selection": {"selection_mode": "affected", "graph_status": "usable"},
+            "pytest_aggregate": {"selection_mode": "affected", "selected_union_count": 7},
         }
     )
 
     assert projection == {
         "run_id": "run-1",
         "started_at": None,
-        "tier": "affected",
-        "graph_state": "incomplete",
-        "selection_reason": "changed executable modules are absent from the native dependency graph",
+        "tier": "all",
+        "graph_status": "usable",
         "selection_mode": "affected",
         "selected_count": 7,
-        "uncovered_executable_paths": ["polylogue/example.py"],
         "wall_time_s": 12.5,
         "outcome": "failed",
         "diagnosis": None,

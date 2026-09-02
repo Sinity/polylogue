@@ -83,7 +83,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools why",
             "devtools why --history 24",
-            "devtools why --run 20260817T213631Z-testmon-2709409-d5c6e72c",
+            "devtools why --run 20260817T213631Z-2709409-d5c6e72c",
         ),
         featured=True,
     ),
@@ -190,25 +190,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools render query-discovery", "devtools render query-discovery --check"),
     ),
     CommandSpec(
-        "render pages",
-        "generated surfaces",
-        "Build the GitHub Pages documentation site into .cache/site/.",
-        "devtools.render_pages",
-        use_when="Build or verify the full GitHub Pages documentation site after changing docs, templates, or design docs.",
-        examples=("devtools render pages", "devtools render pages --check", "devtools render pages --serve"),
-    ),
-    CommandSpec(
-        "render visual-tapes",
-        "generated surfaces",
-        "Write VHS tape files and optionally capture GIFs for the default visual evidence specs.",
-        "devtools.render_visual_tapes",
-        use_when="Regenerate the first-contact demo screencast media from the committed tape specs.",
-        examples=(
-            "devtools render visual-tapes",
-            "devtools render visual-tapes --capture",
-        ),
-    ),
-    CommandSpec(
         "verify",
         "verification",
         "Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check.",
@@ -253,45 +234,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify ci-commands",
-        "verification",
-        "Validate devtools invocations in structured CI run fields.",
-        "devtools.verify_ci_commands",
-        use_when="Catch CI scripts that reference a removed or misspelled devtools command.",
-        examples=("devtools verify ci-commands", "devtools verify ci-commands --json"),
-    ),
-    CommandSpec(
-        "verify reindex-packets",
-        "verification",
-        "Validate the current reindex execution packets from the external Beads blocks graph.",
-        "devtools.reindex_packets",
-        use_when=(
-            "Before dispatching reindex work, recompute blocks-only closure, packet topology, conflicts, "
-            "capability carriers, and launch readiness from current Beads. The report is read-only; apply "
-            "authority remains unsupported until a coordinator evidence adapter exists."
-        ),
-        examples=(
-            "devtools verify reindex-packets --enforce-readiness",
-            "devtools verify reindex-packets --diagnostic --json",
-        ),
-    ),
-    CommandSpec(
-        "verify portfolio-frontier",
-        "verification",
-        "Validate complete Beads ambition, active-set, and execution-focus views.",
-        "devtools.portfolio_frontier",
-        use_when=(
-            "Inspect the complete external Beads export; soft active-set bands diagnose growth but never "
-            "truncate work. The report keeps the complete ambition map (priority and frontier/mid/vision "
-            "horizon) separate from active admission. Active admission reports every admitted leaf by "
-            "owning program, readiness (ready, blocked-near-next, or in_progress), and claim state. "
-            "Execution focus is a derived, smaller selection using claims, priority, critical-path unlock "
-            "leverage, conflicts, and the declared resource policy. The default 30-leaf target and 50-leaf "
-            "warning are soft diagnostics: they never truncate, close, demote, or hide records."
-        ),
-        examples=("devtools verify portfolio-frontier /path/to/issues.jsonl",),
-    ),
-    CommandSpec(
         "verify doc-commands",
         "verification",
         "Validate executable documentation examples against live command inventories.",
@@ -308,42 +250,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools verify atlas", "devtools verify atlas --json"),
     ),
     CommandSpec(
-        "verify corpus-fidelity",
-        "verification",
-        "Run the production corpus-fidelity acceptance gate against an archive root.",
-        "devtools.corpus_fidelity",
-        use_when=(
-            "Run after a promoted index rebuild, alongside `polylogue ops maintenance verify-archive`, "
-            "to prove source-backed corpus absence, attachment, and revision fidelity from the registry."
-        ),
-        examples=(
-            "devtools verify corpus-fidelity --archive-root /path/to/archive",
-            "devtools verify corpus-fidelity --archive-root /path/to/archive --json",
-        ),
-    ),
-    CommandSpec(
-        "verify semantic-fidelity",
-        "verification",
-        "Run the bounded production-route semantic contradiction and construct-flow census.",
-        "devtools.semantic_fidelity",
-        use_when="Check OriginSpec witnesses, detector precedence, dropped-construct mutations, and privacy-safe construct flow.",
-        examples=(
-            "devtools verify semantic-fidelity --json",
-            "devtools verify semantic-fidelity --json --report .agent/reports/semantic-fidelity-v1.json",
-        ),
-    ),
-    CommandSpec(
-        "verify falsification",
-        "verification",
-        "Run the bounded four-slice falsification gate after explicit rebuild-safety consent.",
-        "devtools.falsification_program",
-        use_when="Run the four independent evidence slices together and write a comparable machine-readable result; this runs the rebuild safety scenario.",
-        examples=(
-            "devtools verify falsification --execute-safety --json",
-            "devtools verify falsification --execute-safety --json --report .agent/reports/independent-falsification-v1.json",
-        ),
-    ),
-    CommandSpec(
         "verify schema-inference-gate",
         "verification",
         "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
@@ -357,22 +263,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json",
             "devtools verify schema-inference-gate --archive-root /path/to/archive "
             "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json --json",
-        ),
-    ),
-    CommandSpec(
-        "verify provider-completeness",
-        "verification",
-        "Report provider/importer package completeness by origin and capture mode.",
-        "devtools.provider_completeness",
-        use_when=(
-            "Inspect detector, parser, fixture, schema, docs, ImportExplain, and caveat coverage "
-            "before claiming a provider/importer mode is product-ready."
-        ),
-        examples=(
-            "devtools verify provider-completeness",
-            "devtools verify provider-completeness --json",
-            "devtools verify provider-completeness --origin codex-session --json",
-            "devtools verify provider-completeness --check",
         ),
     ),
     CommandSpec(
@@ -402,20 +292,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools verify coverage",
             "devtools verify coverage --ignore-integration --term-missing",
             "devtools verify coverage -- --maxfail=1",
-        ),
-    ),
-    CommandSpec(
-        "verify mutation-freshness",
-        "verification",
-        "Verify executable mutation campaigns meet the selected freshness and kill-rate thresholds.",
-        "devtools.verify_mutation_freshness",
-        use_when=(
-            "Enforce mutation campaign freshness and kill-rate thresholds after a rotating CI campaign "
-            "has produced its local artifacts."
-        ),
-        examples=(
-            "devtools verify mutation-freshness --enforce-kill-rate",
-            "devtools verify mutation-freshness --strict --default-freshness-days 30",
         ),
     ),
     CommandSpec(
@@ -452,20 +328,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "devtools bench ingest-throughput",
             "devtools bench ingest-throughput --json",
             "devtools bench ingest-throughput --batches 20 --seed 2391",
-        ),
-    ),
-    CommandSpec(
-        "verify read-surface",
-        "verification",
-        "Capture and compare archive read-surface snapshots.",
-        "devtools.self_verify",
-        use_when=(
-            "Freeze archive read-surface behavior before archive work, then compare candidate "
-            "archives against the captured envelope baseline."
-        ),
-        examples=(
-            "devtools verify read-surface capture --out .local/self-verify/baseline.json",
-            "devtools verify read-surface compare .local/self-verify/baseline.json .local/self-verify/candidate.json --json",
         ),
     ),
     CommandSpec(
@@ -532,17 +394,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "workspace physical-identity-census",
-        "workspace",
-        "Census raw evidence hidden by origin/native session identity collapse.",
-        "devtools.physical_identity_census",
-        use_when="Before designing physical session identity changes, measure same-origin/native candidates and distinguishable family evidence.",
-        examples=(
-            "devtools workspace physical-identity-census --json",
-            "devtools workspace physical-identity-census --out docs/evidence/physical-session-identity-census.json",
-        ),
-    ),
-    CommandSpec(
         "verify agent-integration",
         "verification",
         "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",
@@ -594,22 +445,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "derivation, and interactive-read workloads on the selected free-threaded runtime."
         ),
         examples=("devtools bench concurrency", "devtools bench concurrency --json"),
-    ),
-    CommandSpec(
-        "verify runtime",
-        "verification",
-        "Verify the CPython 3.14 free-threaded runtime and required native extensions.",
-        "devtools.runtime_contract",
-        use_when="Prove runtime identity and extension imports before running concurrency-sensitive work.",
-        examples=("devtools verify runtime", "devtools verify runtime --json"),
-    ),
-    CommandSpec(
-        "verify runtime-census",
-        "verification",
-        "Census production concurrency boundaries and classify every discovered item.",
-        "devtools.runtime_census",
-        use_when="Audit executors, SQLite connections, synchronization, caches, registries, and mutable globals.",
-        examples=("devtools verify runtime-census", "devtools verify runtime-census --json"),
     ),
     CommandSpec(
         "bench cli-interaction",
@@ -669,14 +504,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "verify definition-closure",
-        "verification",
-        "Evaluate representative definition-to-production closure policies as a bounded JSON matrix.",
-        "devtools.definition_closure",
-        use_when="Check that authoritative definitions have required production, lifecycle, contract, discovery, and real-route edges.",
-        examples=("devtools verify definition-closure", "devtools verify definition-closure --json"),
-    ),
-    CommandSpec(
         "verify timestamp-doctrine",
         "verification",
         "Verify durable-tier DDL never stores a timestamp column as TEXT.",
@@ -689,20 +516,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
             "cheaper than a copy-forward migration after."
         ),
         examples=("devtools verify timestamp-doctrine", "devtools verify timestamp-doctrine --json"),
-    ),
-    CommandSpec(
-        "verify insight-honesty",
-        "verification",
-        "Verify every registered insight product is rigor-contracted or exempt.",
-        "devtools.verify_insight_rigor_honesty",
-        use_when=(
-            "Enforce that polylogue.insights.registry.INSIGHT_REGISTRY and "
-            "polylogue.insights.rigor's contract matrix/exemption list never drift apart "
-            "(9e5.28) -- a registered product with neither a RigorContract nor a "
-            "RIGOR_EXEMPT entry used to silently vanish from `polylogue ops insights audit` "
-            "instead of showing as uncovered."
-        ),
-        examples=("devtools verify insight-honesty", "devtools verify insight-honesty --json"),
     ),
     CommandSpec(
         "release verify-distribution",
@@ -871,15 +684,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.build_package",
         use_when="Produce the Nix package artifact with its out-link kept under the repo-local output root.",
         examples=("devtools release build-package",),
-    ),
-    CommandSpec(
-        "bench mutation",
-        "benchmarking",
-        "Run focused mutation campaigns with isolated execution and JSON artifacts.",
-        "devtools.mutmut_campaign",
-        use_when="Run or inspect focused mutation-testing work without shrinking the committed mutmut scope.",
-        examples=("devtools bench mutation list", "devtools bench mutation run filters"),
-        featured=True,
     ),
     CommandSpec(
         "workspace continuity-evidence",

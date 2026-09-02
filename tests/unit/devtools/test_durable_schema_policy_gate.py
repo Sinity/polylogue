@@ -118,22 +118,7 @@ def test_policy_json_names_every_duplicate_owner(
     assert "rebase and renumber" in serialized
 
 
-def test_schema_versioning_policy_runs_exactly_once_in_every_noncommit_fast_gate() -> None:
+def test_schema_versioning_policy_runs_exactly_once_in_every_gate_tier() -> None:
     for quick in (True, False):
-        labels = [
-            label
-            for label, _command in verify.build_verify_steps(
-                quick=quick,
-                testmon_environment="env-digest" if not quick else "",
-            )
-        ]
+        labels = [label for label, _command in verify.build_verify_steps(quick=quick)]
         assert labels.count("verify schema-versioning") == 1
-
-    commit_labels = [
-        label
-        for label, _command in verify.build_verify_steps(
-            quick=True,
-            commit=True,
-        )
-    ]
-    assert "verify schema-versioning" not in commit_labels
