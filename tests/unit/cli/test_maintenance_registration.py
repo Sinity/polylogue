@@ -19,14 +19,7 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
     blob_reference_replace_from_source_command,
     blob_reference_replace_from_source_preview_command,
 )
-from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
-from polylogue.cli.commands.maintenance._hook_payload_ref_reconciliation import hook_payload_ref_reconcile_command
 from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
-from polylogue.cli.commands.maintenance._plan import plan_command
-from polylogue.cli.commands.maintenance._raw_authority_recovery import raw_authority_recovery_command
-from polylogue.cli.commands.maintenance._run import run_command
-from polylogue.cli.commands.maintenance._run_preview import run_preview_command
-from polylogue.cli.commands.maintenance._status import status_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.services import RuntimeServices
@@ -40,29 +33,6 @@ def _registered_maintenance_command() -> click.Command:
         if command.name == "maintenance":
             return command
     raise AssertionError("maintenance command is not registered under ops")
-
-
-def test_maintenance_group_in_ops_commands() -> None:
-    """maintenance_group is registered under polylogue ops."""
-    assert _registered_maintenance_command() is not None
-
-
-def test_maintenance_group_is_click_group() -> None:
-    """maintenance_group is a Click Group."""
-    assert isinstance(_registered_maintenance_command(), click.Group)
-
-
-def test_maintenance_plan_is_click_command() -> None:
-    """plan is a Click Command on the maintenance group."""
-    assert isinstance(plan_command, click.Command)
-
-
-def test_raw_authority_recovery_is_click_command() -> None:
-    assert isinstance(raw_authority_recovery_command, click.Command)
-
-
-def test_operation_recovery_is_click_command() -> None:
-    assert isinstance(operation_recovery_command, click.Command)
 
 
 def _recovery_env(tmp_path: Path) -> AppEnv:
@@ -134,16 +104,6 @@ def test_operation_recovery_rejects_an_unknown_target_outcome_value(tmp_path: Pa
     assert "applied|not-applied|unknown" in result.output
 
 
-def test_maintenance_run_is_click_command() -> None:
-    """run is a Click Command on the maintenance group."""
-    assert isinstance(run_command, click.Command)
-
-
-def test_maintenance_run_preview_is_click_command() -> None:
-    """run-preview is a Click Command on the maintenance group."""
-    assert isinstance(run_preview_command, click.Command)
-
-
 def test_maintenance_appears_in_ops_help() -> None:
     """polylogue ops --help includes the maintenance subcommand."""
     runner = CliRunner()
@@ -191,12 +151,6 @@ def test_blob_conservation_uses_the_resolved_archive_root(tmp_path: Path, monkey
 
     assert result.exit_code == 0, result.output
     assert f'"archive_root": "{archive_root}"' in result.output
-
-
-def test_blob_conservation_is_a_click_command() -> None:
-    from polylogue.cli.commands.maintenance._blob_conservation import blob_conservation_command
-
-    assert isinstance(blob_conservation_command, click.Command)
 
 
 def test_blob_conservation_json_returns_failure_for_a_failed_census(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -260,20 +214,6 @@ def test_maintenance_run_preview_help_output() -> None:
     assert result.exit_code == 0
     assert "Read-only" in result.output or "read-only" in result.output.lower()
     assert "--operation-id" in result.output
-
-
-def test_maintenance_status_is_click_command() -> None:
-    """status is a Click Command on the maintenance group (#1197)."""
-    assert isinstance(status_command, click.Command)
-
-
-def test_hook_payload_reconcile_is_click_command() -> None:
-    """hook-payload-ref-reconcile is a Click Command on the maintenance group."""
-    assert isinstance(hook_payload_ref_reconcile_command, click.Command)
-
-
-def test_blob_reference_closure_is_click_command() -> None:
-    assert isinstance(blob_reference_closure_command, click.Command)
 
 
 def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -> None:

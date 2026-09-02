@@ -17,13 +17,16 @@ estimate from the wrong source.
 The fix (``ModelUsageTotals`` plumbed through ``compute_session_cost`` /
 ``build_session_profile`` / ``build_session_insight_records``) makes profile
 building read ``session_model_usage`` back directly -- the same substrate the
-archive's own cost/usage rollups are built from -- so profile columns are
-identical to that rollup by construction, for every origin, not just Codex.
+archive's own cost/usage rollups are built from -- so a profile's token lanes
+are identical to that rollup by construction, for every origin, not just Codex.
 
-These tests exercise the real production write path
-(``write_parsed_session_to_archive``) and both session-insight materializer
-twins (``rebuild_session_insights_sync`` / ``rebuild_session_insights_async``),
-not a toy replica of the aggregation logic.
+``session_model_usage`` is the single authority: #4225 removed the duplicated
+``total_*_tokens`` columns from ``session_profiles``, so these tests assert
+through the derivation (``build_session_profile`` fed from the persisted usage
+rows) rather than by selecting columns that no longer exist. The write path is
+the production one (``write_parsed_session_to_archive``) and the hydration is
+the materializer's own (``load_sync_batch`` / ``hydrate_sessions``), not a toy
+replica of the aggregation logic.
 """
 
 from __future__ import annotations
@@ -31,15 +34,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-import aiosqlite
-
 from polylogue.archive.message.roles import Role
+from polylogue.archive.semantic.cost_records import ModelUsageTotals
+from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.insights.session.rebuild import (
-    rebuild_session_insights_async,
-    rebuild_session_insights_sync,
-)
+from polylogue.storage.insights.session.rebuild import hydrate_sessions, load_sync_batch
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
@@ -147,139 +147,81 @@ def _model_usage_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int,
     return (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
 
 
-def _profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int, int, int]:
-    row = conn.execute(
+def _derived_profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int, int, int]:
+    """Token lanes as the profile read model derives them.
+
+    This is the production derivation: hydrate the session through the
+    materializer's own batch loader, then build its profile from the persisted
+    ``session_model_usage`` rows -- the same substrate the archive's cost and
+    usage rollups read.
+    """
+    batch = load_sync_batch(conn, [session_id])
+    (session,) = hydrate_sessions(batch)
+    rows = conn.execute(
         """
-        SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens
-        FROM session_profiles
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
         WHERE session_id = ?
         """,
         (session_id,),
-    ).fetchone()
-    assert row is not None, f"no session_profiles row for {session_id}"
-    return (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+    ).fetchall()
+    profile = build_session_profile(
+        session,
+        model_usage=[
+            ModelUsageTotals(
+                model_name=str(row[0]),
+                input_tokens=int(row[1]),
+                output_tokens=int(row[2]),
+                cache_read_tokens=int(row[3]),
+                cache_write_tokens=int(row[4]),
+            )
+            for row in rows
+        ],
+    )
+    return (
+        profile.total_input_tokens,
+        profile.total_output_tokens,
+        profile.total_cache_read_tokens,
+        profile.total_cache_write_tokens,
+    )
 
 
-def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Path) -> None:
+def test_codex_cumulative_token_count_event_drives_the_profile_token_lanes(tmp_path: Path) -> None:
+    """A Codex session whose only usage evidence is a cumulative ``token_count``
+    event reports the disjoint lanes, not a word-count estimate.
+
+    Anti-vacuity: the message carries no per-message token fields, so a profile
+    builder that walked ``session.messages`` instead of reading
+    ``session_model_usage`` back would report a handful of tokens here -- the
+    ~1000x undercount polylogue-r7p6 reports -- rather than the 4,000 fresh
+    input tokens the event's totals imply.
+    """
     conn = _make_archive_conn(tmp_path)
-    session_id = "codex-session:model-usage-consistency-sync"
-    write_parsed_session_to_archive(conn, _codex_session("model-usage-consistency-sync"))
+    session_id = "codex-session:model-usage-consistency"
+    write_parsed_session_to_archive(conn, _codex_session("model-usage-consistency"))
 
-    # Sanity: session_model_usage carries the real (large) cumulative usage,
-    # not the near-empty per-message fields.
-    model_usage = _model_usage_totals(conn, session_id)
-    assert model_usage == (
+    expected = (
         _CODEX_EXPECTED_INPUT,
         _CODEX_EXPECTED_OUTPUT,
         _CODEX_EXPECTED_CACHE_READ,
         _CODEX_EXPECTED_CACHE_WRITE,
     )
-
-    rebuild_session_insights_sync(conn, session_ids=[session_id])
-
-    profile_totals = _profile_totals(conn, session_id)
-    assert profile_totals == model_usage
-    assert profile_totals == (
-        _CODEX_EXPECTED_INPUT,
-        _CODEX_EXPECTED_OUTPUT,
-        _CODEX_EXPECTED_CACHE_READ,
-        _CODEX_EXPECTED_CACHE_WRITE,
-    )
+    assert _model_usage_totals(conn, session_id) == expected
+    assert _derived_profile_totals(conn, session_id) == expected
     conn.close()
 
 
-async def test_codex_profile_tokens_match_model_usage_after_async_rebuild(tmp_path: Path) -> None:
-    session_id = "codex-session:model-usage-consistency-async"
-    sync_conn = _make_archive_conn(tmp_path)
-    write_parsed_session_to_archive(sync_conn, _codex_session("model-usage-consistency-async"))
-    model_usage = _model_usage_totals(sync_conn, session_id)
-    sync_conn.close()
+def test_claude_code_per_message_tokens_reach_the_profile_unchanged(tmp_path: Path) -> None:
+    """Provider-neutral: an origin whose per-message tokens were already correct
+    keeps matching ``session_model_usage`` through the same derivation.
 
-    async with aiosqlite.connect(tmp_path / "index.db") as conn:
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA foreign_keys = ON")
-        await rebuild_session_insights_async(conn, session_ids=[session_id])
-        await conn.commit()
-
-    verify_conn = sqlite3.connect(tmp_path / "index.db")
-    verify_conn.row_factory = sqlite3.Row
-    try:
-        profile_totals = _profile_totals(verify_conn, session_id)
-    finally:
-        verify_conn.close()
-
-    assert profile_totals == model_usage
-    assert profile_totals == (
-        _CODEX_EXPECTED_INPUT,
-        _CODEX_EXPECTED_OUTPUT,
-        _CODEX_EXPECTED_CACHE_READ,
-        _CODEX_EXPECTED_CACHE_WRITE,
-    )
-
-
-def test_claude_code_profile_tokens_match_model_usage_no_regression(tmp_path: Path) -> None:
-    """Provider-neutral: a Claude Code session (whose per-message tokens were
-    already correct) must keep matching session_model_usage after the fix."""
+    Anti-vacuity: a derivation that only special-cased Codex cumulative events
+    would drop these per-message lanes to zero.
+    """
     conn = _make_archive_conn(tmp_path)
     session_id = "claude-code-session:model-usage-consistency"
     write_parsed_session_to_archive(conn, _claude_code_session("model-usage-consistency"))
 
-    model_usage = _model_usage_totals(conn, session_id)
-    assert model_usage == (1_000, 500, 200, 100)
-
-    rebuild_session_insights_sync(conn, session_ids=[session_id])
-
-    profile_totals = _profile_totals(conn, session_id)
-    assert profile_totals == model_usage
-    assert profile_totals == (1_000, 500, 200, 100)
-    conn.close()
-
-
-def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Path) -> None:
-    """Anti-vacuity: reverting to the pre-fix behavior (build the profile from
-    only the hydrated Session, with no model_usage rows supplied) reproduces
-    the ~1000x undercount this bead reports -- proving the fix, not a fixture
-    artifact, is what makes the two prior tests pass."""
-    from polylogue.archive.session.session_profile import build_session_profile
-    from polylogue.storage.insights.session.rebuild import hydrate_sessions, load_sync_batch
-
-    conn = _make_archive_conn(tmp_path)
-    session_id = "codex-session:model-usage-consistency-anti-vacuity"
-    write_parsed_session_to_archive(conn, _codex_session("model-usage-consistency-anti-vacuity"))
-    model_usage = _model_usage_totals(conn, session_id)
-    assert model_usage[0] == _CODEX_EXPECTED_INPUT
-
-    # Same hydration path production uses (rebuild.py's load_sync_batch +
-    # hydrate_sessions), so this is the real Session object, not a stub.
-    batch = load_sync_batch(conn, [session_id])
-    (session,) = hydrate_sessions(batch)
-
-    # Old behavior: no model_usage supplied -> falls back to walking
-    # session.messages. The message's own token fields are all zero for this
-    # fixture, so the only signal left is a crude word-count heuristic
-    # estimate off "done" -- a handful of tokens, not the ~4,000 real ones
-    # (a ~1000x undercount, matching the bead's reported ratio).
-    undercounted_profile = build_session_profile(session)
-    assert undercounted_profile.total_input_tokens < 10
-    assert undercounted_profile.total_input_tokens != _CODEX_EXPECTED_INPUT
-
-    # Fixed behavior: model_usage supplied -> matches session_model_usage.
-    from polylogue.archive.semantic.cost_records import ModelUsageTotals
-
-    corrected_profile = build_session_profile(
-        session,
-        model_usage=[
-            ModelUsageTotals(
-                model_name="gpt-5-codex",
-                input_tokens=model_usage[0],
-                output_tokens=model_usage[1],
-                cache_read_tokens=model_usage[2],
-                cache_write_tokens=model_usage[3],
-            )
-        ],
-    )
-    assert corrected_profile.total_input_tokens == _CODEX_EXPECTED_INPUT
-    assert corrected_profile.total_output_tokens == _CODEX_EXPECTED_OUTPUT
-    assert corrected_profile.total_cache_read_tokens == _CODEX_EXPECTED_CACHE_READ
-    assert corrected_profile.total_cache_write_tokens == _CODEX_EXPECTED_CACHE_WRITE
+    assert _model_usage_totals(conn, session_id) == (1_000, 500, 200, 100)
+    assert _derived_profile_totals(conn, session_id) == (1_000, 500, 200, 100)
     conn.close()

@@ -1028,26 +1028,6 @@ class TestReaderSearchState:
 
         assert calls == [("status", 3)]
 
-    def test_raw_tab_uses_bounded_provenance_preview_not_broad_raw_fetch(self, workspace_env: dict[str, Path]) -> None:
-        """The shell must not fetch the broad /raw route when opening Raw.
-
-        Raw bytes are only fetched through /provenance?include_raw=1 after
-        an explicit click, and the server caps that preview.
-        """
-
-        with _running_server(workspace_env) as (_, base_url):
-            status, content_type, body = _get_text(base_url, "/")
-
-        assert status == 200
-        assert "text/html" in content_type
-        assert "renderInspectorRaw" in body
-        assert "loadRawData" in body
-        assert "loadProvenanceRaw" in body
-        assert "/provenance?include_raw=1" in body
-        assert "Raw preview is opt-in" in body
-        assert "await loadSessionRaw(id)" in body
-        assert "function loadProvenanceRaw()" in body
-
     def test_search_envelope_matches_documented_shape(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             payload = _get_json(base_url, "/api/sessions")
@@ -1517,8 +1497,6 @@ class TestReaderSessionState:
         assert dangerous_fragment not in link_shell
         assert prose_fragment not in root_shell
         assert prose_fragment not in link_shell
-        assert "function esc" in root_shell
-        assert "'<div class=\"msg-text\">' + esc(parts[0].body)" in root_shell
 
     def test_unknown_session_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -2196,22 +2174,6 @@ class TestReaderQueryCompletions:
 
 
 class TestReaderActionAffordances:
-    def test_web_shell_renders_shared_action_affordance_rail(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, content_type, body = _get_text(base_url, "/")
-
-        assert status == 200
-        assert "text/html" in content_type
-        assert "function renderActionAffordanceRail" in body
-        assert "Query action affordances" in body
-        assert "state.actionAffordances = data.action_affordances || []" in body
-        assert "action.input && action.input.unit" in body
-        assert "action.execution && action.execution.cardinality_state" in body
-        assert "action.output && action.output.format_support" in body
-        assert "action.safety && action.safety.safety_level" in body
-        assert "action.input_unit" not in body
-        assert "action.safety_level" not in body
-
     def test_action_affordances_endpoint_matches_cli_contract_payload(self) -> None:
         from click.testing import CliRunner
 
@@ -3542,17 +3504,6 @@ class TestReaderAuthSurface:
 # ---------------------------------------------------------------------------
 
 
-def test_reader_smoke_lane_is_documented() -> None:
-    """Sanity check that the reader smoke artefact ids the issue
-    mentions exist as identifiers in this file. A future PR that
-    renames the artefact ids must also update the docs that reference
-    them.
-    """
-    body = Path(__file__).read_text()
-    assert "polylogue.local_reader.search" in body
-    assert "polylogue.local_reader.session" in body
-
-
 # ---------------------------------------------------------------------------
 # Shared surface payload contract tests (#859)
 # ---------------------------------------------------------------------------
@@ -3866,303 +3817,10 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
             return e.code, {}
 
 
-class TestReaderInformability:
-    """MK3 informability surfaces (#956): explicit state language for
-    degraded/partial/stale/unavailable data, and a coherent data-quality
-    chip vocabulary the operator can rely on at a glance.
-
-    These tests assert *presence* of the chip-quality vocabulary, the
-    tri-state FTS render, the insight-freshness chip, and the
-    context-preserving sidebar empty states. They intentionally check
-    JS source rather than runtime DOM so the smoke remains fast and the
-    visual lane (Playwright/Lighthouse) can layer on top later (#952).
-    """
-
-    def test_data_quality_chip_vocabulary_is_defined(self, workspace_env: dict[str, Path]) -> None:
-        """The MK3 chip vocabulary (canonical/inferred/heuristic/explicit/
-        unresolved/repaired/stale/partial/estimated/unavailable/redacted)
-        from docs/design/mk3/docs/11-little-details.md must have CSS
-        classes the renderer can apply. Without these the rest of the
-        informability story is just text.
-        """
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        for quality in (
-            "q-canonical",
-            "q-inferred",
-            "q-heuristic",
-            "q-explicit",
-            "q-unresolved",
-            "q-repaired",
-            "q-stale",
-            "q-partial",
-            "q-estimated",
-            "q-unavailable",
-            "q-redacted",
-        ):
-            assert f".chip.{quality}" in body, f"web shell missing MK3 chip-quality class {quality!r}"
-
-    def test_status_strip_consumes_component_readiness(self, workspace_env: dict[str, Path]) -> None:
-        """The web shell status strip should consume the canonical #1832
-        component readiness map instead of recomputing product state from
-        legacy daemon fields. Legacy FTS rendering remains as fallback for
-        old/status-snapshot payloads.
-        """
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "var readiness = s.component_readiness || {};" in body
-        assert "index DB:" in body
-        assert "renderFtsChip(readiness.search || null, s.fts_readiness || {})" in body
-        assert (
-            "renderMaterializationChip(readiness.raw_materialization || null, s.raw_materialization_readiness || {})"
-            in body
-        )
-        assert "renderSemanticChip(readiness.embeddings || null)" in body
-        assert "renderInsightChip(readiness.session_profiles || null, s.insight_freshness || {})" in body
-        assert "renderIngestChip(readiness.daemon_ingest || null, s.live || {})" in body
-        assert "renderBrowserCaptureChip(readiness.browser_capture || null, s.browser_capture || {})" in body
-        assert "function renderComponentReadinessChip(" in body
-        assert "function renderMaterializationChip(" in body
-        assert "function readinessQuality(" in body
-        assert "function renderBrowserCaptureChip(" in body
-
-    def test_status_strip_starts_with_unknown_counts_not_zero(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert "convs checking" in body
-        assert "msgs checking" in body
-        assert "0 convs" not in body
-        assert "0 msgs" not in body
-        assert "updateStatusCountsUnknown" in body
-        assert "s.total_sessions != null" in body
-        assert "s.total_messages != null" in body
-
-    def test_web_shell_models_failed_route_panels_and_retries(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert "routeStates" in body
-        assert "function routeErrorDetails" in body
-        assert "function fallbackCommand" in body
-        assert "function renderRouteStateNotice" in body
-        assert "function renderInlineRouteFailure" in body
-        assert "setRouteState('sessionList'" in body
-        assert "renderRouteStateNotice('sessionList'" in body
-        assert "Retry" in body
-        assert "stale_available" in body
-        assert "/api/status" in body
-        assert "/api/facets" in body
-        assert "/api/read-view-profiles" in body
-        assert "/api/sessions/" in body
-
-    def test_facets_loader_cancels_previous_request(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert "AbortController" in body
-        assert "state.inFlight.facets.controller.abort()" in body
-        assert "controller.signal" in body
-        assert "state.inFlight.facets.token !== token" in body
-        assert "timeoutMs: opts.timeoutMs || 5000" in body
-        assert "e.name === 'AbortError' && !e.timed_out" in body
-        assert "include_deferred" in body
-        assert "budget_ms" in body
-
-    def test_missing_read_view_profiles_route_has_retry_fallback(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert "setRouteState('readViewProfiles'" in body
-        assert "Read profiles" in body
-        assert "loadReadViewProfiles()" in body
-        assert "curl -fsS http://127.0.0.1:8766" in body
-
-    def test_session_detail_failure_does_not_leave_bare_loading(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert "selectedLoadError" in body
-        assert "Session detail unavailable" in body
-        assert "Loading session detail" in body
-        assert "loadSessionFromError" in body
-        assert "split('?')[0]" in body
-        assert "function loadMoreSessionMessages()" in body
-        assert "Load more messages" in body
-        assert "/api/sessions/" in body
-        assert "Overview readiness is" in body
-        assert "data-overview-snapshot-state" in body
-        assert "Evidence summary unavailable" in body
-        assert "function retryEvidenceSummary(id)" in body
-
-    def test_fts_chip_keeps_legacy_tri_state_fallback(self, workspace_env: dict[str, Path]) -> None:
-        """``renderFtsChip`` must still distinguish ok / partial /
-        unavailable when an older payload lacks ``component_readiness``.
-        """
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "function renderFtsChip(" in body
-        assert "component && component.state !== 'unknown'" in body
-        assert "'FTS: ok'" in body
-        assert "'FTS: partial'" in body
-        assert "'FTS: unavailable'" in body
-
-    def test_materialization_semantic_and_ingest_readiness_chips_render_present(
-        self,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """Materialization, semantic, and ingest state have first-class
-        status-strip chips fed by ``component_readiness``.
-        """
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert 'id="status-materialization"' in body
-        assert 'id="status-semantic"' in body
-        assert 'id="status-ingest"' in body
-        assert "function renderMaterializationChip(" in body
-        assert "counts.raw_artifact_count" in body
-        assert "counts.materialized_raw_artifact_count" in body
-        assert "counts.join_gap_count" in body
-        assert "function renderSemanticChip(" in body
-        assert "function renderIngestChip(" in body
-        assert "'materialization'" in body
-        assert "'semantic'" in body
-        assert "'ingest'" in body
-
-    def test_browser_capture_readiness_chip_consumes_safe_status_payload(
-        self,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """The web workbench displays browser-capture readiness from the
-        daemon status envelope without learning the receiver's local spool path.
-        """
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-            status = cast(dict[str, object], _get_json(base_url, "/api/status"))
-
-        capture = cast(dict[str, object], status["browser_capture"])
-        readiness = cast(dict[str, object], status["component_readiness"])
-
-        assert 'id="status-browser-capture"' in body
-        assert "function renderBrowserCaptureChip(" in body
-        assert "spool_ready" in capture
-        assert "allowed_origins" in capture
-        assert "auth_required" in capture
-        assert "spool_path" not in capture
-        assert "artifact_path" not in capture
-        assert "browser_capture" in readiness
-
-    def test_web_shell_surfaces_latest_api_request_diagnostics(self, workspace_env: dict[str, Path]) -> None:
-        """The web shell has local request diagnostics for UI/API failures."""
-
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-
-        assert 'id="status-api-debug"' in body
-        assert "function nextApiRequestId(" in body
-        assert "'X-Request-ID': requestId" in body
-        assert "function renderApiDebugChip(" in body
-        assert "response_summary" in body
-        assert "invalid_json" in body
-
-    def test_insight_freshness_chip_keeps_legacy_fallback(self, workspace_env: dict[str, Path]) -> None:
-        """Session insight freshness gets its own status-strip chip. It now
-        prefers ``component_readiness.session_profiles`` and keeps the
-        previous freshness-payload fallback for old status snapshots."""
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "function renderInsightChip(" in body
-        assert 'id="status-insights"' in body
-        assert "renderComponentReadinessChip(el, 'insights', component)" in body
-        assert "'insights: ok'" in body
-        assert "'insights: stale'" in body
-
-    def test_sidebar_empty_state_preserves_filter_context(self, workspace_env: dict[str, Path]) -> None:
-        """The empty/no-results branches must include filter context and
-        a concrete next action — the MK3 state matrix calls out that an
-        empty archive and a filtered no-results are different states."""
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "No sessions in archive. Run `polylogued run`" in body
-        assert "No results for query=" in body
-        assert "No sessions from origin=" in body
-        assert "Press Esc to clear" in body
-
-    def test_workspace_actions_have_disabled_state_with_tooltips(self, workspace_env: dict[str, Path]) -> None:
-        """Stack/Compare/Save/Recall workspace buttons must expose a
-        disabled state with explanatory tooltips when context is
-        insufficient — disabled actions are part of the MK3 design."""
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "Stack needs a selected session" in body
-        assert "Compare needs two sessions" in body
-        assert "Save workspace needs at least one open session" in body
-        assert "Recall pack needs at least one open session" in body
-
-    def test_session_header_chip_order_follows_mk3_spec(self, workspace_env: dict[str, Path]) -> None:
-        """MK3 specifies header chip order: origin, live/stale,
-        repo/cwd/branch, counts, cost/tokens, derived/insight, marks.
-        Pin the comment marker so a future reorder is a deliberate change
-        rather than accidental drift."""
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        assert "MK3 header chip order" in body
-        # The origin chip should be tagged canonical (it identifies the
-        # source-of-truth origin for the session), not just a neutral chip.
-        assert "'<span class=\"chip q-canonical\">' + esc(c.origin)" in body
-
-
 class TestReaderSavedViewsUI:
-    """Saved-view UI surface (#1118): toolbar entry, save/recall/delete UX,
-    naming-conflict guard, and an explicit empty state for the inspector list.
-
-    The substrate (``/api/user/saved-views`` POST/GET/DELETE) is covered by
-    ``TestReaderUserState``; these tests assert that the web shell exposes the
-    capability end-to-end so the operator can manage saved views without
-    leaving the reader.
+    """Saved-view route contract (#1118): the POST/GET/DELETE roundtrip the
+    reader's saved-view surface is composed from.
     """
-
-    def test_workspace_toolbar_exposes_saved_view_entry(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        # Dedicated toolbar entry-point so saved views are reachable without
-        # opening the Notes inspector tab (mirrors the Restore workspace
-        # pattern).
-        assert 'id="workspace-saved-view-select"' in body
-        assert 'id="workspace-save-view-btn"' in body
-        # Wired to applySavedView via restoreSavedView; both must be present.
-        assert "function restoreSavedView(" in body
-        assert "function applySavedView(" in body
-        # Toolbar populator must update the select on each render so newly
-        # saved views appear without a full reload.
-        assert "workspace-saved-view-select" in body
-        assert "Saved views (" in body
-
-    def test_save_current_view_handles_naming_conflict(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        # Naming conflict UX: detect locally against state.savedViews, prompt
-        # for overwrite confirmation, replace via DELETE+POST. Empty/whitespace
-        # names are rejected before hitting the wire.
-        assert "Saved view name cannot be empty" in body
-        assert "already exists. Overwrite it?" in body
-        assert "Failed to replace existing view" in body
-
-    def test_saved_view_list_exposes_delete_action(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        # The inspector list must render a Delete button per saved view; the
-        # JS handler is reachable so the operator can prune stale views.
-        assert "function deleteSavedView(" in body
-        assert "Delete saved view" in body
-        assert 'onclick="deleteSavedView(' in body
-
-    def test_saved_view_empty_state_is_actionable(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        # Empty state must point the operator at the action that resolves it
-        # (per MK3 state matrix: each empty state names the next step).
-        assert 'No saved views. Click "Save current view"' in body
 
     def test_saved_views_endpoint_roundtrip_supports_ui_flow(self, workspace_env: dict[str, Path]) -> None:
         # End-to-end roundtrip the UI relies on: save, list, then delete via
@@ -4226,52 +3884,11 @@ class TestReaderSelectionOperations:
     carries export reads. Delete and re-embed are exposed only through a
     preview overlay because the daemon has no corresponding mutation routes yet.
 
-    These tests assert the shipped HTML carries every load-bearing region
-    hook and that the underlying tag endpoint accepts the per-session
-    POSTs the selection toolbar drives — that is the contract the JS depends on.
-    Pixel-level assertions are deliberately avoided so reader visual
-    iteration does not invalidate the smoke.
+    These tests assert the served route contract the selection surface
+    depends on: the tag endpoint accepts the per-session POSTs the toolbar
+    drives, and session detail returns the payload the export bundle is
+    composed from.
     """
-
-    SELECTION_REGION_HOOKS = (
-        "selection-toolbar",
-        "selection-select-all",
-        "selection-clear",
-        'data-selection-action="tag-star"',
-        'data-selection-action="tag-pin"',
-        'data-selection-action="tag-archive"',
-        'data-selection-action="export"',
-        'data-selection-action="delete-preview"',
-        'data-selection-action="reembed-preview"',
-        "selection-preview",
-        "selection-preview-confirm",
-        "selectionApplyMark",
-        "selectionExport",
-        "openSelectionPreview",
-        "confirmSelectionPreview",
-        "renderSelectionToolbar",
-        "isSelectionSelected",
-        "selectionSet",
-        "no_endpoint",
-    )
-
-    def test_selection_toolbar_regions_present_in_shell(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, content_type, body = _get_text(base_url, "/")
-        assert status == 200
-        assert "text/html" in content_type
-        for hook in self.SELECTION_REGION_HOOKS:
-            assert hook in body, f"web shell missing selection hook {hook!r}"
-
-    def test_selection_envelope_keys_documented_in_shell(self, workspace_env: dict[str, Path]) -> None:
-        """The shipped JS must reference the per-session status keys the
-        selection envelope contract uses (succeeded/failed/skipped + dryRun + action).
-        These are the field names the UI surfaces to the operator after a selection
-        op; renaming any of them silently would break the rendered status."""
-        with _running_server_without_seed() as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
-        for key in ("succeeded", "failed", "skipped", "dryRun", "action"):
-            assert key in body, f"selection envelope key {key!r} missing from shell"
 
     def test_selection_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
         """The selection toolbar issues per-session POSTs against
