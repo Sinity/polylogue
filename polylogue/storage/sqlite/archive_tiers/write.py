@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
@@ -588,12 +588,15 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
+    hook_parent_provider_id = _authoritative_parent_claim(
+        source_conn,
+        origin=origin.value,
+        child_native_id=native_id,
+    )
+    effective_session_kind = session.session_kind
+    if hook_parent_provider_id is not None and session.parent_session_provider_id is None:
+        effective_session_kind = SessionKind.SUBAGENT
     if not merge_append:
-        hook_parent_provider_id = _authoritative_parent_claim(
-            source_conn,
-            origin=origin.value,
-            child_native_id=native_id,
-        )
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
@@ -837,7 +840,7 @@ def write_parsed_session_to_archive(
                     active_leaf_message_id,
                     _sqlite_text(session.title),
                     admitted_session_kind(
-                        session.session_kind,
+                        effective_session_kind,
                         branch_type=session.branch_type,
                     ).value,
                     _enum_value(session.title_source),
@@ -1102,17 +1105,15 @@ def write_parsed_session_to_archive(
                 _refresh_session_counts(conn, session_id)
             add_timing("index.session_counts", t0)
             t0 = time.perf_counter()
-            _resolve_session_graph(
-                conn,
-                session_id,
-                native_id,
-                origin.value,
-                cache=signature_cache,
-                add_timing=add_timing,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-                invalidated_session_ids=invalidated_identity_children,
-            )
+            graph_kwargs: dict[str, Any] = {
+                "cache": signature_cache,
+                "add_timing": add_timing,
+                "bulk_fts": bulk_fts,
+                "bulk_build": bulk_build,
+            }
+            if invalidated_identity_children:
+                graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
+            _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
             add_timing("index.graph_resolve", t0)
             t0 = time.perf_counter()
             if not bulk_build:
@@ -4783,6 +4784,28 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
         """,
         (session_id,),
     ).fetchall()
+    # A session written before identity claims existed still has one exact
+    # canonical name. Admit that name as a canonical target without broadening
+    # the lookup to filename, ordering, or partial-string matches.
+    exact_candidates = conn.execute(
+        """
+        SELECT links.dst_origin, links.dst_native_id, links.link_type, sessions.session_id
+        FROM session_links AS links
+        JOIN sessions
+          ON sessions.session_id = links.dst_origin || ':' || links.dst_native_id
+        WHERE links.src_session_id = ?
+          AND links.resolved_dst_session_id IS NULL
+          AND links.status IS NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM session_identity_claims claims
+                WHERE claims.origin = links.dst_origin
+                  AND claims.identity_namespace = 'provider-session'
+                  AND claims.provider_value = links.dst_native_id
+          )
+        """,
+        (session_id,),
+    ).fetchall()
+    candidates.extend(exact_candidates)
     for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
         cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
         if cycle_walk.outcome != "acyclic":
