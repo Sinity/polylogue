@@ -17,7 +17,8 @@ from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.json import json_document
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.daemon.status import raw_failure_info_for_root
-from polylogue.maintenance.models import DerivedModelStatus
+from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
@@ -4773,6 +4774,75 @@ def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytes
     assert len(results) == 1
     assert results[0].success is True
     assert results[0].repaired_count == 2
+
+
+def test_selected_cleanup_passes_session_scope_to_empty_session_handler(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seen: list[tuple[str, ...] | None] = []
+
+    def empty_sessions(
+        _config: Config, dry_run: bool, *, session_ids: tuple[str, ...] | None = None
+    ) -> repair_mod.RepairResult:
+        del dry_run
+        seen.append(session_ids)
+        return repair_mod.RepairResult(
+            name="empty_sessions",
+            category=MaintenanceCategory.ARCHIVE_CLEANUP,
+            destructive=True,
+            repaired_count=1,
+            success=True,
+            detail="scoped",
+        )
+
+    monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "empty_sessions", empty_sessions)
+
+    results = repair_mod.run_selected_maintenance(
+        _config(tmp_path),
+        repair=False,
+        cleanup=True,
+        targets=("empty_sessions",),
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1", "s-2")),
+    )
+
+    assert [result.name for result in results] == ["empty_sessions"]
+    assert seen == [("s-1", "s-2")]
+
+
+@pytest.mark.parametrize(
+    ("repair", "cleanup", "target", "scope_filter"),
+    [
+        (True, False, "session_insights", MaintenanceScopeFilter(origin="codex-session")),
+        (False, True, "superseded_raw_snapshots", MaintenanceScopeFilter(session_ids=("s-1",))),
+    ],
+)
+def test_selected_maintenance_does_not_expand_rejected_target_to_all_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    repair: bool,
+    cleanup: bool,
+    target: str,
+    scope_filter: MaintenanceScopeFilter,
+) -> None:
+    """A refused explicit target cannot fall back to an unscoped run."""
+
+    def rejected_target(*_args: object, **_kwargs: object) -> repair_mod.RepairResult:
+        raise AssertionError("rejected target was dispatched")
+
+    monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, target, rejected_target)
+
+    results = repair_mod.run_selected_maintenance(
+        _config(tmp_path),
+        repair=repair,
+        cleanup=cleanup,
+        targets=(target,),
+        scope_filter=scope_filter,
+    )
+
+    assert [(result.name, result.success) for result in results] == [(target, False)]
+    assert "Unsupported scope dimensions" in results[0].detail
 
 
 # polylogue-t93b: the daemon whale pass. A component whose aggregate raw

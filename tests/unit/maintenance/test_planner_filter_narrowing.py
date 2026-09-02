@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.maintenance.planner import preview_backfill
 from polylogue.maintenance.scope import MaintenanceScopeFilter
 from tests.infra.storage_records import DbFactory, db_setup
@@ -88,8 +89,8 @@ class TestPlannerNarrowsBySessionIds:
         assert narrow.affected_rows == 2
 
 
-class TestPlannerLeavesFilterPassthroughDimensionsIntact:
-    """Filters on dimensions the planner does not yet narrow on are passthrough."""
+class TestPlannerRefusesUnsupportedFilters:
+    """Filters a target cannot apply produce no executable preview rows."""
 
     @pytest.mark.parametrize(
         "scope_filter",
@@ -100,26 +101,19 @@ class TestPlannerLeavesFilterPassthroughDimensionsIntact:
             MaintenanceScopeFilter(parser_version="v3"),
         ],
     )
-    def test_non_session_filters_do_not_change_affected_rows(
+    def test_unsupported_filters_refuse_the_target_without_rows(
         self, workspace_env: dict[str, Path], scope_filter: MaintenanceScopeFilter
     ) -> None:
-        """Filter dimensions the planner doesn't yet honor pass through unchanged.
-
-        The repair-fn boundary is advisory (see ``scope.py`` module
-        docstring): non-session_ids filters reach the planner and
-        are surfaced on the returned scope, but the preview row count
-        comes from the full debt status until a repair fn learns to
-        narrow on that dimension.
-        """
+        """Anti-vacuity: counting full debt for a refused target goes red."""
         config = _seeded_config(workspace_env)
         broad = preview_backfill(config, targets=("empty_sessions",))
         scoped = preview_backfill(config, targets=("empty_sessions",), scope_filter=scope_filter)
         assert broad.affected_rows == 3
-        assert scoped.affected_rows == 3
-        # And the filter still rides through on the scope so the
-        # envelope can echo it.
+        assert scoped.status is OperationStatus.FAILED
+        assert scoped.affected_rows == 0
         assert scoped.scope is not None
         assert scoped.scope.filter == scope_filter
+        assert scoped.failure_samples.samples[0].kind == "UnsupportedScopeDimension"
 
 
 class TestPlannerWithEmptyFilter:

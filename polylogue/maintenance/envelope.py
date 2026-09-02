@@ -168,7 +168,25 @@ def envelope_from_operation(
     scope_payload = MaintenanceScopePayload(
         targets=scope_targets,
         filter=scope_filter_dict,
-        unsupported_dimensions=unsupported_scope_dimensions(scope.filter) if scope is not None else (),
+        unsupported_dimensions=(
+            tuple(
+                dimension
+                for dimension in (
+                    "session_ids",
+                    "origin",
+                    "source_family",
+                    "source_root",
+                    "time_range",
+                    "failure_kind",
+                    "parser_version",
+                )
+                if any(
+                    dimension in unsupported_scope_dimensions(scope.filter, target=target) for target in scope_targets
+                )
+            )
+            if scope is not None
+            else ()
+        ),
     )
     return MaintenanceOperationEnvelope(
         operation_id=operation.operation_id,
