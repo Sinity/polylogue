@@ -383,6 +383,7 @@ export type QueryTextPredicateAst = {
 };
 
 export type QueryUnitAggregateEnvelope = {
+  readonly authority?: AuthorityEnvelope | null;
   readonly continuation?: string | null;
   readonly items: ReadonlyArray<QueryUnitAggregateRowPayload>;
   readonly limit: number;
