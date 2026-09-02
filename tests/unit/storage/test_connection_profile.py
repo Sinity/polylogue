@@ -144,3 +144,28 @@ def test_scratch_synchronous_override_only_honours_off(monkeypatch: pytest.Monke
     monkeypatch.setenv(connection_profile.SCRATCH_SYNCHRONOUS_ENV, "off")
     assert "PRAGMA synchronous = OFF" in profile.pragma_statements
     assert "PRAGMA synchronous = NORMAL" not in profile.pragma_statements
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+@pytest.mark.parametrize(
+    "sibling_tier", [ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS]
+)
+def test_index_write_profiles_refuse_stale_sibling_before_attach(
+    tmp_path: Path,
+    factory: Callable[..., sqlite3.Connection],
+    sibling_tier: ArchiveTier,
+) -> None:
+    root = tmp_path
+    index_path = root / "index.db"
+    with sqlite3.connect(index_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+    sibling_path = root / f"{sibling_tier.value}.db"
+    with sqlite3.connect(sibling_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[sibling_tier] - 1}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        factory(index_path)
+
+    assert excinfo.value.tier == sibling_tier.value
+    assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[sibling_tier]
+    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[sibling_tier] - 1
