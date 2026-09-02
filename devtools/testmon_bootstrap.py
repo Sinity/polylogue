@@ -856,9 +856,9 @@ def seed_native_testmon_from_main_checkout(
     Provisioning copies the graph once, when the worktree is created; a graph
     the nightly corpus run publishes later never reaches an older worktree.
     The copy is a consistent SQLite snapshot, so the worktree still owns its
-    own state afterwards. Returns None when there is nothing to copy: the
-    checkout is the main one, or the main graph is not valid for this exact
-    environment. The caller decides that the local graph lacks it.
+    own state afterwards. Returns None for the main checkout itself, and an
+    absent state naming the main graph's condition when there is nothing
+    usable to copy. The caller decides that the local graph lacks it.
     """
     root = repo_root.resolve()
     local_data = root / TESTMON_DATA_RELPATH
@@ -872,8 +872,15 @@ def seed_native_testmon_from_main_checkout(
         required_executable_paths=required_executable_paths,
         deadline_monotonic=deadline_monotonic,
     )
-    if not main_state.valid:
-        return None
+    if not (main_state.valid or main_state.resumable):
+        # A main graph that merely lacks edges for modules this lane added
+        # is still the corpus every other test depends on; copied, it is
+        # resumable here exactly as it would be there. Anything else is
+        # reported so the refusal names the main graph, not just this one.
+        return NativeTestmonState(
+            "absent",
+            f"native testmon database is absent; main checkout {main} graph: {main_state.reason}",
+        )
     _ensure_deadline(deadline_monotonic)
     _validate_owned_state_parents(root)
     local_data.parent.mkdir(parents=True, exist_ok=True)
