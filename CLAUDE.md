@@ -165,6 +165,13 @@ restart; query/read → CLI/API/MCP parity + pagination + cancellation; daemon �
 lifecycle + cancellation + restart; MCP → registry + shared product route;
 fixture/harness → proves a production route.
 
+## Code Review Rules
+
+- A finding names a concrete input at the reviewed head and the wrong observable outcome. Environment enumeration without a concrete defect is not a finding.
+- Caches and receipts are keyed by declared inputs such as the lockfile, provision stamp, or environment digest, not by enumerating filesystem contents.
+- A review thread closes when a commit answers it or evidence refutes it. Reopen it only when that answer is wrong.
+- Tests and fixtures state the anti-vacuity condition that makes them fail when the behavior is bypassed or the defect returns.
+
 ## Commit / PR discipline
 
 Product code lands via feature branches + squash-merged PRs to protected
