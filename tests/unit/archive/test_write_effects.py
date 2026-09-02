@@ -15,23 +15,25 @@ from polylogue.storage.sqlite.connection import open_connection
 
 
 def test_registry_declares_the_three_canonical_effects_in_order() -> None:
-    """Slice 1 of polylogue-0aj: the registry is the single source of truth
-    for what commit_archive_write_effects runs, and this pins its shape so a
-    future addition/removal is a deliberate, reviewable diff here."""
+    """The registry is the single source of truth for effect order and phase."""
     assert [effect.name for effect in WRITE_EFFECT_REGISTRY] == [
         "ensure_fts_triggers",
         "repair_message_fts",
         "invalidate_search_cache",
+        "invalidate_session_insights",
     ]
     assert [effect.phase for effect in WRITE_EFFECT_REGISTRY] == [
         "in-transaction",
         "in-transaction",
         "post-commit",
+        "async-deferred",
     ]
-    # Failure policy defaults to "abort" unless an effect opts into
-    # log-and-continue; all three canonical effects are today's
-    # already-established abort-on-failure behavior.
-    assert all(effect.failure_policy == "abort" for effect in WRITE_EFFECT_REGISTRY)
+    assert [effect.failure_policy for effect in WRITE_EFFECT_REGISTRY] == [
+        "abort",
+        "abort",
+        "abort",
+        "log-and-continue",
+    ]
 
 
 def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidation(
@@ -66,6 +68,7 @@ def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidati
     assert result.rows_affected == 2
     assert repaired == [("c1", "c2")]
     assert invalidated == [True]
+    assert result.effect_receipts[-1].disposition == "enqueued"
 
 
 def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_ids(
@@ -102,6 +105,34 @@ def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_id
     assert ensured == [True]
     assert repaired == []
     assert invalidated == []
+    assert result.effect_receipts[-1].disposition == "skipped"
+
+
+def test_async_deferred_effect_is_enqueued_after_commit_and_not_run_inline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.archive import write_effects as module
+
+    events: list[str] = []
+
+    def scheduler(effect: WriteEffect, ctx: WriteEffectContext) -> None:
+        assert ctx.conn.in_transaction is False
+        events.append(f"enqueue:{effect.name}")
+
+    monkeypatch.setattr(
+        module,
+        "WRITE_EFFECT_REGISTRY",
+        (WriteEffect(name="deferred", phase="async-deferred", run=lambda _ctx: events.append("run")),),
+    )
+    with open_connection(tmp_path / "archive.db") as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        result = commit_archive_write_effects(
+            conn,
+            WriteOperation.INGEST,
+            {"changed_session_ids": ("s1",), "deferred_scheduler": scheduler},
+        )
+    assert events == ["enqueue:deferred"]
+    assert result.effect_receipts[0].disposition == "enqueued"
 
 
 def test_repair_message_fts_should_run_honors_explicit_opt_out(

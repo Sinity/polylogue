@@ -38,6 +38,7 @@ class WriteResult:
     operation: WriteOperation
     rows_affected: int
     status: WriteResultStatus
+    effect_receipts: tuple[object, ...] = ()
 
 
 class ArchiveWriteGateway:
@@ -82,6 +83,7 @@ class ArchiveWriteGateway:
         from polylogue.archive.write_effects import commit_archive_write_effects
 
         payload = dict(payload)
+        payload.setdefault("_db_path", self._db_path)
         conn: sqlite3.Connection | None = payload.pop("_connection", None)
         owns_conn = conn is None
 
