@@ -1733,8 +1733,6 @@ ON session_tag_rollups(bucket_day DESC, source_name, tag);
 CREATE INDEX IF NOT EXISTS idx_session_tag_rollups_provider
 ON session_tag_rollups(source_name, tag);
 
--- ddl-lifecycle-waiver: benign retired receipt table is dropped during same-version
--- convergence after its one-off consumer was removed.
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into
