@@ -112,7 +112,7 @@ flagged as an open question for whichever child bead executes #3's slice.
 
 - Surfaces (`cli/`, `mcp/`, `api/`, `daemon/`) may not import substrate
   (`archive/`, `storage/`) internals directly — enforced by
-  `docs/plans/layering.yaml` / `devtools verify layering`. Every extraction
+  `docs/plans/layering.yaml` / `devtools gate layering`. Every extraction
   candidate above that crosses a surface/substrate boundary must keep that
   boundary intact; none of the slices considered in this pass required
   crossing it (all four "storage tier" hotspots, #1/#3/#5, are

@@ -3,7 +3,7 @@
 This command previews a schema generation only -- it never writes to
 ``polylogue/schemas/providers/``. To actually persist a full-corpus
 generation into the committed package files, use
-``devtools workspace schema commit`` (``devtools/schema_commit.py``).
+``devtools schema commit`` (``devtools/schema_commit.py``).
 """
 
 from __future__ import annotations
@@ -97,7 +97,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--schema-inference-receipt",
         type=Path,
         required=True,
-        help="Fresh authoritative PASS receipt from devtools verify schema-inference-gate.",
+        help="Fresh authoritative PASS receipt from devtools gate schema-inference-gate.",
     )
     return parser
 

@@ -11,8 +11,8 @@ its owned tier(s) in its module docstring.  A module spanning two tiers is
 allowed only when the same manifest names a reviewed twin-write contract.
 
 Usage:
-  devtools verify layering
-  devtools verify layering --json
+  devtools gate layering
+  devtools gate layering --json
 """
 
 from __future__ import annotations

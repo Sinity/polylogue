@@ -837,9 +837,9 @@ The Home Manager module remains separate from daemon lifecycle. Enabling agent i
 ## Post-cutover regeneration checklist
 
 1. Keep every generated argument contract equal to the registered FastMCP input signatures, including optionality and capability gates.
-2. Run `devtools verify agent-integration --require-live` after declaration changes.
+2. Run `devtools gate agent-integration --require-live` after declaration changes.
 3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.
-4. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools and exact FastMCP signature parity.
+4. Run `devtools gate agent-integration --require-live`; it must see the capability-scoped target tools and exact FastMCP signature parity.
 5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.
 6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.
 7. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.

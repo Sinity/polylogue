@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from devtools import verify
+from devtools import gate, verify
 
 
 def test_starting_the_daemon_bounds_its_idle_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -27,14 +27,14 @@ def test_starting_the_daemon_bounds_its_idle_lifetime(monkeypatch: pytest.Monkey
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     dmypy = str(verify.ROOT / ".venv/bin/dmypy")
-    assert verify._mypy_cmd() == [
+    assert gate.mypy_command() == [
         dmypy,
         "run",
-        f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}",
+        f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}",
         "--",
         "--no-error-summary",
     ]
 
     start = next(argv for argv in calls if "start" in argv)
-    assert f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}" in start
-    assert verify.DMYPY_IDLE_TIMEOUT_SECONDS > 0
+    assert f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}" in start
+    assert gate.DMYPY_IDLE_TIMEOUT_SECONDS > 0

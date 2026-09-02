@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         result = subprocess.run(command, cwd=root / "webui", check=False, text=True, capture_output=True)
     except OSError as exc:
         payload: dict[str, Any] = {
-            "command": "devtools verify webui",
+            "command": "devtools gate webui",
             "argv": command,
             "status": "blocked-env",
             "returncode": None,
@@ -35,7 +35,7 @@ def main(argv: list[str] | None = None) -> int:
 
     output = (result.stdout + result.stderr).strip()
     payload = {
-        "command": "devtools verify webui",
+        "command": "devtools gate webui",
         "argv": command,
         "status": "green" if result.returncode == 0 else "red",
         "returncode": result.returncode,

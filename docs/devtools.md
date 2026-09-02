@@ -44,75 +44,52 @@ These are the commands worth remembering during normal repo work:
 
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
-- `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
-  Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
-- `devtools render all`: Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.
-  Common forms: `devtools render all`, `devtools render all --check`.
-- `devtools verify`: Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.
-  Common forms: `devtools verify`, `devtools verify --quick`.
 - `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest.
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
+- `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
+  Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
+- `devtools verify`: Run the gates and tests locally before pushing. --quick stops at the static gates; --all runs the complete corpus.
+  Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --all`.
+- `devtools gate`: Run a single gate in isolation, or list the declared gates and which of them verify --quick runs.
+  Common forms: `devtools gate --list`, `devtools gate layering`, `devtools gate mypy`.
+- `devtools render`: Refresh or verify generated repo surfaces after changing docs, CLI help, declarations, or agent memory.
+  Common forms: `devtools render all`, `devtools render all --check`, `devtools render cli-reference`.
 
 ### Core
 
 | Command | Description |
 | --- | --- |
+| `devtools cache gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
 | `devtools status` | Render the devshell status view. |
+| `devtools test` | Run focused pytest selections or inspect full-run timing outliers. |
 | `devtools why` | Explain the most recent verification run, or where verification time went. |
-
-### Generated Surfaces
-
-| Command | Description |
-| --- | --- |
-| `devtools render agent-manual` | Render the declaration-generated six-tool agent manual and packaged integration assets. |
-| `devtools render all` | Refresh or verify generated docs and agent files. |
-| `devtools render cli-output-schemas` | Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/. |
-| `devtools render cli-reference` | Render docs/cli-reference.md from live CLI help. |
-| `devtools render devtools-reference` | Render the command catalog inside docs/devtools.md. |
-| `devtools render docs-surface` | Render docs/README.md and the README documentation table. |
-| `devtools render openapi` | Render docs/openapi/search.yaml from typed daemon query payload models. |
-| `devtools render query-discovery` | Render parser-gated query discovery examples and result semantics into docs/search.md. |
-| `devtools render webui-client` | Render the committed WebUI TypeScript client from docs/openapi/search.yaml. |
-| `devtools render webui-design-system` | Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence. |
-
-### Release
-
-| Command | Description |
-| --- | --- |
-| `devtools release build-package` | Build the default Nix package with the out-link under .local/result. |
-| `devtools release verify-distribution` | Verify wheel/sdist installed artifacts expose only supported runtime entrypoints. |
 
 ### Verification
 
 | Command | Description |
 | --- | --- |
-| `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
-| `devtools test` | Run focused pytest selections or inspect full-run timing outliers. |
-| `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
-| `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
-| `devtools verify atlas` | Check atlas citation anchors and verification-commit freshness. |
-| `devtools verify blob-conservation` | Verify both directions of blob/reference conservation without mutation. |
-| `devtools verify consumer-reachability` | Require newly added modules, tables, and tools to have production consumers. |
-| `devtools verify coverage` | Run pytest with the repository coverage floor from pyproject.toml. |
-| `devtools verify doc-commands` | Validate executable documentation examples against live command inventories. |
-| `devtools verify js-tests` | Run the JavaScript test suites of the browser-extension and webui packages. |
-| `devtools verify layering` | Check inter-package imports against declared layering rules from docs/plans/layering.yaml. |
-| `devtools verify oracle-integrity` | Verify tests certify production-reachable code and never read ambient user paths. |
-| `devtools verify patterns` | Enforce AST-shape defect-family rules with shrinking grandfathered baselines. |
-| `devtools verify scenario` | Run a named archive verification scenario. |
-| `devtools verify schema-audit` | Run committed provider schema package quality checks. |
-| `devtools verify schema-inference-gate` | Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt. |
-| `devtools verify schema-roundtrip` | Verify committed provider schema packages reload and roundtrip cleanly. |
-| `devtools verify schema-versioning` | Verify durable-tier migration and derived-tier rebuild boundaries. |
-| `devtools verify timestamp-doctrine` | Verify durable-tier DDL never stores a timestamp column as TEXT. |
-| `devtools verify webui` | Run the declared typed WebUI generation, contract, unit, and build checks. |
-| `devtools workspace schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
-| `devtools workspace schema compare` | Compare two committed schema package versions for a provider. |
-| `devtools workspace schema explain` | Explain a committed package element schema with evidence and annotations. |
-| `devtools workspace schema generate` | Generate provider schema packages and optional evidence clusters. |
-| `devtools workspace schema list` | List committed schema packages, versions, and evidence manifests. |
-| `devtools workspace schema parser-diff` | List observed provider wire keys that no parser references. |
-| `devtools workspace schema promote` | Promote a schema evidence cluster into a registered package version. |
+| `devtools gate` | Run one named invariant check. |
+| `devtools scenario` | Run a named archive verification scenario. |
+| `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
+| `devtools verify` | Run the local verification baseline: every quick gate, then the selected or complete test corpus. |
+
+### Generated Surfaces
+
+| Command | Description |
+| --- | --- |
+| `devtools render` | Refresh or verify one generated repository surface, or all of them. |
+
+### Schema
+
+| Command | Description |
+| --- | --- |
+| `devtools schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
+| `devtools schema compare` | Compare two committed schema package versions for a provider. |
+| `devtools schema explain` | Explain a committed package element schema with evidence and annotations. |
+| `devtools schema generate` | Generate provider schema packages and optional evidence clusters. |
+| `devtools schema list` | List committed schema packages, versions, and evidence manifests. |
+| `devtools schema parser-diff` | List observed provider wire keys that no parser references. |
+| `devtools schema promote` | Promote a schema evidence cluster into a registered package version. |
 
 ### Benchmarking
 
@@ -121,20 +98,19 @@ These are the commands worth remembering during normal repo work:
 | `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
 | `devtools bench concurrency` | Run the managed bounded-compute scaling profile across representative workloads. |
 | `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
-| `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851). |
+| `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture. |
 | `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
+| `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 
-### Workspace
+### Archive
 
 | Command | Description |
 | --- | --- |
-| `devtools workspace continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
-| `devtools workspace deployment-smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
-| `devtools workspace index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
-| `devtools workspace lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
-| `devtools workspace seeded-archive-cache-gc` | Preview or apply age-gated GC for the shared seeded-archive fixture cache. |
+| `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
+| `devtools archive index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
+| `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 
@@ -181,8 +157,8 @@ When changing semantics, validation, or surfaces:
 ```bash
 devtools verify
 devtools test tests/unit/path/to/test_file.py
-devtools verify scenario run archive-smoke --tier 0
-devtools verify scenario run reader-visual-smoke
+devtools scenario run archive-smoke --tier 0
+devtools scenario run reader-visual-smoke
 devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
@@ -193,7 +169,7 @@ Campaign outputs live under `.local/`, not in tracked docs trees.
 - `.cache/`: disposable cache state.
 - `.local/`: untracked local outputs such as campaigns, demo artifacts, and reports.
 - `.venv/` and `.direnv/`: kept at the repo root because their tooling expects those locations.
-- `.local/result`: preferred repo-local out-link for `devtools release build-package`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
+- `.local/result`: preferred repo-local out-link for `nix build`; a top-level `result` symlink is just Nix's default ad-hoc out-link.
 
 Keep new repo-local outputs in `.cache/` or `.local/` instead of adding new
 top-level output roots.

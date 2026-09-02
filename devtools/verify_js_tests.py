@@ -275,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
     if ci is not None and blocked:
         status = NOT_RUN_IN_CI
     payload = {
-        "command": "devtools verify js-tests",
+        "command": "devtools gate js",
         "status": status,
         "ci": ci,
         # Recorded because a starved suite fails on timing, not behaviour, and

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from devtools import required_gate, verify, verify_runs, why
+from devtools import gate, required_gate, verify, verify_runs, why
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     VerifyRun,
@@ -25,8 +25,8 @@ from devtools.verify_runs import (
 def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
-    assert "ruff check" in labels
-    assert "verify oracle-integrity" in labels
+    assert "gate lint" in labels
+    assert "gate oracle-integrity" in labels
     assert not any(label.startswith("pytest") for label in labels)
 
 
@@ -34,11 +34,11 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     steps = verify.build_verify_steps(quick=True)
     commands = dict(steps)
 
-    assert commands["ruff format"][0] == str(verify.ROOT / ".venv/bin/ruff")
-    assert commands["ruff check"][0] == str(verify.ROOT / ".venv/bin/ruff")
-    assert commands["mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
-    assert commands["render all"][0] == str(verify.ROOT / ".venv/bin/python")
-    assert commands["schema privacy registry"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["gate format"][0] == str(verify.ROOT / ".venv/bin/ruff")
+    assert commands["gate lint"][0] == str(verify.ROOT / ".venv/bin/ruff")
+    assert commands["gate mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
+    assert commands["gate generated-surfaces"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
 def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -48,7 +48,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.Monke
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(
-        verify, "build_verify_steps", lambda **_kwargs: [("ruff check", [str(tmp_path / ".venv/bin/ruff")])]
+        verify, "build_verify_steps", lambda **_kwargs: [("gate lint", [str(tmp_path / ".venv/bin/ruff")])]
     )
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
@@ -78,16 +78,16 @@ def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytes
 
     monkeypatch.setattr(subprocess, "run", run)
 
-    assert verify._mypy_cmd() == [
+    assert gate.mypy_command() == [
         dmypy,
         "run",
-        f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}",
+        f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}",
         "--",
         "--no-error-summary",
     ]
     assert calls == [
         [dmypy, "status"],
-        [dmypy, "start", f"--timeout={verify.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
+        [dmypy, "start", f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
     ]
 
 
@@ -104,7 +104,7 @@ def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(required_gate.shutil, "which", lambda name, path=None: None if name == "ruff" else "/bin/true")  # type: ignore[attr-defined]
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
@@ -121,7 +121,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(required_gate.shutil, "which", lambda *_args, **_kwargs: "/bin/ruff")  # type: ignore[attr-defined]
     monkeypatch.setattr(
         subprocess,
@@ -164,7 +164,7 @@ raise SystemExit(render_all.main())
         f"exec({script!r})",
     ]
 
-    exit_code, elapsed, metadata = verify._run("render all", command, run=run)
+    exit_code, elapsed, metadata = verify._run("gate generated-surfaces", command, run=run)
 
     assert exit_code == 1
     assert metadata["diagnosis"] == "render_input_missing"
@@ -366,7 +366,7 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("ruff check", ["ruff", "check"])])
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.25, {"diagnosis": "gate_passed"}))
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
@@ -377,7 +377,7 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     assert receipt["spec"]["measurement_scope"] == "process-tree"
     assert receipt["phases"] == [
         {
-            "name": "ruff check",
+            "name": "gate lint",
             "measurement_scope": None,
             "wall_ms": 250.0,
             "cleanup_complete": None,

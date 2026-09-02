@@ -38,7 +38,7 @@ Run the package-owned generated-contract, lint, type, unit, client-contract,
 and build checks through the project-level route:
 
 ```bash
-devtools verify webui
+devtools gate webui
 ```
 
 For the managed deployed-reader browser smoke, use the declared AgentCTL

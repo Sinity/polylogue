@@ -983,7 +983,7 @@ def _check_schema_drift_medium() -> HealthAlert:
     benign/risky-rate thresholds
     (:mod:`polylogue.cli.commands.status`), so the daemon health surface
     and the CLI status line never disagree about severity. Follow-up
-    action always points at ``devtools workspace schema generate/promote`` --
+    action always points at ``devtools schema generate/promote`` --
     this check only detects drift, it never repairs a schema package.
     """
     now = datetime.now(UTC).isoformat()
@@ -1015,10 +1015,10 @@ def _check_schema_drift_medium() -> HealthAlert:
                 worst_detail = f"{origin}: {rate:.0%} of {total} records carry unseen shapes"
         if worst == "error":
             severity = HealthSeverity.ERROR
-            message = f"format drift: {worst_detail}: devtools workspace schema generate/promote"
+            message = f"format drift: {worst_detail}: devtools schema generate/promote"
         elif worst == "warning":
             severity = HealthSeverity.WARNING
-            message = f"format drift: {worst_detail}: devtools workspace schema generate/promote"
+            message = f"format drift: {worst_detail}: devtools schema generate/promote"
         else:
             severity = HealthSeverity.OK
             message = "no risky format drift"

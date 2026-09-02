@@ -830,4 +830,4 @@ def test_lineage_validation_main_json(tmp_path: Path, capsys: pytest.CaptureFixt
 
     assert exit_code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["command"] == "devtools workspace lineage-validation"
+    assert payload["command"] == "devtools archive lineage-validation"

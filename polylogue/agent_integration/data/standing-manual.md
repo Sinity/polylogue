@@ -324,4 +324,4 @@ The beads-06 installer architecture is retained: managed native MCP entries, ful
 
 ## Cache and regeneration contract
 
-Content version: `2026-08-26.10tool-r01`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. Run the live-signature lane after declaration changes, then run `devtools verify agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.
+Content version: `2026-08-26.10tool-r01`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. Run the live-signature lane after declaration changes, then run `devtools gate agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.

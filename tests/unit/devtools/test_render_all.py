@@ -9,7 +9,7 @@ import pytest
 from devtools import render_all
 
 
-def test_render_all_runs_selected_surfaces(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_render_runs_only_the_named_surface(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, tuple[str, ...]]] = []
 
     class FakeSurface:
@@ -26,7 +26,7 @@ def test_render_all_runs_selected_surfaces(monkeypatch: pytest.MonkeyPatch) -> N
         (FakeSurface("cli-reference"), FakeSurface("docs-surface")),
     )
 
-    assert render_all.main(["--skip", "cli-reference"]) == 0
+    assert render_all.main(["docs-surface"]) == 0
     assert calls == [("docs-surface", ())]
 
 

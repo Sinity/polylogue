@@ -173,7 +173,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (e.g. dropping a zero-consumer table, adding an index/table nothing reads
   yet) — not a general escape hatch. `INDEX_SCHEMA_VERSION` stays reserved for
   semantic changes: consumer-visible column/behavior changes or
-  reparse-required content. `devtools verify schema-versioning` validates
+  reparse-required content. `devtools gate schema-versioning` validates
   every registry entry against the allowed idempotent-DDL shapes and rejects
   anything else (ALTER/INSERT/UPDATE/DELETE, or a `CREATE`/`DROP` missing its
   `IF NOT EXISTS`/`IF EXISTS` guard). First application: dropped the
@@ -191,7 +191,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   metadata-only, index-only, additive-derived, additive-durable, or
   semantic-reparse-required. Same-tier schema changes should be batched before
   a live rebuild so the active archive is not reset repeatedly.
-- `devtools verify schema-versioning` enforces the boundary: durable SQL
+- `devtools gate schema-versioning` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
   derived changes must use declared lifecycle deltas and clone-validated
   fast-forward plans or rebuild. The gate validates those structured carriers
@@ -654,12 +654,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   rows move out of authored-user accounting while provider-role counts remain
   available.
 - Provider schemas (the parsing/validation surface, distinct from the
-  storage schema) are still regenerated fresh. `devtools workspace schema generate`
+  storage schema) are still regenerated fresh. `devtools schema generate`
   only previews a generation (it never writes committed package files);
-  `devtools workspace schema commit --full-corpus` is the entry point that actually
+  `devtools schema commit --full-corpus` is the entry point that actually
   persists a full-corpus regeneration into
   `polylogue/schemas/providers/<provider>/versions/...`, and
-  `devtools workspace schema promote` promotes a single reviewed evidence cluster
+  `devtools schema promote` promotes a single reviewed evidence cluster
   (from `generate --cluster`) into a registered package version -- a
   narrower, single-version operation `commit` does not replace.
 
@@ -685,7 +685,7 @@ copy-forward design and explicit operator consent, never a routine migration.
 `ALTER TABLE ... ADD COLUMN` bootstrap helpers in
 `storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
-`devtools verify schema-versioning` lint enforces the whole boundary:
+`devtools gate schema-versioning` lint enforces the whole boundary:
 numbered durable-tier migrations are allowed; derived-tier lifecycle deltas and
 same-version DDL are validated structurally. Ad hoc open-path upgrades are not a
 supported runtime route, but the lint does not pretend to detect them from
@@ -1231,7 +1231,7 @@ devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed
 
 - `.cache/`: disposable caches (hypothesis, pytest, mypy, ruff)
 - `.local/`: untracked outputs (campaigns, demo artifacts, build artifacts)
-- `.local/result`: out-link for `devtools release build-package`
+- `.local/result`: out-link for `nix build`
 
 ## Blobstore mechanics
 

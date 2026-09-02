@@ -77,7 +77,7 @@ def test_schema_drift_warning_when_one_origin_crosses_warn_threshold(
     alert = _check_schema_drift_medium()
     assert alert.severity == HealthSeverity.WARNING
     assert "claude-code-session" in alert.message
-    assert "devtools workspace schema generate/promote" in alert.message
+    assert "devtools schema generate/promote" in alert.message
     assert alert.consecutive_failures == 1
 
 

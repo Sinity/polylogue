@@ -53,7 +53,7 @@ an exact zero or infer tool failure from prose.
 
 Begin with the focused query or surface test through `devtools test`. For a
 cross-surface change, run the relevant CLI/API/MCP parity tests, pagination and
-cancellation coverage, then `devtools verify doc-commands` and the generated
+cancellation coverage, then `devtools gate doc-commands` and the generated
 surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.
 

@@ -1,6 +1,6 @@
 """Commit a real full-corpus schema generation into committed packages.
 
-``devtools workspace schema generate`` only ever produces a preview
+``devtools schema generate`` only ever produces a preview
 ``GenerationResult`` -- it never writes to ``polylogue/schemas/providers/``.
 This command is the actual persisting entry point (polylogue-k45pq):
 it calls ``generate_all_schemas`` for real via
@@ -60,7 +60,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--schema-inference-gate-receipt",
         type=Path,
         required=True,
-        help="Accepted PASS receipt from devtools verify schema-inference-gate.",
+        help="Accepted PASS receipt from devtools gate schema-inference-gate.",
     )
     parser.add_argument(
         "--dry-run",

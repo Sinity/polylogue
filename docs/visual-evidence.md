@@ -23,7 +23,7 @@ verification authority.
 Representative media has to be evidence, not decoration. Public evidence must
 point to commands that run against synthetic fixtures or an explicitly local
 operator profile and produce a named artifact: the DOM smoke lane below,
-`devtools verify scenario run reader-visual-smoke`,
+`devtools scenario run reader-visual-smoke`,
 the declared `dev_loop_proof` or shared-Chrome `deployment_browser_smoke` AgentCTL operation.
 Screenshots, screencasts, and
 store-listing images are useful only when they point back to one of those run
@@ -36,7 +36,7 @@ From the devshell:
 ```bash
 uv run devtools test tests/unit/daemon/test_web_reader.py
 uv run devtools test tests/visual
-uv run devtools verify scenario run reader-visual-smoke --json --report-dir .local/visual/reader-smoke
+uv run devtools scenario run reader-visual-smoke --json --report-dir .local/visual/reader-smoke
 ```
 
 The first command owns the fast endpoint and envelope contracts. The second
@@ -54,7 +54,7 @@ id, fixture id, route, and structural checks asserted by that test.
 Both suites are part of the standard correctness corpus. There is no
 browser binary or Playwright dependency in these fast lanes: they use Python's
 standard `http.server`, `urllib.request`, and `html.parser` against the real
-`DaemonAPIHTTPServer`. The `devtools verify scenario` command is the
+`DaemonAPIHTTPServer`. The `devtools scenario` command is the
 operator-facing wrapper for the visual/DOM lane.
 
 ## Artifact inventory

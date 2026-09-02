@@ -15,12 +15,12 @@ from devtools.command_catalog import (
 def test_control_plane_helpers_render_consistent_invocations() -> None:
     assert control_plane_command("status", "--json") == "devtools status --json"
     assert control_plane_argv("status", "--json") == ("devtools", "status", "--json")
-    assert control_plane_command("render all", "--check") == "devtools render all --check"
-    assert control_plane_argv("render all", "--check") == ("devtools", "render", "all", "--check")
-    assert control_plane_command("verify schema-roundtrip", "--all") == "devtools verify schema-roundtrip --all"
-    assert control_plane_argv("verify schema-roundtrip", "--all") == ("devtools", "verify", "schema-roundtrip", "--all")
-    assert command_name_from_tokens(["render", "all", "--check"]) == "render all"
-    assert command_name_from_tokens(["verify", "schema-roundtrip", "--all"]) == "verify schema-roundtrip"
+    assert control_plane_command("render", "all", "--check") == "devtools render all --check"
+    assert control_plane_argv("render", "all", "--check") == ("devtools", "render", "all", "--check")
+    assert control_plane_command("gate", "schema-roundtrip") == "devtools gate schema-roundtrip"
+    assert control_plane_argv("gate", "schema-roundtrip") == ("devtools", "gate", "schema-roundtrip")
+    assert command_name_from_tokens(["render", "all", "--check"]) == "render"
+    assert command_name_from_tokens(["schema", "parser-diff"]) == "schema parser-diff"
 
 
 def test_command_specs_have_unique_names_and_known_categories() -> None:
@@ -52,4 +52,23 @@ def test_featured_command_specs_are_actionable() -> None:
 
 def test_catalog_uses_command_ownership_categories() -> None:
     assert "verification lab" not in {spec.category for spec in COMMAND_SPECS}
-    assert {"verify schema-roundtrip", "bench pipeline", "workspace schema commit"} <= set(COMMANDS)
+    assert {"gate", "bench pipeline", "schema commit"} <= set(COMMANDS)
+
+
+def test_top_level_command_surface_is_the_folded_twelve() -> None:
+    """The fold is only real while nothing re-grows a thirteenth root verb."""
+    roots = {spec.command_path[0] for spec in COMMAND_SPECS}
+    assert roots == {
+        "archive",
+        "bench",
+        "cache",
+        "gate",
+        "render",
+        "scenario",
+        "schema",
+        "smoke",
+        "status",
+        "test",
+        "verify",
+        "why",
+    }

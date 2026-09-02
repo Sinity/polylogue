@@ -137,7 +137,7 @@ index additions that can be grouped into one schema bump, and do not call a
 full reingest necessary unless the changed semantics actually require replaying
 source rows.
 
-The policy lint (`devtools verify schema-versioning`) validates derived-tier
+The policy lint (`devtools gate schema-versioning`) validates derived-tier
 lifecycle declarations and clone-safe benign-DDL shapes while allowing numbered
 durable-tier SQL migrations. It does not attempt to classify Python helpers by
 their names; ad hoc open-path upgrades remain unsupported because the runtime
@@ -280,8 +280,7 @@ no datafile seeds it by running everything. `--all` runs every test and still
 updates fingerprints. The corpus runs as one collection, never partitioned:
 testmon drops every recorded test a run did not collect.
 
-Add `devtools release build-package` or `nix flake check` when touching packaging or
-Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
+Add `nix build` or `nix flake check` when touching packaging or Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
 for details.
 
 ## PR Body Discipline

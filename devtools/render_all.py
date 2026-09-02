@@ -279,27 +279,35 @@ def _render_one(surface: GeneratedSurface, check: bool) -> int:
     return 0
 
 
-def _selected_surfaces(skip: set[str]) -> list[GeneratedSurface]:
-    return [surface for surface in GENERATED_SURFACES if surface.name not in skip]
+SURFACE_NAMES: tuple[str, ...] = tuple(surface.name for surface in GENERATED_SURFACES)
+
+
+def _selected_surfaces(surface: str) -> list[GeneratedSurface]:
+    if surface == "all":
+        return list(GENERATED_SURFACES)
+    return [candidate for candidate in GENERATED_SURFACES if candidate.name == surface]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Refresh or verify generated repository surfaces.")
+    parser = argparse.ArgumentParser(
+        prog="devtools render",
+        description="Refresh or verify generated repository surfaces.",
+    )
+    parser.add_argument(
+        "surface",
+        nargs="?",
+        default="all",
+        choices=("all", *sorted(SURFACE_NAMES)),
+        help="the generated surface to render, or 'all' (the default)",
+    )
     parser.add_argument(
         "--check",
         action="store_true",
         help="Exit non-zero when any selected generated surface is out of sync.",
     )
-    parser.add_argument(
-        "--skip",
-        action="append",
-        default=[],
-        choices=sorted(surface.name for surface in GENERATED_SURFACES),
-        help="Skip a generated surface by name (repeatable).",
-    )
     args = parser.parse_args(argv)
 
-    selected = _selected_surfaces(set(args.skip))
+    selected = _selected_surfaces(args.surface)
     if not selected:
         print("render all: no surfaces selected", file=sys.stderr)
         return 2

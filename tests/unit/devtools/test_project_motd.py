@@ -100,11 +100,9 @@ def test_render_motd_contains_expected_sections(
     assert "worktree   dirty · 1 staged · 2 modified · 3 untracked" in rendered
     assert f"generated  {surface_count}/{surface_count} generated unchecked" in rendered
     assert "head       docs: tighten repo guides" in rendered
-    assert (
-        "ready      devtools render all --check · devtools verify --quick · devtools release build-package" in rendered
-    )
+    assert "ready      devtools render all --check · devtools verify --quick · devtools gate --list" in rendered
     assert "test       devtools verify" in rendered
-    assert "roots      keep .venv/ .direnv/ · cache .cache/ · outputs .local/ · build .local/result" in rendered
+    assert "roots      keep .venv/ .direnv/ · cache .cache/ · outputs .local/" in rendered
     assert "dirty · 1 staged · 2 modified · 3 untracked" in rendered
 
 
@@ -126,14 +124,13 @@ def test_status_snapshot_includes_machine_readable_commands(
     assert snapshot["commands"]["discover"] == "devtools --list-commands --json"
     assert snapshot["commands"]["status"] == "devtools status --json"
     assert snapshot["commands"]["verify_quick"] == "devtools verify --quick"
-    assert snapshot["commands"]["build_package"] == "devtools release build-package"
+    assert snapshot["commands"]["gates"] == "devtools gate --list"
     assert snapshot["generated_surfaces"]
     assert snapshot["generated_checked"] is False
     assert set(snapshot["generated_surfaces"].values()) == {"unchecked"}
     assert snapshot["stale_surfaces"] == []
     assert set(snapshot["unchecked_surfaces"]) == set(snapshot["generated_surfaces"].keys())
     assert snapshot["local_state"]["root_residents"] == [".venv/", ".direnv/"]
-    assert snapshot["local_state"]["preferred_build_out_link"] == ".local/result"
 
 
 def test_render_motd_can_verify_generated_surfaces(

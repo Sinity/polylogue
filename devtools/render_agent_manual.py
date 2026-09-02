@@ -286,7 +286,7 @@ def render_standing_manual() -> str:
             "",
             "## Cache and regeneration contract",
             "",
-            f"Content version: `{ASSET_VERSION}`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. Run the live-signature lane after declaration changes, then run `devtools verify agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.",
+            f"Content version: `{ASSET_VERSION}`. The installer records a digest over every generated asset, so unchanged declarations produce byte-identical manual content and stable prompt-cache keys. Run the live-signature lane after declaration changes, then run `devtools gate agent-integration --require-live` and `devtools render all --check`. Any drift is a build failure, not a documentation suggestion.",
             "",
         ]
     )
@@ -420,9 +420,9 @@ def render_deep_reference() -> str:
             "## Post-cutover regeneration checklist",
             "",
             "1. Keep every generated argument contract equal to the registered FastMCP input signatures, including optionality and capability gates.",
-            "2. Run `devtools verify agent-integration --require-live` after declaration changes.",
+            "2. Run `devtools gate agent-integration --require-live` after declaration changes.",
             "3. Confirm t46.9’s preview receipt and confirmation token field names, binding rules, stale response, and receipt schema; do not preserve the compatibility boolean as canonical guidance.",
-            "4. Run `devtools verify agent-integration --require-live`; it must see the capability-scoped target tools and exact FastMCP signature parity.",
+            "4. Run `devtools gate agent-integration --require-live`; it must see the capability-scoped target tools and exact FastMCP signature parity.",
             "5. Run `devtools render agent-manual` after declaration changes and commit all packaged assets and docs mirrors.",
             "6. Run `devtools render all --check`, focused agent-integration/MCP tests, topology verification, and package build checks.",
             "7. Run clean-home Claude Code, Codex, Gemini, and Hermes installation smoke tests and one cold-agent trial per continuity recipe.",

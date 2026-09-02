@@ -69,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         payload = {
             "schema_version": 1,
             "purpose": "Pre-existing hermeticity findings, exempted as a ratchet. Removing entries is the goal.",
-            "generated_by": "devtools verify oracle-integrity --write-baseline",
+            "generated_by": "devtools gate oracle-integrity --write-baseline",
             "entries": entries,
         }
         target = root / BASELINE_PATH

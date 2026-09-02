@@ -1,4 +1,4 @@
-"""``devtools workspace schema commit`` is the real, persisting schema-commit CLI.
+"""``devtools schema commit`` is the real, persisting schema-commit CLI.
 
 Unit-level plumbing tests: the request built from CLI args, and rendering of
 the ``SchemaCommitResult``. The commit path's actual file-writing behavior is

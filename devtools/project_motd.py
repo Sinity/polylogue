@@ -39,7 +39,7 @@ class SnapshotCommands(TypedDict):
     status: str
     render_all_check: str
     verify_quick: str
-    build_package: str
+    gates: str
     test_baseline: str
 
 
@@ -47,7 +47,6 @@ class LocalState(TypedDict):
     cache: str
     outputs: str
     root_residents: list[str]
-    preferred_build_out_link: str
 
 
 class StatusSnapshot(TypedDict):
@@ -158,14 +157,13 @@ def status_snapshot(cwd: Path, *, verify_generated: bool = False) -> StatusSnaps
             "status": control_plane_command("status", "--json"),
             "render_all_check": control_plane_command("render all", "--check"),
             "verify_quick": control_plane_command("verify", "--quick"),
-            "build_package": control_plane_command("release build-package"),
+            "gates": control_plane_command("gate", "--list"),
             "test_baseline": control_plane_command("verify"),
         },
         "local_state": {
             "cache": ".cache/",
             "outputs": ".local/",
             "root_residents": [".venv/", ".direnv/"],
-            "preferred_build_out_link": ".local/result",
         },
     }
 
@@ -201,10 +199,7 @@ def summarize_generated_surfaces(generated_surfaces: dict[str, str]) -> str:
 def summarize_local_state(local_state: LocalState) -> str:
     root_residents = local_state["root_residents"]
     keep_roots = " ".join(root_residents)
-    return (
-        f"keep {keep_roots} · cache {local_state['cache']} · "
-        f"outputs {local_state['outputs']} · build {local_state['preferred_build_out_link']}"
-    )
+    return f"keep {keep_roots} · cache {local_state['cache']} · outputs {local_state['outputs']}"
 
 
 def use_color(stream: TextIO = sys.stdout) -> bool:
@@ -251,7 +246,7 @@ def render_motd(cwd: Path, *, verify_generated: bool = False, stream: TextIO = s
         (
             "ready",
             style(
-                f"{commands['render_all_check']} · {commands['verify_quick']} · {commands['build_package']}",
+                f"{commands['render_all_check']} · {commands['verify_quick']} · {commands['gates']}",
                 ANSI_GREEN,
                 stream=stream,
             ),

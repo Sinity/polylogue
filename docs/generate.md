@@ -8,7 +8,7 @@ For users, the supported entrypoint is `polylogue import --demo`: it generates
 the approved deterministic fixture world and schedules it through the same
 daemon-backed import path as ordinary source imports. For tests and repository behavior checks, the same generator is available
 through `polylogue.scenarios`, shared fixtures, `polylogue demo seed`, and the
-thin `devtools verify scenario` wrapper.
+thin `devtools scenario` wrapper.
 
 ## Quick Start
 
@@ -38,7 +38,7 @@ polylogue demo verify --root "$POLYLOGUE_ARCHIVE_ROOT" --require-overlays --form
 polylogue demo script --shell bash
 
 # Repository behavior checks
-devtools verify scenario run archive-smoke --tier 0
+devtools scenario run archive-smoke --tier 0
 devtools test tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
 ```
 

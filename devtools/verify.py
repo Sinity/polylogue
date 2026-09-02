@@ -16,8 +16,11 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import tomllib
+
 from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
@@ -33,7 +36,7 @@ from devtools.testmon_provision import (
     TestmonGraphStatus,
     inspect_testmon_graph,
 )
-from devtools.toolchain import venv_bin, venv_python
+from devtools.toolchain import venv_python
 from devtools.verification_authority import validate_authority_matrix
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
@@ -124,43 +127,6 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
-#: The daemon holds a type cache worth well over a gigabyte and is reparented to
-#: the user manager, so without this it outlives every gate that starts one and
-#: one accumulates per checkout. The idle clock resets on each connection, so a
-#: checkout under active gating keeps its warm daemon.
-DMYPY_IDLE_TIMEOUT_SECONDS = 900
-
-
-def _mypy_cmd() -> list[str]:
-    dmypy = venv_bin("dmypy", root=ROOT)
-    try:
-        result = subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=ROOT)
-        if result.returncode == 0:
-            # run can itself spawn the daemon (races, direct invocations);
-            # the timeout must ride every spawning form or one immortal
-            # daemon per checkout accumulates.
-            return [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    try:
-        result = subprocess.run(
-            [dmypy, "start", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=ROOT,
-        )
-        if result.returncode == 0:
-            return [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    return [venv_bin("mypy", root=ROOT)]
-
-
-def _devtools_cmd(*args: str) -> list[str]:
-    return [venv_python(root=ROOT), "-m", "devtools", *(part for arg in args for part in arg.split())]
-
-
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     try:
         workers = max(0, int(os.environ.get("POLYLOGUE_PYTEST_WORKERS", "0")))
@@ -169,6 +135,21 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     if maximum is not None:
         workers = min(workers, maximum)
     return ["--dist=loadgroup", "-n", str(workers)]
+
+
+def coverage_threshold(pyproject_path: Path = ROOT / "pyproject.toml") -> int | float:
+    """The committed coverage floor. One source: tool.coverage.report.fail_under."""
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    threshold: object = data.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
+    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+        raise ValueError(f"{pyproject_path} does not define tool.coverage.report.fail_under")
+    return threshold
+
+
+def _coverage_args() -> list[str]:
+    threshold = coverage_threshold()
+    rendered = str(int(threshold)) if float(threshold).is_integer() else str(threshold)
+    return ["--cov=polylogue", "--cov-report=xml", "--cov-fail-under", rendered]
 
 
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
@@ -203,25 +184,20 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         "-p",
         "no:randomly",
         *worker_args,
+        # The complete corpus is the only run that covers enough to judge the
+        # committed floor, so the coverage gate rides it rather than a
+        # separate command with its own pytest invocation.
+        *(_coverage_args() if selection == "all" else []),
     ]
     return [(f"pytest ({selection})", command)]
 
 
+#: Labels whose verdict is recorded but does not decide the verifier's exit.
+NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in quick_gates() if not gate.blocking)
+
+
 def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str, list[str]]]:
-    steps = [
-        ("ruff format", [venv_bin("ruff", root=ROOT), "format", "--check", "polylogue/", "tests/", "devtools/"]),
-        ("ruff check", [venv_bin("ruff", root=ROOT), "check", "polylogue/", "tests/", "devtools/"]),
-        ("mypy", _mypy_cmd()),
-        ("render all", _devtools_cmd("render all", "--check")),
-        ("verify layering", _devtools_cmd("verify layering", "--json")),
-        ("verify patterns", _devtools_cmd("verify patterns", "--json")),
-        ("verify doc-commands", _devtools_cmd("verify doc-commands")),
-        ("verify schema-versioning", _devtools_cmd("verify schema-versioning")),
-        ("verify oracle-integrity", _devtools_cmd("verify oracle-integrity")),
-        ("verify consumer-reachability", _devtools_cmd("verify consumer-reachability", "--json")),
-        ("verify timestamp-doctrine", _devtools_cmd("verify timestamp-doctrine")),
-        ("schema privacy registry", [venv_python(root=ROOT), "-m", "devtools.verify_schema_privacy"]),
-    ]
+    steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick:
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
@@ -463,7 +439,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         if output:
             artifacts.output_path.write_text(output, encoding="utf-8")
             metadata["output_path"] = str(artifacts.output_path.relative_to(ROOT))
-        if label == "render all" and completed.returncode != 0:
+        if label == "gate generated-surfaces" and completed.returncode != 0:
             for line in output.splitlines():
                 match = _RENDER_DIAGNOSIS_RE.match(line)
                 if match is not None:
@@ -678,7 +654,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--quick", action="store_true", help="run the static gates only")
     parser.add_argument(
         "--all",
-        "--full",
         dest="all_tests",
         action="store_true",
         help="explicit form of the default: the static gates plus the complete corpus",
@@ -748,8 +723,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         exit_code = 0
         for label, command in steps:
             rc, elapsed, metadata = _run(label, command, run=run)
-            results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
-            if rc:
+            blocking = label not in NON_BLOCKING_LABELS
+            results.append(
+                {"name": label, "duration_s": round(elapsed, 2), "exit": rc, "blocking": blocking, **metadata}
+            )
+            if rc and not blocking:
+                sys.stderr.write(f"  {label}: report-only, not blocking this run\n")
+            if rc and blocking:
                 exit_code = exit_code or rc
                 if args.quick:
                     break
@@ -780,7 +760,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         exit_code=exit_code,
     )
     # The retained exit code is the first failure's; its diagnosis must be too.
-    diagnosis = next((str(result["diagnosis"]) for result in results if result["exit"] != 0), None)
+    diagnosis = next(
+        (str(result["diagnosis"]) for result in results if result["exit"] != 0 and result.get("blocking", True)),
+        None,
+    )
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,

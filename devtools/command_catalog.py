@@ -12,11 +12,11 @@ CONTROL_PLANE = "devtools"
 
 CATEGORY_ORDER: tuple[str, ...] = (
     "core",
-    "generated surfaces",
-    "release",
     "verification",
+    "generated surfaces",
+    "schema",
     "benchmarking",
-    "workspace",
+    "archive",
 )
 
 
@@ -27,6 +27,9 @@ class CommandSpec:
     description: str
     module: str
     entrypoint: str = "main"
+    json_flag: bool = False
+    #: Flags surfaced in this command's own ``--help`` and forwarded verbatim.
+    flags: tuple[tuple[str, str], ...] = ()
     use_when: str | None = None
     examples: tuple[str, ...] = ()
     featured: bool = False
@@ -70,204 +73,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "core",
         "Render the devshell status view.",
         "devtools.project_motd",
+        json_flag=True,
         use_when="Check repo state, generated-surface drift, and the next default verification steps.",
         examples=("devtools status", "devtools status --json", "devtools status --verify-generated"),
         featured=True,
     ),
     CommandSpec(
-        "why",
-        "core",
-        "Explain the most recent verification run, or where verification time went.",
-        "devtools.why",
-        use_when="A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.",
-        examples=(
-            "devtools why",
-            "devtools why --history 24",
-            "devtools why --run 20260817T213631Z-2709409-d5c6e72c",
-        ),
-        featured=True,
-    ),
-    CommandSpec(
-        "render all",
-        "generated surfaces",
-        "Refresh or verify generated docs and agent files.",
-        "devtools.render_all",
-        use_when="Refresh or verify every generated repo surface together after changing docs, CLI help, or agent memory.",
-        examples=("devtools render all", "devtools render all --check"),
-        featured=True,
-    ),
-    CommandSpec(
-        "render agent-manual",
-        "generated surfaces",
-        "Render the declaration-generated six-tool agent manual and packaged integration assets.",
-        "devtools.render_agent_manual",
-        use_when="Refresh or check cold-start guidance after MCP, query, origin, recipe, or delivery changes.",
-        examples=("devtools render agent-manual", "devtools render agent-manual --check"),
-    ),
-    CommandSpec(
-        "render cli-reference",
-        "generated surfaces",
-        "Render docs/cli-reference.md from live CLI help.",
-        "devtools.render_cli_reference",
-    ),
-    CommandSpec(
-        "render cli-output-schemas",
-        "generated surfaces",
-        "Render JSON Schema artifacts for stable CLI output payloads under docs/schemas/cli-output/.",
-        "devtools.render_cli_output_schemas",
-        use_when=(
-            "Refresh or verify published JSON Schemas after changing the surface payload models "
-            "that back stable CLI JSON output (#1272)."
-        ),
-        examples=(
-            "devtools render cli-output-schemas",
-            "devtools render cli-output-schemas --check",
-        ),
-    ),
-    CommandSpec(
-        "render openapi",
-        "generated surfaces",
-        "Render docs/openapi/search.yaml from typed daemon query payload models.",
-        "devtools.render_openapi",
-        use_when=(
-            "Refresh or verify the published OpenAPI schema for daemon HTTP query routes "
-            "after changing a route handler or a shared surface payload model."
-        ),
-        examples=(
-            "devtools render openapi",
-            "devtools render openapi --check",
-        ),
-    ),
-    CommandSpec(
-        "render webui-design-system",
-        "generated surfaces",
-        "Render WebUI v2 CSS tokens, public badge contracts, and contrast evidence.",
-        "devtools.render_webui_design_system",
-        use_when=(
-            "Refresh or verify browser design-system contracts after changing the Python theme "
-            "palette, the public Origin enum, or evidence-state vocabulary."
-        ),
-        examples=(
-            "devtools render webui-design-system",
-            "devtools render webui-design-system --check",
-        ),
-    ),
-    CommandSpec(
-        "render webui-client",
-        "generated surfaces",
-        "Render the committed WebUI TypeScript client from docs/openapi/search.yaml.",
-        "devtools.render_webui_client",
-        use_when=(
-            "Refresh or verify WebUI request/response types and continuation iterators after changing "
-            "the generated daemon OpenAPI contract."
-        ),
-        examples=(
-            "devtools render webui-client",
-            "devtools render webui-client --check",
-        ),
-    ),
-    CommandSpec(
-        "render devtools-reference",
-        "generated surfaces",
-        "Render the command catalog inside docs/devtools.md.",
-        "devtools.render_devtools_reference",
-    ),
-    CommandSpec(
-        "render docs-surface",
-        "generated surfaces",
-        "Render docs/README.md and the README documentation table.",
-        "devtools.render_docs_surface",
-    ),
-    CommandSpec(
-        "render query-discovery",
-        "generated surfaces",
-        "Render parser-gated query discovery examples and result semantics into docs/search.md.",
-        "devtools.render_query_discovery",
-        use_when=(
-            "Refresh or verify query examples after changing the expression grammar, query-unit metadata, "
-            "result-semantics vocabulary, completions, or MCP cookbook recipes."
-        ),
-        examples=("devtools render query-discovery", "devtools render query-discovery --check"),
-    ),
-    CommandSpec(
-        "verify",
-        "verification",
-        "Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check.",
-        "devtools.verify",
-        use_when="Run format, lint, mypy, render all, committed-schema privacy, and test checks locally before pushing.",
-        examples=("devtools verify", "devtools verify --quick"),
-        featured=True,
-    ),
-    CommandSpec(
-        "verify blob-conservation",
-        "verification",
-        "Verify both directions of blob/reference conservation without mutation.",
-        "polylogue.maintenance.blob_conservation",
-        use_when="Check for orphaned blob files and references whose bytes are neither present nor recoverable.",
-        examples=("devtools verify blob-conservation --archive-root /path/to/archive",),
-    ),
-    CommandSpec(
-        "verify webui",
-        "verification",
-        "Run the declared typed WebUI generation, contract, unit, and build checks.",
-        "devtools.verify_webui",
-        use_when=(
-            "Validate the typed WebUI through its package-owned checks after changing browser components, "
-            "generated contracts, design tokens, or Vite packaging."
-        ),
-        examples=("devtools verify webui", "devtools verify webui --json"),
-    ),
-    CommandSpec(
-        "verify js-tests",
-        "verification",
-        "Run the JavaScript test suites of the browser-extension and webui packages.",
-        "devtools.verify_js_tests",
-        use_when=(
-            "Check the Node packages after changing extension capture code, WebUI components, or generated "
-            "TypeScript contracts. Absent dependencies are installed from the committed lockfile, never "
-            "skipped. CI carries no Node runtime and reports not-run-in-ci there rather than a pass."
-        ),
-        examples=(
-            "devtools verify js-tests",
-            "devtools verify js-tests --install",
-            "devtools verify js-tests --package webui --json",
-        ),
-    ),
-    CommandSpec(
-        "verify doc-commands",
-        "verification",
-        "Validate executable documentation examples against live command inventories.",
-        "devtools.verify_doc_commands",
-        use_when="Catch README and documentation examples that reference an unknown command path or flag.",
-        examples=("devtools verify doc-commands", "devtools verify doc-commands --json"),
-    ),
-    CommandSpec(
-        "verify atlas",
-        "verification",
-        "Check atlas citation anchors and verification-commit freshness.",
-        "devtools.verify_atlas",
-        use_when="Find atlas sections that need re-verification or deletion after cited source files change.",
-        examples=("devtools verify atlas", "devtools verify atlas --json"),
-    ),
-    CommandSpec(
-        "verify schema-inference-gate",
-        "verification",
-        "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
-        "devtools.schema_inference_gate",
-        use_when=(
-            "Run before schema inference or the 818fy rebuild. Declare every external source root represented in "
-            "source.db; the command scans those roots and runs BlobStore's full verifier without mutating the archive."
-        ),
-        examples=(
-            "devtools verify schema-inference-gate --archive-root /path/to/archive "
-            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json",
-            "devtools verify schema-inference-gate --archive-root /path/to/archive "
-            "--ground-truth-root codex-session=/path/to/codex --receipt /path/to/schema-inference-gate-receipt.json --json",
-        ),
-    ),
-    CommandSpec(
         "test",
-        "verification",
+        "core",
         "Run focused pytest selections or inspect full-run timing outliers.",
         "devtools.run_tests",
         use_when=(
@@ -283,30 +96,194 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "verify coverage",
-        "verification",
-        "Run pytest with the repository coverage floor from pyproject.toml.",
-        "devtools.coverage_gate",
-        use_when="Enforce the committed coverage ratchet locally or in CI without duplicating threshold values.",
+        "why",
+        "core",
+        "Explain the most recent verification run, or where verification time went.",
+        "devtools.why",
+        json_flag=True,
+        use_when="A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.",
         examples=(
-            "devtools verify coverage",
-            "devtools verify coverage --ignore-integration --term-missing",
-            "devtools verify coverage -- --maxfail=1",
+            "devtools why",
+            "devtools why --history 24",
+            "devtools why --run 20260817T213631Z-2709409-d5c6e72c",
+        ),
+        featured=True,
+    ),
+    CommandSpec(
+        "cache gc",
+        "core",
+        "Preview or apply age-gated GC for the shared seeded-archive fixture cache.",
+        "devtools.seeded_archive_cache_gc",
+        json_flag=True,
+        flags=(("--apply", "Apply the previewed collection instead of only reporting it."),),
+        use_when=(
+            "Maintain the reusable NVMe seeded-artifact cache from the generated default, named-workload, and "
+            "benchmark reachability inventory. Preview is the default; pass --apply explicitly after reviewing "
+            "the bounded receipt."
+        ),
+        examples=("devtools cache gc --json", "devtools cache gc --apply --json"),
+    ),
+    CommandSpec(
+        "verify",
+        "verification",
+        "Run the local verification baseline: every quick gate, then the selected or complete test corpus.",
+        "devtools.verify",
+        json_flag=True,
+        flags=(
+            ("--quick", "Run the static gates only."),
+            ("--all", "Run the static gates plus the complete test corpus."),
+        ),
+        use_when="Run the gates and tests locally before pushing. --quick stops at the static gates; --all runs the complete corpus.",
+        examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),
+        featured=True,
+    ),
+    CommandSpec(
+        "gate",
+        "verification",
+        "Run one named invariant check.",
+        "devtools.gate",
+        use_when="Run a single gate in isolation, or list the declared gates and which of them verify --quick runs.",
+        examples=("devtools gate --list", "devtools gate layering", "devtools gate mypy"),
+        featured=True,
+    ),
+    CommandSpec(
+        "render",
+        "generated surfaces",
+        "Refresh or verify one generated repository surface, or all of them.",
+        "devtools.render_all",
+        flags=(("--check", "Exit non-zero when a selected surface is out of sync."),),
+        use_when="Refresh or verify generated repo surfaces after changing docs, CLI help, declarations, or agent memory.",
+        examples=("devtools render all", "devtools render all --check", "devtools render cli-reference"),
+        featured=True,
+    ),
+    CommandSpec(
+        "scenario",
+        "verification",
+        "Run a named archive verification scenario.",
+        "devtools.verification_scenario",
+        json_flag=True,
+        use_when="Run a named archive verification scenario through the direct CLI path.",
+        examples=(
+            "devtools scenario list",
+            "devtools scenario run archive-smoke --tier 0",
+            "devtools scenario run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
+        ),
+    ),
+    CommandSpec(
+        "smoke",
+        "verification",
+        "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
+        "devtools.deployment_smoke",
+        json_flag=True,
+        use_when=(
+            "After a system rebuild or before live UI probing, verify that the systemwide "
+            "polylogue/polylogued binaries, loopback daemon routes, browser-capture receiver, "
+            "and browser-capture archive materialization match the expected deployed surface."
+        ),
+        examples=("devtools smoke", "devtools smoke --json"),
+    ),
+    CommandSpec(
+        "schema list",
+        "schema",
+        "List committed schema packages, versions, and evidence manifests.",
+        "devtools.schema_inspect",
+        entrypoint="list_main",
+        json_flag=True,
+        use_when="Inspect committed provider schema package catalogs without presenting them as normal archive usage.",
+        examples=("devtools schema list --provider chatgpt --json",),
+    ),
+    CommandSpec(
+        "schema compare",
+        "schema",
+        "Compare two committed schema package versions for a provider.",
+        "devtools.schema_inspect",
+        entrypoint="compare_main",
+        json_flag=True,
+        use_when="Review schema package drift between committed versions.",
+        examples=("devtools schema compare --provider chatgpt --from v1 --to v2 --markdown",),
+    ),
+    CommandSpec(
+        "schema explain",
+        "schema",
+        "Explain a committed package element schema with evidence and annotations.",
+        "devtools.schema_inspect",
+        entrypoint="explain_main",
+        json_flag=True,
+        use_when="Inspect schema package annotations, semantic roles, and review evidence.",
+        examples=("devtools schema explain --provider chatgpt --version latest --verbose",),
+    ),
+    CommandSpec(
+        "schema generate",
+        "schema",
+        "Generate provider schema packages and optional evidence clusters.",
+        "devtools.schema_generate",
+        json_flag=True,
+        use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
+        examples=("devtools schema generate --provider chatgpt --cluster",),
+    ),
+    CommandSpec(
+        "schema commit",
+        "schema",
+        "Persist a real full-corpus schema generation into committed provider packages.",
+        "devtools.schema_commit",
+        json_flag=True,
+        use_when=(
+            "Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live "
+            "archive -- `schema generate` only ever previews and never writes committed package files."
+        ),
+        examples=(
+            "devtools schema commit --provider chatgpt --full-corpus --dry-run",
+            "devtools schema commit --provider chatgpt --full-corpus",
+        ),
+    ),
+    CommandSpec(
+        "schema promote",
+        "schema",
+        "Promote a schema evidence cluster into a registered package version.",
+        "devtools.schema_promote",
+        json_flag=True,
+        use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
+        examples=("devtools schema promote --provider chatgpt --cluster chatgpt-message-v2",),
+    ),
+    CommandSpec(
+        "schema parser-diff",
+        "schema",
+        "List observed provider wire keys that no parser references.",
+        "devtools.schema_parser_diff",
+        json_flag=True,
+        use_when=(
+            "Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how "
+            "many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching "
+            "is name-based, so read the parser before acting on a row."
+        ),
+        examples=(
+            "devtools schema parser-diff",
+            "devtools schema parser-diff --provider codex --min-encountered 1000",
+        ),
+    ),
+    CommandSpec(
+        "bench pipeline",
+        "benchmarking",
+        "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
+        "devtools.pipeline_probe",
+        use_when="Run real pipeline stages and optionally capture emitted summaries as regression cases.",
+        examples=(
+            "devtools bench pipeline --provider chatgpt --stage parse",
+            "devtools bench pipeline --input-mode archive-subset --capture-regression live-parse-drift",
         ),
     ),
     CommandSpec(
         "bench ingest-amplification",
         "benchmarking",
-        "Measure deterministic per-tier ingest write amplification on a synthetic fixture (#1851).",
+        "Measure deterministic per-tier ingest write amplification on a synthetic fixture.",
         "devtools.ingest_amplification_probe",
+        json_flag=True,
         use_when=(
             "Establish or compare the post-fix baseline for daemon live-ingest write amplification. "
             "Drives the public batch-ingest path over a deterministic synthetic corpus in a temp dir "
-            "and attributes bytes written per archive tier (source/index/embeddings/user/ops) "
-            "per append batch. Additive measurement only — does not touch production ingest logic."
+            "and attributes bytes written per archive tier per append batch."
         ),
         examples=(
-            "devtools bench ingest-amplification",
             "devtools bench ingest-amplification --json",
             "devtools bench ingest-amplification --batches 8 --seed 1851",
         ),
@@ -316,130 +293,43 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "benchmarking",
         "Measure ingest wall-clock throughput on a synthetic fixture.",
         "devtools.ingest_throughput_probe",
+        json_flag=True,
         use_when=(
             "Measure ingest wall-clock / throughput, the time-based counterpart to the "
-            "bytes-based ingest-amplification probe. Drives the public batch-ingest path over "
-            "a deterministic synthetic corpus in a temp dir and times each append batch, "
-            "reporting messages/sessions per second and a per-batch-ms distribution. "
-            "Wall-clock is host-variable: diagnostic and campaign-comparable, no CI thresholds. "
-            "Additive measurement only — does not touch production ingest logic."
+            "bytes-based ingest-amplification probe. Wall-clock is host-variable: diagnostic and "
+            "campaign-comparable, no CI thresholds."
         ),
         examples=(
-            "devtools bench ingest-throughput",
             "devtools bench ingest-throughput --json",
             "devtools bench ingest-throughput --batches 20 --seed 2391",
         ),
     ),
     CommandSpec(
-        "workspace index-fast-forward",
-        "workspace",
-        "Plan and prove a declared index fast-forward against retained raw replay.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
-            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
-            "the production parser/materializer route, then atomically activates the proven generation."
-        ),
-        examples=(
-            "devtools workspace index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools workspace index-fast-forward activate --receipt /path/to/receipt.json",
-        ),
-    ),
-    CommandSpec(
-        "workspace seeded-archive-cache-gc",
-        "workspace",
-        "Preview or apply age-gated GC for the shared seeded-archive fixture cache.",
-        "devtools.seeded_archive_cache_gc",
-        use_when=(
-            "Maintain the reusable NVMe seeded-artifact cache from the generated default, named-workload, and "
-            "benchmark reachability inventory. Preview is the default; pass --apply explicitly after reviewing "
-            "the bounded receipt. Active locks, leases, protected worktrees, corrupt evidence, and grace-period "
-            "artifacts remain under the shared GC primitive."
-        ),
-        examples=(
-            "devtools workspace seeded-archive-cache-gc --json",
-            "devtools workspace seeded-archive-cache-gc --apply --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace deployment-smoke",
-        "workspace",
-        "Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow.",
-        "devtools.deployment_smoke",
-        use_when=(
-            "After a system rebuild or before live UI probing, verify that the systemwide "
-            "polylogue/polylogued binaries, loopback daemon routes, browser-capture receiver, "
-            "and browser-capture archive materialization match the expected deployed surface."
-        ),
-        examples=(
-            "devtools workspace deployment-smoke",
-            "devtools workspace deployment-smoke --json",
-            "devtools workspace deployment-smoke --daemon-url http://127.0.0.1:8766 --receiver-url http://127.0.0.1:8765",
-        ),
-    ),
-    CommandSpec(
-        "workspace lineage-validation",
-        "workspace",
-        "Validate lineage-count evidence before citing archive counts externally.",
-        "devtools.lineage_validation",
-        use_when=(
-            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
-            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
-            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
-        ),
-        examples=(
-            "devtools workspace lineage-validation --json",
-            "devtools workspace lineage-validation --sample-prefix-sharing 100 --json",
-            "devtools workspace lineage-validation --out-dir .local/evidence/lineage-validation/current",
-        ),
-    ),
-    CommandSpec(
-        "verify agent-integration",
-        "verification",
-        "Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures.",
-        "devtools.verify_agent_integration",
-        use_when="Validate the six-tool manual or native integration; add --require-live after the MCP cutover lands.",
-        examples=(
-            "devtools verify agent-integration",
-            "devtools verify agent-integration --json",
-            "devtools verify agent-integration --require-live",
-        ),
+        "bench memory",
+        "benchmarking",
+        "Measure query-memory envelopes on generated fixtures.",
+        "devtools.query_memory_budget",
+        use_when="Assert memory budgets around a concrete query or archive-facing command.",
+        examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
         "bench slo",
         "benchmarking",
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
         "devtools.verify_slos",
+        json_flag=True,
         use_when=(
-            "Run directly to confirm read-surface "
-            "and interactive (daemon query / completion / cold CLI / ingest-to-searchable) latencies "
-            "stay within their declared SLOs. "
-            "Exits non-zero when any measured surface exceeds its budget."
+            "Confirm read-surface and interactive (daemon query / completion / cold CLI / ingest-to-searchable) "
+            "latencies stay within their declared SLOs. Exits non-zero when any measured surface exceeds its budget."
         ),
-        examples=(
-            "devtools bench slo",
-            "devtools bench slo --json",
-            "devtools bench slo --skip-benchmarks --json",
-        ),
-    ),
-    CommandSpec(
-        "bench daemon-operation",
-        "benchmarking",
-        "Run the installed CLI and direct typed-UDS daemon operation profile.",
-        "devtools.daemon_performance_profile",
-        use_when=(
-            "Measure the daemon architecture on the production route: installed CLI status, typed UDS find/read, "
-            "completion, concurrent reads, cancellation, and declared background workload denominators. "
-            "The profile records runtime, queue, CPU/RSS, SQLite, writer-hold, first-byte/full-render, "
-            "rows/bytes, and cancellation evidence where the route exposes it."
-        ),
-        examples=("devtools bench daemon-operation",),
+        examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
     ),
     CommandSpec(
         "bench concurrency",
         "benchmarking",
         "Run the managed bounded-compute scaling profile across representative workloads.",
         "devtools.concurrency_profile",
+        json_flag=True,
         use_when=(
             "Compare bounded worker and admission configurations for tiny-file, ordinary, whale, mixed-ingest, "
             "derivation, and interactive-read workloads on the selected free-threaded runtime."
@@ -458,248 +348,60 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench cli-interaction",),
     ),
     CommandSpec(
-        "verify schema-versioning",
-        "verification",
-        "Verify durable-tier migration and derived-tier rebuild boundaries.",
-        "devtools.verify_schema_upgrade_lane",
-        use_when=(
-            "Enforce the policy boundary documented in docs/internals.md § "
-            "'Schema Versioning Model'. Durable tiers use explicit additive "
-            "migrations with a backup gate; derived tiers are rebuilt or "
-            "blue-green replaced from source evidence."
-        ),
-        examples=("devtools verify schema-versioning", "devtools verify schema-versioning --json"),
-    ),
-    CommandSpec(
-        "verify oracle-integrity",
-        "verification",
-        "Verify tests certify production-reachable code and never read ambient user paths.",
-        "devtools.verify_oracle_integrity",
-        use_when=(
-            "Before a deletion sweep, and as a standing gate. Catches the two ways a green "
-            "test can certify nothing: its entire target set is unreachable from any production "
-            "entrypoint (dead-engine suites), or it reads a real ~/.codex / ~/.claude / /realm "
-            "path instead of a fixture. Reachability seeds four root classes import edges "
-            "miss -- Click lazy commands, `python -m` entrypoints, ancestor packages, and "
-            "literal-container registries -- resolves facade re-exports per symbol, and "
-            "flags module-level Path.home()/expanduser constants in polylogue/** that "
-            "capture an ambient location at import time, "
-            "because import edges alone under-report and this repo has four recorded wrong "
-            "deletions derived from grep."
-        ),
-        examples=(
-            "devtools verify oracle-integrity",
-            "devtools verify oracle-integrity --ignore-baseline --json",
-        ),
-    ),
-    CommandSpec(
-        "verify consumer-reachability",
-        "verification",
-        "Require newly added modules, tables, and tools to have production consumers.",
-        "devtools.consumer_reachability",
-        use_when="Run the fail-closed incremental surface-consumer gate used by quick verification and pre-push.",
-        examples=(
-            "devtools verify consumer-reachability",
-            "devtools verify consumer-reachability --base SHA --head SHA",
-        ),
-    ),
-    CommandSpec(
-        "verify timestamp-doctrine",
-        "verification",
-        "Verify durable-tier DDL never stores a timestamp column as TEXT.",
-        "devtools.verify_timestamp_doctrine",
-        use_when=(
-            "Enforce the time doctrine (UTC epoch-ms canon, docs/internals.md) at DDL-review "
-            "time (cpf.1): a TEXT timestamp in source.db/user.db re-introduces tz-unknown "
-            "ambiguity and lexicographic-vs-temporal sort divergence, and durable tiers need "
-            "an explicit additive migration to fix later -- catching it before merge is orders "
-            "cheaper than a copy-forward migration after."
-        ),
-        examples=("devtools verify timestamp-doctrine", "devtools verify timestamp-doctrine --json"),
-    ),
-    CommandSpec(
-        "release verify-distribution",
-        "release",
-        "Verify wheel/sdist installed artifacts expose only supported runtime entrypoints.",
-        "devtools.verify_distribution_surface",
-        use_when=(
-            "Build wheel and sdist artifacts, rebuild a wheel from an unpacked sdist without .git, "
-            "and smoke installed runtime console scripts."
-        ),
-        examples=("devtools release verify-distribution",),
-    ),
-    CommandSpec(
-        "bench pipeline",
-        "verification",
-        "Run typed pipeline probes against synthetic, staged, or archive-subset inputs.",
-        "devtools.pipeline_probe",
-        use_when="Run real pipeline stages and optionally capture emitted summaries as regression cases.",
-        examples=(
-            "devtools bench pipeline --provider chatgpt --stage parse",
-            "devtools bench pipeline --input-mode archive-subset --capture-regression live-parse-drift",
-        ),
-    ),
-    CommandSpec(
-        "bench memory",
+        "bench daemon-operation",
         "benchmarking",
-        "Measure query-memory envelopes on generated fixtures.",
-        "devtools.query_memory_budget",
-        use_when="Assert memory budgets around a concrete query or archive-facing command.",
-        examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
-    ),
-    CommandSpec(
-        "verify scenario",
-        "verification",
-        "Run a named archive verification scenario.",
-        "devtools.verification_scenario",
-        use_when="Run a named archive verification scenario through the direct CLI path.",
-        examples=(
-            "devtools verify scenario list",
-            "devtools verify scenario run archive-smoke --tier 0",
-            "devtools verify scenario run rebuild-safety --report-dir .cache/rebuild-safety-report --json",
-            "devtools verify scenario run safety-case --report-dir .cache/safety-case --json",
-        ),
-    ),
-    CommandSpec(
-        "workspace schema list",
-        "verification",
-        "List committed schema packages, versions, and evidence manifests.",
-        "devtools.schema_inspect",
-        entrypoint="list_main",
-        use_when="Inspect committed provider schema package catalogs without presenting them as normal archive usage.",
-        examples=("devtools workspace schema list --provider chatgpt --json",),
-    ),
-    CommandSpec(
-        "workspace schema compare",
-        "verification",
-        "Compare two committed schema package versions for a provider.",
-        "devtools.schema_inspect",
-        entrypoint="compare_main",
-        use_when="Review schema package drift between committed versions in the lab surface.",
-        examples=("devtools workspace schema compare --provider chatgpt --from v1 --to v2 --markdown",),
-    ),
-    CommandSpec(
-        "workspace schema explain",
-        "verification",
-        "Explain a committed package element schema with evidence and annotations.",
-        "devtools.schema_inspect",
-        entrypoint="explain_main",
-        use_when="Inspect schema package annotations, semantic roles, and review evidence from the lab surface.",
-        examples=("devtools workspace schema explain --provider chatgpt --version latest --verbose",),
-    ),
-    CommandSpec(
-        "workspace schema generate",
-        "verification",
-        "Generate provider schema packages and optional evidence clusters.",
-        "devtools.schema_generate",
-        use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
-        examples=("devtools workspace schema generate --provider chatgpt --cluster",),
-    ),
-    CommandSpec(
-        "workspace schema commit",
-        "verification",
-        "Persist a real full-corpus schema generation into committed provider packages.",
-        "devtools.schema_commit",
+        "Run the installed CLI and direct typed-UDS daemon operation profile.",
+        "devtools.daemon_performance_profile",
         use_when=(
-            "Actually regenerate and write `polylogue/schemas/providers/<provider>/versions/...` from the live "
-            "archive -- 'lab schema generate' only ever previews and never writes committed package files."
+            "Measure the daemon architecture on the production route: installed CLI status, typed UDS find/read, "
+            "completion, concurrent reads, cancellation, and declared background workload denominators."
+        ),
+        examples=("devtools bench daemon-operation",),
+    ),
+    CommandSpec(
+        "archive index-fast-forward",
+        "archive",
+        "Plan and prove a declared index fast-forward against retained raw replay.",
+        "devtools.index_fast_forward",
+        use_when=(
+            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
+            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
+            "the production parser/materializer route, then atomically activates the proven generation."
         ),
         examples=(
-            "devtools workspace schema commit --provider chatgpt --full-corpus --dry-run",
-            "devtools workspace schema commit --provider chatgpt --full-corpus",
+            "devtools archive index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools archive index-fast-forward activate --receipt /path/to/receipt.json",
         ),
     ),
     CommandSpec(
-        "workspace schema promote",
-        "verification",
-        "Promote a schema evidence cluster into a registered package version.",
-        "devtools.schema_promote",
-        use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
-        examples=("devtools workspace schema promote --provider chatgpt --cluster chatgpt-message-v2",),
-    ),
-    CommandSpec(
-        "verify schema-audit",
-        "verification",
-        "Run committed provider schema package quality checks.",
-        "devtools.schema_audit",
-        use_when="Check committed schema package quality gates without presenting them as normal archive usage.",
-        examples=("devtools verify schema-audit --provider chatgpt --json",),
-    ),
-    CommandSpec(
-        "workspace schema parser-diff",
-        "verification",
-        "List observed provider wire keys that no parser references.",
-        "devtools.schema_parser_diff",
+        "archive lineage-validation",
+        "archive",
+        "Validate lineage-count evidence before citing archive counts externally.",
+        "devtools.lineage_validation",
+        json_flag=True,
         use_when=(
-            "Scope a parser batch by evidence before a rebuild: ranks every schema key nothing reads by how "
-            "many records actually carry it. Output is a triage queue, not a verdict -- parser-side matching "
-            "is name-based, so read the parser before acting on a row."
+            "Before publishing archive session/message/cardinality numbers, emit exact physical/logical counts, "
+            "session-link inheritance rollups, branch-point integrity checks, and sampled composed-read proof "
+            "from the active archive instead of relying on scratch SQL or planner-estimated diagnostics."
         ),
         examples=(
-            "devtools workspace schema parser-diff",
-            "devtools workspace schema parser-diff --provider codex --min-encountered 1000",
-            "devtools workspace schema parser-diff --json",
+            "devtools archive lineage-validation --json",
+            "devtools archive lineage-validation --sample-prefix-sharing 100 --json",
         ),
     ),
     CommandSpec(
-        "verify schema-roundtrip",
-        "verification",
-        "Verify committed provider schema packages reload and roundtrip cleanly.",
-        "devtools.verify_schema_roundtrip",
-        use_when=(
-            "Close the schema inference-validation loop: package manifests must roundtrip through typed models, "
-            "and every supported element schema must be reachable from the runtime registry."
-        ),
-        examples=(
-            "devtools verify schema-roundtrip --provider chatgpt",
-            "devtools verify schema-roundtrip --all --json",
-        ),
-    ),
-    CommandSpec(
-        "verify layering",
-        "verification",
-        "Check inter-package imports against declared layering rules from docs/plans/layering.yaml.",
-        "devtools.verify_layering",
-        use_when=(
-            "Diagnose architecture drift: which files import across declared "
-            "package boundaries. This runs in verify --quick."
-        ),
-        examples=("devtools verify layering", "devtools verify layering --json"),
-    ),
-    CommandSpec(
-        "verify patterns",
-        "verification",
-        "Enforce AST-shape defect-family rules with shrinking grandfathered baselines.",
-        "devtools.verify_patterns",
-        use_when=(
-            "Catch new instances of verified code-shape defect families while allowing only the committed "
-            "file:line debt inventory to remain."
-        ),
-        examples=("devtools verify patterns", "devtools verify patterns --json"),
-    ),
-    CommandSpec(
-        "release build-package",
-        "release",
-        "Build the default Nix package with the out-link under .local/result.",
-        "devtools.build_package",
-        use_when="Produce the Nix package artifact with its out-link kept under the repo-local output root.",
-        examples=("devtools release build-package",),
-    ),
-    CommandSpec(
-        "workspace continuity-evidence",
-        "workspace",
+        "archive continuity-evidence",
+        "archive",
         "Replay continuity scenarios and verify their query routes are discoverable.",
         "devtools.continuity_evidence",
         use_when=(
             "Replay the continuity scenario catalog over MCP stdio JSON-RPC and cross-check "
             "its query routes against discovery. The default seeds the packaged synthetic corpus. "
-            "A supplied --archive-root must be paired with the exact --catalog that describes it; "
-            "the runner rejects an unrelated live archive rather than applying synthetic oracles."
+            "A supplied --archive-root must be paired with the exact --catalog that describes it."
         ),
         examples=(
-            "devtools workspace continuity-evidence",
-            "devtools workspace continuity-evidence --output .cache/continuity-evidence.json",
-            "devtools workspace continuity-evidence --archive-root /path/to/archive --catalog /path/to/catalog.json",
+            "devtools archive continuity-evidence",
+            "devtools archive continuity-evidence --output .cache/continuity-evidence.json",
         ),
     ),
 )

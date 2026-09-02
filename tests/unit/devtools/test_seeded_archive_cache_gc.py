@@ -115,7 +115,7 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["seeded_archive_cache_gc"]
 
-    assert operation["exec"] == ["devtools", "workspace", "seeded-archive-cache-gc", "--json"]
+    assert operation["exec"] == ["devtools", "cache", "gc", "--json"]
     assert operation["scratch"] == "nvme"
     assert operation["exclusive_keys"] == ["polylogue:seeded-archive-cache-gc"]
     assert operation["timeout_seconds"] == 900
