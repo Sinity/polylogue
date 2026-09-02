@@ -2,12 +2,13 @@
 
 ``SinexTransport`` is the interface a real Sinex producer (staging exact
 material bytes, publishing anchored observations through JetStream, and
-reconciling r6d.11 durable receipts / r6d.12 aggregate raw-envelope
-settlement) must satisfy. No implementation in this module talks to a live
-Sinex instance: as of this package landing, the counterpart Sinex-side
-primitives this contract targets (sinex-4j2.1.1, layered on sinex-r6d.11
-which is itself still open upstream) are not yet consumable from Python. See
-the package docstring in ``polylogue/sinex/__init__.py`` for the full note.
+reconciling durable receipts / aggregate raw-envelope settlement) must
+satisfy. Sinex's receipt and settlement implementation is present inside the
+local ``sinexd`` Rust process, but the current public boundary exposes no
+external-producer operation that accepts this revision contract and returns
+its durable receipt. No implementation in this module therefore talks to a
+live Sinex instance. See the package docstring in
+``polylogue/sinex/__init__.py`` for the full note.
 
 :class:`LocalReferenceTransport` is a contract-faithful in-process double: it
 enforces the same idempotency-by-request_id and receipt-state vocabulary a

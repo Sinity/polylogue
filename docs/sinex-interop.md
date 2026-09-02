@@ -4,6 +4,23 @@
 
 The full Sinex-backed architecture described here is a target, not the current implementation.
 
+## Current transport boundary
+
+The local Sinex checkout contains the Polylogue material protocol and has
+durable emission plus aggregate raw-envelope settlement wired inside
+`sinexd`. Its public RPC currently provides source-material staging and read
+operations. It does not provide an external-producer operation that accepts a
+Polylogue revision, publishes its anchored observations, and returns the
+stable-request durable receipt needed by `polylogue.sinex`.
+
+Consequently, Polylogue keeps the transport seam and its durable source-tier
+obligation ledger, while `LocalReferenceTransport` remains test-only. A live
+transport cannot be implemented or proven from the current public boundary
+without inventing a second receipt protocol or reaching into Sinex internals.
+The blocked work requires a versioned Sinex external-producer API that stages
+and confirms material, submits the anchored event batch, and exposes the
+aggregate settlement and durable receipt for reconnect and retry.
+
 Polylogue is, and permanently remains, SQLite-native: standalone SQLite is a first-class, supported product mode, not a deprecated migration path (operator directive, 2026-07-13). `polylogue.toml`'s `[sinex] mode` selects the Sinex-backed authority profile and defaults to `off`, which performs zero Sinex transport work and creates no durable publication obligations.
 
 `polylogue.sinex` (polylogue-303r.2.1) wires the local publication producer into production ingest and daemon convergence: mirror/primary ingest encodes and verifies the accepted normalized revision, then atomically records its exact manifest/segment bytes and durable `source.db` obligation. The daemon drains that outbox through a deployment-injected transport, persists bounded retry/receipt state, and recovers from source-tier bytes after restart or ops reset. `primary` blocks only the affected newest local projection until an allowed durable receipt; `mirror` reports exact lag while local reads continue. `off` performs no encoding, outbox write, service construction, or transport work. `LocalReferenceTransport` remains an in-process contract double used only by tests. A backed daemon with no deployment-registered transport fails explicitly; this change does not infer credentials/endpoints or present the test double as a deployed Sinex adapter. The real material/JetStream/settlement integration remains `polylogue-303r.2.2`, pending the corresponding Sinex capabilities.
