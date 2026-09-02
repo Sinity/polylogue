@@ -67,6 +67,10 @@ async def test_query_drains_real_archive_rows_with_continuation_only(
     assert first["result_ref"] == second["result_ref"]
     assert first["continuation"].startswith("q2.")
     assert {item["message_id"] for item in (*first["items"], *second["items"])}
+    assert first["authority"]["server_identity"] == "direct"
+    assert "daemon_unavailable" in first["authority"]["degraded"]
+    assert first["authority"]["archive_epoch"] == second["authority"]["archive_epoch"]
+    assert first["authority"]["generation_id"] == second["authority"]["generation_id"]
 
 
 @pytest.mark.asyncio

@@ -80,3 +80,19 @@ def test_structural_false_is_trusted_even_with_failure_shaped_prose() -> None:
     )
     assert block.is_error is False
     assert block.outcome_unknown_reason is None
+
+
+def test_exit_code_is_a_structural_outcome_when_boolean_is_absent() -> None:
+    """An explicit exit code must not be flattened into an unknown result."""
+    block = _tool_result_block(
+        [
+            {
+                "type": "tool_result",
+                "tool_use_id": "tool-4",
+                "content": "completed",
+                "exit_code": 7,
+            }
+        ]
+    )
+    assert block.is_error is True
+    assert block.outcome_unknown_reason is None

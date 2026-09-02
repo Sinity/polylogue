@@ -3160,6 +3160,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 spec,
                 limit=limit,
                 offset=offset,
+                serving_identity="daemon",
             )
         except InvalidSearchCursorError as exc:
             return QueryErrorPayload(error="invalid_cursor", detail=str(exc)).model_dump(mode="json")
@@ -4386,6 +4387,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     request,
                     execution_context=transaction.context,
                     transaction_request=transaction.request,
+                    serving_identity="daemon",
                 )
             )
         except QueryTimeoutError:

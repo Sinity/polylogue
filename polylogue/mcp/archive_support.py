@@ -12,6 +12,7 @@ from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
+from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
@@ -429,6 +430,8 @@ def archive_search_payload(
     """Build the generic MCP search envelope from archive block search."""
     from polylogue.surfaces.payloads import build_search_envelope
 
+    authority = build_authority_envelope(archive.archive_root, server_identity="direct")
+
     if spec.similar_session_id is not None:
         from polylogue.archive.query.archive_execution import archive_search_hits
         from polylogue.archive.query.spec import query_spec_to_plan
@@ -453,6 +456,7 @@ def archive_search_payload(
             action_affordances=_search_affordances(include_affordances),
             cursor=cursor,
             request_identity=request_identity,
+            authority=authority,
         )
 
     filters = archive_query_filters(spec)
@@ -482,6 +486,7 @@ def archive_search_payload(
         diagnostics=diagnostics,
         cursor=cursor,
         request_identity=request_identity,
+        authority=authority,
     )
 
 
@@ -611,6 +616,7 @@ def archive_messages_payload(
     max_chars_per_message: int | None = None,
     excerpt: bool = False,
     match_query: str | None = None,
+    authority: AuthorityEnvelope | None = None,
 ) -> MCPMessagesListPayload:
     """Build the generic MCP message-list envelope from an archive session."""
     from polylogue.mcp.payloads import MCPMessagesListPayload
@@ -665,6 +671,7 @@ def archive_messages_payload(
         offset_note=offset_note,
         lineage_complete=session.lineage_complete,
         lineage_truncation_reason=session.lineage_truncation_reason,
+        authority=authority,
     )
 
 
@@ -707,6 +714,7 @@ def archive_message_page_payload(
             max_chars_per_message=max_chars_per_message,
             excerpt=excerpt,
             match_query=match_query,
+            authority=build_authority_envelope(archive.archive_root, server_identity="direct"),
         )
     total = archive.count_session_messages(
         (resolved_session_id,),
@@ -756,6 +764,7 @@ def archive_message_page_payload(
         next_offset=next_offset,
         suggested_tail_offset=suggested_tail_offset,
         offset_note=offset_note,
+        authority=build_authority_envelope(archive.archive_root, server_identity="direct"),
     )
 
 

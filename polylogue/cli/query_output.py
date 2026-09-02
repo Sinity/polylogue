@@ -38,6 +38,7 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
 from polylogue.rendering.formatting import format_session
+from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
 from polylogue.surfaces.payloads import (
     SearchCursor,
     SessionSearchHitPayload,
@@ -537,6 +538,7 @@ def format_search_envelope(
     total: int | None = None,
     message_counts: dict[str, int] | None = None,
     cursor: SearchCursor | None = None,
+    authority: AuthorityEnvelope | None = None,
 ) -> str:
     """Render the canonical :class:`SearchEnvelope` JSON for ranked search.
 
@@ -566,6 +568,7 @@ def format_search_envelope(
         retrieval_lane=resolved_lane,
         sort=sort,
         cursor=cursor,
+        authority=authority,
     )
     return envelope.model_dump_json(indent=2, exclude_none=True)
 
@@ -612,6 +615,7 @@ async def output_search_hits(
                 total=total,
                 message_counts=msg_counts,
                 cursor=cursor,
+                authority=build_authority_envelope(env.config.archive_root, server_identity="direct"),
             )
         )
         return

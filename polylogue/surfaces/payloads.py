@@ -43,6 +43,7 @@ from polylogue.surfaces.action_affordances import (
     CandidateReviewDecision,
     assertion_candidate_review_affordances,
 )
+from polylogue.surfaces.authority import AuthorityEnvelope
 
 MutationStatus: TypeAlias = Literal[
     "ok",
@@ -1610,6 +1611,7 @@ class SessionListResponse(SurfacePayloadModel):
     query_description: list[str] = Field(default_factory=list)
     diagnostics: QueryMissDiagnosticsPayload | None = None
     route_state: RouteReadinessPayload | None = None
+    authority: AuthorityEnvelope | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1703,6 +1705,7 @@ class SearchEnvelope(SurfacePayloadModel):
     unavailable_lanes: tuple[str, ...] = ()
     failed_lanes: tuple[dict[str, str], ...] = ()
     advisories: tuple[str, ...] = ()
+    authority: AuthorityEnvelope | None = None
 
 
 QueryUnitKind: TypeAlias = Literal[
@@ -3417,6 +3420,7 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     result_ref: str | None = None
     continuation: str | None = None
     _transaction_request: object | None = PrivateAttr(default=None)
+    authority: AuthorityEnvelope | None = None
 
 
 class QueryUnitAggregateEnvelope(SurfacePayloadModel):
@@ -3442,6 +3446,7 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     result_ref: str | None = None
     continuation: str | None = None
     _transaction_request: object | None = PrivateAttr(default=None)
+    authority: AuthorityEnvelope | None = None
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
@@ -3780,6 +3785,7 @@ def build_search_envelope(
     cursor: SearchCursor | None = None,
     request_identity: str | None = None,
     execution: Any | None = None,
+    authority: AuthorityEnvelope | None = None,
 ) -> SearchEnvelope:
     """Construct a :class:`SearchEnvelope` with the canonical cursor logic.
 
@@ -3834,6 +3840,7 @@ def build_search_envelope(
             {"lane": failure.lane, "kind": failure.kind, "reason": failure.reason}
             for failure in (execution.failed_lanes if execution is not None else ())
         ),
+        authority=authority,
         advisories=tuple(execution.advisories) if execution is not None else (),
     )
 
@@ -3919,6 +3926,7 @@ class SessionDetailResponse(SurfacePayloadModel):
     """Shared response envelope for a single session detail."""
 
     session: SessionDetailPayload
+    authority: AuthorityEnvelope | None = None
 
 
 class SessionMessagesResponsePayload(SurfacePayloadModel):
@@ -3936,6 +3944,7 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     # previously "safe" surface for this same signal).
     lineage_complete: bool = True
     lineage_truncation_reason: str | None = None
+    authority: AuthorityEnvelope | None = None
 
 
 ProjectionAvailabilityState = Literal["ready", "degraded", "unavailable"]
