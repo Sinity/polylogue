@@ -1,25 +1,23 @@
 Summary
 
-Make CorpusArtifactManifest the sole manifest type for deterministic workload artifacts and remove the retired SeededArchiveManifest compatibility alias. The existing shared WorkloadEnvelopeSpec and WorkloadReceipt contract remains the common carrier for workload identity, phase observations, physical budgets, canaries, and explicit measurement-path dispositions.
+Keep NULL action outcomes unknown when lowering `is_error` and `exit_code` predicates.
 
 Problem
 
-The artifact substrate still exposed a second manifest name after CorpusArtifactManifest became canonical. That preserved a duplicate route and allowed callers to continue depending on the retired name. The packet also requires honest measurement-unavailable handling and anti-vacuity coverage across the shared receipt paths.
+Action predicates used `COALESCE(..., 0)`, causing unknown provider outcomes to match known false or zero-value predicates. The regression fixture reproduced this by returning unknown and no-result actions for `is_error:false` and `exit_code:>=0`.
 
 Solution
 
-Update manifest readers, validators, builders, clone authentication, garbage-collection helpers, exports, and documentation strings to use CorpusArtifactManifest directly. No semantic expected result is carried by the manifest. The shared receipt implementation and named MCP exact-session and watcher append/cohort canaries are retained and exercised by the focused tests.
+Lower action `is_error` predicates with direct comparisons and lower numeric `exit_code` predicates against the nullable column. Added three-state regression assertions covering unknown, zero, and one values.
 
 Verification
 
-`uv run devtools test tests/unit/scenarios/test_workload_receipts.py tests/unit/infra/test_workload_artifacts.py` passed: 99 passed in 1109.24s.
+`uv run devtools test tests/unit/storage/test_archive_tiers_archive.py::test_archive_facade_exposes_distinct_action_result_states` passed after the fix: 1 passed, 1 warning in 42.67s.
 
-`uv run devtools test tests/unit/devtools -k workload` passed: 3 passed, 960 deselected, 1 warning in 39.70s.
+`uv run devtools verify --quick` passed after rebasing onto `origin/master`; every reported gate was ok.
 
-`uv run devtools test tests/unit -k envelope` ran 391 tests: 385 passed, 5 failed, and 1 error. The failures are inherited fixture/schema or generated-web-content issues outside this diff: query execution fixture tool-outcome evidence, deployment smoke schema version, coordination archive fixtures, and selection-shell asset text.
-
-`uv run devtools verify --quick` passed after rebasing onto origin/master. All 17 gates reported ok, including oracle-integrity, consumer-reachability, and schema promotion/privacy checks.
+The containing storage test file reported 49 passed and 1 inherited failure in stale-schema exception typing, where `SchemaSkewError` is raised while the existing test expects `SchemaVersionMismatchError`.
 
 Residual risk
 
-The broad envelope selector retains six unrelated inherited failures. This lane does not claim live MCP or daemon incident measurements; those remain host-dependent observations. The implementation still has a hand-maintained measurement-path declaration inventory rather than kernel-derived declarations.
+This change preserves existing query syntax and does not add an explicit unknown-selection predicate. Unknown outcomes remain excluded from known-value comparisons.

@@ -1,1 +1,1 @@
-refactor(test): make corpus manifests canonical
+fix(query): preserve unknown action outcomes
