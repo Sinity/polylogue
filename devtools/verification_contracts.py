@@ -7,6 +7,7 @@ from enum import StrEnum
 
 class VerificationScope(StrEnum):
     AFFECTED = "affected"
+    COMPLETE = "complete"
     NON_TEST = "non-test"
 
 

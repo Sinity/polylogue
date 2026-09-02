@@ -100,7 +100,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Polylogue on Sinex](sinex-interop.md) | Current bridge, target authority split, and rebuild proof. |
 | [Insights Rigor Matrix](insights-rigor-matrix.md) | Evidence strengths and limitations for insight families. |
 | [Query-Action Workflows](product/workflows.md) | Selection rules, common paths, and executable demo-archive evidence. |
-| [Visual Tape Examples](examples/visual-tapes/README.md) | Reader-evidence and visual-tape artifact catalog. |
 | [Reader-Comprehension Test Harness](examples/reader-comprehension-test/README.md) | Single-blind N-arm cold-reader test harness for README/positioning candidates. |
 | [Example and Proof Index](examples/README.md) | Index of recorded proof artifacts and worked examples. |
 

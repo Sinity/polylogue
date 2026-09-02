@@ -307,7 +307,7 @@ def pytest_deselected(items: list[Any]) -> None:
 
 @pytest.hookimpl(trylast=True)
 def pytest_collection_modifyitems(session: Any, config: Any, items: list[Any]) -> None:
-    """Write the final selected test set after pytest/testmon deselection."""
+    """Write the final selected test set after pytest deselection."""
     del config
     global _COLLECTION_DURATION_S, _CONTROLLER_COLLECTION_PAYLOAD, _SELECTED_COUNT
     if _COLLECTION_STARTED_AT is not None:

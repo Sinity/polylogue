@@ -7,7 +7,6 @@ from typing import Any, Final
 
 RECEIPT_SCHEMA_VERSION: Final = 2
 MAX_GATE_OUTCOMES: Final = 16
-MAX_DIAGNOSTIC_PATHS: Final = 16
 MAX_PUBLIC_STRING_LENGTH: Final = 160
 
 
@@ -15,8 +14,6 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
     """Project verifier semantics without duplicating AgentCTL job metadata."""
     selection = _mapping(payload.get("testmon_selection"))
     aggregate = _mapping(payload.get("pytest_aggregate"))
-    missing_paths = _strings(selection.get("missing_executable_paths"))
-    runtime_data_paths = _strings(selection.get("runtime_data_paths"))
     verification_scope = _string(payload.get("verification_scope"))
     return {
         "schema_version": RECEIPT_SCHEMA_VERSION,
@@ -25,21 +22,13 @@ def declared_verification_result(payload: Mapping[str, Any], *, operation: str) 
         "scope": {
             "verification_scope": verification_scope,
             "selection_mode": _string(selection.get("selection_mode")),
-        },
-        "testmon_environment": {
-            "environment_digest": _string(selection.get("environment_digest")),
-            "state": _string(selection.get("state_status")),
-            "reason": _string(selection.get("state_reason")),
+            "testmon_graph_status": _string(selection.get("graph_status")),
         },
         "gate_outcomes": _gate_outcomes(payload.get("steps")),
         "pytest_outcomes": _pytest_outcomes(aggregate),
         "diagnostics": {
             "diagnosis": _string(payload.get("diagnosis")),
             "checkout_diagnosis": _string(payload.get("checkout_diagnosis")),
-            "selection_widened": _selection_widened(selection),
-            "missing_edges": _bounded_strings(missing_paths),
-            "runtime_data_paths": _bounded_strings(runtime_data_paths),
-            "failure_ledger": _mapping(payload.get("failure_ledger")),
         },
         "semantic_status": _semantic_status(payload, verification_scope),
         "exit_code": _integer(payload.get("exit_code")),
@@ -60,18 +49,6 @@ def _integer(value: object) -> int | None:
 
 def _boolean(value: object) -> bool | None:
     return value if isinstance(value, bool) else None
-
-
-def _strings(value: object) -> list[str]:
-    return [item for item in value if isinstance(item, str)] if isinstance(value, list | tuple) else []
-
-
-def _bounded_strings(values: list[str]) -> dict[str, Any]:
-    return {
-        "count": len(values),
-        "items": [_string(value) for value in values[:MAX_DIAGNOSTIC_PATHS]],
-        "truncated": len(values) > MAX_DIAGNOSTIC_PATHS,
-    }
 
 
 def _gate_outcomes(value: object) -> dict[str, Any]:
@@ -117,15 +94,7 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "outcomes": bounded_outcomes,
         "outcomes_truncated": len(outcomes) > MAX_GATE_OUTCOMES,
     }
-    covered_by = aggregate.get("covered_by_run")
-    if isinstance(covered_by, str) and covered_by:
-        # A skipped complete run names the run whose coverage it inherits.
-        projected["covered_by_run"] = covered_by[:MAX_PUBLIC_STRING_LENGTH]
     return projected
-
-
-def _selection_widened(selection: Mapping[str, Any]) -> bool:
-    return selection.get("selection_mode") in {"all", "bootstrap"}
 
 
 def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None) -> str:
@@ -135,6 +104,7 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
     if exit_code == 0:
         return {
             "affected": "affected-passed",
+            "complete": "complete-passed",
             "non-test": "non-test-passed",
         }.get(verification_scope or "", "passed")
     return "interrupted" if exit_code == 130 else "failed"

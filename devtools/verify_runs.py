@@ -2,7 +2,7 @@
 
 AgentCTL owns jobs, deadlines, process trees, temporary storage, and checkout
 lifecycle. This module records only the verifier facts Polylogue can state:
-what ran, the decoded pytest outcome, testmon selection, and the resulting
+what ran, the decoded pytest outcome, and the resulting
 scope.
 """
 
@@ -12,10 +12,12 @@ import contextlib
 import fcntl
 import json
 import os
+import platform
 import re
 import shutil
 import stat
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -26,7 +28,23 @@ from pathlib import Path
 from typing import Any
 
 from devtools.pytest_evidence import evaluate_pytest_evidence
-from devtools.testmon_bootstrap import TESTMON_DATA_RELPATH
+from devtools.testmon_provision import TESTMON_DATA_RELPATH
+
+
+def environment_fingerprint(*, root: Path | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Identity that separates a product failure from a poisoned environment."""
+    root = root or Path.cwd()
+    environ = os.environ if env is None else env
+    executable = Path(sys.executable).resolve()
+    return {
+        "checkout_root": str(root.absolute()),
+        "python_executable": str(executable),
+        "python_environment": str(Path(environ.get("VIRTUAL_ENV", executable.parent)).absolute()),
+        "python_version": platform.python_version(),
+        "platform": platform.platform(),
+        "harness": environ.get("POLYLOGUE_VERIFY_HARNESS", "devtools"),
+    }
+
 
 VERIFY_CACHE = Path(".cache/verify")
 VERIFY_RUNS_DIR = VERIFY_CACHE / "runs"
@@ -253,8 +271,6 @@ class VerifyRun:
                     self._payload[field] = value
         # Kept on every receipt so later classification does not depend on a
         # live interpreter or a reconstructed shell environment.
-        from devtools.verification_ledger import environment_fingerprint
-
         self._payload["environment_fingerprint"] = environment_fingerprint(root=self.root)
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.write()
@@ -268,36 +284,13 @@ class VerifyRun:
         if self.mirror_current:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
-    def record_selection(
-        self,
-        *,
-        selection_mode: str,
-        state_status: str,
-        state_reason: str,
-        missing_executable_paths: Sequence[str] = (),
-        runtime_data_paths: Sequence[str] = (),
-        environment_digest: str | None = None,
-        packages_digest: str | None = None,
-        plan_digest: str | None = None,
-        packages_drift: bool = False,
-    ) -> None:
+    def record_selection(self, *, selection_mode: str, graph_status: str, graph_reason: str) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
-            "state_status": state_status,
-            "state_reason": state_reason,
-            "missing_executable_paths": list(missing_executable_paths),
-            "runtime_data_paths": list(runtime_data_paths),
-            "environment_digest": environment_digest,
-            "packages_digest": packages_digest,
-            "plan_digest": plan_digest,
-            "packages_drift": packages_drift,
+            "graph_status": graph_status,
+            "graph_reason": graph_reason,
         }
         self.write()
-
-    @property
-    def testmon_selection(self) -> dict[str, Any] | None:
-        selection = self._payload.get("testmon_selection")
-        return dict(selection) if isinstance(selection, dict) else None
 
     def start_step(self, *, label: str, cmd: list[str]) -> PytestStepArtifacts:
         step_id = f"{len(self._payload['steps']) + 1:02d}-{_slug(label)}"
@@ -424,6 +417,10 @@ def pytest_step_run_id(run_id: str, step_id: str) -> str:
 
 def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
     updated = dict(env)
+    # testmon opens the datafile directly; without its directory the session
+    # dies in an internal error rather than a test result.
+    datafile = run.root / TESTMON_DATA_RELPATH
+    datafile.parent.mkdir(parents=True, exist_ok=True)
     updated.update(
         {
             "POLYLOGUE_VERIFY_RUN_ID": run.run_id,
@@ -434,7 +431,7 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
             "POLYLOGUE_PYTEST_EVENTS_PATH": str(artifacts.events_merged_path),
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(artifacts.selection_path),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(artifacts.summary_path),
-            "TESTMON_DATAFILE": str(run.root / TESTMON_DATA_RELPATH),
+            "TESTMON_DATAFILE": str(datafile),
         }
     )
     return updated

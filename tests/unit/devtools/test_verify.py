@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 
 from devtools import required_gate, verify, verify_runs, why
-from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     VerifyRun,
@@ -210,53 +209,11 @@ def test_finish_step_does_not_retry_unavailable_pytest_statistics(
     assert "statistics" not in result
 
 
-def test_native_selection_partitions_semantic_lanes() -> None:
-    steps = verify.build_verify_steps(
-        quick=False,
-        testmon_mode="affected",
-        testmon_environment="polylogue-test",
-    )
-
-    labels = [label for label, _command in steps]
-    assert labels[-3:] == [
-        "pytest native parallel (affected)",
-        "pytest native serial (affected)",
-        "pytest native storage-scale (affected)",
-    ]
-
-
-def test_full_corpus_traces_without_selecting_and_without_partitioning() -> None:
-    """The complete corpus publishes the graph affected selection needs.
-
-    Anti-vacuity: partitioning the parallel lane keeps only the last
-    partition's tests in the graph (testmon deletes what a run did not
-    collect), and dropping --testmon leaves the graph untouched.
-    """
-    steps = verify.build_verify_steps(
-        quick=False,
-        testmon_mode="all",
-        testmon_environment="polylogue-test",
-    )
-
-    assert [label for label, _command in steps[-3:]] == [
-        "pytest native parallel (all)",
-        "pytest native serial (all)",
-        "pytest native storage-scale (all)",
-    ]
-    for _label, command in steps[-3:]:
-        assert "--testmon" in command
-        assert "--testmon-noselect" in command
-        assert "--testmon-forceselect" not in command
-        assert "--testmon-env=polylogue-test" in command
-        assert not any(item.startswith("--polylogue-file-batch") for item in command)
-
-
 def test_every_managed_pytest_run_traces_under_the_full_hypothesis_profile() -> None:
     """Graph writers share one profile; affected runs write edges too.
 
-    Anti-vacuity: leaving a shell's HYPOTHESIS_PROFILE=ci in place lets an
-    affected run replace a property test's edges with the reduced budget's,
-    and a later change reachable only beyond that budget is never selected.
+    Anti-vacuity: leaving a shell's HYPOTHESIS_PROFILE=ci in place lets a run
+    report green under a reduced property-test budget.
     """
     env = {"HYPOTHESIS_PROFILE": "ci", "POLYLOGUE_CI": "1"}
     verify._normalize_managed_pytest_environment(env)
@@ -268,7 +225,7 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
     aggregate = verify._aggregate_pytest_results(
         [
             {
-                "name": "pytest native parallel (all)",
+                "name": "pytest parallel (all)",
                 "statistics": {
                     "selected_count": 27,
                     "terminal_count": 27,
@@ -276,11 +233,11 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
                 },
             },
             {
-                "name": "pytest native serial (all)",
+                "name": "pytest serial (all)",
                 "statistics": {"selected_count": 2, "terminal_count": 2, "outcomes": {"passed": 2}},
             },
             {
-                "name": "pytest native storage-scale (all)",
+                "name": "pytest storage-scale (all)",
                 "statistics": {"selected_count": 1, "terminal_count": 1, "outcomes": {"passed": 1}},
             },
         ],
@@ -338,7 +295,7 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
     )
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
-    exit_code, _elapsed, metadata = verify._run("pytest native serial (affected)", ["pytest"], run=run)
+    exit_code, _elapsed, metadata = verify._run("pytest serial (all)", ["pytest"], run=run)
 
     assert exit_code != 0
     assert metadata["diagnosis"] == "pytest_no_report"
@@ -354,46 +311,6 @@ def test_step_environment_is_receipt_scoped(tmp_path: Path) -> None:
     assert env["POLYLOGUE_VERIFY_RUN_ID"] == run.run_id
     assert env["POLYLOGUE_PYTEST_RUN_ID"].startswith(run.run_id)
     assert Path(env["POLYLOGUE_PYTEST_EVENTS_DIR"]) == artifacts.events_dir
-    assert Path(env["TESTMON_DATAFILE"]) == tmp_path / ".cache" / "testmon" / "testmondata"
-
-
-def test_production_testmon_selection_writes_only_to_owned_cache(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A selected pytest step must not create testmon state at checkout root."""
-    test_file = tmp_path / "test_sample.py"
-    test_file.write_text("def test_sample():\n    assert True\n", encoding="utf-8")
-    (tmp_path / ".cache" / "testmon").mkdir(parents=True)
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    run = VerifyRun(tier="affected", argv=[], git_head="head", root=tmp_path, mirror_current=False)
-
-    command = [
-        sys.executable,
-        "-m",
-        "pytest",
-        "-q",
-        "--override-ini=addopts=",
-        "-p",
-        "testmon.pytest_testmon",
-        "-p",
-        "pytest_jsonreport.plugin",
-        "--json-report",
-        "--json-report-file=.cache/verify/last-pytest.json",
-        "--testmon",
-        "--testmon-forceselect",
-        "--testmon-env=selection-test",
-        "test_sample.py",
-    ]
-    artifacts = run.start_step(label="pytest native serial (affected)", cmd=command)
-    env = verify._subprocess_env()
-    verify._normalize_managed_pytest_environment(env)
-    env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-    result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert (tmp_path / ".cache" / "testmon" / "testmondata").is_file()
-    assert not (tmp_path / ".testmondata").exists()
 
 
 def test_agentctl_verify_run_omits_mutable_current_receipt(tmp_path: Path) -> None:
@@ -422,7 +339,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest native parallel (all)", ["pytest"])])
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest parallel (all)", ["pytest"])])
     monkeypatch.setattr(verify, "_run", interrupt)
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
@@ -437,95 +354,6 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
         assert payload["pytest_aggregate"]["termination_reason"] == "sigterm"
         assert payload["steps"][0]["status"] == "failed"
         assert payload["steps"][0]["termination_reason"] == "sigterm"
-
-
-@pytest.mark.parametrize("early_exit", ("preparation", "bootstrap"))
-def test_verify_records_early_native_terminal_paths(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    early_exit: str,
-) -> None:
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
-    monkeypatch.setattr(verify, "_changed_paths", lambda _base, _head: ())
-    monkeypatch.setattr(
-        verify,
-        "classify_native_testmon_changes",
-        lambda *_args: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
-    )
-    if early_exit == "preparation":
-
-        def fail_preparation(*_args: object, **_kwargs: object) -> object:
-            raise NativeTestmonRepairError("synthetic preparation failure")
-
-        monkeypatch.setattr(verify, "prepare_native_testmon_environment", fail_preparation)
-        expected_code = 125
-    else:
-        monkeypatch.setattr(
-            verify,
-            "prepare_native_testmon_environment",
-            lambda *_args, **_kwargs: SimpleNamespace(
-                selection_mode="bootstrap",
-                environment_name="testmon",
-                local_state=SimpleNamespace(
-                    status="absent",
-                    reason="synthetic bootstrap",
-                    missing_executable_paths=(),
-                ),
-            ),
-        )
-        expected_code = 2
-
-    assert verify._main([]) == expected_code
-    history = tmp_path / ".cache" / "verify" / "history.jsonl"
-    rows = [json.loads(line) for line in history.read_text(encoding="utf-8").splitlines()]
-    assert len(rows) == 1
-    assert rows[0]["status"] == "failed"
-    assert rows[0]["exit_code"] == expected_code
-
-
-def test_verify_reports_native_testmon_refusal_to_the_operator(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A missing graph must be visible at the production command boundary."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
-    monkeypatch.setattr(verify, "_changed_paths", lambda _base, _head: ())
-    monkeypatch.setattr(
-        verify,
-        "classify_native_testmon_changes",
-        lambda *_args: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
-    )
-    monkeypatch.setattr(
-        verify,
-        "prepare_native_testmon_environment",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            selection_mode="bootstrap",
-            environment_name="expected-environment",
-            local_state=SimpleNamespace(
-                status="absent",
-                reason="native environment 'expected-environment' is absent",
-                missing_executable_paths=(),
-            ),
-        ),
-    )
-
-    assert verify._main([]) == 2
-
-    output = capsys.readouterr().err
-    assert "refusing to measure affected verification" in output
-    assert "selection: affected" in output
-    assert "environment: 'expected-environment' (absent)" in output
-    assert "native environment 'expected-environment' is absent" in output
-    assert "devtools verify --all" in output
 
 
 def test_verify_emits_shared_workload_receipt_for_step_timing(
@@ -559,167 +387,6 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     ]
 
 
-def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: without the check the nightly reran the whole corpus on an
-    unchanged master every night."""
-    history: dict[str, Any] = {}
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
-    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
-    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
-    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
-    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
-    monkeypatch.setattr(
-        verify,
-        "classify_native_testmon_changes",
-        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
-    )
-    monkeypatch.setattr(
-        verify,
-        "prepare_native_testmon_environment",
-        lambda *_a, **_k: SimpleNamespace(
-            selection_mode="affected",
-            environment_name="env-1",
-            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
-        ),
-    )
-    monkeypatch.setattr(
-        verify,
-        "read_verify_history",
-        lambda _path: [
-            {
-                "tier": "all",
-                "status": "success",
-                "run_id": "run-prior",
-                "artifact_dir": ".cache/verify/runs/run-prior",
-                "git_dirty": False,
-                "git_head": "head",
-                "semantic_receipt": {"source_revision": "head"},
-                "testmon_selection": {
-                    "environment_digest": "env-1",
-                    "packages_digest": "pkgs-1",
-                    "plan_digest": "plan-1",
-                },
-                "pytest_aggregate": {"complete_corpus_covered": True},
-            }
-        ],
-    )
-    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
-    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: "plan-1")
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
-
-    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
-        raise AssertionError("steps were built for an already-verified corpus")
-
-    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
-
-    assert verify._main(["--all"]) == 0
-    assert history["diagnosis"] == "corpus_already_verified"
-    assert history["pytest_aggregate"]["covered_by_run"] == "run-prior"
-
-
-def test_a_head_that_moves_during_preparation_is_not_reused(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: without the recheck a clean tree at a new commit inherits
-    the old commit's coverage."""
-    history: dict[str, Any] = {}
-    heads = iter(["head", "head-moved", "head-moved", "head-moved"])
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
-    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
-    monkeypatch.setattr(verify, "git_head", lambda _root: next(heads, "head-moved"))
-    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
-    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
-    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
-    monkeypatch.setattr(
-        verify,
-        "classify_native_testmon_changes",
-        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
-    )
-    monkeypatch.setattr(
-        verify,
-        "prepare_native_testmon_environment",
-        lambda *_a, **_k: SimpleNamespace(
-            selection_mode="affected",
-            environment_name="env-1",
-            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
-        ),
-    )
-    monkeypatch.setattr(
-        verify,
-        "read_verify_history",
-        lambda _path: [
-            {
-                "tier": "all",
-                "status": "success",
-                "run_id": "run-prior",
-                "artifact_dir": ".cache/verify/runs/run-prior",
-                "git_dirty": False,
-                "git_head": "head",
-                "semantic_receipt": {"source_revision": "head"},
-                "testmon_selection": {
-                    "environment_digest": "env-1",
-                    "packages_digest": "pkgs-1",
-                    "plan_digest": "plan-1",
-                },
-                "pytest_aggregate": {"complete_corpus_covered": True},
-            }
-        ],
-    )
-    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
-    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: "plan-1")
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
-    built: list[str] = []
-
-    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
-        built.append("built")
-        return []
-
-    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
-
-    verify._main(["--all"])
-
-    assert built == ["built"], "a moved head must run, not inherit"
-    assert history.get("diagnosis") != "corpus_already_verified"
-
-
-def test_execution_plan_digest_sees_gate_executables(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: a ruff that vanished after the green run must change the plan."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    binaries = tmp_path / ".venv" / "bin"
-    binaries.mkdir(parents=True)
-    for name in ("ruff", "mypy", "dmypy"):
-        target = binaries / name
-        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        target.chmod(0o755)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-
-    with_ruff = verify._execution_plan_digest()
-    (binaries / "ruff").unlink()
-    without_ruff = verify._execution_plan_digest()
-
-    assert with_ruff != without_ruff
-
-
-def test_execution_plan_digest_sees_installed_js_trees(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: a node_modules tree deleted after the green run must change the plan."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-    from devtools.verify_js_tests import _STAMP_NAME
-
-    stamp = tmp_path / "webui" / "node_modules" / _STAMP_NAME
-    stamp.parent.mkdir(parents=True)
-    stamp.write_text("fingerprint-1", encoding="utf-8")
-
-    installed = verify._execution_plan_digest()
-    stamp.unlink()
-    removed = verify._execution_plan_digest()
-
-    assert installed != removed
-
-
 def test_git_dirty_fails_closed_when_status_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
     import subprocess
 
@@ -731,224 +398,6 @@ def test_git_dirty_fails_closed_when_status_cannot_be_read(monkeypatch: pytest.M
     monkeypatch.setattr(subprocess, "run", broken)
 
     assert verify_runs.git_dirty() is True
-
-
-def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Anti-vacuity, one clause each: a moved package set or plan runs; a dirty
-    source run is not coverage; a newer failed recompute is not hidden behind
-    an older green; a prior skip is not an attempt."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-
-    def row(
-        run_id: str,
-        *,
-        status: str = "success",
-        dirty: bool = False,
-        packages: str = "pkgs-1",
-        plan: str = "plan-1",
-        covered_by: str | None = None,
-        start_head: str = "head",
-        evidence: bool = True,
-    ) -> dict[str, Any]:
-        aggregate: dict[str, Any] = {"complete_corpus_covered": covered_by is None}
-        if covered_by:
-            aggregate["covered_by_run"] = covered_by
-        if evidence:
-            (tmp_path / ".cache" / "verify" / "runs" / run_id).mkdir(parents=True, exist_ok=True)
-        return {
-            "tier": "all",
-            "status": status,
-            "run_id": run_id,
-            "artifact_dir": f".cache/verify/runs/{run_id}",
-            "git_dirty": dirty,
-            "git_head": start_head,
-            "semantic_receipt": {"source_revision": start_head if run_id == "elsewhere" else "head"},
-            "testmon_selection": {"environment_digest": "env-1", "packages_digest": packages, "plan_digest": plan},
-            "pytest_aggregate": aggregate,
-        }
-
-    def covered(rows: list[dict[str, Any]], **inputs: str) -> str | None:
-        monkeypatch.setattr(verify, "read_verify_history", lambda _p: rows)
-        return verify._corpus_already_verified(
-            head="head",
-            environment="env-1",
-            packages=inputs.get("packages", "pkgs-1"),
-            plan=inputs.get("plan", "plan-1"),
-        )
-
-    assert covered([row("green")]) == "green"
-    # A newer complete run at another head rewrote the shared graph.
-    assert covered([row("green"), row("elsewhere", start_head="other")]) is None
-    assert covered([row("green")], packages="pkgs-2") is None
-    assert covered([row("green")], plan="plan-2") is None
-    # A newer run under another package set rewrote the graph; an older
-    # green under this set is not searched past it.
-    assert covered([row("green"), row("other-packages", packages="pkgs-2")]) is None
-    assert covered([row("dirty", dirty=True)]) is None
-    assert covered([row("green"), row("red-later", status="failed")]) is None
-    assert covered([row("green"), row("skip", covered_by="green")]) == "green"
-    # A run whose HEAD advanced while it ran verified a mixture, not this head.
-    assert covered([row("moved", start_head="older")]) is None
-    # Pruned evidence is history, not coverage.
-    assert covered([row("pruned", evidence=False)]) is None
-    # A traced affected run since, at another head, rewrote the graph.
-    affected = {**row("later-affected"), "tier": "affected"}
-    assert covered([row("green"), affected]) is None
-
-
-def test_execution_plan_digest_sees_the_js_worker_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-    monkeypatch.setenv("POLYLOGUE_EXTENSION_TEST_WORKERS", "2")
-    two = verify._execution_plan_digest()
-    monkeypatch.setenv("POLYLOGUE_EXTENSION_TEST_WORKERS", "4")
-    four = verify._execution_plan_digest()
-
-    assert two != four
-
-
-def test_execution_plan_digest_sees_run_time_tools_and_installed_js_binaries(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Anti-vacuity: an ast-grep that vanished from PATH, or a deleted
-    node_modules/.bin/vitest, must change the plan."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    for name in ("ast-grep", "node", "npm"):
-        target = tools / name
-        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-        target.chmod(0o755)
-    monkeypatch.setenv("PATH", str(tools))
-    binaries = tmp_path / "webui" / "node_modules" / ".bin"
-    binaries.mkdir(parents=True)
-    (binaries / "vitest").write_text("run", encoding="utf-8")
-
-    baseline = verify._execution_plan_digest()
-    (tools / "ast-grep").unlink()
-    without_ast_grep = verify._execution_plan_digest()
-    (binaries / "vitest").unlink()
-    without_vitest = verify._execution_plan_digest()
-
-    assert len({baseline, without_ast_grep, without_vitest}) == 3
-
-
-def test_execution_plan_digest_sees_consumer_reachability_overrides(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-    monkeypatch.delenv("CONSUMER_REACHABILITY_BASE", raising=False)
-    plain = verify._execution_plan_digest()
-    monkeypatch.setenv("CONSUMER_REACHABILITY_BASE", "HEAD")
-    overridden = verify._execution_plan_digest()
-
-    assert plain != overridden
-
-
-def test_recompute_requires_the_complete_corpus(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(SystemExit) as raised:
-        verify._main(["--recompute"])
-    assert raised.value.code == 2
-
-
-def test_execution_plan_digest_sees_master_and_hypothesis_examples(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Anti-vacuity: a moved origin/master or a stored counterexample must change the plan."""
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
-    monkeypatch.setattr(verify, "_git_commit", lambda ref: "m1")
-    monkeypatch.setattr(verify, "_merge_base_with_master", lambda: "b1")
-    examples = tmp_path / ".cache" / "hypothesis" / "examples"
-    examples.mkdir(parents=True)
-    first = verify._execution_plan_digest()
-    monkeypatch.setattr(verify, "_git_commit", lambda ref: "m2")
-    moved = verify._execution_plan_digest()
-    (examples / "deadbeef").write_bytes(b"counterexample")
-    stored = verify._execution_plan_digest()
-
-    assert len({first, moved, stored}) == 3
-
-
-def test_reuse_inputs_are_recomputed_at_the_decision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Anti-vacuity: a plan captured before preparation must not be trusted
-    after an environment sync changed it."""
-    history: dict[str, Any] = {}
-    plans = iter(["plan-1", "plan-2"])
-    monkeypatch.setattr(verify, "ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
-    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
-    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
-    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
-    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
-    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
-    monkeypatch.setattr(
-        verify,
-        "classify_native_testmon_changes",
-        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
-    )
-    monkeypatch.setattr(
-        verify,
-        "prepare_native_testmon_environment",
-        lambda *_a, **_k: SimpleNamespace(
-            selection_mode="affected",
-            environment_name="env-1",
-            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
-        ),
-    )
-    monkeypatch.setattr(
-        verify,
-        "read_verify_history",
-        lambda _path: [
-            {
-                "tier": "all",
-                "status": "success",
-                "run_id": "run-prior",
-                "artifact_dir": ".cache/verify/runs/run-prior",
-                "git_dirty": False,
-                "git_head": "head",
-                "semantic_receipt": {"source_revision": "head"},
-                "testmon_selection": {
-                    "environment_digest": "env-1",
-                    "packages_digest": "pkgs-1",
-                    "plan_digest": "plan-1",
-                },
-                "pytest_aggregate": {"complete_corpus_covered": True},
-            }
-        ],
-    )
-    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
-    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: next(plans, "plan-2"))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
-    built: list[str] = []
-
-    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
-        built.append("built")
-        return []
-
-    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
-
-    verify._main(["--all"])
-
-    assert built == ["built"]
-    assert history.get("diagnosis") != "corpus_already_verified"
-
-
-def test_unreadable_reuse_inputs_run_the_corpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    from devtools.testmon_bootstrap import NativeTestmonRepairError
-
-    def broken() -> str:
-        raise NativeTestmonRepairError("metadata malformed")
-
-    monkeypatch.setattr(verify, "installed_packages_digest", broken)
-    assert verify._reuse_inputs_still_hold("pkgs-1", "plan-1") is False
 
 
 def test_git_dirty_sees_untracked_files_regardless_of_config(monkeypatch: pytest.MonkeyPatch) -> None:

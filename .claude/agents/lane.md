@@ -129,7 +129,7 @@ by construction.
   check whether `devtools render topology-projection` or other generated
   surfaces need regenerating — `render all --check` will tell you.
 - If a failure is pre-existing/unrelated to your change (not selected by
-  testmon, in a file you never touched), say so explicitly rather than
+  in a file you never touched), say so explicitly rather than
   silently working around it or claiming it as fixed.
 
 ## Delivery

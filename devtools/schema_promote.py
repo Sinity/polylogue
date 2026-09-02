@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -53,7 +54,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     render_schema_promote_result(result=result, json_output=bool(args.json))
-    return 0
+    # Promotion evidence must be complete for what it just promoted; the audit
+    # is a postcondition of this command, not of every static gate.
+    audit = subprocess.run(
+        [sys.executable, "-m", "polylogue.schemas.promotion_audit", "polylogue/schemas"],
+        check=False,
+    )
+    return audit.returncode
 
 
 if __name__ == "__main__":

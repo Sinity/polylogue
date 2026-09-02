@@ -128,8 +128,6 @@ def test_progress_plugin_observes_real_pytest_xfail_outcome(tmp_path: Path) -> N
             "-q",
             "-p",
             "devtools.pytest_progress_plugin",
-            "-p",
-            "no:testmon",
             str(test_path),
         ],
         cwd=checkout_root,
@@ -208,10 +206,8 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
             "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
             "POLYLOGUE_VERIFY_RUN_ID": "subprocess-regression",
-            "TESTMON_DATAFILE": str(tmp_path / "testmon" / "testmon.sqlite"),
         }
     )
-    Path(env["TESTMON_DATAFILE"]).parent.mkdir(parents=True)
     result = subprocess.run(
         [
             sys.executable,
@@ -220,7 +216,6 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "-q",
             "-p",
             "devtools.pytest_progress_plugin",
-            "--testmon-noselect",
             "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id",
         ],
         cwd=checkout_root,

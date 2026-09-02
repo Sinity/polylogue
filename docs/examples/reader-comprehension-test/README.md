@@ -80,8 +80,7 @@ This is an honest status, not a placeholder to be quietly promoted:
 ## How to run a real session once arms are populated
 
 1. Generate a full-fold screenshot for each candidate (`current` plus at
-   least one alternative) and save it under this directory or
-   `docs/examples/visual-tapes/`.
+   least one alternative) and save it under this directory.
 2. Open `reader-test-runner.html` directly in a browser (`file://` is fine —
    it makes no network requests).
 3. Fill in each arm's name and screenshot path in the "Arm configuration"

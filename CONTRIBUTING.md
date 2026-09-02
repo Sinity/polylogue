@@ -55,8 +55,8 @@ targeting `master`.
 2. Create a branch from `origin/master`.
 3. Work on the branch. Git hooks enforce format and lint on commit, and
    run `devtools verify --quick` on push.
-4. Run `devtools verify` before creating the PR. It automatically builds or
-   repairs native pytest-testmon state, then uses affected-test selection.
+4. Run `devtools verify` before creating the PR. It runs the static gates and
+   the affected tests, seeding the testmon datafile if the checkout has none.
 5. Open a pull request. The template has required sections — fill them
    all in. The PR title becomes the squash-merge subject on `master`.
 6. CI must pass. Fix failures on the branch, do not merge with red CI.
@@ -212,28 +212,6 @@ Use `Ref #NNN` by default. Do not use GitHub resolver keywords in PR bodies
 or comments unless the operator explicitly asks for that exact PR to change
 that exact issue's GitHub state.
 
-## Documentation Site Previews
-
-The documentation site (`devtools render pages` → `.cache/site/`) is
-published to GitHub Pages on every push to `master` via
-`.github/workflows/pages.yml`.
-
-PRs that touch docs, render pages helpers, or top-level Markdown files
-trigger `.github/workflows/pages-preview.yml`, which rebuilds the site
-and uploads it as a workflow artifact named
-`docs-site-preview-pr-<NNN>`. Download the artifact from the PR's
-Checks → Pages Preview run, extract, and serve locally:
-
-```bash
-unzip docs-site-preview-pr-*.zip -d /tmp/polylogue-docs
-python -m http.server --directory /tmp/polylogue-docs 8000
-```
-
-Per-PR live preview URLs (`/pr/NNN/`) and versioned release trees
-(`/vX.Y.Z/`, plus a `/latest/` alias) are deferred follow-ups under
-#1307 — both require migrating `pages.yml` from the single-target
-`actions/deploy-pages` flow to a branch-based deploy.
-
 ## Repository Settings
 
 The repository should stay aligned with the workflow above:
@@ -283,35 +261,24 @@ runs as part of `devtools verify` and in CI.
 
 ## Verification Baseline
 
-Before creating a PR, run the local baseline. CI runs the same checks, while
-local pytest selection is accelerated by pytest-testmon.
+Before creating a PR, run the local baseline. CI runs the same checks.
 
 ```bash
-devtools verify            # static/generated gates + incremental complete-corpus pytest
+devtools verify            # static/generated gates + affected pytest
 devtools verify --quick    # format + lint + mypy + generated checks, including committed-schema privacy (skip tests)
 devtools bench slo --include-lab  # explicit benchmark tier
 ```
 
 The quick gate runs on `git push` via the active pre-push hook. It's a fast
-check, not a substitute for the default baseline. The default command safely
-repairs missing or invalid native testmon state and automatically builds a new
-environment when collection semantics change.
+check, not a substitute for the default baseline.
 
 `devtools verify` does not replay a prior verify result. It always runs the
-static gates. With a valid native environment, it invokes pytest-testmon to
-execute changed-dependency, never-recorded, and previously-failing tests, and
-attests the remaining corpus from unchanged recorded greens — earning
-release-baseline authority when coverage is complete and green. When it bootstraps a missing or invalid native environment, it runs the
-complete correctness corpus. The pytest step covers unit, property, fuzz, and
-integration tests while excluding the separately operated `tests/benchmarks`
-performance surface. It uses
-`--testmon-forceselect` for incremental selection, with one parallel `not
-load_sensitive` lane and one bounded-concurrency `load_sensitive` lane over the
-same native environment. `tui` is a category marker and remains parallel unless a test is
-also explicitly `load_sensitive`. Use
-There is no manual seed or repair command, and no separate full-corpus flag:
-every plain run is scoped to the complete corpus, executing what changed and
-attesting the rest from unchanged recorded greens.
+static gates, then pytest over unit, property, fuzz, and integration tests,
+excluding the separately operated `tests/benchmarks` performance surface. It
+selects from the checkout's testmon datafile and writes back; a checkout with
+no datafile seeds it by running everything. `--all` runs every test and still
+updates fingerprints. The corpus runs as one collection, never partitioned:
+testmon drops every recorded test a run did not collect.
 
 Add `devtools release build-package` or `nix flake check` when touching packaging or
 Nix expressions. See [TESTING.md](TESTING.md) and [docs/devtools.md](docs/devtools.md)
