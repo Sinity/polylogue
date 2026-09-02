@@ -78,11 +78,11 @@ same directory tree.
 
 ## Input Conventions
 
-- `polylogued run` watches configured source roots and owns ingestion.
+- `polylogued run` watches typed built-in sources and any configured additional roots, and owns ingestion.
 - Use `polylogue import PATH` to ask the running daemon to import an explicit
   file or directory.
 - Directory names are for organization only; providers are detected from content.
-- Supported source formats include `.json`, `.jsonl`, and `.zip`.
+- Additional roots admit `.json`, `.jsonl`, `.ndjson`, and `.zip` through content detection. Typed provider sources retain their narrower contracts, including SQLite state where declared.
 
 ## Configuration Model
 

@@ -30,7 +30,11 @@ The separate `raw-authority-recovery` command is not part of this daemon-owned c
 
 ## Auto-Discovery
 
-The daemon watches these directories by default:
+The daemon watches typed provider sources, the archive inbox, browser-capture
+spool, and hook spools by default. Custom roots add ordinary export sources;
+they do not replace those defaults:
+
+Examples include:
 
 ```
 ~/.claude/projects/       Claude Code sessions
@@ -49,7 +53,7 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--root` | (auto) | Override watch root (repeatable) |
+| `--root` | (auto) | Add an export watch root alongside typed defaults (repeatable) |
 | `--debounce-s` | `2.0` | Quiet period in seconds before parsing a modified file |
 | `--no-watch` | off | Disable the live source watcher |
 | `--no-browser-capture` | off | Disable the browser-capture receiver |
