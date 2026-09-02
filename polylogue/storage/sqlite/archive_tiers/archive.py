@@ -7903,7 +7903,7 @@ def _archive_insight_readiness_verdict(
     incompatible_count: int,
     degraded_count: int,
     total_sessions: int,
-) -> str:
+) -> InsightReadinessVerdict:
     if not table_present:
         return "missing"
     if incompatible_count:
@@ -7925,7 +7925,9 @@ def _archive_insight_readiness_verdict(
     return "ready"
 
 
-def _insight_readiness_aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> str:
+def _insight_readiness_aggregate_verdict(
+    entries: tuple[InsightReadinessEntry, ...],
+) -> InsightReadinessVerdict:
     verdicts = {entry.verdict for entry in entries}
     for verdict in ("incompatible", "stale", "partial", "missing", "degraded", "unknown", "empty"):
         if verdict in verdicts:

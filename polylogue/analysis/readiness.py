@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import cast
+from typing import Literal, cast
 
 import aiosqlite
 from pydantic import Field
@@ -16,6 +16,10 @@ from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapsh
 from polylogue.storage.introspection import table_exists_async as _table_exists
 
 _REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
+
+InsightReadinessVerdict = Literal[
+    "ready", "partial", "empty", "missing", "stale", "incompatible", "degraded", "unknown"
+]
 
 
 def _origin_value(origin: str | None) -> str | None:
@@ -68,7 +72,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
     insight_name: str
     display_name: str
     contract_version: int = ARCHIVE_INSIGHT_CONTRACT_VERSION
-    verdict: str = "unknown"
+    verdict: InsightReadinessVerdict = "unknown"
     row_count: int = 0
     expected_row_count: int | None = None
     missing_count: int = 0
@@ -89,7 +93,7 @@ class InsightReadinessEntry(ArchiveInsightModel):
 
 class InsightReadinessReport(ArchiveInsightModel):
     checked_at: str
-    aggregate_verdict: str
+    aggregate_verdict: InsightReadinessVerdict
     total_sessions: int = 0
     origin: str | None = None
     since: str | None = None
@@ -270,7 +274,7 @@ def _entry_verdict(
     incompatible_count: int,
     degraded_count: int,
     empty_is_ready: bool = False,
-) -> str:
+) -> InsightReadinessVerdict:
     if not table_present:
         return "missing"
     if incompatible_count:
@@ -286,7 +290,7 @@ def _entry_verdict(
     return "ready"
 
 
-def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> str:
+def _aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightReadinessVerdict:
     verdicts = {entry.verdict for entry in entries}
     priority = (
         "incompatible",
