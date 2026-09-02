@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
+from devtools.agent_env import agent_worker_cap
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -279,7 +280,7 @@ def _worker_args(selection: list[str]) -> list[str]:
     """
     if _has_worker_flag(selection):
         return []
-    requested = configured_pytest_worker_request(os.environ)
+    requested = agent_worker_cap(configured_pytest_worker_request(os.environ), os.environ)
     return ["-n", str(requested if requested is not None else 0)]
 
 

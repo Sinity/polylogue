@@ -17,6 +17,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.pytest_collection_contract import (
     CLOSED_WORLD_COLLECTION_ARGS,
@@ -868,6 +869,10 @@ def _aggregate_pytest_results(
 
 
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
+    refusal = refuse_verify_tier(list(argv or []), os.environ)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return 2
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
     parser.add_argument("--quick", action="store_true")
     parser.add_argument("--commit", action="store_true")
