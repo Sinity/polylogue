@@ -511,7 +511,7 @@ Existing authorization in `polylogue-a7xr.25` covers inclusion of the event tran
 
 ## 12. Luna implementation packets
 
-All lanes work from isolated worktrees. They do not edit Beads. Each lane commits after its focused production-route check passes, then runs `devtools verify --quick` before handoff. The coordinator rebases at the stated points, runs `devtools verify` once for the affected merge state, and runs `devtools verify --all` plus `devtools verify schema-versioning` and `devtools render all --check` at the terminal merge-train boundary. Tests below are selectors, not permission to run whole unit directories.
+All lanes work from isolated worktrees. They do not edit Beads. Each lane commits after its focused production-route check passes, then runs `devtools verify --quick` before handoff. The coordinator rebases at the stated points, runs `devtools verify` once for the affected merge state, and runs `devtools verify --all` plus `devtools gate schema-versioning` and `devtools render all --check` at the terminal merge-train boundary. Tests below are selectors, not permission to run whole unit directories.
 
 ### Packet A: OriginSpec, title authority, and hash v2
 
@@ -618,7 +618,7 @@ shared bytes and erasing both removes them. A candidate that bypasses
 
 **Implement:** census first. Stop after the report if any durable archive contains Beads rows or operator consent is absent. After authorization, preserve work evidence, narrow durable checks by copy-forward, delete normalized-session admission, and regenerate public surfaces.
 
-**Verification:** exact pre/post row and raw-byte counts; work-evidence preservation query when rows exist; durable backup restore rehearsal; focused parser deletion fallout, origin-spec conformance, `devtools verify schema-versioning`, and render check.
+**Verification:** exact pre/post row and raw-byte counts; work-evidence preservation query when rows exist; durable backup restore rehearsal; focused parser deletion fallout, origin-spec conformance, `devtools gate schema-versioning`, and render check.
 
 **Anti-vacuity:** before removal a representative `interactions.jsonl` routes to the Beads parser; after removal it is rejected as a session source while its intended work-effect path remains queryable. Restoring the pre-migration backup must recover every raw byte.
 

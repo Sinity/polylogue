@@ -216,7 +216,7 @@ are tunable under `services.polylogue.service.*`; they are deployment policy,
 not archive config.
 
 After deploying, use `polylogue config --format json` to inspect effective
-values and source layers, and `devtools workspace deployment-smoke --json` to capture the
+values and source layers, and `devtools smoke --json` to capture the
 package versions, archive root, daemon URL, browser-capture receiver URL, and
 cgroup resource signals visible on the host. Use the declared
 `deployment_browser_smoke` operation for browser first-paint evidence. It

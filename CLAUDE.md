@@ -28,7 +28,7 @@ sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materializ
 
 New semantics go into the substrate (`storage`/`insights`) or product layer
 first; surfaces adapt through `insights`/`operations`/`api`. Surface→substrate
-imports are a ratchet enforced by `devtools verify layering` (baseline may
+imports are a ratchet enforced by `devtools gate layering` (baseline may
 shrink, never grow); substrate→surface imports are forbidden outright.
 
 ## Identity and content model (know this cold)
@@ -195,7 +195,7 @@ grep the diff and check both paths.
 
 `docs/atlas/` — agent-orientation sheets with code-verified anchors: read
 `00-core.md` and your area's sheet before exploring (storage, daemon, mcp,
-sources/parsers, query/read-path). Run `devtools verify atlas` when changing
+sources/parsers, query/read-path). Run `devtools gate atlas` when changing
 anchored code; stale sections are re-verified or deleted.
 `docs/architecture.md` (rings, data flow), `docs/internals.md` (invariants,
 schema history), `docs/architecture-spine.md` (decisions), `TESTING.md`,

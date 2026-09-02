@@ -74,7 +74,7 @@ Read the area sheet before opening broad source trees:
 
 Then consult `docs/architecture.md` for the ring model, the specific area
 sheet for anchors and gotchas, and `devtools --list-commands` for executable
-verification. `devtools verify atlas` checks that this orientation layer has
+verification. `devtools gate atlas` checks that this orientation layer has
 not rotted.
 
 ## Non-negotiable boundaries

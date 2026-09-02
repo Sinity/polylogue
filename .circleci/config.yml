@@ -82,7 +82,7 @@ jobs:
       # doesn't hide the pass/fail signal of the others in the same job.
       - run:
           name: policy timestamp-doctrine
-          command: ~/.local/bin/uv run devtools verify timestamp-doctrine
+          command: ~/.local/bin/uv run devtools gate timestamp-doctrine
           when: always
   full-suite:
     docker:
@@ -95,7 +95,7 @@ jobs:
       - bootstrap
       - run:
           name: Coverage suite
-          command: ~/.local/bin/uv run devtools verify coverage
+          command: ~/.local/bin/uv run devtools verify --all
           no_output_timeout: 30m
       - run:
           name: Dependency audit
@@ -115,7 +115,7 @@ jobs:
           command: ~/.local/bin/uv build
       - run:
           name: Verify distribution
-          command: ~/.local/bin/uv run devtools release verify-distribution --work-dir /tmp/dist-verify
+          command: ~/.local/bin/uv run devtools gate distribution --work-dir /tmp/dist-verify
       - store_artifacts:
           path: dist
           destination: dist

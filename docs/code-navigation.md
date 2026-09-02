@@ -193,8 +193,8 @@ registry or declaration, not the rendered output.
 | Change | Minimum focused verification |
 | --- | --- |
 | Documentation navigation | `devtools render docs-surface --check` |
-| Package/import boundary | `devtools verify layering` |
-| Durable or derived schema | `devtools verify schema-versioning` plus the owning migration/rebuild tests |
+| Package/import boundary | `devtools gate layering` |
+| Durable or derived schema | `devtools gate schema-versioning` plus the owning migration/rebuild tests |
 | CLI/API/MCP contract | owning focused tests plus generated reference checks |
 | Archive invariant or maintenance route | red-twin test, real command dispatch, and receipt validation |
 | Parser or identity semantics | provider fixture, eager/streaming/replay equivalence, and content-hash/fingerprint tests |

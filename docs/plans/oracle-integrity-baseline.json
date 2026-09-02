@@ -162,7 +162,7 @@
       "path": "polylogue/schemas/observation_models.py"
     }
   ],
-  "generated_by": "devtools verify oracle-integrity --write-baseline",
+  "generated_by": "devtools gate oracle-integrity --write-baseline",
   "purpose": "Pre-existing hermeticity findings, exempted as a ratchet. Removing entries is the goal.",
   "schema_version": 1
 }

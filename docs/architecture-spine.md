@@ -18,15 +18,15 @@ change belongs or which production route must be exercised.
 **Rules:**
 - New semantics go into substrate or insights first, then surfaces adapt.
 - Substrate (`storage`/`pipeline`/`sources`) may not import surface adapters
-  — enforced by `devtools verify layering` with zero exceptions.
+  — enforced by `devtools gate layering` with zero exceptions.
 - Surfaces should not import substrate internals directly, but this is a
   **ratchet, not a clean boundary**: `cli`/`mcp`/`api`/`daemon` each carry a
   large pre-existing baseline of direct substrate imports
   (`docs/plans/layering-surface-baseline.json`) that
-  `devtools verify layering` exempts by exact
+  `devtools gate layering` exempts by exact
   `(target, file, import)` triple; anything not already in that baseline
   fails the check, so the count can shrink over time but never grow
-  unnoticed. `devtools verify layering` runs in the required per-PR `lint`
+  unnoticed. `devtools gate layering` runs in the required per-PR `lint`
   CI job.
 - Archive writes are idempotent by content hash.
 
@@ -58,7 +58,7 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 - **Rejected**: a *single* fresh-first-only policy that forces re-ingest for any
   durable-tier change (loses irreplaceable `user.db` assertions); and full
   Alembic-style forward/reverse upgrade chains for derived tiers (unnecessary —
-  they rebuild). The `devtools verify schema-versioning` lint enforces the
+  they rebuild). The `devtools gate schema-versioning` lint enforces the
   boundary through numbered durable migration slots, declared derived lifecycle
   deltas, and clone-safe SQL shapes rather than helper-name pattern matching.
 - **Constraint**: Archive SQLite file set, WAL mode. Durable-tier migration

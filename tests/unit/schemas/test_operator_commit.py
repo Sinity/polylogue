@@ -1,6 +1,6 @@
 """``commit_provider_schema`` -- the real, persisting full-corpus commit path.
 
-``devtools workspace schema generate`` (``generate_provider_schema``/``infer_schema``)
+``devtools schema generate`` (``generate_provider_schema``/``infer_schema``)
 never writes to ``polylogue/schemas/providers/`` -- only
 ``generate_all_schemas`` does, and it had zero CLI wiring before
 ``polylogue.schemas.operator.commit`` (polylogue-k45pq). These tests prove the

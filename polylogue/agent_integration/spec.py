@@ -927,7 +927,7 @@ def integration_spec_payload() -> dict[str, object]:
         "verification": [
             "Every generated argument is checked against the registered FastMCP signature.",
             "Run devtools render agent-manual and devtools render all --check after declaration changes.",
-            "Run devtools verify agent-integration --require-live before publishing the package.",
+            "Run devtools gate agent-integration --require-live before publishing the package.",
         ],
     }
 
