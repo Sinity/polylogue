@@ -48,7 +48,7 @@ from devtools.verification_ledger import (
 )
 from devtools.verification_result import declared_verification_result
 from devtools.verify_js_tests import _STAMP_NAME as JS_INSTALL_STAMP
-from devtools.verify_js_tests import JS_PACKAGES
+from devtools.verify_js_tests import JS_PACKAGES, available_cpus, extension_test_workers
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
@@ -532,6 +532,8 @@ def _execution_plan_digest() -> str:
             npm_version = "unavailable"
     payload = {
         "workers": os.environ.get("POLYLOGUE_PYTEST_WORKERS", ""),
+        "js_workers": os.environ.get("POLYLOGUE_EXTENSION_TEST_WORKERS")
+        or str(extension_test_workers(available_cpus())),
         "node": node_version,
         "npm": npm_version,
         # The Python gate executables the plan requires: a missing or
@@ -609,7 +611,12 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
             and aggregate.get("complete_corpus_covered") is True
         ):
             run_id = row.get("run_id")
-            return run_id if isinstance(run_id, str) else None
+            artifact_dir = row.get("artifact_dir")
+            # Coverage is only reusable while its evidence still exists; a
+            # run whose detail retention pruned is history, not a receipt.
+            if isinstance(run_id, str) and isinstance(artifact_dir, str) and (ROOT / artifact_dir).is_dir():
+                return run_id
+            return None
         return None
     return None
 

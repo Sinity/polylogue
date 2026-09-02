@@ -565,6 +565,7 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
     history: dict[str, Any] = {}
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
@@ -592,6 +593,7 @@ def test_complete_corpus_is_not_recomputed_for_a_verified_head(monkeypatch: pyte
                 "tier": "all",
                 "status": "success",
                 "run_id": "run-prior",
+                "artifact_dir": ".cache/verify/runs/run-prior",
                 "git_dirty": False,
                 "git_head": "head",
                 "semantic_receipt": {"source_revision": "head"},
@@ -625,6 +627,7 @@ def test_a_head_that_moves_during_preparation_is_not_reused(monkeypatch: pytest.
     heads = iter(["head", "head-moved", "head-moved", "head-moved"])
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
+    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: next(heads, "head-moved"))
     monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
@@ -652,6 +655,7 @@ def test_a_head_that_moves_during_preparation_is_not_reused(monkeypatch: pytest.
                 "tier": "all",
                 "status": "success",
                 "run_id": "run-prior",
+                "artifact_dir": ".cache/verify/runs/run-prior",
                 "git_dirty": False,
                 "git_head": "head",
                 "semantic_receipt": {"source_revision": "head"},
@@ -729,10 +733,13 @@ def test_git_dirty_fails_closed_when_status_cannot_be_read(monkeypatch: pytest.M
     assert verify_runs.git_dirty() is True
 
 
-def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     """Anti-vacuity, one clause each: a moved package set or plan runs; a dirty
     source run is not coverage; a newer failed recompute is not hidden behind
     an older green; a prior skip is not an attempt."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
 
     def row(
         run_id: str,
@@ -743,14 +750,18 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: p
         plan: str = "plan-1",
         covered_by: str | None = None,
         start_head: str = "head",
+        evidence: bool = True,
     ) -> dict[str, Any]:
         aggregate: dict[str, Any] = {"complete_corpus_covered": covered_by is None}
         if covered_by:
             aggregate["covered_by_run"] = covered_by
+        if evidence:
+            (tmp_path / ".cache" / "verify" / "runs" / run_id).mkdir(parents=True, exist_ok=True)
         return {
             "tier": "all",
             "status": status,
             "run_id": run_id,
+            "artifact_dir": f".cache/verify/runs/{run_id}",
             "git_dirty": dirty,
             "git_head": start_head,
             "semantic_receipt": {"source_revision": "head"},
@@ -775,3 +786,16 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: p
     assert covered([row("green"), row("skip", covered_by="green")]) == "green"
     # A run whose HEAD advanced while it ran verified a mixture, not this head.
     assert covered([row("moved", start_head="older")]) is None
+    # Pruned evidence is history, not coverage.
+    assert covered([row("pruned", evidence=False)]) is None
+
+
+def test_execution_plan_digest_sees_the_js_worker_budget(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+    monkeypatch.setenv("POLYLOGUE_EXTENSION_TEST_WORKERS", "2")
+    two = verify._execution_plan_digest()
+    monkeypatch.setenv("POLYLOGUE_EXTENSION_TEST_WORKERS", "4")
+    four = verify._execution_plan_digest()
+
+    assert two != four
