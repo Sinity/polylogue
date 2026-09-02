@@ -1512,9 +1512,9 @@ def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index
 ) -> None:
     """polylogue-ovme.2 AC1 canary.
 
-    A b5l-style index-only active generation lives entirely outside
-    ``configured_root`` and carries none of the durable tiers as physical
-    siblings (unlike ``IndexGenerationStore.create``'s own generation
+    An index-only active generation lives in its own generation directory
+    under the configured root and carries none of the durable tiers as
+    physical siblings (unlike ``IndexGenerationStore.create``'s own generation
     directories, which happen to populate symlinked siblings -- that
     convention must not be load-bearing for status reporting).  Diagnostics
     must still report ``source``/``user``/``embeddings``/``ops`` as present
@@ -1526,8 +1526,8 @@ def test_archive_storage_info_reads_durable_tiers_from_configured_root_for_index
     configured.mkdir()
     for name in ("source.db", "embeddings.db", "user.db", "ops.db"):
         (configured / name).touch()
-    generation_dir = tmp_path / "external-generation"
-    generation_dir.mkdir()
+    generation_dir = configured / ".index-generations" / "gen-a"
+    generation_dir.mkdir(parents=True)
     generation_index = generation_dir / "index.db"
     initialize_archive_database(generation_index, ArchiveTier.INDEX)
     pointer = configured / ".index-active-pointer"
