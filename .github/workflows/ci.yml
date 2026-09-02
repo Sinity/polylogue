@@ -56,8 +56,8 @@ jobs:
           POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
 
   test:
-    # The full suite runs under coverage instrumentation. Keep a generous job
-    # ceiling so pytest's per-test timeout can report the actual stalled node.
+    # Keep a generous job ceiling so pytest's per-test timeout can report the
+    # actual stalled node.
     # This heavy gate is intentionally OFF the per-PR path (operator decision):
     # the ~18 min wait on every PR was not worth it. It still runs post-merge on
     # master (regression net) and on demand via workflow_dispatch, but no longer
@@ -81,11 +81,6 @@ jobs:
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
           HYPOTHESIS_PROFILE: ci
-      - uses: actions/upload-artifact@v7
-        if: matrix.python-version == '3.14'
-        with:
-          name: coverage-report
-          path: coverage.xml
 
   typecheck:
     # Strict mypy over the clean subset of polylogue/*. The list of

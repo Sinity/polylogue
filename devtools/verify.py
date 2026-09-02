@@ -16,8 +16,6 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-import tomllib
-
 from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.gate import quick_gates
@@ -137,21 +135,6 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["--dist=loadgroup", "-n", str(workers)]
 
 
-def coverage_threshold(pyproject_path: Path = ROOT / "pyproject.toml") -> int | float:
-    """The committed coverage floor. One source: tool.coverage.report.fail_under."""
-    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-    threshold: object = data.get("tool", {}).get("coverage", {}).get("report", {}).get("fail_under")
-    if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
-        raise ValueError(f"{pyproject_path} does not define tool.coverage.report.fail_under")
-    return threshold
-
-
-def _coverage_args() -> list[str]:
-    threshold = coverage_threshold()
-    rendered = str(int(threshold)) if float(threshold).is_integer() else str(threshold)
-    return ["--cov=polylogue", "--cov-report=xml", "--cov-fail-under", rendered]
-
-
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
     """The corpus runs as ONE collection.
 
@@ -184,10 +167,8 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         "-p",
         "no:randomly",
         *worker_args,
-        # The complete corpus is the only run that covers enough to judge the
-        # committed floor, so the coverage gate rides it rather than a
-        # separate command with its own pytest invocation.
-        *(_coverage_args() if selection == "all" else []),
+        # Never under pytest-cov: testmon owns the tracer, and refuses to share
+        # it with branch coverage.
     ]
     return [(f"pytest ({selection})", command)]
 
