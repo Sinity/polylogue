@@ -18,6 +18,7 @@ from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 from hypothesis.database import DirectoryBasedExampleDatabase
 
+from devtools.agent_env import refuse_bare_pytest
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -50,10 +51,13 @@ if TYPE_CHECKING:
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Refuse a test run that imports the product from another checkout."""
+    """Refuse a test run that imports the product from another checkout, or bypasses the harness in a lane."""
     del config
     if _CHECKOUT_GUARD_ERROR is not None:
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
+    bare = refuse_bare_pytest(os.environ)
+    if bare is not None:
+        raise pytest.UsageError(bare)
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
 
 
