@@ -198,6 +198,9 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr("devtools.run_tests.run_pytest", fake_run_pytest)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
     monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
+    monkeypatch.setattr(
+        "devtools.run_tests.append_verification_evidence", lambda payload: captured.update(evidence=payload)
+    )
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
     assert "--json" not in captured["cmd"]
     assert "tests/unit/pipeline" in captured["cmd"]
@@ -209,6 +212,7 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
     assert isinstance(captured["history"]["git_dirty"], bool)
     assert captured["history"]["verification_scope"] == "affected"
     assert captured["history"]["status"] == "success"
+    assert captured["evidence"] == captured["history"]
 
 
 def test_main_preserves_relative_selection_from_subdirectory(
