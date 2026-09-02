@@ -1571,6 +1571,88 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
         assert archive.raw_revision_head_raw_id("codex-session:session") == folded
 
 
+def test_claude_append_replay_writes_composed_coverage_once(tmp_path: Path) -> None:
+    """The replay writer must persist the same composed session it hashes.
+
+    Re-indexing each original chunk would make this fail with two coverage
+    rows and a content hash for a session that was never persisted.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(message_id: str, text: str, seen: int) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_parse_coverage",
+                    payload={"sidecar_seen": {"progress": seen}, "sidecar_persisted": {"progress": seen}},
+                )
+            ],
+        )
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "claude-code-session:session",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b"b" * 5,
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append,
+            RawRevisionEnvelope(
+                "claude-code-session:session",
+                RawRevisionKind.APPEND,
+                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                1,
+                predecessor_source_revision="full-0",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        baseline_session = parsed("m0", "zero", 2)
+        append_session = parsed("m1", "one", 3)
+        aggregate = merge_parsed_session_chunks([baseline_session, append_session])[0]
+
+        archive.apply_raw_revision_replay(
+            archive.raw_revision_replay_plan("claude-code-session:session"),
+            {baseline: baseline_session, append: append_session},
+            acquired_at_ms=0,
+        )
+
+        stored = archive._conn.execute(
+            "SELECT content_hash, message_count, raw_id FROM sessions WHERE session_id = 'claude-code-session:session'"
+        ).fetchone()
+        assert stored is not None
+        assert bytes(stored[0]).hex() == session_content_hash(aggregate)
+        assert stored[1] == len(aggregate.messages)
+        assert stored[2] == append
+        coverage = archive._conn.execute(
+            """SELECT payload_json FROM session_events
+               WHERE session_id = 'claude-code-session:session' AND event_type = 'claude_parse_coverage'"""
+        ).fetchall()
+        assert len(coverage) == 1
+        assert json.loads(coverage[0][0])["sidecar_seen"] == {"progress": 5}
+
+
 @pytest.mark.parametrize("mutation", ["tail", "gap", "overlap", "predecessor", "baseline", "missing", "divergent"])
 def test_real_append_fold_proof_mutations_roll_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str

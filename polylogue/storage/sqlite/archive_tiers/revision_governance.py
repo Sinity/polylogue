@@ -2724,6 +2724,8 @@ def apply_raw_revision_replay(
     aggregate_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in plan.accepted_raw_ids)
     if len(aggregate_sessions) != 1:
         raise RuntimeError("one logical revision chain did not compose to exactly one session")
+    aggregate_session = aggregate_sessions[0]
+    compose_chain_for_write = aggregate_session.source_name is Provider.CLAUDE_CODE and len(plan.accepted_raw_ids) > 1
     aggregate_content_hash = bytes.fromhex(session_content_hash(aggregate_sessions[0]))
     attachments_by_raw_id: dict[str, dict[int, tuple[bytes | None, int, str]]] = {}
     attachment_refs_by_raw_id: dict[str, tuple[ArchiveSourceBlobRef, ...]] = {}
@@ -2736,6 +2738,11 @@ def apply_raw_revision_replay(
         )
         attachments_by_raw_id[raw_id] = acquired
         attachment_refs_by_raw_id[raw_id] = refs
+    aggregate_attachments = {
+        attachment_id: blob
+        for raw_id in plan.accepted_raw_ids
+        for attachment_id, blob in attachments_by_raw_id[raw_id].items()
+    }
     if store._blob_publisher is not None:
         if not manage_transaction and store._blob_publisher.has_pending:
             # Batched replay holds one transaction across many cohorts; a
@@ -2817,6 +2824,8 @@ def apply_raw_revision_replay(
             )
             existing_head = None
         for position, raw_id in enumerate(plan.accepted_raw_ids):
+            if compose_chain_for_write and position > 0:
+                continue
             if position <= already_indexed_upto:
                 # Already durably written by an earlier accepted replay
                 # of this exact byte chain (see ``skip_already_applied``
@@ -2832,22 +2841,26 @@ def apply_raw_revision_replay(
             # see this function's docstring for the resolve-here-not-earlier
             # rationale and the always-safe stale-prepared fallback.
             resolved_prepared: PreparedSessionRows | None = None
-            if position == 0 and prepared_by_raw_id is not None:
+            if not compose_chain_for_write and position == 0 and prepared_by_raw_id is not None:
                 prepared_candidate = prepared_by_raw_id.get(raw_id)
                 if isinstance(prepared_candidate, Future):
                     resolved_prepared = prepared_candidate.result()
                 else:
                     resolved_prepared = prepared_candidate
             index_started = time.perf_counter()
+            session_to_write = aggregate_session if compose_chain_for_write else parsed_by_raw_id[raw_id]
+            raw_id_to_write = plan.accepted_raw_ids[-1] if compose_chain_for_write else raw_id
             result = _index_parsed_for_retained_raw(
                 store,
-                parsed_by_raw_id[raw_id],
-                raw_id=raw_id,
-                source_index=0 if position == 0 else -1,
+                session_to_write,
+                raw_id=raw_id_to_write,
+                source_index=0 if compose_chain_for_write or position == 0 else -1,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
                 manage_transaction=False,
-                preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
+                preacquired_attachment_blobs=aggregate_attachments
+                if compose_chain_for_write
+                else attachments_by_raw_id[raw_id],
                 finalize_raw_parse=False,
                 revision_authoritative=True,
                 bulk_fts=bulk_fts,
