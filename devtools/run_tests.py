@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -102,6 +103,22 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
         "-o",
     }
 )
+
+
+def _prepare_nodatacow_parent(path: Path) -> None:
+    """Best-effortly mark the parent of a pytest basetemp as nodatacow."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        process = subprocess.Popen(
+            ["chattr", "+C", str(path.parent)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        process.wait()
+    except OSError:
+        # The optimization is filesystem-specific and must not make tests
+        # unavailable on hosts without chattr or the btrfs attribute.
+        return
 
 
 def _phase_duration(test: dict[str, Any]) -> float:
@@ -513,6 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     # and lanes, batches and the coordinator do run concurrently here.
     run_temp = basetemp_root(os.environ, root=ROOT) / f"tmp-{os.getpid()}-{time.time_ns():x}"
     remove_temp_tree(run_temp)
+    _prepare_nodatacow_parent(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(cmd)
     run = VerifyRun(

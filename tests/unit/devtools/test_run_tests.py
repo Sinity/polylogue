@@ -118,6 +118,35 @@ def test_build_pytest_cmd_does_not_add_distribution_for_serial_run() -> None:
     assert not any(arg.startswith("--dist") for arg in cmd)
 
 
+def test_prepare_nodatacow_parent_marks_basetemp_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], object, object]] = []
+
+    class FakeProcess:
+        def wait(self) -> None:
+            pass
+
+    def fake_popen(command: list[str], *, stdout: object, stderr: object) -> FakeProcess:
+        calls.append((command, stdout, stderr))
+        return FakeProcess()
+
+    basetemp = tmp_path / "verify" / "pytest-run"
+    monkeypatch.setattr("devtools.run_tests.subprocess.Popen", fake_popen)
+
+    run_tests._prepare_nodatacow_parent(basetemp)
+
+    assert calls == [(["chattr", "+C", str(basetemp.parent)], subprocess.DEVNULL, subprocess.DEVNULL)]
+    assert basetemp.parent.is_dir()
+
+
+def test_prepare_nodatacow_parent_is_best_effort(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        raise FileNotFoundError("chattr")
+
+    monkeypatch.setattr("devtools.run_tests.subprocess.Popen", unavailable)
+
+    run_tests._prepare_nodatacow_parent(tmp_path / "pytest-run")
+
+
 def test_main_requires_a_selection(capsys: pytest.CaptureFixture[str]) -> None:
     assert run_tests.main([]) == 2
     err = capsys.readouterr().err
