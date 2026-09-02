@@ -751,6 +751,8 @@ def test_linked_worktree_does_not_seed_from_a_foreign_environment(tmp_path: Path
 
     assert preparation.selection_mode == "bootstrap"
     assert not (lane / TESTMON_DATA_RELPATH).exists()
+    assert "main checkout" in preparation.local_state.reason
+    assert "is absent" in preparation.local_state.reason
 
 
 def test_linked_worktree_keeps_its_own_graph_over_the_main_one(tmp_path: Path) -> None:
@@ -808,3 +810,21 @@ def test_seed_never_writes_through_a_planted_staging_link(tmp_path: Path, monkey
 
     assert outside.read_bytes() == b"precious"
     assert planted.is_symlink()
+
+
+def test_linked_worktree_seeds_a_resumable_main_graph_for_new_modules(tmp_path: Path) -> None:
+    """Anti-vacuity: requiring a valid main graph left every lane that added a
+    module without selection (packet-polylogue-6ho2s, 2026-09-02 03:47Z)."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (lane / "polylogue" / "added.py").write_text("value = 2\n", encoding="utf-8")
+
+    preparation = prepare_native_testmon_environment(
+        lane, required_executable_paths=("polylogue/module.py", "polylogue/added.py")
+    )
+
+    assert preparation.selection_mode == "affected"
+    assert preparation.local_state.status == "incomplete"
+    assert preparation.local_state.missing_executable_paths == ("polylogue/added.py",)
+    assert (lane / TESTMON_DATA_RELPATH).is_file()
