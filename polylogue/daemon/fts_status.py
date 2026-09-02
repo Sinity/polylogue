@@ -389,7 +389,9 @@ def fts_readiness_info(dbf: Path, *, exact: bool = False) -> dict[str, object]:
             "coverage_pct": 0.0,
         }
     try:
-        conn = open_readonly_connection(dbf)
+        # Readiness reports a skewed or unstamped tier as not-ready data; it must
+        # not raise the status surface out of service.
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             if exact:
                 conn.execute("BEGIN")

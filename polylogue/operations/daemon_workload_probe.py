@@ -1008,7 +1008,7 @@ def _boundary_table_counts_and_precision(
         counts[table], precision[table] = _table_count_with_precision(conn, table, exact=exact)
     if source_db is not None and source_db.exists():
         try:
-            source_conn = open_readonly_connection(source_db)
+            source_conn = open_readonly_connection(source_db, validate_schema=False)
             try:
                 for table in ("raw_sessions", "raw_artifacts"):
                     counts[table], precision[table] = _table_count_with_precision(source_conn, table, exact=exact)
@@ -2387,10 +2387,11 @@ def probe(
     observed_db: Path | None
     if db.exists():
         observed_db = db
-        conn = open_readonly_connection(db)
+        # The probe reports what the archive currently holds, skew included.
+        conn = open_readonly_connection(db, validate_schema=False)
     elif index_db.exists():
         observed_db = index_db
-        conn = open_readonly_connection(index_db)
+        conn = open_readonly_connection(index_db, validate_schema=False)
     else:
         observed_db = None
         conn = sqlite3.connect(":memory:")

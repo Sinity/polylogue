@@ -55,15 +55,13 @@ def record_schema_drift_observations_to_ops_sync(
     if not ops_db_path.exists():
         return 0
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
     from polylogue.storage.sqlite.archive_tiers.ops_write import record_schema_drift_sample
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import open_connection
 
     ops_conn: sqlite3.Connection | None = None
     try:
-        ops_conn = open_connection(ops_db_path, timeout=5.0)
-        initialize_archive_tier(ops_conn, ArchiveTier.OPS)
+        ops_conn = open_initialized_tier_connection(ops_db_path, ArchiveTier.OPS, timeout=5.0, daemon=False)
     except sqlite3.Error:
         logger.debug("schema drift sampling: ops.db open/init failed", exc_info=True)
         if ops_conn is not None:

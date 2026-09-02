@@ -109,15 +109,15 @@ def sample_fts_drift_to_ops_sync(conn: sqlite3.Connection, *, archive_root: Path
     if not ops_db_path.exists():
         return 0
 
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
     from polylogue.storage.sqlite.archive_tiers.ops_write import record_fts_drift_sample
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import open_connection
 
     ops_conn: sqlite3.Connection | None = None
     try:
-        ops_conn = open_connection(ops_db_path, timeout=_OPS_SAMPLE_TIMEOUT_SECONDS)
-        initialize_archive_tier(ops_conn, ArchiveTier.OPS)
+        ops_conn = open_initialized_tier_connection(
+            ops_db_path, ArchiveTier.OPS, timeout=_OPS_SAMPLE_TIMEOUT_SECONDS, daemon=False
+        )
         sampled_at_ms = int(time.time() * 1000)
         written = 0
         for row in rows:

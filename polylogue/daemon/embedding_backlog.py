@@ -32,12 +32,10 @@ def recover_embedding_catchup_receipts(archive_root: Path) -> int:
     ops_db = archive_root / "ops.db"
     if not ops_db.exists():
         return 0
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-    with open_daemon_connection(ops_db, timeout=30.0) as conn:
-        initialize_archive_tier(conn, ArchiveTier.OPS)
+    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
         updated = conn.execute(
             """
             UPDATE embedding_catchup_runs
@@ -375,15 +373,13 @@ def _upsert_archive_embedding_catchup_run(
     estimated_cost_usd: float | None = None,
     error_message: str | None = None,
 ) -> str:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
     from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_embedding_catchup_run
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     ops_db.parent.mkdir(parents=True, exist_ok=True)
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
-    with open_daemon_connection(ops_db, timeout=30.0) as conn:
-        initialize_archive_tier(conn, ArchiveTier.OPS)
+    with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
         return upsert_embedding_catchup_run(
             conn,
             run_id=run_id,

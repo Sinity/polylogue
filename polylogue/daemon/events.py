@@ -82,7 +82,9 @@ def _open_events_reader(path: Path | None = None) -> sqlite3.Connection | None:
     if not path.is_file():
         return None
     try:
-        conn = open_readonly_connection(path)
+        # The event ledger is diagnostic evidence; read it even when the tier's
+        # schema version is not the runtime's.
+        conn = open_readonly_connection(path, validate_schema=False)
     except sqlite3.OperationalError:
         if not path.is_file():
             return None

@@ -46,12 +46,12 @@ from polylogue.core.stats import percentile
 from polylogue.daemon.cursor_lag_status import CursorLagItem, CursorLagSummary
 from polylogue.logging import get_logger
 from polylogue.sources.live._lag_sample_ddl import _LAG_SAMPLE_DDL, _LAG_SAMPLE_INDEX_DDL
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
 from polylogue.storage.sqlite.archive_tiers.ops_write import (
     record_cursor_lag_sample as record_archive_cursor_lag_sample,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -232,8 +232,7 @@ def _record_archive_cursor_lag_samples(
         return 0
     ops_db.parent.mkdir(parents=True, exist_ok=True)
     try:
-        with closing(open_daemon_connection(ops_db, timeout=0.1)) as conn:
-            initialize_archive_tier(conn, ArchiveTier.OPS)
+        with closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn:
             for family, source_path, max_lag_s, stuck_file_count, p50_s, p95_s in rows:
                 record_archive_cursor_lag_sample(
                     conn,
@@ -263,8 +262,7 @@ def _gc_archive_cursor_lag_samples(
         return 0
     cutoff_ms = _epoch_ms((now or datetime.now(UTC)) - timedelta(days=retention_days))
     try:
-        with closing(open_daemon_connection(ops_db, timeout=0.1)) as conn:
-            initialize_archive_tier(conn, ArchiveTier.OPS)
+        with closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn:
             cur = conn.execute("DELETE FROM cursor_lag_samples WHERE sampled_at_ms < ?", (cutoff_ms,))
             conn.commit()
             return cur.rowcount or 0

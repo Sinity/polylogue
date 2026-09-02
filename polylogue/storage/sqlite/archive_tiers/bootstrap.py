@@ -237,7 +237,24 @@ def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, r
     initialize_archive_tier(conn, tier)
 
 
+_DERIVED_IDENTITY_TIERS = (ArchiveTier.INDEX, ArchiveTier.OPS)
+"""Tiers whose readers assert a derived schema identity before using them."""
+
+
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
+    """Materialise a tier on an open connection and stamp its schema identity.
+
+    Every route that creates a derived tier passes through here, so the
+    identity readers assert is stamped here rather than by each caller.
+    """
+    _materialize_archive_tier(conn, tier)
+    if tier in _DERIVED_IDENTITY_TIERS:
+        from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+        stamp_derived_schema_identity(conn, tier.value)
+
+
+def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
     """Initialize a fresh archive tier database on an already-open connection.
 
     When the connection's database is verifiably empty (no objects in
@@ -608,10 +625,7 @@ def initialize_archive_database(
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_fresh_archive_tier(conn, tier, required_version)
-        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
-            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
-
-            stamp_derived_schema_identity(conn, tier.value)
+        if tier in _DERIVED_IDENTITY_TIERS:
             conn.commit()
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
@@ -796,6 +810,46 @@ def reconcile_durable_change_trains_on_startup(root: Path) -> tuple[Path, ...]:
     return reconcile_durable_change_train_startup(root)
 
 
+def open_initialized_tier_connection(
+    path: Path | str,
+    tier: ArchiveTier,
+    *,
+    timeout: float = 30.0,
+    busy_timeout_ms: int | None = None,
+    daemon: bool = True,
+) -> sqlite3.Connection:
+    """Open a tier database that may not exist yet, materialise it, and validate.
+
+    A tier this route is about to create carries no schema version, so the
+    open-time version check is deferred until ``initialize_archive_tier`` has
+    stamped it. The check still runs before the connection is handed back, so a
+    genuinely skewed tier is refused exactly as an ordinary open refuses it.
+    """
+    from polylogue.storage.sqlite.connection_profile import (
+        assert_tier_schema_supported,
+        open_connection,
+        open_daemon_connection,
+    )
+
+    if daemon:
+        conn = open_daemon_connection(
+            path,
+            timeout=timeout,
+            busy_timeout_ms=busy_timeout_ms,
+            tier=tier,
+            validate_schema=False,
+        )
+    else:
+        conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False)
+    try:
+        initialize_archive_tier(conn, tier)
+        assert_tier_schema_supported(conn, path, tier)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 __all__ = [
     "ARCHIVE_TIER_SPECS",
     "DurabilityClass",
@@ -803,6 +857,7 @@ __all__ = [
     "initialize_active_archive_root",
     "initialize_archive_database",
     "initialize_archive_tier",
+    "open_initialized_tier_connection",
     "reconcile_durable_change_trains_on_startup",
     "archive_tier_spec",
 ]

@@ -733,7 +733,8 @@ def _archive_embedding_status_payload(
         dimensions=_payload_int(getattr(cfg, "embedding_dimension", 0)),
     )
     root = configured_root if configured_root is not None else db_path.parent
-    conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0)
+    # Status payloads degrade rather than refuse when the index tier is skewed.
+    conn = open_readonly_connection(index_db, timeout=STATUS_READ_BUSY_TIMEOUT_MS / 1000.0, validate_schema=False)
     conn.execute(f"PRAGMA busy_timeout = {STATUS_READ_BUSY_TIMEOUT_MS}")
     try:
         if not _table_exists(conn, "sessions"):

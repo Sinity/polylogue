@@ -2364,7 +2364,7 @@ def test_fts_readiness_exact_uses_snapshot_transaction(monkeypatch: pytest.Monke
     initialize_archive_database(db_path, ArchiveTier.INDEX)
     traced: list[str] = []
 
-    def _open_traced_connection(path: Path) -> sqlite3.Connection:
+    def _open_traced_connection(path: Path, **_kwargs: object) -> sqlite3.Connection:
         conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         conn.set_trace_callback(traced.append)
         return conn
