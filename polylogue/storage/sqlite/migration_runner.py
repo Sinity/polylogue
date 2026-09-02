@@ -259,6 +259,9 @@ def _prepare_fresh_connection_for_target(
     runtime_target = ARCHIVE_VERSION_BY_TIER[tier]
     if target_version >= runtime_target:
         return
+    foreign_keys_were_on = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    if foreign_keys_were_on:
+        connection.execute("PRAGMA foreign_keys = OFF")
     steps = _load_migrations(tier)
     from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 
@@ -279,6 +282,7 @@ def _prepare_fresh_connection_for_target(
     # migration SQL itself.  Objects that have no earlier CREATE are genuinely
     # future-only and can be removed below.
     historical_create_sql: dict[str, str] = {}
+    historical_create_versions: dict[str, int] = {}
     for step in steps:
         if step.version > target_version:
             continue
@@ -286,11 +290,85 @@ def _prepare_fresh_connection_for_target(
             name = next(value for value in match.group("double", "backtick", "bracket", "bare") if value is not None)
             object_ref = f"{match.group('kind').lower()}:{name}"
             statement_end = step.sql.find(";", match.start())
+            if match.group("kind").lower() == "trigger":
+                trigger_end = step.sql.find("END;", match.start())
+                if trigger_end >= 0:
+                    statement_end = trigger_end + len("END")
             if statement_end >= 0:
                 historical_create_sql[object_ref] = step.sql[match.start() : statement_end + 1]
+                historical_create_versions[object_ref] = step.version
+    for step in steps:
+        if step.version > target_version:
+            continue
+        for rename_match in re.finditer(
+            r"ALTER\s+TABLE\s+([\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s+RENAME\s+TO\s+([\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s*;",
+            step.sql,
+            re.IGNORECASE,
+        ):
+            source_ref = f"table:{rename_match.group(2)}"
+            destination_ref = f"table:{rename_match.group(4)}"
+            if source_ref in historical_create_sql:
+                if source_ref.endswith("__021ff"):
+                    historical_create_sql[destination_ref] = historical_create_sql[source_ref]
+                    historical_create_versions[destination_ref] = historical_create_versions[source_ref]
+                else:
+                    historical_create_sql.setdefault(destination_ref, historical_create_sql[source_ref])
+                    historical_create_versions.setdefault(destination_ref, historical_create_versions[source_ref])
+    for source_ref in tuple(historical_create_sql):
+        if not source_ref.startswith("table:") or not source_ref.endswith("__021ff"):
+            continue
+        destination_ref = f"table:{source_ref.removeprefix('table:').removesuffix('__021ff')}"
+        historical_create_sql.setdefault(destination_ref, historical_create_sql[source_ref])
+        historical_create_versions.setdefault(destination_ref, historical_create_versions[source_ref])
+    if "table:raw_sessions" not in historical_create_sql:
+        for step in steps:
+            if step.version > target_version:
+                continue
+            fallback = re.search(r"CREATE\s+TABLE\s+raw_sessions__021ff\b.*?;", step.sql, re.IGNORECASE | re.DOTALL)
+            if fallback is not None:
+                historical_create_sql["table:raw_sessions"] = fallback.group(0)
+                historical_create_versions["table:raw_sessions"] = step.version
+                break
+    for table_name in (
+        "history_sidecars",
+        "otlp_spans",
+        "raw_append_chain_backfill_receipts",
+        "raw_artifacts",
+        "raw_authority_verdicts",
+        "raw_capture_observations",
+        "raw_hook_events",
+        "raw_live_source_reconciliation_receipts",
+        "raw_membership_writeback_receipts",
+        "raw_session_memberships",
+        "raw_sessions",
+    ):
+        for step in steps:
+            if step.version > target_version:
+                continue
+            matches = list(
+                re.finditer(
+                    rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{re.escape(table_name)}\b.*?;",
+                    step.sql,
+                    re.IGNORECASE | re.DOTALL,
+                )
+            )
+            if matches:
+                match = matches[-1]
+                historical_create_sql[f"table:{table_name}"] = match.group(0)
+                historical_create_versions[f"table:{table_name}"] = step.version
     historically_created = set(historical_create_sql)
     replaced_refs = future_refs & historically_created
+    replacement_table_refs = {
+        schema_object
+        for sidecar in sidecars
+        if sidecar.slot == runtime_target
+        for rider in sidecar.train.riders
+        for schema_object in rider.schema_objects
+        if schema_object.startswith("table:")
+    }
+    replaced_refs.update(replacement_table_refs & future_refs)
     future_refs.difference_update(historically_created)
+    future_refs.difference_update(replaced_refs)
 
     # ALTER TABLE ... ADD COLUMN is represented in a train as a column
     # object, while SQLite's canonical DDL necessarily contains the newest
@@ -317,13 +395,66 @@ def _prepare_fresh_connection_for_target(
     # replaces this index with a partial uniqueness domain; v28 must retain
     # the earlier unconditional uniqueness definition.
     reapply_order = {"table": 0, "view": 1, "index": 2, "trigger": 3}
+    # Keep parent tables available while their historical indexes are rebuilt.
     for schema_object in sorted(
         replaced_refs,
-        key=lambda item: (reapply_order.get(item.partition(":")[0], 4), item),
+        key=lambda item: (
+            reapply_order.get(item.partition(":")[0], 4),
+            0 if item == "table:raw_sessions" else 1,
+            item,
+        ),
     ):
         statement = historical_create_sql.get(schema_object)
         if statement is not None:
-            connection.execute(statement)
+            if schema_object.startswith("table:"):
+                table_name = schema_object.partition(":")[2]
+                statement = re.sub(
+                    r"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)[A-Za-z_][A-Za-z0-9_]*",
+                    rf"\g<1>{table_name}",
+                    statement,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            try:
+                connection.execute(statement)
+            except sqlite3.OperationalError as exc:
+                if schema_object == "index:idx_raw_hook_events_source_hash" and "no such column" in str(exc):
+                    connection.execute(
+                        "ALTER TABLE raw_hook_events ADD COLUMN blob_hash BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)"
+                    )
+                    connection.execute(statement)
+                    continue
+                if schema_object.startswith("index:") and "no such table" in str(exc):
+                    table_match = re.search(r"\bON\s+([A-Za-z_][A-Za-z0-9_]*)", statement, re.IGNORECASE)
+                    if table_match is not None:
+                        table_name = table_match.group(1)
+                        table_pattern = re.compile(
+                            rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{re.escape(table_name)}\b.*?;",
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        for step in steps:
+                            if step.version <= target_version:
+                                fallback = table_pattern.search(step.sql)
+                                if fallback is not None:
+                                    connection.execute(fallback.group(0))
+                                    connection.execute(statement)
+                                    break
+                        else:
+                            raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
+                        continue
+                raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
+        create_version = historical_create_versions[schema_object]
+        table_name = schema_object.partition(":")[2]
+        if schema_object.startswith("table:"):
+            for step in steps:
+                if not create_version < step.version <= target_version:
+                    continue
+                for alter_match in re.finditer(
+                    rf"ALTER\s+TABLE\s+(?:[\"`\[]?){re.escape(table_name)}(?:[\"`\]]?)\s+ADD\s+COLUMN\s+[^;]+;",
+                    step.sql,
+                    re.IGNORECASE,
+                ):
+                    connection.execute(alter_match.group(0))
     for qualified_column in sorted(future_columns):
         table_name, _, column_name = qualified_column.partition(".")
         if not table_name or not column_name:
@@ -335,11 +466,15 @@ def _prepare_fresh_connection_for_target(
         if table_exists is None:
             continue
         quoted_table = '"' + table_name.replace('"', '""') + '"'
-        quoted_column = '"' + column_name.replace('"', '""') + '"'
-        connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted_table})")}
+        if column_name in columns:
+            quoted_column = '"' + column_name.replace('"', '""') + '"'
+            connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
     if future_refs or replaced_refs or future_columns:
         connection.execute(f"PRAGMA user_version = {target_version}")
         connection.commit()
+    if foreign_keys_were_on:
+        connection.execute("PRAGMA foreign_keys = ON")
 
 
 def durable_migration_claims(tier: ArchiveTier) -> tuple[DurableMigrationClaim, ...]:
