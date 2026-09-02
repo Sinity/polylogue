@@ -25,13 +25,6 @@ identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
 checkpoint_untracked = true
 verification_operations = ["verify_affected", "verify_quick", "verify_all"]
 
-[workspace.provision]
-copy = [".cache/testmon/testmondata"]
-# Prove the lane venv and copied testmon graph at provision time; failure rolls
-# the workspace back as a typed provisioning error.
-exec = ["sh", "-c", "uv sync --extra dev --frozen && python -m devtools.testmon_provision"]
-exec_timeout_seconds = 600
-
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]
 generated_surfaces = ["docs/reference/schema-support-matrix.md"]
