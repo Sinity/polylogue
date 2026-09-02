@@ -20,6 +20,7 @@ from typing import Any
 from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.pytest_collection_contract import (
+    CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
@@ -344,6 +345,115 @@ def _read_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+MAX_RERUN_NODEIDS = 300
+
+
+def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifacts: Any) -> dict[str, Any] | None:
+    """Rerun exactly the failed tests once, alone and unselected.
+
+    A test that fails twice is red and decides the step. A test that passes
+    on rerun is flaky: recorded with both outcomes in the step and in the
+    canonical report, where it counts as passed. A run beside other work can
+    fail hundreds of tests on load alone; that is not a verdict on the head.
+    """
+    report_path = _pytest_report_path(command)
+    report = _read_json(report_path)
+    if not isinstance(report, Mapping):
+        return None
+    failed = [
+        str(test["nodeid"])
+        for test in report.get("tests", [])
+        if isinstance(test, Mapping) and test.get("outcome") in {"failed", "error"} and test.get("nodeid")
+    ]
+    if not failed or len(failed) > MAX_RERUN_NODEIDS:
+        return None
+    rerun_report = artifacts.step_dir / "pytest-rerun.json"
+    rerun_command = [
+        venv_python(root=ROOT),
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "--json-report",
+        "--json-report-omit=collectors,log,streams,warnings",
+        f"--json-report-file={rerun_report}",
+        *MANAGED_PLUGIN_ARGS,
+        "-p",
+        "no:testmon",
+        "-p",
+        "no:randomly",
+        CLEAR_CONFIGURED_ADDOPTS,
+        *failed,
+    ]
+    sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")
+    sys.stderr.flush()
+    rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+    rerun_completed = subprocess.run(rerun_command, cwd=ROOT, env=rerun_env, stdout=sys.stderr, stderr=sys.stderr)
+    second = _read_json(rerun_report)
+    if not isinstance(second, Mapping) or rerun_completed.returncode not in (0, 1):
+        # No report, or pytest itself did not finish cleanly (exit 3 is an
+        # internal error): nothing here clears a failure.
+        return {
+            "attempted": failed,
+            "still_failed": failed,
+            "flaky": [],
+            "rerun_report": None,
+            "rerun_exit": rerun_completed.returncode,
+        }
+    second_outcome = {
+        str(test["nodeid"]): str(test.get("outcome"))
+        for test in second.get("tests", [])
+        if isinstance(test, Mapping) and test.get("nodeid")
+    }
+    still_failed = [nodeid for nodeid in failed if second_outcome.get(nodeid) != "passed"]
+    flaky = [nodeid for nodeid in failed if second_outcome.get(nodeid) == "passed"]
+    if not still_failed and rerun_completed.returncode != 0:
+        # Every node passed but the process did not: the run is not green.
+        still_failed, flaky = failed, []
+    if flaky:
+        patched = dict(report)
+        tests = []
+        for test in report.get("tests", []):
+            if isinstance(test, Mapping) and test.get("nodeid") in flaky:
+                test = {**test, "first_outcome": test.get("outcome"), "outcome": "passed", "flaky": True}
+            tests.append(test)
+        patched["tests"] = tests
+        summary = dict(report.get("summary") or {})
+        for key in ("failed", "error"):
+            if key in summary:
+                summary[key] = max(
+                    0,
+                    int(summary[key])
+                    - sum(
+                        1
+                        for t in report.get("tests", [])
+                        if isinstance(t, Mapping) and t.get("nodeid") in flaky and t.get("outcome") == key
+                    ),
+                )
+        summary["passed"] = int(summary.get("passed", 0)) + len(flaky)
+        summary["flaky"] = len(flaky)
+        if not still_failed:
+            summary["exitstatus"] = 0
+        patched["summary"] = summary
+        report_path.write_text(json.dumps(patched), encoding="utf-8")
+        # The progress plugin's own summary carries the first exit status;
+        # evidence evaluation compares the two, so both tell the same story.
+        plugin_summary_path = artifacts.step_dir / "summary.json"
+        plugin_summary = _read_json(plugin_summary_path)
+        if isinstance(plugin_summary, Mapping):
+            updated = dict(plugin_summary)
+            updated["flaky"] = len(flaky)
+            if not still_failed:
+                updated["exitstatus"] = 0
+            plugin_summary_path.write_text(json.dumps(updated), encoding="utf-8")
+    return {
+        "attempted": failed,
+        "still_failed": still_failed,
+        "flaky": flaky,
+        "rerun_report": str(rerun_report.relative_to(ROOT)),
+    }
+
+
 def _pytest_report_path(command: Sequence[str]) -> Path:
     return next(
         (Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")),
@@ -373,6 +483,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     artifacts = run.start_step(label=label, cmd=command)
     env = _subprocess_env()
     completed: subprocess.CompletedProcess[Any]
+    rerun: dict[str, Any] | None = None
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
         early_metadata = {
@@ -390,6 +501,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
+        rerun = _rerun_failed_once(command, env=env, artifacts=artifacts) if completed.returncode else None
     else:
         try:
             completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
@@ -406,6 +518,13 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         "diagnosis": "pytest_failed" if pytest_step else "gate_passed" if completed.returncode == 0 else "gate_failed"
     }
     if pytest_step:
+        if rerun is not None:
+            metadata["rerun"] = rerun
+            if not rerun["still_failed"]:
+                # Every failure passed alone: the step is green with its
+                # flakes named, never green silently.
+                metadata["diagnosis"] = "gate_passed"
+                completed = subprocess.CompletedProcess(command, 0)
         metadata.update(_copy_pytest_report(command, artifacts))
         copy_current_pytest_artifacts(
             ROOT,

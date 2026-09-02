@@ -965,3 +965,111 @@ def test_git_dirty_sees_untracked_files_regardless_of_config(monkeypatch: pytest
     monkeypatch.setattr(subprocess, "run", record)
     assert verify_runs.git_dirty() is True
     assert "--untracked-files=all" in seen[0]
+
+
+def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: without the rerun a load-induced failure is a red step;
+    without the still-failed check a real failure passes as flaky."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_python", lambda root: "python")
+    report_path = tmp_path / ".cache" / "verify" / "last-pytest.json"
+    report_path.parent.mkdir(parents=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "tests": [
+                    {"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"},
+                    {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
+                    {"nodeid": "tests/test_a.py::test_ok", "outcome": "passed"},
+                ],
+                "summary": {"failed": 2, "passed": 1, "exitstatus": 1},
+            }
+        )
+    )
+    step_dir = tmp_path / "step"
+    step_dir.mkdir()
+    (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 1, "failed": 2}))
+    reruns: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        reruns.append(command)
+        rerun_report = Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1])
+        rerun_report.write_text(
+            json.dumps(
+                {
+                    "tests": [
+                        {"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"},
+                        {"nodeid": "tests/test_a.py::test_red", "outcome": "failed"},
+                    ]
+                }
+            )
+        )
+        return SimpleNamespace(returncode=1)
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    command = ["python", "-m", "pytest", f"--json-report-file={report_path}"]
+
+    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+
+    assert result is not None
+    assert result["flaky"] == ["tests/test_a.py::test_flaky"]
+    assert result["still_failed"] == ["tests/test_a.py::test_red"]
+    assert "-p" in reruns[0] and "no:testmon" in reruns[0]
+    assert reruns[0][-2:] == ["tests/test_a.py::test_flaky", "tests/test_a.py::test_red"]
+    patched = json.loads(report_path.read_text())
+    by_id = {t["nodeid"]: t for t in patched["tests"]}
+    assert by_id["tests/test_a.py::test_flaky"]["outcome"] == "passed"
+    assert by_id["tests/test_a.py::test_flaky"]["flaky"] is True
+    assert by_id["tests/test_a.py::test_red"]["outcome"] == "failed"
+    assert patched["summary"]["failed"] == 1 and patched["summary"]["flaky"] == 1
+    assert patched["summary"]["exitstatus"] == 1, "a real failure keeps the step red"
+    assert json.loads((step_dir / "summary.json").read_text()) == {"exitstatus": 1, "failed": 2, "flaky": 1}
+
+    # Every failure passes alone: both summaries agree the step is green.
+    report_path.write_text(
+        json.dumps(
+            {
+                "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"}],
+                "summary": {"failed": 1, "exitstatus": 1},
+            }
+        )
+    )
+    (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 1}))
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_k: (
+            Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1]).write_text(
+                json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
+            ),
+            SimpleNamespace(returncode=0),
+        )[1],
+    )
+    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+    assert result is not None and result["still_failed"] == []
+    assert json.loads((step_dir / "summary.json").read_text())["exitstatus"] == 0
+    assert json.loads(report_path.read_text())["summary"]["exitstatus"] == 0
+
+    # Every node passed but pytest exited 3 (internal error): nothing is cleared.
+    report_path.write_text(
+        json.dumps(
+            {
+                "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"}],
+                "summary": {"failed": 1, "exitstatus": 1},
+            }
+        )
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **_k: (
+            Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1]).write_text(
+                json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
+            ),
+            SimpleNamespace(returncode=3),
+        )[1],
+    )
+    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+    assert result is not None and result["still_failed"] == ["tests/test_a.py::test_flaky"] and result["flaky"] == []

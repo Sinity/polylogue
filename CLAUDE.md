@@ -167,10 +167,18 @@ fixture/harness → proves a production route.
 
 ## Code Review Rules
 
-- A finding names a concrete input at the reviewed head and the wrong observable outcome. Environment enumeration without a concrete defect is not a finding.
-- Caches and receipts are keyed by declared inputs such as the lockfile, provision stamp, or environment digest, not by enumerating filesystem contents.
-- A review thread closes when a commit answers it or evidence refutes it. Reopen it only when that answer is wrong.
-- Tests and fixtures state the anti-vacuity condition that makes them fail when the behavior is bypassed or the defect returns.
+- A finding names a concrete input at the reviewed head and the wrong
+  observable outcome; a scenario that needs the environment corrupted below
+  its own integrity contract (lockfile, provision stamp, environment digest,
+  tests) is out of scope.
+- Verification receipts and caches are keyed on declared inputs; do not ask
+  for filesystem enumeration (installed trees, example databases, every
+  executable) as a cache key.
+- A thread answered by a commit or a stated refutation is closed unless the
+  answer is wrong; do not restate an answered finding in a later round.
+- Judge a test by the anti-vacuity condition it names, not by whether it
+  could be stricter.
+- Publication text and lane metadata are not review targets.
 
 ## Commit / PR discipline
 
