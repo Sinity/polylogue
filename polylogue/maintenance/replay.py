@@ -63,7 +63,7 @@ from polylogue.maintenance.planner import (
     FailureSample,
     MaintenanceScope,
 )
-from polylogue.maintenance.scope import MaintenanceScopeFilter
+from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     MAINTENANCE_TARGET_NAMES,
@@ -1273,6 +1273,16 @@ def _run_one_target(
     """Execute one target, recording success or a typed failure sample."""
 
     target_name = spec.name
+    unsupported = unsupported_scope_dimensions(scope_filter, target=target_name)
+    if unsupported:
+        message = f"Target {target_name!r} cannot apply scope dimensions: {', '.join(unsupported)}"
+        _record_failure(
+            state,
+            FailureSample(kind="UnsupportedScopeDimension", locator=f"target:{target_name}", message=message),
+            target=target_name,
+            config=config,
+        )
+        return False
     repair_fn = _replay_handler_for(target_name, replayable=spec.replayable)
     if repair_fn is None:
         reason = (

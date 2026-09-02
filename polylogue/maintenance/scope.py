@@ -42,6 +42,11 @@ from polylogue.core.enums import Origin
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 HONORED_SCOPE_DIMENSIONS = frozenset(("session_ids",))
+TARGET_HONORED_SCOPE_DIMENSIONS = {
+    "session_insights": HONORED_SCOPE_DIMENSIONS,
+    "empty_sessions": HONORED_SCOPE_DIMENSIONS,
+    "superseded_raw_snapshots": frozenset(),
+}
 
 
 class MaintenanceScopeFilter(SurfacePayloadModel):
@@ -167,8 +172,11 @@ def _coerce_datetime(value: Any) -> datetime:
     raise TypeError(f"Cannot coerce {value!r} to datetime")
 
 
-def unsupported_scope_dimensions(scope_filter: MaintenanceScopeFilter) -> tuple[str, ...]:
-    """Return requested dimensions the maintenance executor does not apply."""
+def unsupported_scope_dimensions(scope_filter: MaintenanceScopeFilter, *, target: str | None = None) -> tuple[str, ...]:
+    """Return requested dimensions the selected target does not apply."""
+    honored = (
+        TARGET_HONORED_SCOPE_DIMENSIONS.get(target, HONORED_SCOPE_DIMENSIONS) if target else HONORED_SCOPE_DIMENSIONS
+    )
     return tuple(
         name
         for name in (
@@ -180,8 +188,13 @@ def unsupported_scope_dimensions(scope_filter: MaintenanceScopeFilter) -> tuple[
             "failure_kind",
             "parser_version",
         )
-        if getattr(scope_filter, name, None) is not None and name not in HONORED_SCOPE_DIMENSIONS
+        if getattr(scope_filter, name, None) is not None and name not in honored
     )
 
 
-__all__ = ["HONORED_SCOPE_DIMENSIONS", "MaintenanceScopeFilter", "unsupported_scope_dimensions"]
+__all__ = [
+    "HONORED_SCOPE_DIMENSIONS",
+    "MaintenanceScopeFilter",
+    "TARGET_HONORED_SCOPE_DIMENSIONS",
+    "unsupported_scope_dimensions",
+]

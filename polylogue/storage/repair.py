@@ -37,7 +37,7 @@ from polylogue.core.sources import origin_from_provider, origin_provider_fiber, 
 from polylogue.logging import get_logger
 from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
 from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-from polylogue.maintenance.scope import MaintenanceScopeFilter
+from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -5902,7 +5902,10 @@ def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_
     return not observation.parse_as_session
 
 
-def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
+def _empty_session_debris_session_ids(
+    conn: sqlite3.Connection,
+    session_ids: tuple[str, ...] | None = None,
+) -> list[str]:
     """Return ``session_id``s for message-less sessions whose raw artifact
     positively fails the current record-shape classifier.
 
@@ -5924,6 +5927,9 @@ def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
     conn.row_factory = sqlite3.Row
     try:
         candidates = _empty_session_candidate_ids(conn)
+        if session_ids is not None:
+            requested = set(session_ids)
+            candidates = [item for item in candidates if item[0] in requested]
         if not candidates:
             return []
         source_db = _sibling_source_db_path(conn)
@@ -5944,7 +5950,9 @@ def _empty_session_debris_session_ids(conn: sqlite3.Connection) -> list[str]:
         conn.row_factory = original_row_factory
 
 
-def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult:
+def repair_empty_sessions(
+    config: Config, dry_run: bool = False, *, session_ids: tuple[str, ...] | None = None
+) -> RepairResult:
     """Delete message-less sessions whose raw artifact positively fails the
     current record-shape classifier.
 
@@ -5958,15 +5966,17 @@ def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult
     del config
     try:
         with _open_archive_index_connection() as conn:
-            session_ids = _empty_session_debris_session_ids(conn)
+            candidate_ids = _empty_session_debris_session_ids(conn, session_ids=session_ids)
             if dry_run:
                 return _repair_result(
                     "empty_sessions",
-                    repaired_count=len(session_ids),
+                    repaired_count=len(candidate_ids),
                     success=True,
-                    detail=(f"Would: {len(session_ids)} rows affected" if session_ids else "Would: No issues found"),
+                    detail=(
+                        f"Would: {len(candidate_ids)} rows affected" if candidate_ids else "Would: No issues found"
+                    ),
                 )
-            if not session_ids:
+            if not candidate_ids:
                 return _repair_result(
                     "empty_sessions",
                     repaired_count=0,
@@ -5975,14 +5985,14 @@ def repair_empty_sessions(config: Config, dry_run: bool = False) -> RepairResult
                 )
             conn.executemany(
                 "DELETE FROM sessions WHERE session_id = ?",
-                [(session_id,) for session_id in session_ids],
+                [(session_id,) for session_id in candidate_ids],
             )
             conn.commit()
             return _repair_result(
                 "empty_sessions",
-                repaired_count=len(session_ids),
+                repaired_count=len(candidate_ids),
                 success=True,
-                detail=f"Repaired {len(session_ids)} rows",
+                detail=f"Repaired {len(candidate_ids)} rows",
             )
     except Exception as exc:
         return _repair_result(
@@ -7451,6 +7461,7 @@ def run_archive_cleanup(
     *,
     preview_counts: dict[str, int] | None = None,
     targets: tuple[str, ...] = (),
+    session_ids: tuple[str, ...] | None = None,
 ) -> list[RepairResult]:
     preview_counts = preview_counts or {}
     selected = set(targets) if targets else set(CLEANUP_TARGETS)
@@ -7458,10 +7469,14 @@ def run_archive_cleanup(
     for target_name in CLEANUP_TARGETS:
         if target_name not in selected:
             continue
-        if dry_run and target_name in preview_counts:
+        if dry_run and session_ids is None and target_name in preview_counts:
             results.append(PREVIEW_HANDLERS[target_name](count=preview_counts[target_name]))
             continue
-        results.append(REPAIR_HANDLERS[target_name](config, dry_run=dry_run))
+        repair = REPAIR_HANDLERS[target_name]
+        if target_name == "empty_sessions" and session_ids is not None:
+            results.append(repair(config, dry_run=dry_run, session_ids=session_ids))
+        else:
+            results.append(repair(config, dry_run=dry_run))
     return results
 
 
@@ -7487,8 +7502,29 @@ def run_selected_maintenance(
     if blockers:
         return blockers
     results: list[RepairResult] = []
-    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS)
-    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS)
+    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS) or (
+        SAFE_REPAIR_TARGETS if repair and not targets else ()
+    )
+    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS) or (
+        CLEANUP_TARGETS if cleanup and not targets else ()
+    )
+    effective_filter = scope_filter or MaintenanceScopeFilter()
+    selected_names = (*repair_targets, *cleanup_targets)
+    unsupported_targets: set[str] = set()
+    for target_name in selected_names:
+        unsupported = unsupported_scope_dimensions(effective_filter, target=target_name)
+        if unsupported:
+            unsupported_targets.add(target_name)
+            results.append(
+                _repair_result(
+                    target_name,
+                    repaired_count=0,
+                    success=False,
+                    detail=(f"Unsupported scope dimensions for target {target_name!r}: {', '.join(unsupported)}"),
+                )
+            )
+    repair_targets = tuple(name for name in repair_targets if name not in unsupported_targets)
+    cleanup_targets = tuple(name for name in cleanup_targets if name not in unsupported_targets)
     if repair:
         results.extend(
             run_safe_repairs(
@@ -7498,12 +7534,18 @@ def run_selected_maintenance(
                 targets=repair_targets,
                 session_insight_progress_callback=session_insight_progress_callback,
                 session_insight_progress_total=session_insight_progress_total,
-                session_ids=None if scope_filter is None else scope_filter.session_ids,
+                session_ids=effective_filter.session_ids,
             )
         )
     if cleanup:
         results.extend(
-            run_archive_cleanup(config, dry_run=dry_run, preview_counts=preview_counts, targets=cleanup_targets)
+            run_archive_cleanup(
+                config,
+                dry_run=dry_run,
+                preview_counts=preview_counts,
+                targets=cleanup_targets,
+                session_ids=effective_filter.session_ids,
+            )
         )
     return results
 
