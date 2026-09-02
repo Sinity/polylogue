@@ -809,10 +809,15 @@ class ArchiveStore:
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
+            # ``assert_readable_archive_layout`` below is this route's version
+            # refusal: it names the generation and the lifecycle action the
+            # operator must take. The generic open-time check would preempt it
+            # with a message carrying neither.
             self._conn = open_readonly_connection(
                 self.index_db_path,
                 timeout=read_timeout,
                 opened_main_fd=opened_index_fd,
+                validate_schema=False,
             )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:

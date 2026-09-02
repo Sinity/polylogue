@@ -163,7 +163,9 @@ def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[Catch
     if not dbf.exists():
         return []
     try:
-        conn = open_readonly_connection(dbf)
+        # Status reads tolerate a skewed or unstamped tier; the table probe below
+        # already establishes what can be read.
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_ingest_stage_event'"

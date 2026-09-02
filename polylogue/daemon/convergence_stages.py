@@ -342,15 +342,13 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
     status = "gaps" if gaps else "clean"
     try:
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
-        from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+        from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-        from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
         ops_db = archive_root / "ops.db"
         ops_db.parent.mkdir(parents=True, exist_ok=True)
-        with open_daemon_connection(ops_db, timeout=30.0) as conn:
-            initialize_archive_tier(conn, ArchiveTier.OPS)
+        with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
             record_daemon_stage_event(
                 conn,
                 stage=CLAUDE_WORKFLOW_STAGE_NAME,

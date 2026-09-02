@@ -538,11 +538,26 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
         )
 
 
+def assert_tier_schema_supported(
+    conn: sqlite3.Connection,
+    path: str | Path,
+    tier: ArchiveTier | None = None,
+) -> None:
+    """Reject a known archive tier whose on-disk version is not the runtime's.
+
+    Public so a bootstrap route that opens a not-yet-materialised tier with
+    ``validate_schema=False`` can apply the same check once it has stamped the
+    schema.
+    """
+    _assert_schema_supported(conn, path, tier)
+
+
 def open_connection(
     path: str | Path,
     *,
     timeout: float = DB_TIMEOUT,
     tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -556,7 +571,8 @@ def open_connection(
     """
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
-        _assert_schema_supported(conn, path, tier)
+        if validate_schema:
+            _assert_schema_supported(conn, path, tier)
         for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
@@ -575,6 +591,7 @@ def open_daemon_connection(
     timeout: float = DB_TIMEOUT,
     busy_timeout_ms: int | None = None,
     tier: ArchiveTier | None = None,
+    validate_schema: bool = True,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection for daemon maintenance/ops writes.
 
@@ -585,7 +602,8 @@ def open_daemon_connection(
     """
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
-        _assert_schema_supported(conn, path, tier)
+        if validate_schema:
+            _assert_schema_supported(conn, path, tier)
         for stmt in DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS:
             if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
                 stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
@@ -724,6 +742,7 @@ __all__ = [
     "descriptor_alias_path",
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
+    "assert_tier_schema_supported",
     "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",

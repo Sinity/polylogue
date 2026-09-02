@@ -1947,7 +1947,8 @@ def _archive_user_version(path: Path) -> int:
     try:
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-        conn = open_readonly_connection(path)
+        # This probe exists to report the on-disk version, including a skewed one.
+        conn = open_readonly_connection(path, validate_schema=False)
         try:
             return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
         finally:

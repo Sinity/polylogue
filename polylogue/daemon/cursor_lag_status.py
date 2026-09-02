@@ -123,7 +123,9 @@ def cursor_lag_summary_info(dbf: Path, *, now: datetime | None = None, ops_db: P
     if not dbf.exists():
         return CursorLagSummary()
     try:
-        conn = open_readonly_connection(dbf)
+        # A status projection reads whatever the tier holds; schema skew is
+        # reported by the readiness probe, not raised from here.
+        conn = open_readonly_connection(dbf, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'live_cursor'"

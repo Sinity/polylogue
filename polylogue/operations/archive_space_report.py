@@ -108,7 +108,9 @@ def build_space_report(db: Path, *, limit: int = 25, include_objects: bool = Fal
             "db_path": str(db),
             "error": "database_not_found",
         }
-    with closing(open_readonly_connection(db)) as conn:
+    # A space report reads page geometry, not tier content: a skewed tier is
+    # exactly one the operator needs the report for.
+    with closing(open_readonly_connection(db, validate_schema=False)) as conn:
         page_size = _scalar_int(conn, "PRAGMA page_size")
         page_count = _scalar_int(conn, "PRAGMA page_count")
         freelist_count = _scalar_int(conn, "PRAGMA freelist_count")
