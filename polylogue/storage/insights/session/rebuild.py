@@ -92,6 +92,7 @@ from polylogue.storage.sqlite.queries.mappers import (
     _row_to_content_block,
     _row_to_message,
     _row_to_session_profile_record,
+    session_profile_usage_lanes_sql,
 )
 from polylogue.storage.sqlite.queries.model_usage import get_model_usage_batch, sync_model_usage_batch
 from polylogue.storage.sqlite.queries.session_events import (
@@ -106,10 +107,10 @@ if TYPE_CHECKING:
     from polylogue.markers.models import MarkerCandidate
 
 _ALL_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY COALESCE(sort_key_ms, 0) DESC, session_id"
-_ALL_SESSION_PROFILE_ROWS_SQL = """
-SELECT *
-FROM session_profiles
-ORDER BY COALESCE(source_sort_key, 0) DESC, session_id
+_ALL_SESSION_PROFILE_ROWS_SQL = f"""
+SELECT sp.*, {session_profile_usage_lanes_sql()}
+FROM session_profiles sp
+ORDER BY COALESCE(sp.source_sort_key, 0) DESC, sp.session_id
 """
 # Full rebuilds must tolerate very large session payloads without letting a
 # single chunk inflate RSS into multi-GB territory. The message-budget chunker
@@ -1694,7 +1695,8 @@ def _session_profile_records_for_session_ids_sync(
         return []
     placeholders = ", ".join("?" for _ in session_ids)
     rows = conn.execute(
-        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+        f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
+        f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
         tuple(session_ids),
     ).fetchall()
     return [_row_to_session_profile_record(row) for row in rows]
@@ -1925,7 +1927,8 @@ async def _session_profile_records_for_session_ids_async(
         return []
     placeholders = ", ".join("?" for _ in session_ids)
     cursor = await conn.execute(
-        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+        f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
+        f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
         tuple(session_ids),
     )
     rows = await cursor.fetchall()

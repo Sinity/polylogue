@@ -22,8 +22,9 @@ are identical to that rollup by construction, for every origin, not just Codex.
 
 ``session_model_usage`` is the single authority: #4225 removed the duplicated
 ``total_*_tokens`` columns from ``session_profiles``, so these tests assert
-through the derivation (``build_session_profile`` fed from the persisted usage
-rows) rather than by selecting columns that no longer exist. The write path is
+through the derivation rather than by selecting columns that no longer exist --
+``build_session_profile`` fed from the persisted usage rows, and the repository
+read route that projects the same rollup back onto the record. The write path is
 the production one (``write_parsed_session_to_archive``) and the hydration is
 the materializer's own (``load_sync_batch`` / ``hydrate_sessions``), not a toy
 replica of the aggregation logic.
@@ -34,14 +35,24 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import aiosqlite
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 from polylogue.archive.session.session_profile import build_session_profile
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-from polylogue.storage.insights.session.rebuild import hydrate_sessions, load_sync_batch
+from polylogue.storage.insights.session.rebuild import (
+    hydrate_sessions,
+    load_sync_batch,
+    rebuild_session_insights_sync,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.queries.session_insight_profile_reads import (
+    get_session_profile,
+    get_session_profiles_batch,
+)
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
 # matching the corpus finding in _provider_usage_disjoint_lanes's docstring),
@@ -225,3 +236,43 @@ def test_claude_code_per_message_tokens_reach_the_profile_unchanged(tmp_path: Pa
     assert _model_usage_totals(conn, session_id) == (1_000, 500, 200, 100)
     assert _derived_profile_totals(conn, session_id) == (1_000, 500, 200, 100)
     conn.close()
+
+
+async def test_profile_read_route_reports_token_lanes_from_session_model_usage(tmp_path: Path) -> None:
+    """The repository profile read route carries the token lanes.
+
+    ``session_profiles`` no longer stores token columns (#4225), so a reader
+    that selects only that table's own columns reports zero and every consumer
+    of the record -- portfolio and postmortem token lanes among them -- silently
+    reads a known-zero it has no evidence for.
+
+    Anti-vacuity: dropping the ``session_model_usage`` projection from
+    ``session_profile_usage_lanes_sql`` (or from the SELECT that applies it)
+    makes ``_row_int(row, "total_input_tokens", 0)`` fall back to its default
+    and every lane below reads 0 instead of the fixture's totals.
+    """
+    conn = _make_archive_conn(tmp_path)
+    session_id = "codex-session:model-usage-read-route"
+    write_parsed_session_to_archive(conn, _codex_session("model-usage-read-route"))
+    rebuild_session_insights_sync(conn, session_ids=[session_id])
+    conn.commit()
+    conn.close()
+
+    async with aiosqlite.connect(tmp_path / "index.db") as read_conn:
+        read_conn.row_factory = aiosqlite.Row
+        record = await get_session_profile(read_conn, session_id)
+        batch = await get_session_profiles_batch(read_conn, [session_id])
+
+    assert record is not None
+    for source in (record, batch[session_id]):
+        assert (
+            source.total_input_tokens,
+            source.total_output_tokens,
+            source.total_cache_read_tokens,
+            source.total_cache_write_tokens,
+        ) == (
+            _CODEX_EXPECTED_INPUT,
+            _CODEX_EXPECTED_OUTPUT,
+            _CODEX_EXPECTED_CACHE_READ,
+            _CODEX_EXPECTED_CACHE_WRITE,
+        )

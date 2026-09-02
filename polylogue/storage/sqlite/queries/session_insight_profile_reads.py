@@ -6,7 +6,10 @@ import aiosqlite
 
 from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionProfileRecord
-from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.mappers import (
+    _row_to_session_profile_record,
+    session_profile_usage_lanes_sql,
+)
 
 __all__ = [
     "get_session_profile",
@@ -30,7 +33,7 @@ async def get_session_profile(
     session_id: str,
 ) -> SessionProfileRecord | None:
     cursor = await conn.execute(
-        "SELECT * FROM session_profiles WHERE session_id = ?",
+        f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
         (session_id,),
     )
     row = await cursor.fetchone()
@@ -45,7 +48,8 @@ async def get_session_profiles_batch(
         return {}
     placeholders = ", ".join("?" for _ in session_ids)
     cursor = await conn.execute(
-        f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+        f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
+        f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
         tuple(session_ids),
     )
     rows = await cursor.fetchall()
@@ -106,7 +110,7 @@ async def list_session_profiles(
     if query.terminal_state:
         where.append("sp.terminal_state = ?")
         params.append(query.terminal_state)
-    sql = "SELECT sp.* " + from_clause
+    sql = f"SELECT sp.*, {session_profile_usage_lanes_sql()} " + from_clause
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += f" {order_by}"

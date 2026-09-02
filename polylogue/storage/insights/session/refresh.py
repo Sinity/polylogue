@@ -37,7 +37,10 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
     SessionWorkEventRecord,
 )
-from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.mappers import (
+    _row_to_session_profile_record,
+    session_profile_usage_lanes_sql,
+)
 
 # Keep incremental refreshes on the same bounded chunk size as full rebuilds.
 # Hydrating 100 sessions at once inflates RSS badly on pathological archives.
@@ -169,7 +172,7 @@ async def delete_session_insights_for_session_async(
     )
 
     cursor = await conn.execute(
-        "SELECT * FROM session_profiles WHERE session_id = ?",
+        f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
         (session_id,),
     )
     row = await cursor.fetchone()
@@ -242,7 +245,7 @@ async def _apply_session_insight_session_update_async(
 
     old_profile_record = await (
         await conn.execute(
-            "SELECT * FROM session_profiles WHERE session_id = ?",
+            f"SELECT sp.*, {session_profile_usage_lanes_sql()} FROM session_profiles sp WHERE sp.session_id = ?",
             (session_id,),
         )
     ).fetchone()
@@ -363,7 +366,8 @@ async def _load_existing_session_profile_records_async(
     placeholders = ", ".join("?" for _ in session_ids)
     rows = await (
         await conn.execute(
-            f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
+            f"SELECT sp.*, {session_profile_usage_lanes_sql()} "
+            f"FROM session_profiles sp WHERE sp.session_id IN ({placeholders})",
             tuple(session_ids),
         )
     ).fetchall()
