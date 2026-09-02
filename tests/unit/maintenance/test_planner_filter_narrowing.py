@@ -105,11 +105,10 @@ class TestPlannerLeavesFilterPassthroughDimensionsIntact:
     ) -> None:
         """Filter dimensions the planner doesn't yet honor pass through unchanged.
 
-        The repair-fn boundary is advisory (see ``scope.py`` module
-        docstring): non-session_ids filters reach the planner and
-        are surfaced on the returned scope, but the preview row count
-        comes from the full debt status until a repair fn learns to
-        narrow on that dimension.
+        Non-session filters reach the planner and are surfaced on the
+        returned scope, but the preview row count comes from the full debt
+        status. Execution refuses dimensions the selected target does not
+        honor.
         """
         config = _seeded_config(workspace_env)
         broad = preview_backfill(config, targets=("empty_sessions",))

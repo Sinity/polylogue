@@ -75,6 +75,7 @@ from polylogue.storage import repair as _repair
 from polylogue.storage.repair import (
     RepairResult,
     offline_maintenance_blockers,
+    repair_empty_sessions,
     repair_session_insights,
 )
 
@@ -1330,6 +1331,12 @@ def _run_one_target(
                 dry_run,
                 session_ids=scope_filter.session_ids,
                 progress_callback=_emit_target_progress,
+            )
+        elif target_name == "empty_sessions" and repair_fn is repair_empty_sessions:
+            result = repair_empty_sessions(
+                config,
+                dry_run,
+                session_ids=scope_filter.session_ids,
             )
         else:
             result = repair_fn(config, dry_run)

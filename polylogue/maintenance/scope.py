@@ -22,7 +22,7 @@ The filter is intentionally *target-owned* at the repair-fn boundary:
 each repair fn declares which dimensions it knows how to honor and must
 not advertise narrower operator behavior than it actually applies. For
 example, session-insight repair honors ``session_ids``. Other dimensions
-remain advisory until a target pins their contract.
+are refused at execution until a target pins their contract.
 
 The filter round-trips through :meth:`MaintenanceScopeFilter.to_dict`
 / :meth:`MaintenanceScopeFilter.from_dict` so the CLI ``--output-format

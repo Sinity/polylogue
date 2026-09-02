@@ -585,6 +585,43 @@ def test_scoped_resume_requires_persisted_scope_identity(
     assert patched_dispatch["session_insights"] == []
 
 
+def test_replay_passes_session_scope_to_empty_session_cleanup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = _make_config(tmp_path)
+    seen: list[tuple[str, ...] | None] = []
+
+    def empty_sessions(_config: Config, _dry_run: bool, *, session_ids: tuple[str, ...] | None = None) -> RepairResult:
+        seen.append(session_ids)
+        return _ok_result("empty_sessions")
+
+    monkeypatch.setattr(replay_module, "repair_empty_sessions", empty_sessions)
+    monkeypatch.setitem(repair_module.REPAIR_HANDLERS, "empty_sessions", empty_sessions)
+
+    operation = execute_replay(
+        config,
+        targets=("empty_sessions",),
+        operation_id="op-empty-session-scope",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1", "s-2")),
+    )
+
+    assert operation.status is OperationStatus.COMPLETED
+    assert seen == [("s-1", "s-2")]
+
+
+def test_replay_refuses_target_that_cannot_honor_session_scope(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    operation = execute_replay(
+        _make_config(tmp_path),
+        targets=("superseded_raw_snapshots",),
+        operation_id="op-unsupported-session-scope",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+
+    assert operation.status is OperationStatus.FAILED
+    assert operation.failure_samples.samples[0].kind == "UnsupportedScopeDimension"
+    assert patched_dispatch["superseded_raw_snapshots"] == []
+
+
 def test_legacy_result_metrics_are_reconstructed_when_aggregate_is_absent(
     tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
 ) -> None:

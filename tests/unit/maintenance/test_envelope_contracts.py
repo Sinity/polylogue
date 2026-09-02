@@ -48,6 +48,7 @@ from polylogue.maintenance.planner import (
     FailureSample,
     MaintenanceScope,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 
 # ---------------------------------------------------------------------------
 # Envelope shape pinning
@@ -329,14 +330,7 @@ def _capture_cli_preview(operation: BackfillOperation, tmp_path: Path) -> dict[s
 
 
 class TestUnsupportedScopeDimensionsAreDeclared:
-    """A narrowing the target cannot honor must be named, not silently echoed.
-
-    `run_selected_maintenance` forwards only `session_ids`; every other
-    dimension is dropped while the envelope reflects the whole filter back to
-    the caller. `scope.py` states the governing rule — a repair fn must not
-    advertise narrower behaviour than it applies — so the envelope has to say
-    which dimensions were not applied.
-    """
+    """A narrowing the selected targets cannot honor must be declared."""
 
     @staticmethod
     def _envelope_for(**filter_kwargs: object) -> MaintenanceScopePayload:
@@ -364,6 +358,22 @@ class TestUnsupportedScopeDimensionsAreDeclared:
         scope = self._envelope_for(session_ids=("claude-ai-export:abc",))
 
         assert scope.unsupported_dimensions == ()
+
+    def test_session_ids_is_declared_when_any_selected_target_refuses_it(self) -> None:
+        operation = BackfillOperation(
+            **{
+                **_example_operation().__dict__,
+                "targets": ("empty_sessions", "superseded_raw_snapshots"),
+                "scope": MaintenanceScope(
+                    targets=("empty_sessions", "superseded_raw_snapshots"),
+                    filter=MaintenanceScopeFilter(session_ids=("claude-ai-export:abc",)),
+                ),
+            }
+        )
+
+        envelope = envelope_from_operation(operation, origin="mcp", mode="execute")
+
+        assert envelope.scope.unsupported_dimensions == ("session_ids",)
 
     def test_every_unhonored_dimension_is_reported_together(self) -> None:
         scope = self._envelope_for(
