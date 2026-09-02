@@ -1147,7 +1147,7 @@ def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shap
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
-        (WatchSource(name="codex", root=root),),
+        (WatchSource(name="codex-state", root=root),),
         cursor=CursorStore(index_db),
         parser_fingerprint="test-parser",
     )
@@ -1157,7 +1157,7 @@ def test_source_only_full_ingest_snapshots_unrecognized_codex_state_without_shap
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not inspect source-only state schema")),
     )
     try:
-        result = processor._ingest_full_paths_sync([state_db], source_name="codex")
+        result = processor._ingest_full_paths_sync([state_db], source_name="codex-state")
     finally:
         clear_degraded()
 

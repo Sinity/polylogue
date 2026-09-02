@@ -581,6 +581,7 @@ def test_canonical_runtime_provider_normalizes_unknowns_to_unknown() -> None:
 
 def test_canonical_acquisition_provider_accepts_scoped_source_names() -> None:
     assert canonical_acquisition_provider(None, source_name="codex:24") == "codex"
+    assert canonical_acquisition_provider(None, source_name="codex-state") == "codex"
     assert canonical_acquisition_provider(None, source_name="claude-code:project") == "claude-code"
     assert canonical_acquisition_provider("unknown", source_name="codex:24") == "codex"
 

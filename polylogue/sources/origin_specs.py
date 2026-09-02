@@ -357,7 +357,6 @@ def recognize_source_class(
             return SourceClassRecognition("unsupported", "SQLite has no declared provider source class")
         return None
 
-    from polylogue.sources.dispatch import detect_provider
     from polylogue.sources.parsers import (
         antigravity,
         codex_state,
@@ -377,6 +376,9 @@ def recognize_source_class(
             return SourceClassRecognition("session", "Antigravity declared conversation source class")
         if classification.role.value != "unknown":
             return SourceClassRecognition("non_session", "Antigravity declared artifact source class")
+
+    if path.suffix.lower() == ".zip":
+        return None
 
     if path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
         if source_only:
@@ -403,6 +405,9 @@ def recognize_source_class(
         return SourceClassRecognition("unsupported", f"{provider.value} SQLite has no declared source class")
 
     if source_only:
+        return None
+
+    if provider not in {Provider.HERMES, Provider.ANTIGRAVITY}:
         return None
 
     if payload is None:
@@ -439,14 +444,7 @@ def recognize_source_class(
         if isinstance(payload, dict) and antigravity.looks_like_markdown_export(payload):
             return SourceClassRecognition("session", "Antigravity language-server export structural signature")
         return SourceClassRecognition("unsupported", "Antigravity candidate has no declared source-class signature")
-    detected = detect_provider(payload)
-    if (
-        detected is provider
-        or (provider is Provider.DRIVE and detected is Provider.GEMINI)
-        or (provider is Provider.GEMINI and detected is Provider.DRIVE)
-    ):
-        return SourceClassRecognition("session", f"{provider.value} declared detector structural signature")
-    return SourceClassRecognition("unsupported", f"{provider.value} candidate has no declared source-class signature")
+    return None
 
 
 #: Root the committed schema packages live under, resolved once here so

@@ -77,6 +77,15 @@ def test_hermes_source_class_recognition_accepts_atof_jsonl(tmp_path: Path) -> N
     assert result.source_class == "session"
 
 
+def test_source_class_recognition_defers_zip_members_to_archive_extraction(tmp_path: Path) -> None:
+    """A provider archive is classified after its members are extracted."""
+
+    archive = tmp_path / "export.zip"
+    archive.write_bytes(b"not inspected during source-class admission")
+
+    assert recognize_source_class(Provider.CODEX, archive) is None
+
+
 def test_hermes_root_census_accounts_for_every_candidate_without_parsing(tmp_path: Path) -> None:
     """A broad root has one declared disposition for every enumerated file.
 
