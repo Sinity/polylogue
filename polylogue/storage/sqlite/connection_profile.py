@@ -713,6 +713,8 @@ def open_readonly_connection(
     conn = sqlite3.connect(database_uri, uri=True, timeout=timeout)
     try:
         if validate_schema:
+        if validate_schema:
+            _assert_schema_supported(conn, path, tier)
             _assert_schema_supported(conn, path, tier)
         for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
             conn.execute(stmt)
