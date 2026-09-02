@@ -341,13 +341,14 @@ def apply_assertion_transition(
     if audit_conn is not None:
         _validate_reference_catalog(audit_conn, "audit")
     _validate_result_set_manifests(conn)
-    _validate_result_set_targets(conn, plan)
     connections: tuple[sqlite3.Connection, ...] = (
         (conn,) if audit_conn is None or audit_conn is conn else (conn, audit_conn)
     )
     connections_by_tier: tuple[tuple[sqlite3.Connection, DurableTier], ...] = ((conn, "user"),) + (
         ((audit_conn, "audit"),) if audit_conn is not None and audit_conn is not conn else ()
     )
+    _validate_migration_coverage(connections_by_tier, plan)
+    _validate_result_set_targets(conn, plan)
     savepoints = tuple(f"assertion_transition_{index}" for index in range(len(connections)))
     for connection, savepoint in zip(connections, savepoints, strict=True):
         connection.execute(f"SAVEPOINT {savepoint}")
@@ -570,6 +571,24 @@ def _validate_result_set_targets(conn: sqlite3.Connection, plan: AssertionTransi
             ).fetchone()
             if collision is not None and old != new:
                 raise ObjectRefReconciliationError(f"result set member migration would collide: {result_set_id}")
+
+
+def _validate_migration_coverage(
+    connections: tuple[tuple[sqlite3.Connection, DurableTier], ...],
+    plan: AssertionTransitionPlan,
+) -> None:
+    """Ensure an explicit map cannot omit a declared durable relation cell."""
+    mapped = {old for old, _new in plan.forward}
+    if not mapped:
+        return
+    for connection, tier in connections:
+        inventory = _inventory_for_connection(connection, tier)
+        present = {item.value for item in inventory if item.grammar == "public"}
+        omitted = {old for old in mapped if old in present and old not in {row.source for row in plan.rows}}
+        if omitted:
+            raise ObjectRefReconciliationError(
+                f"identity migration is not total over durable {tier} references: {sorted(omitted)!r}"
+            )
 
 
 def _validate_result_set_manifests(conn: sqlite3.Connection) -> None:

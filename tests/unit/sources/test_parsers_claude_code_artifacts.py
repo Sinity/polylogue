@@ -236,6 +236,27 @@ def test_claude_workflow_artifact_parser_retains_native_facts() -> None:
     assert journal.facts[0].payload["structuredResult"] == {"ok": True}
 
 
+def test_claude_sidecar_parser_exposes_dispatch_join_facts() -> None:
+    artifact = parse_claude_orchestration_artifact(
+        "/tmp/.claude/projects/x/subagents/agent-a1.meta.json",
+        json.dumps(
+            {
+                "agentType": "worker",
+                "description": "inspect the source",
+                "toolUseId": "toolu_123",
+                "spawnDepth": 1,
+            }
+        ),
+    )
+
+    assert artifact is not None
+    fact = artifact.facts[0]
+    assert fact.tool_use_id == "toolu_123"
+    assert fact.agent_type == "worker"
+    assert fact.description == "inspect the source"
+    assert fact.payload["toolUseId"] == "toolu_123"
+
+
 def test_claude_agent_prompt_needs_positive_human_provenance() -> None:
     generated = parse_code(
         [{"type": "user", "uuid": "u1", "sessionId": "agent-session", "message": {"role": "user", "content": "work"}}],
