@@ -20,6 +20,8 @@ from polylogue.sources.origin_specs import (
     ORIGIN_SPECS,
     DroppedValueVocabulary,
     OriginSpecRegistry,
+    TopologyCapabilities,
+    TopologyCapability,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
     detector_registry,
@@ -195,6 +197,55 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude_ai["message_branch_state"]["state"] == "positive-derived"
     assert aistudio_drive["message_parent"]["state"] == "carried"
     assert aistudio_drive["message_branch_state"]["state"] == "positive-derived"
+
+
+def test_topology_capability_census_rejects_missing_or_duplicate_origins() -> None:
+    """The census requires exactly one declaration for every current origin."""
+    with pytest.raises(ValueError, match="cover every current Origin exactly once"):
+        topology_capability_census(ORIGIN_SPECS[:-1])
+    with pytest.raises(ValueError, match="cover every current Origin exactly once"):
+        topology_capability_census((*ORIGIN_SPECS, ORIGIN_SPECS[0]))
+
+
+def test_topology_capability_census_rejects_missing_dimensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every topology declaration exposes all five dimensions."""
+    original_as_dict = TopologyCapabilities.as_dict
+
+    def missing_parent_dispatch(capabilities: TopologyCapabilities) -> dict[str, TopologyCapability]:
+        return {
+            name: capability for name, capability in original_as_dict(capabilities).items() if name != "parent_dispatch"
+        }
+
+    monkeypatch.setattr(TopologyCapabilities, "as_dict", missing_parent_dispatch)
+    with pytest.raises(ValueError, match="topology capability census is incomplete"):
+        topology_capability_census()
+
+
+@pytest.mark.parametrize(
+    ("attribute", "value", "match"),
+    [
+        ("state", "unknown", "capability state is not complete"),
+        ("evidence", (), "topology capability lacks evidence"),
+        ("reason", "", "structural absence lacks a reason"),
+    ],
+    ids=["unknown-state", "missing-evidence", "missing-absence-reason"],
+)
+def test_topology_capability_census_rejects_invalid_capability_cells(attribute: str, value: object, match: str) -> None:
+    """The census validates cells even when a malformed declaration bypasses construction checks."""
+    capability = TopologyCapability("structurally-absent", ("mutation",), "mutation")
+    object.__setattr__(capability, attribute, value)
+    specs = tuple(
+        replace(
+            spec,
+            topology_capabilities=replace(spec.topology_capabilities, message_parent=capability),
+        )
+        if spec.origin is Origin.CODEX_SESSION
+        else spec
+        for spec in ORIGIN_SPECS
+    )
+
+    with pytest.raises(ValueError, match=match):
+        topology_capability_census(specs)
 
 
 def test_public_origin_projections_cover_declared_specs_coherently() -> None:

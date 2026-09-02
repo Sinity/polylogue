@@ -163,11 +163,6 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
             messages.append(parsed)
             if extras_event := _hermes_message_wire_extras_event(item, parsed):
                 session_events.append(extras_event)
-    # bd polylogue-ksgg: this JSON-sidecar Hermes shape has no parent-message
-    # evidence either -- chain each message to the previous one on the
-    # active path, same as the state-db conversational parser
-    # (hermes_state.py::_parse_session_row).
-    messages = fill_linear_parent_chain(messages)
     messages = _mark_active_leaf(messages)
     if metadata_event := _hermes_session_metadata_event(payload, message_count=len(messages)):
         session_events.append(metadata_event)

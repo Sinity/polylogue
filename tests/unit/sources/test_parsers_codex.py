@@ -727,7 +727,7 @@ class TestMessageParsing:
         assert classification.accepted_raw_ids == ("one", "two")
         assert not classification.equivalent_raw_ids
 
-    def test_idless_linear_turns_resolve_parent_coordinates_in_archive(self, workspace_env: Mapping[str, Path]) -> None:
+    def test_idless_linear_turns_do_not_fabricate_parent_coordinates(self, workspace_env: Mapping[str, Path]) -> None:
         result = parse(
             [
                 {
@@ -753,7 +753,7 @@ class TestMessageParsing:
         )
 
         assert [message.provider_message_id for message in result.messages] == ["", "", ""]
-        assert [message.parent_message_position for message in result.messages] == [None, 0, 1]
+        assert [message.parent_message_position for message in result.messages] == [None, None, None]
 
         with open_connection(db_setup(workspace_env)) as conn:
             write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
@@ -762,7 +762,7 @@ class TestMessageParsing:
             ).fetchall()
 
         assert [row["native_id"] for row in rows] == [None, None, None]
-        assert [row["parent_message_id"] for row in rows] == [None, rows[0]["message_id"], rows[1]["message_id"]]
+        assert [row["parent_message_id"] for row in rows] == [None, None, None]
 
     def test_reasoning_with_only_encrypted_content_still_recorded(self) -> None:
         """No recoverable text (summary absent, content null) -- the block

@@ -1290,6 +1290,7 @@ def _hermes_spec() -> OriginSpec:
         ),
         acquisition_modes=("state-db", "atif-spans", "atof-jsonl", "verification-evidence-db", "session-snapshot"),
         parser_paths=(
+            "polylogue/sources/parsers/local_agent.py",
             "polylogue/sources/parsers/hermes_state.py",
             "polylogue/sources/parsers/hermes_spans.py",
             "polylogue/sources/parsers/hermes_verification.py",
@@ -2153,8 +2154,36 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
-def topology_capability_census() -> dict[str, dict[str, dict[str, object]]]:
-    """Project the complete topology capability census from ``OriginSpec``."""
+def topology_capability_census(
+    specs: Sequence[OriginSpec] | None = None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Project the complete topology capability census from ``OriginSpec``.
+
+    The optional sequence is used by declaration-law tests to prove that
+    omissions and malformed capability cells fail closed.
+    """
+    declared_specs = ORIGIN_SPECS if specs is None else tuple(specs)
+    expected_dimensions = {
+        "message_parent",
+        "message_branch_state",
+        "session_parent_target",
+        "inheritance_branch_point",
+        "parent_dispatch",
+    }
+    origins = tuple(spec.origin for spec in declared_specs)
+    if len(set(origins)) != len(origins) or set(origins) != set(Origin):
+        raise ValueError("topology capability census must cover every current Origin exactly once")
+    for spec in declared_specs:
+        capabilities = spec.topology_capabilities.as_dict()
+        if set(capabilities) != expected_dimensions:
+            raise ValueError(f"{spec.origin.value}: topology capability census is incomplete")
+        for dimension, capability in capabilities.items():
+            if capability.state not in {"carried", "positive-derived", "structurally-absent"}:
+                raise ValueError(f"{spec.origin.value}.{dimension}: topology capability state is not complete")
+            if not capability.evidence:
+                raise ValueError(f"{spec.origin.value}.{dimension}: topology capability lacks evidence")
+            if capability.state == "structurally-absent" and not capability.reason:
+                raise ValueError(f"{spec.origin.value}.{dimension}: structural absence lacks a reason")
     return {
         spec.origin.value: {
             name: {
@@ -2164,7 +2193,7 @@ def topology_capability_census() -> dict[str, dict[str, dict[str, object]]]:
             }
             for name, capability in spec.topology_capabilities.as_dict().items()
         }
-        for spec in ORIGIN_SPECS
+        for spec in declared_specs
     }
 
 

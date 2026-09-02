@@ -306,14 +306,13 @@ def synthetic_message_id(
 def fill_linear_parent_chain(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
     """Backfill linear parent evidence for a strictly linear message list.
 
-    bd polylogue-ksgg: five of nine archive origins (Codex, Hermes, Gemini
-    CLI, Grok, and AI Studio Drive's non-branch path) never assert an
+    Gemini CLI, Grok, and AI Studio Drive's non-branch path never assert an
     explicit reply-to edge, because their session shape is a plain ordered
     turn sequence with no fork/retry concept at the message level -- there is
-    no ``variant_index>0`` row in any of them today (ksgg finding B). Leaving
+    no ``variant_index>0`` row in any of them today. Leaving
     ``parent_message_provider_id`` at ``None`` for every message makes
     position-order the ONLY way to reconstruct the conversation shape for
-    these origins, unlike Claude Code / ChatGPT where a real parent chain is
+    these paths, unlike Claude Code / ChatGPT where a real parent chain is
     carried end to end.
 
     This fills the trivial, unambiguous case -- chaining each message to the
