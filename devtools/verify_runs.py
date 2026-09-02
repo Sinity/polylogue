@@ -179,6 +179,9 @@ def git_dirty(cwd: Path | None = None) -> bool:
         )
     except (OSError, subprocess.TimeoutExpired):
         return True
+    if result.returncode != 0:
+        # A tree whose status cannot be read is not a proven-clean tree.
+        return True
     return bool((result.stdout or "").strip())
 
 

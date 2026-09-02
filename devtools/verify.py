@@ -47,6 +47,8 @@ from devtools.verification_ledger import (
     read_verify_history,
 )
 from devtools.verification_result import declared_verification_result
+from devtools.verify_js_tests import _STAMP_NAME as JS_INSTALL_STAMP
+from devtools.verify_js_tests import JS_PACKAGES
 from devtools.verify_runs import (
     CURRENT_EVENTS_DIR,
     PYTEST_CANONICAL_REPORT_NAME,
@@ -507,8 +509,9 @@ def _scope(*, quick: bool, commit: bool, all_tests: bool) -> VerificationScope:
 
 def _execution_plan_digest() -> str:
     """Inputs of the whole verification plan beyond Python collection: worker
-    count, the JavaScript toolchain the js-tests gate runs under, and whether
-    each required Python gate executable can be launched."""
+    count, the JavaScript toolchain and installed package trees the js-tests
+    gate runs against, and whether each required Python gate executable can
+    be launched."""
     node = shutil.which("node")
     node_version = ""
     if node:
@@ -538,8 +541,24 @@ def _execution_plan_digest() -> str:
             name: executable_gate_result([venv_bin(name, root=ROOT)], gate=name).executable_available
             for name in ("ruff", "mypy", "dmypy")
         },
+        # The js-tests gate runs against each package's installed tree; the
+        # lockfile and the install stamp identify what a green run executed.
+        "js": {
+            package: {
+                "lock": _file_digest(ROOT / package / "package-lock.json"),
+                "installed": _file_digest(ROOT / package / "node_modules" / JS_INSTALL_STAMP),
+            }
+            for package in JS_PACKAGES
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _file_digest(path: Path) -> str:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return "absent"
 
 
 def _packages_drift(packages: str) -> bool:

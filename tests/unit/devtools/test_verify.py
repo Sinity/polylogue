@@ -699,6 +699,36 @@ def test_execution_plan_digest_sees_gate_executables(monkeypatch: pytest.MonkeyP
     assert with_ruff != without_ruff
 
 
+def test_execution_plan_digest_sees_installed_js_trees(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: a node_modules tree deleted after the green run must change the plan."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+    from devtools.verify_js_tests import _STAMP_NAME
+
+    stamp = tmp_path / "webui" / "node_modules" / _STAMP_NAME
+    stamp.parent.mkdir(parents=True)
+    stamp.write_text("fingerprint-1", encoding="utf-8")
+
+    installed = verify._execution_plan_digest()
+    stamp.unlink()
+    removed = verify._execution_plan_digest()
+
+    assert installed != removed
+
+
+def test_git_dirty_fails_closed_when_status_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from devtools import verify_runs
+
+    def broken(*_a: Any, **_k: Any) -> SimpleNamespace:
+        return SimpleNamespace(returncode=128, stdout="", stderr="fatal: index file corrupt")
+
+    monkeypatch.setattr(subprocess, "run", broken)
+
+    assert verify_runs.git_dirty() is True
+
+
 def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity, one clause each: a moved package set or plan runs; a dirty
     source run is not coverage; a newer failed recompute is not hidden behind
