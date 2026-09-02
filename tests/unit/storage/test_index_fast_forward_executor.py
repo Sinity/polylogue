@@ -99,6 +99,9 @@ def _build_downgradable_index_db(path: Path, downgrade_from_version: int, downgr
     conn = sqlite3.connect(path)
     try:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
+        from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+        stamp_derived_schema_identity(conn, ArchiveTier.INDEX.value)
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
 
         _seed_indexable_block(conn, native_suffix="a", text="needle prose one")
@@ -157,6 +160,9 @@ def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path, m
 
     path = tmp_path / "index.db"
     _build_v42_shaped_index_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP INDEX idx_messages_active_leaf")
+        conn.commit()
 
     # Monkeypatch to use synthetic declarations so v42→v43 is fast-forwardable.
     # This tests the executor without depending on real v44/v45 SEMANTIC_REPARSE.
@@ -174,6 +180,14 @@ def test_sql_fast_forwardable_index_db_reaches_current_on_open(tmp_path: Path, m
     conn = sqlite3.connect(path)
     try:
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == 43
+        # ANTI-VACUITY: removing the runtime-index repair from the fast-forward
+        # branch leaves this index absent and makes the assertion fail.
+        assert (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_active_leaf'"
+            ).fetchone()
+            is not None
+        )
         # Verify data survived the fast-forward
         indexable_rows = conn.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0]
         assert indexable_rows == 2
