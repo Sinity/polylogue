@@ -28,6 +28,7 @@ from polylogue.material_protocol.v1.errors import (
     SemanticClosureError,
     SequenceOrderError,
     UnknownOriginVocabularyError,
+    UnsupportedSemanticsVersionError,
 )
 from polylogue.material_protocol.v1.input_model import (
     AttachmentInput,
@@ -79,6 +80,7 @@ __all__ = [
     "SessionEventInput",
     "SessionMaterial",
     "UnknownOriginVocabularyError",
+    "UnsupportedSemanticsVersionError",
     "UsageInput",
     "decode_session_revision",
     "encode_appended_revision",

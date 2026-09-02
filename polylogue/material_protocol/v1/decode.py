@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.canonical import parse_json_value
 from polylogue.material_protocol.v1.errors import SegmentMissingError, SequenceOrderError
-from polylogue.material_protocol.v1.manifest import RevisionManifest, SegmentDescriptor
+from polylogue.material_protocol.v1.manifest import RevisionManifest, SegmentDescriptor, require_current_semantics
 
 
 @dataclass
@@ -79,6 +79,7 @@ def iter_records(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) ->
 
 
 def decode_session_revision(manifest: RevisionManifest, segment_bytes: dict[int, bytes]) -> DecodedSession:
+    require_current_semantics(manifest)
     records = iter_records(manifest, segment_bytes)
 
     session_records = [r for r in records if r["kind"] == "session"]

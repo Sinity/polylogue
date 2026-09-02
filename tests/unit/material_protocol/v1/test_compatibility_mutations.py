@@ -21,6 +21,8 @@ from polylogue.material_protocol.v1 import (
     SegmentMissingError,
     SequenceOrderError,
     UnknownOriginVocabularyError,
+    UnsupportedSemanticsVersionError,
+    decode_session_revision,
     encode_session_revision,
     resolve_anchor,
     verify_revision,
@@ -119,6 +121,14 @@ def test_unknown_origin_vocabulary_version_fails(encoded: EncodedRevision) -> No
     bad_manifest = dataclasses.replace(encoded.manifest, origin_vocabulary_version=9999)
     with pytest.raises(UnknownOriginVocabularyError):
         verify_revision(bad_manifest, encoded.segments)
+
+
+def test_stale_semantics_version_fails_closed(encoded: EncodedRevision) -> None:
+    bad_manifest = dataclasses.replace(encoded.manifest, semantics_version=2)
+    with pytest.raises(UnsupportedSemanticsVersionError):
+        verify_revision(bad_manifest, encoded.segments)
+    with pytest.raises(UnsupportedSemanticsVersionError):
+        decode_session_revision(bad_manifest, encoded.segments)
 
 
 def test_stale_origin_vocabulary_digest_fails(encoded: EncodedRevision) -> None:

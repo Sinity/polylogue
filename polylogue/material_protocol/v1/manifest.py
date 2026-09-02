@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 
 from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1.constants import PROTOCOL_VERSION, SEGMENT_MEDIA_TYPE, SEMANTICS_VERSION
+from polylogue.material_protocol.v1.errors import UnsupportedSemanticsVersionError
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,11 +220,21 @@ def new_manifest_scaffold() -> tuple[str, int]:
     return PROTOCOL_VERSION, SEMANTICS_VERSION
 
 
+def require_current_semantics(manifest: RevisionManifest) -> None:
+    """Reject revisions whose bytes use semantics not implemented by this reader."""
+    if manifest.semantics_version != SEMANTICS_VERSION:
+        raise UnsupportedSemanticsVersionError(
+            f"unsupported material semantics version {manifest.semantics_version}; "
+            f"current version is {SEMANTICS_VERSION}"
+        )
+
+
 __all__ = [
     "AnchorEntry",
     "ContentDigest",
     "FidelityGap",
     "RevisionManifest",
+    "require_current_semantics",
     "SegmentDescriptor",
     "new_manifest_scaffold",
 ]
