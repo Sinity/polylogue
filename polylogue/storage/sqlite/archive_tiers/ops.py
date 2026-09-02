@@ -7,6 +7,7 @@ from typing import get_args
 from polylogue.core.enums import OPERATION_LIFECYCLE_STATUSES, IngestOutcome, Origin, SloSampleLabel
 from polylogue.schemas.drift_sentinel import DriftClassification
 from polylogue.storage.sqlite.archive_tiers.common import check, literal_check, nullable_check
+from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 
 OPS_SCHEMA_VERSION = 1
 # Batch aggregation is a terminal run state distinct from both success and
@@ -416,6 +417,9 @@ CREATE TABLE IF NOT EXISTS context_injection_ledger (
 CREATE INDEX IF NOT EXISTS idx_context_injection_ledger_build
 ON context_injection_ledger(build_ref, observed_at_ms);
 """
+
+# CREATE TABLE schema_identity; ddl-lifecycle-waiver: derived schema_identity is existing bootstrap metadata; declaring it in canonical DDL changes fresh-bootstrap completeness, not the ops data shape.
+OPS_DDL += DERIVED_SCHEMA_META_DDL
 
 OPS_BENIGN_DDL_CONVERGENCE_PLAN: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_daemon_events_kind_id ON daemon_events(kind, id DESC)",

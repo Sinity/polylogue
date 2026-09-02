@@ -26,6 +26,11 @@ def _canonical_digest(parts: dict[str, object]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _identity_ddl(ddl: str) -> str:
+    """Exclude the identity stamp table from the identity it stores."""
+    return ddl.removesuffix(DERIVED_SCHEMA_META_DDL)
+
+
 def derived_schema_identity(tier: DerivedTier) -> str:
     """Return the current identity for a rebuildable tier."""
     if tier is DerivedTier.INDEX:
@@ -40,7 +45,7 @@ def derived_schema_identity(tier: DerivedTier) -> str:
         return _canonical_digest(
             {
                 "tier": tier.value,
-                "ddl": INDEX_DDL,
+                "ddl": _identity_ddl(INDEX_DDL),
                 "runtime_index_ddl": runtime_index_ddl(),
                 "lowering_fingerprint": lowering_fingerprint(),
                 "materializer_fingerprint": materializer_fingerprint(),
@@ -50,7 +55,7 @@ def derived_schema_identity(tier: DerivedTier) -> str:
     if tier is DerivedTier.OPS:
         from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 
-        return _canonical_digest({"tier": tier.value, "ddl": OPS_DDL})
+        return _canonical_digest({"tier": tier.value, "ddl": _identity_ddl(OPS_DDL)})
     raise ValueError(f"unsupported derived tier: {tier}")
 
 

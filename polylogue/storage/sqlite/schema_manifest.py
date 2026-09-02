@@ -64,10 +64,6 @@ def canonical_schema_manifest(tier: ArchiveTier, *, version: int | None = None) 
             from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
             ensure_runtime_indexes_sync(conn)
-        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
-            from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
-
-            conn.executescript(DERIVED_SCHEMA_META_DDL)
         conn.execute(f"PRAGMA user_version = {int(ARCHIVE_VERSION_BY_TIER[tier] if version is None else version)}")
         return SchemaManifest.from_connection(conn, tier)
     finally:
