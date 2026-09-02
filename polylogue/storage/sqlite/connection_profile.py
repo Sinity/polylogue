@@ -28,6 +28,22 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
+SCRATCH_SYNCHRONOUS_ENV = "POLYLOGUE_SQLITE_SYNCHRONOUS"
+
+
+def scratch_synchronous_override() -> str | None:
+    """``POLYLOGUE_SQLITE_SYNCHRONOUS=OFF`` drops fsync for throwaway archives.
+
+    The test harness sets it: every archive under a pytest scratch tree is
+    deleted seconds after it is written, and on a copy-on-write filesystem
+    its fsyncs are the dominant disk load of a run. Only ``OFF`` is honoured
+    and it applies to every profile that syncs at all; the value is read
+    when statements are built, so it must be set before this module loads.
+    """
+    value = os.environ.get(SCRATCH_SYNCHRONOUS_ENV, "")
+    return "OFF" if value.strip().upper() == "OFF" else None
+
+
 @dataclass(frozen=True, slots=True)
 class SQLiteConnectionProfile:
     """SQLite timeout and PRAGMA profile for one connection role."""
@@ -49,6 +65,7 @@ class SQLiteConnectionProfile:
     @property
     def pragma_statements(self) -> tuple[str, ...]:
         statements: list[str] = []
+        synchronous = scratch_synchronous_override() or self.synchronous
         if self.foreign_keys:
             statements.append("PRAGMA foreign_keys = ON")
         if self.journal_mode is not None:
@@ -59,8 +76,8 @@ class SQLiteConnectionProfile:
                 f"PRAGMA cache_size = -{self.cache_size_kib}",
             )
         )
-        if self.synchronous is not None:
-            statements.append(f"PRAGMA synchronous = {self.synchronous}")
+        if synchronous is not None:
+            statements.append(f"PRAGMA synchronous = {synchronous}")
         statements.extend(
             (
                 # Qualify the schema explicitly.  An unqualified mmap_size

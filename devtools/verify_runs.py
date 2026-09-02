@@ -427,6 +427,8 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
     updated.update(
         {
             "POLYLOGUE_VERIFY_RUN_ID": run.run_id,
+            # Scratch archives never need durability; see connection_profile.
+            "POLYLOGUE_SQLITE_SYNCHRONOUS": "OFF",
             "POLYLOGUE_PYTEST_RUN_ID": pytest_step_run_id(run.run_id, artifacts.step_id),
             "POLYLOGUE_PYTEST_EVENTS_DIR": str(artifacts.events_dir),
             "POLYLOGUE_PYTEST_EVENTS_PATH": str(artifacts.events_merged_path),
