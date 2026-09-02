@@ -1575,14 +1575,14 @@ def _action_field_predicate_clause(action_alias: str, predicate: QueryFieldPredi
         truthy = normalized & {"1", "true", "yes", "y", "error", "failed", "failure"}
         falsy = normalized & {"0", "false", "no", "n", "ok", "success", "passed"}
         if truthy and falsy:
-            return f"COALESCE({action_alias}.is_error, 0) IN (0, 1)", []
+            return f"{action_alias}.is_error IN (0, 1)", []
         if truthy:
-            return f"COALESCE({action_alias}.is_error, 0) = 1", []
+            return f"{action_alias}.is_error = 1", []
         if falsy:
-            return f"COALESCE({action_alias}.is_error, 0) = 0", []
+            return f"{action_alias}.is_error = 0", []
         return "0=1", []
     if field == "exit_code":
-        return _numeric_predicate_clause(f"COALESCE({action_alias}.exit_code, 0)", predicate)
+        return _numeric_predicate_clause(f"{action_alias}.exit_code", predicate)
     if field == "followup_class":
         return _in_or_equals_clause(f"{action_alias}.followup_class", predicate.values, lower=True)
     if field == "text":
