@@ -844,7 +844,6 @@ def _render_site_header(current_path: str) -> str:
         + link("/search", "Search")
         + link("/cost", "Cost & usage")
         + link("/observability", "Observability")
-        + link("/", "Legacy reader")
         + "</nav></header>"
     )
 
