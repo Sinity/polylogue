@@ -511,11 +511,20 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
         raise ValueError(f"unknown archive tier: {resolved_tier!r}") from exc
     found = int(conn.execute("PRAGMA user_version").fetchone()[0])
     if found != expected:
+        from polylogue.storage.sqlite.migration_runner import DURABLE_MIGRATION_TIERS
+
+        if resolved_tier in DURABLE_MIGRATION_TIERS:
+            remedy = (
+                "use the numbered durable-tier migration path, verifying its required backup "
+                "before applying it; restore from a verified backup if migration cannot proceed"
+            )
+        else:
+            remedy = "rebuild or migrate the derived/disposable tier with the current runtime before retrying"
         raise SchemaSkew(
             tier=resolved_tier.value,
             expected=expected,
             found=found,
-            remedy="rebuild or migrate the tier with the current runtime before retrying",
+            remedy=remedy,
         )
 
 

@@ -13,7 +13,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
         connection.execute("INSERT INTO evidence VALUES ('selected')")
@@ -32,7 +32,7 @@ def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path)
 def test_open_readonly_connection_refuses_without_descriptor_bound_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
@@ -46,7 +46,7 @@ def test_open_readonly_connection_refuses_without_descriptor_bound_path(
 
 
 def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    db_path = tmp_path / "evidence.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
 
@@ -63,20 +63,39 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
 
 
 @pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
-def test_schema_skew_write_profiles_refuse_stale_archive_tier_before_returning_connection(
-    tmp_path: Path, factory: Callable[..., sqlite3.Connection]
+@pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT])
+def test_schema_skew_write_profiles_route_durable_tiers_to_safe_remedy(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection], tier: ArchiveTier
 ) -> None:
-    db_path = tmp_path / "user.db"
+    db_path = tmp_path / f"{tier.value}.db"
     with sqlite3.connect(db_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1}")
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[tier] - 1}")
 
     with pytest.raises(SchemaSkew) as excinfo:
         factory(db_path)
 
-    assert excinfo.value.tier == ArchiveTier.USER.value
-    assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
-    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER] - 1
-    assert "rebuild or migrate" in excinfo.value.remedy
+    assert excinfo.value.tier == tier.value
+    assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[tier]
+    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[tier] - 1
+    assert "numbered durable-tier migration path" in excinfo.value.remedy
+    assert "verified backup" in excinfo.value.remedy
+    assert "rebuild" not in excinfo.value.remedy
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+@pytest.mark.parametrize("tier", [ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS])
+def test_schema_skew_write_profiles_keep_rebuild_remedy_for_non_durable_tiers(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection], tier: ArchiveTier
+) -> None:
+    db_path = tmp_path / f"{tier.value}.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[tier] - 1}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        factory(db_path, tier=tier)
+
+    assert "rebuild" in excinfo.value.remedy
+    assert "derived/disposable tier" in excinfo.value.remedy
 
 
 def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> None:
