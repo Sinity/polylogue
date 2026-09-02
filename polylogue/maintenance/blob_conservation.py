@@ -7,9 +7,10 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import click
-
+from polylogue.config import Config
 from polylogue.daemon.backup import _source_blob_reservations, _source_recoverability_proofs
+from polylogue.maintenance.offline_guard import offline_writer_block_reason
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_integrity import project_source_blob_liveness
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
 
@@ -25,16 +26,23 @@ class BlobConservationReport:
     dangling_references: int
     recoverable_references: int
     reserved_blobs: int
+    corrupt_blobs: int
     invalid_namespace_entries: int
     staged_in_flight: int
     orphan_sample: tuple[str, ...] = ()
     dangling_sample: tuple[str, ...] = ()
     recoverable_sample: tuple[str, ...] = ()
+    corrupt_sample: tuple[str, ...] = ()
     invalid_sample: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
-        return self.orphan_blobs == 0 and self.dangling_references == 0 and self.invalid_namespace_entries == 0
+        return (
+            self.orphan_blobs == 0
+            and self.dangling_references == 0
+            and self.corrupt_blobs == 0
+            and self.invalid_namespace_entries == 0
+        )
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -46,11 +54,13 @@ class BlobConservationReport:
             "dangling_references": self.dangling_references,
             "recoverable_references": self.recoverable_references,
             "reserved_blobs": self.reserved_blobs,
+            "corrupt_blobs": self.corrupt_blobs,
             "invalid_namespace_entries": self.invalid_namespace_entries,
             "staged_in_flight": self.staged_in_flight,
             "orphan_sample": list(self.orphan_sample),
             "dangling_sample": list(self.dangling_sample),
             "recoverable_sample": list(self.recoverable_sample),
+            "corrupt_sample": list(self.corrupt_sample),
             "invalid_sample": list(self.invalid_sample),
         }
 
@@ -58,22 +68,33 @@ class BlobConservationReport:
 def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> BlobConservationReport:
     """Compare canonical files with the descriptor-owned live projection.
 
-    Both SQLite tiers are opened immutable/read-only. The backup module's
-    existing source replay prover is the only recoverability implementation.
-    Staging entries are reported separately and are never treated as blobs.
+    The caller must run this only while the archive writer is stopped. Both
+    SQLite tiers use ordinary read-only connections so committed WAL content
+    is included. The backup module's existing source replay prover is the
+    only recoverability implementation. Staging entries are reported
+    separately and are never treated as blobs.
     """
     root = archive_root.resolve()
+    blocker = offline_writer_block_reason(Config(archive_root=root, render_root=root / "render", sources=[]))
+    if blocker is not None:
+        raise RuntimeError(f"blob conservation requires the archive writer to be stopped: {blocker}")
     source_db = root / "source.db"
-    index_db = root / "index.db"
+    index_db = resolve_active_index_path(root)
     store = BlobStore(root / "blob")
-    projection = project_source_blob_liveness(source_db, index_db=index_db, immutable=True)
+    projection = project_source_blob_liveness(source_db, index_db=index_db)
     if projection.blockers:
         raise RuntimeError("blob conservation projection blocked: " + "; ".join(projection.blockers))
 
     entries = tuple(store.iter_namespace())
-    present = {entry.hash_hex for entry in entries if entry.kind is BlobNamespaceEntryKind.BLOB and entry.hash_hex}
+    verification = store.verify_all(max_failures=max(1, len(entries) + 1))
+    corrupt = {failure.hash for failure in verification.failures if failure.hash}
+    present = {
+        entry.hash_hex
+        for entry in entries
+        if entry.kind is BlobNamespaceEntryKind.BLOB and entry.hash_hex and entry.hash_hex not in corrupt
+    }
     referenced = set(projection.live_hashes)
-    reservations = _source_blob_reservations(source_db)
+    reservations = _source_blob_reservations(source_db, immutable=False)
     protected = referenced | reservations
     missing = protected - present
     source_hashes = set().union(
@@ -85,6 +106,7 @@ def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> Blo
         root=root,
         missing_hashes=missing & source_hashes,
         unproven=unproven,
+        immutable=False,
     )
     recoverable = {str(row["blob_hash"]) for row in proofs}
     invalid = tuple(
@@ -102,11 +124,13 @@ def check_blob_conservation(archive_root: Path, *, sample_size: int = 20) -> Blo
         dangling_references=len(missing - recoverable),
         recoverable_references=len(recoverable),
         reserved_blobs=len(reservations),
+        corrupt_blobs=len(corrupt),
         invalid_namespace_entries=len(invalid),
         staged_in_flight=len(staged),
         orphan_sample=tuple(sorted(present - protected)[:limit]),
         dangling_sample=tuple(sorted(missing - recoverable)[:limit]),
         recoverable_sample=tuple(sorted(recoverable)[:limit]),
+        corrupt_sample=tuple(sorted(corrupt)[:limit]),
         invalid_sample=tuple(sorted(invalid)[:limit]),
     )
 
@@ -124,25 +148,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Blob conservation: {'PASS' if report.ok else 'FAIL'}")
         print(f"Referenced: {report.referenced_blobs:,}; present: {report.present_blobs:,}")
         print(
-            f"Orphans: {report.orphan_blobs:,}; dangling: {report.dangling_references:,}; recoverable: {report.recoverable_references:,}; reserved: {report.reserved_blobs:,}"
+            f"Orphans: {report.orphan_blobs:,}; dangling: {report.dangling_references:,}; corrupt: {report.corrupt_blobs:,}"
         )
+        print(f"Recoverable: {report.recoverable_references:,}; reserved: {report.reserved_blobs:,}")
         print(f"Invalid namespace: {report.invalid_namespace_entries:,}; staged in-flight: {report.staged_in_flight:,}")
     return 0 if report.ok else 1
 
 
-@click.command("blob-conservation")
-@click.option("--archive-root", type=click.Path(path_type=Path), required=True)
-@click.option("--sample-size", type=int, default=20, show_default=True)
-@click.option("--json", "as_json", is_flag=True)
-def blob_conservation_command(archive_root: Path, sample_size: int, as_json: bool) -> None:
-    """Run the read-only blob conservation check from the operations CLI."""
-    args = ["--archive-root", str(archive_root), "--sample-size", str(sample_size)]
-    if as_json:
-        args.append("--json")
-    raise click.exceptions.Exit(main(args))
-
-
-__all__ = ["BlobConservationReport", "blob_conservation_command", "check_blob_conservation", "main"]
+__all__ = ["BlobConservationReport", "check_blob_conservation", "main"]
 
 
 if __name__ == "__main__":

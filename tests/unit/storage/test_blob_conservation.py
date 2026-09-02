@@ -36,6 +36,46 @@ def test_conservation_flags_orphan_and_dangling_reference(monkeypatch: pytest.Mo
     assert not report.ok
 
 
+def test_conservation_reads_the_active_index_without_immutable_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The census follows a promoted index and includes committed WAL rows.
+
+    Anti-vacuity: restoring the conventional path or ``immutable=True`` makes
+    this assertion fail.
+    """
+    _empty_archive(tmp_path)
+    active_index = tmp_path / "promoted" / "index.db"
+    projection = BlobLivenessProjection(frozenset())
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(blob_conservation, "resolve_active_index_path", lambda _root: active_index)
+
+    def project(source_db: Path, **kwargs: object) -> BlobLivenessProjection:
+        observed["source_db"] = source_db
+        observed.update(kwargs)
+        return projection
+
+    monkeypatch.setattr(blob_conservation, "project_source_blob_liveness", project)
+    blob_conservation.check_blob_conservation(tmp_path)
+
+    assert observed["source_db"] == tmp_path / "source.db"
+    assert observed["index_db"] == active_index
+    assert "immutable" not in observed
+
+
+def test_conservation_refuses_a_live_archive_writer(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The census requires a stable archive snapshot.
+
+    Anti-vacuity: removing the writer guard would open the SQLite tiers and
+    produce a result while concurrent ingestion can change its evidence.
+    """
+    monkeypatch.setattr(blob_conservation, "offline_writer_block_reason", lambda _config: "live pidfile PID 42")
+
+    with pytest.raises(RuntimeError, match="requires the archive writer to be stopped: live pidfile PID 42"):
+        blob_conservation.check_blob_conservation(tmp_path)
+
+
 def test_conservation_excludes_staged_work_from_blob_population(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -92,3 +132,27 @@ def test_conservation_excludes_backup_prover_confirmed_reference(
     assert report.dangling_references == 0
     assert report.recoverable_references == 1
     assert report.ok
+
+
+def test_conservation_rejects_a_corrupt_referenced_blob(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A canonical filename alone cannot satisfy conservation.
+
+    Anti-vacuity: counting namespace-shaped files as present would make this
+    report pass.
+    """
+    _empty_archive(tmp_path)
+    store = BlobStore(tmp_path / "blob")
+    blob_hash, _ = store.write_from_bytes(b"intact")
+    store.blob_path(blob_hash).write_bytes(b"truncated")
+    projection = BlobLivenessProjection(
+        frozenset({blob_hash}), owner_hashes=(("source.db.raw_sessions", frozenset({blob_hash})),)
+    )
+    monkeypatch.setattr(blob_conservation, "project_source_blob_liveness", lambda *args, **kwargs: projection)
+    monkeypatch.setattr(blob_conservation, "_source_recoverability_proofs", lambda *args, **kwargs: [])
+
+    report = blob_conservation.check_blob_conservation(tmp_path)
+
+    assert report.corrupt_blobs == 1
+    assert report.corrupt_sample == (blob_hash,)
+    assert report.dangling_references == 1
+    assert not report.ok
