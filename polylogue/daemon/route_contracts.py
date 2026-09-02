@@ -1,10 +1,9 @@
 """Stable daemon HTTP route contract metadata.
 
-This module is intentionally descriptive: dispatch still lives in
-``polylogue.daemon.http``, but route classes, auth posture, and stability are
-owned here so docs, tests, OpenAPI generation, and future web-workbench code do
-not infer security semantics from handler names. Tests compare this metadata
-against route patterns exposed by the live dispatcher tables.
+The proof-critical read routes are executable declarations: the daemon adapter
+and OpenAPI renderer derive their route metadata from this module. Remaining
+historical and web-shell routes retain metadata-only contracts until their own
+migration slices land.
 """
 
 from __future__ import annotations

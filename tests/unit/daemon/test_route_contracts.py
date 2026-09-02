@@ -84,6 +84,30 @@ def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> No
     assert generated == declared
 
 
+def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
+    """The executable read declarations remain the shared authority."""
+
+    from devtools.render_openapi import _build_openapi_document
+
+    expected = {
+        "/api/sessions": ("daemon.find.sessions", "_handle_list_sessions"),
+        "/api/status": ("daemon.status", "_handle_status"),
+        "/api/query-units": ("daemon.query.units", "_handle_query_units"),
+        "/api/sessions/:id/read": ("daemon.read.session", "_handle_get_session_read"),
+    }
+    installed = {route.pattern: route for route in (*_static_get_routes(), *_parameterized_get_routes())}
+    document = _build_openapi_document()
+
+    assert {declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS} == set(expected)
+    for path, (declaration_id, handler_name) in expected.items():
+        declaration = daemon_route_declaration("GET", path)
+        assert declaration.kernel.declaration_id == declaration_id
+        assert installed[path].handler_name == handler_name
+        operation = document["paths"][path.replace(":id", "{session_id}")]["get"]
+        assert operation["x-polylogue-declaration"]["declaration_id"] == declaration_id
+        assert operation["x-polylogue-declaration"]["path"] == path
+
+
 def test_unreachable_generated_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
     """Removing one generated binding makes the completeness oracle red."""
 
