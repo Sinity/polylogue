@@ -1,22 +1,27 @@
 Summary
 
-Admit deliberate unknown tool outcomes as `ToolOutcome.UNKNOWN`, preserve their parser reason, and keep action surfaces honest across Claude Code, Codex, and Hermes transcripts.
+Rebased the inherited packet onto current origin/master and removed the duplicate inline tool-outcome derivation added by the unfinished lane. Current master already contains the typed outcome implementation, parser evidence handling, deliberate unknown reasons, and schema lifecycle declaration.
 
 Problem
 
-The writer refused real Claude Code and Codex results whose parser evidence deliberately recorded `not_reported` or `distrusted`. The prior lane also converted unknown action assertions to success and removed no-verdict shapes from synthetic generators.
+The inherited lane replay introduced a second `_derive_tool_outcomes` helper in `storage/sqlite/archive_tiers/write.py` and duplicated the `ToolOutcome` import. Keeping both implementations would leave the write choke point ambiguous and stale.
 
 Solution
 
-The writer derives `unknown` from `tool_result_outcome_unknown_reason`, preserves the reason, and leaves legacy error and exit-code fields null. Codex and Hermes parser paths retain `not_reported` for unresolved structural results. Action SQL maps the canonical value to `outcome_unknown`. Claude Code, Codex, and tool-heavy synthetic generators can again emit no-verdict results. A parser-to-writer regression covers both real parser routes, and the restored assertions expect `OUTCOME_UNKNOWN` with `tool_success is None`. Index schema v82 declares semantic replay for the changed derived DDL.
+Retained the canonical `polylogue.sources.tool_outcomes.derive_tool_outcomes` route from current master and removed the duplicate writer helper and import. Rebase conflict resolution preserved current-master parser, schema, fixture, and assertion behavior.
 
 Verification
 
-- `.venv/bin/python -m devtools test tests/unit/storage/test_tool_outcome.py tests/unit/core/test_synthetic_semantics.py::TestWireFormatShape tests/unit/sources/test_claude_code_unread_wire_fields.py tests/unit/sources/test_tool_result_structural_outcome.py tests/unit/sources/parsers/test_hermes_state.py tests/unit/sources/test_parsers_codex_catalog.py::test_codex_catalog_parser_only_smoke` passed: 59 passed.
-- Read-only parser census through `prepare_session_rows`: 143 sampled Claude Code files with 11,259 tool results and 0 refusals; 116 sampled Codex files with 46,414 tool results and 0 refusals. Deliberate unknown reasons were retained in both populations.
-- `git fetch origin master && git rebase origin/master` passed. The lane uses schema v82, above the v80 and v81 claims present in other active worktrees.
-- `.venv/bin/python -m devtools verify --quick` passed: all quick checks green, including schema versioning.
+- `nix develop --command devtools test tests/unit/storage/test_tool_outcome.py tests/unit/storage/test_archive_tiers_archive.py`: 75 passed, 1 failed. The failure is the inherited `test_read_open_rejects_stale_index_with_generation_and_lifecycle_action`, which raises current `SchemaSkewError` instead of the test's older `SchemaVersionMismatchError` expectation.
+- `nix develop --command devtools verify --quick`: success, exit 0. Ruff format, Ruff check, mypy, rendering, layering, patterns, CI commands, JavaScript tests, documentation commands, schema checks, oracle integrity, consumer reachability, definition closure, timestamp doctrine, insight honesty, schema promotion, and privacy registry all passed.
+- `git fetch origin && git rebase origin/master`: success. Product code is now identical to current origin/master; the only branch diff is the required uncommitted `.lane` publication text.
 
-Residual risk: the complete 59 GB local JSONL corpus and live daemon convergence were not run. The malformed source file noted in the prior review remains an input-quality issue, not a typed-outcome refusal.
+Residual risk
 
-Reviewed-by: Claude (Opus) cross-family review
+The focused archive test retains the inherited exception-name mismatch. Full corpus convergence was not run in this lane.
+
+LANE-BRANCH: feature/packet/polylogue-xd0ha
+LANE-COMMIT: eab0c2434d8253ff687a5a8b81424e8592e605e2
+LANE-QUICK: green
+LANE-CLASSIFICATION: inherited test expectation mismatch: current read-open path raises SchemaSkewError
+LANE-CLASSIFICATION: packet implementation already present on origin/master; lane commit removes the stale duplicate helper
