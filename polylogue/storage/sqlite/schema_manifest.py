@@ -49,6 +49,7 @@ def _projection(conn: sqlite3.Connection) -> tuple[tuple[str, str, str], ...]:
     rows = conn.execute(
         """SELECT type, name, sql FROM sqlite_master
            WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+             AND name != 'schema_identity'
            ORDER BY type, name"""
     ).fetchall()
     # FTS5 shadow tables are storage FTS5 owns and reshapes across SQLite
