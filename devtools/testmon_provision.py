@@ -7,8 +7,14 @@ copying master's datafile: paths are repo-relative and fingerprints are by
 content, so a copy is valid immediately.
 
 An absent datafile is not a failure — the next run seeds it. A datafile that
-cannot be opened, or that no compatible testmon wrote, is: selecting against
-it would silently skip tests.
+cannot be opened, or that the installed testmon would not read, is: testmon
+deletes a datafile whose data version differs from its own and starts over,
+which is a silent full re-execution masquerading as selection.
+
+testmon keys its graph on the installed package set: when that changes it
+drops the environment row and every recorded test with it, and the run
+re-executes everything. That is legitimate, and it is reported here so the
+receipt says why a selected run ran the whole corpus.
 """
 
 from __future__ import annotations
@@ -23,15 +29,27 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from testmon.common import drop_patch_version, get_system_packages
+from testmon.db import DATA_VERSION as TESTMON_DATA_VERSION
+
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
 
 #: The single environment every managed run traces and selects under. Pinned so
-#: a dependency bump, a Hypothesis profile or a Python patch release cannot
-#: rename the environment and orphan the graph.
+#: a Hypothesis profile or a settings module cannot rename the environment and
+#: orphan the graph.
 TESTMON_ENVIRONMENT = "polylogue"
 
-#: Tables a datafile written by a compatible pytest-testmon carries.
-_REQUIRED_TABLES = frozenset({"environment", "node"})
+#: testmon attributes covered lines to tests through coverage's dynamic
+#: contexts, which the sys.monitoring core does not support: traced under it,
+#: every test depends on nothing but its own file and selection skips every
+#: test on every source change. Managed runs pin the C tracer.
+TESTMON_COVERAGE_CORE = "ctrace"
+
+#: Tables the installed pytest-testmon writes and reads.
+_REQUIRED_TABLES = frozenset({"environment", "test_execution", "file_fp", "test_execution_file_fp"})
+
+#: Files under this prefix are tests, not the code under test.
+_TEST_PREFIX = "tests/"
 
 _SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
@@ -46,6 +64,10 @@ class TestmonGraphStatus(StrEnum):
 class TestmonGraphState:
     status: TestmonGraphStatus
     reason: str
+    #: Set when the graph is usable but the installed packages or interpreter
+    #: differ from what it was written under: testmon will re-execute every
+    #: test this run and record the new environment.
+    full_rerun_cause: str | None = None
 
     @property
     def usable(self) -> bool:
@@ -54,6 +76,13 @@ class TestmonGraphState:
 
 def testmon_datafile(root: Path) -> Path:
     return root / TESTMON_DATA_RELPATH
+
+
+def current_environment_key() -> tuple[str, str]:
+    """(system_packages, python_version) exactly as testmon records them."""
+    packages = drop_patch_version(get_system_packages())
+    version = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return packages, version
 
 
 def inspect_testmon_graph(root: Path) -> TestmonGraphState:
@@ -67,16 +96,51 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
         return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile cannot be opened: {exc}")
     try:
         with contextlib.closing(connection):
+            data_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            environment = None
+            recorded_tests = 0
+            source_dependencies = 0
+            if data_version == TESTMON_DATA_VERSION and tables >= _REQUIRED_TABLES:
+                environment = connection.execute(
+                    "SELECT system_packages, python_version FROM environment WHERE environment_name = ? ORDER BY id DESC",
+                    (TESTMON_ENVIRONMENT,),
+                ).fetchone()
+                recorded_tests = int(connection.execute("SELECT count(*) FROM test_execution").fetchone()[0])
+                source_dependencies = int(
+                    connection.execute(
+                        "SELECT count(*) FROM file_fp WHERE substr(filename, 1, ?) != ?",
+                        (len(_TEST_PREFIX), _TEST_PREFIX),
+                    ).fetchone()[0]
+                )
     except sqlite3.Error as exc:
         return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile is corrupt: {exc}")
+    if data_version != TESTMON_DATA_VERSION:
+        return TestmonGraphState(
+            TestmonGraphStatus.UNUSABLE,
+            f"the testmon datafile carries data version {data_version}; the installed pytest-testmon "
+            f"reads version {TESTMON_DATA_VERSION} and would silently replace it",
+        )
     missing = _REQUIRED_TABLES - tables
     if missing:
         return TestmonGraphState(
             TestmonGraphStatus.UNUSABLE,
             f"the testmon datafile was written by an incompatible testmon version (no {', '.join(sorted(missing))})",
         )
-    return TestmonGraphState(TestmonGraphStatus.USABLE, "testmon datafile present")
+    if recorded_tests and not source_dependencies:
+        return TestmonGraphState(
+            TestmonGraphStatus.UNUSABLE,
+            f"the testmon datafile records {recorded_tests} tests and no dependency on any source file: "
+            "it was traced without dynamic contexts and cannot select",
+        )
+    cause = None
+    if environment is not None:
+        packages, version = current_environment_key()
+        if environment[1] != version:
+            cause = f"the interpreter changed ({environment[1]} -> {version})"
+        elif environment[0] != packages:
+            cause = "the installed packages changed"
+    return TestmonGraphState(TestmonGraphStatus.USABLE, "testmon datafile present", cause)
 
 
 def discard_testmon_graph(root: Path) -> None:
@@ -107,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         "environment": TESTMON_ENVIRONMENT,
         "status": str(state.status),
         "reason": state.reason,
+        "full_rerun_cause": state.full_rerun_cause,
         "discarded": discarded,
     }
     if args.json:
@@ -114,6 +179,8 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write("\n")
     else:
         print(f"testmon provision: {state.status}: {state.reason}")
+        if state.full_rerun_cause:
+            print(f"the next run re-executes every test: {state.full_rerun_cause}")
         if discarded:
             print(f"discarded the unusable datafile at {TESTMON_DATA_RELPATH}")
     return 0

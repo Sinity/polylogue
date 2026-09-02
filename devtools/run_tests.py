@@ -42,7 +42,7 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
-from devtools.testmon_provision import TESTMON_ENVIRONMENT
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
@@ -379,6 +379,7 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_XDIST_WORKER", None)
     env.pop("PYTEST_CURRENT_TEST", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
 
 
 def _copy_focused_pytest_report(artifacts: PytestStepArtifacts) -> None:

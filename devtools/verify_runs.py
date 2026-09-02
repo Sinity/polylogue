@@ -284,11 +284,14 @@ class VerifyRun:
         if self.mirror_current:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
-    def record_selection(self, *, selection_mode: str, graph_status: str, graph_reason: str) -> None:
+    def record_selection(
+        self, *, selection_mode: str, graph_status: str, graph_reason: str, full_rerun_cause: str | None = None
+    ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
             "graph_status": graph_status,
             "graph_reason": graph_reason,
+            "full_rerun_cause": full_rerun_cause,
         }
         self.write()
 

@@ -27,6 +27,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
+    TESTMON_COVERAGE_CORE,
     TESTMON_DATA_RELPATH,
     TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
@@ -234,6 +235,7 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     # Property tests run under one full profile so a reduced Hypothesis budget
     # cannot quietly narrow what a recorded green stands for.
     env["HYPOTHESIS_PROFILE"] = "default"
+    env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)
 
 
@@ -713,7 +715,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         agentctl_operation=agentctl_operation,
     )
     if not args.quick:
-        run.record_selection(selection_mode=selection, graph_status=str(graph.status), graph_reason=graph.reason)
+        run.record_selection(
+            selection_mode=selection,
+            graph_status=str(graph.status),
+            graph_reason=graph.reason,
+            full_rerun_cause=graph.full_rerun_cause,
+        )
         if graph.status is TestmonGraphStatus.UNUSABLE:
             payload = _finish_and_record_verification(
                 run=run,
@@ -731,6 +738,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             return 2
         if graph.status is TestmonGraphStatus.ABSENT:
             sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
+        elif graph.full_rerun_cause:
+            sys.stderr.write(
+                f"verify: {graph.full_rerun_cause} since the graph was written: this run re-executes every test.\n"
+            )
     steps = build_verify_steps(quick=args.quick, selection=selection)
     try:
         results: list[dict[str, Any]] = []
