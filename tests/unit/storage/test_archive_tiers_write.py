@@ -112,6 +112,67 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
         conn.close()
 
 
+@pytest.mark.parametrize("is_error, expected_outcome", [(False, "ok"), (True, "error")])
+def test_merge_append_reconciles_tool_use_from_prior_batch(
+    tmp_path: Path, is_error: bool, expected_outcome: str
+) -> None:
+    """A result arriving in a later batch must update its stored FIFO use."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"append-tool-result-{expected_outcome}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="use",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="tool-1", tool_name="run")],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        prior_use_hash = conn.execute(
+            "SELECT content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+            (session_id,),
+        ).fetchone()["content_hash"]
+
+        appended = session.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="result",
+                        role=Role.TOOL,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="tool-1",
+                                text="output",
+                                is_error=is_error,
+                            )
+                        ],
+                    )
+                ]
+            }
+        )
+        write_parsed_session_to_archive(conn, appended, merge_append=True)
+
+        use = conn.execute(
+            "SELECT tool_outcome, content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+            (session_id,),
+        ).fetchone()
+        action = conn.execute(
+            "SELECT result_state FROM actions WHERE session_id = ? AND tool_use_block_id = ?",
+            (session_id, f"{session_id}:n:use:0"),
+        ).fetchone()
+        assert use is not None
+        assert action is not None
+        assert use["tool_outcome"] == expected_outcome
+        assert action["result_state"] == ("outcome_error" if is_error else "outcome_success")
+        assert use["content_hash"] != prior_use_hash
+    finally:
+        conn.close()
+
+
 def test_writer_separates_native_and_positional_message_identity(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     try:

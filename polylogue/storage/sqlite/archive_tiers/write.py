@@ -956,6 +956,9 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.blocks", t0)
                 t0 = time.perf_counter()
+                _reconcile_tool_use_outcomes(conn, session_id)
+                add_timing("index.tool_outcomes", t0)
+                t0 = time.perf_counter()
                 _write_file_edits(
                     conn,
                     session_id,
@@ -2353,6 +2356,62 @@ def _write_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
     conn.executemany(_blocks_insert_sql(), rows)
+
+
+def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> None:
+    """Re-pair every stored tool use when an append supplies its result.
+
+    Append batches can split a FIFO pair across writes. The incoming parser
+    derivation cannot see the earlier use, so reconcile from the complete
+    session projection while the append transaction is still open.
+    """
+    rows = conn.execute(
+        """
+        SELECT b.block_id, b.block_type, b.tool_id, b.tool_outcome,
+               b.text, b.tool_name, b.tool_input, b.semantic_type,
+               b.media_type, b.language, b.tool_result_is_error,
+               b.tool_result_exit_code, b.tool_result_outcome_unknown_reason,
+               b.signature, m.position, m.variant_index, b.position
+        FROM blocks AS b
+        JOIN messages AS m ON m.message_id = b.message_id
+        WHERE b.session_id = ? AND b.tool_id IS NOT NULL
+          AND b.block_type IN ('tool_use', 'tool_result')
+        ORDER BY m.position, m.variant_index, b.position
+        """,
+        (session_id,),
+    ).fetchall()
+    uses: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    results: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        if row["block_type"] == BlockType.TOOL_USE.value:
+            uses[row["tool_id"]].append(row)
+        else:
+            results[row["tool_id"]].append(row)
+
+    for tool_uses in uses.values():
+        tool_id = tool_uses[0]["tool_id"]
+        tool_results = results.get(tool_id, ())
+        for rank, use in enumerate(tool_uses):
+            outcome = tool_results[rank]["tool_outcome"] if rank < len(tool_results) else ToolOutcome.NO_RESULT.value
+            if outcome == use["tool_outcome"]:
+                continue
+            content_hash = _block_content_hash(
+                block_type=use["block_type"],
+                text=use["text"],
+                tool_name=use["tool_name"],
+                tool_input_json=use["tool_input"],
+                semantic_type=use["semantic_type"],
+                media_type=use["media_type"],
+                language=use["language"],
+                is_error=use["tool_result_is_error"],
+                exit_code=use["tool_result_exit_code"],
+                tool_outcome=outcome,
+                outcome_unknown_reason=use["tool_result_outcome_unknown_reason"],
+            )
+            conn.execute(
+                "UPDATE blocks SET tool_outcome = ?, content_hash = ? WHERE block_id = ?",
+                (outcome, content_hash, use["block_id"]),
+            )
 
 
 def _build_file_edit_rows(
