@@ -828,3 +828,24 @@ def test_linked_worktree_seeds_a_resumable_main_graph_for_new_modules(tmp_path: 
     assert preparation.local_state.status == "incomplete"
     assert preparation.local_state.missing_executable_paths == ("polylogue/added.py",)
     assert (lane / TESTMON_DATA_RELPATH).is_file()
+
+
+def test_orphan_sidecars_are_removed_and_the_graph_seeded(tmp_path: Path) -> None:
+    """Anti-vacuity: without the re-inspection, a worktree holding only
+    `-wal`/`-shm` sidecars refused affected verification
+    (worktree-0770508891930436, 2026-09-02 04:28Z) although the main graph
+    was valid for its digest."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    lane_data = lane / TESTMON_DATA_RELPATH
+    lane_data.parent.mkdir(parents=True)
+    Path(f"{lane_data}-wal").write_bytes(b"orphan")
+    Path(f"{lane_data}-shm").write_bytes(b"orphan")
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "affected"
+    assert preparation.local_state.valid
+    assert {path.name for path in preparation.removed_paths} == {"testmondata-wal", "testmondata-shm"}
+    assert lane_data.is_file()

@@ -982,6 +982,25 @@ def prepare_native_testmon_environment(
     removed: tuple[Path, ...] = ()
     if local.status == "invalid":
         removed = remove_invalid_native_testmon_state(root)
+        # What remains after the repair is an empty slot, and an empty slot
+        # seeds: orphan sidecars must not cost a lane its selection.
+        local = inspect_native_testmon_environment(
+            local_data,
+            environment_name=environment_name,
+            required_executable_paths=required_executable_paths,
+            deadline_monotonic=deadline_monotonic,
+        )
+        if local.status == "absent":
+            seeded = seed_native_testmon_from_main_checkout(
+                root,
+                environment_name=environment_name,
+                required_executable_paths=required_executable_paths,
+                deadline_monotonic=deadline_monotonic,
+            )
+            if seeded is not None:
+                local = seeded
+                if local.valid:
+                    return NativeTestmonPreparation(environment_name, "affected", local, removed)
     _ensure_deadline(deadline_monotonic)
 
     if local.resumable:
