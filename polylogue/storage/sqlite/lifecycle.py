@@ -792,21 +792,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=57,
-        # polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, a
-        # brand-new table with no rows on any existing archive -- see
-        # INDEX_SCHEMA_VERSION's v57 comment (archive_tiers/index.py).
-        # Same shape as v33's `insight_materialization` new-table delta.
-        classes=(DerivedDeltaClass.CONSTRAINT_ONLY, DerivedDeltaClass.INDEX_ONLY),
+        # The one-shot sidecar-purge receipt has no remaining consumer. Its
+        # removal is a clone-safe rebuildable-cache deletion.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
         operations=(
             FastForwardOperation(
-                name="v57-agent-meta-sidecar-purge-receipts",
-                kind=FastForwardOperationKind.REPLACE_TABLE,
+                name="v57-drop-agent-meta-sidecar-purge-receipts",
+                kind=FastForwardOperationKind.DROP_TABLE,
                 objects=(("table", "agent_meta_sidecar_purge_receipts"),),
-            ),
-            FastForwardOperation(
-                name="v57-agent-meta-sidecar-purge-receipts",
-                kind=FastForwardOperationKind.CREATE_INDEX,
-                objects=(("index", "idx_agent_meta_sidecar_purge_receipts_purged_at"),),
             ),
         ),
     ),
@@ -1152,6 +1145,25 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # structured parser evidence. A shape-only copy-forward would mint
         # unsupported values, so existing rows require semantic reparse.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=85,
+        # ``threads.dominant_repo_id`` had no writer or reader. Replacing the
+        # projection table preserves every surviving derived value while
+        # removing the unused column.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v85-drop-threads-dominant-repo-id",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "threads"),),
+            ),
+            FastForwardOperation(
+                name="v85-drop-threads-dominant-repo-id",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_threads_time"),),
+            ),
+        ),
     ),
 )
 

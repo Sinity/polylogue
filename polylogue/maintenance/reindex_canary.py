@@ -2589,7 +2589,6 @@ _EXCLUDED_TABLES = frozenset(
     {
         "delegation_refresh_scope",
         "derived_refresh_guard",
-        "agent_meta_sidecar_purge_receipts",
         "session_tag_rollups",
     }
 )

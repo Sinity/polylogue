@@ -274,15 +274,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # `polylogue ops reset --index && polylogued run` is required; deliberately
 # NOT executed by this declaration.
 
-# polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, an immutable
-# per-row audit record for the retired one-shot sidecar purge actuator
-# -- the targeted actuator that deletes the ~4,945 pre-2026-07-28
-# `agent-<hash>.meta.json` subagent-sidecar phantom sessions found by the
-# polylogue-b508 audit (a fixed producer bug materialized a per-subagent
-# metadata sidecar file into its own empty session, duplicate of the real,
-# correctly-ingested subagent transcript). Brand-new table, no existing
-# archive has any rows to migrate -- CONSTRAINT_ONLY/REPLACE_TABLE fast-
-# forwards to a plain create, same shape as v33's `insight_materialization`.
 # polylogue-omsw: v58 declares the classification change made to
 # `archive.artifact_taxonomy.classify_artifact`/`classify_artifact_path`:
 # (1) a `tool-results/<name>.json` sidecar now refuses session

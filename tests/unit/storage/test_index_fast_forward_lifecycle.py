@@ -89,11 +89,33 @@ def test_v61_pricing_column_drop_is_a_clone_safe_constraint_copy_forward() -> No
     assert declaration.operations[0].objects == (("table", "session_model_usage"),)
 
 
+def test_v57_sidecar_purge_receipt_removal_is_a_clone_safe_cache_deletion() -> None:
+    plan = index_fast_forward_plan(56, 57)
+
+    assert plan is not None
+    declaration = plan.declarations[0]
+    assert declaration.classes == (DerivedDeltaClass.CACHE_REMOVAL,)
+    assert declaration.operations[0].kind is FastForwardOperationKind.DROP_TABLE
+    assert declaration.operations[0].objects == (("table", "agent_meta_sidecar_purge_receipts"),)
+
+
 def test_v64_fingerprint_stamp_delta_requires_semantic_reparse() -> None:
     declaration = next(d for d in lifecycle.INDEX_DELTA_DECLARATIONS if d.version == 64)
 
     assert declaration.classes == (DerivedDeltaClass.SEMANTIC_REPARSE,)
     assert lifecycle.index_fast_forward_plan(63, 64) is None
+
+
+def test_v85_threads_projection_removal_is_a_clone_safe_cache_deletion() -> None:
+    plan = index_fast_forward_plan(84, 85)
+
+    assert plan is not None
+    declaration = plan.declarations[0]
+    assert declaration.classes == (DerivedDeltaClass.CACHE_REMOVAL,)
+    assert declaration.operations[0].kind is FastForwardOperationKind.REPLACE_TABLE
+    assert declaration.operations[0].objects == (("table", "threads"),)
+    assert declaration.operations[1].kind is FastForwardOperationKind.CREATE_INDEX
+    assert declaration.operations[1].objects == (("index", "idx_threads_time"),)
 
 
 def test_v70_application_frontier_receipts_require_semantic_reparse() -> None:
