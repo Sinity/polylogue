@@ -1671,6 +1671,29 @@ def _archive_list_assertion_candidate_reviews(
         return []
 
 
+def _archive_list_assertion_candidates(
+    config: Config,
+    *,
+    target_ref: str | None = None,
+    kinds: Sequence[str | AssertionKind] | None = None,
+    limit: int | None = None,
+) -> list[Any]:
+    """Read every pending candidate kind from the durable judgment queue."""
+
+    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CANDIDATE_REVIEW_STATUSES
+
+    return [
+        review.candidate
+        for review in _archive_list_assertion_candidate_reviews(
+            config,
+            target_ref=target_ref,
+            kinds=kinds,
+            statuses=(ASSERTION_CANDIDATE_REVIEW_STATUSES[0],),
+            limit=limit,
+        )
+    ]
+
+
 def _archive_assertion_candidate_queue_health(
     config: Config,
     *,
@@ -3422,12 +3445,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> list[AssertionClaimPayload]:
         """List candidate assertion claims awaiting explicit judgment."""
 
-        return await self.list_assertion_claim_payloads(
-            kinds=kinds,
-            target_ref=target_ref,
-            statuses=(AssertionStatus.CANDIDATE,),
-            limit=limit,
+        from polylogue.surfaces.payloads import AssertionClaimPayload
+
+        candidates = cast(
+            list["ArchiveAssertionEnvelope"],
+            _archive_list_assertion_candidates(self.config, target_ref=target_ref, kinds=kinds, limit=limit),
         )
+        return [AssertionClaimPayload.from_envelope(candidate) for candidate in candidates]
 
     async def list_assertion_candidate_reviews(
         self,
