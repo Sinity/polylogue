@@ -29,6 +29,7 @@ import pytest
 from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
@@ -40,6 +41,7 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     decide_schema_bootstrap,
     schema_version_mismatch_message,
 )
+from polylogue.storage.sqlite.schema_manifest import canonical_schema_manifest, schema_manifest_diff
 
 # ---------------------------------------------------------------------------
 # Canonical FTS triggers — see docs/internals.md
@@ -197,6 +199,33 @@ def test_existing_archive_repairs_runtime_indexes_before_manifest_validation(tmp
 
     with sqlite3.connect(index_db) as conn:
         assert any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
+
+
+def test_same_version_trigram_trigger_variants_are_accepted() -> None:
+    """The v63 lifecycle rule preserves ungated triggers until rebuild."""
+    expected = canonical_schema_manifest(ArchiveTier.INDEX)
+    variant_names = {
+        "blocks_command_trigram_ai",
+        "blocks_command_trigram_ad",
+        "blocks_command_trigram_au",
+    }
+    guards = (
+        " and not exists (select 1 from derived_refresh_guard where guard_name = 'fts_bulk_session_write')",
+        " when not exists (select 1 from derived_refresh_guard where guard_name = 'fts_bulk_session_write')",
+    )
+    variant_objects = tuple(
+        (kind, name, sql.replace(guards[0], "").replace(guards[1], "")) if name in variant_names else (kind, name, sql)
+        for kind, name, sql in expected.objects
+    )
+    actual = expected.__class__(expected.tier, expected.version, variant_objects, "")
+    assert schema_manifest_diff(expected, actual)["wrong_definition"] == []
+
+    unrelated_objects = tuple(
+        (kind, name, sql + " changed") if name == "blocks_command_trigram_ai" else (kind, name, sql)
+        for kind, name, sql in expected.objects
+    )
+    unrelated = expected.__class__(expected.tier, expected.version, unrelated_objects, "")
+    assert schema_manifest_diff(expected, unrelated)["wrong_definition"]
 
 
 def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
