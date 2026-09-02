@@ -564,11 +564,14 @@ def initialize_archive_database(
                 # full rebuild a schema-version bump would force. Re-apply the
                 # registry on every same-version open so an already-populated
                 # archive converges without touching INDEX_SCHEMA_VERSION.
+                from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+                ensure_runtime_indexes_sync(conn)
                 apply_index_benign_ddl_convergence(conn)
-                conn.commit()
                 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
                 assert_schema_manifest(conn, tier)
+                conn.commit()
             return
         if current_version != 0:
             if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:

@@ -180,6 +180,25 @@ def test_matching_version_database_ensures_runtime_indexes(tmp_path: Path) -> No
         conn.close()
 
 
+def test_existing_archive_repairs_runtime_indexes_before_manifest_validation(tmp_path: Path) -> None:
+    """A same-version archive with a dropped runtime index remains restartable.
+
+    The dropped index is the anti-vacuity mutation: without the writable
+    bootstrap repair, canonical manifest validation fails before startup can
+    finish.
+    """
+    initialize_active_archive_root(tmp_path)
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("DROP INDEX idx_messages_message_type")
+        conn.commit()
+
+    initialize_active_archive_root(tmp_path)
+
+    with sqlite3.connect(index_db) as conn:
+        assert any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
+
+
 def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
     """Read surfaces must not mutate an existing index to gain runtime indexes."""
     initialize_active_archive_root(tmp_path)
