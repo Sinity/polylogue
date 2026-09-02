@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.scenarios import CorpusSpec
+from polylogue.scenarios import CorpusProfile, CorpusSpec
 from tests.infra.integration_profile import (
     IntegrationInteraction,
     IntegrationProfile,
@@ -74,7 +74,7 @@ def test_selection_rejects_unrealizable_constraints_and_semantic_metadata() -> N
         )
 
 
-def test_same_provider_witnesses_receive_distinct_session_identities() -> None:
+def test_same_provider_witnesses_receive_distinct_session_identities(tmp_path: Path) -> None:
     recipe = CorpusSpec.for_provider("codex", count=1, messages_min=2, messages_max=2, seed=42)
     profile = IntegrationProfile(
         name="identity",
@@ -85,12 +85,19 @@ def test_same_provider_witnesses_receive_distinct_session_identities() -> None:
         profile,
         (
             IntegrationWitness(recipe, interactions=(IntegrationInteraction.IDENTITY_COLLISION,)),
-            IntegrationWitness(replace(recipe, seed=43), interactions=(IntegrationInteraction.IDENTITY_COLLISION,)),
+            IntegrationWitness(
+                replace(recipe, profile=CorpusProfile(family_ids=("law",), profile_tokens=("second",))),
+                interactions=(IntegrationInteraction.IDENTITY_COLLISION,),
+            ),
         ),
     )
 
     session_ids = tuple(native_id for spec in selection.corpus_specs() for native_id in spec.session_native_ids)
     assert len(session_ids) == len(set(session_ids))
+    artifact = build_integration_archive(selection, cache_root=tmp_path / "cache")
+    assert {fact.expected_session_id for fact in artifact.facts} == {
+        f"codex-session:{native_id}" for native_id in session_ids
+    }
 
 
 def test_archive_publishes_selected_heterogeneous_contents(tmp_path: Path) -> None:
