@@ -12,6 +12,7 @@ from polylogue.storage.fts.sql import (
 )
 from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
+from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
 from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
@@ -1761,5 +1762,7 @@ ON agent_meta_sidecar_purge_receipts(purged_at_ms);
 # devtools render demo-corpus-datasheet started failing with "Search index
 # is incomplete" right after #2893 landed.
 INDEX_DDL = INDEX_DDL + "\n\n" + ";\n\n".join(FTS_TRIGGER_DDL) + ";\n"
+# CREATE TABLE schema_identity; ddl-lifecycle-waiver: derived schema_identity is existing bootstrap metadata; declaring it in canonical DDL changes fresh-bootstrap completeness, not the indexed data shape.
+INDEX_DDL += DERIVED_SCHEMA_META_DDL
 
 __all__ = ["FTS_FRESHNESS_STATE_DDL", "INDEX_DDL", "INDEX_SCHEMA_VERSION"]
