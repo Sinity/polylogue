@@ -31,11 +31,13 @@ class _MessageAggregate(TypedDict):
 
 class OriginSessionCountRow(TypedDict):
     origin: str
+    session_kind: str
     session_count: int
 
 
 class OriginMetricsRow(TypedDict):
     origin: str
+    session_kind: str
     session_count: int
     message_count: int
     user_message_count: int
@@ -354,9 +356,9 @@ async def get_origin_session_counts(
     """Return session counts per origin — fast, sessions-table-only query."""
     cursor = await conn.execute(
         """
-        SELECT origin, COUNT(*) AS session_count
+        SELECT origin, session_kind, COUNT(*) AS session_count
         FROM sessions
-        GROUP BY origin
+        GROUP BY origin, session_kind
         ORDER BY session_count DESC
         """
     )
@@ -364,6 +366,7 @@ async def get_origin_session_counts(
     return [
         {
             "origin": str(row["origin"] or "unknown-export"),
+            "session_kind": str(row["session_kind"] or "unknown"),
             "session_count": int(row["session_count"] or 0),
         }
         for row in rows
@@ -377,6 +380,7 @@ async def get_origin_metrics_rows(
     stats_sql = """
         SELECT
             origin,
+            session_kind,
             COUNT(*) AS session_count,
             COALESCE(SUM(message_count), 0) AS message_count,
             COALESCE(SUM(tool_use_count), 0) AS tool_use_count,
@@ -390,7 +394,7 @@ async def get_origin_metrics_rows(
             COALESCE(SUM(authored_user_word_count), 0) AS authored_user_word_sum,
             COALESCE(SUM(assistant_word_count), 0) AS assistant_word_sum
         FROM sessions
-        GROUP BY origin
+        GROUP BY origin, session_kind
         """
     stats_cursor = await conn.execute(stats_sql)
     stats_rows = await stats_cursor.fetchall()
@@ -409,6 +413,7 @@ async def get_origin_metrics_rows(
         merged.append(
             {
                 "origin": origin,
+                "session_kind": str(row["session_kind"] or "unknown"),
                 "session_count": int(row["session_count"] or 0),
                 "message_count": int(row["message_count"] or 0),
                 "user_message_count": role_split["user_message_count"],

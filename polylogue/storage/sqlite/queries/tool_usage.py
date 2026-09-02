@@ -11,7 +11,7 @@ for that origin.
 from __future__ import annotations
 
 import aiosqlite
-from typing_extensions import TypedDict
+from typing_extensions import NotRequired, TypedDict
 
 from polylogue.core.enums import Origin
 from polylogue.insights.tool_usage import ToolUsageInsightQuery
@@ -28,6 +28,7 @@ class ToolUsageRow(TypedDict):
     """One row per (origin, normalized_tool_name)."""
 
     origin: str
+    session_kind: NotRequired[str]
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -42,6 +43,7 @@ class ToolUsageOriginCoverageRow(TypedDict):
     """Per-origin coverage signal — does the substrate carry tool data?"""
 
     origin: str
+    session_kind: NotRequired[str]
     session_count: int
     action_count: int
     distinct_tool_count: int
@@ -69,6 +71,9 @@ async def get_tool_usage_rows(
     if origin:
         where.append("s.origin = ?")
         params.append(origin)
+    if request.session_kind:
+        where.append("s.session_kind = ?")
+        params.append(request.session_kind)
     tool_expr = "COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')"
     if request.tool:
         where.append(f"{tool_expr} = LOWER(?)")
@@ -98,6 +103,7 @@ async def get_tool_usage_rows(
         f"""
         SELECT
             s.origin AS origin,
+            s.session_kind AS session_kind,
             {tool_expr} AS normalized_tool_name,
             COALESCE(NULLIF(a.semantic_type, ''), 'tool_use') AS action_kind,
             COUNT(*) AS call_count,
@@ -111,6 +117,7 @@ async def get_tool_usage_rows(
         {"WHERE " + " AND ".join(where) if where else ""}
         GROUP BY
             s.origin,
+            s.session_kind,
             normalized_tool_name,
             action_kind
         ORDER BY call_count DESC, s.origin ASC, normalized_tool_name ASC
@@ -122,6 +129,7 @@ async def get_tool_usage_rows(
     return [
         {
             "origin": str(row["origin"] or "unknown-export"),
+            "session_kind": str(row["session_kind"] or "unknown"),
             "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
             "action_kind": str(row["action_kind"] or "unknown"),
             "call_count": int(row["call_count"] or 0),
@@ -148,6 +156,7 @@ async def get_tool_usage_origin_coverage_rows(
         """
         SELECT
             s.origin AS origin,
+            s.session_kind AS session_kind,
             COUNT(DISTINCT s.session_id) AS session_count,
             COALESCE(COUNT(a.tool_use_block_id), 0) AS action_count,
             COUNT(DISTINCT COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')) AS distinct_tool_count,
@@ -157,7 +166,7 @@ async def get_tool_usage_origin_coverage_rows(
             SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS has_output_text_signal
         FROM sessions s
         LEFT JOIN actions a ON a.session_id = s.session_id
-        GROUP BY s.origin
+        GROUP BY s.origin, s.session_kind
         ORDER BY action_count DESC, session_count DESC, s.origin ASC
         """
     )
@@ -165,6 +174,7 @@ async def get_tool_usage_origin_coverage_rows(
     return [
         {
             "origin": str(row["origin"] or "unknown-export"),
+            "session_kind": str(row["session_kind"] or "unknown"),
             "session_count": int(row["session_count"] or 0),
             "action_count": int(row["action_count"] or 0),
             "distinct_tool_count": int(row["distinct_tool_count"] or 0),

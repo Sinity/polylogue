@@ -512,12 +512,14 @@ class PolylogueInsightsMixin:
             arguments={
                 "group_by": request.group_by,
                 "origin": request.origin,
+                "session_kind": request.session_kind,
                 "since": request.since,
                 "until": request.until,
             },
             work=lambda archive: archive.list_archive_coverage_insights(
                 group_by=request.group_by,
                 origin=request.origin,
+                session_kind=request.session_kind,
                 since_ms=_archive_query_date_ms("since", request.since),
                 until_ms=_archive_query_date_ms("until", request.until),
                 limit=request.limit,

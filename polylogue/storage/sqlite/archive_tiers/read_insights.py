@@ -285,6 +285,7 @@ class ArchiveReadInsights:
         return [
             {
                 "origin": str(row["origin"] or "unknown-export"),
+                "session_kind": str(row["session_kind"] or "unknown"),
                 "normalized_tool_name": str(row["normalized_tool_name"] or "unknown"),
                 "action_kind": str(row["action_kind"] or "tool_use"),
                 "call_count": int(row["call_count"] or 0),
@@ -302,6 +303,7 @@ class ArchiveReadInsights:
             """
             SELECT
                 s.origin AS origin,
+                s.session_kind AS session_kind,
                 COUNT(DISTINCT s.session_id) AS session_count,
                 COUNT(a.tool_use_block_id) AS action_count,
                 COUNT(DISTINCT COALESCE(NULLIF(LOWER(a.tool_name), ''), 'unknown')) AS distinct_tool_count,
@@ -311,13 +313,14 @@ class ArchiveReadInsights:
                 SUM(CASE WHEN a.output_text IS NOT NULL AND a.output_text != '' THEN 1 ELSE 0 END) AS has_output_text_signal
             FROM sessions s
             LEFT JOIN actions a ON a.session_id = s.session_id
-            GROUP BY s.origin
+            GROUP BY s.origin, s.session_kind
             ORDER BY action_count DESC, session_count DESC, s.origin ASC
             """
         ).fetchall()
         return [
             {
                 "origin": str(row["origin"] or "unknown-export"),
+                "session_kind": str(row["session_kind"] or "unknown"),
                 "session_count": int(row["session_count"] or 0),
                 "action_count": int(row["action_count"] or 0),
                 "distinct_tool_count": int(row["distinct_tool_count"] or 0),
@@ -334,6 +337,7 @@ class ArchiveReadInsights:
         *,
         group_by: str = "origin",
         origin: str | None = None,
+        session_kind: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = None,
@@ -341,13 +345,17 @@ class ArchiveReadInsights:
     ) -> list[ArchiveCoverageInsight]:
         """Aggregate archive coverage from index tables."""
         normalized_origin = self._normalize_origin(origin)
+        normalized_kind = session_kind.strip().lower() if session_kind else None
         if group_by == "origin":
-            return self._origin_coverage_insights(origin=normalized_origin, limit=limit, offset=offset)
+            return self._origin_coverage_insights(
+                origin=normalized_origin, session_kind=normalized_kind, limit=limit, offset=offset
+            )
         if group_by == "day":
             return self._time_bucket_coverage_insights(
                 bucket_format="%Y-%m-%d",
                 group_by="day",
                 origin=normalized_origin,
+                session_kind=normalized_kind,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=limit,
@@ -358,6 +366,7 @@ class ArchiveReadInsights:
                 bucket_format="%Y-W%W",
                 group_by="week",
                 origin=normalized_origin,
+                session_kind=normalized_kind,
                 since_ms=since_ms,
                 until_ms=until_ms,
                 limit=limit,
@@ -369,6 +378,7 @@ class ArchiveReadInsights:
         self,
         *,
         origin: str | None,
+        session_kind: str | None,
         limit: int | None,
         offset: int,
     ) -> list[ArchiveCoverageInsight]:
@@ -377,6 +387,10 @@ class ArchiveReadInsights:
         if origin is not None:
             where = "WHERE s.origin = ?"
             params.append(origin)
+        if session_kind is not None:
+            where += " AND " if where else "WHERE "
+            where += "s.session_kind = ?"
+            params.append(session_kind)
         pagination = "" if limit is None else " LIMIT ? OFFSET ?"
         if limit is not None:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
@@ -384,6 +398,7 @@ class ArchiveReadInsights:
             f"""
             SELECT
                 s.origin,
+                s.session_kind,
                 COUNT(*) AS session_count,
                 SUM(s.message_count) AS message_count,
                 SUM(s.user_message_count) AS user_message_count,
@@ -400,7 +415,7 @@ class ArchiveReadInsights:
                               FROM session_model_usage u WHERE u.session_id = s.session_id), 0.0)) AS total_cost_usd
             FROM sessions s
             {where}
-            GROUP BY s.origin
+            GROUP BY s.origin, s.session_kind
             ORDER BY session_count DESC, s.origin
             {pagination}
             """,
@@ -414,6 +429,7 @@ class ArchiveReadInsights:
         bucket_format: str,
         group_by: str,
         origin: str | None,
+        session_kind: str | None,
         since_ms: int | None,
         until_ms: int | None,
         limit: int | None,
@@ -424,6 +440,9 @@ class ArchiveReadInsights:
         if origin is not None:
             where.append("s.origin = ?")
             params.append(origin)
+        if session_kind is not None:
+            where.append("s.session_kind = ?")
+            params.append(session_kind)
         if since_ms is not None:
             where.append("s.sort_key_ms >= ?")
             params.append(since_ms)
@@ -438,6 +457,7 @@ class ArchiveReadInsights:
             f"""
             SELECT
                 strftime('{bucket_format}', s.sort_key_ms / 1000, 'unixepoch') AS bucket,
+                s.session_kind AS session_kind,
                 COUNT(DISTINCT s.session_id) AS session_count,
                 COUNT(DISTINCT COALESCE(s.root_session_id, s.session_id)) AS logical_session_count,
                 SUM(s.message_count) AS message_count,
@@ -450,7 +470,7 @@ class ArchiveReadInsights:
             FROM sessions s
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             {clause}
-            GROUP BY bucket
+            GROUP BY bucket, s.session_kind
             HAVING bucket IS NOT NULL
             ORDER BY bucket DESC
             {pagination}
@@ -461,6 +481,7 @@ class ArchiveReadInsights:
             ArchiveCoverageInsight(
                 group_by=group_by,
                 bucket=str(row["bucket"]),
+                session_kind=str(row["session_kind"] or "unknown"),
                 session_count=int(row["session_count"] or 0),
                 logical_session_count=int(row["logical_session_count"] or 0),
                 message_count=int(row["message_count"] or 0),
@@ -522,6 +543,7 @@ def _origin_coverage_from_archive_row(row: sqlite3.Row) -> ArchiveCoverageInsigh
         group_by="origin",
         bucket=origin,
         origin=origin,
+        session_kind=str(row["session_kind"] or "unknown"),
         session_count=session_count,
         message_count=message_count,
         user_message_count=user_message_count,

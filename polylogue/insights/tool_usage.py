@@ -43,6 +43,7 @@ class ToolUsageEntry(ArchiveInsightModel):
     """One per-(origin, tool, action_kind) rollup row."""
 
     origin: str
+    session_kind: str
     normalized_tool_name: str
     action_kind: str
     call_count: int
@@ -58,6 +59,7 @@ class ToolUsageCoverageEntry(ArchiveInsightModel):
     """Per-origin tool-data coverage signal."""
 
     origin: str
+    session_kind: str
     session_count: int
     action_count: int
     distinct_tool_count: int
@@ -105,6 +107,7 @@ class ToolUsageInsightQuery(PaginatedInsightQuery):
     mcp_server: str | None = None
     action_kind: str | None = None
     session_id: str | None = None
+    session_kind: str | None = None
     """Scope rollups to one session. Pushed into SQL as an equality predicate
     on the indexed ``blocks.session_id`` column so a single-session lookup
     stays cheap instead of joining/materializing the whole archive."""
@@ -116,6 +119,7 @@ def _tool_usage_entry(row: ToolUsageRow) -> ToolUsageEntry:
     tool_name = row["normalized_tool_name"]
     return ToolUsageEntry(
         origin=row["origin"],
+        session_kind=row.get("session_kind", "unknown"),
         normalized_tool_name=tool_name,
         action_kind=row["action_kind"],
         call_count=row["call_count"],
@@ -132,6 +136,7 @@ def _tool_usage_coverage(row: ToolUsageOriginCoverageRow) -> ToolUsageCoverageEn
     action_count = row["action_count"]
     return ToolUsageCoverageEntry(
         origin=row["origin"],
+        session_kind=row.get("session_kind", "unknown"),
         session_count=row["session_count"],
         action_count=action_count,
         distinct_tool_count=row["distinct_tool_count"],

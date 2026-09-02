@@ -146,6 +146,7 @@ class SessionTagRollupQuery(OriginSearchInsightQuery):
 
 class ArchiveCoverageInsightQuery(OriginTimeWindowInsightQuery):
     group_by: str = "origin"
+    session_kind: str | None = None
     limit: int | None = None
 
 
@@ -470,6 +471,7 @@ class ArchiveCoverageInsight(ArchiveInsightModel):
     group_by: str = "origin"
     bucket: str = ""
     origin: str | None = None
+    session_kind: str = "unknown"
     session_count: int
     logical_session_count: int = 0
     message_count: int = 0
@@ -506,6 +508,7 @@ class SessionCostInsight(ArchiveInsightModel):
     semantic_tier: str = "estimate"
     session_id: str
     origin: str
+    session_kind: str = "unknown"
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -518,6 +521,7 @@ class CostRollupInsight(ArchiveInsightModel):
     insight_kind: str = "cost_rollup"
     semantic_tier: str = "estimate"
     origin: str
+    session_kind: str = "unknown"
     model_name: str | None = None
     normalized_model: str | None = None
     session_count: int = 0

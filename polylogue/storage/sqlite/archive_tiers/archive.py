@@ -349,6 +349,7 @@ class _UsageTimelineAccumulator:
 @dataclass(slots=True)
 class _CostRollupAccumulator:
     source_name: str
+    session_kind: str
     model_name: str | None
     normalized_model: str | None
     session_count: int = 0
@@ -2607,7 +2608,7 @@ class ArchiveStore:
             params.extend([max(int(limit), 0), max(int(offset), 0)])
         rows = self._conn.execute(
             f"""
-            SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+            SELECT s.session_id, s.origin, s.session_kind, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
@@ -2661,9 +2662,16 @@ class ArchiveStore:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
 
+        session_kind_expr = (
+            "s.session_kind"
+            if "session_kind" in {str(row[1]) for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()}
+            else "'unknown'"
+        )
+
         rows = self._conn.execute(
             f"""
             SELECT s.origin AS source_name,
+                   {session_kind_expr} AS session_kind,
                    u.model_name AS model_name,
                    COUNT(DISTINCT u.session_id) AS session_count,
                    COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), CASE WHEN (SELECT COUNT(DISTINCT u2.model_name) FROM session_model_usage u2 WHERE u2.session_id = u.session_id) = 1 THEN MAX(s.reported_cost_usd) ELSE 0.0 END, 0.0) AS stored_cost_usd,
@@ -2689,7 +2697,7 @@ class ArchiveStore:
             JOIN sessions s ON s.session_id = u.session_id
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             WHERE {" AND ".join(where)}
-            GROUP BY s.origin,
+            GROUP BY s.origin, {session_kind_expr},
                      u.model_name,
                      CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
                           WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced'
@@ -2703,6 +2711,7 @@ class ArchiveStore:
         no_usage_rows = self._conn.execute(
             f"""
             SELECT s.origin AS source_name,
+                   {session_kind_expr} AS session_kind,
                    NULL AS model_name,
                    COUNT(DISTINCT s.session_id) AS session_count,
                    COALESCE(SUM(s.reported_cost_usd), 0.0) AS stored_cost_usd,
@@ -2720,21 +2729,23 @@ class ArchiveStore:
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             LEFT JOIN session_model_usage u ON u.session_id = s.session_id
             WHERE {" AND ".join(no_usage_where)}
-            GROUP BY s.origin, CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END
+            GROUP BY s.origin, {session_kind_expr},
+                     CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' ELSE 'unknown' END
             """,
             tuple(params),
         ).fetchall()
 
-        grouped: dict[tuple[str, str | None], _CostRollupAccumulator] = {}
+        grouped: dict[tuple[str, str, str | None], _CostRollupAccumulator] = {}
         materialized_at = datetime.now(UTC).isoformat()
         for row in [*rows, *no_usage_rows]:
             source_origin = str(row["source_name"] or "unknown")
             source_name = source_origin
+            session_kind = str(row["session_kind"] or "unknown")
             model_name = str(row["model_name"]) if row["model_name"] is not None else None
             normalized_model = _normalize_model(model_name) if model_name is not None else None
             if model is not None and model not in {model_name, normalized_model}:
                 continue
-            key = (source_name, normalized_model or model_name)
+            key = (source_name, session_kind, normalized_model or model_name)
             session_count = int(row["session_count"] or 0)
             stored_cost_usd = float(row["stored_cost_usd"] or 0.0)
             stored_credits = float(row["stored_credits"] or 0.0)
@@ -2748,6 +2759,7 @@ class ArchiveStore:
                 key,
                 _CostRollupAccumulator(
                     source_name=source_name,
+                    session_kind=session_kind,
                     model_name=model_name,
                     normalized_model=normalized_model,
                 ),
@@ -2827,6 +2839,7 @@ class ArchiveStore:
             rollups.append(
                 CostRollupInsight(
                     origin=entry.source_name,
+                    session_kind=entry.session_kind,
                     model_name=entry.model_name,
                     normalized_model=entry.normalized_model,
                     session_count=entry.session_count,
@@ -4245,6 +4258,7 @@ class ArchiveStore:
         *,
         group_by: str = "origin",
         origin: str | None = None,
+        session_kind: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = None,
@@ -4253,6 +4267,7 @@ class ArchiveStore:
         return self._read_insights().list_archive_coverage_insights(
             group_by=group_by,
             origin=origin,
+            session_kind=session_kind,
             since_ms=since_ms,
             until_ms=until_ms,
             limit=limit,
@@ -7749,6 +7764,7 @@ def _session_cost_insight_from_archive_row(
     return SessionCostInsight(
         session_id=session_id,
         origin=source_name,
+        session_kind=str(row["session_kind"] or "unknown"),
         title=str(row["title"]) if row["title"] is not None else None,
         created_at=_iso_from_ms(row["created_at_ms"]),
         updated_at=_iso_from_ms(row["updated_at_ms"]),

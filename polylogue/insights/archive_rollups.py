@@ -226,18 +226,18 @@ def aggregate_cost_rollup_insights(
 ) -> list[CostRollupInsight]:
     """Group ``SessionCostInsight`` rows into ``CostRollupInsight`` rows.
 
-    Grouping is keyed by ``(source_name, normalized_model_or_model_name)``.
+    Grouping is keyed by ``(source_name, session_kind, normalized_model_or_model_name)``.
     Each row aggregates the basis axes, ``unavailable_reason_counts``, and a
     per-model breakdown across the sessions in the group.
     """
 
-    grouped: dict[tuple[str, str | None], list[SessionCostInsight]] = {}
+    grouped: dict[tuple[str, str, str | None], list[SessionCostInsight]] = {}
     for insight in session_costs:
-        key = (insight.origin, insight.estimate.normalized_model or insight.estimate.model_name)
+        key = (insight.origin, insight.session_kind, insight.estimate.normalized_model or insight.estimate.model_name)
         grouped.setdefault(key, []).append(insight)
 
     rollups: list[CostRollupInsight] = []
-    for (source_name, normalized_model), insights in sorted(
+    for (source_name, session_kind, normalized_model), insights in sorted(
         grouped.items(),
         key=lambda item: (item[0][0], item[0][1] or ""),
     ):
@@ -284,6 +284,7 @@ def aggregate_cost_rollup_insights(
         rollups.append(
             CostRollupInsight(
                 origin=source_name,
+                session_kind=session_kind,
                 model_name=model_names.most_common(1)[0][0] if model_names else None,
                 normalized_model=normalized_model,
                 session_count=len(insights),
