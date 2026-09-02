@@ -483,6 +483,46 @@ def test_readable_layout_admits_a_missing_message_fts_surface(tmp_path: Path) ->
         conn.close()
 
 
+def test_readable_layout_rejects_current_version_with_cost_usage_shape_drift(tmp_path: Path) -> None:
+    """The read guard checks the complete canonical index schema.
+
+    Dropping both cost columns is the anti-vacuity mutation: the old
+    ``sessions.reported_cost_usd`` sentinel remains present, while coverage
+    reads still fail when they select the usage columns.
+    """
+    db_path = tmp_path / "cost-usage-drift.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    conn.executescript(
+        """
+        ALTER TABLE session_model_usage RENAME TO session_model_usage_current;
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            model_name TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
+            output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
+            message_count INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
+            cost_credits REAL,
+            PRIMARY KEY(session_id, model_name)
+        ) STRICT;
+        DROP TABLE session_model_usage_current;
+        """
+    )
+    conn.commit()
+    try:
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn, generation_id="gen-cost-drift")
+        error = caught.value
+        assert error.current_version == SCHEMA_VERSION
+        assert error.expected_version == SCHEMA_VERSION
+        assert error.generation_id == "gen-cost-drift"
+        assert error.lifecycle_action == "rebuild_index"
+    finally:
+        conn.close()
+
+
 def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: the async
     bootstrap path enforces the same policy as the sync path.
