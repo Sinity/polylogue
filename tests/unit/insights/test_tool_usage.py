@@ -267,7 +267,7 @@ class TestListToolUsageInsightsEndToEnd:
                     {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
                     {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
                     {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
-                    {"type": "tool_result", "tool_id": "toolu_3", "text": "hello"},
+                    {"type": "tool_result", "tool_id": "toolu_3", "text": "hello", "tool_result_is_error": 0},
                 ],
             )
             .save()

@@ -892,7 +892,7 @@ def test_archive_insights_batch_propagates_nontransient_write_failures(
         stages._archive_insights_execute_many(tmp_path / "index.db", [tmp_path / "source.jsonl"])
 
 
-def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
+def test_derived_stage_materializes_archive_profiles_from_archive_tiers(tmp_path: Path) -> None:
     archive_db = tmp_path / "index.db"
     source_path = tmp_path / "codex.jsonl"
     session_id = "codex-session:s1"
@@ -906,10 +906,10 @@ def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_pat
     result = stage.execute_sessions([session_id])
     assert result
     assert isinstance(result, StageExecutionResult)
-    assert "insights.analysis.facts" in result.stage_timings_s
-    assert "insights.facts.message_flags" in result.stage_timings_s
-    assert "insights.facts.message_facts" in result.stage_timings_s
-    assert "insights.facts.aggregate_messages" in result.stage_timings_s
+    assert "derived.analysis.facts" in result.stage_timings_s
+    assert "derived.facts.message_flags" in result.stage_timings_s
+    assert "derived.facts.message_facts" in result.stage_timings_s
+    assert "derived.facts.aggregate_messages" in result.stage_timings_s
     assert stage.check_sessions([session_id]) == set()
     with sqlite3.connect(archive_db) as conn:
         profile = conn.execute("SELECT session_id, substantive_count FROM session_profiles").fetchone()
@@ -923,7 +923,7 @@ def test_insights_stage_materializes_archive_profiles_from_archive_tiers(tmp_pat
     assert latency == (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION, 1770000000.0)
 
 
-def test_insights_stage_rebuilds_sync_against_configured_db(
+def test_derived_stage_rebuilds_sync_against_configured_db(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1241,7 +1241,7 @@ def test_embed_stage_defers_to_pending_debt_while_predicate_holds(
     assert embed_calls == ["execute", "execute_many", "execute_sessions"]
 
 
-def test_insights_stage_batches_sync_rebuild_chunks(
+def test_derived_stage_batches_sync_rebuild_chunks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1288,7 +1288,7 @@ def test_insights_stage_batches_sync_rebuild_chunks(
     assert rebuild_calls == [(["conv-a", "conv-b"], 10)]
 
 
-def test_insights_stage_defers_hot_large_session_debt(
+def test_derived_stage_defers_hot_large_session_debt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1509,7 +1509,7 @@ def test_insights_session_rebuild_returns_false_when_still_stale(
     assert stage.execute_sessions([session_id]) is False
 
 
-def test_insights_stage_rebuilds_large_session_after_quiet_window(
+def test_derived_stage_rebuilds_large_session_after_quiet_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -1530,21 +1530,21 @@ def test_insights_stage_rebuilds_large_session_after_quiet_window(
     result = stage.execute_sessions([session_id])
     assert result
     assert isinstance(result, StageExecutionResult)
-    assert "insights.load_batch" in result.stage_timings_s
-    assert "insights.build_records.analysis" in result.stage_timings_s
-    assert "insights.build_records.profile" in result.stage_timings_s
-    assert "insights.analysis.facts" in result.stage_timings_s
-    assert "insights.facts.message_flags" in result.stage_timings_s
-    assert "insights.facts.message_facts" in result.stage_timings_s
-    assert "insights.facts.aggregate_messages" in result.stage_timings_s
-    assert "insights.profile.cost_summary" in result.stage_timings_s
+    assert "derived.load_batch" in result.stage_timings_s
+    assert "derived.build_records.analysis" in result.stage_timings_s
+    assert "derived.build_records.profile" in result.stage_timings_s
+    assert "derived.analysis.facts" in result.stage_timings_s
+    assert "derived.facts.message_flags" in result.stage_timings_s
+    assert "derived.facts.message_facts" in result.stage_timings_s
+    assert "derived.facts.aggregate_messages" in result.stage_timings_s
+    assert "derived.profile.cost_summary" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
         )
 
 
-def test_insights_stage_rebuilds_small_active_session(
+def test_derived_stage_rebuilds_small_active_session(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1562,21 +1562,21 @@ def test_insights_stage_rebuilds_small_active_session(
     result = stage.execute_sessions([session_id])
     assert result
     assert isinstance(result, StageExecutionResult)
-    assert "insights.load_batch" in result.stage_timings_s
-    assert "insights.build_records.analysis" in result.stage_timings_s
-    assert "insights.build_records.profile" in result.stage_timings_s
-    assert "insights.analysis.facts" in result.stage_timings_s
-    assert "insights.facts.message_flags" in result.stage_timings_s
-    assert "insights.facts.message_facts" in result.stage_timings_s
-    assert "insights.facts.aggregate_messages" in result.stage_timings_s
-    assert "insights.profile.cost_summary" in result.stage_timings_s
+    assert "derived.load_batch" in result.stage_timings_s
+    assert "derived.build_records.analysis" in result.stage_timings_s
+    assert "derived.build_records.profile" in result.stage_timings_s
+    assert "derived.analysis.facts" in result.stage_timings_s
+    assert "derived.facts.message_flags" in result.stage_timings_s
+    assert "derived.facts.message_facts" in result.stage_timings_s
+    assert "derived.facts.aggregate_messages" in result.stage_timings_s
+    assert "derived.profile.cost_summary" in result.stage_timings_s
     with sqlite3.connect(db_path) as conn:
         assert (
             conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] == 1
         )
 
 
-def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) -> None:
+def test_derived_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     sessions = {
         "conv-fresh": "2026-05-24T01:00:00+00:00",
@@ -1619,15 +1619,15 @@ def test_insights_stage_scopes_session_debt_to_stale_profiles(tmp_path: Path) ->
     assert stage.execute_sessions is not None
     assert stage.execute_sessions(["codex-session:conv-stale-version"])
     with open_connection(db_path) as conn:
-        materialization = conn.execute(
+        profile = conn.execute(
             """
             SELECT materializer_version
-            FROM insight_materialization
-            WHERE insight_type = 'session_profile' AND session_id = ?
+            FROM session_profiles
+            WHERE session_id = ?
             """,
             ("codex-session:conv-stale-version",),
         ).fetchone()
-    assert tuple(materialization) == (SESSION_INSIGHT_MATERIALIZER_VERSION,)
+    assert tuple(profile) == (SESSION_INSIGHT_MATERIALIZER_VERSION,)
 
 
 def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: Path) -> None:

@@ -708,7 +708,7 @@ def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> N
     with sqlite3.connect(root / "ops.db") as conn:
         conn.execute(
             "INSERT INTO convergence_debt VALUES (?, ?, ?, ?, ?)",
-            ("source_path", "session-1", "insights", "pending", "wrong namespace"),
+            ("source_path", "session-1", "derived", "pending", "wrong namespace"),
         )
 
     collision_only = project_named_source_freshness(root, source, now=_NOW)
@@ -719,7 +719,7 @@ def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> N
     with sqlite3.connect(root / "ops.db") as conn:
         conn.execute(
             "INSERT INTO convergence_debt VALUES (?, ?, ?, ?, ?)",
-            ("session_id", "session-1", "insights", "pending", "real debt"),
+            ("session_id", "session-1", "derived", "pending", "real debt"),
         )
 
     with_real_debt = project_named_source_freshness(root, source, now=_NOW)

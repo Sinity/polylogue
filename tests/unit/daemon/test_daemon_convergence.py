@@ -18,7 +18,7 @@ def test_converger_reports_only_current_run_stage_timings(tmp_path: Path) -> Non
     converger = DaemonConverger(
         [
             ConvergenceStage(
-                name="insights",
+                name="derived",
                 description="test stage",
                 check=lambda candidate: candidate not in executed,
                 execute=execute,
@@ -31,8 +31,8 @@ def test_converger_reports_only_current_run_stage_timings(tmp_path: Path) -> Non
     first_last_stage_times = dict(first.last_stage_times)
     second = converger.converge_file(path)
 
-    assert set(first_stage_times) == {"insights"}
-    assert set(first_last_stage_times) == {"insights"}
+    assert set(first_stage_times) == {"derived"}
+    assert set(first_last_stage_times) == {"derived"}
     assert second.stage_times == first_stage_times
     assert second.last_stage_times == {}
 
@@ -55,7 +55,7 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     converger = DaemonConverger(
         [
             ConvergenceStage(
-                name="insights",
+                name="derived",
                 description="test batch stage",
                 check=lambda _candidate: True,
                 execute=lambda _candidate: False,
@@ -70,7 +70,7 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     assert checked == [tuple(paths)]
     assert [set(candidates) for candidates in executed] == [set(paths)]
     assert set(states) == set(paths)
-    assert set(stage_times) == {"insights"}
+    assert set(stage_times) == {"derived"}
     assert all(state.converged for state in states.values())
     assert converger._file_states == {}
 
@@ -85,7 +85,7 @@ def test_converger_retains_failed_batch_state_for_diagnostics(tmp_path: Path) ->
     converger = DaemonConverger(
         [
             ConvergenceStage(
-                name="insights",
+                name="derived",
                 description="test stage",
                 check=lambda _candidate: True,
                 execute=lambda candidate: candidate != failed,
@@ -139,7 +139,7 @@ def test_converger_batches_session_execution() -> None:
     converger = DaemonConverger(
         [
             ConvergenceStage(
-                name="insights",
+                name="derived",
                 description="test session stage",
                 check=lambda _candidate: False,
                 execute=lambda _candidate: False,
@@ -154,7 +154,7 @@ def test_converger_batches_session_execution() -> None:
     assert checked == [("conv-a", "conv-b")]
     assert [set(candidates) for candidates in executed] == [{"conv-a", "conv-b"}]
     assert set(states) == {"conv-a", "conv-b"}
-    assert set(stage_times) == {"insights"}
+    assert set(stage_times) == {"derived"}
     assert all(state.converged for state in states.values())
     assert converger._session_states == {}
 
@@ -167,15 +167,15 @@ def test_converger_propagates_nested_session_stage_timings() -> None:
         return StageExecutionResult(
             success=True,
             stage_timings_s={
-                "insights.load_batch": 0.25,
-                "insights.build_records": 0.5,
+                "derived.load_batch": 0.25,
+                "derived.build_records": 0.5,
             },
         )
 
     converger = DaemonConverger(
         [
             ConvergenceStage(
-                name="insights",
+                name="derived",
                 description="test session stage",
                 check=lambda _candidate: False,
                 execute=lambda _candidate: False,
@@ -187,10 +187,10 @@ def test_converger_propagates_nested_session_stage_timings() -> None:
 
     states, stage_times = converger.converge_sessions(["conv-a", "conv-b"])
 
-    assert set(stage_times) == {"insights", "insights.build_records", "insights.load_batch"}
-    assert stage_times["insights.build_records"] == 0.5
+    assert set(stage_times) == {"derived", "derived.build_records", "derived.load_batch"}
+    assert stage_times["derived.build_records"] == 0.5
     assert all(state.converged for state in states.values())
-    assert all(state.last_stage_times["insights.load_batch"] == 0.25 for state in states.values())
+    assert all(state.last_stage_times["derived.load_batch"] == 0.25 for state in states.values())
 
 
 def test_converger_keeps_bounded_session_false_as_pending_debt() -> None:

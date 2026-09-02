@@ -1067,6 +1067,7 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
                             "type": "tool_result",
                             "tool_id": "call-1",
                             "text": large_tool_output,
+                            "tool_result_is_error": 0,
                         },
                     ],
                 )

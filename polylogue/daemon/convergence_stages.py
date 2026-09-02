@@ -2435,7 +2435,7 @@ def _archive_insights_execute_ids(
                 session_ids=list(session_ids),
                 page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 stage_timings_s=stage_timings_s,
-                stage_timing_prefix="insights",
+                stage_timing_prefix="derived",
             )
         else:
             counts = rebuild_session_insights_sync(
@@ -2444,7 +2444,7 @@ def _archive_insights_execute_ids(
                 marker_conn=marker_conn,
                 page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 stage_timings_s=stage_timings_s,
-                stage_timing_prefix="insights",
+                stage_timing_prefix="derived",
             )
     finally:
         if marker_conn is not None:

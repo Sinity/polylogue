@@ -64,12 +64,12 @@ def test_convergence_debt_summary_does_not_count_deferred_as_failed(tmp_path: Pa
     with sqlite3.connect(ops_path) as conn:
         add_convergence_debt(
             conn,
-            stage="insights",
+            stage="derived",
             target_type="session_id",
             target_id="conv-deferred",
             status="deferred",
             attempts=1,
-            last_error="insights deferred until source quiet",
+            last_error="derived deferred until source quiet",
             next_retry_at="2026-05-24T00:01:00+00:00",
             created_at_ms=1_770_000_000_000,
             updated_at_ms=1_770_000_000_000,

@@ -241,7 +241,7 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
             INSERT INTO convergence_debt (
                 debt_id, stage, target_type, target_id, status, priority,
                 attempts, last_error, created_at_ms, updated_at_ms
-            ) VALUES ('candidate-guard-debt', 'insights', 'session_id',
+            ) VALUES ('candidate-guard-debt', 'derived', 'session_id',
                       'claude-ai-export:frozen-source', 'deferred', 0, 1,
                       'candidate must not resolve live debt', 1, 1)
             """
@@ -274,7 +274,7 @@ def test_real_no_promote_candidate_preserves_frozen_durable_tiers(
     with sqlite3.connect(root / "ops.db") as ops:
         assert ops.execute(
             "SELECT stage, target_id FROM convergence_debt WHERE debt_id = 'candidate-guard-debt'"
-        ).fetchone() == ("insights", "claude-ai-export:frozen-source")
+        ).fetchone() == ("derived", "claude-ai-export:frozen-source")
     with sqlite3.connect(f"file:{generation.index_path}?mode=ro", uri=True) as candidate:
         assert candidate.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 

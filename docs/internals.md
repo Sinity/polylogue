@@ -480,7 +480,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   per-turn dispatch authorship. Existing index tiers must be rebuilt from
   source evidence (`polylogue ops reset --index && polylogued run`); no
   public reader should keep consuming the old column names.
-- Index schema version 80 retires the per-session insight lifecycle ledger.
+- Index schema version 85 retires the per-session insight lifecycle ledger.
   Existing derived rows are regenerated from source evidence through ordinary
   convergence, so provider-usage and session insight changes share one
   freshness route.

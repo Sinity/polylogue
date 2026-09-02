@@ -1039,12 +1039,12 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
     with sqlite3.connect(ops_db) as conn:
         add_convergence_debt(
             conn,
-            stage="insights",
+            stage="derived",
             target_type="session_id",
             target_id="codex-session:hot",
             status="deferred",
             attempts=1,
-            last_error="insights deferred until source quiet",
+            last_error="derived deferred until source quiet",
             next_retry_at="2026-06-30T15:52:22+00:00",
             created_at_ms=1_770_000_000_000,
         )
@@ -1059,7 +1059,7 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
         "unresolved_count": 1,
         "by_stage": [
             {
-                "stage": "insights",
+                "stage": "derived",
                 "failed_count": 0,
                 "deferred_count": 1,
                 "unresolved_count": 1,

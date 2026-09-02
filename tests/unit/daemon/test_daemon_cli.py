@@ -338,7 +338,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_due_items_without_source_failure(
+def test_drain_convergence_debt_migrates_retired_insights_stage(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
@@ -360,7 +360,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
         )
         conn.commit()
     stage = ConvergenceStage(
-        name="insights",
+        name="derived",
         description="retry test",
         check=lambda candidate: candidate == source,
         execute=lambda candidate: candidate == source,
@@ -385,7 +385,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
@@ -396,7 +396,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         )
         conn.commit()
     stage = ConvergenceStage(
-        name="insights",
+        name="derived",
         description="retry test",
         check=lambda _candidate: False,
         execute=lambda _candidate: False,
