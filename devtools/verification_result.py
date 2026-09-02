@@ -117,6 +117,12 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
         "outcomes": bounded_outcomes,
         "outcomes_truncated": len(outcomes) > MAX_GATE_OUTCOMES,
     }
+    for key in ("flaky_tests", "red_tests"):
+        values = aggregate.get(key)
+        if isinstance(values, list):
+            projected[key] = [item[:MAX_PUBLIC_STRING_LENGTH] for item in values if isinstance(item, str)][
+                :MAX_DIAGNOSTIC_PATHS
+            ]
     covered_by = aggregate.get("covered_by_run")
     if isinstance(covered_by, str) and covered_by:
         # A skipped complete run names the run whose coverage it inherits.

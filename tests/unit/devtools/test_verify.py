@@ -31,6 +31,31 @@ def test_quick_steps_are_static_gates() -> None:
     assert not any(label.startswith("pytest") for label in labels)
 
 
+def test_failed_pytest_nodes_are_rerun_without_testmon_selection() -> None:
+    command = [
+        "python",
+        "-m",
+        "pytest",
+        "--testmon",
+        "--testmon-env=env",
+        "--testmon-forceselect",
+        "-m",
+        "parallel",
+        "-p",
+        "no:randomly",
+        "-n",
+        "2",
+    ]
+
+    rerun = verify._pytest_rerun_command(command, ["tests/test_b.py::test_b", "tests/test_a.py::test_a"])
+
+    assert "--testmon" not in rerun
+    assert not any(argument.startswith("--testmon-env=") for argument in rerun)
+    assert "--testmon-forceselect" not in rerun
+    assert "-m" not in rerun
+    assert rerun[-2:] == ["tests/test_b.py::test_b", "tests/test_a.py::test_a"]
+
+
 def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     steps = verify.build_verify_steps(quick=True)
     commands = dict(steps)

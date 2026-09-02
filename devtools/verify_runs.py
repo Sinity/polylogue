@@ -782,6 +782,8 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "terminal_green",
                 "complete_corpus_covered",
                 "outcomes",
+                "flaky_tests",
+                "red_tests",
             )
             if key in aggregate
         }

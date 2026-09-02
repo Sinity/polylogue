@@ -350,6 +350,50 @@ def _pytest_report_path(command: Sequence[str]) -> Path:
     )
 
 
+def _failed_pytest_nodeids(step: Mapping[str, Any]) -> list[str]:
+    """Return failed node IDs from one completed pytest step."""
+    artifact = step.get("artifact_dir")
+    if not isinstance(artifact, str):
+        return []
+    report = _read_json(ROOT / artifact / PYTEST_CANONICAL_REPORT_NAME)
+    if report is None:
+        return []
+    return sorted(
+        {
+            str(test["nodeid"])
+            for test in report.get("tests", ())
+            if isinstance(test, Mapping)
+            and isinstance(test.get("nodeid"), str)
+            and test["nodeid"]
+            and test.get("outcome") in {"failed", "error"}
+        }
+    )
+
+
+def _pytest_rerun_command(command: Sequence[str], nodeids: Sequence[str]) -> list[str]:
+    """Run exactly the failed nodes under the original pytest profile."""
+    removed_testmon = {
+        "--testmon",
+        "--testmon-forceselect",
+        "--testmon-noselect",
+    }
+    result: list[str] = []
+    skip_next = False
+    for argument in command:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument in removed_testmon or argument.startswith("--testmon-env="):
+            continue
+        if argument in {"-m", "--mark"}:
+            skip_next = True
+            continue
+        if argument.startswith("--mark=") or argument.startswith("-m") and argument != "-m":
+            continue
+        result.append(str(argument))
+    return [*result, *nodeids]
+
+
 def _copy_pytest_report(command: Sequence[str], artifacts: Any) -> dict[str, Any]:
     report = _read_json(_pytest_report_path(command))
     metadata: dict[str, Any] = {}
@@ -457,12 +501,63 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     if pytest_step and step is not None:
         effective_exit = int(step["exit"])
         metadata = step
+    if pytest_step and effective_exit and "rerun" not in label:
+        failed_nodeids = _failed_pytest_nodeids(metadata)
+        if failed_nodeids:
+            rerun_label = f"pytest rerun failed nodes ({len(failed_nodeids)})"
+            rerun_exit, _rerun_elapsed, rerun_metadata = _run(
+                rerun_label,
+                _pytest_rerun_command(command, failed_nodeids),
+                run=run,
+            )
+            rerun_outcomes = _pytest_node_outcomes(rerun_metadata)
+            flaky = sorted(nodeid for nodeid in failed_nodeids if rerun_outcomes.get(nodeid) == "passed")
+            still_failed = sorted(nodeid for nodeid in failed_nodeids if nodeid not in set(flaky))
+            rerun = {
+                "nodeids": failed_nodeids,
+                "outcomes": rerun_outcomes,
+                "flaky_tests": flaky,
+                "red_tests": still_failed,
+                "exit": rerun_exit,
+            }
+            metadata = dict(metadata)
+            metadata["rerun"] = rerun
+            metadata["flaky_tests"] = flaky
+            metadata["red_tests"] = still_failed
+            metadata["diagnosis"] = "pytest_flaky" if flaky and not still_failed else "pytest_failed"
+            effective_exit = 0 if flaky and not still_failed else rerun_exit or 1
+            for candidate in run._payload["steps"]:
+                if candidate.get("step_id") == metadata.get("step_id"):
+                    candidate.update(
+                        {
+                            "exit": effective_exit,
+                            "status": "success" if effective_exit == 0 else "failed",
+                            "diagnosis": metadata["diagnosis"],
+                            "rerun": rerun,
+                            "flaky_tests": flaky,
+                            "red_tests": still_failed,
+                        }
+                    )
+                    run.write()
+                    break
     sys.stderr.write(f"{'ok' if effective_exit == 0 else 'FAILED'} ({elapsed:.1f}s)\n")
     if not pytest_step and effective_exit and isinstance(completed.stdout, str):
         sys.stderr.write(completed.stdout)
     if not pytest_step and completed.returncode and isinstance(completed.stderr, str):
         sys.stderr.write(completed.stderr)
     return effective_exit, elapsed, metadata
+
+
+def _pytest_node_outcomes(step: Mapping[str, Any]) -> dict[str, str]:
+    artifact = step.get("artifact_dir")
+    if not isinstance(artifact, str):
+        return {}
+    report = _read_json(ROOT / artifact / PYTEST_CANONICAL_REPORT_NAME)
+    return {
+        str(test["nodeid"]): str(test["outcome"])
+        for test in (report or {}).get("tests", ())
+        if isinstance(test, Mapping) and isinstance(test.get("nodeid"), str) and isinstance(test.get("outcome"), str)
+    }
 
 
 def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> dict[str, Any]:
@@ -843,7 +938,13 @@ def _aggregate_pytest_results(
     outcomes: dict[str, int] = {}
     selected_counts: list[int] = []
     terminal_counts: list[int] = []
+    flaky_tests: set[str] = set()
+    red_tests: set[str] = set()
     for result in pytest_results:
+        rerun = result.get("rerun")
+        if isinstance(rerun, Mapping):
+            flaky_tests.update(item for item in rerun.get("flaky_tests", ()) if isinstance(item, str))
+            red_tests.update(item for item in rerun.get("red_tests", ()) if isinstance(item, str))
         raw_statistics: object = result.get("statistics")
         statistics: Mapping[str, Any] = raw_statistics if isinstance(raw_statistics, Mapping) else {}
         selected = statistics.get("selected_count")
@@ -855,7 +956,7 @@ def _aggregate_pytest_results(
         for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
-    return {
+    aggregate = {
         "selection_mode": mode,
         # Full-corpus verification partitions the collection across managed
         # pytest steps, so these are disjoint populations and must be summed.
@@ -865,6 +966,11 @@ def _aggregate_pytest_results(
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
     }
+    if flaky_tests:
+        aggregate["flaky_tests"] = sorted(flaky_tests)
+    if red_tests:
+        aggregate["red_tests"] = sorted(red_tests)
+    return aggregate
 
 
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
@@ -1041,6 +1147,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     )
     # The retained exit code is the first failure's; its diagnosis must be too.
     diagnosis = next((str(result["diagnosis"]) for result in results if result["exit"] != 0), None)
+    if diagnosis is None and aggregate.get("flaky_tests"):
+        diagnosis = "pytest_flaky"
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,
