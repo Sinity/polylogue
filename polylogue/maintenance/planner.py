@@ -459,10 +459,26 @@ def preview_backfill(
 
     preview = preview_counts_from_archive_debt(debt_statuses)
 
-    # Compute affected rows and estimated time
+    scope_refusals: list[FailureSample] = []
+    unsupported_targets: set[str] = set()
+    for target_name in resolved_names:
+        unsupported = unsupported_scope_dimensions(effective_filter, target=target_name)
+        if unsupported:
+            unsupported_targets.add(target_name)
+            scope_refusals.append(
+                FailureSample(
+                    kind="UnsupportedScopeDimension",
+                    locator=f"target:{target_name}",
+                    message=f"Unsupported scope dimensions for target {target_name!r}: {', '.join(unsupported)}",
+                )
+            )
+
+    # Compute affected rows and estimated time only for targets that can
+    # apply the requested scope. A rejected target has no executable plan.
     total_rows = 0
     for name in resolved_names:
-        total_rows += preview.get(name, 0)
+        if name not in unsupported_targets:
+            total_rows += preview.get(name, 0)
 
     # Rough estimate: ~50 rows/s for complex rebuilds (session insights,
     # actions), ~500 rows/s for simple repairs (FTS, WAL).
@@ -472,6 +488,8 @@ def preview_backfill(
     preview_results: list[JSONDocument] = []
     reason: InvalidationReason | None = None
     for name in resolved_names:
+        if name in unsupported_targets:
+            continue
         status = debt_statuses.get(name)
         if status is not None:
             preview_results.append(status.to_dict())
@@ -490,12 +508,13 @@ def preview_backfill(
         operation_id=operation_id,
         kind=BackfillKind.DERIVED_REBUILD,
         targets=resolved_names,
-        status=OperationStatus.PENDING,
+        status=OperationStatus.FAILED if scope_refusals else OperationStatus.PENDING,
         affected_rows=total_rows,
         estimated_time_s=estimated_time_s,
         results=preview_results,
         scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
         reason=reason,
+        failure_samples=BoundedFailureSamples.from_samples(scope_refusals),
     )
 
 

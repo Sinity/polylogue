@@ -1099,17 +1099,19 @@ def execute_replay(
     if not pending_specs:
         state.cursor = CURSOR_DONE
         completed_at = datetime.now(timezone.utc).isoformat()
+        terminal_scope_refusal = _has_terminal_scope_refusal(state.failures)
         final = BackfillOperation(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
             targets=resolved_names,
-            status=OperationStatus.COMPLETED,
+            status=OperationStatus.FAILED if terminal_scope_refusal else OperationStatus.COMPLETED,
             progress=1.0,
             started_at=started_at,
             completed_at=completed_at,
             affected_rows=state.repaired_total,
             results=state.results,
             scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
+            reason=InvalidationReason.UNKNOWN if terminal_scope_refusal else None,
             resume_cursor=CURSOR_DONE,
             failure_samples=BoundedFailureSamples(
                 samples=tuple(state.failures[:MAX_FAILURE_SAMPLES]),
@@ -1118,7 +1120,18 @@ def execute_replay(
             metrics=_operation_metrics(state),
         )
         if persist_state:
-            clear_state(config, op_id)
+            if terminal_scope_refusal:
+                _checkpoint_state(
+                    config=config,
+                    operation_id=op_id,
+                    state=state,
+                    started_at=started_at,
+                    dry_run=dry_run,
+                    scope_filter=effective_filter,
+                    operation_snapshot=final,
+                )
+            else:
+                clear_state(config, op_id)
         return final
 
     logger.info(
@@ -1172,7 +1185,9 @@ def execute_replay(
             )
 
     completed_at = datetime.now(timezone.utc).isoformat()
-    successful = all(name in state.completed_targets for name in resolved_names)
+    all_targets_completed = all(name in state.completed_targets for name in resolved_names)
+    terminal_scope_refusal = _has_terminal_scope_refusal(state.failures)
+    successful = all_targets_completed and not terminal_scope_refusal
     status = OperationStatus.COMPLETED if successful else OperationStatus.FAILED
 
     completed_current = sum(name in state.completed_targets for name in resolved_names)
@@ -1208,7 +1223,7 @@ def execute_replay(
     )
 
     if persist_state:
-        if successful:
+        if all_targets_completed and not terminal_scope_refusal:
             # Success path: drop the state file. The registry's
             # default TTL prune will never see this op_id again.
             clear_state(config, op_id)
@@ -1235,15 +1250,14 @@ def _record_failure(
     *,
     target: str,
     config: Config,
+    route: bool = True,
 ) -> None:
     """Append a failure sample and route it to the daemon raw-failure surface.
 
-    The in-memory ``state.failures`` envelope continues to back the
-    returned :class:`BackfillOperation`'s
-    :class:`BoundedFailureSamples`, so existing callers see the same
-    shape; the side effect of :func:`route_failure_sample` is the new
-    daemon-visible JSONL append handled by
-    :mod:`polylogue.maintenance.failure_routing`.
+    The in-memory ``state.failures`` envelope backs the returned
+    :class:`BackfillOperation`'s :class:`BoundedFailureSamples`.
+    Request-validation refusals set ``route=False`` because they are
+    terminal operation outcomes, not maintenance debt.
     """
 
     state.failures.append(sample)
@@ -1252,12 +1266,18 @@ def _record_failure(
     if len(state.failures) > MAX_FAILURE_SAMPLES:
         state.failures_truncated = True
         del state.failures[MAX_FAILURE_SAMPLES:]
-    route_failure_sample(
-        sample,
-        operation_id=state.operation_id,
-        archive_root=Path(config.archive_root),
-        target=target,
-    )
+    if route:
+        route_failure_sample(
+            sample,
+            operation_id=state.operation_id,
+            archive_root=Path(config.archive_root),
+            target=target,
+        )
+
+
+def _has_terminal_scope_refusal(samples: list[FailureSample]) -> bool:
+    """Return whether a completed replay carries a permanent scope refusal."""
+    return any(sample.kind == "UnsupportedScopeDimension" for sample in samples)
 
 
 def _run_one_target(
@@ -1282,8 +1302,9 @@ def _run_one_target(
             FailureSample(kind="UnsupportedScopeDimension", locator=f"target:{target_name}", message=message),
             target=target_name,
             config=config,
+            route=False,
         )
-        return False
+        return True
     repair_fn = _replay_handler_for(target_name, replayable=spec.replayable)
     if repair_fn is None:
         reason = (

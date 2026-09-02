@@ -339,6 +339,27 @@ class TestEmptyTargetsFastFail:
 
 
 class TestExecutionScopeRefusals:
+    def test_preview_refuses_an_unsupported_target_without_advertising_rows(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polylogue.storage import repair as repair_module
+
+        monkeypatch.setattr(
+            repair_module,
+            "preview_counts_from_archive_debt",
+            lambda _statuses: {"superseded_raw_snapshots": 100},
+        )
+
+        operation = preview_backfill(
+            _make_config(tmp_path),
+            targets=("superseded_raw_snapshots",),
+            scope_filter=MaintenanceScopeFilter(session_ids=("session-1",)),
+        )
+
+        assert operation.status is OperationStatus.FAILED
+        assert operation.affected_rows == 0
+        assert operation.failure_samples.samples[0].kind == "UnsupportedScopeDimension"
+
     def test_execute_reports_typed_failure_for_each_rejected_target(self, tmp_path: Path) -> None:
         operation = execute_backfill(
             _make_config(tmp_path),

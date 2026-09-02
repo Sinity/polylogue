@@ -610,15 +610,30 @@ def test_replay_passes_session_scope_to_empty_session_cleanup(tmp_path: Path, mo
 def test_replay_refuses_target_that_cannot_honor_session_scope(
     tmp_path: Path, patched_dispatch: dict[str, list[str]]
 ) -> None:
+    config = _make_config(tmp_path)
     operation = execute_replay(
-        _make_config(tmp_path),
+        config,
         targets=("superseded_raw_snapshots",),
         operation_id="op-unsupported-session-scope",
         scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
     )
 
     assert operation.status is OperationStatus.FAILED
+    assert operation.resume_cursor == CURSOR_DONE
     assert operation.failure_samples.samples[0].kind == "UnsupportedScopeDimension"
+    assert patched_dispatch["superseded_raw_snapshots"] == []
+    assert not (Path(config.archive_root) / ".maintenance-state" / "failures.jsonl").exists()
+
+    resumed = execute_replay(
+        config,
+        targets=("superseded_raw_snapshots",),
+        operation_id="op-unsupported-session-scope",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+
+    assert resumed.status is OperationStatus.FAILED
+    assert resumed.resume_cursor == CURSOR_DONE
+    assert len(resumed.failure_samples.samples) == 1
     assert patched_dispatch["superseded_raw_snapshots"] == []
 
 
