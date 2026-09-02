@@ -177,8 +177,7 @@ class CorpusArtifactManifest:
 
     The manifest describes construction and storage identity only.  It does
     not carry an expected semantic result, incident classification, or case
-    admission state.  ``SeededArchiveManifest`` remains a compatibility alias
-    for existing fixture consumers.
+    admission state.
     """
 
     protocol_version: int
@@ -206,9 +205,6 @@ class CorpusArtifactManifest:
         payload = asdict(self)
         payload["manifest_id"] = self.manifest_id
         return payload
-
-
-SeededArchiveManifest = CorpusArtifactManifest
 
 
 @dataclass(frozen=True)
@@ -2015,7 +2011,7 @@ def _validate_frontier_convergence(root: Path) -> None:
         raise RuntimeError("seeded archive is missing completed raw-authority frontier convergence")
 
 
-def _manifest_from_payload(payload: object) -> SeededArchiveManifest:
+def _manifest_from_payload(payload: object) -> CorpusArtifactManifest:
     if not isinstance(payload, dict):
         raise ValueError("seeded archive manifest must be an object")
     _reject_semantic_metadata(
@@ -2035,7 +2031,7 @@ def _manifest_from_payload(payload: object) -> SeededArchiveManifest:
         raise ValueError("seeded archive manifest has malformed receipt")
     try:
         facts = tuple(SyntheticArtifactFacts(**item) for item in raw_facts)
-        manifest = SeededArchiveManifest(facts=facts, **payload)
+        manifest = CorpusArtifactManifest(facts=facts, **payload)
     except (TypeError, ValueError) as exc:
         raise ValueError("seeded archive manifest has malformed metadata") from exc
     if stored_manifest_id != manifest.manifest_id:
@@ -2043,13 +2039,13 @@ def _manifest_from_payload(payload: object) -> SeededArchiveManifest:
     return manifest
 
 
-def _read_manifest_fd(fd: int) -> SeededArchiveManifest:
+def _read_manifest_fd(fd: int) -> CorpusArtifactManifest:
     os.lseek(fd, 0, os.SEEK_SET)
     with os.fdopen(os.dup(fd), "r", encoding="utf-8") as handle:
         return _manifest_from_payload(json.load(handle))
 
 
-def _read_manifest(path: Path) -> SeededArchiveManifest:
+def _read_manifest(path: Path) -> CorpusArtifactManifest:
     fd = _open_no_follow(path, os.O_RDONLY)
     try:
         return _read_manifest_fd(fd)
@@ -2057,7 +2053,7 @@ def _read_manifest(path: Path) -> SeededArchiveManifest:
         os.close(fd)
 
 
-def _manifest_binds_to_key(manifest: SeededArchiveManifest, root: Path, key: SeededArchiveKey) -> bool:
+def _manifest_binds_to_key(manifest: CorpusArtifactManifest, root: Path, key: SeededArchiveKey) -> bool:
     """Require manifest metadata to agree with the cache key and publication path."""
     if not isinstance(manifest.receipt, dict):
         return False
@@ -2107,7 +2103,7 @@ def _gc_tree_size(root: Path) -> int:
     return total
 
 
-def _gc_manifest_integrity(root: Path) -> tuple[SeededArchiveManifest | None, int, str | None]:
+def _gc_manifest_integrity(root: Path) -> tuple[CorpusArtifactManifest | None, int, str | None]:
     """Check only the authenticated final-tree shape needed before GC.
 
     Full semantic validation remains the build/query authority. GC does not
@@ -2963,7 +2959,7 @@ def _build_seeded_archive_inner(
                     profile_id=profile_id,
                     build_id=build_id,
                 )
-                manifest = SeededArchiveManifest(
+                manifest = CorpusArtifactManifest(
                     protocol_version=_ARTIFACT_PROTOCOL_VERSION,
                     key=key.value,
                     archive_id=archive_id,
@@ -3101,7 +3097,7 @@ def _copy_tree(source: Path, destination: Path) -> None:
 def _authenticate_clone_copy(
     source: SeededArchiveArtifact,
     destination: Path,
-    manifest: SeededArchiveManifest,
+    manifest: CorpusArtifactManifest,
     *,
     ignored_relatives: frozenset[str] = frozenset(),
 ) -> None:
@@ -3328,7 +3324,6 @@ __all__ = [
     "clone_immutable_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",
-    "SeededArchiveManifest",
     "SeededArchiveReachabilityEntry",
     "SeededArchiveReachabilityInventory",
     "benchmark_corpus_specs",
