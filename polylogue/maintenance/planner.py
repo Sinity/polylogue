@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.maintenance.invalidation import InvalidationReason
-from polylogue.maintenance.scope import MaintenanceScopeFilter
+from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
 from polylogue.maintenance.targets import (
     CLEANUP_TARGETS,
     SAFE_REPAIR_TARGETS,
@@ -591,6 +591,17 @@ def execute_backfill(
         completed_at = datetime.now(timezone.utc).isoformat()
         all_success = all(r.success for r in repair_results)
         total_repaired = sum(r.repaired_count for r in repair_results)
+        scope_refusals: list[FailureSample] = []
+        for target_name in resolved_names:
+            unsupported = unsupported_scope_dimensions(effective_filter, target=target_name)
+            if unsupported:
+                scope_refusals.append(
+                    FailureSample(
+                        kind="UnsupportedScopeDimension",
+                        locator=f"target:{target_name}",
+                        message=f"Unsupported scope dimensions for target {target_name!r}: {', '.join(unsupported)}",
+                    )
+                )
 
         logger.info(
             "backfill_completed",
@@ -614,6 +625,7 @@ def execute_backfill(
             results=[r.to_dict() for r in repair_results],
             scope=MaintenanceScope(targets=resolved_names, filter=effective_filter),
             reason=reason,
+            failure_samples=BoundedFailureSamples.from_samples(scope_refusals),
             metrics={"repaired_count": float(total_repaired)},
         )
         persist_operation_snapshot(config, result, dry_run=dry_run)

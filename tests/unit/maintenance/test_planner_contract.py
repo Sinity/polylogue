@@ -28,6 +28,7 @@ from polylogue.maintenance.planner import (
     execute_backfill,
     preview_backfill,
 )
+from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.maintenance.targets import build_maintenance_target_catalog
 from tests.infra.storage_records import DbFactory, db_setup
 
@@ -335,6 +336,24 @@ class TestEmptyTargetsFastFail:
         op = execute_backfill(config, targets=("does-not-exist",))
         assert op.status is OperationStatus.FAILED
         assert op.targets == ()
+
+
+class TestExecutionScopeRefusals:
+    def test_execute_reports_typed_failure_for_each_rejected_target(self, tmp_path: Path) -> None:
+        operation = execute_backfill(
+            _make_config(tmp_path),
+            targets=("superseded_raw_snapshots",),
+            scope_filter=MaintenanceScopeFilter(session_ids=("session-1",)),
+        )
+
+        assert operation.status is OperationStatus.FAILED
+        assert operation.failure_samples.samples == (
+            FailureSample(
+                kind="UnsupportedScopeDimension",
+                locator="target:superseded_raw_snapshots",
+                message="Unsupported scope dimensions for target 'superseded_raw_snapshots': session_ids",
+            ),
+        )
 
 
 class TestConfigThreading:

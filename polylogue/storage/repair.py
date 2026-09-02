@@ -7525,7 +7525,7 @@ def run_selected_maintenance(
             )
     repair_targets = tuple(name for name in repair_targets if name not in unsupported_targets)
     cleanup_targets = tuple(name for name in cleanup_targets if name not in unsupported_targets)
-    if repair:
+    if repair and repair_targets:
         results.extend(
             run_safe_repairs(
                 config,
@@ -7537,7 +7537,7 @@ def run_selected_maintenance(
                 session_ids=effective_filter.session_ids,
             )
         )
-    if cleanup:
+    if cleanup and cleanup_targets:
         results.extend(
             run_archive_cleanup(
                 config,

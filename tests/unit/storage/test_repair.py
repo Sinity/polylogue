@@ -4810,6 +4810,29 @@ def test_selected_cleanup_passes_session_scope_to_empty_session_handler(
     assert seen == [("s-1", "s-2")]
 
 
+def test_selected_maintenance_does_not_expand_rejected_target_to_all_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A refused explicit target cannot fall back to unscoped cleanup."""
+
+    def rejected_cleanup(_config: Config, _dry_run: bool) -> repair_mod.RepairResult:
+        raise AssertionError("rejected cleanup target was dispatched")
+
+    monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "superseded_raw_snapshots", rejected_cleanup)
+
+    results = repair_mod.run_selected_maintenance(
+        _config(tmp_path),
+        repair=False,
+        cleanup=True,
+        targets=("superseded_raw_snapshots",),
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+
+    assert [(result.name, result.success) for result in results] == [("superseded_raw_snapshots", False)]
+    assert "Unsupported scope dimensions" in results[0].detail
+
+
 # polylogue-t93b: the daemon whale pass. A component whose aggregate raw
 # payload exceeds the ordinary fast-path envelope must not stay
 # permanently resource-blocked when every member is stream-record-safe --
