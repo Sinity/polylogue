@@ -808,6 +808,38 @@ async def test_health_check_returns_readiness_report(tmp_path: Path) -> None:
         await archive.close()
 
 
+async def test_health_check_warns_when_session_insight_row_counts_do_not_match(tmp_path: Path) -> None:
+    """Derived row-count mismatches remain unhealthy without the retired ledger."""
+    from polylogue.readiness import VerifyStatus
+
+    archive = _archive(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="health-row-mismatch",
+        title="Health row mismatch",
+        messages=[
+            ParsedMessage(
+                provider_message_id="health-row-mismatch-user",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Investigate health row counts.")],
+            )
+        ],
+    )
+    try:
+        with ArchiveStore(tmp_path) as store:
+            store.write_parsed(session)
+        await archive.rebuild_insights()
+        with sqlite3.connect(tmp_path / "index.db") as conn:
+            conn.execute("UPDATE session_profiles SET work_event_count = work_event_count + 1")
+
+        report = await archive.health_check()
+
+        check = next(check for check in report.checks if check.name == "archive_session_insights")
+        assert check.status is VerifyStatus.WARNING
+    finally:
+        await archive.close()
+
+
 async def test_archive_debt_returns_shared_payload_on_empty_archive(tmp_path: Path) -> None:
     """``archive_debt()`` exposes the shared operational debt payload."""
     from polylogue.surfaces.payloads import ArchiveDebtListPayload

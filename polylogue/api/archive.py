@@ -1148,6 +1148,11 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     insight_status.stale_thread_count,
                     insight_status.orphan_thread_count,
                 )
+            ) and (
+                insight_status.profile_row_count == insight_status.total_sessions
+                and insight_status.work_event_inference_count == insight_status.expected_work_event_inference_count
+                and insight_status.phase_count == insight_status.expected_phase_count
+                and insight_status.thread_count == insight_status.root_threads
             )
             checks.append(
                 ReadinessCheck(
@@ -1157,7 +1162,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     summary=(
                         "session insight rows ready"
                         if insights_ready
-                        else "session insight rows missing or stale; run rebuild_insights"
+                        else "session insight rows missing, stale, or inconsistent; run rebuild_insights"
                     ),
                 )
             )

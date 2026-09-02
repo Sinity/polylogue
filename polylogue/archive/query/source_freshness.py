@@ -1650,10 +1650,10 @@ def _load_insight_evidence(
                     sql = (
                         f"SELECT {', '.join(selected)} FROM convergence_debt "
                         f"WHERE target_type = ? AND {target_column} IN ({placeholders}) "
-                        f"AND {stage_column} = ? "
+                        f"AND {stage_column} IN (?, ?) "
                         f"ORDER BY rowid DESC LIMIT {max(limits.max_debt_rows, 1) + 1}"
                     )
-                    params = cast(tuple[object, ...], (target_type, *ids, "derived"))
+                    params = cast(tuple[object, ...], (target_type, *ids, "derived", "insights"))
                     selected_rows = db.exact_rows(
                         label=f"insight-debt-by-{target_type}",
                         sql=sql,
@@ -1675,10 +1675,10 @@ def _load_insight_evidence(
                 placeholders = ",".join("?" for _ in target_ids)
                 sql = (
                     f"SELECT {', '.join(selected)} FROM convergence_debt "
-                    f"WHERE {target_column} IN ({placeholders}) AND {stage_column} = ? "
+                    f"WHERE {target_column} IN ({placeholders}) AND {stage_column} IN (?, ?) "
                     f"ORDER BY rowid DESC LIMIT {max(limits.max_debt_rows, 1) + 1}"
                 )
-                params = cast(tuple[object, ...], (*target_ids, "derived"))
+                params = cast(tuple[object, ...], (*target_ids, "derived", "insights"))
                 selected_rows = db.exact_rows(
                     label="insight-debt-by-source-or-session-id",
                     sql=sql,

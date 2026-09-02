@@ -119,18 +119,23 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
     )
     work_event_ready = (
         session_status.work_event_inference_count == session_status.expected_work_event_inference_count
-        and session_status.work_event_inference_fts_duplicate_count == 0
-        and session_status.work_event_inference_fts_count == session_status.work_event_inference_count
+        and session_status.stale_work_event_inference_count == 0
         and session_status.orphan_work_event_inference_count == 0
     )
     phase_ready = (
         session_status.phase_count == session_status.expected_phase_count
+        and session_status.stale_phase_inference_count == 0
         and session_status.orphan_phase_inference_count == 0
     )
     threads_ready = (
-        session_status.thread_count == session_status.root_threads and session_status.orphan_thread_count == 0
+        session_status.thread_count == session_status.root_threads
+        and session_status.stale_thread_count == 0
+        and session_status.orphan_thread_count == 0
     )
-    tag_rollups_ready = session_status.stale_tag_rollup_count == 0
+    tag_rollups_ready = (
+        session_status.tag_rollup_count == session_status.expected_tag_rollup_count
+        and session_status.stale_tag_rollup_count == 0
+    )
     return {
         "profile_rows": session_status.profile_row_count,
         "work_event_rows": session_status.work_event_inference_count,
