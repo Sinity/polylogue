@@ -455,7 +455,9 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # v85 adds parser-derived attachment direction and model-output provenance.
 # Existing rows must be replayed because direction cannot be recovered from the
 # old upload_origin field without inventing evidence.
-INDEX_SCHEMA_VERSION = 85
+# v86 removes the unused ``threads.dominant_repo_id`` projection. Existing
+# thread rows copy forward through the derived-tier fast-forward route.
+INDEX_SCHEMA_VERSION = 86
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

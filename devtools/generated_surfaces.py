@@ -12,10 +12,8 @@ from devtools import (
     render_devtools_reference,
     render_docs_surface,
     render_openapi,
-    render_pages,
     render_query_discovery,
     render_schema_disposition,
-    render_visual_tapes,
     render_webui_client,
     render_webui_design_system,
 )
@@ -72,7 +70,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/sources/provider_completeness.py",
             "devtools/render_cli_reference.py",
             "devtools/render_cli_output_schemas.py",
-            "devtools/provider_completeness.py",
         ),
     ),
     GeneratedSurface(
@@ -148,7 +145,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
         main=render_devtools_reference.main,
         inputs=(
             "devtools/command_catalog.py",
-            "devtools/provider_completeness.py",
             "polylogue/sources/provider_completeness.py",
             "devtools/render_devtools_reference.py",
         ),
@@ -197,32 +193,6 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "docs/",
             "README.md",
         ),
-    ),
-    GeneratedSurface(
-        name="pages",
-        label="GitHub Pages",
-        description="Build the GitHub Pages documentation site into .cache/site/.",
-        command=control_plane_argv("render pages"),
-        main=render_pages.main,
-        inputs=(
-            "devtools/render_pages.py",
-            "docs/",
-            "README.md",
-            "polylogue/",
-            "polylogue/daemon/route_contracts.py",
-            "polylogue/archive/query/metadata.py",
-            "polylogue/archive/viewport/profiles.py",
-            "polylogue/surfaces/payloads.py",
-            "pyproject.toml",
-        ),
-    ),
-    GeneratedSurface(
-        name="visual-tapes",
-        label="Visual evidence tapes",
-        description="Render (or verify) the committed VHS tape files for the default visual evidence specs.",
-        command=control_plane_argv("render visual-tapes"),
-        main=render_visual_tapes.generated_surface_main,
-        inputs=("devtools/visual_vhs.py", "devtools/render_visual_tapes.py"),
     ),
 )
 

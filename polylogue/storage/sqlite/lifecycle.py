@@ -1147,19 +1147,19 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
     IndexDeltaDeclaration(
-        version=85,
+        version=86,
         # ``threads.dominant_repo_id`` had no writer or reader. Replacing the
         # projection table preserves every surviving derived value while
         # removing the unused column.
         classes=(DerivedDeltaClass.CACHE_REMOVAL,),
         operations=(
             FastForwardOperation(
-                name="v85-drop-threads-dominant-repo-id",
+                name="v86-drop-threads-dominant-repo-id",
                 kind=FastForwardOperationKind.REPLACE_TABLE,
                 objects=(("table", "threads"),),
             ),
             FastForwardOperation(
-                name="v85-drop-threads-dominant-repo-id",
+                name="v86-drop-threads-dominant-repo-id",
                 kind=FastForwardOperationKind.CREATE_INDEX,
                 objects=(("index", "idx_threads_time"),),
             ),

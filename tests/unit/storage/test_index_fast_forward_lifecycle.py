@@ -106,8 +106,8 @@ def test_v64_fingerprint_stamp_delta_requires_semantic_reparse() -> None:
     assert lifecycle.index_fast_forward_plan(63, 64) is None
 
 
-def test_v85_threads_projection_removal_is_a_clone_safe_cache_deletion() -> None:
-    plan = index_fast_forward_plan(84, 85)
+def test_v86_threads_projection_removal_is_a_clone_safe_cache_deletion() -> None:
+    plan = index_fast_forward_plan(85, 86)
 
     assert plan is not None
     declaration = plan.declarations[0]
