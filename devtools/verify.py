@@ -539,21 +539,52 @@ def _execution_plan_digest() -> str:
         # The Python gate executables the plan requires: a missing or
         # unlaunchable one turns a real run red, so its availability is part
         # of the plan a recorded green stands for.
-        "gates": {
-            name: executable_gate_result([venv_bin(name, root=ROOT)], gate=name).executable_available
-            for name in ("ruff", "mypy", "dmypy")
+        "gates": {name: _executable_identity(venv_bin(name, root=ROOT)) for name in ("ruff", "mypy", "dmypy")},
+        # Every step of the complete plan names an executable; tools a gate
+        # resolves at run time are listed here.
+        "steps": {
+            label: _executable_identity(command[0])
+            for label, command in build_verify_steps(quick=False, testmon_mode="all", testmon_environment="plan")
+            if command
         },
+        "tools": {name: _executable_identity(name) for name in ("ast-grep", "node", "npm")},
         # The js-tests gate runs against each package's installed tree; the
-        # lockfile and the install stamp identify what a green run executed.
+        # lockfile, the install stamp and the installed binaries identify
+        # what a green run executed.
         "js": {
             package: {
                 "lock": _file_digest(ROOT / package / "package-lock.json"),
                 "installed": _file_digest(ROOT / package / "node_modules" / JS_INSTALL_STAMP),
+                "binaries": _tree_listing(ROOT / package / "node_modules" / ".bin"),
             }
             for package in JS_PACKAGES
         },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def _executable_identity(executable: str) -> str:
+    """Where an executable resolves and what it is, or "absent"."""
+    if not executable_gate_result([executable], gate="plan").executable_available:
+        return "absent"
+    resolved = executable if os.path.dirname(executable) else shutil.which(executable)
+    if resolved is None:
+        return "absent"
+    try:
+        real = os.path.realpath(resolved)
+        state = os.stat(real)
+    except OSError:
+        return "absent"
+    return f"{real}:{state.st_size}:{int(state.st_mtime)}"
+
+
+def _tree_listing(root: Path) -> str:
+    """A digest of the names and sizes of the files directly under a directory."""
+    try:
+        entries = sorted((entry.name, entry.stat().st_size) for entry in root.iterdir() if not entry.is_dir())
+    except OSError:
+        return "absent"
+    return hashlib.sha256(json.dumps(entries).encode()).hexdigest()
 
 
 def _file_digest(path: Path) -> str:

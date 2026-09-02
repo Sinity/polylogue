@@ -799,3 +799,30 @@ def test_execution_plan_digest_sees_the_js_worker_budget(monkeypatch: pytest.Mon
     four = verify._execution_plan_digest()
 
     assert two != four
+
+
+def test_execution_plan_digest_sees_run_time_tools_and_installed_js_binaries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: an ast-grep that vanished from PATH, or a deleted
+    node_modules/.bin/vitest, must change the plan."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.setattr(verify, "venv_bin", lambda name, root: str(root / ".venv" / "bin" / name))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for name in ("ast-grep", "node", "npm"):
+        target = tools / name
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        target.chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    binaries = tmp_path / "webui" / "node_modules" / ".bin"
+    binaries.mkdir(parents=True)
+    (binaries / "vitest").write_text("run", encoding="utf-8")
+
+    baseline = verify._execution_plan_digest()
+    (tools / "ast-grep").unlink()
+    without_ast_grep = verify._execution_plan_digest()
+    (binaries / "vitest").unlink()
+    without_vitest = verify._execution_plan_digest()
+
+    assert len({baseline, without_ast_grep, without_vitest}) == 3
