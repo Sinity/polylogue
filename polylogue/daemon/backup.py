@@ -511,10 +511,11 @@ def _source_generation_tables_exist(conn: sqlite3.Connection) -> bool:
     return len(tables) == 2
 
 
-def _source_blob_reservations(source_db: Path) -> set[str]:
+def _source_blob_reservations(source_db: Path, *, immutable: bool = True) -> set[str]:
     """Read pending publication receipts independently of committed liveness."""
 
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as source_conn:
+    immutable_query = "&immutable=1" if immutable else ""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as source_conn:
         has_reservations = source_conn.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'blob_publication_reservations'"
         ).fetchone()
@@ -823,6 +824,7 @@ def _source_recoverability_proofs(
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
     zip_payload_cache: dict[str, dict[int, bytes]] | None = None,
+    immutable: bool = True,
 ) -> list[dict[str, str]]:
     """Prove missing source-owned bytes by replaying their acquisition payload."""
     if not missing_hashes:
@@ -832,7 +834,8 @@ def _source_recoverability_proofs(
     zip_payload_cache = zip_payload_cache if zip_payload_cache is not None else {}
     by_hash: dict[str, list[dict[str, object]]] = {}
     prior_full_sizes: dict[str, list[tuple[int, int]]] = {}
-    with closing(sqlite3.connect(f"file:{source_db}?mode=ro&immutable=1", uri=True)) as conn:
+    immutable_query = "&immutable=1" if immutable else ""
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro{immutable_query}", uri=True)) as conn:
         reference_rows = _raw_session_reference_rows(conn)
         for row in reference_rows:
             if (

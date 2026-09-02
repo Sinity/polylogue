@@ -95,6 +95,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools verify` | Run the local verification baseline before pushing or creating a PR, including the required committed-schema privacy registry check. |
 | `devtools verify agent-integration` | Verify manual compilation, parser examples, continuation, native delivery, packaging, and live cutover signatures. |
 | `devtools verify atlas` | Check atlas citation anchors and verification-commit freshness. |
+| `devtools verify blob-conservation` | Verify both directions of blob/reference conservation without mutation. |
 | `devtools verify ci-commands` | Validate devtools invocations in structured CI run fields. |
 | `devtools verify consumer-reachability` | Require newly added modules, tables, and tools to have production consumers. |
 | `devtools verify corpus-fidelity` | Run the production corpus-fidelity acceptance gate against an archive root. |

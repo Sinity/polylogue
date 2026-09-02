@@ -152,6 +152,12 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Classify source-tier orphan refs; apply only with backup and receipt.",
     ),
     (
+        "blob-conservation",
+        "_blob_conservation",
+        "blob_conservation_command",
+        "Verify both directions of blob/reference conservation without mutation.",
+    ),
+    (
         "blob-reference-closure",
         "_blob_reference_closure",
         "blob_reference_closure_command",
