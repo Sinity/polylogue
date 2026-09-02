@@ -80,12 +80,10 @@ dev-common = [
   "syrupy>=5.5.3",  # Snapshot testing — pytest plugin, .ambr files
   "pyte>=0.8.0",  # Terminal emulator for deterministic output snapshot tests
   "pytest-timeout>=2.4.0",  # Per-test hang guard; fail fast with a stack instead of burning the CI job ceiling
-  "mutmut>=3.7.0",  # Mutation testing for coverage verification
   "mypy>=2.3.1,<2.4",
   "types-dateparser>=1.4.2.20260813",  # dateparser library stubs for mypy
   "types-PyYAML>=6.0",  # yaml library stubs for mypy
   "ruff>=0.16.4",
-  "pre-commit>=4.6.2",
   "pip-audit>=2.10.1",  # OSV-backed CVE scanning over the locked dev environment
 ]
 dev = [
@@ -93,7 +91,6 @@ dev = [
 ]
 fuzz = [
   "atheris>=3.1.0",  # Google's Python fuzzer
-  "mutmut>=3.7.0",  # Mutation testing
 ]
 sqlite-compat = [
   # Self-contained modern SQLite (FTS5 contentless_delete needs 3.43+) for
@@ -294,18 +291,3 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]
 
-[tool.mutmut]
-paths_to_mutate = [
-    # Broad first-party surface. Chunk mutation campaigns with CLI globs,
-    # not by narrowing config down to a few hand-picked files.
-    "polylogue",
-]
-do_not_mutate = [
-    # Package markers and thin entrypoints add noise under mutation testing.
-    "polylogue/**/__init__.py",
-    "polylogue/**/__main__.py",
-]
-also_copy = ["polylogue", "README.md"]
-# Mutmut runs inside one process; inheriting repo-wide `pytest -n auto`
-# breaks trampoline bookkeeping inside xdist workers.
-pytest_add_cli_args = ["-n", "0", "-p", "no:randomly", "-p", "no:random-order", "--benchmark-disable", "-m", "not benchmark"]
