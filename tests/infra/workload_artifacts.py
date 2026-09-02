@@ -55,7 +55,7 @@ from polylogue.storage.blob_integrity import scan_blob_integrity
 from polylogue.storage.blob_publication import abandon_blob_publication_receipts, inspect_blob_publication_receipts
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
-from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER, schema_identity
 from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient, provider_source_package
 
 if TYPE_CHECKING:
@@ -992,6 +992,13 @@ def _archive_schema_id() -> str:
         digest.update(str(ARCHIVE_VERSION_BY_TIER[tier]).encode())
         digest.update(b"\0")
         digest.update(ARCHIVE_DDL_BY_TIER[tier].encode())
+        digest.update(b"\0")
+    digest.update(schema_identity.DERIVED_SCHEMA_META_DDL.encode())
+    digest.update(b"\0")
+    for derived_tier in (schema_identity.DerivedTier.INDEX, schema_identity.DerivedTier.OPS):
+        digest.update(derived_tier.value.encode())
+        digest.update(b"\0")
+        digest.update(schema_identity.derived_schema_identity(derived_tier).encode())
         digest.update(b"\0")
     return f"archive-schema:sha256:{digest.hexdigest()}"
 
