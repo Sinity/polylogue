@@ -506,6 +506,13 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
             continue
         sibling = root / filename
         if sibling.exists():
+            tier = _archive_tier_for_path(sibling)
+            if tier is not None:
+                sibling_conn = sqlite3.connect(f"file:{sibling}?mode=ro", uri=True)
+                try:
+                    _assert_schema_supported(sibling_conn, sibling, tier)
+                finally:
+                    sibling_conn.close()
             conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
 
 

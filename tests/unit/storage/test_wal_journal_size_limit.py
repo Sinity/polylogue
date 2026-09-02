@@ -23,6 +23,9 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.errors import SchemaSkew
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import (
     DAEMON_WRITE_CACHE_SIZE_KIB,
     DAEMON_WRITE_CONNECTION_PROFILE,
@@ -40,6 +43,24 @@ def _pragma_int(conn: sqlite3.Connection, name: str) -> int:
     row = conn.execute(f"PRAGMA {name}").fetchone()
     assert row is not None
     return int(row[0])
+
+
+@pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS])
+def test_index_connection_rejects_stale_attached_tier(tmp_path: Path, tier: ArchiveTier) -> None:
+    """A stale sibling must be rejected before it can be used through ATTACH.
+
+    Mutating the sibling version to the next value makes this red if the
+    attachment path validates only ``index.db``.
+    """
+    for archive_tier in (ArchiveTier.INDEX, tier):
+        initialize_archive_database(tmp_path / f"{archive_tier.value}.db", archive_tier)
+    sibling = tmp_path / f"{tier.value}.db"
+    with sqlite3.connect(sibling) as conn:
+        conn.execute("PRAGMA user_version = 999999")
+        conn.commit()
+
+    with pytest.raises(SchemaSkew, match=f"{tier.value} schema skew"):
+        open_connection(tmp_path / "index.db").close()
 
 
 # ---------------------------------------------------------------------------
