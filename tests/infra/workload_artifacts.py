@@ -894,6 +894,9 @@ def current_seeded_archive_reachability() -> SeededArchiveReachabilityInventory:
 
     add("default", "c03", (c03_semantic_corpus_spec(),))
     add("default", "schema-coverage", schema_coverage_corpus_specs())
+    from tests.infra.integration_profile import default_integration_selection
+
+    add("default", "integration", default_integration_selection().corpus_specs())
     for named_profile in NAMED_WORKLOAD_PROFILES:
         add("named", named_profile.name, named_profile.corpus_specs())
     for benchmark_profile in BENCHMARK_WORKLOAD_PROFILES:
@@ -911,6 +914,7 @@ def validate_seeded_archive_reachability(inventory: SeededArchiveReachabilityInv
     expected = {
         ("default", "c03"),
         ("default", "schema-coverage"),
+        ("default", "integration"),
         *(("named", profile.name) for profile in NAMED_WORKLOAD_PROFILES),
         *(("benchmark", profile.tier.value) for profile in BENCHMARK_WORKLOAD_PROFILES),
     }

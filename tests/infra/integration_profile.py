@@ -1,24 +1,35 @@
-"""Disposable integration workload selection over law-owned witnesses.
-
-This module owns selection shape only. Witnesses remain small, law-owned
-recipes and the artifact publisher remains the sole archive construction and
-cache authority. No expected result is accepted here.
-"""
+"""Disposable integration workload selection over composable witness recipes."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive
 
+_SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "case_", "pathology_")
+
+
+def _reject_semantic_metadata(value: object) -> None:
+    if isinstance(value, str):
+        if not value or value.startswith(_SEMANTIC_METADATA_PREFIXES):
+            raise ValueError("integration witness cannot carry semantic case metadata")
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            _reject_semantic_metadata(key)
+            _reject_semantic_metadata(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _reject_semantic_metadata(item)
+
 
 class IntegrationInteraction(StrEnum):
-    """Cross-law behavior that requires a composed archive."""
+    """Cross-witness behavior that requires a composed archive."""
 
     COEXISTENCE = "coexistence"
     IDENTITY_COLLISION = "identity-collision"
@@ -40,15 +51,15 @@ class IntegrationProfile:
     scale: str = "representative"
 
     def __post_init__(self) -> None:
-        if not self.name or self.name.startswith(("expected_", "oracle_", "case_", "pathology_")):
-            raise ValueError("integration profile cannot carry semantic case metadata")
+        _reject_semantic_metadata(
+            (self.name, self.required_origins, self.required_source_classes, self.temporal_operations)
+        )
         if not self.required_origins:
             raise ValueError("integration profile requires a name and at least one origin")
         if self.scale not in {"smoke", "representative", "archive-shaped", "stress"}:
             raise ValueError("integration profile scale must be an operational profile")
-        for value in (*self.required_origins, *self.required_source_classes, *self.temporal_operations):
-            if not value or value.startswith(("expected_", "oracle_", "case_", "pathology_")):
-                raise ValueError("integration profile cannot carry semantic case metadata")
+        if any(not isinstance(interaction, IntegrationInteraction) for interaction in self.interactions):
+            raise ValueError("integration profile interactions must use declared interaction values")
 
     @property
     def digest(self) -> str:
@@ -65,34 +76,39 @@ class IntegrationProfile:
 
 @dataclass(frozen=True, slots=True)
 class IntegrationWitness:
-    """A law-owned recipe reference and its provider-shaped workload shape."""
+    """One law-owned corpus recipe and the interactions it can support."""
 
-    recipe_digest: str
-    provider: str
-    origin: str
+    recipe: CorpusSpec
     source_class: str = "provider-shaped"
-    count: int = 1
-    messages_min: int = 2
-    messages_max: int = 4
-    seed: int = 42
+    interactions: tuple[IntegrationInteraction, ...] = (
+        IntegrationInteraction.COEXISTENCE,
+        IntegrationInteraction.REGISTRY_MIX,
+    )
+    temporal_operations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        if not self.recipe_digest or not self.origin or self.count < 1:
-            raise ValueError("integration witness requires identity and positive count")
-        if self.messages_min < 1 or self.messages_max < self.messages_min:
-            raise ValueError("integration witness has invalid message bounds")
-        if self.recipe_digest.startswith(("expected_", "oracle_", "case_", "pathology_")):
-            raise ValueError("integration witness identity cannot encode semantic metadata")
+        _reject_semantic_metadata((self.recipe.to_payload(), self.source_class, self.temporal_operations))
+        if any(not isinstance(interaction, IntegrationInteraction) for interaction in self.interactions):
+            raise ValueError("integration witness interactions must use declared interaction values")
+
+    @property
+    def recipe_digest(self) -> str:
+        payload = json.dumps(self.recipe.to_payload(), sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(payload).hexdigest()
+
+    @property
+    def origin(self) -> str:
+        return origin_from_provider(self.recipe.provider).value
+
+    @property
+    def session_native_ids(self) -> tuple[str, ...]:
+        return tuple(f"integration-{self.recipe_digest[:16]}-{index:03d}" for index in range(self.recipe.count))
 
     def corpus_spec(self, profile: IntegrationProfile) -> CorpusSpec:
-        return CorpusSpec.for_provider(
-            self.provider,
-            count=self.count,
-            messages_min=self.messages_min,
-            messages_max=self.messages_max,
-            seed=self.seed,
-            origin=self.origin,
-            tags=("synthetic", "integration", profile.name, profile.scale, self.source_class),
+        return replace(
+            self.recipe,
+            session_native_ids=self.session_native_ids,
+            tags=(*self.recipe.tags, "synthetic", "integration", profile.name, profile.scale, self.source_class),
             profile=CorpusProfile(
                 family_ids=("integration-workload",),
                 profile_tokens=(
@@ -111,6 +127,8 @@ class IntegrationSelection:
     witnesses: tuple[IntegrationWitness, ...]
 
     def __post_init__(self) -> None:
+        if not self.witnesses:
+            raise ValueError("integration selection requires at least one witness")
         origins = {witness.origin for witness in self.witnesses}
         missing = set(self.profile.required_origins) - origins
         if missing:
@@ -119,6 +137,33 @@ class IntegrationSelection:
         missing_classes = set(self.profile.required_source_classes) - source_classes
         if missing_classes:
             raise ValueError(f"integration selection lacks required source classes: {sorted(missing_classes)}")
+        available = {interaction for witness in self.witnesses for interaction in witness.interactions}
+        missing_interactions = set(self.profile.interactions) - available
+        if missing_interactions:
+            raise ValueError(f"integration selection lacks interaction support: {sorted(missing_interactions)}")
+        cross_witness_interactions = {
+            IntegrationInteraction.COEXISTENCE,
+            IntegrationInteraction.CROSS_CASE_INTERFERENCE,
+            IntegrationInteraction.CANDIDATE_DIFFER,
+            IntegrationInteraction.LIFECYCLE_SCHEDULE,
+        }
+        if cross_witness_interactions & set(self.profile.interactions) and len(self.witnesses) < 2:
+            raise ValueError("declared interaction requires multiple witnesses")
+        if (
+            IntegrationInteraction.REGISTRY_MIX in self.profile.interactions
+            and len({w.recipe.provider for w in self.witnesses}) < 2
+        ):
+            raise ValueError("registry mix requires multiple providers")
+        if IntegrationInteraction.IDENTITY_COLLISION in self.profile.interactions:
+            providers = {w.recipe.provider for w in self.witnesses}
+            if not any(sum(w.recipe.provider == provider for w in self.witnesses) > 1 for provider in providers):
+                raise ValueError("identity collision requires multiple witnesses for one provider")
+        temporal_operations = {operation for witness in self.witnesses for operation in witness.temporal_operations}
+        missing_operations = set(self.profile.temporal_operations) - temporal_operations
+        if missing_operations:
+            raise ValueError(f"integration selection lacks temporal operation support: {sorted(missing_operations)}")
+        if self.profile.temporal_operations and IntegrationInteraction.LIFECYCLE_SCHEDULE not in available:
+            raise ValueError("temporal operations require lifecycle schedule support")
 
     @property
     def digest(self) -> str:
@@ -127,13 +172,9 @@ class IntegrationSelection:
             "witnesses": tuple(
                 {
                     "recipe_digest": witness.recipe_digest,
-                    "provider": witness.provider,
-                    "origin": witness.origin,
                     "source_class": witness.source_class,
-                    "count": witness.count,
-                    "messages_min": witness.messages_min,
-                    "messages_max": witness.messages_max,
-                    "seed": witness.seed,
+                    "interactions": tuple(item.value for item in witness.interactions),
+                    "temporal_operations": witness.temporal_operations,
                 }
                 for witness in self.witnesses
             ),
@@ -146,9 +187,16 @@ class IntegrationSelection:
 
 DEFAULT_INTEGRATION_PROFILE = IntegrationProfile(
     name="heterogeneous-representative",
-    required_origins=("generated.integration-chatgpt", "generated.integration-codex"),
+    required_origins=("chatgpt-export", "codex-session"),
     required_source_classes=("provider-shaped",),
     interactions=(IntegrationInteraction.COEXISTENCE, IntegrationInteraction.REGISTRY_MIX),
+)
+
+_CHATGPT_DIALOGUE_RECIPE = CorpusSpec.for_provider(
+    "chatgpt", count=1, messages_min=2, messages_max=4, seed=42, origin="generated.integration"
+)
+_CODEX_DIALOGUE_RECIPE = CorpusSpec.for_provider(
+    "codex", count=1, messages_min=2, messages_max=4, seed=42, origin="generated.integration"
 )
 
 
@@ -156,10 +204,7 @@ def default_integration_selection() -> IntegrationSelection:
     """Return the smallest heterogeneous selection used by integration tests."""
     return IntegrationSelection(
         DEFAULT_INTEGRATION_PROFILE,
-        (
-            IntegrationWitness("law-chatgpt-dialogue-v1", "chatgpt", "generated.integration-chatgpt"),
-            IntegrationWitness("law-codex-dialogue-v1", "codex", "generated.integration-codex"),
-        ),
+        (IntegrationWitness(_CHATGPT_DIALOGUE_RECIPE), IntegrationWitness(_CODEX_DIALOGUE_RECIPE)),
     )
 
 

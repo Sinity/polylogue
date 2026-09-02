@@ -223,7 +223,11 @@ def test_current_seeded_archive_reachability_is_generated_and_rejects_partial_se
     inventory = current_seeded_archive_reachability()
 
     assert {entry.kind for entry in inventory.entries} == {"default", "named", "benchmark"}
-    assert {entry.name for entry in inventory.entries if entry.kind == "default"} == {"c03", "schema-coverage"}
+    assert {entry.name for entry in inventory.entries if entry.kind == "default"} == {
+        "c03",
+        "schema-coverage",
+        "integration",
+    }
     assert {entry.name for entry in inventory.entries if entry.kind == "named"} == {
         profile.name for profile in NAMED_WORKLOAD_PROFILES
     }
