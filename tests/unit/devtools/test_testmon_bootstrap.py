@@ -828,3 +828,86 @@ def test_linked_worktree_seeds_a_resumable_main_graph_for_new_modules(tmp_path: 
     assert preparation.local_state.status == "incomplete"
     assert preparation.local_state.missing_executable_paths == ("polylogue/added.py",)
     assert (lane / TESTMON_DATA_RELPATH).is_file()
+
+
+def test_orphan_sidecars_are_removed_and_the_graph_seeded(tmp_path: Path) -> None:
+    """Anti-vacuity: without the re-inspection, a worktree holding only
+    `-wal`/`-shm` sidecars refused affected verification
+    (worktree-0770508891930436, 2026-09-02 04:28Z) although the main graph
+    was valid for its digest."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    lane_data = lane / TESTMON_DATA_RELPATH
+    lane_data.parent.mkdir(parents=True)
+    Path(f"{lane_data}-wal").write_bytes(b"orphan")
+    Path(f"{lane_data}-shm").write_bytes(b"orphan")
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "affected"
+    assert preparation.local_state.valid
+    assert {path.name for path in preparation.removed_paths} == {"testmondata-wal", "testmondata-shm"}
+    assert lane_data.is_file()
+
+
+def test_a_seeded_graph_still_refuses_a_path_missing_from_the_checkout(tmp_path: Path) -> None:
+    """Anti-vacuity: the seed path returned affected selection without the
+    checkout-path check the local path applies."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (lane / "polylogue" / "module.py").unlink()
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "bootstrap"
+
+
+def test_a_resumable_seed_still_refuses_a_path_missing_from_the_checkout(tmp_path: Path) -> None:
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (lane / "polylogue" / "module.py").unlink()
+
+    preparation = prepare_native_testmon_environment(
+        lane, required_executable_paths=("polylogue/module.py", "polylogue/added.py")
+    )
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.local_state.status == "invalid"
+    assert "absent from the current checkout" in preparation.local_state.reason
+
+
+def test_a_failed_reseed_keeps_the_invalid_diagnosis(tmp_path: Path) -> None:
+    """Anti-vacuity: replacing the corruption reason with "absent" leaves
+    `devtools why` unable to say why the local graph was deleted."""
+    main, lane = _linked_worktree(tmp_path)
+    _seed_partial_native_graph(main, environment_name="polylogue-other", fingerprinted="polylogue/module.py")
+    lane_data = lane / TESTMON_DATA_RELPATH
+    lane_data.parent.mkdir(parents=True)
+    Path(f"{lane_data}-wal").write_bytes(b"orphan")
+
+    preparation = prepare_native_testmon_environment(lane)
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.local_state.status == "invalid"
+    assert preparation.local_state.reason.startswith("SQLite sidecars exist without the owned database")
+    assert "main checkout" in preparation.local_state.reason
+    assert preparation.removed_paths
+
+
+def test_a_failed_reseed_keeps_the_missing_paths(tmp_path: Path) -> None:
+    """The receipt and `devtools why` name the files whose absence forced the repair."""
+    (tmp_path / "polylogue").mkdir()
+    (tmp_path / "polylogue" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    environment_name = _testmon_environment_digest(tmp_path)
+    _seed_partial_native_graph(tmp_path, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    (tmp_path / "polylogue" / "module.py").unlink()
+
+    preparation = prepare_native_testmon_environment(tmp_path, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "bootstrap"
+    assert preparation.local_state.status == "invalid"
+    assert preparation.local_state.missing_executable_paths == ("polylogue/module.py",)
+    assert preparation.local_state.reason.startswith("changed executable modules are absent from the current checkout")
