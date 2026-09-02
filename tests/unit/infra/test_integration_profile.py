@@ -60,9 +60,25 @@ def test_selection_rejects_unrealizable_constraints_and_semantic_metadata() -> N
             (IntegrationWitness(recipe, interactions=(IntegrationInteraction.LIFECYCLE_SCHEDULE,)),),
         )
     with pytest.raises(ValueError, match="semantic case metadata"):
-        IntegrationWitness(recipe, source_class="expected_success")
+        IntegrationProfile(
+            name="bounded", required_origins=("chatgpt-export",), required_source_classes=("expected_success",)
+        )
     with pytest.raises(ValueError, match="semantic case metadata"):
         IntegrationWitness(replace(recipe, tags=("oracle_result",)))
+    with pytest.raises(ValueError, match="deterministic seed"):
+        IntegrationWitness(CorpusSpec.for_provider("chatgpt"))
+    with pytest.raises(ValueError, match="cannot repeat a witness recipe"):
+        IntegrationSelection(
+            IntegrationProfile(
+                name="duplicate",
+                required_origins=("chatgpt-export",),
+                interactions=(IntegrationInteraction.IDENTITY_COLLISION,),
+            ),
+            (
+                IntegrationWitness(recipe, interactions=(IntegrationInteraction.IDENTITY_COLLISION,)),
+                IntegrationWitness(recipe, interactions=(IntegrationInteraction.IDENTITY_COLLISION,)),
+            ),
+        )
     with pytest.raises(ValueError, match="multiple providers"):
         IntegrationSelection(
             IntegrationProfile(
@@ -112,3 +128,4 @@ def test_archive_publishes_selected_heterogeneous_contents(tmp_path: Path) -> No
     with sqlite3.connect(artifact.root / "index.db") as conn:
         origins = {row[0] for row in conn.execute("SELECT DISTINCT origin FROM sessions")}
     assert origins == set(selection.profile.required_origins)
+    assert {witness.source_class for witness in selection.witnesses} == set(selection.profile.required_source_classes)

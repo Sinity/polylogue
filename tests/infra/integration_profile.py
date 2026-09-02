@@ -10,6 +10,7 @@ from pathlib import Path
 
 from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusProfile, CorpusSpec
+from tests.infra.source_builders import PROVIDER_SOURCE_CLASS
 from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive
 
 _SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "case_", "pathology_")
@@ -79,7 +80,6 @@ class IntegrationWitness:
     """One law-owned corpus recipe and the interactions it can support."""
 
     recipe: CorpusSpec
-    source_class: str = "provider-shaped"
     interactions: tuple[IntegrationInteraction, ...] = (
         IntegrationInteraction.COEXISTENCE,
         IntegrationInteraction.REGISTRY_MIX,
@@ -87,9 +87,16 @@ class IntegrationWitness:
     temporal_operations: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
-        _reject_semantic_metadata((self.recipe.to_payload(), self.source_class, self.temporal_operations))
+        _reject_semantic_metadata((self.recipe.to_payload(), self.temporal_operations))
+        if self.recipe.seed is None:
+            raise ValueError("integration witness recipe requires a deterministic seed")
         if any(not isinstance(interaction, IntegrationInteraction) for interaction in self.interactions):
             raise ValueError("integration witness interactions must use declared interaction values")
+
+    @property
+    def source_class(self) -> str:
+        """Source package shape used by the seeded-archive admission route."""
+        return PROVIDER_SOURCE_CLASS
 
     @property
     def recipe_digest(self) -> str:
@@ -129,6 +136,8 @@ class IntegrationSelection:
     def __post_init__(self) -> None:
         if not self.witnesses:
             raise ValueError("integration selection requires at least one witness")
+        if len({witness.recipe_digest for witness in self.witnesses}) != len(self.witnesses):
+            raise ValueError("integration selection cannot repeat a witness recipe")
         origins = {witness.origin for witness in self.witnesses}
         missing = set(self.profile.required_origins) - origins
         if missing:
