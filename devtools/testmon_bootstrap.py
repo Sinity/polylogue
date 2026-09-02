@@ -33,6 +33,7 @@ import stat
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -850,19 +851,17 @@ def seed_native_testmon_from_main_checkout(
     required_executable_paths: Sequence[str] = (),
     deadline_monotonic: float | None = None,
 ) -> NativeTestmonState | None:
-    """Copy the main checkout's graph into a linked worktree that has none.
+    """Copy the main checkout's graph into a linked worktree lacking this environment.
 
     Provisioning copies the graph once, when the worktree is created; a graph
     the nightly corpus run publishes later never reaches an older worktree.
     The copy is a consistent SQLite snapshot, so the worktree still owns its
     own state afterwards. Returns None when there is nothing to copy: the
     checkout is the main one, or the main graph is not valid for this exact
-    environment.
+    environment. The caller decides that the local graph lacks it.
     """
     root = repo_root.resolve()
     local_data = root / TESTMON_DATA_RELPATH
-    if local_data.exists():
-        return None
     main = main_checkout_root(root)
     if main is None:
         return None
@@ -878,8 +877,23 @@ def seed_native_testmon_from_main_checkout(
     _ensure_deadline(deadline_monotonic)
     _validate_owned_state_parents(root)
     local_data.parent.mkdir(parents=True, exist_ok=True)
-    staging = local_data.with_name(f"{local_data.name}.seed-{os.getpid()}.tmp")
+    # A local database that lacks this environment (another digest's graph,
+    # or the empty row an interrupted bootstrap leaves) is replaced whole:
+    # the snapshot carries every environment the main checkout holds. Its
+    # sidecars go first, so a stale WAL is never replayed onto the snapshot.
+    validate_native_testmon_state_ownership(root)
+    for sidecar in (Path(f"{local_data}{suffix}") for suffix in TESTMON_SIDECAR_SUFFIXES):
+        with contextlib.suppress(FileNotFoundError):
+            sidecar.unlink()
+    staging = local_data.with_name(f"{local_data.name}.seed-{uuid.uuid4().hex}.tmp")
+    created = False
     try:
+        descriptor = os.open(staging, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        os.close(descriptor)
+        created = True
+        state = staging.lstat()
+        if not stat.S_ISREG(state.st_mode) or state.st_nlink != 1:
+            raise NativeTestmonRepairError(f"staging path is not a fresh regular file: {staging}")
         source = sqlite3.connect(_readonly_uri(main_data), uri=True, timeout=_remaining_timeout(deadline_monotonic, 10))
         try:
             target = sqlite3.connect(staging)
@@ -891,8 +905,9 @@ def seed_native_testmon_from_main_checkout(
             source.close()
         os.replace(staging, local_data)
     except (sqlite3.Error, OSError) as exc:
-        with contextlib.suppress(OSError):
-            staging.unlink()
+        if created:
+            with contextlib.suppress(OSError):
+                staging.unlink()
         raise NativeTestmonRepairError(f"cannot seed native testmon graph from {main_data}: {exc}") from exc
     return inspect_native_testmon_environment(
         local_data,

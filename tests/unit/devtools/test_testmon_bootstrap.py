@@ -765,3 +765,46 @@ def test_linked_worktree_keeps_its_own_graph_over_the_main_one(tmp_path: Path) -
     assert preparation.selection_mode == "affected", "an incomplete local graph is resumable, not replaced"
     assert preparation.local_state.status == "incomplete"
     assert lane_data.read_bytes() == before
+
+
+def test_linked_worktree_replaces_a_graph_without_its_environment(tmp_path: Path) -> None:
+    """Anti-vacuity: refusing to seed over a foreign-environment database left
+    every pre-existing worktree refusing after a digest change."""
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    lane_data = _seed_partial_native_graph(
+        lane, environment_name="polylogue-older", fingerprinted="polylogue/module.py"
+    )
+    stale_wal = Path(f"{lane_data}-wal")
+    stale_wal.write_bytes(b"stale")
+
+    preparation = prepare_native_testmon_environment(lane, required_executable_paths=("polylogue/module.py",))
+
+    assert preparation.selection_mode == "affected"
+    assert preparation.local_state.valid
+    assert not stale_wal.exists() or stale_wal.read_bytes() != b"stale"
+    assert not list(lane_data.parent.glob("*.tmp"))
+
+
+def test_seed_never_writes_through_a_planted_staging_link(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    main, lane = _linked_worktree(tmp_path)
+    environment_name = _testmon_environment_digest(lane)
+    _seed_partial_native_graph(main, environment_name=environment_name, fingerprinted="polylogue/module.py")
+    outside = tmp_path / "outside.db"
+    outside.write_bytes(b"precious")
+    cache = lane / TESTMON_DATA_RELPATH.parent
+    cache.mkdir(parents=True)
+    planted = cache / "testmondata.seed-feedface.tmp"
+    planted.symlink_to(outside)
+    import uuid
+
+    monkeypatch.setattr(uuid, "uuid4", lambda: type("U", (), {"hex": "feedface"})())
+
+    from devtools.testmon_bootstrap import seed_native_testmon_from_main_checkout
+
+    with pytest.raises(NativeTestmonRepairError):
+        seed_native_testmon_from_main_checkout(lane, environment_name=environment_name)
+
+    assert outside.read_bytes() == b"precious"
+    assert planted.is_symlink()
