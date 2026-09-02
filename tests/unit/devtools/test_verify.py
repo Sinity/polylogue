@@ -783,6 +783,9 @@ def test_reuse_requires_a_clean_newest_attempt_on_the_same_inputs(
     assert covered([row("green"), row("elsewhere", start_head="other")]) is None
     assert covered([row("green")], packages="pkgs-2") is None
     assert covered([row("green")], plan="plan-2") is None
+    # A newer run under another package set rewrote the graph; an older
+    # green under this set is not searched past it.
+    assert covered([row("green"), row("other-packages", packages="pkgs-2")]) is None
     assert covered([row("dirty", dirty=True)]) is None
     assert covered([row("green"), row("red-later", status="failed")]) is None
     assert covered([row("green"), row("skip", covered_by="green")]) == "green"
@@ -868,3 +871,68 @@ def test_execution_plan_digest_sees_master_and_hypothesis_examples(
     stored = verify._execution_plan_digest()
 
     assert len({first, moved, stored}) == 3
+
+
+def test_reuse_inputs_are_recomputed_at_the_decision(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: a plan captured before preparation must not be trusted
+    after an environment sync changed it."""
+    history: dict[str, Any] = {}
+    plans = iter(["plan-1", "plan-2"])
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".cache" / "verify" / "runs" / "run-prior").mkdir(parents=True)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "git_dirty", lambda _root: False)
+    monkeypatch.setattr(verify, "_git_commit", lambda _ref: "base")
+    monkeypatch.setattr(verify, "_changed_paths", lambda _b, _h: ())
+    monkeypatch.setattr(
+        verify,
+        "classify_native_testmon_changes",
+        lambda *_a: SimpleNamespace(executable_paths=(), runtime_data_paths=()),
+    )
+    monkeypatch.setattr(
+        verify,
+        "prepare_native_testmon_environment",
+        lambda *_a, **_k: SimpleNamespace(
+            selection_mode="affected",
+            environment_name="env-1",
+            local_state=SimpleNamespace(status="valid", reason="current", missing_executable_paths=(), valid=True),
+        ),
+    )
+    monkeypatch.setattr(
+        verify,
+        "read_verify_history",
+        lambda _path: [
+            {
+                "tier": "all",
+                "status": "success",
+                "run_id": "run-prior",
+                "artifact_dir": ".cache/verify/runs/run-prior",
+                "git_dirty": False,
+                "git_head": "head",
+                "semantic_receipt": {"source_revision": "head"},
+                "testmon_selection": {
+                    "environment_digest": "env-1",
+                    "packages_digest": "pkgs-1",
+                    "plan_digest": "plan-1",
+                },
+                "pytest_aggregate": {"complete_corpus_covered": True},
+            }
+        ],
+    )
+    monkeypatch.setattr(verify, "installed_packages_digest", lambda: "pkgs-1")
+    monkeypatch.setattr(verify, "_execution_plan_digest", lambda: next(plans, "plan-2"))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    built: list[str] = []
+
+    def no_steps(**_kwargs: Any) -> list[tuple[str, list[str]]]:
+        built.append("built")
+        return []
+
+    monkeypatch.setattr(verify, "build_verify_steps", no_steps)
+
+    verify._main(["--all"])
+
+    assert built == ["built"]
+    assert history.get("diagnosis") != "corpus_already_verified"

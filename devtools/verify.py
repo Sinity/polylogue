@@ -653,17 +653,16 @@ def _corpus_already_verified(*, head: str, environment: str, packages: str, plan
         if aggregate.get("covered_by_run"):
             # A skip is not an attempt; the attempt it reused is older.
             continue
-        if receipt.get("source_revision") != head:
-            # The newest complete attempt anywhere rewrote the shared graph
-            # for its own head; a green at this head is no longer the graph
-            # on disk, so the corpus runs and restores it.
-            return None
+        # The newest complete attempt anywhere is the graph on disk. If it
+        # ran at another head, environment, package set or plan, this
+        # invocation's corpus is not what is recorded, so it runs.
         if (
-            selection.get("environment_digest") != environment
+            receipt.get("source_revision") != head
+            or selection.get("environment_digest") != environment
             or selection.get("packages_digest") != packages
             or selection.get("plan_digest") != plan
         ):
-            continue
+            return None
         # The newest attempt decides: a later failed recompute must not be
         # hidden behind an older green.
         if (
@@ -942,7 +941,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 covered = _corpus_already_verified(
                     head=head, environment=preparation.environment_name, packages=packages, plan=plan
                 )
-                if covered is not None and not git_dirty(ROOT) and git_head(ROOT) == head:
+                if (
+                    covered is not None
+                    and not git_dirty(ROOT)
+                    and git_head(ROOT) == head
+                    # The inputs are recomputed at the decision: an
+                    # environment sync between capture and here is a new plan.
+                    and installed_packages_digest() == packages
+                    and _execution_plan_digest() == plan
+                ):
                     # The corpus at this head under this environment is already
                     # a recorded fact; rerunning it changes nothing but the
                     # electricity bill. A different head, a moved dependency
