@@ -459,9 +459,11 @@ def workspace_env(
     data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
+    home_dir = tmp_path / "home"
 
     monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("HOME", str(home_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     # Most tests using this fixture assert pipeline/query behavior, not schema
     # contract strictness. Keep validation deterministic and opt-in per test.
@@ -474,6 +476,7 @@ def workspace_env(
             "archive_root": archive_root,
             "data_root": data_dir,
             "state_dir": state_dir,
+            "home_dir": home_dir,
         }
     finally:
         # A bare ``with sqlite3.connect(...)`` commits or rolls back but does

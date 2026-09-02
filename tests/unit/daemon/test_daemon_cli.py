@@ -2453,6 +2453,18 @@ def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[st
     assert next(source for source in sources if source.root == default_root).name == "codex"
 
 
+def test_workspace_env_isolates_typed_default_source_roots(workspace_env: dict[str, Path]) -> None:
+    from polylogue.daemon import cli as daemon_cli
+
+    roots_by_name = {source.name: source.root for source in daemon_cli.default_sources()}
+    home_dir = workspace_env["home_dir"]
+
+    assert roots_by_name["claude-code"] == home_dir / ".claude" / "projects"
+    assert roots_by_name["codex"] == home_dir / ".codex" / "sessions"
+    assert roots_by_name["codex-state"] == home_dir / ".codex"
+    assert roots_by_name["hermes"] == home_dir / ".hermes"
+
+
 def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
     from polylogue.daemon import cli as daemon_cli
 
