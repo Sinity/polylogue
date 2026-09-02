@@ -199,8 +199,8 @@ def test_existing_archive_repairs_runtime_indexes_before_manifest_validation(tmp
         assert any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
 
 
-def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) -> None:
-    """Read surfaces must not mutate an existing index to gain runtime indexes."""
+def test_read_only_archive_open_rejects_missing_runtime_indexes_without_mutating(tmp_path: Path) -> None:
+    """Read surfaces reject missing canonical objects without repairing them."""
     initialize_active_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     conn = sqlite3.connect(index_db)
@@ -211,8 +211,9 @@ def test_read_only_archive_open_does_not_ensure_runtime_indexes(tmp_path: Path) 
     finally:
         conn.close()
 
-    with ArchiveStore.open_existing(tmp_path) as archive:
-        assert archive._read_only is True
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(tmp_path)
+    assert caught.value.lifecycle_action == "rebuild_index"
 
     conn = sqlite3.connect(index_db)
     try:
@@ -263,9 +264,9 @@ def test_pinned_read_only_archive_open_does_not_mutate_physical_index_after_prom
         "polylogue.storage.sqlite.archive_tiers.archive.ensure_runtime_indexes_sync",
         fail_if_write_time_indexes_run,
     )
-    with ArchiveStore.open_existing(archive_root, index_path=pinned_index) as archive:
-        assert archive._read_only is True
-        assert tuple(archive._conn.execute("SELECT value FROM pinned_evidence").fetchone()) == ("old physical index",)
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(archive_root, index_path=pinned_index)
+    assert caught.value.lifecycle_action == "rebuild_index"
 
     with sqlite3.connect(old_index) as conn:
         assert not any(row[1] == "idx_messages_message_type" for row in conn.execute("PRAGMA index_list(messages)"))
@@ -403,6 +404,27 @@ def test_readable_layout_rejects_shape_drift_with_typed_refusal(tmp_path: Path) 
         assert "rebuild" in str(error).lower()
     finally:
         conn.close()
+
+
+def test_read_only_archive_open_rejects_semantic_manifest_drift(tmp_path: Path) -> None:
+    """The production read-only route must validate the complete manifest.
+
+    An extra table is the anti-vacuity mutation: the legacy sessions-column
+    sentinel still passes, while the archive contains an object outside the
+    current schema contract.
+    """
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("CREATE TABLE unexpected_read_object (value TEXT NOT NULL)")
+        conn.commit()
+
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(tmp_path, read_only=True)
+    error = caught.value
+    assert error.current_version == SCHEMA_VERSION
+    assert error.expected_version == SCHEMA_VERSION
+    assert error.lifecycle_action == "rebuild_index"
+    assert "semantic schema manifest" in str(error)
 
 
 def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:

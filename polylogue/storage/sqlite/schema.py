@@ -68,6 +68,18 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             lifecycle_action=lifecycle_action,
         )
     if snapshot.current_version == SCHEMA_VERSION:
+        try:
+            assert_schema_manifest(conn, ArchiveTier.INDEX)
+        except (RuntimeError, sqlite3.Error) as exc:
+            suffix = f" Generation {generation_id}" if generation_id is not None else ""
+            raise SchemaVersionMismatchError(
+                f"Archive index semantic schema manifest does not match runtime version {SCHEMA_VERSION}.{suffix} "
+                "Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`.",
+                current_version=snapshot.current_version,
+                expected_version=SCHEMA_VERSION,
+                generation_id=generation_id,
+                lifecycle_action="rebuild_index",
+            ) from exc
         missing_error: sqlite3.Error | None
         try:
             columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)")}
