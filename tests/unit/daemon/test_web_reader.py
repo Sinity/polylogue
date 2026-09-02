@@ -859,7 +859,8 @@ class TestReaderSearchState:
             status, content_type, body = _get_text(base_url, "/")
         assert status == 200
         assert "text/html" in content_type
-        assert "<!DOCTYPE html>" in body
+        # The doctype is case-insensitive in HTML5; the renderer emits lowercase.
+        assert "<!doctype html>" in body.lower()
         for region in (
             "renderSidebarState",
             "renderSessions",

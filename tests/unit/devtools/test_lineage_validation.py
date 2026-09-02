@@ -12,6 +12,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -23,9 +24,9 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
     db = root / "index.db"
     conn = sqlite3.connect(db)
     try:
+        conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION}")
         conn.executescript(
             """
-            PRAGMA user_version = 73;
             CREATE TABLE sessions (
                 session_id TEXT PRIMARY KEY,
                 native_id TEXT,
@@ -272,7 +273,7 @@ def test_lineage_validation_clean_archive_is_citable(tmp_path: Path) -> None:
 
     report = lineage_validation.build_report(_args(archive_root))
 
-    assert report["index_schema_version"] == 73
+    assert report["index_schema_version"] == INDEX_SCHEMA_VERSION
     assert report["counts"]["physical_sessions"] == 3
     assert report["counts"]["logical_sessions"] == 2
     assert report["counts"]["stored_messages"] == 4
