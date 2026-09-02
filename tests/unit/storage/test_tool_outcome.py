@@ -241,6 +241,32 @@ def test_real_parser_unknown_shape_is_admitted_by_writer(
         conn.close()
 
 
+@pytest.mark.parametrize("provider", [Provider.CLAUDE_CODE, Provider.CODEX, Provider.HERMES])
+def test_declared_origin_without_verdict_is_admitted_as_unknown(provider: Provider, tmp_path: Path) -> None:
+    """Declared origins preserve a missing provider verdict as typed unknown.
+
+    Anti-vacuity: removing the origin declaration makes this normalized
+    no-verdict result refuse at the writer seam.
+    """
+    conn = _connect(tmp_path / f"declared-{provider.value}.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            _session(
+                provider,
+                ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="provider omitted a verdict"),
+            ),
+        )
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
+            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize("content_type", ["execution_output", "computer_output", "citable_code_output"])
 def test_chatgpt_declared_unknown_output_is_admitted_without_inventing_success(
     content_type: str, tmp_path: Path

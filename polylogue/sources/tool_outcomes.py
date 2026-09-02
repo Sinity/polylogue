@@ -6,6 +6,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 
 from polylogue.core.enums import BlockType, Origin, ToolOutcome, ToolResultUnknownReason
+from polylogue.sources.origin_specs import tool_outcome_unknown_reason_for_origin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSessionEvent
 
 
@@ -172,4 +173,5 @@ def _tool_result_unknown_reason(block: ParsedContentBlock, *, origin: Origin) ->
         return ToolResultUnknownReason.NOT_REPORTED.value
     if block.file_edit is not None:
         return ToolResultUnknownReason.NOT_REPORTED.value
-    return None
+    declared_reason = tool_outcome_unknown_reason_for_origin(origin)
+    return declared_reason.value if declared_reason is not None else None

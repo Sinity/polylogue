@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, cast
 
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -598,6 +598,9 @@ class OriginSpec:
     #: ``get_assembly_spec`` registry by :func:`validate_assembly_spec_parity`
     #: rather than replacing that registry with a second one.
     assembly_spec_path: str | None = None
+    #: Provider records for this origin may omit a terminal tool verdict. The
+    #: normalized result is then an explicit unknown, never an inferred one.
+    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None
 
     def parser_fingerprint(self) -> str:
         """Return the origin-scoped fingerprint of parser output semantics."""
@@ -1021,6 +1024,7 @@ def _claude_code_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(origin),
+        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
     )
     topology_capabilities = TopologyCapabilities(
         message_parent=TopologyCapability("carried", ("claude_code.parentUuid",)),
@@ -1149,6 +1153,7 @@ def _executable_spec(
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
     assembly_spec_path: str | None = None,
+    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
     topology_capabilities: TopologyCapabilities,
 ) -> OriginSpec:
@@ -1168,6 +1173,7 @@ def _executable_spec(
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
+        tool_outcome_unknown_reason=tool_outcome_unknown_reason,
         artifact_rules=artifact_rules,
         display_description=display_description,
         public_filter=public_filter,
@@ -1245,6 +1251,7 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
+        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
     )
     carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
     return replace(
@@ -1317,6 +1324,7 @@ def _hermes_spec() -> OriginSpec:
             "argument to the same function.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
+        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
     )
     carried = TopologyCapability(
         "carried", ("hermes_state.sessions.parent_session_id", "hermes ATIF parent_session_id")
@@ -2154,6 +2162,12 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
+def tool_outcome_unknown_reason_for_origin(origin: Origin) -> ToolResultUnknownReason | None:
+    """Return the declared fallback for a provider-omitted tool verdict."""
+
+    return _ORIGIN_SPECS_BY_ORIGIN[origin].tool_outcome_unknown_reason
+
+
 def topology_capability_census(
     specs: Sequence[OriginSpec] | None = None,
 ) -> dict[str, dict[str, dict[str, object]]]:
@@ -2302,6 +2316,7 @@ __all__ = [
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
+    "tool_outcome_unknown_reason_for_origin",
     "topology_capability_census",
     "public_origin_descriptions",
     "public_origin_meanings",
