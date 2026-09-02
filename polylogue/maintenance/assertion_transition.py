@@ -16,14 +16,12 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from polylogue.core.hashing import hash_payload
 from polylogue.core.refs import EvidenceRef, ObjectRef, parse_public_ref
 from polylogue.storage.sqlite.archive_tiers.durable_references import (
     DurableReferenceField,
     DurableTier,
     durable_reference_relations,
 )
-from polylogue.storage.sqlite.query_objects import membership_merkle_root
 
 
 class ObjectRefDisposition(StrEnum):
@@ -340,22 +338,20 @@ def apply_assertion_transition(
     _validate_reference_catalog(conn, "user")
     if audit_conn is not None:
         _validate_reference_catalog(audit_conn, "audit")
-    _validate_result_set_manifests(conn)
     connections: tuple[sqlite3.Connection, ...] = (
         (conn,) if audit_conn is None or audit_conn is conn else (conn, audit_conn)
     )
     connections_by_tier: tuple[tuple[sqlite3.Connection, DurableTier], ...] = ((conn, "user"),) + (
         ((audit_conn, "audit"),) if audit_conn is not None and audit_conn is not conn else ()
     )
-    _validate_migration_coverage(connections_by_tier, plan)
-    _validate_result_set_targets(conn, plan)
+    _validate_plan_inventory(connections_by_tier, plan)
+    _reject_sealed_reference_rewrites(connections_by_tier, plan)
     savepoints = tuple(f"assertion_transition_{index}" for index in range(len(connections)))
     for connection, savepoint in zip(connections, savepoints, strict=True):
         connection.execute(f"SAVEPOINT {savepoint}")
     try:
         for connection, tier in connections_by_tier:
             _apply_declared_references(connection, tier, plan)
-        _refresh_result_set_manifests(conn)
         if append_audit is not None:
             append_audit(plan)
         for connection, savepoint in zip(connections, savepoints, strict=True):
@@ -378,17 +374,14 @@ def _public_ref_text(value: str | ObjectRef | EvidenceRef) -> str:
 def _parse_durable_public_ref(value: str) -> ObjectRef | EvidenceRef:
     """Parse archive refs without mistaking paths and receipt ids for evidence."""
 
-    parsed = parse_public_ref(value)
-    if isinstance(parsed, EvidenceRef):
-        lowered = value.lower()
-        if (
-            "/" in value
-            or "\\" in value
-            or "://" in value
-            or lowered.startswith(("file:", "path:", "receipt:", "codex-receipt:"))
-        ):
-            raise ValueError("external locator is not an archive evidence ref")
-    return parsed
+    lowered = value.lower()
+    if (
+        value.startswith(("/", "\\"))
+        or "://" in value
+        or lowered.startswith(("file:", "path:", "receipt:", "codex-receipt:"))
+    ):
+        raise ValueError("external locator is not an archive evidence ref")
+    return parse_public_ref(value)
 
 
 def _tables(conn: sqlite3.Connection) -> tuple[str, ...]:
@@ -488,7 +481,7 @@ def _apply_declared_references(
     tables = frozenset(columns_by_table)
     forward = dict(plan.forward)
     for relation in durable_reference_relations(tier):
-        if relation.table not in tables:
+        if relation.transition != "rewrite" or relation.table not in tables:
             continue
         present = set(columns_by_table[relation.table])
         identity_columns = tuple(column for column in relation.identity_columns if column in present)
@@ -501,6 +494,7 @@ def _apply_declared_references(
             values = dict(zip(selected, row, strict=True))
             identity_where = " AND ".join(f"{_quote_identifier(column)} = ?" for column in identity_columns)
             identity_values = tuple(values[column] for column in identity_columns)
+            changes: dict[str, str] = {}
             for field in fields:
                 raw = values[field.column]
                 if field.cardinality == "scalar":
@@ -508,20 +502,18 @@ def _apply_declared_references(
                         continue
                     replacement = _mapped_reference(raw, forward)
                     if replacement is not None:
-                        conn.execute(
-                            f"UPDATE {_quote_identifier(relation.table)} SET {_quote_identifier(field.column)} = ? "
-                            f"WHERE {identity_where}",
-                            (replacement, *identity_values),
-                        )
+                        changes[field.column] = replacement
                     continue
                 raw_values = _field_values(field, raw)
                 changed = tuple(_mapped_reference(value, forward) or value for value in raw_values)
                 if changed != raw_values:
-                    conn.execute(
-                        f"UPDATE {_quote_identifier(relation.table)} SET {_quote_identifier(field.column)} = ? "
-                        f"WHERE {identity_where}",
-                        (json.dumps(changed), *identity_values),
-                    )
+                    changes[field.column] = json.dumps(changed)
+            if changes:
+                assignments = ", ".join(f"{_quote_identifier(column)} = ?" for column in changes)
+                conn.execute(
+                    f"UPDATE {_quote_identifier(relation.table)} SET {assignments} WHERE {identity_where}",
+                    (*changes.values(), *identity_values),
+                )
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -531,85 +523,38 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     )
 
 
-def _refresh_result_set_manifests(conn: sqlite3.Connection) -> None:
-    if not _table_exists(conn, "result_set_members") or not _table_exists(conn, "result_sets"):
-        return
-    required = {"result_set_id", "member_count", "membership_merkle_root", "ordered_rank_hash"}
-    if not required <= set(_columns(conn, "result_sets")):
-        return
-    rows = conn.execute("SELECT result_set_id FROM result_sets ORDER BY result_set_id").fetchall()
-    for (result_set_id,) in rows:
-        members = tuple(
-            str(row[0])
-            for row in conn.execute(
-                "SELECT member_ref FROM result_set_members WHERE result_set_id = ? ORDER BY rank",
-                (result_set_id,),
-            )
-        )
-        conn.execute(
-            "UPDATE result_sets SET member_count = ?, membership_merkle_root = ?, ordered_rank_hash = ? "
-            "WHERE result_set_id = ?",
-            (len(members), membership_merkle_root(members), hash_payload(list(members)), result_set_id),
-        )
-
-
-def _validate_result_set_targets(conn: sqlite3.Connection, plan: AssertionTransitionPlan) -> None:
-    if not _table_exists(conn, "result_set_members"):
-        return
-    columns = set(_columns(conn, "result_set_members"))
-    if not {"result_set_id", "member_ref"} <= columns:
-        return
-    for old, new in plan.forward:
-        result_sets = tuple(
-            str(row[0])
-            for row in conn.execute("SELECT result_set_id FROM result_set_members WHERE member_ref = ?", (old,))
-        )
-        for result_set_id in result_sets:
-            collision = conn.execute(
-                "SELECT 1 FROM result_set_members WHERE result_set_id = ? AND member_ref = ? LIMIT 1",
-                (result_set_id, new),
-            ).fetchone()
-            if collision is not None and old != new:
-                raise ObjectRefReconciliationError(f"result set member migration would collide: {result_set_id}")
-
-
-def _validate_migration_coverage(
+def _validate_plan_inventory(
     connections: tuple[tuple[sqlite3.Connection, DurableTier], ...],
     plan: AssertionTransitionPlan,
 ) -> None:
-    """Ensure an explicit map cannot omit a declared durable relation cell."""
-    mapped = {old for old, _new in plan.forward}
-    if not mapped:
-        return
+    """Require a plan to classify every durable public reference before mutation."""
+    classified = {row.source for row in plan.rows}
     for connection, tier in connections:
         inventory = _inventory_for_connection(connection, tier)
         present = {item.value for item in inventory if item.grammar == "public"}
-        omitted = {old for old in mapped if old in present and old not in {row.source for row in plan.rows}}
-        if omitted:
+        unclassified = present - classified
+        if unclassified:
             raise ObjectRefReconciliationError(
-                f"identity migration is not total over durable {tier} references: {sorted(omitted)!r}"
+                f"transition plan does not classify durable {tier} references: {sorted(unclassified)!r}"
             )
 
 
-def _validate_result_set_manifests(conn: sqlite3.Connection) -> None:
-    """Reject a plan if a coupled durable result manifest is already corrupt."""
-    if not _table_exists(conn, "result_set_members") or not _table_exists(conn, "result_sets"):
-        return
-    required = {"result_set_id", "member_count", "membership_merkle_root", "ordered_rank_hash"}
-    if not required <= set(_columns(conn, "result_sets")):
-        return
-    for result_set_id, count, merkle, ordered in conn.execute(
-        "SELECT result_set_id, member_count, membership_merkle_root, ordered_rank_hash FROM result_sets"
-    ):
-        members = tuple(
-            str(row[0])
-            for row in conn.execute(
-                "SELECT member_ref FROM result_set_members WHERE result_set_id = ? ORDER BY rank",
-                (result_set_id,),
-            )
-        )
-        if (count, merkle, ordered) != (len(members), membership_merkle_root(members), hash_payload(list(members))):
-            raise ObjectRefReconciliationError(f"result set manifest is corrupt: {result_set_id}")
+def _reject_sealed_reference_rewrites(
+    connections: tuple[tuple[sqlite3.Connection, DurableTier], ...],
+    plan: AssertionTransitionPlan,
+) -> None:
+    """Keep authenticated receipts and audit history byte-for-byte stable."""
+    mapped = {old for old, _new in plan.forward}
+    for connection, tier in connections:
+        sealed_relations = {
+            relation.table for relation in durable_reference_relations(tier) if relation.transition == "sealed"
+        }
+        for item in _inventory_for_connection(connection, tier):
+            relation = item.relation.split(":", 1)[0]
+            if relation in sealed_relations and item.value in mapped:
+                raise ObjectRefReconciliationError(
+                    f"identity migration cannot rewrite sealed durable relation: {tier}.{relation}"
+                )
 
 
 def _digest(value: object) -> str:

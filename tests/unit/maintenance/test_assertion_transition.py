@@ -159,7 +159,7 @@ def test_apply_refuses_a_stale_binding_and_leaves_assertions_untouched() -> None
     assert conn.execute("SELECT target_ref FROM assertions").fetchone() == (old,)
 
 
-def test_mixed_evidence_and_finding_members_are_reconciled_without_parsing_external_refs() -> None:
+def test_assertion_transition_classifies_evidence_without_parsing_external_locators() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(
         """
@@ -167,49 +167,28 @@ def test_mixed_evidence_and_finding_members_are_reconciled_without_parsing_exter
             assertion_id TEXT PRIMARY KEY, scope_ref TEXT, target_ref TEXT NOT NULL,
             evidence_refs_json TEXT, supersedes_json TEXT
         );
-        CREATE TABLE result_sets (
-            result_set_id TEXT PRIMARY KEY, member_count INTEGER NOT NULL,
-            membership_merkle_root TEXT NOT NULL, ordered_rank_hash TEXT NOT NULL
-        );
-        CREATE TABLE result_set_members (
-            result_set_id TEXT NOT NULL, rank INTEGER NOT NULL, member_ref TEXT NOT NULL,
-            PRIMARY KEY (result_set_id, rank)
-        );
         """
     )
-    old = tuple(f"message:session:old-{index}" for index in range(20))
-    new = tuple(f"message:session:new-{index}" for index in range(20))
+    old = ("message:session:old-0", "message:session:old-1")
+    new = ("message:session:new-0", "message:session:new-1")
+    evidence = "codex-session:demo::m::0"
     conn.execute(
         "INSERT INTO assertions VALUES (?, ?, ?, ?, ?)",
-        ("a", old[0], old[0], json.dumps([old[1], "codex-session:demo::m::0", "/tmp/receipt.json"]), "[]"),
+        ("a", old[0], old[0], json.dumps([old[1], evidence, "/tmp/receipt.json"]), "[]"),
     )
-    conn.execute("INSERT INTO result_sets VALUES (?, ?, ?, ?)", ("finding", 20, "", ""))
-    conn.executemany(
-        "INSERT INTO result_set_members VALUES (?, ?, ?)", (("finding", index, ref) for index, ref in enumerate(old))
-    )
-    # Seed the coupled manifest using the production hash formulas.
-    from polylogue.core.hashing import hash_payload
-    from polylogue.storage.sqlite.query_objects import membership_merkle_root
-
-    conn.execute(
-        "UPDATE result_sets SET membership_merkle_root = ?, ordered_rank_hash = ? WHERE result_set_id = 'finding'",
-        (membership_merkle_root(old), hash_payload(list(old))),
-    )
-    refs = enumerate_assertion_object_refs(conn)
-    assert set(refs) == set(old)
+    refs = tuple(item.value for item in enumerate_durable_reference_inventory(conn))
+    assert set(refs) == {*old, evidence}
     plan = reconcile_object_refs(
         refs,
-        candidate_refs=new,
+        candidate_refs=(*new, evidence),
         source_claims=SourceIdentityClaims.from_refs(()),
         migration_map=IdentityMigrationMap("producer-v2", tuple(zip(old, new, strict=True))),
         binding=_binding(),
     )
     apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
-    assert tuple(row[0] for row in conn.execute("SELECT member_ref FROM result_set_members ORDER BY rank")) == new
     assert conn.execute("SELECT evidence_refs_json FROM assertions").fetchone()[0] == json.dumps(
-        [new[1], "codex-session:demo::m::0", "/tmp/receipt.json"]
+        [new[1], evidence, "/tmp/receipt.json"]
     )
-    assert conn.execute("SELECT member_count FROM result_sets").fetchone() == (20,)
 
 
 def test_missing_candidate_endpoint_blocks_before_mutation() -> None:
@@ -269,7 +248,7 @@ def test_omitted_relation_in_a_complete_schema_blocks_apply() -> None:
         apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
 
 
-def test_result_set_member_collision_blocks_apply() -> None:
+def test_result_set_members_are_sealed_against_identity_rewrites() -> None:
     conn = sqlite3.connect(":memory:")
     conn.executescript(
         """
@@ -279,11 +258,10 @@ def test_result_set_member_collision_blocks_apply() -> None:
         );
         CREATE TABLE result_set_members (
             result_set_id TEXT NOT NULL, rank INTEGER NOT NULL, member_ref TEXT NOT NULL,
-            PRIMARY KEY (result_set_id, rank), UNIQUE (result_set_id, member_ref)
+            PRIMARY KEY (result_set_id, rank)
         );
         INSERT INTO assertions VALUES ('a', NULL, 'message:old', '[]', '[]');
         INSERT INTO result_set_members VALUES ('finding', 0, 'message:old');
-        INSERT INTO result_set_members VALUES ('finding', 1, 'message:new');
         """
     )
     binding = _binding()
@@ -295,12 +273,9 @@ def test_result_set_member_collision_blocks_apply() -> None:
         binding=binding,
     )
 
-    with pytest.raises(ObjectRefReconciliationError, match="collide"):
+    with pytest.raises(ObjectRefReconciliationError, match="sealed durable relation: user.result_set_members"):
         apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
-    assert tuple(row[0] for row in conn.execute("SELECT member_ref FROM result_set_members ORDER BY rank")) == (
-        "message:old",
-        "message:new",
-    )
+    assert conn.execute("SELECT member_ref FROM result_set_members").fetchone() == ("message:old",)
 
 
 def test_inventory_includes_evidence_refs_and_rejects_undeclared_reference_columns() -> None:
@@ -349,25 +324,33 @@ def test_evidence_reference_can_use_an_exact_migration_map() -> None:
     assert plan.forward == ((old, new),)
 
 
-def test_transition_rewrites_declared_user_and_audit_relations_and_preserves_opaque_values() -> None:
+def test_native_evidence_identity_can_contain_slashes() -> None:
+    old = "browser-capture:c/with spaces::message-id"
+    new = "browser-capture:c/with spaces::replacement-id"
+    plan = reconcile_object_refs(
+        (old,),
+        candidate_refs=(new,),
+        source_claims=SourceIdentityClaims.from_refs(()),
+        migration_map=IdentityMigrationMap("producer", ((old, new),)),
+        binding=_binding(),
+    )
+    assert plan.forward == ((old, new),)
+
+
+def test_plan_must_classify_every_durable_public_reference() -> None:
     user = sqlite3.connect(":memory:")
-    audit = sqlite3.connect(":memory:")
     user.executescript(
         """
+        CREATE TABLE assertions (
+            assertion_id TEXT PRIMARY KEY, scope_ref TEXT, target_ref TEXT NOT NULL,
+            evidence_refs_json TEXT, supersedes_json TEXT
+        );
         CREATE TABLE context_deliveries (
             snapshot_ref TEXT PRIMARY KEY, evidence_refs_json TEXT NOT NULL
         );
+        INSERT INTO assertions VALUES ('a', NULL, 'message:old', '[]', '[]');
         INSERT INTO context_deliveries VALUES
-            ('context-snapshot:s1', '["message:old", "/tmp/receipt"]');
-        """
-    )
-    audit.executescript(
-        """
-        CREATE TABLE operation_targets (
-            operation_id TEXT NOT NULL, ordinal INTEGER NOT NULL, target_ref TEXT NOT NULL,
-            PRIMARY KEY (operation_id, ordinal)
-        );
-        INSERT INTO operation_targets VALUES ('op', 0, 'message:old');
+            ('context-snapshot:s1', '["message:unclassified", "/tmp/receipt"]');
         """
     )
     old, new = "message:old", "message:new"
@@ -378,41 +361,58 @@ def test_transition_rewrites_declared_user_and_audit_relations_and_preserves_opa
         migration_map=IdentityMigrationMap("producer", ((old, new),)),
         binding=_binding(),
     )
-    apply_assertion_transition(user, plan, binding=_binding(), verified_backup=True, audit_conn=audit)
-    assert user.execute("SELECT evidence_refs_json FROM context_deliveries").fetchone() == (
-        '["message:new", "/tmp/receipt"]',
-    )
-    assert audit.execute("SELECT target_ref FROM operation_targets").fetchone() == (new,)
+    with pytest.raises(ObjectRefReconciliationError, match="does not classify durable user references"):
+        apply_assertion_transition(user, plan, binding=_binding(), verified_backup=True)
+    assert user.execute("SELECT target_ref FROM assertions").fetchone() == (old,)
 
 
-def test_corrupt_result_manifest_blocks_before_any_reference_is_rewritten() -> None:
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE assertions (
-            assertion_id TEXT PRIMARY KEY, scope_ref TEXT, target_ref TEXT NOT NULL,
-            evidence_refs_json TEXT, supersedes_json TEXT
-        );
-        CREATE TABLE result_sets (
-            result_set_id TEXT PRIMARY KEY, member_count INTEGER NOT NULL,
-            membership_merkle_root TEXT NOT NULL, ordered_rank_hash TEXT NOT NULL
-        );
-        CREATE TABLE result_set_members (
-            result_set_id TEXT NOT NULL, rank INTEGER NOT NULL, member_ref TEXT NOT NULL,
-            PRIMARY KEY (result_set_id, rank)
-        );
-        INSERT INTO assertions VALUES ('a', NULL, 'message:old', '[]', '[]');
-        INSERT INTO result_sets VALUES ('finding', 1, 'corrupt', 'corrupt');
-        INSERT INTO result_set_members VALUES ('finding', 0, 'message:old');
-        """
-    )
+@pytest.mark.parametrize(
+    ("tier", "ddl", "select"),
+    [
+        (
+            "user",
+            """
+            CREATE TABLE annotation_batches (batch_id TEXT PRIMARY KEY, target_ref TEXT NOT NULL);
+            INSERT INTO annotation_batches VALUES ('batch', 'message:old');
+            """,
+            "SELECT target_ref FROM annotation_batches",
+        ),
+        (
+            "user",
+            """
+            CREATE TABLE context_deliveries (snapshot_ref TEXT PRIMARY KEY, evidence_refs_json TEXT NOT NULL);
+            INSERT INTO context_deliveries VALUES ('context-snapshot:old', '[\"message:old\"]');
+            """,
+            "SELECT evidence_refs_json FROM context_deliveries",
+        ),
+        (
+            "audit",
+            """
+            CREATE TABLE operation_targets (operation_id TEXT NOT NULL, ordinal INTEGER NOT NULL, target_ref TEXT NOT NULL,
+                PRIMARY KEY (operation_id, ordinal));
+            INSERT INTO operation_targets VALUES ('operation', 0, 'message:old');
+            """,
+            "SELECT target_ref FROM operation_targets",
+        ),
+    ],
+)
+def test_sealed_durable_history_is_never_rewritten(tier: str, ddl: str, select: str) -> None:
+    user = sqlite3.connect(":memory:")
+    audit = sqlite3.connect(":memory:")
+    connection = user if tier == "user" else audit
+    connection.executescript(ddl)
+    old, new = "message:old", "message:new"
+    refs = (old, "context-snapshot:old") if tier == "user" and "context_deliveries" in ddl else (old,)
     plan = reconcile_object_refs(
-        ("message:old",),
-        candidate_refs=("message:new",),
+        refs,
+        candidate_refs=tuple("context-snapshot:new" if ref == "context-snapshot:old" else new for ref in refs),
         source_claims=SourceIdentityClaims.from_refs(()),
-        migration_map=IdentityMigrationMap("producer", (("message:old", "message:new"),)),
+        migration_map=IdentityMigrationMap(
+            "producer",
+            tuple((ref, "context-snapshot:new" if ref == "context-snapshot:old" else new) for ref in refs),
+        ),
         binding=_binding(),
     )
-    with pytest.raises(ObjectRefReconciliationError, match="manifest is corrupt"):
-        apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
-    assert conn.execute("SELECT target_ref FROM assertions").fetchone() == ("message:old",)
+    with pytest.raises(ObjectRefReconciliationError, match=f"sealed durable relation: {tier}."):
+        apply_assertion_transition(user, plan, binding=_binding(), verified_backup=True, audit_conn=audit)
+    assert connection.execute(select).fetchone()[0] != new

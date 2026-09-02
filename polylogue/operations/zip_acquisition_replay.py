@@ -78,6 +78,14 @@ def zip_reacquisition_payload(
         return None, f"error:{exc}"
     expected_hash = str(row.get("blob_hash") or "")
     if expected_hash:
+        # Canonical replay bytes prove identity even when several payloads
+        # satisfy the provider's structural contract.
+        matches = tuple(
+            payload for payload in payloads.values() if hashlib.sha256(payload).hexdigest() == expected_hash
+        )
+        unique = tuple(dict.fromkeys(matches))
+        if len(unique) == 1:
+            return unique[0], None
         # Prefer the recorded bytes and compare values under the provider's
         # structural contract. This admits harmless JSON numeric changes such
         # as 1 versus 1.0 while retaining type distinctions elsewhere.
@@ -93,13 +101,6 @@ def zip_reacquisition_payload(
                 return structural[0], None
             if len(structural) > 1:
                 return None, "content_identity:ambiguous"
-        # Canonical replay bytes are still an exact identity fallback.
-        matches = tuple(
-            payload for payload in payloads.values() if hashlib.sha256(payload).hexdigest() == expected_hash
-        )
-        unique = tuple(dict.fromkeys(matches))
-        if len(unique) == 1:
-            return unique[0], None
         return None, "content_identity:ambiguous" if len(unique) > 1 else "content_identity:unmatched"
     if split_index is None:
         return (next(iter(payloads.values())), None) if len(payloads) == 1 else (None, "content_identity:missing")

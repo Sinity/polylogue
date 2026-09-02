@@ -7,6 +7,7 @@ from typing import Literal
 
 ReferenceCardinality = Literal["scalar", "json-list"]
 ReferenceGrammar = Literal["public", "public-or-opaque"]
+ReferenceTransition = Literal["rewrite", "sealed"]
 DurableTier = Literal["user", "audit"]
 
 
@@ -27,6 +28,7 @@ class DurableReferenceRelation:
     table: str
     identity_columns: tuple[str, ...]
     fields: tuple[DurableReferenceField, ...]
+    transition: ReferenceTransition = "sealed"
 
 
 def _scalar(column: str, *, grammar: ReferenceGrammar = "public") -> DurableReferenceField:
@@ -49,6 +51,7 @@ _USER_RELATIONS = (
             _list("evidence_refs_json"),
             _list("supersedes_json"),
         ),
+        "rewrite",
     ),
     DurableReferenceRelation("user", "query_excision_ledger", ("ledger_id",), (_scalar("actor_ref"),)),
     DurableReferenceRelation("user", "result_set_members", ("result_set_id", "rank"), (_scalar("member_ref"),)),
@@ -123,5 +126,6 @@ __all__ = [
     "DurableReferenceRelation",
     "ReferenceCardinality",
     "ReferenceGrammar",
+    "ReferenceTransition",
     "durable_reference_relations",
 ]
