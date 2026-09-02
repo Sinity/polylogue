@@ -903,7 +903,7 @@ def _source_recoverability_proofs(
                         payload, error = prefix_payload, prefix_error
                         if error is not None:
                             historical_snapshot_candidate = False
-                            payload, error = _current_raw_payload_bytes(
+                            fallback_payload, fallback_error = _current_raw_payload_bytes(
                                 resolved,
                                 source_index,
                                 raw_id=str(row.get("ref_id") or "") or None,
@@ -911,6 +911,12 @@ def _source_recoverability_proofs(
                                 source_bytes_cache=source_bytes_cache,
                                 decoded_payload_cache=decoded_payload_cache,
                             )
+                            if (
+                                fallback_error is None
+                                and fallback_payload is not None
+                                and hashlib.sha256(fallback_payload).hexdigest() == blob_hash
+                            ):
+                                payload, error = fallback_payload, fallback_error
                     else:
                         payload, error = _current_raw_payload_bytes(
                             resolved,

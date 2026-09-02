@@ -792,31 +792,26 @@ def test_backup_replays_historical_full_snapshot_prefix(
     assert unproven == []
 
 
-def test_backup_falls_back_to_current_decoder_after_prefix_mismatch(
+def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     workspace_env: dict[str, Path],
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A failed historical prefix can still be recovered by normal decoding."""
+    """A grown file cannot replace a mismatching historical prefix proof."""
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / "grown.jsonl"
     historical = b'{"id":"stale"}\n'
-    decoded = b'{"id":"recoverable"}\n'
-    source_path.write_bytes(historical + decoded)
-    blob_hash = hashlib.sha256(decoded).digest()
+    expected = b'{"id":"expected"}\n'
+    source_path.write_bytes(historical + b'{"id":"later"}\n')
+    blob_hash = hashlib.sha256(expected).digest()
     with sqlite3.connect(archive_root / "source.db") as conn:
         conn.execute(
             """INSERT INTO raw_sessions (
                 raw_id, origin, source_path, source_index, blob_hash, blob_size,
                 acquired_at_ms, validation_status, revision_kind
             ) VALUES ('decoder-fallback', 'hermes-session', ?, 0, ?, ?, 1, 'passed', 'full')""",
-            (str(source_path), blob_hash, len(decoded)),
+            (str(source_path), blob_hash, len(expected)),
         )
 
-    def decode_current_payload(*args: object, **kwargs: object) -> tuple[bytes, None]:
-        return decoded, None
-
-    monkeypatch.setattr(backup_mod, "_current_raw_payload_bytes", decode_current_payload)
     unproven: list[dict[str, str]] = []
     proofs = backup_mod._source_recoverability_proofs(
         archive_root / "source.db",
@@ -825,9 +820,16 @@ def test_backup_falls_back_to_current_decoder_after_prefix_mismatch(
         unproven=unproven,
     )
 
-    assert len(proofs) == 1
-    assert proofs[0]["kind"] == "direct_file_sha256"
-    assert unproven == []
+    assert proofs == []
+    assert unproven == [
+        {
+            "blob_hash": blob_hash.hex(),
+            "kind": "historical_snapshot_prefix_mismatch",
+            "reason": "historical_snapshot:prefix_mismatch",
+            "raw_id": "decoder-fallback",
+            "source_path": str(source_path),
+        }
+    ]
 
 
 def test_backup_types_legacy_codex_append_without_window(
