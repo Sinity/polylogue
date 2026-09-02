@@ -19,6 +19,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.scenarios import CorpusSpec
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore, ReadOnlyArchiveError
@@ -61,6 +62,22 @@ from tests.infra.workload_artifacts import (
 )
 
 pytest_plugins = ("tests.infra.corpus_fixtures",)
+
+
+#: Cache-protocol tests (corruption, forged receipts, placement) assert
+#: refusal semantics, which do not depend on corpus size; two sessions of two
+#: messages make a build seconds instead of a minute.
+_SMALL_SPECS = (
+    CorpusSpec.for_provider(
+        "codex",
+        count=2,
+        messages_min=2,
+        messages_max=2,
+        seed=7,
+        style="tool-heavy",
+        origin="generated.test-workload-small",
+    ),
+)
 
 
 def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) -> None:
@@ -257,8 +274,8 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(
     monkeypatch.setattr("tests.infra.workload_artifacts.parse_sources_archive", record_parse_workers)
     cache_root = tmp_path / "cache"
 
-    first = build_seeded_archive(cache_root=cache_root)
-    second = build_seeded_archive(cache_root=cache_root)
+    first = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    second = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert observed_parse_workers == [1]
 
@@ -301,7 +318,7 @@ def test_seeded_archive_rejects_symlinked_cache_ancestor(tmp_path: Path) -> None
     (cache_root / "artifacts").symlink_to(outside, target_is_directory=True)
 
     with pytest.raises(OSError):
-        build_seeded_archive(cache_root=cache_root)
+        build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     assert not (outside / "artifacts").exists()
 
 
@@ -388,12 +405,12 @@ def test_seeded_archive_rejects_unsupported_cache_node_and_rebuilds(tmp_path: Pa
     import tests.infra.workload_artifacts as artifacts
 
     cache_root = tmp_path / "cache"
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
     hostile = original.root / "u"
     os.mkfifo(hostile)
     artifacts._VALIDATED_ARTIFACTS.clear()
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     assert not (rebuilt.root / "u").exists()
 
 
@@ -568,13 +585,13 @@ def test_seeded_archive_reflink_and_copy_clones_are_equivalent(
 
 def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     index_path = original.root / "index.db"
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
     index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
     index_path.unlink()
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.root == original.root
     assert rebuilt.root.joinpath("index.db").is_file()
@@ -587,12 +604,12 @@ def test_seeded_archive_rejects_corrupt_published_cache_and_rebuilds(tmp_path: P
 
 def test_seeded_archive_rejects_unexpected_published_files(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
-    artifact = build_seeded_archive(cache_root=cache_root)
+    artifact = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     artifact.root.chmod(artifact.root.stat().st_mode | stat.S_IWUSR)
     extra = artifact.root / "unexpected.txt"
     extra.write_text("contamination", encoding="utf-8")
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert not rebuilt.root.joinpath("unexpected.txt").exists()
     assert not (rebuilt.root.stat().st_mode & stat.S_IWUSR)
@@ -603,7 +620,7 @@ def test_seeded_archive_memo_rejects_same_size_database_corruption(tmp_path: Pat
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     index_path = original.root / "index.db"
     original_bytes = index_path.read_bytes()
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
@@ -616,7 +633,7 @@ def test_seeded_archive_memo_rejects_same_size_database_corruption(tmp_path: Pat
     index_path.chmod(index_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.root.joinpath("index.db").read_bytes() != poisoned_bytes
 
@@ -630,7 +647,7 @@ def test_seeded_archive_rejects_forged_receipt_with_recomputed_manifest(
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     receipt = dict(original.manifest.receipt)
     receipt["evidence_refs"] = ["forged-evidence"]
     forged = dataclasses.replace(original.manifest, receipt=receipt)
@@ -641,7 +658,7 @@ def test_seeded_archive_rejects_forged_receipt_with_recomputed_manifest(
     manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.manifest.receipt["evidence_refs"] == []
 
@@ -653,7 +670,7 @@ def test_seeded_archive_rebuilds_malformed_build_provenance_without_raising(tmp_
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     forged = dataclasses.replace(original.manifest, build_id="git:not-a-commit")
     manifest_path = original.root / "manifest.json"
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
@@ -662,7 +679,7 @@ def test_seeded_archive_rebuilds_malformed_build_provenance_without_raising(tmp_
     manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.manifest.build_id != "git:not-a-commit"
     assert rebuilt.manifest.manifest_id == artifacts._read_manifest(rebuilt.root / "manifest.json").manifest_id
@@ -701,7 +718,7 @@ def test_build_aborts_when_key_lock_path_is_replaced_during_cleanup(
 
     monkeypatch.setattr(artifacts, "_recover_stale_staging", replace_lock)
     with pytest.raises(OSError, match="lock pathname was replaced|Permission denied"):
-        build_seeded_archive(cache_root=cache_root)
+        build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
 
 def test_cleanup_removes_symlink_nodes_without_following_targets(tmp_path: Path) -> None:
@@ -771,7 +788,7 @@ def test_seeded_archive_rejects_malformed_self_hashed_file_entry(
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     malformed_files = [dict(item) for item in original.manifest.files]
     malformed_files[0].pop("path")
     forged = dataclasses.replace(original.manifest, files=tuple(malformed_files))
@@ -782,7 +799,7 @@ def test_seeded_archive_rejects_malformed_self_hashed_file_entry(
     manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.manifest.files[0]["path"] == original.manifest.files[0]["path"]
 
@@ -792,7 +809,7 @@ def test_seeded_archive_memo_rejects_manifest_replacement(tmp_path: Path) -> Non
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     manifest_path = original.root / "manifest.json"
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     payload["manifest_id"] = "poisoned-manifest"
@@ -802,7 +819,7 @@ def test_seeded_archive_memo_rejects_manifest_replacement(tmp_path: Path) -> Non
     manifest_path.chmod(manifest_path.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     disk_manifest = json.loads(rebuilt.root.joinpath("manifest.json").read_text(encoding="utf-8"))
     assert disk_manifest["manifest_id"] == rebuilt.manifest.manifest_id
@@ -813,7 +830,7 @@ def test_seeded_archive_memo_rejects_nested_write_bits(tmp_path: Path) -> None:
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     nested = original.root / "wire"
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
     nested.chmod(nested.stat().st_mode | stat.S_IWGRP)
@@ -821,7 +838,7 @@ def test_seeded_archive_memo_rejects_nested_write_bits(tmp_path: Path) -> None:
     index_path.chmod(index_path.stat().st_mode | stat.S_IWOTH)
     original.root.chmod(original.root.stat().st_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert all(
         not (path.stat().st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)) for path in rebuilt.root.rglob("*")
@@ -970,7 +987,7 @@ def test_seeded_archive_sealing_failure_never_publishes_writable_artifact(
     cache_root = tmp_path / "cache"
 
     with pytest.raises(RuntimeError, match="injected sealing failure"):
-        build_seeded_archive(cache_root=cache_root)
+        build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert not list((cache_root / "artifacts").iterdir())
     assert not list((cache_root / ".staging").iterdir())
@@ -1222,7 +1239,7 @@ import tests.infra.workload_artifacts as artifacts
 
 artifacts._build_id = lambda: os.environ["FAKE_BUILD_ID"]
 cache_root = Path(sys.argv[1])
-artifact = artifacts.build_seeded_archive(cache_root=cache_root)
+artifact = artifacts.build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 print(json.dumps({
     "key": artifact.manifest.key,
     "root": str(artifact.root),
@@ -1443,7 +1460,7 @@ def test_seeded_archive_memo_skips_revalidation_within_a_process(
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    first = build_seeded_archive(cache_root=cache_root)
+    first = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     calls = 0
     real_validate = artifacts._validate_artifact
@@ -1454,7 +1471,7 @@ def test_seeded_archive_memo_skips_revalidation_within_a_process(
         return real_validate(root, key)
 
     monkeypatch.setattr(artifacts, "_validate_artifact", counting_validate)
-    second = build_seeded_archive(cache_root=cache_root)
+    second = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert calls == 0
     assert second.root == first.root
@@ -1467,13 +1484,13 @@ def test_seeded_archive_memo_is_dropped_when_the_artifact_is_unplaced(tmp_path: 
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     index_path = original.root / "index.db"
     original.root.chmod(original.root.stat().st_mode | stat.S_IWUSR)
     index_path.chmod(index_path.stat().st_mode | stat.S_IWUSR)
     index_path.unlink()
 
-    rebuilt = build_seeded_archive(cache_root=cache_root)
+    rebuilt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert rebuilt.root == original.root
     assert rebuilt.root.joinpath("index.db").is_file()
@@ -1485,7 +1502,7 @@ from pathlib import Path
 from tests.infra.workload_artifacts import build_seeded_archive
 
 cache_root = Path(sys.argv[1])
-artifact = build_seeded_archive(cache_root=cache_root)
+artifact = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 print(json.dumps({"key": artifact.manifest.key, "root": str(artifact.root)}))
 """
 
@@ -1509,7 +1526,7 @@ def test_seeded_archive_corruption_is_refused_by_a_fresh_process(tmp_path: Path)
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    original = build_seeded_archive(cache_root=cache_root)
+    original = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     index_path = original.root / "index.db"
     # ``stat.S_IWUSR``, not ``os.W_OK``: the latter is 2, which as a mode bit
@@ -1723,7 +1740,7 @@ def test_artifact_gc_uses_current_manifest_key_not_build_id_and_respects_grace(t
             cache_root=cache_root,
             reachable_keys=("git:" + "0" * 40,),
         )
-    reachable = build_seeded_archive(cache_root=cache_root)
+    reachable = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     stale = build_seeded_archive(named_corpus_specs("cli-chatgpt"), cache_root=cache_root)
     _age_artifact(stale.root)
 
@@ -1748,7 +1765,7 @@ def test_artifact_gc_preview_and_apply_write_receipts_and_delete_only_stale_fina
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    stale = build_seeded_archive(cache_root=cache_root)
+    stale = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     _age_artifact(stale.root)
     preview_receipt = tmp_path / "preview.json"
     preview = gc_seeded_archive_artifacts(
@@ -1782,7 +1799,7 @@ def test_artifact_gc_preserves_active_per_key_lock_and_query_lease(tmp_path: Pat
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    artifact = build_seeded_archive(cache_root=cache_root)
+    artifact = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     _age_artifact(artifact.root)
     lock_path = cache_root / ".locks" / f"{artifact.root.name}.lock"
     with lock_path.open("a+") as handle:
@@ -1837,7 +1854,7 @@ def test_artifact_gc_cannot_delete_source_while_clone_is_reading(
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    artifact = build_seeded_archive(cache_root=cache_root)
+    artifact = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     _age_artifact(artifact.root)
     copy_started = threading.Event()
     allow_copy = threading.Event()
@@ -1965,7 +1982,7 @@ def test_artifact_gc_retains_corruption_and_explicit_worktree_protection(tmp_pat
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    corrupt = build_seeded_archive(cache_root=cache_root)
+    corrupt = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     _age_artifact(corrupt.root)
     corrupt.root.chmod(corrupt.root.stat().st_mode | stat.S_IWUSR)
     index = corrupt.root / "index.db"
@@ -2072,7 +2089,7 @@ def test_contention_during_cache_validation_reuses_published_artifact(
 
     cache_root = tmp_path / "cache"
     artifacts._VALIDATED_ARTIFACTS.clear()
-    published = build_seeded_archive(cache_root=cache_root)
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
     artifacts._VALIDATED_ARTIFACTS.clear()
     real_validate = artifacts._validate_artifact
     attempts = 0
@@ -2090,7 +2107,7 @@ def test_contention_during_cache_validation_reuses_published_artifact(
 
     monkeypatch.setattr(artifacts, "_validate_artifact", contend_once)
     monkeypatch.setattr(artifacts, "_remove_tree", forbid_republish)
-    reused = build_seeded_archive(cache_root=cache_root)
+    reused = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
 
     assert attempts >= 2
     assert reused.root == published.root

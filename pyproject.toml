@@ -177,6 +177,10 @@ cache_dir = ".cache/pytest"
 # an explicit @pytest.mark.timeout(...) override at the test site.
 timeout = 120
 timeout_method = "signal"
+# The alarm covers the test function only. Firing during setup, teardown or
+# report formatting turns a slow test into an INTERNALERROR that costs xdist
+# the whole worker (corpus run 3a2a88f5, 2026-09-02).
+timeout_func_only = true
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",

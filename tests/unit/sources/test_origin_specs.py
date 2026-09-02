@@ -709,3 +709,40 @@ def test_undeclared_schema_values_flags_a_value_the_declaration_does_not_cover()
         reason="Anti-vacuity fixture: an empty declared set must show the real observed value as drift.",
     )
     assert undeclared_schema_values(narrow_vocab) == {"success"}
+
+
+def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: a second process-level computation reads the memo instead of parsing.
+
+    Dropping the memo makes the second call recompute (the patched compute
+    raises); editing a source changes its signature and forces a recompute.
+    """
+    import polylogue.sources.origin_specs as origin_specs_module
+
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    emitter = source_dir / "emitter.py"
+    emitter.write_text("def emit(payload):\n    return payload\n", encoding="utf-8")
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+    first = origin_specs_module.lowering_fingerprint()
+    memos = list((source_root / ".cache" / "source-fingerprints").glob("*.txt"))
+    assert len(memos) == 1 and len(memos[0].read_text(encoding="utf-8")) == 64
+
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    monkeypatch.setattr(
+        origin_specs_module,
+        "_fingerprint_sources_compute",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("recomputed despite memo")),
+    )
+    assert origin_specs_module.lowering_fingerprint() == first
+
+    monkeypatch.undo()
+    monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+    emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
+    origin_specs_module._fingerprint_sources_cached.cache_clear()
+    assert origin_specs_module.lowering_fingerprint() != first

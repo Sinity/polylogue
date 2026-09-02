@@ -582,16 +582,12 @@ def cli_workspace(
         shutil.rmtree(archive_root, ignore_errors=True)
 
 
-@pytest.fixture(scope="session")
-def empty_archive_template(
-    tmp_path_factory: pytest.TempPathFactory,
-    worker_id: str,
-) -> Path:
-    """Build a census-complete empty archive once per pytest run.
+def build_empty_archive_template(run_root: Path) -> Path:
+    """Build the census-complete empty archive once per run root, under a lock.
 
     A complete five-tier layout alone is no longer sufficient to claim raw
     materialization readiness: the raw-authority frontier must have a
-    completed census too.  The shared fixture represents a usable empty
+    completed census too.  The shared template represents a usable empty
     archive, so establish that real durable state through the production
     census route before sharing clones with CLI and insight tests.
     """
@@ -601,8 +597,6 @@ def empty_archive_template(
     from polylogue.storage.raw_reconciler import inspect_raw_authority_frontier
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    worker_base = tmp_path_factory.getbasetemp()
-    run_root = worker_base.parent if worker_id != "master" else worker_base
     template = run_root / ".empty-archive-template"
     ready = run_root / ".empty-archive-template.ready"
     lock_path = run_root / ".empty-archive-template.lock"
@@ -631,6 +625,43 @@ def empty_archive_template(
             shutil.rmtree(building, ignore_errors=True)
 
     return template
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Warm every shared archive once on the controller, before workers start.
+
+    Under xdist each worker reaching a cold shared fixture blocks on the
+    build lock while one worker builds; the wait is charged to whichever
+    test arrived first (60-120 s per worker in the 2026-09-02 profile).
+    Building here costs the same once and nothing per worker.
+    """
+    config = session.config
+    if hasattr(config, "workerinput"):
+        return
+    if not getattr(config.option, "numprocesses", 0):
+        return
+    basetemp = getattr(config.option, "basetemp", None)
+    if not basetemp:
+        return
+    run_root = Path(basetemp).resolve()
+    run_root.mkdir(parents=True, exist_ok=True)
+    build_empty_archive_template(run_root)
+    from tests.infra.workload_artifacts import NAMED_WORKLOAD_PROFILES, build_seeded_archive
+
+    build_seeded_archive()
+    for profile in NAMED_WORKLOAD_PROFILES:
+        build_seeded_archive(profile.corpus_specs())
+
+
+@pytest.fixture(scope="session")
+def empty_archive_template(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+) -> Path:
+    """The run's shared empty archive; built here only when no controller warmed it."""
+    worker_base = tmp_path_factory.getbasetemp()
+    run_root = worker_base.parent if worker_id != "master" else worker_base
+    return build_empty_archive_template(run_root)
 
 
 @pytest.fixture
