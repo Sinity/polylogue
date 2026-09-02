@@ -7,7 +7,9 @@ transcripts, paths, and raw exports stay outside this repository.
 
 ## State
 
-Queue version: `2026-08-27.v1`
+Queue version: `2026-09-02.v2`
+
+Storage decision: keep the queue in this versioned public document under `docs/`, not in the durable assertions tier. The queue defines questions and evidence requirements; cycle results and private evidence references belong in private packets.
 
 The queue is prepared before reindex completion. The three live cycles are
 launch-gated on final reindex proof and a healthy archive read path. No live
@@ -41,7 +43,7 @@ Every cycle produces one private packet with this fixed record. A public note
 may cite only the question ID, method, product gap, and redacted finding.
 
 ```yaml
-queue_version: 2026-08-27.v1
+queue_version: 2026-09-02.v2
 cycle_id: <operator-private-id>
 question_id: Q01
 archive_state: sealed-full-archive | seeded-corpus | unavailable
