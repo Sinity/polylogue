@@ -1438,8 +1438,8 @@ def test_historical_source_projection_matches_every_supported_train_target(
 ) -> None:
     """Each admitted source train matches a genuine numbered migration chain.
 
-    The migrated side begins at the durable adoption floor and applies numbered
-    SQL to each target. The projected side begins at canonical current DDL --
+    The migrated side begins at ``_SOURCE_DDL_PARITY_FLOOR`` and applies
+    numbered SQL to each target. The projected side begins at canonical DDL --
     the production bootstrap route -- and removes later train riders, so the
     inventory comparison covers definitions as well as table/index/trigger/view
     names.
