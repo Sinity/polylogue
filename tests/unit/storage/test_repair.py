@@ -4810,26 +4810,38 @@ def test_selected_cleanup_passes_session_scope_to_empty_session_handler(
     assert seen == [("s-1", "s-2")]
 
 
-def test_selected_maintenance_does_not_expand_rejected_target_to_all_cleanup(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("repair", "cleanup", "target", "scope_filter"),
+    [
+        (True, False, "session_insights", MaintenanceScopeFilter(origin="codex-session")),
+        (False, True, "superseded_raw_snapshots", MaintenanceScopeFilter(session_ids=("s-1",))),
+    ],
+)
+def test_selected_maintenance_does_not_expand_rejected_target_to_all_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    repair: bool,
+    cleanup: bool,
+    target: str,
+    scope_filter: MaintenanceScopeFilter,
 ) -> None:
-    """A refused explicit target cannot fall back to unscoped cleanup."""
+    """A refused explicit target cannot fall back to an unscoped run."""
 
-    def rejected_cleanup(_config: Config, _dry_run: bool) -> repair_mod.RepairResult:
-        raise AssertionError("rejected cleanup target was dispatched")
+    def rejected_target(*_args: object, **_kwargs: object) -> repair_mod.RepairResult:
+        raise AssertionError("rejected target was dispatched")
 
     monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
-    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "superseded_raw_snapshots", rejected_cleanup)
+    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, target, rejected_target)
 
     results = repair_mod.run_selected_maintenance(
         _config(tmp_path),
-        repair=False,
-        cleanup=True,
-        targets=("superseded_raw_snapshots",),
-        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+        repair=repair,
+        cleanup=cleanup,
+        targets=(target,),
+        scope_filter=scope_filter,
     )
 
-    assert [(result.name, result.success) for result in results] == [("superseded_raw_snapshots", False)]
+    assert [(result.name, result.success) for result in results] == [(target, False)]
     assert "Unsupported scope dimensions" in results[0].detail
 
 
