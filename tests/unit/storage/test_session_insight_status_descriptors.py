@@ -246,6 +246,7 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             CREATE TABLE session_profiles (
@@ -297,6 +298,7 @@ def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> No
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             CREATE TABLE session_profiles (
@@ -412,6 +414,7 @@ def test_status_treats_run_projection_materialization_as_optional_cache() -> Non
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             CREATE TABLE session_runs (session_id TEXT NOT NULL);
@@ -525,6 +528,7 @@ def test_status_tracks_work_and_phase_staleness_from_materialization_ledger() ->
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             CREATE TABLE session_profiles (
@@ -619,6 +623,7 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
@@ -672,6 +677,7 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             CREATE TABLE session_profiles (

@@ -36,6 +36,8 @@ from polylogue.storage.embeddings.preflight import (
     message_window_for_cost,
     read_pending_message_count,
 )
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 # ---------------------------------------------------------------------------
 # Splicer
@@ -413,7 +415,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         pending = [
             PendingSession(session_id="conv-1", title="A", message_count=2),
             PendingSession(session_id="conv-2", title="B", message_count=2),
@@ -457,7 +459,7 @@ class TestBackfillCommand:
         fake_select = MagicMock(return_value=[])
         fake_preflight = MagicMock(return_value=report)
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         with (
             patch("polylogue.cli.commands.embed._build_preflight_report", fake_preflight),
             patch(
@@ -497,7 +499,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         pending = [PendingSession(session_id="codex-session:v1", title="v1", message_count=2)]
         fake_provider = MagicMock()
         fake_embed = MagicMock(
@@ -545,7 +547,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         pending = [PendingSession(session_id="codex-session:v1", title="v1", message_count=2)]
         with (
             _patch_preflight(_make_report(pending_sessions=1, pending_messages=2, max_messages=2)),
@@ -631,7 +633,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         # Event-driven fake clock: scripted read sequences broke twice (a
         # StopIteration when the command read the clock an extra time, then a
         # second embed when an extra read consumed the past-deadline value).
@@ -692,7 +694,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         fake_embed = MagicMock(
             side_effect=[
                 EmbedSessionOutcome(status="error", session_id="conv-1", error="provider 429"),
@@ -740,7 +742,7 @@ class TestBackfillCommand:
         )
 
         index_db = tmp_path / "index.db"
-        sqlite3.connect(index_db).close()
+        initialize_archive_database(index_db, ArchiveTier.INDEX)
         fake_embed = MagicMock(
             side_effect=[
                 EmbedSessionOutcome(status="embedded", session_id="conv-1", embedded_message_count=2),

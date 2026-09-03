@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import sys
 from pathlib import Path
@@ -294,3 +295,76 @@ def test_the_leaked_cloud_basetemp_sentinel_is_declined(tmp_path: Path, monkeypa
     sentinel = cloud_sentinels.CLOUD_SENTINELS[BASETEMP_ROOT_ENV]
 
     assert basetemp_root({BASETEMP_ROOT_ENV: sentinel}, root=tmp_path) == tmp_path / ".cache" / "verify"
+
+
+#: A ``pueue`` whose ``wait`` kills the process waiting on it, the way a
+#: session or a wrapper being killed leaves a queued task with no waiter.
+FAKE_PUEUE_KILLS_ITS_WAITER = """#!/usr/bin/env python3
+import json, os, signal, sys, time
+
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+
+command = sys.argv[1] if len(sys.argv) > 1 else ""
+if command == "add":
+    print("11")
+elif command == "wait":
+    os.kill(os.getppid(), signal.SIGTERM)
+    time.sleep(2)
+sys.exit(0)
+"""
+
+_WAITER = """
+import os, sys
+sys.path.insert(0, {repo!r})
+from devtools.pytest_slot import run_pytest
+
+run_pytest(
+    [sys.executable, "-c", "pass"],
+    cwd={cwd!r},
+    env={{"PATH": os.environ["PATH"], "HOME": os.environ["HOME"]}},
+    root={root!r},
+    label="polylogue:test:signalled",
+)
+"""
+
+
+def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
+    """A task outlives its waiter, and the slot's parallelism is one.
+
+    Anti-vacuity: dropping the ``_reaping`` context leaves the recorded calls
+    at ``add``/``wait`` -- the task stays queued with nothing left to wait on
+    it, which is exactly the starvation this reap exists to prevent.
+    """
+    import subprocess
+
+    directory = tmp_path / "fakebin"
+    directory.mkdir()
+    script = directory / "pueue"
+    script.write_text(FAKE_PUEUE_KILLS_ITS_WAITER, encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    record = Path(str(script) + ".calls.jsonl")
+    repo = str(Path(pytest_slot.__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _WAITER.format(repo=repo, cwd=str(tmp_path), root=str(tmp_path)),
+        ],
+        env={
+            "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
+            "HOME": os.environ.get("HOME", "/home/nobody"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == -int(signal.SIGTERM), completed.stderr
+    verbs = [call["argv"][0] for call in _calls(record)]
+    assert verbs == ["add", "wait", "kill", "remove"], verbs
+    leftover = list((tmp_path / "verify").glob("pytest-slot-*.json")) + list(
+        (tmp_path / ".cache" / "verify").glob("pytest-slot-*.json")
+    )
+    assert leftover == [], "the launch file carries a resolved environment and must not survive the reap"

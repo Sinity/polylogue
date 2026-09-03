@@ -43,12 +43,14 @@ from polylogue.logging import get_logger
 from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage
+from polylogue.sources.parsers.base_support import derive_attachment_provenance
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.write import (
     _attachment_caption,
     _attachment_id,
     _attachment_message_id_maps,
     _attachment_native_id_values,
+    _attachment_provenance,
     _attachment_reference_positions,
     _attachment_source_url,
     _duplicate_message_native_ids,
@@ -147,6 +149,23 @@ def _read_orphaned_attachment_ids(index_conn: sqlite3.Connection) -> list[str]:
 
 def _message_exists(index_conn: sqlite3.Connection, message_id: str) -> bool:
     return index_conn.execute("SELECT 1 FROM messages WHERE message_id = ?", (message_id,)).fetchone() is not None
+
+
+def _persisted_message_provenance(
+    index_conn: sqlite3.Connection,
+    message_id: str,
+) -> tuple[str | None, str | None]:
+    """Derive an attachment's provenance from the persisted owning turn.
+
+    An append payload's owning message can already be materialized, so it is
+    absent from the payload's own message map. Its role is in the index.
+    """
+
+    row = index_conn.execute("SELECT role, native_id FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+    if row is None:
+        return None, None
+    direction, producer_ref = derive_attachment_provenance(str(row[0]), row[1] or message_id)
+    return direction, producer_ref
 
 
 def _append_materialized_message_ids(
@@ -341,7 +360,7 @@ def _match_session_payload(
     session_id = payload.session_id
     messages = payload.parsed_session.messages
     position_offset = _next_message_position(index_conn, session_id) if payload.append_only else 0
-    owner_resolution, by_owner_key, _owning_messages = _attachment_message_id_maps(
+    owner_resolution, by_owner_key, owning_messages = _attachment_message_id_maps(
         session_id,
         messages,
         position_offset=position_offset,
@@ -394,14 +413,23 @@ def _match_session_payload(
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
             continue
+        # Provenance goes through the same derivation the writer uses, so a
+        # record parsed before attachments carried direction relinks with the
+        # owning turn's direction rather than a null the column refuses.
+        owning_message = owning_messages.get(message_id)
+        if owning_message is None and attachment.direction is None:
+            direction, producer_ref = _persisted_message_provenance(index_conn, message_id)
+            producer_ref = attachment.producer_ref or producer_ref
+        else:
+            direction, producer_ref = _attachment_provenance(attachment, owning_message, resolved_message_id=message_id)
         recovered[attachment_id] = RelinkableAttachment(
             attachment_id=attachment_id,
             session_id=session_id,
             message_id=message_id,
             position=attachment_positions[id(attachment)],
             upload_origin=attachment.upload_origin,
-            direction=attachment.direction,
-            producer_ref=attachment.producer_ref,
+            direction=direction,
+            producer_ref=producer_ref,
             source_url=_attachment_source_url(attachment),
             caption=_attachment_caption(attachment),
             raw_id=raw_id,

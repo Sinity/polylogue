@@ -156,7 +156,9 @@ def test_semantic_card_web_json_contract(_semantic_card_session: tuple[str, dict
 
 def test_semantic_card_web_dom_shape_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, body = get_text(base_url, "/")
+        # The interpolated shell this test reads answers on the workspace
+        # routes; the root serves the typed WebUI.
+        status, content_type, body = get_text(base_url, "/w/stack")
 
     assert status == 200
     assert "text/html" in content_type
