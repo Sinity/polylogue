@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import aiosqlite
 
+from polylogue.storage.insights.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_async,
+)
 from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionProfileRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
@@ -34,7 +38,11 @@ async def get_session_profile(
         (session_id,),
     )
     row = await cursor.fetchone()
-    return _row_to_session_profile_record(row) if row else None
+    if row is None:
+        return None
+    record = _row_to_session_profile_record(row)
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"])])
+    return apply_profile_cost_lanes(record, usage)
 
 
 async def get_session_profiles_batch(
@@ -49,7 +57,10 @@ async def get_session_profiles_batch(
         tuple(session_ids),
     )
     rows = await cursor.fetchall()
-    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return {
+        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows
+    }
 
 
 async def list_session_profiles(
@@ -115,4 +126,5 @@ async def list_session_profiles(
         params.extend([query.limit, query.offset])
     cursor = await conn.execute(sql, tuple(params))
     rows = await cursor.fetchall()
-    return [_row_to_session_profile_record(row) for row in rows]
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows]

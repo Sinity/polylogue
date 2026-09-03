@@ -172,11 +172,14 @@ def compile_portfolio_bundle(
     input_tokens = output_tokens = cache_read = cache_write = 0
     cost_bearing_refs: list[EvidenceRef] = []
     per_session_cost: list[float] = []
+    unpriced = 0
     for profile in profiles:
         cost = float(profile.total_cost_usd)
         total_cost += cost
         per_session_cost.append(cost)
         any_estimated = any_estimated or bool(profile.cost_is_estimated)
+        if profile.cost_provenance == "unknown":
+            unpriced += 1
         input_tokens += int(profile.total_input_tokens)
         output_tokens += int(profile.total_output_tokens)
         cache_read += int(profile.total_cache_read_tokens)
@@ -187,6 +190,7 @@ def compile_portfolio_bundle(
     estimated_cost = CostMetric(
         total_cost_usd=round(total_cost, 6),
         cost_is_estimated=any_estimated,
+        unpriced_session_count=unpriced,
         tokens=TokenLanes(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -324,7 +328,11 @@ def render_portfolio_plain(bundle: PortfolioBundle) -> str:
         lines.append(f"origins: {origin_text}")
     cost = bundle.estimated_cost
     estimated = " (estimated)" if cost.cost_is_estimated else ""
-    lines.append(f"total_cost: {_fmt_usd(cost.total_cost_usd)}{estimated}")
+    unpriced = f", {cost.unpriced_session_count} unpriced" if cost.unpriced_session_count else ""
+    lines.append(
+        f"total_cost: {_fmt_usd(cost.total_cost_usd)}{estimated}"
+        f" across {scope.analyzed_session_count} sessions{unpriced}"
+    )
     lines.append(
         "tokens: "
         f"in={cost.tokens.input_tokens} out={cost.tokens.output_tokens} "
@@ -361,7 +369,11 @@ def render_portfolio_markdown(bundle: PortfolioBundle) -> str:
     if bundle.origins:
         out.append("- **Origins:** " + ", ".join(f"{o.origin} ({o.session_count})" for o in bundle.origins))
     estimated = " _(estimated)_" if cost.cost_is_estimated else ""
-    out.append(f"- **Total cost:** {_fmt_usd(cost.total_cost_usd)}{estimated}")
+    unpriced = f", {cost.unpriced_session_count} unpriced" if cost.unpriced_session_count else ""
+    out.append(
+        f"- **Total cost:** {_fmt_usd(cost.total_cost_usd)}{estimated}"
+        f" across {scope.analyzed_session_count} sessions{unpriced}"
+    )
     out.append(
         "- **Tokens:** "
         f"in {cost.tokens.input_tokens}, out {cost.tokens.output_tokens}, "

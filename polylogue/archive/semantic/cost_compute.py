@@ -30,7 +30,7 @@ _PRICE_SNAPSHOT_VERSION = f"{CATALOG_PROVENANCE}-{CATALOG_EFFECTIVE_DATE}"
 
 
 def compute_session_cost(
-    session: Session,
+    session: Session | None,
     *,
     session_estimate: CostEstimatePayload | None = None,
     estimate_if_missing: bool = True,
@@ -52,6 +52,16 @@ def compute_session_cost(
     per-message ``usage`` blocks), which is what made the per-message fallback
     ~1000x too small for Codex sessions when it was the only source.
 
+    ``session`` may be ``None`` when no hydrated session is available -- the
+    profile read path recomputes cost from ``session_model_usage`` alone rather
+    than hydrating every session's messages. Message evidence is then simply
+    absent: usage rows carrying real token counters price exactly as they would
+    with a session in hand, while identity-only rows (chatgpt-export and
+    claude-ai-export write a real ``model_name`` with zero counters) keep the
+    ``unknown`` disposition ``_per_model_from_model_usage`` already assigns them
+    instead of being upgraded to a message-length estimate. That is a loss of
+    richness for those origins, never a fabricated figure (polylogue-9kjtc).
+
     ``subscription_tier`` selects the plan whose ``monthly_fee_usd /
     credit_pool`` ratio prices the subscription-equivalent figure
     (:func:`polylogue.archive.semantic.subscription_pricing.credits_to_usd`).
@@ -60,7 +70,9 @@ def compute_session_cost(
     read the ``subscription_tier`` :mod:`user_settings` row, polylogue-at44)
     should pass it explicitly.
     """
-    estimate = session_estimate or (estimate_session_cost(session) if estimate_if_missing else None)
+    estimate = session_estimate or (
+        estimate_session_cost(session) if estimate_if_missing and session is not None else None
+    )
     if estimate is not None and estimate.status == "exact" and not model_usage:
         return SessionCostSummary(
             total_input_tokens=estimate.usage.input_tokens,
@@ -97,9 +109,11 @@ def compute_session_cost(
             ),
         )
     per_model: dict[str, SessionCostBreakdown] = (
-        _per_model_from_model_usage(model_usage) if model_usage else _per_model_from_messages(session)
+        _per_model_from_model_usage(model_usage)
+        if model_usage
+        else (_per_model_from_messages(session) if session is not None else {})
     )
-    if model_usage and not any(breakdown.total_tokens for breakdown in per_model.values()):
+    if session is not None and model_usage and not any(breakdown.total_tokens for breakdown in per_model.values()):
         # session_model_usage carries model identity but no real usage
         # counters for every row (e.g. chatgpt-export/claude-ai-export
         # exports, which don't carry provider token counters -- see

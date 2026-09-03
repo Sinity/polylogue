@@ -15,6 +15,10 @@ from polylogue.storage.insights.session.aggregates import (
     profile_provider_day,
     refresh_async_provider_day_aggregates,
 )
+from polylogue.storage.insights.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_async,
+)
 from polylogue.storage.insights.session.rebuild import (
     SessionInsightRecordBundle,
     build_session_insight_records,
@@ -367,7 +371,10 @@ async def _load_existing_session_profile_records_async(
             tuple(session_ids),
         )
     ).fetchall()
-    return {str(row["session_id"]): _row_to_session_profile_record(row) for row in rows}
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return {
+        str(row["session_id"]): apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows
+    }
 
 
 async def _load_message_counts_async(

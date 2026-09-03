@@ -44,6 +44,11 @@ from polylogue.storage.insights.session.latency_profiles import (
     build_latency_profile_facts,
     build_session_latency_profile_record,
 )
+from polylogue.storage.insights.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_async,
+    read_model_usage_batch_sync,
+)
 from polylogue.storage.insights.session.profiles import (
     build_session_profile_record,
     hydrate_session_profile,
@@ -434,8 +439,9 @@ def iter_hydrated_session_profiles_sync(
         rows = cursor.fetchmany(page_size)
         if not rows:
             break
+        usage = read_model_usage_batch_sync(conn, [str(row["session_id"]) for row in rows])
         for row in rows:
-            yield hydrate_session_profile(_row_to_session_profile_record(row))
+            yield hydrate_session_profile(apply_profile_cost_lanes(_row_to_session_profile_record(row), usage))
 
 
 async def iter_session_id_pages_async(
@@ -1697,7 +1703,8 @@ def _session_profile_records_for_session_ids_sync(
         f"SELECT * FROM session_profiles WHERE session_id IN ({placeholders})",
         tuple(session_ids),
     ).fetchall()
-    return [_row_to_session_profile_record(row) for row in rows]
+    usage = read_model_usage_batch_sync(conn, [str(row["session_id"]) for row in rows])
+    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows]
 
 
 def _materialize_thread_spine_sync(
@@ -1929,7 +1936,8 @@ async def _session_profile_records_for_session_ids_async(
         tuple(session_ids),
     )
     rows = await cursor.fetchall()
-    return [_row_to_session_profile_record(row) for row in rows]
+    usage = await read_model_usage_batch_async(conn, [str(row["session_id"]) for row in rows])
+    return [apply_profile_cost_lanes(_row_to_session_profile_record(row), usage) for row in rows]
 
 
 def rebuild_session_insights_sync(

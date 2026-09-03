@@ -49,26 +49,23 @@ def _seed_schema_drift(root: Path) -> None:
 class TestHelpOutput:
     """Test --help output rendering."""
 
-    def test_help_output_snapshot(self, snapshot: object) -> None:
-        """Verify --help output renders correctly."""
-        result = run_in_pty(["--help"], rows=80)
-        assert result.exit_code == 0
+    @pytest.mark.parametrize("cols", [60, 80, 120])
+    def test_help_renders_a_complete_grid_at_every_width(self, cols: int) -> None:
+        """``--help`` renders its structural sections and never truncates a
+        line at the terminal edge, at narrow, default, and wide widths.
 
-        # Sanitize and convert to text
-        grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
-        output = grid_to_text(grid)
-
-        assert output == snapshot
-
-    def test_help_output_has_basic_structure(self) -> None:
-        """Verify --help output contains expected sections."""
-        result = run_in_pty(["--help"], rows=80)
+        Anti-vacuity: a renderer that dropped the options section, exited
+        nonzero, or emitted lines wider than the terminal fails here. Exact
+        wording is deliberately not pinned — no contract declares it.
+        """
+        result = run_in_pty(["--help"], cols=cols, rows=80)
         assert result.exit_code == 0
 
         text = grid_to_text(result.grid)
         assert "Usage:" in text or "usage:" in text
         assert "Options:" in text or "options:" in text
         assert "Subcommands:" not in text
+        assert max(len(line) for line in text.splitlines()) <= cols
 
 
 class TestCommandOutputs:
@@ -114,47 +111,23 @@ class TestCommandOutputs:
 class TestErrorOutput:
     """Test error message rendering."""
 
-    def test_invalid_option_error_output(self, snapshot: object) -> None:
-        """Verify invalid option error message."""
+    def test_invalid_option_error_names_the_rejected_option(self) -> None:
+        """An unknown option exits nonzero and names the option it rejected.
+
+        Anti-vacuity: a handler that swallowed the error, exited 0, or
+        reported a bare "error" without the offending token fails here.
+        """
         result = run_in_pty(["--bogus"])
         assert result.exit_code != 0
 
-        grid = sanitize_grid(result.grid, strip_timestamps=True, strip_paths=True)
-        output = grid_to_text(grid)
-
-        assert output == snapshot
+        output = grid_to_text(sanitize_grid(result.grid, strip_timestamps=True, strip_paths=True))
+        assert "--bogus" in output
 
     def test_missing_required_argument_error(self) -> None:
         """Verify error on missing required arguments."""
         # Use completions command without --shell (requires it)
         result = run_in_pty(["config", "completions"])
         assert result.exit_code != 0
-
-
-class TestTerminalDimensions:
-    """Test output at different terminal widths."""
-
-    def test_help_at_narrow_width(self, snapshot: object) -> None:
-        """Verify help wraps correctly at 60 columns."""
-        result = run_in_pty(["--help"], cols=60, rows=80)
-        assert result.exit_code == 0
-
-        grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
-        output = grid_to_text(grid)
-
-        assert output == snapshot
-        # Verify wrapping occurred (should have lines)
-        assert len(output) > 0
-
-    def test_help_at_wide_width(self, snapshot: object) -> None:
-        """Verify help renders at 120 columns."""
-        result = run_in_pty(["--help"], cols=120, rows=80)
-        assert result.exit_code == 0
-
-        grid = sanitize_grid(result.grid, strip_timestamps=False, strip_paths=True)
-        output = grid_to_text(grid)
-
-        assert output == snapshot
 
 
 class TestPlainModeConsistency:

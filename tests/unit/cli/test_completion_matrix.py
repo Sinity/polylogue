@@ -847,58 +847,74 @@ def test_read_format_completion_uses_selected_view_per_shell(
     assert item_map == {"json": "Supported by read --view raw"}
 
 
-@pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
 @pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
-def test_dynamic_completers_empty_archive_per_shell(
-    shell: str,
-    comp_cls: type[ShellComplete],
+def test_dynamic_completers_return_nothing_on_an_empty_archive(
     label: str,
     cwords: list[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dynamic completers degrade gracefully (empty list, no traceback) on empty archive."""
+    """Every archive-backed completer degrades to an empty list, not a traceback.
+
+    The shell axis is omitted deliberately: with no archive there are no items
+    to format, so per-shell ``format_completion`` is unreached and every shell
+    would exercise the same code. Per-shell formatting of real items is covered
+    by ``test_dynamic_completers_format_seeded_items_per_shell``.
+
+    Anti-vacuity: a completer that raised on a missing database, or that
+    returned static placeholder values instead of archive-derived ones, fails
+    here.
+    """
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
 
-    # Returns [] when DB is missing — must not raise.
-    items = _run_completion(shell, comp_cls, cwords)
-    assert isinstance(items, list)
+    assert _run_completion("bash", BashComplete, cwords) == []
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])
-@pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
-def test_dynamic_completers_seeded_archive_per_shell(
+def test_dynamic_completers_format_seeded_items_per_shell(
     shell: str,
     comp_cls: type[ShellComplete],
+    completion_seeded_archive_ro: SeededArchiveQueryLease,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Session-id completion yields archive-derived items that every shell formats.
+
+    ``session_id`` is the one dynamic completer the synthetic corpus always
+    populates, so it is the only case that puts real items through each shell's
+    ``format_completion`` (asserted inside ``_run_completion``). Tags, repos and
+    cwd prefixes may legitimately be empty in the default corpus, which would
+    make a per-shell formatting claim vacuous — their resolution is covered
+    against an empty archive above and by the query-field matrix below.
+    """
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
+    monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
+
+    items = _run_completion(shell, comp_cls, CONTRACT_COMPLETION_COMMANDS["session_id"])
+    assert items, f"session_id returned no items on the seeded archive ({shell})"
+
+
+@pytest.mark.parametrize("label,cwords", DYNAMIC_COMPLETERS, ids=[label for label, _ in DYNAMIC_COMPLETERS])
+def test_every_dynamic_completer_resolves_against_a_seeded_archive(
     label: str,
     cwords: list[str],
     completion_seeded_archive_ro: SeededArchiveQueryLease,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With a seeded archive, every dynamic completer returns at least one item on every shell.
+    """Each dynamic completer resolves without raising on a populated archive.
 
-    This is the core coverage claim of #1271 — providers/source-families,
-    session IDs, tags, repos, actions, tools all complete in all
-    three shells. Repos/tags/cwd may legitimately yield zero from the
-    default synthetic corpus, so we only require session_id and
-    tool (which are always populated) to be non-empty, while still
-    asserting the call itself succeeds for all completers.
+    Anti-vacuity: a completer whose query no longer matches the archive schema
+    raises here rather than silently returning nothing, because the empty-archive
+    test above pins the same completers to ``[]`` — a completer that started
+    raising on *both* would fail this test while the other stayed green.
     """
-    # The named workload is generated through the production pipeline; this
-    # read-only consumer points at the shared immutable artifact instead of
-    # cloning it into a private archive root.
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(completion_seeded_archive_ro.root))
     monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
 
-    items = _run_completion(shell, comp_cls, cwords)
-    # The call must succeed for every completer.
-    assert isinstance(items, list)
-    # Guarantee: completers whose values come from messages/sessions
-    # always have data in a seeded archive.
-    if label in {"session_id"}:
-        assert items, f"{label} returned no items on seeded archive ({shell})"
+    items = _run_completion("bash", BashComplete, cwords)
+    if label == "session_id":
+        assert items, "session_id must resolve to archive-derived items"
 
 
 @pytest.mark.parametrize("shell,comp_cls", SUPPORTED_SHELLS, ids=[s for s, _ in SUPPORTED_SHELLS])

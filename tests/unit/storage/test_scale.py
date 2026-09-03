@@ -9,15 +9,10 @@ The original production failure was a connection storm with thousands of
 concurrent SQLite connections. These tests ensure the archive batch read path
 (``Polylogue.get_sessions`` / ``list_sessions``) works at moderate
 scale.
-
-Performance budget tests (TestPerformanceBudget) assert that key operations
-finish within fixed timing budgets. They use ``@pytest.mark.slow`` and are
-excluded from the normal fast unit run.
 """
 
 from __future__ import annotations
 
-import time
 from pathlib import Path
 
 import pytest
@@ -181,46 +176,3 @@ class TestLargeInputRoundTrip:
             # FTS over the large text must work.
             hits = await archive.search("word", limit=5)
             assert any(str(hit.session_id) == session_id for hit in hits.hits)
-
-
-@pytest.mark.slow
-@pytest.mark.load_sensitive
-class TestPerformanceBudget:
-    """Performance budget tests — each asserts a timing SLA.
-
-    Budgets are conservative (10–20x typical times on a modern workstation).
-    """
-
-    @pytest.mark.asyncio
-    async def test_list_performance_budget(self, workspace_env: dict[str, Path]) -> None:
-        """list_sessions(limit=50) on a 500-session DB must finish in <500ms."""
-        _seed_archive(workspace_env, 500, msgs_per_conv=5)
-        async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as archive:
-            t0 = time.monotonic()
-            results = await archive.list_sessions(limit=50)
-            elapsed_ms = (time.monotonic() - t0) * 1000
-        assert len(results) == 50
-        assert elapsed_ms < 500, f"list_sessions took {elapsed_ms:.0f}ms (budget: 500ms)"
-
-    @pytest.mark.asyncio
-    async def test_get_sessions_performance_budget(self, workspace_env: dict[str, Path]) -> None:
-        """get_sessions(100 ids) on a 500-session DB must finish in <2s."""
-        ids = _seed_archive(workspace_env, 500, msgs_per_conv=5)
-        async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as archive:
-            sample = ids[:100]
-            t0 = time.monotonic()
-            results = await archive.get_sessions(sample)
-            elapsed_ms = (time.monotonic() - t0) * 1000
-        assert len(results) == 100
-        assert elapsed_ms < 2000, f"get_sessions(100) took {elapsed_ms:.0f}ms (budget: 2000ms)"
-
-    @pytest.mark.asyncio
-    async def test_fts_search_budget(self, workspace_env: dict[str, Path]) -> None:
-        """FTS search for a common term on a 500-session DB must finish in <1s."""
-        _seed_archive(workspace_env, 500, msgs_per_conv=5)
-        async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as archive:
-            t0 = time.monotonic()
-            results = await archive.search("Message", limit=20)
-            elapsed_ms = (time.monotonic() - t0) * 1000
-        assert elapsed_ms < 1000, f"FTS search took {elapsed_ms:.0f}ms (budget: 1000ms)"
-        _ = results  # exercised

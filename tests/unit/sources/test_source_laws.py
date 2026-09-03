@@ -2958,11 +2958,18 @@ def test_normalize_role_result_is_canonical(text: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-@given(st.sampled_from(sorted(CANONICAL_ROLES - {"unknown"})))
-def test_normalize_role_idempotent_on_canonical(role: str) -> None:
-    """Applying normalize_role to a canonical role returns the same value."""
-    result = normalize_role(role)
-    assert result == role
+@pytest.mark.parametrize("role", sorted(CANONICAL_ROLES - {"unknown"}))
+@pytest.mark.parametrize("padding", [0, 1, 5])
+def test_normalize_role_is_identity_on_canonical_roles_modulo_whitespace(role: str, padding: int) -> None:
+    """A canonical role normalizes to itself, whatever whitespace surrounds it.
+
+    The input space is the finite canonical role set, so this enumerates it
+    exhaustively rather than sampling. Anti-vacuity: a normalizer that mapped a
+    canonical role onto another token, or that stopped stripping whitespace,
+    fails here.
+    """
+    padded = " " * padding + role + " " * padding
+    assert normalize_role(padded) == role
 
 
 # ---------------------------------------------------------------------------
@@ -2982,22 +2989,7 @@ def test_normalize_role_case_insensitive(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Law 5: normalize_role strips whitespace before normalizing
-# ---------------------------------------------------------------------------
-
-
-@given(
-    st.sampled_from(["user", "assistant", "system", "tool"]),
-    st.integers(min_value=0, max_value=5),
-)
-def test_normalize_role_strips_whitespace(role: str, padding: int) -> None:
-    """normalize_role ignores leading/trailing whitespace."""
-    padded = " " * padding + role + " " * padding
-    assert normalize_role(padded) == role
-
-
-# ---------------------------------------------------------------------------
-# Law 6: normalize_role raises ValueError for empty/whitespace-only input
+# Law 5: normalize_role raises ValueError for empty/whitespace-only input
 # ---------------------------------------------------------------------------
 
 
