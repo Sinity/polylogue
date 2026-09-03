@@ -118,7 +118,6 @@ class CaptureJobRegistry:
                 checkpoint_json TEXT, checkpoint_sequence INTEGER, checkpoint_digest TEXT,
                 receipt_json TEXT, retry_json TEXT NOT NULL, lease_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                request_budget_json TEXT NOT NULL DEFAULT '{"max_requests":1000,"used":0}',
                 retention_json TEXT NOT NULL DEFAULT '{"state":"active","hold_reason":null,"timeline_authoritative":true}',
                 UNIQUE(provider, account_scope, intent_key)
             ) STRICT"""
@@ -155,10 +154,6 @@ class CaptureJobRegistry:
         if "job_revision" not in columns:
             connection.execute("ALTER TABLE capture_job_events ADD COLUMN job_revision INTEGER NOT NULL DEFAULT 0")
         job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
-        if "request_budget_json" not in job_columns:
-            connection.execute(
-                'ALTER TABLE capture_jobs ADD COLUMN request_budget_json TEXT NOT NULL DEFAULT \'{"max_requests":1000,"used":0}\''
-            )
         if "retention_json" not in job_columns:
             connection.execute(
                 'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
@@ -210,7 +205,6 @@ class CaptureJobRegistry:
         intent = json.loads(row["intent_json"])
         lease = json.loads(row["lease_json"]) if row["lease_json"] else None
         retry = json.loads(row["retry_json"])
-        budget = json.loads(row["request_budget_json"])
         retention = json.loads(row["retention_json"])
         latest_receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
         return {
@@ -225,7 +219,6 @@ class CaptureJobRegistry:
             "checkpoint_sequence": row["checkpoint_sequence"],
             "checkpoint_digest": row["checkpoint_digest"],
             "retry": retry,
-            "request_budget": budget,
             "retention": retention,
             "checkpoint": json.loads(row["checkpoint_json"]) if row["checkpoint_json"] else None,
             "latest_receipt": latest_receipt,
@@ -363,7 +356,13 @@ class CaptureJobRegistry:
                 return 200, {"created": False, "job": self._summary(found)}
             job_id = str(uuid4())
             connection.execute(
-                "INSERT INTO capture_jobs VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)",
+                # Named columns, not positional: a receiver database created by an
+                # earlier build carries extra columns this build never writes.
+                """INSERT INTO capture_jobs (
+                    job_id, provider, account_scope, intent_key, intent_json, revision,
+                    checkpoint_json, checkpoint_sequence, checkpoint_digest, receipt_json,
+                    retry_json, lease_json, created_at, updated_at, retention_json
+                ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?)""",
                 (
                     job_id,
                     provider,
@@ -373,7 +372,6 @@ class CaptureJobRegistry:
                     canonical_json({"state": "ready", "attempt": 0}),
                     now,
                     now,
-                    canonical_json({"max_requests": 1000, "used": 0}),
                     canonical_json({"state": "active", "hold_reason": None, "timeline_authoritative": True}),
                 ),
             )
@@ -407,10 +405,17 @@ class CaptureJobRegistry:
             return {"jobs": [self._summary(row) for row in rows]}
 
     def list_orphans(self, protocol: object) -> dict[str, object]:
-        """Return the global legacy census only on its explicit operator route."""
+        """Run the receiver's spool housekeeping pass and return its census.
+
+        This route already reconciles the spool's legacy checkpoint root into
+        the durable orphan census; retention collection runs on the same pass so
+        eligible jobs are reclaimed at the cadence the receiver is already
+        polled, without a second schedule.
+        """
         self._validate_protocol(protocol)
+        collected = self.gc()
         with self._connection() as connection:
-            return {"orphans": self._census_legacy_orphans(connection)}
+            return {"orphans": self._census_legacy_orphans(connection), "collected": collected["deleted"]}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connection() as connection:
@@ -662,10 +667,18 @@ class CaptureJobRegistry:
         if retention is not None:
             if not isinstance(retention, dict) or retention.get("state") not in {"active", "held", "eligible"}:
                 raise CaptureJobError(400, "invalid_retention_state")
+            hold_reason = retention.get("hold_reason")
+            timeline_authoritative = retention.get("timeline_authoritative", True)
+            if (
+                not isinstance(timeline_authoritative, bool)
+                or (retention["state"] == "held" and (not isinstance(hold_reason, str) or not hold_reason))
+                or (retention["state"] != "held" and hold_reason is not None)
+            ):
+                raise CaptureJobError(400, "invalid_retention_state")
             retention = {
                 "state": retention["state"],
-                "hold_reason": retention.get("hold_reason"),
-                "timeline_authoritative": retention.get("timeline_authoritative", True),
+                "hold_reason": hold_reason,
+                "timeline_authoritative": timeline_authoritative,
             }
         ttl = body.get("lease_ttl_seconds")
         if ttl is not None and (not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 300):
@@ -705,6 +718,7 @@ class CaptureJobRegistry:
                     "kind": "capture_job_update",
                     "revision": row["revision"],
                     "retry": current_retry,
+                    "retention": current_retention,
                     "lease_expires_at": lease["expires_at"],
                     "acknowledged_at": _stamp(now),
                     "no_op": True,
@@ -722,6 +736,7 @@ class CaptureJobRegistry:
                 "kind": "capture_job_update",
                 "revision": revision,
                 "retry": next_retry,
+                "retention": next_retention,
                 "lease_expires_at": next_lease["expires_at"],
                 "acknowledged_at": _stamp(now),
             }
@@ -756,12 +771,22 @@ class CaptureJobRegistry:
                 if len(deleted) >= limit:
                     break
                 retention = json.loads(row["retention_json"])
+                retry = json.loads(row["retry_json"])
                 lease = self._lease(row)
                 if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
                     continue
-                expires_at = lease.get("expires_at") if lease else None
-                if isinstance(expires_at, str) and datetime.fromisoformat(expires_at.replace("Z", "+00:00")) > current:
+                if retry.get("state") not in {"completed", "abandoned"}:
                     continue
+                if lease is not None:
+                    expires_at = lease.get("expires_at")
+                    if not isinstance(expires_at, str):
+                        continue
+                    try:
+                        lease_expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                    except ValueError:
+                        continue
+                    if lease_expires_at.tzinfo is None or lease_expires_at > current:
+                        continue
                 if row["checkpoint_sequence"] is None or not row["receipt_json"]:
                     continue
                 connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))

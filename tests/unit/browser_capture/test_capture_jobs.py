@@ -7,6 +7,7 @@ import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from http.client import HTTPConnection
 from pathlib import Path
 from threading import Thread
@@ -14,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.browser_capture import capture_jobs as capture_jobs_module
 from polylogue.browser_capture.capture_jobs import (
     CaptureJobRegistry,
     canonical_digest,
@@ -51,6 +53,19 @@ def request(host: str, port: int, method: str, path: str, body: dict[str, object
     )
     response = connection.getresponse()
     return response.status, json.loads(response.read())
+
+
+def housekeeping(host: str, port: int, *, now: datetime | None = None) -> list[str]:
+    """Drive the receiver's spool housekeeping route, which owns retention collection."""
+    original = capture_jobs_module._now
+    if now is not None:
+        capture_jobs_module._now = lambda: now
+    try:
+        status, payload = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+    finally:
+        capture_jobs_module._now = original
+    assert status == 200
+    return cast(list[str], payload["collected"])
 
 
 def create(host: str, port: int) -> dict[str, Any]:
@@ -481,6 +496,130 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
         assert status == 200
         assert [event["kind"] for event in page["events"]] == ["created", "first-seen"]
         assert page["events"][1]["refs"]["conversation_ref"] == "conversation:1"
+        assert page["timelines"] == {"conversation:1": [first["event"]]}
+
+
+def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
+    """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
+
+    Collection is driven only through the receiver's housekeeping route, so
+    unwiring it from that route makes this fail too.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        base = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+        }
+        first_event = {
+            **base,
+            "request_id": "timeline-first",
+            "expected_revision": adopted["job"]["revision"],
+            "kind": "first-seen",
+            "refs": {"conversation_ref": "conversation:1"},
+            "payload": {"ordinal": 1},
+        }
+        status, first = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/events", first_event)
+        assert status == 200
+        status, second = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/events",
+            {
+                **first_event,
+                "request_id": "timeline-second",
+                "expected_revision": first["job"]["revision"],
+                "kind": "detected-new",
+                "payload": {"ordinal": 2},
+            },
+        )
+        assert status == 200
+        checkpoint_payload = {"cursor": 2}
+        status, checkpoint = request(
+            host,
+            port,
+            "PUT",
+            f"/v1/capture-jobs/{job['job_id']}/checkpoint",
+            {
+                **base,
+                "request_id": "timeline-checkpoint",
+                "expected_revision": second["job"]["revision"],
+                "checkpoint": {
+                    "sequence": 1,
+                    "payload": checkpoint_payload,
+                    "digest": canonical_digest(checkpoint_payload),
+                },
+            },
+        )
+        assert status == 200
+        status, invalid_retention = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                **base,
+                "request_id": "invalid-retention",
+                "expected_revision": checkpoint["job"]["revision"],
+                "retention": {"state": "eligible", "hold_reason": None, "timeline_authoritative": 0},
+            },
+        )
+        assert status == 400 and invalid_retention["error"]["code"] == "invalid_retention_state"
+        status, retention = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                **base,
+                "request_id": "eligible-before-completion",
+                "expected_revision": checkpoint["job"]["revision"],
+                "retention": {"state": "eligible", "hold_reason": None, "timeline_authoritative": False},
+            },
+        )
+        assert status == 200
+        future = datetime(2050, 1, 1, tzinfo=UTC)
+        assert housekeeping(host, port, now=future) == []
+
+        status, completed = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                **base,
+                "request_id": "completed-for-gc",
+                "expected_revision": retention["job"]["revision"],
+                "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+            },
+        )
+        assert status == 200
+        assert housekeeping(host, port) == []
+        status, page = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert page["timelines"]["conversation:1"] == [second["event"], first["event"]]
+        assert housekeeping(host, port, now=future) == [job["job_id"]]
+        assert (
+            request(
+                host,
+                port,
+                "GET",
+                f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+                {},
+            )[0]
+            == 404
+        )
 
 
 def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: Path) -> None:
