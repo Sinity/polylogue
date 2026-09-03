@@ -8,11 +8,17 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import loads as json_loads
 from polylogue.sources.live.batch_support import codex_append_payload
 
+#: A session_meta header is a single JSON record. Replay reads it from an
+#: arbitrary on-disk file, so the read is bounded rather than trusting the
+#: file to contain a newline. Matches the live acquisition bound in
+#: ``sources/live/batch.py``'s ``_codex_session_meta_native_id``.
+_SESSION_META_READ_LIMIT = 1024 * 1024
+
 
 def _codex_session_meta_id(source_name: str) -> str | None:
     try:
         with Path(source_name).open("rb") as handle:
-            record = json_loads(handle.readline())
+            record = json_loads(handle.readline(_SESSION_META_READ_LIMIT))
     except (OSError, ValueError, TypeError):
         return None
     if not isinstance(record, dict) or record.get("type") != "session_meta":

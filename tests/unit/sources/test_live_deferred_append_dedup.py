@@ -159,6 +159,65 @@ def test_deferred_claude_cursor_preserves_semantic_frontier(tmp_path: Path) -> N
     assert decoded.body_bytes == len(body)
 
 
+def test_deferred_claude_cursor_refuses_frontier_over_rewritten_prefix(tmp_path: Path) -> None:
+    """A same-length prefix rewrite must not inherit the prior semantic frontier.
+
+    The frontier is recomposed from the bytes on disk at the recorded frontier
+    offset. Size, offset, and last-complete-newline are all unchanged by a
+    body rewrite of identical length, so recomposing without comparing against
+    the recorded frontier promotes bytes this cursor never accepted to
+    semantic authority.
+
+    Anti-vacuity: dropping the ``recomposed == cursor.tail_hash`` comparison in
+    ``record_deferred_append_cursor`` stores a frontier recomposed from the
+    rewritten body, so ``decode_claude_semantic_frontier`` returns a frontier
+    and the final assertion goes red. The first assertion pins that a genuine
+    frontier was present beforehand, so the test cannot pass merely because no
+    frontier was ever established.
+    """
+    source = tmp_path / "session.jsonl"
+    header = b'{"sessionId":"claude-session"}\n'
+    body = b'{"type":"assistant","message":{"role":"assistant","content":"stable"}}\n'
+    rewritten_body = b'{"type":"assistant","message":{"role":"assistant","content":"mutate"}}\n'
+    assert len(rewritten_body) == len(body)
+    source.write_bytes(header + body)
+    cursor = CursorStore(tmp_path / "ops.db")
+    stat = source.stat()
+    authority = claude_semantic_frontier_for_prefix(source, len(header) + len(body))
+    assert authority is not None
+    cursor.set(
+        source,
+        stat.st_size,
+        byte_offset=len(header) + len(body),
+        last_complete_newline=len(header) + len(body),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        content_fingerprint="f" * 64,
+        tail_hash=authority,
+        source_name="claude-code",
+        st_dev=stat.st_dev,
+        st_ino=stat.st_ino,
+        mtime_ns=stat.st_mtime_ns,
+    )
+    recorded = cursor.get_record(source)
+    assert recorded is not None
+    assert decode_claude_semantic_frontier(recorded.tail_hash) is not None
+
+    source.write_bytes(header + rewritten_body + b'{"partial":')
+
+    record_deferred_append_cursor(
+        cursor,
+        source,
+        cursor=recorded,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        source_name="claude-code",
+        deferred_end_offset=None,
+    )
+
+    updated = cursor.get_record(source)
+    assert updated is not None
+    assert decode_claude_semantic_frontier(updated.tail_hash) is None
+
+
 def test_deferred_legacy_claude_cursor_keeps_unverified_prefix_nonsemantic(tmp_path: Path) -> None:
     """A legacy cursor cannot prove that current Claude bytes match its old prefix."""
     source = tmp_path / "session.jsonl"

@@ -220,6 +220,26 @@ def sqlite_logical_revision(path: Path) -> str:
                         encoded.append([kind, value])
                 digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode())
                 digest.update(b"\n")
+        # sqlite_sequence is SQLite-owned, so it is excluded from the schema
+        # and row enumeration above with the rest of the sqlite_% names. Its
+        # contents are still logical database state: an insert-then-delete on
+        # an AUTOINCREMENT table leaves every user row identical while
+        # advancing the stored high-water mark, and without this the digest
+        # reports that database as unchanged.
+        sequence_rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
+        ).fetchall()
+        if sequence_rows:
+            digest.update(b"sqlite_sequence\0")
+            for name, seq in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name"):
+                digest.update(
+                    json.dumps(
+                        [schema_text(name), schema_text(seq) if seq is not None else None],
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ).encode()
+                )
+                digest.update(b"\n")
     return digest.hexdigest()
 
 

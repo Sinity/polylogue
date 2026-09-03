@@ -13,6 +13,10 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
+#: A Claude header is a single JSON record; bound the read rather than
+#: trusting an arbitrary on-disk file to contain a newline.
+_HEADER_READ_LIMIT = 1024 * 1024
+
 
 def record_deferred_append_cursor(
     cursor_store: CursorStore,
@@ -56,11 +60,24 @@ def record_deferred_append_cursor(
     if claude_frontier is not None:
         try:
             with path.open("rb") as handle:
-                header_length = len(handle.readline())
+                header_length = len(handle.readline(_HEADER_READ_LIMIT))
         except OSError:
             header_length = 0
         semantic_end_offset = header_length + claude_frontier.body_bytes
-        semantic_authority = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
+        # This frontier is composed from the bytes currently on disk. The
+        # header is replaceable by contract, so a rewritten header rebases the
+        # frontier onto it; the body is the accepted content and must still be
+        # the body this cursor accepted. A same-length body rewrite leaves
+        # size, offset, and last-complete-newline identical, so the body
+        # digest is the only evidence that distinguishes it -- without this
+        # comparison those bytes are promoted to semantic authority unread.
+        recomposed = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
+        recomposed_frontier = decode_claude_semantic_frontier(recomposed)
+        semantic_authority = (
+            recomposed
+            if recomposed_frontier is not None and recomposed_frontier.body_sha256 == claude_frontier.body_sha256
+            else None
+        )
     else:
         semantic_authority = None
     cursor_store.set(

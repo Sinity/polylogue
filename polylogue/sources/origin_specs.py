@@ -165,9 +165,33 @@ def _source_file_from_reference(reference: str) -> str:
     return path if separator else reference
 
 
-def _source_signature(path: Path) -> tuple[str, int, int]:
+#: Per-process content digests, keyed by the full inode identity of the file
+#: they were read from. ``st_ctime_ns`` is the load-bearing component: it
+#: advances on every write and, unlike ``st_mtime_ns``, cannot be restored by
+#: ``os.utime``, so a same-length rewrite under a replayed mtime misses this
+#: cache and is re-read.
+_SOURCE_DIGESTS: dict[tuple[str, int, int, int, int, int], str] = {}
+
+
+def _source_signature(path: Path) -> tuple[str, str, int]:
+    """Identify one parser source by its contents, not its stat metadata.
+
+    The persistent fingerprint memo is keyed by these signatures. Keyed on
+    (path, mtime, size) it is reused by any rewrite preserving both -- a
+    same-length edit under a restored mtime, which checkout, patch
+    application, and archive extraction all produce -- and the stale parser
+    fingerprint then claims semantics the file no longer has.
+
+    Digesting the bytes is the identity; the stat-keyed cache above only
+    avoids re-reading a file whose inode has not been touched since.
+    """
     stat = path.stat()
-    return str(path), stat.st_mtime_ns, stat.st_size
+    key = (str(path), stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size, stat.st_dev, stat.st_ino)
+    digest = _SOURCE_DIGESTS.get(key)
+    if digest is None:
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        _SOURCE_DIGESTS[key] = digest
+    return str(path), digest, stat.st_size
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -187,7 +211,7 @@ def _module_path(base: Path) -> Path | None:
 
 
 @lru_cache(maxsize=512)
-def _local_import_paths(signature: tuple[str, int, int]) -> tuple[str, ...]:
+def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     """Return local Python dependencies of one parser-semantic source file."""
     path = Path(signature[0])
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -227,15 +251,15 @@ def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 1
+_FINGERPRINT_ALGORITHM_VERSION = 2
 
 
-def _fingerprint_memo_path(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> Path | None:
+def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
     """Where this exact set of source signatures memoizes its fingerprint.
 
     Parsing and normalizing the closure of parser sources costs tens of
     seconds of CPU per process; every test worker and every CLI start paid
-    it. The signatures already encode path, mtime and size, so a memo keyed
+    it. The signatures encode each source's content digest, so a memo keyed
     by them is invalidated by any edit. Returns None where no cache
     directory can exist (installed packages), which falls back to computing.
     """
@@ -254,7 +278,7 @@ def _fingerprint_memo_path(signatures: tuple[tuple[str, int, int], ...], namespa
 
 
 @lru_cache(maxsize=128)
-def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     memo = _fingerprint_memo_path(signatures, namespace)
     if memo is not None:
         try:
@@ -274,7 +298,7 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], na
     return fingerprint
 
 
-def _fingerprint_sources_compute(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
     for path_string, _mtime_ns, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
@@ -1204,10 +1228,8 @@ def _chatgpt_spec() -> OriginSpec:
             message_parent=TopologyCapability("carried", ("chatgpt.mapping.parent",)),
             message_branch_state=TopologyCapability("carried", ("chatgpt.mapping.children",)),
             session_parent_target=_absent_topology("ChatGPT exports carry no session-parent target"),
-            inheritance_branch_point=TopologyCapability(
-                "positive-derived",
-                ("chatgpt.mapping.parent", "chatgpt.mapping.children"),
-                "branch boundaries are derived from mapping ancestry",
+            inheritance_branch_point=_absent_topology(
+                "ChatGPT mapping ancestry is intra-session message topology, not cross-session inheritance"
             ),
             parent_dispatch=_absent_topology("ChatGPT exports carry no parent-dispatch identity"),
         ),

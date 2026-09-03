@@ -3094,13 +3094,17 @@ def test_parser_fingerprint_change_triggers_reingest(tmp_path: Path, monkeypatch
     watcher, parse_sources = _make_watcher(tmp_path, root)
 
     asyncio.run(_ingest_one(watcher, f))
-    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-batched-v3")
+    # Derive the changed value from the real constant. A hardcoded sentinel
+    # silently becomes a no-op the moment the constant is bumped to it, and
+    # this test then asserts nothing.
+    changed = f"{live_watcher._PARSER_FINGERPRINT}-changed"
+    monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", changed)
     asyncio.run(_ingest_one(watcher, f))
 
     assert parse_sources.await_count == 2
     record = watcher._cursor.get_record(f)
     assert record is not None
-    assert record.parser_fingerprint == "live-batched-v3"
+    assert record.parser_fingerprint == changed
 
 
 def test_live_batch_processor_observes_dynamic_parser_fingerprint(

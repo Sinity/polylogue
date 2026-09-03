@@ -67,7 +67,13 @@ if TYPE_CHECKING:
     from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
-_PARSER_FINGERPRINT = "live-batched-v2"
+# Bump whenever parser semantics change the values derived from already-
+# observed bytes. A cursor stamped with a superseded fingerprint is treated
+# as needing work, which routes its source back through parse on the next
+# watcher pass -- the production convergence route, not a manual rebuild.
+# v3: tool-result outcomes now derive `is_error` from an explicit exit code
+# (#4539), so records parsed under v2 retain a stale unknown outcome.
+_PARSER_FINGERPRINT = "live-batched-v3"
 # One bounded writer hold per hook-spool drain batch; the drain loops until
 # the backlog is gone, releasing the writer between batches.
 _HOOK_SPOOL_DRAIN_BATCH_LIMIT = 250

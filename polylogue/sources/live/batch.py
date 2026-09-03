@@ -118,6 +118,7 @@ from polylogue.sources.live.batch_support import (
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
     encode_cursor_hash_authority,
+    file_prefix_sha256,
     fingerprint_file,
     jsonl_complete_prefix,
     last_complete_newline_from_tail,
@@ -581,6 +582,12 @@ class LiveBatchProcessor:
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
+        # One-shot channels out of ``_resynthesize_cursor_from_source``, which
+        # cannot widen its own return type without rewriting every one of its
+        # refusal exits. ``_append_plan`` drains both immediately after
+        # calling it, so neither outlives a single planning attempt.
+        self._pending_legacy_promotions: dict[Path, Callable[[], bool]] = {}
+        self._resynthesized_cursors: dict[Path, CursorRecord] = {}
         # polylogue-wf8a: when set (the watcher always sets one; a caller
         # that wants the unmodified in-hold parse path passes ``None``
         # explicitly, e.g. an equivalence test's baseline run),
@@ -882,6 +889,14 @@ class LiveBatchProcessor:
                 continue
             cursor = cursor_records.get(path)
             append_plan = self.plan_append(path, cursor=cursor) if self._can_ingest_appends_directly() else None
+            # Drain unconditionally: an entry left behind would be read by a
+            # later pass as though it described that pass's observation.
+            # Planning may have rebuilt a cursor from durable evidence, and
+            # without it the deferral below has nothing to persist and
+            # re-mints the same resynthesis on every tick.
+            resynthesized = self._resynthesized_cursors.pop(path, None)
+            if cursor is None:
+                cursor = resynthesized
             if isinstance(append_plan, _DeferredAppend):
                 # No new authority-relevant append happened this pass (no
                 # complete trailing newline yet, or -- polylogue-hat0 --
@@ -4097,20 +4112,34 @@ class LiveBatchProcessor:
                 for candidate in candidates
                 if candidate.raw_id in inferred and candidate.raw_id in replay_plan.accepted_chain
             ]
-            try:
-                archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-                with _open_archive_for_live_write(archive_root) as archive:
-                    source_prefix_sha256, source_stat = reconstructed_prefix_proof
-                    archive.promote_reconstructed_legacy_append_revisions(
-                        reconstructed_revisions,
-                        source_prefix_sha256=source_prefix_sha256,
-                        source_size=source_stat.st_size,
-                        source_mtime_ns=source_stat.st_mtime_ns,
-                        source_ctime_ns=source_stat.st_ctime_ns,
-                        observed_at_ms=int(datetime.now(UTC).timestamp() * 1000),
-                    )
-            except (OSError, sqlite3.Error, ValueError):
-                return None
+
+            # Promotion is a durable source.db write, so it must not run
+            # while the cursor it supports is still provisional. Planning can
+            # still defer or refuse after this point, and a promotion already
+            # committed for a plan that never applied leaves durable state
+            # attesting to an append no cursor records. Hand the caller a
+            # thunk instead and let it commit once the plan is real.
+            def promote_legacy_appends(
+                reconstructed_revisions: list[tuple[str, RawRevisionEnvelope]] = reconstructed_revisions,
+                reconstructed_prefix_proof: tuple[str, os.stat_result] = reconstructed_prefix_proof,
+            ) -> bool:
+                try:
+                    archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+                    with _open_archive_for_live_write(archive_root) as archive:
+                        source_prefix_sha256, source_stat = reconstructed_prefix_proof
+                        archive.promote_reconstructed_legacy_append_revisions(
+                            reconstructed_revisions,
+                            source_prefix_sha256=source_prefix_sha256,
+                            source_size=source_stat.st_size,
+                            source_mtime_ns=source_stat.st_mtime_ns,
+                            source_ctime_ns=source_stat.st_ctime_ns,
+                            observed_at_ms=int(datetime.now(UTC).timestamp() * 1000),
+                        )
+                except (OSError, sqlite3.Error, ValueError):
+                    return False
+                return True
+
+            self._pending_legacy_promotions[path] = promote_legacy_appends
         blob_hash_hex = blob_hash_by_raw_id.get(head_raw_id)
         if blob_hash_hex is None or len(blob_hash_hex) != 64:
             return None
@@ -4139,6 +4168,15 @@ class LiveBatchProcessor:
             )
             == "claude-header-body"
         ):
+            # The frontier is composed from the live file, so it describes
+            # whatever bytes are on disk now -- not the retained bytes this
+            # cursor claims authority over. The reconstructed branch already
+            # proved its prefix against every retained blob component byte by
+            # byte; the full-head branch has proved nothing, so a rewrite
+            # preserving `head.blob_size` would be adopted as authority.
+            # Require the live prefix to reproduce the retained blob digest.
+            if not reconstructed_head and file_prefix_sha256(path, byte_offset) != blob_hash_hex:
+                return None
             composed_tail_hash = claude_semantic_frontier_for_prefix(path, byte_offset)
             if composed_tail_hash is None:
                 return None
@@ -4257,6 +4295,7 @@ class LiveBatchProcessor:
             # which already handles multi-session grouping correctly.
             return None
         cursor = cursor or self._cursor.get_record(path)
+        pending_promotion: Callable[[], bool] | None = None
         if cursor is None:
             # polylogue-aex0: the disposable ops.db cursor is gone (reset,
             # schema mismatch, or never written yet) -- try to resynthesize
@@ -4267,6 +4306,13 @@ class LiveBatchProcessor:
             # not disposable-tier loss, and must keep forcing a full
             # re-ingest exactly as before -- never resynthesized over.
             cursor = self._resynthesize_cursor_from_source(path)
+            # Drain both channels now so neither survives this attempt.
+            # The promotion is committed only where a real plan is returned;
+            # the cursor is published so a deferred outcome can still persist
+            # the resynthesized state instead of discarding it.
+            pending_promotion = self._pending_legacy_promotions.pop(path, None)
+            if cursor is not None:
+                self._resynthesized_cursors[path] = cursor
         if (
             cursor is None
             or cursor.parser_fingerprint != self._current_parser_fingerprint()
@@ -4404,6 +4450,10 @@ class LiveBatchProcessor:
             return None
         append_payload, native_id_hint, acquisition_native_id_hint = append_result
         tail_hash = sha256(complete_payload).hexdigest()
+        # Planning succeeded, so the reconstructed legacy chain this plan
+        # rests on is now worth making durable.
+        if pending_promotion is not None and not pending_promotion():
+            return None
         return _AppendPlan(
             path=path,
             source_name=self._source_name_for(path),
