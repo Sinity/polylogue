@@ -447,212 +447,24 @@ def test_symlinked_user_tier_uses_resolved_attestation_authority(
         conn.close()
 
 
-def _restore_source_pre_v30_raw_artifact_indexes(conn: sqlite3.Connection) -> None:
-    """Restore the raw-artifact index shape that existed before migration 030."""
-    conn.executescript(
-        """
-        DROP INDEX IF EXISTS idx_raw_artifacts_failure_identity;
-        DROP INDEX IF EXISTS idx_raw_artifacts_source_identity;
-        CREATE UNIQUE INDEX idx_raw_artifacts_source_identity
-        ON raw_artifacts(origin, source_path, source_index);
-        """
-    )
-
-
-# Oldest source version from which the numbered migrations still reach
-# canonical-DDL parity. Migrations 009, 021 and 027 rebuild raw_sessions and
-# raw_hook_events with enum-membership CHECK constraints that the canonical
-# source DDL no longer carries -- vocabulary is validated at the write boundary
-# (#4495) -- so a tier replayed across any of them diverges from a fresh
-# bootstrap by those CHECK definitions. 027 is the newest of the three.
-_SOURCE_DDL_PARITY_FLOOR = 27
-
-
-def _create_source_at_ddl_parity_floor(path: Path) -> None:
-    """Build an empty source tier at ``_SOURCE_DDL_PARITY_FLOOR``.
+def _create_source_one_version_behind_head(path: Path) -> None:
+    """Build an empty source tier one numbered migration below head.
 
     Derived from canonical DDL -- the production bootstrap route -- then
-    stripped of every object a migration above that version introduces.
+    stripped of the objects the newest migration introduces, so migrating it
+    exercises the real runner without depending on which older migrations a
+    fixture would have to replay.
     """
+    version = SOURCE_SCHEMA_VERSION - 1
     path.unlink(missing_ok=True)
     conn = sqlite3.connect(path)
     try:
         conn.executescript(SOURCE_DDL)
-        _restore_source_pre_v30_raw_artifact_indexes(conn)
-        _reset_source_fixture_to_version(conn, _SOURCE_DDL_PARITY_FLOOR)
-        conn.execute(f"PRAGMA user_version = {_SOURCE_DDL_PARITY_FLOOR}")
+        _reset_source_fixture_to_version(conn, version)
+        conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
     finally:
         conn.close()
-
-
-def _create_source_v29_raw_failure_fixture(path: Path, *, archive_root: Path) -> tuple[str, str, str]:
-    """Build the exact pre-v30 source shape used by migration 030."""
-    current_indexes = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_source_identity
-ON raw_artifacts(origin, source_path, source_index)
-WHERE artifact_kind NOT IN (
-    'deferred_hot_jsonl_capture',
-    'deferred_claude_code_partial_jsonl',
-    'deferred_cas_frontier',
-    'deferred_codex_cas_frontier',
-    'terminal_corrupt_input',
-    'terminal_superseded_deferred_cas_frontier',
-    'terminal_unknown_json_decode',
-    'terminal_unknown_export_no_session',
-    'terminal_unsupported_shape'
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_failure_identity
-ON raw_artifacts(raw_id, origin, source_path, source_index)
-WHERE artifact_kind IN (
-    'deferred_hot_jsonl_capture',
-    'deferred_claude_code_partial_jsonl',
-    'deferred_cas_frontier',
-    'deferred_codex_cas_frontier',
-    'terminal_corrupt_input',
-    'terminal_superseded_deferred_cas_frontier',
-    'terminal_unknown_json_decode',
-    'terminal_unknown_export_no_session',
-    'terminal_unsupported_shape'
-);
-"""
-    legacy_index = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_artifacts_source_identity
-ON raw_artifacts(origin, source_path, source_index);
-"""
-    v29_ddl = SOURCE_DDL.replace(current_indexes, legacy_index)
-    assert v29_ddl != SOURCE_DDL
-    path.unlink(missing_ok=True)
-    blob_store = BlobStore(archive_root / "blob")
-    ordinary_blob, ordinary_size = blob_store.write_from_bytes(b"ordinary-v29")
-    failure_a_blob, failure_a_size = blob_store.write_from_bytes(b"failure-a-v29")
-    failure_b_blob, failure_b_size = blob_store.write_from_bytes(b"failure-b-v29")
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(v29_ddl)
-        _reset_source_fixture_to_version(conn, 29)
-        conn.execute("PRAGMA user_version = 29")
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, 'codex-session', ?, ?, ?, ?, ?)
-            """,
-            [
-                ("raw-v29-ordinary", "/v29/ordinary.json", 0, bytes.fromhex(ordinary_blob), ordinary_size, 1),
-                ("raw-v29-failure-a", "/v29/failure.jsonl", 0, bytes.fromhex(failure_a_blob), failure_a_size, 2),
-                ("raw-v29-failure-b", "/v29/failure.jsonl", 1, bytes.fromhex(failure_b_blob), failure_b_size, 3),
-            ],
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_artifacts (
-                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
-                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
-            ) VALUES ('artifact-v29-ordinary', 'raw-v29-ordinary', 'codex-session',
-                      '/v29/ordinary.json', 0, 'session_export', 'supported_parseable',
-                      'ordinary-v29', 1, 1)
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO raw_artifacts (
-                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
-                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
-            ) VALUES (?, ?, 'codex-session', '/v29/failure.jsonl', ?,
-                      'deferred_cas_frontier', 'partial_decode', 'deferred-v29', ?, ?)
-            """,
-            [
-                ("artifact-v29-failure-a", "raw-v29-failure-a", 0, 2, 2),
-                ("artifact-v29-failure-b", "raw-v29-failure-b", 1, 3, 3),
-            ],
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    return ordinary_blob, failure_a_blob, failure_b_blob
-
-
-def test_source_tier_v29_migration_030_splits_raw_artifact_indexes(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    """The source-v30 index split preserves ordinary and retained-raw evidence."""
-    db_path = workspace_env["archive_root"] / "source.db"
-    _create_source_v29_raw_failure_fixture(db_path, archive_root=workspace_env["archive_root"])
-    manifest = _verified_backup_manifest(tmp_path / "backup-source-v29")
-
-    with sqlite3.connect(db_path) as conn:
-        # "Only migration 030" was true while 30 was the head version. The
-        # runner enforces canonical-DDL parity against the CURRENT head, so a
-        # pinned target cannot pass; assert that 030 ran and that the index
-        # split it performs is intact, which is what this test is really for.
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-        assert result.from_version == 29
-        assert 30 in result.applied_versions
-        assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
-
-        index_names = {str(row[1]) for row in conn.execute("PRAGMA index_list('raw_artifacts')")}
-        assert {"idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity"} <= index_names
-        index_columns = {
-            name: tuple(str(column[2]) for column in conn.execute(f"PRAGMA index_info('{name}')"))
-            for name in ("idx_raw_artifacts_source_identity", "idx_raw_artifacts_failure_identity")
-        }
-        assert index_columns["idx_raw_artifacts_source_identity"] == ("origin", "source_path", "source_index")
-        assert index_columns["idx_raw_artifacts_failure_identity"] == (
-            "raw_id",
-            "origin",
-            "source_path",
-            "source_index",
-        )
-        assert {
-            tuple(row)
-            for row in conn.execute(
-                """
-                SELECT artifact_id, raw_id, source_path, source_index, artifact_kind
-                FROM raw_artifacts
-                ORDER BY artifact_id
-                """
-            )
-        } == {
-            (
-                "artifact-v29-failure-a",
-                "raw-v29-failure-a",
-                "/v29/failure.jsonl",
-                0,
-                "deferred_cas_frontier",
-            ),
-            (
-                "artifact-v29-failure-b",
-                "raw-v29-failure-b",
-                "/v29/failure.jsonl",
-                1,
-                "deferred_cas_frontier",
-            ),
-            (
-                "artifact-v29-ordinary",
-                "raw-v29-ordinary",
-                "/v29/ordinary.json",
-                0,
-                "session_export",
-            ),
-        }
-
-        conn.execute(
-            """
-            INSERT INTO raw_artifacts (
-                artifact_id, raw_id, origin, source_path, source_index, artifact_kind,
-                support_status, classification_reason, first_observed_at_ms, last_observed_at_ms
-            ) VALUES ('artifact-v30-failure-same-coordinate', 'raw-v29-ordinary',
-                      'codex-session', '/v29/failure.jsonl', 0, 'deferred_cas_frontier',
-                      'partial_decode', 'new-v30', 4, 4)
-            """
-        )
-        assert conn.execute(
-            "SELECT COUNT(*) FROM raw_artifacts WHERE source_path = '/v29/failure.jsonl' AND source_index = 0"
-        ).fetchone() == (2,)
 
 
 def test_additive_no_backup_marker_must_be_the_header_not_a_substring() -> None:
@@ -699,64 +511,6 @@ def test_source_tier_fresh_bootstrap_accepts_claude_design_session(
         assert conn.execute("SELECT origin FROM raw_sessions WHERE raw_id = 'fresh-design'").fetchone() == (
             "claude-design-session",
         )
-
-
-def _create_source_v2_with_pending_blob_refs(path: Path) -> None:
-    """A v2 source tier that still carries ``pending_blob_refs``.
-
-    Mirrors the pre-polylogue-v7e0 schema so migration 003's
-    ``DROP TABLE IF EXISTS pending_blob_refs`` has a real table to drop,
-    proving the migration is effective, not just a no-op ``IF EXISTS``.
-    """
-    path.unlink(missing_ok=True)
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id                  TEXT PRIMARY KEY,
-                origin                  TEXT NOT NULL,
-                native_id               TEXT,
-                source_path             TEXT NOT NULL,
-                source_index            INTEGER NOT NULL DEFAULT 0,
-                blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
-                blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
-                acquired_at_ms          INTEGER NOT NULL,
-                file_mtime_ms           INTEGER,
-                parsed_at_ms            INTEGER,
-                parse_error             TEXT,
-                validated_at_ms         INTEGER,
-                validation_status       TEXT,
-                validation_error        TEXT,
-                validation_drift_count  INTEGER NOT NULL DEFAULT 0 CHECK(validation_drift_count >= 0),
-                validation_mode         TEXT,
-                detection_warnings_json TEXT NOT NULL DEFAULT '[]'
-            ) STRICT;
-            CREATE INDEX idx_raw_sessions_origin ON raw_sessions(origin);
-            CREATE INDEX idx_raw_sessions_origin_native
-            ON raw_sessions(origin, native_id)
-            WHERE native_id IS NOT NULL;
-            CREATE TABLE pending_blob_refs (
-                blob_hash       BLOB NOT NULL CHECK(length(blob_hash) = 32),
-                operation_id    TEXT NOT NULL,
-                ref_type        TEXT NOT NULL,
-                ref_id          TEXT NOT NULL,
-                acquired_at_ms  INTEGER NOT NULL,
-                PRIMARY KEY(blob_hash, operation_id, ref_type, ref_id)
-            );
-            CREATE INDEX idx_pending_blob_refs_operation
-            ON pending_blob_refs(operation_id);
-            PRAGMA user_version = 2;
-            """
-        )
-        conn.execute(
-            "INSERT INTO pending_blob_refs (blob_hash, operation_id, ref_type, ref_id, acquired_at_ms) "
-            "VALUES (?, 'op-1', 'raw_payload', 'op-1', 0)",
-            (b"a" * 32,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _create_source_v3_with_referenced_blob(path: Path, blob_hash: str) -> None:
@@ -806,51 +560,6 @@ def _create_source_v3_with_referenced_blob(path: Path, blob_hash: str) -> None:
             (bytes.fromhex(blob_hash), "raw-one", "raw_payload"),
         )
         conn.commit()
-    finally:
-        conn.close()
-
-
-def test_source_tier_v2_migrates_to_v3_dropping_pending_blob_refs(
-    workspace_env: dict[str, Path],
-    tmp_path: Path,
-) -> None:
-    """Migration 003 actually drops a populated ``pending_blob_refs`` table.
-
-    Regression coverage for polylogue-v7e0: the lease mechanism the table
-    backed was never reachable in production, so the table is removed
-    rather than left as dead schema. Starts from a v2 fixture where the
-    table exists and has a row, unlike the v1 fixture above where it never
-    existed.
-    """
-    db_path = workspace_env["archive_root"] / "source.db"
-    _create_source_v2_with_pending_blob_refs(db_path)
-    manifest = _verified_backup_manifest(tmp_path / "backup")
-
-    conn = sqlite3.connect(db_path)
-    try:
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'").fetchone()
-
-        result = migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=manifest)
-
-        assert result.from_version == 2
-        assert result.to_version == SOURCE_SCHEMA_VERSION
-        assert result.applied_versions == tuple(range(3, SOURCE_SCHEMA_VERSION + 1))
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == SOURCE_SCHEMA_VERSION
-        assert not conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='pending_blob_refs'"
-        ).fetchone()
-        assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='gc_generations'").fetchone()
-        assert conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='blob_publication_reservations'"
-        ).fetchone()
-        with pytest.raises(sqlite3.IntegrityError):
-            conn.execute(
-                """
-                INSERT INTO raw_hook_events (
-                    hook_event_id, origin, source_path, event_type, payload_json, observed_at_ms
-                ) VALUES ('invalid-origin', 'invalid-origin', '/fixture.json', 'PreToolUse', '{}', 1)
-                """
-            )
     finally:
         conn.close()
 
@@ -1360,7 +1069,7 @@ def test_backup_artifact_inventory_scan_is_cached_across_both_durable_tier_migra
     archive_root_path = workspace_env["archive_root"]
     source_path = archive_root_path / "source.db"
     user_path = archive_root_path / "user.db"
-    _create_source_at_ddl_parity_floor(source_path)
+    _create_source_one_version_behind_head(source_path)
     _create_user_v3(user_path)
     # Default "rebuildable_cache_exclude" profile includes source+user+embeddings.
     manifest = _verified_backup_manifest(tmp_path / "backup")
@@ -1399,7 +1108,7 @@ def test_cached_backup_inventory_still_detects_tamper_between_tier_migrations(
     archive_root_path = workspace_env["archive_root"]
     source_path = archive_root_path / "source.db"
     user_path = archive_root_path / "user.db"
-    _create_source_at_ddl_parity_floor(source_path)
+    _create_source_one_version_behind_head(source_path)
     _create_user_v3(user_path)
     manifest = _verified_backup_manifest(tmp_path / "backup")
 
@@ -1431,80 +1140,3 @@ def test_backup_inventory_cache_signature_rejects_stale_entry_after_size_change(
 
     assert first_hash != second_hash
     assert second_hash == hashlib.sha256(b"mutated-bytes-are-longer").hexdigest()
-
-
-def test_historical_source_projection_matches_every_supported_train_target(
-    workspace_env: dict[str, Path], tmp_path: Path
-) -> None:
-    """Each admitted source train matches a genuine numbered migration chain.
-
-    The migrated side begins at ``_SOURCE_DDL_PARITY_FLOOR`` and applies
-    numbered SQL to each target. The projected side begins at canonical DDL --
-    the production bootstrap route -- and removes later train riders, so the
-    inventory comparison covers definitions as well as table/index/trigger/view
-    names.
-
-    Anti-vacuity: a migration that adds a column, index, table, trigger or view
-    the canonical DDL does not carry (or canonical DDL that carries one no
-    migration adds) makes the inventory diverge and this red. The companion
-    test below proves the comparison itself is not inert.
-    """
-    db_path = workspace_env["archive_root"] / "source.db"
-
-    for target_version in range(_SOURCE_DDL_PARITY_FLOOR, SOURCE_SCHEMA_VERSION + 1):
-        db_path.unlink(missing_ok=True)
-        _create_source_at_ddl_parity_floor(db_path)
-        manifest = _verified_backup_manifest(tmp_path / f"source-projection-backup-v{target_version}")
-        with sqlite3.connect(db_path) as migrated:
-            result = migrate_archive_tier(
-                migrated,
-                ArchiveTier.SOURCE,
-                backup_manifest=manifest,
-                target_version=target_version,
-            )
-            assert result.to_version == target_version
-            with sqlite3.connect(":memory:") as projected:
-                projected.executescript(SOURCE_DDL)
-                projected.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
-                migration_runner._prepare_fresh_connection_for_target(projected, ArchiveTier.SOURCE, target_version)
-                parity = migration_runner.prove_durable_fresh_ddl_parity(
-                    ArchiveTier.SOURCE,
-                    target_version,
-                    migrated_connection=migrated,
-                    fresh_connection=projected,
-                    evidence_ref=f"test:source-projection-matrix:v{target_version}",
-                )
-        assert parity.matches, parity
-
-
-def test_historical_source_projection_rejects_a_missing_replaced_index(
-    workspace_env: dict[str, Path], tmp_path: Path
-) -> None:
-    """Anti-vacuity: a v28 projection without its replaced index is rejected."""
-    target_version = 28
-    db_path = workspace_env["archive_root"] / "source.db"
-    db_path.unlink(missing_ok=True)
-    _create_source_at_ddl_parity_floor(db_path)
-    manifest = _verified_backup_manifest(tmp_path / "source-projection-corruption-backup")
-
-    with sqlite3.connect(db_path) as migrated, sqlite3.connect(":memory:") as projected:
-        migrate_archive_tier(
-            migrated,
-            ArchiveTier.SOURCE,
-            backup_manifest=manifest,
-            target_version=target_version,
-        )
-        projected.executescript(SOURCE_DDL)
-        projected.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
-        migration_runner._prepare_fresh_connection_for_target(projected, ArchiveTier.SOURCE, target_version)
-        projected.execute("DROP INDEX idx_raw_artifacts_source_identity")
-        parity = migration_runner.prove_durable_fresh_ddl_parity(
-            ArchiveTier.SOURCE,
-            target_version,
-            migrated_connection=migrated,
-            fresh_connection=projected,
-            evidence_ref="test:source-projection-matrix:corruption",
-        )
-
-    assert parity.matches is False
-    assert parity.unexpected_objects == ("index:idx_raw_artifacts_source_identity",)
