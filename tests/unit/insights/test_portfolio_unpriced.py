@@ -7,13 +7,13 @@ sessions" reads identically whether none or most were unpriced.
 
 from __future__ import annotations
 
-from polylogue.archive.session.models import SessionProfile
-from polylogue.insights.portfolio import (
+from polylogue.analysis.portfolio import (
     compile_portfolio_bundle,
     render_portfolio_markdown,
     render_portfolio_plain,
 )
-from polylogue.insights.postmortem import PostmortemScope
+from polylogue.analysis.postmortem import PostmortemScope
+from polylogue.archive.session.models import SessionProfile
 
 
 def _profile(session_id: str, *, cost: float, provenance: str) -> SessionProfile:

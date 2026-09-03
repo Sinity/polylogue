@@ -25,7 +25,7 @@ from polylogue.archive.semantic.cost_compute import compute_session_cost
 from polylogue.archive.semantic.cost_records import ModelUsageTotals
 
 if TYPE_CHECKING:
-    from polylogue.storage.insights.session.records import SessionProfileRecord
+    from polylogue.storage.derived.session.records import SessionProfileRecord
 
 __all__ = [
     "ProfileCostLanes",
