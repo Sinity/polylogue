@@ -156,6 +156,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "testmon-selection",
+        "Prove a generated fixture uses a small affected selection with the managed worker default.",
+        "module",
+        ("devtools.verify_testmon_selection",),
+        label="gate testmon-selection",
+        in_quick=True,
+    ),
+    Gate(
         "consumer-reachability",
         "Report newly added modules, tables, and tools without production consumers.",
         "module",

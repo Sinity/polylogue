@@ -6,7 +6,7 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 
 - the repository's managed environment (``POLYLOGUE_ROOT`` and friends, a
   repo-local pycache prefix);
-- a single-process worker default (``-n 0``) for fast focused runs, overridable
+- an eight-worker default (``-n 8``), overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
@@ -45,7 +45,7 @@ from devtools.pytest_slot import (
     remove_temp_tree,
     run_pytest,
 )
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, sync_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
@@ -320,7 +320,7 @@ def _worker_args(selection: list[str]) -> list[str]:
     if _has_worker_flag(selection):
         return []
     requested = agent_worker_cap(configured_pytest_worker_request(os.environ), os.environ)
-    return ["-n", str(requested if requested is not None else 0)]
+    return ["-n", str(requested if requested is not None else 8)]
 
 
 def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:
@@ -483,6 +483,7 @@ def main(argv: list[str] | None = None) -> int:
         return print_outliers(outlier_count)
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    sync_testmon_graph(ROOT)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:

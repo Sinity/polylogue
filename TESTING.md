@@ -100,12 +100,7 @@ advanced rather than recomputed; a worktree is provisioned by copying master's
 datafile, which is valid immediately because paths are repo-relative and
 fingerprints are by content.
 
-A checkout with no datafile is not an error: the run says so, seeds the
-datafile, and runs every test. A datafile that cannot be opened, or that no
-compatible testmon wrote, stops the run with a typed `graph_unusable` result
-naming the remedy — delete it and rerun. `--all` runs every test and still
-updates fingerprints; `--quick` runs the static gates alone. A selected run
-reports only the tests it executed.
+A managed run first snapshots the newer primary checkout datafile into a lane, using SQLite backup so the copy is consistent. An unusable lane copy is replaced by that snapshot, while no available seed is reported as a full run that seeds the graph. `--all` runs every test and still updates fingerprints, `--quick` runs the static gates alone, and a selected run reports only the tests it executed.
 
 The corpus runs as ONE collection. testmon drops every recorded test a run did
 not collect, so a partitioned run would keep only its last partition's edges.
