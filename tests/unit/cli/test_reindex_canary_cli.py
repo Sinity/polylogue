@@ -298,8 +298,12 @@ def _write_real_unreviewed_canary_report(
     monkeypatch.setattr("polylogue.config.resolve_archive_root", lambda: live_root)
     with sqlite3.connect(canary_root / "index.db") as connection:
         connection.execute("UPDATE sessions SET title_ref = NULL, title_confidence = NULL")
-        # Model a targeted title backfill: the pre-rebuild index lacks authored
-        # title values and the rebuilt candidate restores them.
+        # Model the v43 -> v44 targeted title backfill: the old index shape
+        # lacks authored title values and the rebuilt candidate restores them.
+        # The stamped version is load-bearing -- an expected difference can
+        # only approve a canary whose compared generations cross the delta
+        # that authorizes it, and delta 44 is what owns these two columns.
+        connection.execute("PRAGMA user_version = 43")
 
     receipt_path = _schema_receipt_path(canary_root)
     observed_result = run_reindex_canary(

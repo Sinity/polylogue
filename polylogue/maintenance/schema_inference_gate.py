@@ -1936,7 +1936,13 @@ def validate_schema_inference_receipt(
             try:
                 with (
                     open_readonly_connection(root / "source.db") as source,
-                    open_readonly_connection(ArchiveLocation.resolve(root).active_index_path) as index,
+                    # The active index is read here only to project the live
+                    # blob universe, and a rebuild is the route that carries a
+                    # non-current index forward, so its declared version must
+                    # not gate the rebuild's own preflight.
+                    open_readonly_connection(
+                        ArchiveLocation.resolve(root).active_index_path, validate_schema=False
+                    ) as index,
                 ):
                     referenced_hashes = _referenced_blob_hashes(source, index_conn=index)
                 verified_snapshot = (
