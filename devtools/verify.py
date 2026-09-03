@@ -30,10 +30,13 @@ from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
-    TESTMON_DATA_RELPATH,
     TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
+    discard_testmon_graph,
     inspect_testmon_graph,
+    primary_worktree,
+    sync_testmon_graph,
+    testmon_datafile,
 )
 from devtools.toolchain import venv_python
 from devtools.verification_authority import validate_authority_matrix
@@ -128,9 +131,9 @@ def _anchor_verification_paths() -> None:
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     try:
-        workers = max(0, int(os.environ.get("POLYLOGUE_PYTEST_WORKERS", "0")))
+        workers = max(0, int(os.environ.get("POLYLOGUE_PYTEST_WORKERS", "8")))
     except ValueError:
-        workers = 0
+        workers = 8
     if maximum is not None:
         workers = min(workers, maximum)
     return ["--dist=loadgroup", "-n", str(workers)]
@@ -702,7 +705,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     _anchor_verification_paths()
     validate_authority_matrix()
     started = time.monotonic()
+    seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
+    if graph.status is TestmonGraphStatus.UNUSABLE:
+        # An unusable lane copy cannot be an authority. If the primary seed
+        # was unavailable, discard it so this run honestly reseeds.
+        discard_testmon_graph(ROOT)
+        graph = inspect_testmon_graph(ROOT)
     selection = "all" if args.all_tests else "affected"
     scope = _scope(quick=args.quick, selection=selection)
     try:
@@ -734,6 +743,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             graph_status=str(graph.status),
             graph_reason=graph.reason,
             full_rerun_cause=graph.full_rerun_cause,
+            seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
+            seed_source_mtime_ns=(
+                testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
+            ),
         )
         if graph.status is TestmonGraphStatus.UNUSABLE:
             payload = _finish_and_record_verification(
@@ -744,10 +757,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                 verification_scope=scope.value,
                 final_git_head=git_head(ROOT),
             )
-            sys.stderr.write(
-                f"verify: {graph.reason}.\n"
-                f"  remedy: delete {TESTMON_DATA_RELPATH} and rerun; the next run reseeds it.\n"
-            )
+            sys.stderr.write(f"verify: {graph.reason}; no usable primary seed was available.\n")
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
         if graph.status is TestmonGraphStatus.ABSENT:

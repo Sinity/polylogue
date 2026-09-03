@@ -35,13 +35,7 @@ jobs:
         run: |
           mkdir -p .cache/testmon
           seed=/realm/project/polylogue/.cache/testmon/testmondata
-          if [ -f .cache/testmon/testmondata ]; then
-            echo "runner already has a datafile; keeping it"
-          elif [ -f "$seed" ]; then
-            cp "$seed" .cache/testmon/testmondata
-          else
-            echo "no seed at $seed; this run seeds the graph and runs everything"
-          fi
+          nix develop --command python -m devtools.testmon_provision --seed "$seed"
 
       - name: Verify
         run: nix develop --command devtools verify

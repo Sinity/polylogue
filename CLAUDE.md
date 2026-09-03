@@ -140,10 +140,10 @@ explicit-and-retryable or a typed permanent refusal.
   guard, environment, typed result). Never bare `pytest`.
 - `devtools verify` — static gates plus pytest, selecting from the checkout's
   one testmon datafile (`.cache/testmon/testmondata`, environment `polylogue`)
-  and writing back. No datafile: the run seeds it and runs everything. A
-  corrupt or foreign-format datafile stops with `graph_unusable` — delete it
-  and rerun. `--all` runs every test and still updates fingerprints;
-  `--quick` is the static gates alone.
+  and writing back. A managed run snapshots a newer primary-checkout seed into
+  a lane with SQLite backup, replacing unusable lane copies. If no seed is
+  available, the run reports a full seed run; `--all` runs every test and
+  updates fingerprints, and `--quick` is the static gates alone.
 - Every managed pytest run holds the host's single `pytest` pueue slot: a
   caller outside a queued task (`SINNIXD_JOB_ID` unset) queues, waits, and
   reads the captured log the run prints, and refuses if pueued is unreachable.
