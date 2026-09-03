@@ -17,6 +17,7 @@ def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path)
     # this test's subject is descriptor binding.
     db_path = tmp_path / "descriptor-bound.db"
     with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
         connection.execute("CREATE TABLE evidence (value TEXT)")
         connection.execute("INSERT INTO evidence VALUES ('selected')")
 
@@ -107,6 +108,19 @@ def test_schema_skew_read_profile_refuses_stale_archive_tier(tmp_path: Path) -> 
 
     with pytest.raises(SchemaSkew, match="index schema skew"):
         connection_profile.open_readonly_connection(db_path)
+
+
+def test_schema_skew_diagnostic_read_profile_opens_stale_archive_tier(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {stale_version}")
+
+    reader = connection_profile.open_readonly_connection(db_path, validate_schema=False)
+    try:
+        assert reader.execute("PRAGMA user_version").fetchone() == (stale_version,)
+    finally:
+        reader.close()
 
 
 def test_schema_skew_explicit_tier_checks_noncanonical_generation_path(tmp_path: Path) -> None:
