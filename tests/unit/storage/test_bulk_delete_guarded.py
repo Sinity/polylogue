@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -317,8 +318,8 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
     # store's own ``_conn`` nor a separate connection observes those deletes.
     real_connect = sqlite3.connect
 
-    def _connect_with_canaries(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
-        conn = real_connect(database, *args, **kwargs)  # type: ignore[arg-type]
+    def _connect_with_canaries(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connection:
+        conn: sqlite3.Connection = real_connect(database, *args, **kwargs)
         if str(database) == str(index_db_path):
             _install_canary_triggers(conn, counts)
         return conn
