@@ -91,7 +91,7 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     # interrupted the read rather than merely finishing before the grace
     # timeout elapsed.
     assert budget["cancellation_attempted"] is True
-    assert budget["cancellation_outcome"] == "cancelled_confirmed"
+    assert budget["cancellation_outcome"] == "cancelled_confirmed", budget["cancellation_detail"]
     assert budget["cancellation_exercised"] is True
     cancellation_elapsed_ms = budget["cancellation_elapsed_ms"]
     max_cancel_grace_ms = budget["max_cancel_grace_ms"]
