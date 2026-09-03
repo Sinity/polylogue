@@ -666,12 +666,12 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
     assert row == (1000, 500, 1, 0.5)
 
 
-def test_v85_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> None:
-    """The declared v85 fast-forward preserves the live thread projection."""
+def test_v86_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> None:
+    """The declared v86 fast-forward preserves the live thread projection."""
     from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
     from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
 
-    plan = index_fast_forward_plan(84, 85)
+    plan = index_fast_forward_plan(85, 86)
     assert plan is not None
 
     conn = sqlite3.connect(tmp_path / "scratch.db")
@@ -688,7 +688,7 @@ def test_v85_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> Non
             """
         )
         conn.execute("INSERT INTO threads VALUES ('codex-session:s1', 'repo-1', 'example/repo')")
-        conn.execute("PRAGMA user_version = 84")
+        conn.execute("PRAGMA user_version = 85")
         conn.commit()
 
         apply_index_fast_forward(conn, plan)

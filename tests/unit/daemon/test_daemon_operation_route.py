@@ -72,7 +72,7 @@ def test_one_uds_operation_request_returns_typed_result_without_health_probe(
 
 
 def test_operation_route_bounds_the_serialized_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runtime = Path(tempfile.mkdtemp(prefix="plg-operation-limit-"))
+    runtime = Path(tempfile.mkdtemp(prefix="plg-operation-limit-", dir="/tmp"))
     archive = tmp_path / "archive"
     archive.mkdir()
     (archive / "index.db").write_bytes(b"index")

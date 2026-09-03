@@ -544,8 +544,13 @@ def test_archive_fts_global_repair_scopes_bounded_mmap_to_main_tier(
     archive_db = tmp_path / "index.db"
     source_path = tmp_path / "codex.jsonl"
     _seed_minimal_archive(archive_db, source_path)
-    for tier_name in ("user.db", "embeddings.db", "ops.db"):
-        sqlite3.connect(tmp_path / tier_name).close()
+    for tier_name, tier in (
+        ("user.db", ArchiveTier.USER),
+        ("embeddings.db", ArchiveTier.EMBEDDINGS),
+        ("ops.db", ArchiveTier.OPS),
+    ):
+        with sqlite3.connect(tmp_path / tier_name) as conn:
+            initialize_archive_tier(conn, tier)
 
     observed: dict[str, int] = {}
     real_configure = dangling_repair.configure_bounded_repair_connection
