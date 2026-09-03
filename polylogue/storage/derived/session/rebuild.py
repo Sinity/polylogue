@@ -32,7 +32,6 @@ from polylogue.insights.archive_models import (
 )
 from polylogue.insights.fallback import FallbackReason
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
-from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.derived.session.latency_profiles import (
     build_latency_profile_facts,
     build_session_latency_profile_record,
@@ -55,6 +54,7 @@ from polylogue.storage.derived.session.timeline_rows import (
     build_session_phase_records,
     build_session_work_event_records,
 )
+from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,

@@ -126,6 +126,12 @@ from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import Heartbeat, PreparedBlob
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    SessionInsightStatusSnapshot,
+)
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -133,12 +139,6 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.derived.session.records import SessionProfileRecord
-from polylogue.storage.derived.session.runtime import (
-    SESSION_INSIGHT_MATERIALIZATION_TYPES,
-    SessionInsightStatusSnapshot,
-)
-from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.introspection import relation_exists as _relation_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
