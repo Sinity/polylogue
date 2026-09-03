@@ -2128,8 +2128,14 @@ def _embed_archive_sessions_sync(
             vec_provider,
             session_id,
             embeddings_db_path=embeddings_db,
+            stop_after_seconds=max(0.0, _DAEMON_EMBED_STOP_AFTER_SECONDS - (time.monotonic() - started_at)),
         )
         processed += 1
+        if outcome.status == "deferred":
+            embedded += 1 if outcome.embedded_message_count else 0
+            message_budget -= outcome.embedded_message_count
+            deferred = True
+            break
         if outcome.status == "embedded":
             embedded += 1
             message_budget -= outcome.embedded_message_count

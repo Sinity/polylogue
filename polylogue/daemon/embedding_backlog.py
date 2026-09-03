@@ -296,8 +296,18 @@ def _drain_archive_embedding_backlog_once(index_db: Path, *, archive_root: Path)
                 monthly_cap,
             )
             break
-        outcome = embed_archive_session_sync(index_db, vec_provider, item.session_id, embeddings_db_path=embeddings_db)
+        outcome = embed_archive_session_sync(
+            index_db,
+            vec_provider,
+            item.session_id,
+            embeddings_db_path=embeddings_db,
+            stop_after_seconds=_DAEMON_EMBED_STOP_AFTER_SECONDS,
+        )
         processed += 1
+        if outcome.status == "deferred":
+            embedded_messages += outcome.embedded_message_count
+            logger.info("embed: archive %s deferred with resumable progress", item.session_id)
+            break
         if outcome.status == "embedded":
             embedded += 1
             embedded_messages += outcome.embedded_message_count
