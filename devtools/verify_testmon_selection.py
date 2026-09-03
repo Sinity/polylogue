@@ -21,7 +21,13 @@ def main(_argv: list[str] | None = None) -> int:
     to zero makes the worker assertion fail; refusing the seed makes the first
     run fail to establish the graph.
     """
-    if _pytest_worker_args() != ["--dist=loadgroup", "-n", "8"]:
+    configured_workers = os.environ.pop("POLYLOGUE_PYTEST_WORKERS", None)
+    try:
+        default_worker_args = _pytest_worker_args()
+    finally:
+        if configured_workers is not None:
+            os.environ["POLYLOGUE_PYTEST_WORKERS"] = configured_workers
+    if default_worker_args != ["--dist=loadgroup", "-n", "8"]:
         print("testmon-selection: managed verification does not default to eight workers")
         return 1
     with tempfile.TemporaryDirectory(prefix="polylogue-testmon-gate-") as temporary:
