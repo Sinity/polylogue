@@ -1100,6 +1100,32 @@ components:
             type: string
           title: Degraded
           type: array
+        matched:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: Matched
+        analyzed:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: Analyzed
+        request_scope_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Request Scope Fingerprint
+        result_scope_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Result Scope Fingerprint
       required:
       - run_id
       - archive_epoch

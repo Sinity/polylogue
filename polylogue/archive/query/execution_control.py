@@ -121,6 +121,8 @@ class QueryExecutionReceipt:
     result_pages_emitted: int = 0
     cleanup_complete: bool = False
     error: str | None = None
+    request_scope_fingerprint: str | None = None
+    result_scope_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -140,6 +142,8 @@ class QueryExecutionReceipt:
             "result_pages_emitted": self.result_pages_emitted,
             "cleanup_complete": self.cleanup_complete,
             "error": self.error,
+            "request_scope_fingerprint": self.request_scope_fingerprint,
+            "result_scope_fingerprint": self.result_scope_fingerprint,
         }
 
 
@@ -230,6 +234,15 @@ class QueryExecutionContext:
                 if existing is not None and existing != normalized:
                     raise RuntimeError("query execution reported contradictory exact selection counts")
                 self.receipt.selected_rows_exact = normalized
+
+    def record_scope_fingerprints(self, *, request: str, result: str) -> None:
+        """Record and compare independently derived request/result scopes."""
+        from polylogue.archive.query.scope import assert_scope_match
+
+        assert_scope_match(request, result)
+        with self._receipt_lock:
+            self.receipt.request_scope_fingerprint = request
+            self.receipt.result_scope_fingerprint = result
 
     def mark_cleanup_complete(self) -> None:
         with self._receipt_lock:

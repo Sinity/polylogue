@@ -1387,6 +1387,54 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
     assert payload == {"mode": "count", "origin": "codex-session", "count": 2}
 
 
+def test_async_execute_query_archive_analyze_id_keeps_exact_session_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An identity predicate must reach aggregate execution, not mean all rows."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "codex-session:one"
+            return token
+
+        def count_sessions(self, **kwargs: object) -> int:
+            assert kwargs["session_id"] == "codex-session:one"
+            return 1
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        _execute_query_params(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:one",
+                "count_only": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(capsys.readouterr().out)["count"] == 1
+
+
 def test_async_execute_query_archive_count_applies_boolean_predicate(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

@@ -260,7 +260,7 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
         else False
     )
     freshness_ready = (
-        True
+        False
         if freshness_records is None
         else freshness_ready_record_trusted(
             state=recorded_state,
@@ -277,6 +277,22 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
             source_has_rows=source_has_rows,
         )
     )
+    # Ledger state is a cache of a measurement, not authority to refuse a
+    # read. Re-measure a non-trusted recorded scope against the rows the
+    # executor will actually search; a deferred single-session observation
+    # must not masquerade as archive-wide incompleteness.
+    if freshness is not None and not freshness_ready:
+        measured = _archive_exact_blocks_surface(conn)
+        measured.update(
+            {
+                "freshness_known": True,
+                "freshness_state": recorded_state,
+                "freshness_recorded_state": recorded_state,
+                "freshness_trusted": False,
+                "freshness_detail": freshness.get("detail"),
+            }
+        )
+        return measured
     freshness_state = recorded_state
     if recorded_state == "ready" and not freshness_ready:
         freshness_state = UNKNOWN if source_rows == 0 and indexed_rows == 0 and source_has_rows is not False else STALE
@@ -309,11 +325,27 @@ def _archive_readiness_payload(conn: sqlite3.Connection, *, exact: bool) -> dict
     block_source_rows = _payload_int(blocks, "source_rows")
     block_indexed_rows = _payload_int(blocks, "indexed_rows")
     invariant_ready = bool(blocks["ready"])
+    event_source_exists = _table_exists(conn, "session_work_events")
+    event_exists = _table_exists(conn, "session_work_events_fts")
+    event_docsize_exists = _table_exists(conn, "session_work_events_fts_docsize")
+    event_triggers_present = event_exists and _triggers_present(
+        conn, ("session_work_events_fts_ai", "session_work_events_fts_ad", "session_work_events_fts_au")
+    )
+    if not event_source_exists:
+        event_ready = not event_exists
+    elif not event_exists or not event_docsize_exists:
+        event_ready = False
+    else:
+        event_source_rows = int(conn.execute("SELECT COUNT(*) FROM session_work_events").fetchone()[0] or 0)
+        event_indexed_rows = int(
+            conn.execute("SELECT COUNT(*) FROM session_work_events_fts_docsize").fetchone()[0] or 0
+        )
+        event_ready = event_triggers_present and event_source_rows == event_indexed_rows
     return {
         "indexed_surface": "messages_fts",
         "messages_ready": invariant_ready,
-        "session_work_events_ready": True,
-        "invariant_ready": invariant_ready,
+        "session_work_events_ready": event_ready,
+        "invariant_ready": invariant_ready and event_ready,
         "message_indexed_count": block_indexed_rows,
         "message_indexable_count": block_source_rows,
         # source_rows == 0 means there is nothing to index -- a genuine,

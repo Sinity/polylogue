@@ -440,6 +440,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     }
     if compiled_spec.boolean_predicate is not None:
         filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
+    session_scope_id = compiled_spec.session_id or (
+        str(params["conv_id"]) if params.get("conv_id") is not None else None
+    )
     lineage_seed_session_id = _lineage_seed_from_predicate(compiled_spec.boolean_predicate)
     if _try_emit_daemon_session_page(
         env,
@@ -582,6 +585,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             session_ids = _matched_session_ids_for_stats(
                 archive,
                 query=query,
+                session_id=session_scope_id,
                 limit=aggregate_limit,
                 filter_kwargs=filter_kwargs,
             )
@@ -665,6 +669,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                         since_ms=since_ms,
                         until_ms=until_ms,
                         since_session_id=since_session_id,
+                        session_id=session_scope_id,
                         boolean_predicate=filter_kwargs.get("boolean_predicate"),
                     ),
                     output_format=output_format,
@@ -702,6 +707,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     since_ms=since_ms,
                     until_ms=until_ms,
                     since_session_id=since_session_id,
+                    session_id=session_scope_id,
                     boolean_predicate=filter_kwargs.get("boolean_predicate"),
                 ),
                 output_format=output_format,
@@ -2203,9 +2209,15 @@ def _matched_session_ids_for_stats(
     archive: ArchiveStore,
     *,
     query: str,
+    session_id: str | None,
     limit: int | None,
     filter_kwargs: _ArchiveFilterKwargs,
 ) -> tuple[str, ...]:
+    if session_id is not None:
+        try:
+            return (archive.resolve_session_id(session_id),)
+        except KeyError:
+            return ()
     if not query:
         return ()
     return archive.search_session_ids(query, limit=limit, **filter_kwargs)

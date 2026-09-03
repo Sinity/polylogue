@@ -25,6 +25,10 @@ class AuthorityEnvelope(BaseModel):
     server_identity: Literal["daemon", "direct"]
     elapsed_ms: int = Field(ge=0)
     degraded: tuple[str, ...] = ()
+    matched: int | None = Field(default=None, ge=0)
+    analyzed: int | None = Field(default=None, ge=0)
+    request_scope_fingerprint: str | None = None
+    result_scope_fingerprint: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -44,6 +48,10 @@ def build_authority_envelope(
     started_at: float | None = None,
     run_id: str | None = None,
     degraded: tuple[str, ...] = (),
+    matched: int | None = None,
+    analyzed: int | None = None,
+    request_scope_fingerprint: str | None = None,
+    result_scope_fingerprint: str | None = None,
 ) -> AuthorityEnvelope:
     """Assemble the envelope from facts the operation boundary already resolved.
 
@@ -65,6 +73,10 @@ def build_authority_envelope(
         server_identity=server_identity,
         elapsed_ms=max(0, round((monotonic() - started_at) * 1000)) if started_at is not None else 0,
         degraded=tuple(dict.fromkeys(reasons)),
+        matched=matched,
+        analyzed=analyzed,
+        request_scope_fingerprint=request_scope_fingerprint,
+        result_scope_fingerprint=result_scope_fingerprint,
     )
 
 
