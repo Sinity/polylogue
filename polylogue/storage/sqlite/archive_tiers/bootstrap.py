@@ -612,6 +612,9 @@ def initialize_archive_database(
                     from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
                     ensure_runtime_indexes_sync(conn)
+                    from polylogue.storage.sqlite.schema_bootstrap import ensure_derived_schema_identity
+
+                    ensure_derived_schema_identity(conn, tier.value)
                     from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
                     assert_schema_manifest(conn, tier)
