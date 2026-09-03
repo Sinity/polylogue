@@ -19,7 +19,8 @@ PROTOCOL_VERSION = "polylogue.material-protocol/v1"
 #: usage) moved into a per-revision head segment; transcript segments carry
 #: only immutable records and are the sole byte-reuse surface for appends.
 #: v3: block records carry canonical tool outcomes and unknown-outcome reasons.
-SEMANTICS_VERSION = 3
+#: v4: attachment records carry direction, producer_ref and caption.
+SEMANTICS_VERSION = 4
 
 #: Version of the canonicalization algorithm (NFC + sorted-key JSON framing).
 CANONICALIZER_VERSION = 1
