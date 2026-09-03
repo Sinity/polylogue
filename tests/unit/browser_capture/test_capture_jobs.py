@@ -15,6 +15,7 @@ from typing import Any, cast
 
 import pytest
 
+from polylogue.browser_capture import capture_jobs as capture_jobs_module
 from polylogue.browser_capture.capture_jobs import (
     CaptureJobRegistry,
     canonical_digest,
@@ -52,6 +53,19 @@ def request(host: str, port: int, method: str, path: str, body: dict[str, object
     )
     response = connection.getresponse()
     return response.status, json.loads(response.read())
+
+
+def housekeeping(host: str, port: int, *, now: datetime | None = None) -> list[str]:
+    """Drive the receiver's spool housekeeping route, which owns retention collection."""
+    original = capture_jobs_module._now
+    if now is not None:
+        capture_jobs_module._now = lambda: now
+    try:
+        status, payload = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+    finally:
+        capture_jobs_module._now = original
+    assert status == 200
+    return cast(list[str], payload["collected"])
 
 
 def create(host: str, port: int) -> dict[str, Any]:
@@ -486,7 +500,11 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
 
 
 def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
-    """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail."""
+    """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
+
+    Collection is driven only through the receiver's housekeeping route, so
+    unwiring it from that route makes this fail too.
+    """
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -565,8 +583,8 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
             },
         )
         assert status == 200
-        registry = CaptureJobRegistry(tmp_path, "receiver")
-        assert registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC))["deleted"] == []
+        future = datetime(2050, 1, 1, tzinfo=UTC)
+        assert housekeeping(host, port, now=future) == []
 
         status, completed = request(
             host,
@@ -581,7 +599,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
             },
         )
         assert status == 200
-        assert registry.gc()["deleted"] == []
+        assert housekeeping(host, port) == []
         status, page = request(
             host,
             port,
@@ -591,7 +609,17 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
         )
         assert status == 200
         assert page["timelines"]["conversation:1"] == [second["event"], first["event"]]
-        assert registry.gc(now=datetime(2050, 1, 1, tzinfo=UTC)) == {"deleted": [job["job_id"]], "count": 1}
+        assert housekeeping(host, port, now=future) == [job["job_id"]]
+        assert (
+            request(
+                host,
+                port,
+                "GET",
+                f"/v1/capture-jobs/{job['job_id']}?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+                {},
+            )[0]
+            == 404
+        )
 
 
 def test_legacy_checkpoint_is_a_typed_orphan_and_routes_are_declared(tmp_path: Path) -> None:

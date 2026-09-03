@@ -9,12 +9,10 @@ from collections import defaultdict
 
 def read_capture_job_retention(connection: sqlite3.Connection, job_id: str) -> dict[str, object] | None:
     """Read lifecycle fields for receiver read-surface consumers."""
-    row = connection.execute(
-        "SELECT request_budget_json, retention_json FROM capture_jobs WHERE job_id=?", (job_id,)
-    ).fetchone()
+    row = connection.execute("SELECT retention_json FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
     if row is None:
         return None
-    return {"request_budget": json.loads(row[0]), "retention": json.loads(row[1])}
+    return {"retention": json.loads(row[0])}
 
 
 def read_capture_job_events(connection: sqlite3.Connection, job_id: str, limit: int) -> list[dict[str, object]]:
