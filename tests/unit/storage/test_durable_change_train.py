@@ -39,7 +39,6 @@ from polylogue.storage.sqlite.durable_change_train import (
     assert_source_continuity_apply_allowed,
     durable_change_train_manifest_path,
     durable_change_train_policy_report,
-    durable_migration_sidecar_for_slot,
     execute_durable_change_train,
     mark_source_continuity_pending_intent_terminal,
     reconcile_durable_change_train_startup,
@@ -69,7 +68,6 @@ from polylogue.storage.sqlite.migration_runner import (
     durable_migration_claim_for_sql,
     durable_migration_collision_report,
     load_durable_change_train_manifest,
-    migrate_archive_tier,
     prove_durable_change_train,
     prove_durable_fresh_ddl_parity,
     reconcile_interrupted_durable_change_train,
@@ -252,6 +250,15 @@ def _admitted(
     )
 
 
+_SOURCE_ADOPTION_FLOOR = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+# The first slot a source train may own. Synthetic future-migration fixtures
+# must sit above the floor, or sidecar discovery refuses them before the
+# behavior under test runs.
+_NEXT_SOURCE_SLOT = _SOURCE_ADOPTION_FLOOR + 1
+_NEXT_SOURCE_SQL_NAME = f"{_NEXT_SOURCE_SLOT:03d}_future_items.sql"
+_NEXT_SOURCE_SIDECAR_NAME = f"{_NEXT_SOURCE_SLOT:03d}.train.json"
+
+
 def _install_synthetic_migration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -309,55 +316,6 @@ def _runtime_results() -> tuple[DurableRuntimeConsumerResult, ...]:
         DurableRuntimeConsumerResult("consumer-0", "proof:behavior:0", True),
         DurableRuntimeConsumerResult("consumer-1", "proof:behavior:1", True),
     )
-
-
-def test_source_v27_sidecar_proves_the_real_hook_event_writer_against_fresh_schema(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-
-    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 27)
-    assert sidecar is not None
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-
-    results = _runtime_consumer_results(sidecar.train, tmp_path)
-
-    hook_writer = next(result for result in results if result.consumer_id == "source-hook-event-writer")
-    assert hook_writer.passed is True
-    assert hook_writer.behavior_proof_ref == "proof:source-v27:raw-hook-events-origin-repair"
-    assert hook_writer.detail == "wrote and read back a hook payload in a fresh source tier"
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
-        assert conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone() == (0,)
-
-
-def test_source_v29_sidecar_proves_failure_lifecycle_consumers_against_fresh_schema(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-
-    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 29)
-    assert sidecar is not None
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-
-    results = _runtime_consumer_results(sidecar.train, tmp_path)
-
-    assert [(result.consumer_id, result.passed) for result in results] == [
-        ("raw-failure-lifecycle", True),
-        ("historical-disposition-actuator", True),
-    ]
-    assert results[0].detail == "read raw failure lifecycle state=healthy"
-    assert results[1].detail == "validated one raw failure disposition without mutation"
-
-
-def test_source_v30_sidecar_proves_raw_artifact_upsert_against_fresh_schema(tmp_path: Path) -> None:
-    sidecar = durable_migration_sidecar_for_slot(ArchiveTier.SOURCE, 30)
-    assert sidecar is not None
-
-    results = _runtime_consumer_results(sidecar.train, tmp_path)
-
-    assert [(result.consumer_id, result.passed) for result in results] == [
-        ("raw-artifact-upsert", True),
-        ("raw-failure-lifecycle", True),
-        ("raw-materialization-replay", True),
-    ]
-    assert results[0].detail == "wrote and read back one raw artifact in the projected source tier"
 
 
 def test_applied_train_release_requires_the_source_hook_event_writer_probe(
@@ -1008,7 +966,7 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (source_package / "__init__.py").write_text("", encoding="utf-8")
     sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
-    sql_path = source_package / "027_future_items.sql"
+    sql_path = source_package / _NEXT_SOURCE_SQL_NAME
     sql_path.write_text(sql, encoding="utf-8")
     claim = durable_migration_claim_for_sql(
         ArchiveTier.SOURCE,
@@ -1017,17 +975,17 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
         owner_ref="owner:future-source",
     )
     train = declare_durable_change_train(
-        train_id="train:source:v27",
+        train_id=f"train:source:v{_NEXT_SOURCE_SLOT}",
         tier=ArchiveTier.SOURCE,
-        current_version=DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE],
-        target_version=27,
-        slot=27,
+        current_version=_SOURCE_ADOPTION_FLOOR,
+        target_version=_NEXT_SOURCE_SLOT,
+        slot=_NEXT_SOURCE_SLOT,
         owner_ref="owner:future-source",
         migration=claim,
         riders=(_rider(),),
         declared_at_ms=1,
     )
-    (source_package / "027.train.json").write_text(
+    (source_package / _NEXT_SOURCE_SIDECAR_NAME).write_text(
         json.dumps(migration_runner.durable_change_train_to_payload(train)),
         encoding="utf-8",
     )
@@ -1045,13 +1003,13 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
     observed = validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
     loaded = migration_runner._load_migrations(ArchiveTier.SOURCE)
 
-    assert [item.resource_name for item in observed] == ["027.train.json"]
+    assert [item.resource_name for item in observed] == [_NEXT_SOURCE_SIDECAR_NAME]
     assert observed[0].train.migration.sql_sha256 == claim.sql_sha256
-    assert loaded[0].version == 27
+    assert loaded[0].version == _NEXT_SOURCE_SLOT
     assert "fixture_migrations.source" in sys.modules
 
     versions = dict(ARCHIVE_VERSION_BY_TIER)
-    versions[ArchiveTier.SOURCE] = 27
+    versions[ArchiveTier.SOURCE] = _NEXT_SOURCE_SLOT
     monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
     ddl = dict(ARCHIVE_DDL_BY_TIER)
     ddl[ArchiveTier.SOURCE] = """
@@ -1062,11 +1020,11 @@ def test_future_train_sidecar_discovery_uses_real_package_resources(
     db_path = tmp_path / "real-route-source.db"
     with sqlite3.connect(db_path) as conn:
         conn.execute("CREATE TABLE base_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT")
-        conn.execute("PRAGMA user_version = 26")
+        conn.execute(f"PRAGMA user_version = {_SOURCE_ADOPTION_FLOOR}")
         conn.commit()
         result = migration_runner.migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
-        assert result.applied_versions == (27,)
-        assert conn.execute("PRAGMA user_version").fetchone() == (27,)
+        assert result.applied_versions == (_NEXT_SOURCE_SLOT,)
+        assert conn.execute("PRAGMA user_version").fetchone() == (_NEXT_SOURCE_SLOT,)
         assert conn.execute("SELECT name FROM sqlite_schema WHERE name='future_items'").fetchone() == ("future_items",)
 
 
@@ -1637,11 +1595,13 @@ def test_startup_checks_chain_when_only_current_train_remains(
 ) -> None:
     manifest_root = tmp_path / ".maintenance-state" / "durable-change-trains"
     manifest_root.mkdir(parents=True)
-    manifest_path = manifest_root / "source-028.json"
+    manifest_path = manifest_root / f"source-{_NEXT_SOURCE_SLOT + 1:03d}.json"
     manifest_path.touch()
     current = cast(
         DurableChangeTrain,
-        SimpleNamespace(state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=28),
+        SimpleNamespace(
+            state=DurableChangeTrainState.RELEASED, tier=ArchiveTier.SOURCE, target_version=_NEXT_SOURCE_SLOT + 1
+        ),
     )
 
     @contextmanager
@@ -1657,12 +1617,12 @@ def test_startup_checks_chain_when_only_current_train_remains(
     monkeypatch.setattr(
         durable_change_train_module,
         "capture_durable_database_evidence",
-        lambda _connection, _tier: SimpleNamespace(user_version=28),
+        lambda _connection, _tier: SimpleNamespace(user_version=_NEXT_SOURCE_SLOT + 1),
     )
     monkeypatch.setattr(
         durable_change_train_module,
         "_released_train_manifests_by_target",
-        lambda _root, _tier: {28: current},
+        lambda _root, _tier: {_NEXT_SOURCE_SLOT + 1: current},
     )
 
     with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
@@ -1678,7 +1638,7 @@ def test_startup_checks_chain_when_manifest_directory_is_missing(
     @contextmanager
     def fake_open_tier(_path: Path) -> Iterator[sqlite3.Connection]:
         with sqlite3.connect(":memory:") as connection:
-            connection.execute("PRAGMA user_version = 28")
+            connection.execute(f"PRAGMA user_version = {_NEXT_SOURCE_SLOT}")
             yield connection
 
     monkeypatch.setattr(
@@ -2080,56 +2040,6 @@ def test_adopted_audit_restore_rejects_an_unrelated_higher_promoted_source_head(
             )
 
 
-@pytest.mark.parametrize("order", ((ArchiveTier.AUDIT, ArchiveTier.SOURCE), (ArchiveTier.SOURCE, ArchiveTier.AUDIT)))
-def test_continuity_migrations_have_a_deployable_cross_tier_compatibility_window(
-    workspace_env: dict[str, Path], order: tuple[ArchiveTier, ArchiveTier]
-) -> None:
-    """Each numbered migration can ship first; coordination activates only after both."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-    from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator
-
-    archive_root = workspace_env["archive_root"]
-    initialize_active_archive_root(archive_root)
-    with sqlite3.connect(archive_root / "source.db") as source:
-        # The archive was bootstrapped at the CURRENT version, so claiming v31
-        # leaves every later table, index and column in place and the next
-        # migration fails on its own CREATE/ALTER.
-        reset_source_fixture_to_version(source, 31)
-        source.execute("DROP TABLE IF EXISTS audit_continuity_control")
-        source.execute("PRAGMA user_version = 31")
-        source.commit()
-    with sqlite3.connect(archive_root / "audit.db") as audit:
-        audit.execute("DROP TABLE audit_continuity_head")
-        audit.execute("PRAGMA user_version = 1")
-        audit.commit()
-    backup = backup_archive(
-        output_dir=archive_root.parent / f"continuity-{order[0].value}-first", profile="full_evidence", verify=True
-    )
-    assert backup.ok and backup.output_path is not None, backup.error
-    manifest = Path(backup.output_path) / "manifest.json"
-
-    for position, tier in enumerate(order):
-        with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
-            result = migrate_archive_tier(connection, tier, backup_manifest=manifest)
-        # Each tier must REACH its head; requiring exactly one applied step
-        # only held while the fixture's pinned version was head minus one.
-        assert result.to_version == ARCHIVE_VERSION_BY_TIER[tier]
-        assert ARCHIVE_VERSION_BY_TIER[tier] in result.applied_versions
-        sidecar = durable_migration_sidecar_for_slot(tier, ARCHIVE_VERSION_BY_TIER[tier])
-        assert sidecar is not None
-        train = sidecar.train
-        results = _runtime_consumer_results(train, archive_root)
-        assert {result.consumer_id for result in results} == {
-            consumer.consumer_id for rider in train.riders for consumer in rider.runtime_consumers
-        }
-        probe = AuditContinuityCoordinator(archive_root)
-        if position == 0:
-            assert probe.runtime_probe().startswith("standby")
-        else:
-            assert probe.runtime_probe() == "reconciled matching source/audit continuity heads"
-
-
 @pytest.mark.parametrize(
     ("entry_name", "entry_kind"),
     (
@@ -2163,52 +2073,6 @@ def test_precontinuity_binding_rejects_invalid_present_archive_entries(
 
         with pytest.raises(MigrationError, match="invalid pre-continuity"):
             migration_runner._bind_populated_precontinuity_audit(source, backup_manifest=None)
-
-
-def test_populated_precontinuity_audit_upgrade_binds_authenticated_existing_content(
-    workspace_env: dict[str, Path],
-) -> None:
-    """The real two-tier upgrade advances past genesis with the legacy journal's digest."""
-
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    archive_root = workspace_env["archive_root"]
-    initialize_active_archive_root(archive_root)
-    with sqlite3.connect(archive_root / "audit.db") as audit:
-        audit.execute(
-            "INSERT INTO archive_authority(archive_instance_id, created_at_ms, authority_format) VALUES ('legacy:archive', 1, 1)"
-        )
-        audit.execute("DROP TABLE audit_continuity_head")
-        audit.execute("PRAGMA user_version = 1")
-        audit.commit()
-    with sqlite3.connect(archive_root / "source.db") as source:
-        # The archive was bootstrapped at the CURRENT version, so claiming v31
-        # leaves every later table, index and column in place and the next
-        # migration fails on its own CREATE/ALTER.
-        reset_source_fixture_to_version(source, 31)
-        source.execute("DROP TABLE IF EXISTS audit_continuity_control")
-        source.execute("PRAGMA user_version = 31")
-        source.commit()
-    backup = backup_archive(
-        output_dir=archive_root.parent / "populated-precontinuity", profile="full_evidence", verify=True
-    )
-    assert backup.ok and backup.output_path is not None, backup.error
-    manifest = Path(backup.output_path) / "manifest.json"
-
-    with sqlite3.connect(archive_root / "audit.db") as audit:
-        assert migrate_archive_tier(audit, ArchiveTier.AUDIT, backup_manifest=manifest).applied_versions == (2,)
-    with sqlite3.connect(archive_root / "source.db") as source:
-        # 32 was the head version when this was written; assert it ran rather
-        # than that it was the only step, so a later migration does not break a
-        # test about the v32 continuity binding.
-        assert 32 in migrate_archive_tier(source, ArchiveTier.SOURCE, backup_manifest=manifest).applied_versions
-
-    with sqlite3.connect(archive_root / "source.db") as source, sqlite3.connect(archive_root / "audit.db") as audit:
-        assert source.execute("SELECT committed_generation FROM audit_continuity_control").fetchone() == (1,)
-        assert audit.execute("SELECT generation, mutation_id FROM audit_continuity_head").fetchone()[0] == 1
-        assert str(audit.execute("SELECT mutation_id FROM audit_continuity_head").fetchone()[0]).startswith(
-            "precontinuity-audit:"
-        )
 
 
 def test_adopted_audit_restore_replaces_stale_operation_staging_after_crash(
@@ -3251,15 +3115,15 @@ def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (source_package / "__init__.py").write_text("", encoding="utf-8")
     sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
-    sql_path = source_package / "027_future_items.sql"
+    sql_path = source_package / _NEXT_SOURCE_SQL_NAME
     sql_path.write_text(sql, encoding="utf-8")
     claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, sql_path.name, sql, owner_ref="owner:future-source")
     train = declare_durable_change_train(
-        train_id="train:source:v27",
+        train_id=f"train:source:v{_NEXT_SOURCE_SLOT}",
         tier=ArchiveTier.SOURCE,
-        current_version=26,
-        target_version=27,
-        slot=27,
+        current_version=_SOURCE_ADOPTION_FLOOR,
+        target_version=_NEXT_SOURCE_SLOT,
+        slot=_NEXT_SOURCE_SLOT,
         owner_ref="owner:future-source",
         migration=claim,
         riders=(_rider(),),
@@ -3269,7 +3133,7 @@ def test_future_train_sidecar_hash_and_slot_are_admission_bound(
     cast(dict[str, object], payload["migration"])["sql_sha256"] = "0" * 64
     payload.pop("manifest_sha256", None)
     payload["manifest_sha256"] = migration_runner._canonical_json_sha256(payload)
-    (source_package / "027.train.json").write_text(json.dumps(payload), encoding="utf-8")
+    (source_package / _NEXT_SOURCE_SIDECAR_NAME).write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
@@ -3280,10 +3144,10 @@ def test_future_train_sidecar_hash_and_slot_are_admission_bound(
         validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
 
     cast(dict[str, object], payload["migration"])["sql_sha256"] = claim.sql_sha256
-    payload["slot"] = 28
+    payload["slot"] = _NEXT_SOURCE_SLOT + 1
     payload.pop("manifest_sha256", None)
     payload["manifest_sha256"] = migration_runner._canonical_json_sha256(payload)
-    (source_package / "027.train.json").write_text(json.dumps(payload), encoding="utf-8")
+    (source_package / _NEXT_SOURCE_SIDECAR_NAME).write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(DurableChangeTrainError, match="slot"):
         validate_durable_migration_sidecars(ArchiveTier.SOURCE, ((sql_path.name, sql),))
 
@@ -3297,21 +3161,21 @@ def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
     (package_root / "__init__.py").write_text("", encoding="utf-8")
     (source_package / "__init__.py").write_text("", encoding="utf-8")
     sql = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
-    sql_path = source_package / "027_future_items.sql"
+    sql_path = source_package / _NEXT_SOURCE_SQL_NAME
     sql_path.write_text(sql, encoding="utf-8")
     claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, sql_path.name, sql, owner_ref="owner:future-source")
     train = declare_durable_change_train(
-        train_id="train:source:v27",
+        train_id=f"train:source:v{_NEXT_SOURCE_SLOT}",
         tier=ArchiveTier.SOURCE,
-        current_version=26,
-        target_version=27,
-        slot=27,
+        current_version=_SOURCE_ADOPTION_FLOOR,
+        target_version=_NEXT_SOURCE_SLOT,
+        slot=_NEXT_SOURCE_SLOT,
         owner_ref="owner:future-source",
         migration=claim,
         riders=(_rider(),),
         declared_at_ms=1,
     )
-    sidecar = source_package / "027.train.json"
+    sidecar = source_package / _NEXT_SOURCE_SIDECAR_NAME
     sidecar.write_text(json.dumps(migration_runner.durable_change_train_to_payload(train)), encoding="utf-8")
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.setattr(migration_runner, "_migration_package", lambda _tier: "fixture_migrations_missing.source")
@@ -3319,7 +3183,7 @@ def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
         "polylogue.storage.sqlite.durable_change_train._migration_package",
         lambda _tier: "fixture_migrations_missing.source",
     )
-    assert migration_runner._load_migrations(ArchiveTier.SOURCE)[0].version == 27
+    assert migration_runner._load_migrations(ArchiveTier.SOURCE)[0].version == _NEXT_SOURCE_SLOT
     sidecar.unlink()
     with pytest.raises(MigrationError, match="missing durable migration train sidecar"):
         migration_runner._load_migrations(ArchiveTier.SOURCE)
@@ -3327,7 +3191,7 @@ def test_missing_future_sidecar_is_rejected_at_the_migration_runner_choke_point(
     assert policy["ok"] is False
     violations = cast(list[str], policy["violations"])
     assert any("missing durable migration train sidecar" in violation for violation in violations)
-    (source_package / "028.train.json").write_text(
+    (source_package / f"{_NEXT_SOURCE_SLOT + 1:03d}.train.json").write_text(
         json.dumps(migration_runner.durable_change_train_to_payload(train)), encoding="utf-8"
     )
     with pytest.raises(DurableChangeTrainError, match="no matching SQL resource"):
@@ -3386,20 +3250,21 @@ def test_canonical_inventory_preserves_trigger_literal_whitespace() -> None:
 
 
 def test_historical_source_inventory_removes_only_future_schema_objects() -> None:
-    """Historical parity keeps replaced v28 objects and removes v29+ additions."""
+    """Historical parity keeps objects at the target and removes later additions."""
+    target = _NEXT_SOURCE_SLOT
     connection = sqlite3.connect(":memory:")
     try:
         connection.executescript(ARCHIVE_DDL_BY_TIER[ArchiveTier.SOURCE])
-        migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, 28)
+        migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target)
         inventory = migration_runner.capture_durable_schema_inventory(connection)
     finally:
         connection.close()
 
     refs = {item.object_ref for item in inventory.objects}
-    assert "index:idx_raw_artifacts_source_identity" in refs
-    assert "index:idx_raw_artifacts_failure_identity" not in refs
-    assert "table:raw_container_coordinates" not in refs
-    assert "column:raw_sessions.detected_provider" not in refs
+    assert "table:source_items" in refs
+    assert "table:material_observations" in refs
+    assert "table:source_attachments" not in refs
+    assert "table:raw_legacy_append_resynthesis_receipts" not in refs
 
 
 def test_admission_rejects_stale_current_and_target_versions() -> None:

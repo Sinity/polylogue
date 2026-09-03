@@ -75,7 +75,12 @@ from polylogue.storage.sqlite.migration_runner import (
 )
 
 DURABLE_MIGRATION_ADOPTION_FLOORS: Final[dict[ArchiveTier, int]] = {
-    ArchiveTier.SOURCE: 26,
+    # v37 is the lowest source version whose numbered migration chain reproduces
+    # canonical SOURCE_DDL: below it the chain rebuilds source_items (v26-36),
+    # raw_sessions (v26-32), raw_hook_events and
+    # raw_failure_disposition_receipts (v26-28) to shapes canonical DDL no
+    # longer declares.
+    ArchiveTier.SOURCE: 37,
     ArchiveTier.USER: 10,
     ArchiveTier.AUDIT: 1,
 }
