@@ -59,6 +59,10 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "raw_revision_heads": frozenset({"decided_at_ms"}),
     "repo_checkouts": frozenset(),
     "repos": frozenset(),
+    # Comparable rather than excluded: a rebuild that produces a different
+    # derived schema identity than the archive it rebuilt is exactly the
+    # drift this differential exists to catch.
+    "schema_identity": frozenset(),
     "session_agent_policies": frozenset(),
     "session_commits": frozenset(),
     "session_events": frozenset(),

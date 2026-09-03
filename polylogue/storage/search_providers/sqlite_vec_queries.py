@@ -275,16 +275,24 @@ class SqliteVecQueryMixin:
             return self._count_session_embeddings_unlocked(session_id)
 
     def _count_session_embeddings_unlocked(self, session_id: str) -> int:
-        """Return the number of distinct stored vectors for ``session_id``."""
+        """Return the number of distinct stored vectors for ``session_id``.
+
+        Counted from the stored refs joined to vector metadata, not from the
+        eligible-message projection: eligibility says a message *should* be
+        embedded, and a session mid-materialization or with failed embeds
+        would otherwise report vectors it does not have.
+        """
         self._ensure_vec_available()
         conn = self._get_connection()
         try:
             try:
                 row = conn.execute(
                     """
-                    SELECT COUNT(DISTINCT vector_derivation_hash) AS count
-                    FROM current_embedding_messages
-                    WHERE session_id = ?
+                    SELECT COUNT(DISTINCT r.vector_derivation_hash) AS count
+                    FROM message_embedding_refs AS r
+                    JOIN message_embeddings_meta AS m
+                      ON m.vector_derivation_hash = r.vector_derivation_hash
+                    WHERE r.session_id = ?
                     """,
                     (session_id,),
                 ).fetchone()

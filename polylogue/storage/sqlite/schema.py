@@ -75,6 +75,7 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
             lifecycle_action=lifecycle_action,
         )
     if snapshot.current_version == SCHEMA_VERSION:
+        suffix = f" Generation {generation_id}" if generation_id is not None else ""
         try:
             # A missing message FTS surface degrades search and nothing else,
             # so a read reports it through the search route's degraded state
@@ -87,8 +88,19 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 raise RuntimeError(
                     f"{ArchiveTier.INDEX.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)}"
                 )
-        except (RuntimeError, sqlite3.Error) as exc:
-            suffix = f" Generation {generation_id}" if generation_id is not None else ""
+        except sqlite3.Error as exc:
+            # The manifest could not be read at all. That is a failure of this
+            # read, not evidence about the schema on disk, and prescribing a
+            # rebuild would destroy a sound index over a transient fault.
+            raise SchemaVersionMismatchError(
+                f"Archive index schema could not be read.{suffix} "
+                f"{exc} Retry the read; the archive schema was not inspected.",
+                current_version=snapshot.current_version,
+                expected_version=SCHEMA_VERSION,
+                generation_id=generation_id,
+                lifecycle_action="retry",
+            ) from exc
+        except RuntimeError as exc:
             raise SchemaVersionMismatchError(
                 f"Archive index schema does not match runtime version {SCHEMA_VERSION}.{suffix} "
                 f"{exc} Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`.",

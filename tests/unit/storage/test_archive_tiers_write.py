@@ -3734,18 +3734,62 @@ def test_writer_sanitizes_unpaired_surrogates_in_attachment_native_ids(tmp_path:
         conn.close()
 
 
-def test_writer_refuses_attachment_without_derived_direction(tmp_path: Path) -> None:
+def test_writer_derives_attachment_direction_from_the_owning_turn(tmp_path: Path) -> None:
+    """An attachment with no declared direction takes the owning turn's.
+
+    Anti-vacuity: make ``_attachment_provenance`` return ``(None, None)``
+    whenever the attachment declares no direction and this fails -- the write
+    is refused by the ``attachment direction is not supported`` guard instead
+    of persisting ``user_input``.
+    """
     conn = _connect(tmp_path / "index.db")
     try:
         session = ParsedSession(
             source_name=Provider.CHATGPT,
-            provider_session_id="attachment-direction-required",
+            provider_session_id="attachment-direction-derived",
             messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="read this")],
             attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1")],
         )
 
-        with pytest.raises(ValueError, match="attachment direction"):
-            write_parsed_session_to_archive(conn, session)
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        rows = conn.execute(
+            "SELECT direction, producer_ref FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [("user_input", None)]
+    finally:
+        conn.close()
+
+
+def test_writer_names_the_producing_turn_when_the_provider_supplied_no_id(tmp_path: Path) -> None:
+    """A model turn with no provider message id still produces a producer_ref.
+
+    Anti-vacuity: drop the ``or message_id`` fallback in
+    ``_attachment_provenance`` and this fails -- the derivation yields
+    ``("model_output", None)`` and the writer refuses the whole session with
+    "model_output attachment requires producer provenance".
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-producer-fallback",
+            messages=[
+                ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="here is the chart"),
+            ],
+            attachments=[ParsedAttachment(provider_attachment_id="a1", message_position=0)],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+
+        row = conn.execute(
+            "SELECT direction, producer_ref, message_id FROM attachment_refs WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert row is not None, "the attachment was not persisted at all"
+        assert row[0] == "model_output"
+        assert row[1] == f"message:{row[2]}"
     finally:
         conn.close()
 

@@ -48,7 +48,13 @@ from polylogue.material_protocol.v1.origin_vocab import check_origin_vocabulary
 
 
 def resolve_anchor(manifest: RevisionManifest, segment_bytes: dict[int, bytes], record_id: str) -> dict[str, JSONValue]:
-    """Resolve *record_id* to its full record, reading only its own segment."""
+    """Resolve *record_id* to its full record, reading only its own segment.
+
+    Single-record resolution is a read of domain bytes, so it is gated on the
+    declared semantics version exactly as the full pass is: anchor digests
+    prove the line is intact, never that this reader understands its shape.
+    """
+    require_current_semantics(manifest)
     anchor = manifest.anchors.get(record_id)
     if anchor is None:
         raise AnchorNotFoundError(f"no anchor for record_id={record_id!r}")

@@ -36,6 +36,21 @@ def _category_counts(snapshot: Mapping[str, object]) -> Mapping[str, object]:
     return cast(Mapping[str, object], snapshot["category_counts"])
 
 
+def _stamp_index_as_current_schema(index_db: Path) -> None:
+    """Declare a hand-built stub index to be at this runtime's schema.
+
+    These fixtures assert raw-gap classification, not schema compatibility,
+    and the readiness probe reads through the schema-enforcing open. Stamping
+    states the precondition explicitly instead of leaving the probe to accept
+    an index whose shape it never checked.
+    """
+    from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        stamp_derived_schema_identity(conn, "index")
+
+
 def test_probe_archive_tier_reports_schema_skew_without_opening_a_usable_reader(tmp_path: Path) -> None:
     """The version probe remains readable when the normal reader rejects stale schemas."""
     db_path = tmp_path / "source.db"
@@ -495,6 +510,7 @@ def test_raw_materialization_snapshot_classifies_durable_authority_gaps(
             """
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot.get("available") is True, snapshot
@@ -590,6 +606,7 @@ def test_raw_materialization_snapshot_ignores_skipped_raw_rows(tmp_path: Path) -
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["available"] is True
@@ -645,6 +662,7 @@ def test_raw_materialization_snapshot_counts_raw_artifacts_once(tmp_path: Path) 
             ],
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["raw_artifact_count"] == 2
@@ -683,6 +701,7 @@ def test_raw_materialization_snapshot_marks_parse_failures_actionable(tmp_path: 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, raw_id TEXT)")
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["total"] == 2
@@ -741,6 +760,7 @@ def test_raw_materialization_snapshot_classifies_native_aliases(tmp_path: Path) 
             ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-raw"),
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["classification"] == "cheap_projection"
@@ -808,6 +828,7 @@ def test_raw_materialization_snapshot_classifies_stale_decode_aliases(tmp_path: 
             ("codex-session:session-1", "codex-session", "session-1", "raw-current"),
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["actionable"] == 0
@@ -854,6 +875,7 @@ def test_raw_materialization_snapshot_classifies_dangling_index_raw_link_as_lost
             ("chatgpt-export:conv-1", "chatgpt-export", "conv-1", "older-missing-raw"),
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["lost_source_evidence_count"] == 1
@@ -918,6 +940,7 @@ def test_raw_materialization_snapshot_marks_reverse_authority_query_failure_unav
             """
         )
 
+    _stamp_index_as_current_schema(tmp_path / "index.db")
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["available"] is False
@@ -987,6 +1010,7 @@ def test_raw_materialization_snapshot_classifies_source_path_aliases(tmp_path: P
             ("claude-code-session:native-alias", "claude-code-session", "native-alias", "older-raw"),
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["classified"] == 1
@@ -1035,6 +1059,7 @@ def test_raw_materialization_snapshot_classifies_parsed_non_session_artifacts(tm
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["classification"] == "cheap_projection"
@@ -1108,6 +1133,7 @@ def test_raw_materialization_snapshot_keeps_unexplained_gaps_unchecked(tmp_path:
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY, origin TEXT, native_id TEXT, raw_id TEXT)")
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["raw_artifact_count"] == 2
@@ -1172,6 +1198,7 @@ def test_raw_materialization_snapshot_classifies_same_native_lost_source_evidenc
             ),
         )
 
+    _stamp_index_as_current_schema(index_db)
     snapshot = raw_materialization_readiness_snapshot(tmp_path)
 
     assert snapshot["lost_source_evidence_count"] == 1

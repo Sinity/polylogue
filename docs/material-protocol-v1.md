@@ -66,7 +66,7 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
   other typed fact the archive records): `record_id = "{session_id}:{position}"`
 
 Records live in one of two **spaces** with different mutability contracts
-(semantics v3), each with its own strictly increasing `seq` starting at 0 —
+(semantics v4), each with its own strictly increasing `seq` starting at 0 —
 together this **is** the manifest's `sequence_rule`:
 
 **Head** (`head.ndjson`, reserved segment index `-1`) — the revision-mutable
@@ -114,9 +114,12 @@ Key fields (`RevisionManifest` in `manifest.py`):
 - `protocol_version`, `semantics_version` — this document's version and the
   Polylogue domain-semantics version the encoder implements.
 
-Readers accept only the current semantics version. A manifest declaring an
-older or newer version is rejected before its records are trusted; v2 bytes
-are not interpreted as v3.
+Readers accept only the current semantics version, and the gate applies to
+single-anchor resolution as well as the full verification pass. A manifest
+declaring an older or newer version is rejected before its records are
+trusted; v3 bytes are not interpreted as v4. The declared version is read as
+an exact integer — a non-integral declaration is a rejection, never a
+truncation down to a supported version.
 - `origin_vocabulary_version` / `origin_vocabulary_digest` — pins the public
   `Origin` enum (`polylogue.core.enums.Origin`) this revision was encoded
   against. See [Origin vocabulary pinning](#origin-vocabulary-pinning).

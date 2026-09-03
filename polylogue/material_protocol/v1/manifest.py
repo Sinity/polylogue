@@ -17,6 +17,20 @@ from polylogue.material_protocol.v1.constants import PROTOCOL_VERSION, SEGMENT_M
 from polylogue.material_protocol.v1.errors import UnsupportedSemanticsVersionError
 
 
+def _declared_semantics_version(raw: JSONValue) -> int:
+    """Read a declared semantics version without letting coercion widen it.
+
+    ``int(3.9)`` truncates to a version this reader does implement, so a
+    non-integral declaration would be accepted as its floor. Only an exact
+    integer is a version; ``bool`` is not one despite subclassing ``int``.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise UnsupportedSemanticsVersionError(
+            f"semantics_version must be an integer, got {type(raw).__name__} {raw!r}"
+        )
+    return raw
+
+
 @dataclass(frozen=True, slots=True)
 class SegmentDescriptor:
     index: int
@@ -191,7 +205,7 @@ class RevisionManifest:
         assert isinstance(expected_counts_payload, dict)
         return RevisionManifest(
             protocol_version=str(payload["protocol_version"]),
-            semantics_version=int(payload["semantics_version"]),  # type: ignore[arg-type]
+            semantics_version=_declared_semantics_version(payload["semantics_version"]),
             origin_vocabulary_version=int(payload["origin_vocabulary_version"]),  # type: ignore[arg-type]
             origin_vocabulary_digest=str(payload["origin_vocabulary_digest"]),
             session_id=str(payload["session_id"]),

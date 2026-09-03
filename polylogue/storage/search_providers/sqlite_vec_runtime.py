@@ -94,6 +94,13 @@ class SqliteVecRuntimeMixin:
             register_embedding_identity_sql(conn)
             index_path = resolve_active_index_path(self.archive_root).resolve(strict=False)
             if index_path != self.db_path.resolve(strict=False):
+                # ATTACH creates the file when it does not exist, so a missing
+                # or mistyped index would silently become an empty database
+                # and the projection below would report zero eligible messages
+                # as though the archive held none.
+                if not index_path.is_file():
+                    conn.close()
+                    raise SqliteVecError(f"managed embedding projection found no active index at {index_path}")
                 try:
                     conn.execute("ATTACH DATABASE ? AS archive_index", (str(index_path),))
                     conn.executescript(
