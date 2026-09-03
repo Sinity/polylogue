@@ -206,6 +206,7 @@ async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: P
                 tool_name TEXT,
                 tool_result_exit_code INTEGER,
                 tool_result_is_error INTEGER,
+                tool_outcome TEXT,
                 search_text TEXT
             );
             INSERT INTO sessions (session_id, parent_session_id, source_name, sort_key, updated_at)
