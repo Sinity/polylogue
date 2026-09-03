@@ -16,6 +16,7 @@ from tests.visual.conftest import (
     assert_no_private_paths,
     get_json,
     get_text,
+    parse_dom,
     running_reader_server,
     seed_reader_assertion_claims,
     write_evidence_manifest,
@@ -28,6 +29,88 @@ def _send_json(base_url: str, method: str, path: str, payload: dict[str, object]
     req = Request(f"{base_url}{path}", data=body, headers=headers, method=method)
     with urlopen(req, timeout=10) as resp:
         return resp.status, json.loads(resp.read())
+
+
+def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+    with running_reader_server(reader_workspace) as (_, base_url):
+        # The interpolated shell answers on the workspace routes; the root
+        # serves the typed WebUI.
+        status, content_type, body = get_text(base_url, "/w/stack")
+
+    assert status == 200
+    assert "text/html" in content_type
+    assert len(body) > 20_000
+    assert "https://cdn" not in body
+    assert_no_private_paths(body, context="reader shell HTML")
+
+    dom = parse_dom(body)
+    expected_ids = {
+        "app",
+        "status-strip",
+        "status-dot",
+        "status-browser-capture",
+        "sidebar",
+        "search",
+        "facet-bar",
+        "conv-list",
+        "main",
+        "conv-header",
+        "msg-list",
+        "inspector",
+        "inspector-tabs",
+        "workspace-toolbar",
+        "workspace-mode-switcher",
+        "workspace-save-btn",
+        "workspace-restore-select",
+        "workspace-create-recall-pack-btn",
+        "footer",
+        "help-overlay",
+    }
+    assert expected_ids <= dom.ids
+    assert dom.meta_viewport is True
+    assert dom.scripts == 1
+    assert dom.styles == 1
+    for phrase in (
+        "Select a session",
+        "Keyboard Shortcuts",
+        "Focus search",
+        "Local",
+        "/api/user/marks",
+        "/api/user/annotations",
+        "toggleMark",
+        "saveAnnotation",
+        "No annotations on this session",
+        "Save current view",
+        "Saved Views",
+        "Save workspace",
+        "Restore workspace",
+        "Recall pack",
+        "/api/user/workspaces",
+        "/api/user/recall-packs",
+        "/api/stack",
+        "/api/compare",
+    ):
+        assert phrase in body
+
+    checks = {
+        "status": status,
+        "content_type": content_type,
+        "html_bytes": len(body.encode()),
+        "required_ids": sorted(expected_ids),
+        "script_tags": dom.scripts,
+        "style_tags": dom.styles,
+        "viewport_meta": dom.meta_viewport,
+        "private_path_safe": True,
+        "runtime_cdn_free": True,
+    }
+    manifest = write_evidence_manifest(
+        tmp_path / "reader-search-dom-evidence.json",
+        artifact_id="polylogue.local_reader.search",
+        route="/w/stack",
+        fixture_id="reader-visual-synthetic-v1",
+        checks=checks,
+    )
+    assert manifest["evidence_kind"] == "browserless-dom"
 
 
 def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:

@@ -92,7 +92,9 @@ def test_attachment_to_envelope_shape() -> None:
 def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
         seed_reader_attachments(reader_workspace)
-        status, content_type, body = get_text(base_url, "/")
+        # The interpolated shell this test reads answers on the workspace
+        # routes; the root serves the typed WebUI.
+        status, content_type, body = get_text(base_url, "/w/stack")
         conv_payload = get_json(base_url, f"/api/sessions/{READER_C1}")
         per_conv = get_json(base_url, f"/api/sessions/{READER_C1}/attachments")
         library = get_json(base_url, "/api/attachments?limit=100")
@@ -268,7 +270,9 @@ def test_raw_html_attachment_renders_no_inline_script(
 
     with running_reader_server(reader_workspace) as (_, base_url):
         seed_reader_attachments(reader_workspace)
-        _status, _ctype, shell_body = get_text(base_url, "/")
+        # The interpolated shell this test reads answers on the workspace
+        # routes; the root serves the typed WebUI.
+        _status, _ctype, shell_body = get_text(base_url, "/w/stack")
         _ls, _lc, library_body = get_text(base_url, "/a")
         payload = get_json(base_url, "/api/attachments?limit=200")
 

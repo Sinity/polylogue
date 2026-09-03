@@ -167,7 +167,9 @@ class TestMessageAnchors:
     def test_assembled_html_contains_message_anchor_markup(self, workspace_env: dict[str, Path]) -> None:
         """The full assembled shell HTML must contain msg-anchor-link."""
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
+            # The assembled shell answers on the workspace routes; the root
+            # serves the typed WebUI.
+            _, _, body = _get_text(base_url, "/w/stack")
         assert "msg-anchor-link" in body
         assert "msg-anchor-target" in body
 
@@ -222,7 +224,9 @@ class TestContentFolds:
     def test_assembled_html_contains_text_fold_markup(self, workspace_env: dict[str, Path]) -> None:
         """The assembled shell HTML must contain text-fold CSS classes."""
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
+            # The assembled shell answers on the workspace routes; the root
+            # serves the typed WebUI.
+            _, _, body = _get_text(base_url, "/w/stack")
         assert "msg-text-fold" in body
 
 
@@ -268,7 +272,9 @@ class TestDensityToggle:
     def test_assembled_html_contains_density_toggle_markup(self, workspace_env: dict[str, Path]) -> None:
         """The assembled shell HTML must contain the density-toggle class."""
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
+            # The assembled shell answers on the workspace routes; the root
+            # serves the typed WebUI.
+            _, _, body = _get_text(base_url, "/w/stack")
         assert "density-toggle" in body
 
 
@@ -304,7 +310,9 @@ class TestKeyboardNavigation:
     def test_assembled_footer_lists_new_shortcuts(self, workspace_env: dict[str, Path]) -> None:
         """The footer hint strip must include g g and G."""
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            _, _, body = _get_text(base_url, "/")
+            # The assembled shell answers on the workspace routes; the root
+            # serves the typed WebUI.
+            _, _, body = _get_text(base_url, "/w/stack")
         assert "g g" in body
         assert "top" in body
         assert "bottom" in body

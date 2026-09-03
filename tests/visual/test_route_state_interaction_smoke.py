@@ -72,7 +72,9 @@ def test_truthful_route_state_contract_in_served_shell(
     reader_workspace: ReaderWorkspace,
 ) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, body = get_text(base_url, "/")
+        # The interpolated shell whose route-state behaviour this test pins
+        # answers on the workspace routes; the root serves the typed WebUI.
+        status, content_type, body = get_text(base_url, "/w/stack")
 
     assert status == 200
     assert "text/html" in content_type
