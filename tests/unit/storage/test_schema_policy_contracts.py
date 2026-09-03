@@ -454,6 +454,35 @@ def test_readable_layout_rejects_extra_object_with_typed_refusal(tmp_path: Path)
         conn.close()
 
 
+def test_readable_layout_admits_a_missing_message_fts_surface(tmp_path: Path) -> None:
+    """A degraded search index is a reported read state, not a closed archive.
+
+    ``messages_fts`` is contentless, trigger-maintained, and rebuildable from
+    ``blocks``. Losing it degrades search; every other read of the index stays
+    valid, and the search route reports the degradation as route state.
+
+    Anti-vacuity: widening the admission to any manifest diff makes
+    ``test_readable_layout_rejects_extra_object_with_typed_refusal`` red, and
+    dropping a non-FTS table here still raises.
+    """
+    db_path = tmp_path / "degraded-fts.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+        conn.execute(f"DROP TRIGGER {trigger}")
+    conn.execute("DROP TABLE messages_fts")
+    conn.commit()
+    try:
+        assert_readable_archive_layout(conn, generation_id="gen-degraded-fts")
+
+        conn.execute("DROP TABLE session_links")
+        conn.commit()
+        with pytest.raises(SchemaVersionMismatchError, match="session_links"):
+            assert_readable_archive_layout(conn, generation_id="gen-degraded-fts")
+    finally:
+        conn.close()
+
+
 def test_async_path_rejects_unknown_version(tmp_path: Path) -> None:
     """docs/internals.md § Schema Versioning Model: the async
     bootstrap path enforces the same policy as the sync path.
