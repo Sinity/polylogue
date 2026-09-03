@@ -14,7 +14,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider, ToolResultUnknownReason
-from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.core.errors import SchemaSkew, SchemaVersionMismatchError
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
@@ -78,6 +78,18 @@ def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_
     assert refusal.lifecycle_action == "rebuild_index"
     assert "gen-stale-read" in str(refusal)
     assert "polylogue ops maintenance rebuild-index" in str(refusal)
+
+
+def test_read_open_rejects_stale_index_identity(tmp_path: Path) -> None:
+    """A readable archive must reject a derived identity mismatch before queries run."""
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        connection.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = 'index'")
+
+    with pytest.raises(SchemaSkew, match="stale derived tier"):
+        ArchiveStore.open_existing(tmp_path, read_only=True)
 
 
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
