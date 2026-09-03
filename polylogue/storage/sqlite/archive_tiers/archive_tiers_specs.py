@@ -944,9 +944,6 @@ THREADS_SPEC = _make_table_spec(
             "thread_id",
             """thread_id                    TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
         ),
-        _raw_column(
-            "dominant_repo_id", """dominant_repo_id             TEXT REFERENCES repos(repo_id) ON DELETE SET NULL"""
-        ),
         _raw_column("materializer_version", """materializer_version         INTEGER NOT NULL DEFAULT 5"""),
         _raw_column("materialized_at", """materialized_at              TEXT NOT NULL DEFAULT ''"""),
         _raw_column("source_updated_at", """source_updated_at            TEXT"""),
@@ -1724,21 +1721,6 @@ SESSION_TAG_ROLLUPS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(tag, bucket_day, source_name)""",),
 )
 
-AGENT_META_SIDECAR_PURGE_RECEIPTS_SPEC = _make_table_spec(
-    "agent_meta_sidecar_purge_receipts",
-    (
-        _raw_column("session_id", """session_id           TEXT PRIMARY KEY"""),
-        _raw_column("origin", """origin               TEXT NOT NULL"""),
-        _raw_column("native_id", """native_id            TEXT NOT NULL"""),
-        _raw_column("raw_id", """raw_id               TEXT NOT NULL"""),
-        _raw_column("source_path", """source_path          TEXT NOT NULL"""),
-        _raw_column("purged_at_ms", """purged_at_ms         INTEGER NOT NULL CHECK(purged_at_ms >= 0)"""),
-        _raw_column("tool_version", """tool_version         TEXT NOT NULL"""),
-        _raw_column("backup_manifest_path", """backup_manifest_path TEXT NOT NULL"""),
-        _raw_column("detail", """detail               TEXT NOT NULL DEFAULT ''"""),
-    ),
-)
-
 INDEX_TABLE_SPECS = {
     "fts_freshness_state": FTS_FRESHNESS_STATE_SPEC,
     "query_unit_frame_state": QUERY_UNIT_FRAME_STATE_SPEC,
@@ -1778,7 +1760,6 @@ INDEX_TABLE_SPECS = {
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,
     "session_tag_rollups": SESSION_TAG_ROLLUPS_SPEC,
-    "agent_meta_sidecar_purge_receipts": AGENT_META_SIDECAR_PURGE_RECEIPTS_SPEC,
 }
 
 

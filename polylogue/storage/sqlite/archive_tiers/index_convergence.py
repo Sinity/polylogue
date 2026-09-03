@@ -117,6 +117,15 @@ INDEX_BENIGN_DDL_REGISTRY: tuple[BenignDDLEntry, ...] = (
             "canonical-cost semantic rebuild."
         ),
     ),
+    BenignDDLEntry(
+        name="drop_agent_meta_sidecar_purge_receipts",
+        sql="DROP TABLE IF EXISTS agent_meta_sidecar_purge_receipts",
+        reason=(
+            "polylogue-ioz7: retired one-off sidecar purge receipt. The "
+            "actuator and every production consumer were removed; the "
+            "receipt is not derived domain state and has no successor."
+        ),
+    ),
 )
 
 

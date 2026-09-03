@@ -44,7 +44,6 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
 # they make an added table fail this test until its volatility is considered.
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "action_pairs": frozenset(),
-    "agent_meta_sidecar_purge_receipts": frozenset(),
     "attachment_native_ids": frozenset(),
     "attachment_refs": frozenset(),
     "attachments": frozenset(),

@@ -872,7 +872,7 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
         ).fetchall()
         threads = conn.execute(
             """
-            SELECT t.thread_id, t.dominant_repo_id, t.materializer_version,
+            SELECT t.thread_id, t.materializer_version,
                    t.source_updated_at, t.input_high_water_mark,
                    t.input_high_water_mark_source, t.input_row_count,
                    t.start_time, t.end_time, t.dominant_repo,

@@ -465,7 +465,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Schema Disposition Audit",
         "schema-disposition-2026-08-19.md",
-        "Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr).",
+        "Generated six-tier target schema disposition and canonical DDL inventory (polylogue-gvzkr).",
         "archive",
     ),
 )

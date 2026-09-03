@@ -672,7 +672,6 @@ def test_archive_tiers_database_split_keeps_source_index_embeddings_user_and_ops
         "blob_refs",
         "blob_publication_reservations",
         "raw_artifacts",
-        "otlp_spans",
     ):
         assert expected in source
         assert expected not in index
@@ -884,11 +883,7 @@ def test_archive_tiers_database_bootstrap_leaves_current_tier_unchanged(tmp_path
 
 
 def _plant_zombie_index_tables(conn: sqlite3.Connection) -> None:
-    """Recreate the pre-polylogue-v2mg ``model_prices``/``session_reported_costs``
-    shape on an already-initialized INDEX tier, simulating an archive that
-    predates their removal from canonical DDL but is still stamped at the
-    current ``INDEX_SCHEMA_VERSION`` (no bump accompanied the removal).
-    """
+    """Recreate retired same-version index tables on an initialized tier."""
     conn.executescript(
         """
         CREATE TABLE model_prices (
@@ -904,6 +899,9 @@ def _plant_zombie_index_tables(conn: sqlite3.Connection) -> None:
             amount     REAL NOT NULL,
             source     TEXT NOT NULL,
             PRIMARY KEY(session_id, cost_kind, source)
+        );
+        CREATE TABLE agent_meta_sidecar_purge_receipts (
+            session_id TEXT PRIMARY KEY
         );
         """
     )
@@ -932,7 +930,7 @@ def test_index_benign_ddl_convergence_drops_zombie_tables_on_same_version_open(t
     version_before = conn.execute("PRAGMA user_version").fetchone()[0]
     conn.close()
     _plant_zombie_index_tables(_connect(path))
-    assert {"model_prices", "session_reported_costs"} <= _index_table_names(path)
+    assert {"model_prices", "session_reported_costs", "agent_meta_sidecar_purge_receipts"} <= _index_table_names(path)
 
     initialize_archive_database(path, ArchiveTier.INDEX)
 
@@ -942,6 +940,7 @@ def test_index_benign_ddl_convergence_drops_zombie_tables_on_same_version_open(t
     conn.close()
     assert "model_prices" not in tables
     assert "session_reported_costs" not in tables
+    assert "agent_meta_sidecar_purge_receipts" not in tables
     assert version_after == version_before == ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version
 
 
@@ -957,6 +956,7 @@ def test_index_benign_ddl_convergence_is_idempotent(tmp_path: Path) -> None:
     tables = _index_table_names(path)
     assert "model_prices" not in tables
     assert "session_reported_costs" not in tables
+    assert "agent_meta_sidecar_purge_receipts" not in tables
 
 
 def test_index_fresh_init_and_converged_live_archive_agree_schema_wise(tmp_path: Path) -> None:

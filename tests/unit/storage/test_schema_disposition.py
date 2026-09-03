@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
+from devtools.render_schema_disposition import render_markdown
 from polylogue.storage.sqlite.archive_tiers import AUDIT_COLUMN_DISPOSITIONS
 from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     assert_complete_audit_disposition,
@@ -16,6 +19,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
     schema_disposition_report,
     schema_dispositions,
 )
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_archive_tier_schema_assembly_publishes_complete_disposition() -> None:
@@ -76,11 +80,24 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     assert {row.disposition for row in rows} <= {"KEEP", "COMPLETE", "PURGE", "DERIVE", "TRANSITION"}
     by_ref = {row.object_ref: row for row in rows}
 
-    assert by_ref["source:column:raw_unknown_export_reclassification_receipts.raw_id"].disposition == "PURGE"
     assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
-    assert by_ref["index:column:threads.dominant_repo_id"].disposition == "PURGE"
+    assert by_ref["source:table:history_sidecars"].disposition == "KEEP"
+    assert by_ref["source:table:otlp_spans"].disposition == "KEEP"
+    assert by_ref["source:table:raw_failure_disposition_receipts"].disposition == "KEEP"
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
-    assert all(row.semantic_owner and row.implementation_bead for row in rows)
+    assert by_ref["source:table:raw_unknown_export_reclassification_receipts"].disposition == "PURGE"
+    assert not any("dominant_repo_id" in row.object_ref for row in rows)
+    assert all(
+        row.semantic_owner
+        and row.implementation_bead
+        and row.definition_sha256
+        and row.producer
+        and row.consumer
+        and row.live_row_denominator
+        and row.campaign_action
+        and row.successor_or_authorization
+        for row in rows
+    )
 
 
 def test_six_tier_disposition_rejects_undeclared_object() -> None:
@@ -99,4 +116,16 @@ def test_six_tier_report_is_generated_from_the_complete_disposition() -> None:
     counts = cast("dict[str, int]", report["disposition_counts"])
     objects = cast("list[object]", report["objects"])
     assert sum(counts.values()) == report["object_count"]
+    assert report["unknown_count"] == 0
+    assert set(cast("dict[str, object]", report["tier_counts"])) == {tier.value for tier in ArchiveTier}
     assert len(objects) == report["object_count"]
+
+
+def test_committed_schema_disposition_artifacts_match_the_canonical_report() -> None:
+    report = schema_disposition_report()
+
+    artifact = json.loads(Path("docs/evidence/schema-disposition-2026-08-31.json").read_text(encoding="utf-8"))
+    markdown = Path("docs/schema-disposition-2026-08-19.md").read_text(encoding="utf-8")
+
+    assert artifact == report
+    assert markdown == render_markdown(report)

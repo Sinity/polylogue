@@ -13,6 +13,7 @@ from devtools import (
     render_docs_surface,
     render_openapi,
     render_query_discovery,
+    render_schema_disposition,
     render_webui_client,
     render_webui_design_system,
 )
@@ -161,6 +162,17 @@ GENERATED_SURFACES: tuple[GeneratedSurface, ...] = (
             "polylogue/archive/query/metadata.py",
             "polylogue/archive/query/transaction.py",
             "docs/search.md",
+        ),
+    ),
+    GeneratedSurface(
+        name="schema-disposition",
+        label="Schema disposition",
+        description="Render the declaration-derived six-tier schema disposition artifacts.",
+        command=control_plane_argv("render schema-disposition"),
+        main=render_schema_disposition.main,
+        inputs=(
+            "devtools/render_schema_disposition.py",
+            "polylogue/storage/sqlite/archive_tiers/",
         ),
     ),
     GeneratedSurface(
