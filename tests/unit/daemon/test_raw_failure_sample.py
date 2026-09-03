@@ -890,7 +890,9 @@ class TestRawFailureInfoProducesTypedSamples:
 
         statements: list[str] = []
 
-        def open_traced_readonly(path: Path) -> sqlite3.Connection:
+        def open_traced_readonly(path: Path, **kwargs: object) -> sqlite3.Connection:
+            # Accepts whatever the production factory accepts: this double
+            # exists to trace statements, not to pin its caller's signature.
             connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
             connection.set_trace_callback(statements.append)
             return connection
@@ -933,7 +935,9 @@ class TestRawFailureInfoProducesTypedSamples:
 
         statements: list[str] = []
 
-        def open_traced_readonly(path: Path) -> sqlite3.Connection:
+        def open_traced_readonly(path: Path, **kwargs: object) -> sqlite3.Connection:
+            # Accepts whatever the production factory accepts: this double
+            # exists to trace statements, not to pin its caller's signature.
             connection = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
             connection.set_trace_callback(statements.append)
             return connection
