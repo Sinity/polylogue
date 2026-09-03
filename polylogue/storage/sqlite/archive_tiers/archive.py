@@ -630,7 +630,10 @@ class ArchiveStore:
         frozen_source_validation: bool = False,
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
+        validate_index_layout: bool = True,
     ) -> None:
+        if not validate_index_layout and not read_only:
+            raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
         if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
@@ -708,6 +711,7 @@ class ArchiveStore:
         try:
             self._initialize_store(
                 archive_root,
+                validate_index_layout=validate_index_layout,
                 # The generation store already initialized the candidate's
                 # sole owned tier, index.db. Active-root initialization would
                 # reinterpret deliberate source/user read-through symlinks as
@@ -742,6 +746,7 @@ class ArchiveStore:
         read_timeout: float,
         bulk_build_profile: bool = False,
         opened_index_fd: int | None = None,
+        validate_index_layout: bool = True,
     ) -> None:
         self.archive_root = archive_root
         self.source_db_path = archive_root / "source.db"
@@ -834,7 +839,7 @@ class ArchiveStore:
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
             self._conn.execute(statement)
-        if read_only:
+        if read_only and validate_index_layout:
             from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 
             resolved_index = self.index_db_path.resolve()
@@ -878,6 +883,7 @@ class ArchiveStore:
         read_timeout: float = 5.0,
         index_path: Path | None = None,
         opened_main_fd: int | None = None,
+        validate_index_layout: bool = True,
     ) -> ArchiveStore:
         """Open archive tier files.
 
@@ -887,6 +893,11 @@ class ArchiveStore:
         may pass an already-resolved ``index_path`` to remain pinned to one
         physical generation across an active-pointer promotion. An opened main
         descriptor can additionally bind the index connection to that inode.
+
+        ``validate_index_layout=False`` opens a read-only archive whose index
+        is not at the runtime's shape. It exists for the tools whose subject is
+        such an index -- the fast-forward actuator reaching source-tier
+        evidence -- and never for a read of the index itself.
         """
         if index_path is not None and not read_only:
             raise ValueError("index_path is valid only for read-only archive access")
@@ -898,6 +909,7 @@ class ArchiveStore:
             read_timeout=read_timeout,
             frozen_index_path=index_path,
             opened_index_fd=opened_main_fd,
+            validate_index_layout=validate_index_layout,
         )
 
     @classmethod

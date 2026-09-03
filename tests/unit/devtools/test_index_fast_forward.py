@@ -17,9 +17,20 @@ from polylogue.maintenance.archive_verification import (
 from polylogue.sources.dispatch import parse_payload
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+#: The suite exercises the fast-forward actuator, not any particular delta.
+#: It anchors its two-version world at the live index version so the archive
+#: on disk is one the runtime can open, and forwards to a synthetic successor.
+#: Recent real deltas are semantic-reparse and route to replay instead, so a
+#: pair taken from the shipped declarations would depend on which versions the
+#: package happens to carry.
+_SOURCE_VERSION = int(ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX])
+_TARGET_VERSION = _SOURCE_VERSION + 1
+_SOURCE_GENERATION = f"v{_SOURCE_VERSION}"
 
 
 def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
@@ -29,7 +40,7 @@ def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
     # `<root>/.index-generations/<gen>/index.db` with `<root>/index.db` an
     # absolute symlink to it. An index pointer resolving outside the root is a
     # copied archive and is refused.
-    active_root = root / ".index-generations" / "v36"
+    active_root = root / ".index-generations" / _SOURCE_GENERATION
     active_root.mkdir(parents=True)
     active = active_root / "index.db"
     (root / "index.db").replace(active)
@@ -77,22 +88,53 @@ def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
         conn.execute(
             "INSERT INTO attachment_native_ids(ref_id, id_kind, native_id) VALUES ('orphan-ref', 'url', 'orphan')"
         )
-        conn.execute("PRAGMA user_version = 36")
+        # Bootstrap stamps whatever version the tier declares, and the
+        # synthetic successor is declared for the duration of a test. Pin the
+        # source version so the actuator always has one delta to carry.
+        conn.execute(f"PRAGMA user_version = {_SOURCE_VERSION}")
         conn.commit()
     return root
 
 
 @pytest.fixture
 def _patch_v37(monkeypatch: pytest.MonkeyPatch) -> None:
-    import polylogue.storage.sqlite.lifecycle as lifecycle
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    """Declare one fast-forwardable successor to the live index version."""
 
-    monkeypatch.setattr(
-        lifecycle,
-        "INDEX_DELTA_DECLARATIONS",
-        tuple(declaration for declaration in lifecycle.INDEX_DELTA_DECLARATIONS if 36 <= declaration.version <= 37),
+    import polylogue.storage.sqlite.lifecycle as lifecycle
+
+    source = lifecycle.IndexDeltaDeclaration(
+        version=_SOURCE_VERSION,
+        classes=(lifecycle.DerivedDeltaClass.CONSTRAINT_ONLY,),
+        operations=(
+            lifecycle.FastForwardOperation(
+                name="fixture-origin-checks",
+                kind=lifecycle.FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "sessions"), ("table", "session_links")),
+            ),
+        ),
     )
-    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, 37)
+    target = lifecycle.IndexDeltaDeclaration(
+        version=_TARGET_VERSION,
+        classes=(lifecycle.DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            lifecycle.FastForwardOperation(
+                name="fixture-drop-run-projection-caches",
+                kind=lifecycle.FastForwardOperationKind.DROP_TABLE,
+                objects=(
+                    ("table", "session_runs"),
+                    ("table", "session_observed_events"),
+                    ("table", "session_context_snapshots"),
+                ),
+            ),
+            lifecycle.FastForwardOperation(
+                name="fixture-repair-orphan-attachment-native-ids",
+                kind=lifecycle.FastForwardOperationKind.REPAIR_ORPHAN_ATTACHMENT_NATIVE_IDS,
+                objects=(("table", "attachment_native_ids"),),
+            ),
+        ),
+    )
+    monkeypatch.setattr(lifecycle, "INDEX_DELTA_DECLARATIONS", (source, target))
+    monkeypatch.setitem(ARCHIVE_VERSION_BY_TIER, ArchiveTier.INDEX, _TARGET_VERSION)
 
 
 def _no_corpus_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,7 +310,7 @@ def test_activation_refuses_parser_or_materializer_fingerprint_drift(
     with pytest.raises(forward.IndexFastForwardError, match="fingerprints changed"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_activation_refuses_source_metadata_mutation_after_candidate_gate(
@@ -287,7 +329,7 @@ def test_activation_refuses_source_metadata_mutation_after_candidate_gate(
     with pytest.raises(forward.IndexFastForwardError, match="immediately before promotion"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_activation_refuses_embedding_orphan_at_strict_candidate_gate(
@@ -311,7 +353,7 @@ def test_activation_refuses_embedding_orphan_at_strict_candidate_gate(
     with pytest.raises(forward.IndexFastForwardError, match=r"embeddings-refs-liveness.*orphan"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 @pytest.mark.parametrize("mutation", ("missing", "corrupt", "orphan"))
@@ -336,7 +378,7 @@ def test_activation_refuses_physical_blob_failure_without_pointer_mutation(
     with pytest.raises(forward.IndexFastForwardError, match=r"blob-integrity"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_activation_refuses_acquired_unreachable_attachment_without_pointer_mutation(
@@ -363,7 +405,7 @@ def test_activation_refuses_acquired_unreachable_attachment_without_pointer_muta
     with pytest.raises(forward.IndexFastForwardError, match=r"attachment-coverage"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_recovery_refuses_durable_source_mutation_after_pointer_swap(
@@ -440,7 +482,7 @@ def test_prepared_activation_refuses_generation_metadata_mutation(
         forward.activate_forward(receipt_path=receipt_path)
 
     store = IndexGenerationStore.for_archive_root(root)
-    assert store.active_pointer.resolve().parent.name == "v36"
+    assert store.active_pointer.resolve().parent.name == _SOURCE_GENERATION
     assert json.loads(receipt_path.read_text(encoding="utf-8"))["status"] == "prepared"
     if field == "archive_root":
         with pytest.raises(RuntimeError, match="generation metadata archive root mismatch"):
@@ -572,7 +614,7 @@ def test_activation_rejects_non_ok_or_missing_index_acceptance_result(
     with pytest.raises(forward.IndexFastForwardError, match=check_name):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_bypassing_replay_cannot_create_an_activatable_receipt(
@@ -631,7 +673,7 @@ def test_activation_refuses_forged_equivalence_hashes(
     with pytest.raises(forward.IndexFastForwardError, match="hashes disagree"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION
 
 
 def test_activation_refuses_tampered_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _patch_v37: None) -> None:
@@ -647,4 +689,4 @@ def test_activation_refuses_tampered_receipt(tmp_path: Path, monkeypatch: pytest
     with pytest.raises(forward.IndexFastForwardError, match="hash mismatch"):
         forward.activate_forward(receipt_path=receipt_path)
 
-    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == "v36"
+    assert IndexGenerationStore.for_archive_root(root).active_pointer.resolve().parent.name == _SOURCE_GENERATION

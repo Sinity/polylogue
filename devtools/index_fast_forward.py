@@ -439,7 +439,10 @@ def _replay_sample(archive_root: Path, candidate_index: Path, manifest: list[dic
         # shared raw-revision descriptor requires the production blob
         # publisher to be present.  Attach its read-only filesystem facade to
         # the read-only archive store.  No pending blob is queued or flushed.
-        with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+        # This replay reaches source-tier evidence; the index it is opened
+        # beside is the pre-forward one, which by definition is not at the
+        # runtime's shape.
+        with ArchiveStore.open_existing(archive_root, read_only=True, validate_index_layout=False) as archive:
             archive._blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
             replayed_ids: list[str] = []
             for entry in manifest:
