@@ -455,7 +455,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # rows must be reprocessed so current catalog prices are served.
 # polylogue-avlt5: v83 removes materialized thread/tag-rollup caches while
 # retaining compact indexed action/delegation relations for bounded reads.
-INDEX_SCHEMA_VERSION = 83
+INDEX_SCHEMA_VERSION = 87
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
