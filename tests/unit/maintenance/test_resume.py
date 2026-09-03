@@ -1055,7 +1055,9 @@ def test_terminal_scope_refusal_checkpoints_as_failed(
     checkpointed: list[str] = []
 
     def observe(_progress: ReplayProgress) -> None:
-        snapshot = load_state(config, "op-refusal-checkpoint")["operation"]
+        state = load_state(config, "op-refusal-checkpoint")
+        assert state is not None
+        snapshot = state["operation"]
         assert isinstance(snapshot, dict)
         checkpointed.append(str(snapshot["status"]))
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Any
 
 import pytest
 
@@ -577,7 +578,7 @@ def _whole_inventory_plan(conn: sqlite3.Connection, old: str, new: str, audit: s
     )
 
 
-def _member_transition_fixture(conn: sqlite3.Connection) -> tuple[object, tuple[str, ...], tuple[str, ...]]:
+def _member_transition_fixture(conn: sqlite3.Connection) -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
     """Seed one promoted result set whose members all need a new identity."""
     conn.execute("PRAGMA foreign_keys = ON")
     initialize_archive_tier(conn, ArchiveTier.USER)
