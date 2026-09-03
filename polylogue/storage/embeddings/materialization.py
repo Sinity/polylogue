@@ -1732,9 +1732,7 @@ def _embed_archive_session_sync(
             lifecycle_store.refresh_binding_contract(lifecycle_binding)
 
         to_embed = [
-            row
-            for row in pending_embeddable
-            if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
+            row for row in pending_embeddable if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
         ]
         batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
         deferred = False
