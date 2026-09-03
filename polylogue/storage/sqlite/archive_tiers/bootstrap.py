@@ -237,18 +237,10 @@ def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, r
     initialize_archive_tier(conn, tier)
 
 
-_DERIVED_IDENTITY_TIERS = (ArchiveTier.INDEX, ArchiveTier.OPS)
-"""Tiers whose readers assert a derived schema identity before using them."""
-
-
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
-    """Materialise a tier on an open connection and stamp its schema identity.
-
-    Every route that creates a derived tier passes through here, so the
-    identity readers assert is stamped here rather than by each caller.
-    """
+    """Materialise a tier on an open connection and stamp derived identities."""
     _materialize_archive_tier(conn, tier)
-    if tier in _DERIVED_IDENTITY_TIERS:
+    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
         from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
         stamp_derived_schema_identity(conn, tier.value)
@@ -582,19 +574,11 @@ def initialize_archive_database(
                 ensure_runtime_indexes_sync(conn)
                 apply_index_benign_ddl_convergence(conn)
             if derived_tier is not None:
-                from polylogue.storage.sqlite.archive_tiers.schema_identity import read_schema_identity
                 from polylogue.storage.sqlite.schema_bootstrap import (
-                    assert_derived_schema_identity,
-                    stamp_derived_schema_identity,
+                    ensure_derived_schema_identity,
                 )
 
-                identity_table = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'"
-                ).fetchone()
-                found_identity = read_schema_identity(conn, derived_tier) if identity_table is not None else None
-                if identity_table is None or found_identity is None:
-                    stamp_derived_schema_identity(conn, tier.value)
-                assert_derived_schema_identity(conn, tier.value)
+                ensure_derived_schema_identity(conn, tier.value)
             if tier is ArchiveTier.INDEX:
                 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
@@ -643,7 +627,10 @@ def initialize_archive_database(
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_fresh_archive_tier(conn, tier, required_version)
-        if tier in _DERIVED_IDENTITY_TIERS:
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+            stamp_derived_schema_identity(conn, tier.value)
             conn.commit()
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
@@ -889,7 +876,6 @@ __all__ = [
     "initialize_active_archive_root",
     "initialize_archive_database",
     "initialize_archive_tier",
-    "open_initialized_tier_connection",
     "reconcile_durable_change_trains_on_startup",
     "archive_tier_spec",
 ]

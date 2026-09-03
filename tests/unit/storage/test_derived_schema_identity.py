@@ -17,7 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_identity import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
-from polylogue.storage.sqlite.schema import ensure_schema_async
+from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
 
 
@@ -117,3 +117,29 @@ def test_fast_forward_adopts_older_stamped_index_before_identity_validation(tmp_
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == target_version
         assert read_schema_identity(conn, DerivedTier.INDEX) == derived_schema_identity(DerivedTier.INDEX)
+
+
+def test_canonical_sync_bootstrap_adopts_current_unstamped_index(tmp_path: Path) -> None:
+    path = tmp_path / "index.db"
+    with sqlite3.connect(path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute("DROP TABLE schema_identity")
+
+    with sqlite3.connect(path) as conn:
+        _ensure_schema(conn)
+        assert read_schema_identity(conn, DerivedTier.INDEX) == derived_schema_identity(DerivedTier.INDEX)
+
+
+@pytest.mark.asyncio
+async def test_canonical_async_bootstrap_adopts_current_unstamped_index(tmp_path: Path) -> None:
+    path = tmp_path / "index.db"
+    with sqlite3.connect(path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        conn.execute("DROP TABLE schema_identity")
+
+    async with aiosqlite.connect(path) as conn:
+        await ensure_schema_async(conn)
+        cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (DerivedTier.INDEX.value,))
+        row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] == derived_schema_identity(DerivedTier.INDEX)

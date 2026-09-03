@@ -113,6 +113,20 @@ def stamp_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
     )
 
 
+def ensure_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
+    """Adopt an unstamped derived tier, then reject a stale stamp."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, read_schema_identity
+
+    derived_tier = DerivedTier(tier)
+    identity_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'"
+    ).fetchone()
+    found = read_schema_identity(conn, derived_tier) if identity_table is not None else None
+    if found is None:
+        stamp_derived_schema_identity(conn, tier)
+    assert_derived_schema_identity(conn, tier)
+
+
 async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier: str) -> None:
     """Async counterpart to :func:`assert_derived_schema_identity`."""
     from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
@@ -129,6 +143,30 @@ async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier:
     found = None if row is None else str(row[0])
     if found != expected:
         raise SchemaSkew(tier, expected, found)
+
+
+async def ensure_derived_schema_identity_async(conn: aiosqlite.Connection, tier: str) -> None:
+    """Async counterpart to :func:`ensure_derived_schema_identity`."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
+    derived_tier = DerivedTier(tier)
+    cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'")
+    identity_table = await cursor.fetchone()
+    found = None
+    if identity_table is not None:
+        cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier,))
+        row = await cursor.fetchone()
+        found = None if row is None else str(row[0])
+    if found is None:
+        from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+        await conn.executescript(DERIVED_SCHEMA_META_DDL)
+        await conn.execute(
+            "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
+            "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",
+            (tier, derived_schema_identity(derived_tier)),
+        )
+    await assert_derived_schema_identity_async(conn, tier)
 
 
 def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
@@ -212,6 +250,8 @@ __all__ = [
     "decide_schema_bootstrap",
     "assert_derived_schema_identity",
     "assert_derived_schema_identity_async",
+    "ensure_derived_schema_identity",
+    "ensure_derived_schema_identity_async",
     "stamp_derived_schema_identity",
     "ensure_vec0_table",
     "ensure_vec0_table_async",
