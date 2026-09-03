@@ -25,13 +25,15 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 def _archive(tmp_path: Path, *, extra_native_ids: tuple[str, ...] = ()) -> Path:
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
-    storage = tmp_path / "storage"
-    active_root = storage / ".index-generations" / "v36"
+    # Generations live inside the archive root, the shape `promote()` writes:
+    # `<root>/.index-generations/<gen>/index.db` with `<root>/index.db` an
+    # absolute symlink to it. An index pointer resolving outside the root is a
+    # copied archive and is refused.
+    active_root = root / ".index-generations" / "v36"
     active_root.mkdir(parents=True)
     active = active_root / "index.db"
     (root / "index.db").replace(active)
-    (storage / "index.db").symlink_to(active)
-    (root / "index.db").symlink_to(storage / "index.db")
+    (root / "index.db").symlink_to(active)
 
     payload_object = {
         "id": "source-backed-session",
