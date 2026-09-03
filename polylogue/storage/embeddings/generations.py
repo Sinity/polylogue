@@ -273,9 +273,19 @@ class EmbeddingGenerationStore:
             dimensions.add(int(dimension))
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
-        if len(recipe_values) > 1 or len(output_values) > 1 or len(model_values) > 1 or len(dimensions) > 1:
+        # Vectors are addressed by the provider request, so one tier may hold
+        # rows labelled by several recipe revisions (vectors carried across a
+        # reindex beside newly embedded ones). Model, dimension, and output
+        # contract must still be uniform.
+        if len(output_values) > 1 or len(model_values) > 1 or len(dimensions) > 1:
             raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
         digest.update(len(rows).to_bytes(8, "big"))
+        if len(recipe_values) == 1:
+            recipe_label = next(iter(recipe_values)).hex()
+        elif recipe_values:
+            recipe_label = hashlib.sha256("".join(sorted(v.hex() for v in recipe_values)).encode("ascii")).hexdigest()
+        else:
+            recipe_label = "empty"
 
         def stable(path_value: Path) -> str:
             try:
@@ -287,7 +297,7 @@ class EmbeddingGenerationStore:
         index = self.archive_root / "index.db"
         source = self.archive_root / "source.db"
         return {
-            "recipe_hash": next(iter(recipe_values)).hex() if recipe_values else "empty",
+            "recipe_hash": recipe_label,
             "source_generation": stable(source),
             "index_generation": stable(index),
             "schema_version": EMBEDDINGS_SCHEMA_VERSION,
