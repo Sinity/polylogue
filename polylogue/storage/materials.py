@@ -11,9 +11,13 @@ import hashlib
 import json
 import mimetypes
 import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 from typing import Literal
 
 from polylogue.storage.blob_store import BlobStore, get_blob_store
@@ -31,6 +35,7 @@ MaterialState = Literal[
 ]
 MaterialPrivacy = Literal["private", "restricted", "public", "synthetic"]
 MaterialRelation = Literal["refers_to", "acquired_from", "supports", "affected"]
+MaterialFetchState = Literal["unavailable", "expired", "access_denied", "malformed", "partial"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +135,8 @@ def admit_material(
         manifest = extraction_manifest(payload, media_type)
         if manifest.get("diagnostic") and material_state == "acquired":
             material_state = "malformed"
+            if not diagnostic:
+                diagnostic = str(manifest["diagnostic"])
     else:
         blob_hash, byte_size, manifest, custody = (
             None,
@@ -202,6 +209,181 @@ def admit_material(
     )
 
 
+def acquire_material(
+    conn: sqlite3.Connection,
+    *,
+    source_uri: str,
+    referrer_ref: str,
+    observed_at_ms: int,
+    blob_store: BlobStore | None = None,
+    media_type: str | None = None,
+    media_charset: str | None = None,
+    filename: str | None = None,
+    privacy_classification: MaterialPrivacy = "private",
+    timeout_seconds: float = 20.0,
+    max_bytes: int = 64 * 1024 * 1024,
+) -> MaterialObservation:
+    """Acquire a URL while retaining a durable claim for every outcome.
+
+    The response is streamed into memory only up to ``max_bytes``. HTTP
+    redirects are followed by urllib and the final URL is recorded in the
+    diagnostic when it differs from the admitted source URI. Transport and
+    policy failures remain material observations rather than exceptions that
+    erase the original link.
+    """
+    if not source_uri.strip() or not referrer_ref.strip():
+        raise ValueError("source_uri and referrer_ref are required")
+    if max_bytes <= 0:
+        raise ValueError("max_bytes must be positive")
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    parsed = urllib.parse.urlparse(source_uri)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=filename,
+            state="malformed",
+            diagnostic=f"unsupported material URI scheme or missing host: {parsed.scheme or '<none>'}",
+            privacy_classification=privacy_classification,
+        )
+    try:
+        with urllib.request.urlopen(source_uri, timeout=timeout_seconds) as response:
+            response_media_type = response.headers.get_content_type()
+            response_charset = response.headers.get_content_charset()
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                chunk = response.read(min(1024 * 1024, max_bytes - total + 1))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+                if total > max_bytes:
+                    payload = b"".join(chunks)[:max_bytes]
+                    final_uri = response.geturl()
+                    diagnostic = f"response exceeded bounded acquisition size {max_bytes} bytes"
+                    if final_uri != source_uri:
+                        diagnostic += f"; redirected to {final_uri}"
+                    return admit_material(
+                        conn,
+                        blob_store=blob_store,
+                        source_uri=source_uri,
+                        referrer_ref=referrer_ref,
+                        observed_at_ms=observed_at_ms,
+                        payload=payload,
+                        media_type=media_type or response_media_type,
+                        media_charset=media_charset or response_charset,
+                        filename=filename,
+                        state="partial",
+                        diagnostic=diagnostic,
+                        retryable=True,
+                        privacy_classification=privacy_classification,
+                    )
+            final_uri = response.geturl()
+            diagnostic = "" if final_uri == source_uri else f"redirected to {final_uri}"
+            return admit_material(
+                conn,
+                blob_store=blob_store,
+                source_uri=source_uri,
+                referrer_ref=referrer_ref,
+                observed_at_ms=observed_at_ms,
+                payload=b"".join(chunks),
+                media_type=media_type or response_media_type,
+                media_charset=media_charset or response_charset,
+                filename=filename,
+                diagnostic=diagnostic,
+                privacy_classification=privacy_classification,
+            )
+    except urllib.error.HTTPError as exc:
+        status = int(exc.code)
+        state: MaterialFetchState = (
+            "expired" if status in {404, 410} else "access_denied" if status in {401, 403} else "unavailable"
+        )
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=filename,
+            state=state,
+            diagnostic=f"HTTP {status} {exc.reason}",
+            retryable=state == "unavailable",
+            privacy_classification=privacy_classification,
+        )
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=filename,
+            state="unavailable",
+            diagnostic=f"acquisition failed: {type(exc).__name__}: {exc}",
+            retryable=True,
+            privacy_classification=privacy_classification,
+        )
+
+
+def admit_material_file(
+    conn: sqlite3.Connection,
+    *,
+    path: str | Path,
+    referrer_ref: str,
+    observed_at_ms: int,
+    blob_store: BlobStore | None = None,
+    media_type: str | None = None,
+    privacy_classification: MaterialPrivacy = "private",
+) -> MaterialObservation:
+    """Admit a pasted/downloaded local file through the same material route."""
+    file_path = Path(path)
+    source_uri = file_path.as_uri()
+    try:
+        payload = file_path.read_bytes()
+    except PermissionError as exc:
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=file_path.name,
+            state="access_denied",
+            diagnostic=f"file access denied: {exc}",
+            retryable=False,
+            privacy_classification=privacy_classification,
+        )
+    except FileNotFoundError as exc:
+        return admit_material(
+            conn,
+            blob_store=blob_store,
+            source_uri=source_uri,
+            referrer_ref=referrer_ref,
+            observed_at_ms=observed_at_ms,
+            filename=file_path.name,
+            state="unavailable",
+            diagnostic=f"file unavailable: {exc}",
+            retryable=True,
+            privacy_classification=privacy_classification,
+        )
+    return admit_material(
+        conn,
+        blob_store=blob_store,
+        source_uri=source_uri,
+        referrer_ref=referrer_ref,
+        observed_at_ms=observed_at_ms,
+        payload=payload,
+        filename=file_path.name,
+        media_type=media_type,
+        privacy_classification=privacy_classification,
+    )
+
+
 def link_material(
     conn: sqlite3.Connection,
     material_id: str,
@@ -213,8 +395,12 @@ def link_material(
     observed_at_ms: int,
     source_diagnostic: str = "",
 ) -> None:
+    if not material_id.strip() or not evidence_ref.strip():
+        raise ValueError("material_id and evidence_ref are required")
     if not 0.0 <= confidence <= 1.0:
         raise ValueError("confidence must be between 0 and 1")
+    if conn.execute("SELECT 1 FROM material_observations WHERE material_id = ?", (material_id,)).fetchone() is None:
+        raise KeyError(material_id)
     conn.execute(
         """INSERT INTO material_evidence_links
       (material_id, evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic)
@@ -276,18 +462,46 @@ def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None)
         ).fetchall()
     observations: list[MaterialObservation] = []
     for row in rows:
-        observation = get_material(conn, row["material_id"])
+        # The source-tier query API accepts both the default tuple row factory
+        # and sqlite3.Row connections used by the archive runtime.
+        material_id = row[0] if not isinstance(row, sqlite3.Row) else row["material_id"]
+        observation = get_material(conn, material_id)
         if observation is not None:
             observations.append(observation)
     return observations
 
 
+def list_material_links(conn: sqlite3.Connection, material_id: str) -> list[MaterialEvidenceLink]:
+    """Return direct provenance/effect edges for one retained or claimed material."""
+    rows = conn.execute(
+        """SELECT evidence_ref, relation, authority, confidence, observed_at_ms, source_diagnostic
+           FROM material_evidence_links
+           WHERE material_id = ?
+           ORDER BY observed_at_ms, evidence_ref, relation""",
+        (material_id,),
+    ).fetchall()
+    return [
+        MaterialEvidenceLink(
+            evidence_ref=row[0],
+            relation=row[1],
+            authority=row[2],
+            confidence=float(row[3]),
+            observed_at_ms=int(row[4]),
+            source_diagnostic=row[5],
+        )
+        for row in rows
+    ]
+
+
 __all__ = [
     "MaterialObservation",
     "admit_material",
+    "admit_material_file",
+    "acquire_material",
     "extraction_manifest",
     "get_material",
     "link_material",
+    "list_material_links",
     "list_materials",
     "read_material",
     "MaterialEvidenceLink",
