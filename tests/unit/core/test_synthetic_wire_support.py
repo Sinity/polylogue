@@ -167,7 +167,7 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
         )
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_first_coverage_witness)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     dropped = next(witness for witness in entry.parser_witnesses if witness.index == 0)
@@ -751,7 +751,7 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
         )
 
     monkeypatch.setattr(dispatch_module, "parse_payload", fail_baseline)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -775,7 +775,7 @@ def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.Mon
         return original_validate(self, payload)
 
     monkeypatch.setattr(validator_module.SchemaValidator, "validate", fail_chatgpt_baseline)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -892,11 +892,19 @@ def test_antigravity_metadata_only_source_has_no_language_server_session(tmp_pat
     assert sessions == []
 
 
+#: Building the receipt runs the full synthetic corpus and parser for every
+#: catalogued package element, so a test that asserts a receipt *changed*
+#: names the providers whose entries carry the change rather than paying for
+#: the whole catalog. Catalog-wide construction stays covered by
+#: ``test_support_receipt_is_deterministic``.
+_COVERAGE_PROVIDERS = ("chatgpt", "codex")
+
+
 def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
-    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
-    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     assert before.to_dict() != after.to_dict()
     assert not after.complete
@@ -1032,7 +1040,7 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
             super().__init__(schema, strict=strict, provider=provider)
 
     monkeypatch.setattr(validator_module, "SchemaValidator", CapturingValidator)
-    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     assert entry.schema_valid is True
@@ -1045,7 +1053,7 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
 
 
 def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("claude-code",))
     entry = next(item for item in receipt.entries if item.provider == "claude-code")
 
     assert entry.construct_coverage is not None
@@ -1147,10 +1155,10 @@ def test_missing_required_and_additional_property_evidence_makes_receipt_incompl
 
 
 def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
-    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     monkeypatch.delitem(wire_formats.PROVIDER_WIRE_ROUTES, "codex")
-    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     assert before.to_dict() != after.to_dict()
     assert after.missing_routes == ("codex",)
