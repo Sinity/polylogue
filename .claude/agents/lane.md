@@ -110,6 +110,12 @@ by construction.
   discovering the backgrounding after the fact. This is not optional
   guidance, it is the mechanical fix for a bug that has independently hit
   this fleet 3+ times.
+- `devtools test` and `devtools verify` queue on the host's single pytest
+  slot and can wait longer than the Bash tool's 10-minute cap. When a run
+  is auto-backgrounded while still queued, do not wait for a notification:
+  none arrives for a pueue task. Read the task id from its output and wait
+  in the foreground with `agentctl job wait <id> --timeout-seconds 590`,
+  repeating until the task is terminal, then read the slot log it names.
 - Inner loop: `devtools test <files>` (or `devtools test -k <expr>`) against
   the exact files/behavior you changed. Do not run whole test directories or
   blanket `pytest tests/unit` — that reruns tests your change never touched
