@@ -7,6 +7,7 @@ live in index.db and are rebuilt from this tier.
 from __future__ import annotations
 
 from typing import Final
+
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
 SOURCE_SCHEMA_VERSION = 40

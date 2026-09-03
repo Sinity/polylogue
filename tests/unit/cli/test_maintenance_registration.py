@@ -22,8 +22,6 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
 from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
 from polylogue.cli.commands.maintenance._plan import plan_command
-from polylogue.cli.commands.maintenance._run import run_command
-from polylogue.cli.commands.maintenance._run_preview import run_preview_command
 from polylogue.cli.commands.maintenance._status import status_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -57,6 +55,8 @@ def test_maintenance_plan_is_click_command() -> None:
 
 def test_operation_recovery_is_click_command() -> None:
     assert isinstance(operation_recovery_command, click.Command)
+
+
 def _recovery_env(tmp_path: Path) -> AppEnv:
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -244,6 +244,8 @@ def test_maintenance_status_is_click_command() -> None:
 
 def test_blob_reference_closure_is_click_command() -> None:
     assert isinstance(blob_reference_closure_command, click.Command)
+
+
 def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -> None:
     """The real Click registry exposes diagnostic and write commands separately."""
 
