@@ -39,6 +39,37 @@ class DerivedDeltaClass(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class SameVersionSchemaVariant:
+    """A declared object-definition variant retained by a derived tier."""
+
+    introduced_version: int
+    object_names: tuple[tuple[str, str], ...]
+    transformation: Literal["remove_fts_bulk_guard"]
+
+    def __post_init__(self) -> None:
+        if self.introduced_version < 1 or not self.object_names:
+            raise ValueError("SameVersionSchemaVariant requires a version and objects")
+
+
+INDEX_SAME_VERSION_SCHEMA_VARIANTS: tuple[SameVersionSchemaVariant, ...] = (
+    SameVersionSchemaVariant(
+        introduced_version=63,
+        object_names=(
+            ("trigger", "blocks_command_trigram_ai"),
+            ("trigger", "blocks_command_trigram_ad"),
+            ("trigger", "blocks_command_trigram_au"),
+        ),
+        transformation="remove_fts_bulk_guard",
+    ),
+)
+
+
+def same_version_schema_variants(version: int) -> tuple[SameVersionSchemaVariant, ...]:
+    """Return compatibility variants retained by a generation version."""
+    return tuple(variant for variant in INDEX_SAME_VERSION_SCHEMA_VARIANTS if version >= variant.introduced_version)
+
+
+@dataclass(frozen=True, slots=True)
 class TargetedReprocessScope:
     """A bounded reprocess scope over already-persisted sessions, as data.
 
@@ -761,21 +792,14 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=57,
-        # polylogue-ioz7: adds `agent_meta_sidecar_purge_receipts`, a
-        # brand-new table with no rows on any existing archive -- see
-        # INDEX_SCHEMA_VERSION's v57 comment (archive_tiers/index.py).
-        # Same shape as v33's `insight_materialization` new-table delta.
-        classes=(DerivedDeltaClass.CONSTRAINT_ONLY, DerivedDeltaClass.INDEX_ONLY),
+        # The one-shot sidecar-purge receipt has no remaining consumer. Its
+        # removal is a clone-safe rebuildable-cache deletion.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
         operations=(
             FastForwardOperation(
-                name="v57-agent-meta-sidecar-purge-receipts",
-                kind=FastForwardOperationKind.REPLACE_TABLE,
+                name="v57-drop-agent-meta-sidecar-purge-receipts",
+                kind=FastForwardOperationKind.DROP_TABLE,
                 objects=(("table", "agent_meta_sidecar_purge_receipts"),),
-            ),
-            FastForwardOperation(
-                name="v57-agent-meta-sidecar-purge-receipts",
-                kind=FastForwardOperationKind.CREATE_INDEX,
-                objects=(("index", "idx_agent_meta_sidecar_purge_receipts_purged_at"),),
             ),
         ),
     ),
@@ -1103,11 +1127,43 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
     ),
     IndexDeltaDeclaration(
         version=83,
-        # Thread and tag-rollup caches are removed, while action_pairs and
-        # delegation_facts retain compact indexed forms for bounded reads.
-        # Existing generations must be rebuilt to establish the new relation
-        # layout and repopulate the retained derived relations.
+        # polylogue-xd0ha: deliberate unknown outcomes are now
+        # admitted and their parser reasons are preserved in the canonical
+        # projection. Existing rows require fresh parser replay.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        # Delegation cost estimation now treats provider-reported dollars as
+        # exact even when catalog pricing is unavailable. Existing derived
+        # rows need the updated view definition.
+        version=84,
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=85,
+        # Attachment direction and producer provenance depend on each origin's
+        # structured parser evidence. A shape-only copy-forward would mint
+        # unsupported values, so existing rows require semantic reparse.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
+        version=86,
+        # ``threads.dominant_repo_id`` had no writer or reader. Replacing the
+        # projection table preserves every surviving derived value while
+        # removing the unused column.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v86-drop-threads-dominant-repo-id",
+                kind=FastForwardOperationKind.REPLACE_TABLE,
+                objects=(("table", "threads"),),
+            ),
+            FastForwardOperation(
+                name="v86-drop-threads-dominant-repo-id",
+                kind=FastForwardOperationKind.CREATE_INDEX,
+                objects=(("index", "idx_threads_time"),),
+            ),
+        ),
     ),
 )
 
@@ -1343,6 +1399,8 @@ __all__ = [
     "IndexDeltaDeclaration",
     "IndexDeltaDeclarationReport",
     "IndexFastForwardPlan",
+    "INDEX_SAME_VERSION_SCHEMA_VARIANTS",
+    "SameVersionSchemaVariant",
     "TargetedReprocessScope",
     "get_latest_sql_fast_forwardable_version",
     "get_semantic_reparse_blocking_version_pair",
@@ -1351,5 +1409,6 @@ __all__ = [
     "invalid_canary_change_declarations",
     "index_fast_forward_plan",
     "resolve_canonical_index_objects",
+    "same_version_schema_variants",
     "undeclared_index_delta_versions",
 ]
