@@ -1147,7 +1147,7 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
     IndexDeltaDeclaration(
-        version=85,
+        version=90,
         # Canonical provider identity claims and parent-side dispatch
         # observations change the normalized topology reconstructed from raw
         # source; existing indexes must be replayed.
