@@ -24,7 +24,7 @@ from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
 from .dispatch import is_jsonl_source_path
 from .emitter import _SessionEmitter
-from .origin_specs import recognize_source_class
+from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_state, hermes_verification
 from .parsers.base import ParsedSession, RawSessionData
 from .source_walk import _setup_source_walk
@@ -47,6 +47,28 @@ def has_decoded_session_evidence(path: Path, *, provider: Provider) -> bool:
     except (JSONDecodeError, OSError):
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+def _decoded_session_admits_path_rule(
+    path: Path,
+    *,
+    provider: Provider,
+    recognition: SourceClassRecognition,
+) -> bool:
+    """Return whether decoded session content admits a path-rule candidate.
+
+    Only a declared path rule that permits parsing may be overridden by
+    content: ``raw-only`` families (tool-result overflow) can reproduce a
+    genuine session document verbatim, so content may never admit them
+    (polylogue-omsw), and a typed ``unsupported`` candidate has no session
+    parser at all.
+    """
+    if recognition.source_class != "non_session":
+        return False
+    rule = artifact_rule_for_path(provider, str(path))
+    if rule is None or rule.parse_policy == "raw-only":
+        return False
+    return has_decoded_session_evidence(path, provider=provider)
 
 
 def iter_antigravity_language_server_sessions(
@@ -259,7 +281,11 @@ def parse_one_source_path(
         )
         return
     source_class = recognize_source_class(provider_hint, path)
-    if source_class is not None and source_class.source_class != "session":
+    if (
+        source_class is not None
+        and source_class.source_class != "session"
+        and not _decoded_session_admits_path_rule(path, provider=provider_hint, recognition=source_class)
+    ):
         logger.info(
             "source_candidate_not_admitted",
             source_path=str(path),

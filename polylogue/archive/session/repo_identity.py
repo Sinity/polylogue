@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Iterable
 from functools import lru_cache
@@ -75,8 +76,27 @@ def _is_non_work_repo_root(path: Path) -> bool:
     return path.name == "blob-repository" and ".local" in parts and "state" in parts
 
 
-def _find_git_root(path: Path) -> Path | None:
+def _git_ceiling_directories() -> tuple[str, ...]:
+    """Resolved ``GIT_CEILING_DIRECTORIES`` entries.
+
+    Git's semantics: a colon-separated list of absolute directories the
+    upward repository walk must stop before examining. Empty and relative
+    entries are ignored; entries are resolved because the walk's candidates
+    are resolved.
+    """
+    raw = os.environ.get("GIT_CEILING_DIRECTORIES", "")
+    ceilings: list[str] = []
+    for entry in raw.split(":"):
+        if not entry or not entry.startswith("/"):
+            continue
+        ceilings.append(str(Path(entry).expanduser().resolve(strict=False)))
+    return tuple(sorted(set(ceilings)))
+
+
+def _find_git_root(path: Path, ceilings: tuple[str, ...] = ()) -> Path | None:
     for candidate in _iter_repo_root_candidates(path):
+        if str(candidate) in ceilings:
+            return None
         if candidate.name == ".git" and _path_exists(candidate):
             repo_root = candidate.parent
             if not _is_non_work_repo_root(repo_root):
@@ -114,7 +134,7 @@ def _repo_name_from_remote(value: str) -> str | None:
 
 
 @lru_cache(maxsize=4096)
-def normalize_repo_path(value: object) -> str | None:
+def _normalize_repo_path_cached(value: object, ceilings: tuple[str, ...]) -> str | None:
     raw = str(value or "").strip()
     if not raw:
         return None
@@ -123,20 +143,28 @@ def normalize_repo_path(value: object) -> str | None:
         return None
     if _is_non_probing_absolute_path(path_candidate):
         return None
-    git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False))
+    git_root = _find_git_root(Path(path_candidate).expanduser().resolve(strict=False), ceilings)
     return str(git_root) if git_root is not None else None
 
 
+def normalize_repo_path(value: object) -> str | None:
+    return _normalize_repo_path_cached(value, _git_ceiling_directories())
+
+
 @lru_cache(maxsize=4096)
-def normalize_repo_name(value: object) -> str | None:
+def _normalize_repo_name_cached(value: object, ceilings: tuple[str, ...]) -> str | None:
     raw = str(value or "").strip()
     if not raw:
         return None
-    repo_path = normalize_repo_path(raw)
+    repo_path = _normalize_repo_path_cached(raw, ceilings)
     if repo_path is not None:
         name = Path(repo_path).name.strip()
         return name or None
     return _repo_name_from_remote(raw)
+
+
+def normalize_repo_name(value: object) -> str | None:
+    return _normalize_repo_name_cached(value, _git_ceiling_directories())
 
 
 def normalize_repo_names(

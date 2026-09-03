@@ -180,7 +180,6 @@ def test_provider_namespace_policy_discloses_open_world_fallback() -> None:
     assert {item["origin"] for item in policies} == {origin.value for origin in Origin} - {Origin.BEADS_ISSUE.value}
     assert {item["provider_family"] for item in policies} == {
         "antigravity",
-        "beads",
         "chatgpt",
         "claude-ai",
         "claude-design",

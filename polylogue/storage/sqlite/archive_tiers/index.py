@@ -455,7 +455,8 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # rows must be reprocessed so current catalog prices are served.
 # polylogue-avlt5: v83 removes materialized thread/tag-rollup caches while
 # retaining compact indexed action/delegation relations for bounded reads.
-INDEX_SCHEMA_VERSION = 87
+# v88 removes the retired agent-meta sidecar purge receipt from fresh DDL.
+INDEX_SCHEMA_VERSION = 88
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1961,17 +1962,6 @@ LEFT JOIN repo_json rj
   ON rj.source_name = dm.source_name AND rj.bucket_day = dm.bucket_day AND rj.tag = dm.tag
 GROUP BY dm.tag, dm.bucket_day, dm.source_name;
 
--- v57 (polylogue-ioz7): one immutable receipt per `sessions` row deleted by
--- the agent-meta-sidecar purge actuator. No FK to `sessions` -- the whole
--- point of the row is that the session it describes no longer exists.
--- `raw_id` is likewise unconstrained here (source.db is a separate
--- database file; the raw row and its blob are deliberately retained there).
-CREATE TABLE IF NOT EXISTS agent_meta_sidecar_purge_receipts (
-    {TABLE_SPECS["agent_meta_sidecar_purge_receipts"].ddl_body}
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_agent_meta_sidecar_purge_receipts_purged_at
-ON agent_meta_sidecar_purge_receipts(purged_at_ms);
 """
 
 # polylogue-a7xr.5 consolidated the FTS trigger CREATE statements into

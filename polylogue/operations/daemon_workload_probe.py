@@ -23,6 +23,7 @@ from typing import Any
 
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.config import Config
+from polylogue.core.errors import SchemaSkewError
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -32,6 +33,10 @@ from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+# A tier whose schema does not match the packaged version is unreadable, not fatal:
+# the probe reports skew instead of crashing.
+_TIER_UNAVAILABLE_ERRORS = (sqlite3.Error, SchemaSkewError)
 
 # Bumped when the JSON shape gains new top-level keys or changes a field type.
 # The compare path uses this to refuse incompatible inputs loudly.
@@ -394,7 +399,7 @@ def _ops_recent_attempts(ops_db: Path | None, *, limit: int) -> list[dict[str, A
             payloads = _ops_stage_payloads(conn, [str(row[0]) for row in rows])
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return []
 
     attempts: list[dict[str, Any]] = []
@@ -544,7 +549,7 @@ def _ops_storage_route_counts(ops_db: Path | None) -> dict[str, int] | None:
             return counts
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return None
 
 
@@ -627,7 +632,7 @@ def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
             }
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return None
 
 
@@ -736,7 +741,7 @@ def _archive_source_path_churn(
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return []
 
     items: list[dict[str, Any]] = []
@@ -894,7 +899,7 @@ def _ops_cursor_lag_baselines(ops_db: Path | None) -> dict[str, Any] | None:
             }
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return None
 
 
@@ -1028,7 +1033,7 @@ def _boundary_table_counts_and_precision(
                     counts[table], precision[table] = _table_count_with_precision(ops_conn, table, exact=exact)
             finally:
                 ops_conn.close()
-        except sqlite3.Error:
+        except _TIER_UNAVAILABLE_ERRORS:
             for table in _OPS_BOUNDARY_TABLES:
                 counts.setdefault(table, -1)
                 precision.setdefault(table, "missing")
@@ -2038,7 +2043,7 @@ def _tier_state_or_current(conn: sqlite3.Connection, tier_db: Path, reader: Any)
                 return dict(reader(tier_conn))
             finally:
                 tier_conn.close()
-        except sqlite3.Error:
+        except _TIER_UNAVAILABLE_ERRORS:
             pass
     return dict(reader(conn))
 
@@ -2251,7 +2256,7 @@ def _ops_daemon_resource_signal(ops_db: Path | None) -> dict[str, Any] | None:
             ).fetchone()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return None
     if row is None:
         return None
@@ -2367,7 +2372,7 @@ def _archive_query_plans(root: Path) -> dict[str, Any]:
                     }
         finally:
             conn.close()
-    except sqlite3.Error:
+    except _TIER_UNAVAILABLE_ERRORS:
         return {}
     return plans
 

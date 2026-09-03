@@ -112,7 +112,7 @@ _RECIPE_INPUT_ROOTS = (
     _REPOSITORY_ROOT / "polylogue" / "__init__.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "runtime_registry.py",
     _REPOSITORY_ROOT / "polylogue" / "schemas" / "registry.py",
-    _REPOSITORY_ROOT / "polylogue" / "insights" / "claude_workflow_materializer.py",
+    _REPOSITORY_ROOT / "polylogue" / "analysis" / "claude_workflow_materializer.py",
 )
 _RECIPE_PROVIDER_ROOT = _REPOSITORY_ROOT / "polylogue" / "schemas" / "providers"
 _ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit.db", "ops.db")

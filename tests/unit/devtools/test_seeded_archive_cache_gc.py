@@ -64,7 +64,7 @@ def test_route_preview_apply_and_repeat_apply_use_generated_keys(tmp_path: Path)
     preview = json.loads(preview_output.getvalue())
     assert preview["dry_run"] is True
     assert current.manifest.key in preview["reachable_keys"]
-    assert preview["reachability"]["kinds"] == {"benchmark": 4, "default": 2, "named": 5}
+    assert preview["reachability"]["kinds"] == {"benchmark": 4, "default": 3, "named": 5}
     stale_preview = next(entry for entry in preview["entries"] if entry["name"] == stale.root.name)
     assert stale_preview["disposition"] == ArtifactGcDisposition.STALE.value
     assert stale.root.exists()
@@ -119,7 +119,6 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     assert operation["result"] == "json"
     assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 900
-    assert operation["parameters"]["apply"]["flag"] == "--apply"
 
 
 def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:

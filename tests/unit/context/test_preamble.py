@@ -24,7 +24,8 @@ from polylogue.context.preamble import _git_project_state, build_context_preambl
 from polylogue.context.scheduler import read_context_ledger
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.markers import parse_markers
-from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def _init_git_repo(path: Path, *, branch: str = "main") -> None:
@@ -171,8 +172,7 @@ class TestBuildContextPreambleGitEnrichment:
         poly = MagicMock()
         poly.config.archive_root = tmp_path / "archive"
         poly.config.archive_root.mkdir()
-        with sqlite3.connect(poly.config.archive_root / "ops.db") as conn:
-            conn.executescript(OPS_DDL)
+        initialize_archive_database(poly.config.archive_root / "ops.db", ArchiveTier.OPS)
         poly.get_session = AsyncMock(return_value=session)
         poly.get_session_topology = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
@@ -217,8 +217,6 @@ async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
     """
     from polylogue.api import Polylogue
     from polylogue.core.enums import AssertionKind
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
     archive_root = tmp_path / "archive"

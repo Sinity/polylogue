@@ -49,6 +49,7 @@
         "estimated_cost": {
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
+          "unpriced_session_count": 4,
           "tokens": {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -161,6 +162,7 @@
         "estimated_cost": {
           "total_cost_usd": 0.0,
           "cost_is_estimated": true,
+          "unpriced_session_count": 4,
           "tokens": {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -475,7 +477,7 @@
         "id": "chatgpt-export:12ae5c22-741b-47f5-8c24-<HASH>",
         "message_count": 7,
         "origin": "chatgpt-export",
-        "relative_time": "70w ago",
+        "relative_time": "<RELATIVE_AGE>",
         "tags": [],
         "target_ref": {
           "identity_key": "session:chatgpt-export:12ae5c22-741b-47f5-8c24-<HASH>",
@@ -508,7 +510,7 @@
         "id": "chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
         "message_count": 5,
         "origin": "chatgpt-export",
-        "relative_time": "130w ago",
+        "relative_time": "<RELATIVE_AGE>",
         "tags": [],
         "target_ref": {
           "identity_key": "session:chatgpt-export:a003cd28-ca8f-4653-89af-<HASH>",
@@ -1169,7 +1171,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 36,
+          "sqlite_stat1_rows": 38,
           "planner_stats_present": true
         },
         "embeddings": {
@@ -1190,7 +1192,7 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 1,
+          "sqlite_stat1_rows": 2,
           "planner_stats_present": true
         }
       }
@@ -1442,7 +1444,7 @@
   - **Scope:** archive-start → now
   - **Sessions:** 4 analyzed / 4 matched
   - **Origins:** chatgpt-export (2), claude-code-session (2)
-  - **Total cost:** $0.00 _(estimated)_
+  - **Total cost:** $0.00 _(estimated)_ across 4 sessions, 4 unpriced
   - **Tokens:** in 0, out 0, cache-read 0, cache-write 0
   
   ## Distributions
@@ -1509,7 +1511,7 @@
   scope: archive-start → now
   sessions: analyzed=4 matched=4
   origins: chatgpt-export=2, claude-code-session=2
-  total_cost: $0.00 (estimated)
+  total_cost: $0.00 (estimated) across 4 sessions, 4 unpriced
   tokens: in=0 out=0 cache_read=0 cache_write=0
   cost_per_session_usd: no signal
   wall_per_session_s: n=4 total=1.45443e+<DURATION> min=240 p50=360 p90=7.38324e+07 max=7.38324e+07 mean=3.63606e+07

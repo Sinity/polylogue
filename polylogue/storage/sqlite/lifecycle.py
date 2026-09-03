@@ -1171,6 +1171,20 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # and delegation maintenance required by archive-scale reads.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=88,
+        # The retired sidecar purge receipt was already removed from every
+        # open archive by same-version convergence. Remove its stale fresh-DDL
+        # declaration without rebuilding derived data.
+        classes=(DerivedDeltaClass.CACHE_REMOVAL,),
+        operations=(
+            FastForwardOperation(
+                name="v88-drop-agent-meta-sidecar-purge-receipts",
+                kind=FastForwardOperationKind.DROP_TABLE,
+                objects=(("table", "agent_meta_sidecar_purge_receipts"),),
+            ),
+        ),
+    ),
 )
 
 

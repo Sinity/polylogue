@@ -7,7 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,11 +100,25 @@ def _payload_action_identity(row: dict[str, object]) -> ActionIdentity:
     )
 
 
-def _assert_repository_membership(root: Path, manifest: QueryCardinalityManifest) -> None:
-    """Assert the action_relation_select_sql -> query_actions production path."""
+def _assert_repository_membership(
+    root: Path,
+    manifest: QueryCardinalityManifest,
+    *,
+    mutate: Callable[[sqlite3.Connection], None] | None = None,
+) -> None:
+    """Assert the action_relation_select_sql -> query_actions production path.
+
+    ``mutate`` runs on the opened archive's own connection, after the open
+    completes: opening asserts the index semantic manifest against the
+    canonical DDL, so a schema mutation written to disk beforehand is refused
+    before any query runs. TEMP objects are invisible to that check while
+    still shadowing their ``main`` namesakes for the query that follows.
+    """
     source = parse_unit_source_expression(_ACTION_EXPRESSION)
     assert source is not None
     with ArchiveStore.open_existing(root) as archive:
+        if mutate is not None:
+            mutate(archive._conn)
         rows = archive.query_actions(source.predicate, limit=100)
     actual = tuple(_action_identity(row) for row in rows)
     expected = manifest.matching_action_identities()
@@ -332,18 +346,22 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
 ) -> None:
     """Dropping ordinal pairing creates seven rows where the oracle requires five.
 
-    The mutation replaces the production ``actions`` view with the historical
+    The mutation shadows the production ``actions`` view with the historical
     same-session/same-tool-id join, equivalent to removing
     ``result_rank = use_rank`` from ``action_relation_select_sql``.  The two
     duplicate uses and two duplicate results then form a 2x2 product (four
     rows instead of two), and the real-route membership survivor must reject it.
     """
     root = _copy_archive(query_cardinality_archive.root, tmp_path / "naive-join-archive")
-    with sqlite3.connect(root / "index.db") as conn:
+
+    def _shadow_actions_with_naive_join(conn: sqlite3.Connection) -> None:
+        # The read-mode connection runs under ``PRAGMA query_only``, which
+        # refuses temp-schema writes too; the main schema stays ``mode=ro``
+        # throughout, so only the temp view is created here.
+        conn.execute("PRAGMA query_only = OFF")
         conn.executescript(
             """
-            DROP VIEW actions;
-            CREATE VIEW actions AS
+            CREATE TEMP VIEW actions AS
             SELECT
                 u.session_id,
                 u.message_id,
@@ -372,9 +390,14 @@ def test_survivor_detects_naive_duplicate_id_join_mutation(
             WHERE u.block_type = 'tool_use';
             """
         )
+        conn.execute("PRAGMA query_only = ON")
 
     with pytest.raises(AssertionError) as caught:
-        _assert_repository_membership(root, query_cardinality_archive.manifest)
+        _assert_repository_membership(
+            root,
+            query_cardinality_archive.manifest,
+            mutate=_shadow_actions_with_naive_join,
+        )
     message = str(caught.value)
     assert "expected 5 independently planted action rows, got 7" in message
     assert QUERY_CARDINALITY_TOKEN in message

@@ -5736,6 +5736,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
         ops_db = archive_root() / "ops.db"
+        if not ops_db.exists():
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
         with open_daemon_connection(ops_db) as conn:
             table_count = int(
                 conn.execute(

@@ -38,7 +38,8 @@ def _make_repo(tmp_path: Path, name: str) -> Path:
     return repo_root
 
 
-def test_repo_identity_normalization_filters_noise(tmp_path: Path) -> None:
+def test_repo_identity_normalization_filters_noise(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     sinnix_repo = _make_repo(tmp_path, "sinnix")
     polylogue_repo = _make_repo(tmp_path, "polylogue")
 
@@ -106,7 +107,10 @@ def test_attribution_does_not_probe_archived_automount_paths(monkeypatch: pytest
     assert attribution.languages_detected == ("python",)
 
 
-def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(tmp_path: Path) -> None:
+def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     sinnix_repo = _make_repo(tmp_path, "sinnix")
     noisy_repo_path = f"/../../{sinnix_repo.relative_to(Path('/'))}"
     noisy_file_path = f"{noisy_repo_path}/README.md"
@@ -114,6 +118,28 @@ def test_repo_identity_normalization_canonicalizes_absolute_parent_traversal(tmp
     assert normalize_repo_path(noisy_repo_path) == str(sinnix_repo)
     assert normalize_repo_path(noisy_file_path) == str(sinnix_repo)
     assert normalize_repo_name(noisy_file_path) == "sinnix"
+
+
+def test_repo_identity_normalization_honours_git_ceiling_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The upward walk stops before examining a ``GIT_CEILING_DIRECTORIES`` entry.
+
+    Anti-vacuity: deleting the ceiling check in ``_find_git_root`` makes the
+    first assertion return the outer repo instead of ``None``.
+    """
+    outer_repo = _make_repo(tmp_path, "outer")
+    inner_file = outer_repo / "inner" / "file"
+    inner_file.parent.mkdir(parents=True)
+    inner_file.touch()
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(outer_repo))
+    assert normalize_repo_path(str(inner_file)) is None
+    assert normalize_repo_name(str(inner_file)) is None
+
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
+    assert normalize_repo_path(str(inner_file)) == str(outer_repo)
+    assert normalize_repo_name(str(inner_file)) == "outer"
 
 
 def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,7 +158,10 @@ def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypa
     assert normalize_repo_paths([str(unreadable_git_dir)]) == ()
 
 
-def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_path: Path) -> None:
+def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     transcript_repo = tmp_path / ".claude" / "projects"
     (transcript_repo / ".git").mkdir(parents=True)
     config_transcript_repo = tmp_path / ".config" / "claude" / "projects"
@@ -149,7 +178,10 @@ def test_repo_identity_normalization_ignores_transcript_and_state_git_repos(tmp_
     assert normalize_repo_names(repo_paths=[str(transcript_repo), str(config_transcript_repo), str(state_repo)]) == ()
 
 
-def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(tmp_path: Path) -> None:
+def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_repo_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     polylogue_repo = _make_repo(tmp_path, "polylogue")
     sinnix_repo = _make_repo(tmp_path, "sinnix")
 
@@ -175,7 +207,10 @@ def test_session_profile_from_dict_preserves_explicit_repo_names_and_normalizes_
     assert profile.repo_names == ("polylogue", "sinnix")
 
 
-def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_paths(tmp_path: Path) -> None:
+def test_build_session_profile_normalizes_repo_roots_from_workdirs_and_tool_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     sinnix_repo = _make_repo(tmp_path, "sinnix")
 
     session = Session(
@@ -247,7 +282,10 @@ def test_extract_attribution_preserves_repo_name_from_provider_git_remote() -> N
     assert attribution.languages_detected == ()
 
 
-def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path: Path) -> None:
+def test_extract_attribution_ignores_configured_claude_transcript_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     transcript_repo = tmp_path / ".config" / "claude" / "projects"
     (transcript_repo / ".git").mkdir(parents=True)
     work_repo = _make_repo(tmp_path, "sinnix")
@@ -292,7 +330,10 @@ def test_extract_attribution_ignores_configured_claude_transcript_repo(tmp_path:
     assert attribution.repo_names == ("sinnix",)
 
 
-def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(tmp_path: Path) -> None:
+def test_extract_attribution_filters_transcript_temp_and_snapshot_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     work_repo = _make_repo(tmp_path, "sinnix")
     repo_tool_result = work_repo / "tool-results" / "parser.py"
     repo_tool_result.parent.mkdir()

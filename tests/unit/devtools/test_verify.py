@@ -29,6 +29,26 @@ from devtools.verify_runs import (
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
 
 
+def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset means the corpus width; an explicit value, ``0`` included, wins.
+
+    Anti-vacuity: reading the variable with a ``"0"`` default (the previous
+    code) makes the unset case yield ``-n 0`` and fails the first assertion;
+    ignoring the variable makes the override cases fail.
+    """
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "0"
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "3")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "3"
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "64")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+
+
 def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
@@ -489,7 +509,11 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
     assert result["flaky"] == ["tests/test_a.py::test_flaky"]
     assert result["still_failed"] == ["tests/test_a.py::test_red"]
     assert "-p" in reruns[0] and "no:testmon" in reruns[0]
-    assert reruns[0][-2:] == ["tests/test_a.py::test_flaky", "tests/test_a.py::test_red"]
+    # Exactly the failed tests are selected, and nothing that passed.
+    assert [arg for arg in reruns[0] if arg.startswith("tests/")] == [
+        "tests/test_a.py::test_flaky",
+        "tests/test_a.py::test_red",
+    ]
     patched = json.loads(report_path.read_text())
     by_id = {t["nodeid"]: t for t in patched["tests"]}
     assert by_id["tests/test_a.py::test_flaky"]["outcome"] == "passed"

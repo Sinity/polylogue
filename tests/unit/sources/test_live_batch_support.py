@@ -4326,7 +4326,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         polylogue,
         (WatchSource(name="codex", root=root),),
         cursor=cursor,
-        parser_fingerprint="live-batched-v2",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     original_hash = sha256_range_from_path
     next_record = 0

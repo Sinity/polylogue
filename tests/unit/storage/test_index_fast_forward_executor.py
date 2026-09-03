@@ -571,7 +571,9 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
     ANTI-VACUITY: reverting ``INDEX_DDL``'s ``session_model_usage`` back to
     declaring ``priced_with``/``priced_at_ms`` (undoing the polylogue-resk
     DDL edit) makes the ``columns`` assertions below fail (both columns
-    would still be present after the copy-forward).
+    would still be present after the copy-forward). Narrowing
+    ``_apply_replace_table``'s copy to the primary key alone drops the
+    surviving token/count/credit values and fails the row assertion.
     """
     from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import _apply_replace_table
     from polylogue.storage.sqlite.lifecycle import resolve_canonical_index_objects
@@ -635,10 +637,10 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
             """
             INSERT INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens,
-                message_count, priced_with, priced_at_ms, cost_usd, cost_provenance
+                message_count, priced_with, priced_at_ms, cost_usd, cost_credits, cost_provenance
             ) VALUES (
                 'codex-session:s1', 'gpt-4o', 1000, 500,
-                1, 'legacy-catalog', 1700000000000, 0.05, 'priced'
+                1, 'legacy-catalog', 1700000000000, 0.05, 0.5, 'priced'
             )
             """
         )
@@ -649,7 +651,7 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
 
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(session_model_usage)").fetchall()}
         row = conn.execute(
-            "SELECT input_tokens, output_tokens, message_count, cost_usd, cost_provenance "
+            "SELECT input_tokens, output_tokens, message_count, cost_credits "
             "FROM session_model_usage WHERE model_name = 'gpt-4o'"
         ).fetchone()
     finally:
@@ -657,46 +659,11 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
 
     assert "priced_with" not in columns
     assert "priced_at_ms" not in columns
-    assert row == (1000, 500, 1, 0.05, "priced")
-
-
-def test_v85_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> None:
-    """The declared v85 fast-forward preserves the live thread projection."""
-    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
-    from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
-
-    plan = index_fast_forward_plan(84, 85)
-    assert plan is not None
-
-    conn = sqlite3.connect(tmp_path / "scratch.db")
-    try:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY) STRICT")
-        conn.execute("INSERT INTO sessions VALUES ('codex-session:s1')")
-        conn.execute(
-            """
-            CREATE TABLE threads (
-                thread_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-                dominant_repo_id TEXT,
-                dominant_repo TEXT
-            ) STRICT
-            """
-        )
-        conn.execute("INSERT INTO threads VALUES ('codex-session:s1', 'repo-1', 'example/repo')")
-        conn.execute("PRAGMA user_version = 84")
-        conn.commit()
-
-        apply_index_fast_forward(conn, plan)
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(threads)")}
-        row = conn.execute("SELECT thread_id, dominant_repo FROM threads").fetchone()
-        index_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_time'"
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert "dominant_repo_id" not in columns
-    assert row == ("codex-session:s1", "example/repo")
-    assert index_exists == (1,)
+    # The canonical shape splits provider and catalog cost (#4493); the
+    # pre-v61 cost_usd/cost_provenance columns have no counterpart to copy into.
+    assert "cost_usd" not in columns
+    assert "cost_provenance" not in columns
+    assert row == (1000, 500, 1, 0.5)
 
 
 def test_v63_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> None:

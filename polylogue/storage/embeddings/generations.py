@@ -162,6 +162,30 @@ def _regular_file(path: Path) -> bool:
     return path.is_file() and not path.is_symlink()
 
 
+def _recipe_membership(contracts: set[tuple[bytes, bytes, str, int]]) -> str:
+    """Encode the recipe identities a published database carries.
+
+    A single-recipe database keeps its bare recipe hash, so the encoding of a
+    generation is stable across a recipe migration that never reaches it.  A
+    database mid-migration carries every distinct (recipe, output contract,
+    model, dimension) tuple, hashed in a canonical order so the contract stays
+    attributable and comparable.
+    """
+    if not contracts:
+        return "empty"
+    if len(contracts) == 1:
+        return next(iter(contracts))[0].hex()
+    digest = hashlib.sha256()
+    for recipe_value, output_value, model, dimension in sorted(contracts):
+        digest.update(recipe_value)
+        digest.update(output_value)
+        encoded = model.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+        digest.update(dimension.to_bytes(8, "big", signed=True))
+    return f"mixed:{digest.hexdigest()}"
+
+
 class EmbeddingGenerationStore:
     """Own archive-local embedding pointers and bounded rollback retention."""
 
@@ -255,10 +279,13 @@ class EmbeddingGenerationStore:
         except sqlite3.Error as exc:
             raise EmbeddingGenerationError("cannot read embedding membership digest") from exc
         digest = hashlib.sha256()
-        recipe_values: set[bytes] = set()
-        output_values: set[bytes] = set()
-        model_values: set[str] = set()
-        dimensions: set[int] = set()
+        # A recipe change is migrated in place, one bounded window of sessions
+        # per convergence pass, so one physical generation legitimately holds
+        # rows of the outgoing and incoming recipe at the same time.  The
+        # contract therefore records which recipes are present rather than
+        # demanding one; per-row recipe identity stays authoritative for
+        # freshness through `DerivationKey`.
+        contracts: set[tuple[bytes, bytes, str, int]] = set()
         for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
             value = bytes(vector_hash)
             recipe_value = bytes(recipe_hash)
@@ -267,25 +294,10 @@ class EmbeddingGenerationStore:
                 raise EmbeddingGenerationError("embedding membership contains malformed vector identity")
             if len(recipe_value) != 32 or len(output_value) != 32:
                 raise EmbeddingGenerationError("embedding membership contains malformed recipe identity")
-            recipe_values.add(recipe_value)
-            output_values.add(output_value)
-            model_values.add(str(model))
-            dimensions.add(int(dimension))
+            contracts.add((recipe_value, output_value, str(model), int(dimension)))
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
-        # Vectors are addressed by the provider request, so one tier may hold
-        # rows labelled by several recipe revisions (vectors carried across a
-        # reindex beside newly embedded ones). Model, dimension, and output
-        # contract must still be uniform.
-        if len(output_values) > 1 or len(model_values) > 1 or len(dimensions) > 1:
-            raise EmbeddingGenerationError("embedding membership contains mixed vector contracts")
         digest.update(len(rows).to_bytes(8, "big"))
-        if len(recipe_values) == 1:
-            recipe_label = next(iter(recipe_values)).hex()
-        elif recipe_values:
-            recipe_label = hashlib.sha256("".join(sorted(v.hex() for v in recipe_values)).encode("ascii")).hexdigest()
-        else:
-            recipe_label = "empty"
 
         def stable(path_value: Path) -> str:
             try:
@@ -297,7 +309,7 @@ class EmbeddingGenerationStore:
         index = self.archive_root / "index.db"
         source = self.archive_root / "source.db"
         return {
-            "recipe_hash": recipe_label,
+            "recipe_hash": _recipe_membership(contracts),
             "source_generation": stable(source),
             "index_generation": stable(index),
             "schema_version": EMBEDDINGS_SCHEMA_VERSION,

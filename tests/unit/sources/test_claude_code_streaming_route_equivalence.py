@@ -217,6 +217,7 @@ def test_every_production_route_produces_one_canonical_normalization(tmp_path: P
     assert len(main["messages"]) == 9
     assert [event["event_type"] for event in main["session_events"]] == [
         "message_usage",
+        "claude_tool_execution_result",
         "background_task_completion",
         "message_usage",
         "claude_parse_coverage",
