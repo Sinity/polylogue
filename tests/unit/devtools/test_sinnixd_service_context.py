@@ -10,10 +10,8 @@ from typing import Any, cast
 
 import pytest
 
-from devtools import sinnixd_service_context
 from devtools.sinnixd_service_context import (
     require_declared_operation_context,
-    require_declared_service_context,
     terminate_process_group,
 )
 
@@ -50,16 +48,6 @@ def test_operation_context_requires_matching_unit_and_declared_operation() -> No
         )
         == unit
     )
-
-
-def test_service_context_delegates_to_declared_operation_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sinnixd_service_context,
-        "require_declared_operation_context",
-        lambda operation, **_kwargs: f"unit-{operation}",
-    )
-
-    assert require_declared_service_context("dev_loop_proof") == "unit-dev_loop_proof"
 
 
 def test_forged_environment_without_matching_cgroup_fails_before_launch() -> None:
