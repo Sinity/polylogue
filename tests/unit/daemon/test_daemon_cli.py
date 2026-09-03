@@ -266,9 +266,14 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
+    # The refused index tier leaves raw frontier integrity uncollectable, so
+    # the daemon is not ready and the command exits non-zero.
+    integrity = cast(dict[str, object], payload["raw_frontier_integrity"])
+    assert integrity["available"] is False
+    assert integrity["overall_status"] == "unknown"
     storage_raw = payload["archive_storage"]
     assert isinstance(storage_raw, dict)
     storage = cast(dict[str, object], storage_raw)
@@ -324,7 +329,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
     ):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert (
         "Storage: archive_file_set (source, index, embeddings, user, ops); final split complete; schema mismatch index"
         in result.output
@@ -3617,7 +3622,7 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
     asyncio.run(exercise())
 
 
-def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
+def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
@@ -3658,7 +3663,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     def fake_embedding_lifecycle_startup(_archive_root_path: Path) -> Path:
         events.append("embedding-lifecycle")
-        return Path("/tmp/polylogue-test-archive/embeddings.db")
+        return tmp_path / "embeddings.db"
 
     def fake_lineage_startup() -> int:
         events.append("lineage")
@@ -3722,7 +3727,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
-        stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
+        stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
         stack.enter_context(

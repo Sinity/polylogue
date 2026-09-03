@@ -53,7 +53,7 @@ from polylogue.context.scheduler import (
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
-from polylogue.core.errors import ArchiveTierUnavailableError, PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
@@ -4120,13 +4120,20 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             now_ms=0,
         )
         try:
-            ops_conn = open_connection(_active_archive_root(self.config) / "ops.db")
+            ops_db = _active_archive_root(self.config) / "ops.db"
+            if not ops_db.exists():
+                from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+                from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+                initialize_archive_database(ops_db, ArchiveTier.OPS)
+            ops_conn = open_connection(ops_db)
             try:
                 record_context_ledger(ops_conn, admission, observed_at_ms=0)
             finally:
                 ops_conn.close()
-        except (OSError, sqlite3.Error):
-            # Frozen/read-only archive views still return the compiled image.
+        except (OSError, sqlite3.Error, DatabaseError):
+            # Frozen/read-only archive views, and a tier this runtime cannot
+            # use, still return the compiled image.
             pass
 
         admitted_ids = {item.ref for item in (*admission.quoted_evidence, *admission.executable_policy)}
