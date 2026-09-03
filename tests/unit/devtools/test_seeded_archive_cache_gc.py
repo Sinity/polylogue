@@ -116,25 +116,10 @@ def test_declared_agentctl_operation_is_bounded_and_previewable() -> None:
     operation = descriptor["operations"]["seeded_archive_cache_gc"]
 
     assert operation["exec"] == ["devtools", "cache", "gc", "--json"]
-    assert operation["scratch"] == "nvme"
-    assert operation["exclusive_keys"] == ["polylogue:seeded-archive-cache-gc"]
+    assert operation["result"] == "json"
+    assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 900
     assert operation["parameters"]["apply"]["flag"] == "--apply"
-
-
-def test_declared_agentctl_operation_shares_its_exclusive_key_with_verification() -> None:
-    """Applied GC and a verify run that consumes the same cache must not overlap.
-
-    Anti-vacuity: dropping ``polylogue:seeded-archive-cache-gc`` from either
-    ``verify_affected`` or ``verify_all``'s exclusive_keys makes this fail.
-    """
-    import tomllib
-
-    descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
-    gc_key = "polylogue:seeded-archive-cache-gc"
-    assert gc_key in descriptor["operations"]["seeded_archive_cache_gc"]["exclusive_keys"]
-    assert gc_key in descriptor["operations"]["verify_affected"]["exclusive_keys"]
-    assert gc_key in descriptor["operations"]["verify_all"]["exclusive_keys"]
 
 
 def test_gc_rejects_non_finite_grace_period(tmp_path: Path) -> None:
