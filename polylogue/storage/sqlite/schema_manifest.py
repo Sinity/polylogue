@@ -90,6 +90,10 @@ def _canonical_schema_manifest(tier: ArchiveTier, version: int, ddl: str) -> Sch
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(ddl)
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+            conn.executescript(DERIVED_SCHEMA_META_DDL)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 

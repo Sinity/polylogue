@@ -2160,6 +2160,13 @@ def _message_content_hash(
         _sqlite_text(message.text) or "",
         _sqlite_text(message.user_context_text) or "",
         _enum_value(message.stop_reason) or "",
+        _sqlite_text(message.model_name) or "",
+        _sqlite_text(message.model_effort) or "",
+        _sqlite_text(message.sender_name) or "",
+        _sqlite_text(message.recipient) or "",
+        _sqlite_text(message.delivery_status) or "",
+        "" if message.end_turn is None else str(int(message.end_turn)),
+        "" if message.occurred_at_ms is None else str(message.occurred_at_ms),
         *block_parts,
     )
 
@@ -2214,6 +2221,7 @@ def _block_content_hash(
     exit_code: int | None,
     tool_outcome: ToolOutcome | str | None = None,
     outcome_unknown_reason: str | None = None,
+    semantic_extra_json: str | None = None,
 ) -> bytes:
     """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
 
@@ -2238,6 +2246,7 @@ def _block_content_hash(
         "" if exit_code is None else str(exit_code),
         _enum_value(tool_outcome) or "",
         outcome_unknown_reason or "",
+        semantic_extra_json or "",
     )
 
 
@@ -2302,6 +2311,13 @@ def _build_block_rows(
                     exit_code=exit_code,
                     tool_outcome=tool_outcome,
                     outcome_unknown_reason=outcome_unknown_reason,
+                    semantic_extra_json=_json_dumps(
+                        {
+                            "metadata": block.metadata,
+                            "file_edit": block.file_edit.model_dump(mode="json") if block.file_edit else None,
+                            "web_constructs": [item.model_dump(mode="json") for item in block.web_constructs],
+                        }
+                    ),
                 ),
             }
             rows.append(archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values))
