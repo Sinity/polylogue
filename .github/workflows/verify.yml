@@ -1,0 +1,55 @@
+name: Verify
+
+# The real test evidence for a change. Hosted CI runs only the quick gate, so a
+# green PR check there does not mean tests ran; this job runs `devtools verify`
+# on the workstation runner, where pytest goes through the host's single
+# `pytest` pueue slot automatically.
+on:
+  pull_request:
+  merge_group:
+
+permissions:
+  contents: read
+
+# The host has one pytest slot. Serialising here means a queued run waits in
+# GitHub rather than holding a runner while blocked on the slot, and a run that
+# is already proving a revision is never discarded.
+concurrency:
+  group: pytest
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify
+    runs-on: [self-hosted, sinnix-prime]
+    timeout-minutes: 120
+    steps:
+      # clean: false keeps the runner's gitignored state -- the testmon
+      # datafile and the devshell venv -- so a run selects instead of seeding.
+      - uses: actions/checkout@v7
+        with:
+          clean: false
+
+      - name: Seed the testmon graph
+        run: |
+          mkdir -p .cache/testmon
+          seed=/realm/project/polylogue/.cache/testmon/testmondata
+          if [ -f .cache/testmon/testmondata ]; then
+            echo "runner already has a datafile; keeping it"
+          elif [ -f "$seed" ]; then
+            cp "$seed" .cache/testmon/testmondata
+          else
+            echo "no seed at $seed; this run seeds the graph and runs everything"
+          fi
+
+      - name: Verify
+        run: nix develop --command devtools verify
+        env:
+          POLYLOGUE_FORCE_PLAIN: "1"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: verify-run
+          path: .cache/verify/current-run.json
+          if-no-files-found: error
