@@ -1,8 +1,8 @@
-"""Fixed AgentCTL-owned service proof for Polylogue browser capture.
+"""Fixed AgentCTL-owned proof for Polylogue browser capture.
 
-AgentCTL injects the descriptor-declared ports and owns the enclosing systemd
-service, deadline, cancellation, lease, and result artifact. This module owns
-only Polylogue semantics inside that fixed execution boundary.
+AgentCTL owns the enclosing systemd service, deadline, cancellation, and result
+artifact. This module owns Polylogue semantics inside that boundary, including
+its own loopback ports: it binds them free and publishes them in the result.
 """
 
 from __future__ import annotations
@@ -10,8 +10,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from http.client import HTTPConnection
 from pathlib import Path
@@ -19,16 +21,10 @@ from threading import Thread
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
+from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-_API_PORT_ENV = "POLYLOGUE_API_PORT"
-_BROWSER_CAPTURE_PORT_ENV = "POLYLOGUE_BROWSER_CAPTURE_PORT"
-_DECLARED_PORTS = {
-    _API_PORT_ENV: (48800, 48863),
-    _BROWSER_CAPTURE_PORT_ENV: (48864, 48927),
-}
 _MAX_ERROR_MESSAGE = 512
 _RECEIVER_ORIGIN = "chrome-extension://polylogue-agentctl-proof"
 _RECEIVER_TOKEN = "polylogue-agentctl-proof-token"
@@ -38,41 +34,38 @@ _CHILD_ERROR_TAIL_CHARS = 384
 _DETERMINISTIC_PROVIDERS = ("chatgpt", "claude-ai")
 
 
-def _leased_port(name: str, bounds: tuple[int, int]) -> int:
-    """Read one expected service-context port, never a fallback."""
-    raw = os.environ.get(name)
-    if raw is None:
-        raise ValueError(f"{name} must be present for the fixed dev-loop service context")
+def _free_loopback_ports(count: int) -> list[int]:
+    """Reserve distinct free loopback ports, then release them for the children.
+
+    The listeners are held open together so the kernel cannot hand out the same
+    port twice within one proof.
+    """
+    sockets = []
     try:
-        port = int(raw)
-    except ValueError as error:
-        raise ValueError(f"{name} must be an integer lease port") from error
-    if not bounds[0] <= port <= bounds[1]:
-        raise ValueError(f"{name} is outside the fixed dev-loop service port range")
-    return port
+        for _index in range(count):
+            listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            listener.bind(("127.0.0.1", 0))
+            sockets.append(listener)
+        return [listener.getsockname()[1] for listener in sockets]
+    finally:
+        for listener in sockets:
+            listener.close()
 
 
-def _require_agentctl_service_context() -> dict[str, int]:
-    """Reject accidental shell execution outside the expected service context.
+def _require_agentctl_operation_context() -> None:
+    """Reject accidental shell execution outside the declared operation context.
 
     These checkout-local environment checks are deliberately not authorization
     or admission. Sinnixd validates the registered workspace, exact head,
-    declared operation, lease, and service cgroup before it invokes this
-    module. This guard only fails closed for ordinary accidental invocation.
+    declared operation, and job cgroup before it invokes this module. This
+    guard only fails closed for ordinary accidental invocation.
     """
-    require_declared_service_context("dev_loop_proof")
-    ports = {name: _leased_port(name, bounds) for name, bounds in _DECLARED_PORTS.items()}
-    if len(set(ports.values())) != len(ports):
-        raise ValueError("fixed dev-loop service context contains duplicate ports")
-    return ports
+    require_declared_operation_context("dev_loop_proof")
 
 
 def _service_paths() -> tuple[Path, Path]:
-    """Place disposable proof state under AgentCTL's per-job scratch root."""
-    scratch = os.environ.get("TMPDIR")
-    if not scratch:
-        raise ValueError("TMPDIR must be injected by AgentCTL for the declared nvme scratch contract")
-    root = Path(scratch).resolve() / "polylogue-dev-loop-proof"
+    """Place disposable proof state under the per-job temporary root."""
+    root = Path(tempfile.gettempdir()).resolve() / "polylogue-dev-loop-proof"
     return root / "archive", root / "artifacts"
 
 
@@ -379,11 +372,10 @@ def _redacted_convergence(convergence: dict[str, dict[str, object]]) -> dict[str
 
 
 def run_proof(*, repo_root: Path | None = None, readiness_timeout_s: float = 45.0) -> dict[str, object]:
-    """Run the bounded Polylogue semantics behind the AgentCTL service lease."""
+    """Run the bounded Polylogue semantics inside the AgentCTL job boundary."""
     checkout = (repo_root or Path(__file__).resolve().parents[1]).resolve()
-    ports = _require_agentctl_service_context()
-    api_port = ports[_API_PORT_ENV]
-    capture_port = ports[_BROWSER_CAPTURE_PORT_ENV]
+    _require_agentctl_operation_context()
+    api_port, capture_port = _free_loopback_ports(2)
     archive_root, artifact_root = _service_paths()
     artifact_root.mkdir(parents=True, exist_ok=True)
     initialize_active_archive_root(archive_root)

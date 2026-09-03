@@ -25,20 +25,14 @@ def test_declared_browser_smoke_has_no_private_browser_service_lease() -> None:
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
-def test_declared_live_provider_proof_has_only_a_receiver_service_lease() -> None:
+def test_declared_live_provider_proof_declares_no_port_lease() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["live_provider_proof"]
 
     assert operation["exec"] == ["python", "-m", "devtools.live_provider_proof_service", "--json"]
     assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 180
-    assert operation["service"] == {
-        "readiness": "project-command",
-        "lifetime": "job",
-        "ports": {
-            "browser_capture": {"environment": "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT", "range": [49120, 49183]},
-        },
-    }
+    assert "service" not in operation
     assert "parameters" not in operation
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
@@ -67,9 +61,10 @@ print(json.dumps({
     "proof": {
         "command": proof.command,
         "parameters": proof.parameters,
-        "service": proof.service.catalog_row() if proof.service is not None else None,
     },
-    "service_operations": sorted(operation.name for operation in adapter.operations if operation.service is not None),
+    "service_operations": sorted(
+        operation.name for operation in adapter.operations if getattr(operation, "service", None) is not None
+    ),
 }))
 """
     completed = subprocess.run(
@@ -88,9 +83,9 @@ print(json.dumps({
     assert parsed["proof"] == {
         "command": ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"],
         "parameters": [],
-        "service": None,
     }
-    assert parsed["service_operations"] == ["dev_loop_proof", "live_provider_proof"]
+    # Sinnixd allocates no ports; every proof binds its own.
+    assert parsed["service_operations"] == []
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 

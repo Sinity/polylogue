@@ -2,8 +2,9 @@
 
 The providers and receiver are fixed by this operation. The Node workflow uses
 the Sinnix shared-Chrome control boundary, which opens and parks proof-owned
-windows in the existing authenticated browser. Sinnixd remains the authority
-for admission, exact-head binding, and the receiver lease.
+windows in the existing authenticated browser. The receiver binds a free
+loopback port, passes it to the Node workflow, and publishes it in the result.
+Sinnixd remains the authority for admission and exact-head binding.
 """
 
 from __future__ import annotations
@@ -13,50 +14,36 @@ import json
 import os
 import secrets
 import subprocess
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from devtools.sinnixd_service_context import require_declared_service_context, terminate_process_group
+from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 
 _RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
-_RECEIVER_PORT_RANGE = (49120, 49183)
 _NODE_PROOF_TIMEOUT_S = 120
 _MAX_ERROR_MESSAGE = 512
 
 
-def _leased_port(name: str, bounds: tuple[int, int]) -> int:
-    raw = os.environ.get(name)
-    try:
-        port = int(raw) if raw is not None else None
-    except ValueError as error:
-        raise ValueError(f"{name} must be an integer declared-service port") from error
-    if port is None or not bounds[0] <= port <= bounds[1]:
-        raise ValueError(f"{name} is outside its fixed live-provider service port range")
-    return port
-
-
-def _service_context_receiver_port() -> int:
-    require_declared_service_context("live_provider_proof")
-    return _leased_port(_RECEIVER_PORT_ENV, _RECEIVER_PORT_RANGE)
-
-
 def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
-    """Run the shared-Chrome workflow under its receiver service lease."""
-    receiver_port = _service_context_receiver_port()
+    """Run the shared-Chrome workflow against a self-bound loopback receiver."""
+    require_declared_operation_context("live_provider_proof")
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     extension_root = root / "browser-extension"
-    scratch = Path(os.environ["TMPDIR"]).resolve() / "polylogue-live-provider-proof"
+    scratch = Path(tempfile.gettempdir()).resolve() / "polylogue-live-provider-proof"
     spool = scratch / "browser-capture"
     spool.mkdir(parents=True, exist_ok=True)
     receiver_token = secrets.token_urlsafe(32)
-    server = make_server("127.0.0.1", receiver_port, spool_path=spool, auth_token=receiver_token)
+    server = make_server("127.0.0.1", 0, spool_path=spool, auth_token=receiver_token)
+    receiver_port = int(server.server_address[1])
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     environment = os.environ.copy()
     environment["POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN"] = receiver_token
+    environment[_RECEIVER_PORT_ENV] = str(receiver_port)
     process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
@@ -13,7 +15,7 @@ from devtools import dev_loop_service
 from devtools.command_catalog import COMMAND_SPECS
 
 
-def test_declared_operation_has_fixed_json_service_contract() -> None:
+def test_declared_operation_has_a_json_contract_and_no_retired_keys() -> None:
     descriptor = tomllib.loads(Path(".agentctl/project.toml").read_text(encoding="utf-8"))
     operation = descriptor["operations"]["dev_loop_proof"]
 
@@ -21,14 +23,9 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
     assert operation["result"] == "json"
     assert operation["cache"] == "none"
     assert operation["timeout_seconds"] == 900
-    assert operation["service"] == {
-        "readiness": "project-command",
-        "lifetime": "job",
-        "ports": {
-            "api": {"environment": "POLYLOGUE_API_PORT", "range": [48800, 48863]},
-            "browser_capture": {"environment": "POLYLOGUE_BROWSER_CAPTURE_PORT", "range": [48864, 48927]},
-        },
-    }
+    # sinnixd has no port-lease/service contract: the proof binds its own ports.
+    retired = {"service", "estimate_memory_bytes", "exclusive_keys", "scratch", "supersede"}
+    assert all(not retired & set(declared) for declared in descriptor["operations"].values())
     verify_all = descriptor["operations"]["verify_all"]
     assert verify_all["timeout_seconds"] == 14400
     assert verify_all["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
@@ -38,20 +35,20 @@ def test_declared_operation_has_fixed_json_service_contract() -> None:
 
 
 def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(dev_loop_service, "require_declared_service_context", lambda operation: f"unit-{operation}")
+    monkeypatch.setattr(dev_loop_service, "require_declared_operation_context", lambda operation: f"unit-{operation}")
     monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
     monkeypatch.setenv("SINNIXD_OPERATION", "dev_loop_proof")
     monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
-    monkeypatch.setenv("POLYLOGUE_API_PORT", "48801")
-    monkeypatch.setenv("POLYLOGUE_BROWSER_CAPTURE_PORT", "48865")
 
 
-def test_run_proof_uses_only_agentctl_injected_ports_and_product_convergence(
+def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fixed_service_context(monkeypatch)
-    monkeypatch.setenv("TMPDIR", str(tmp_path / "scratch"))
+    monkeypatch.setattr(dev_loop_service, "_free_loopback_ports", lambda count: [48801, 48865][:count])
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path / "scratch"))
+    (tmp_path / "scratch").mkdir()
     initialized: list[Path] = []
     monkeypatch.setattr(dev_loop_service, "initialize_active_archive_root", initialized.append)
     monkeypatch.setattr(dev_loop_service, "run_receiver_smoke", lambda **_kwargs: {"ok": True})
@@ -202,6 +199,15 @@ def test_run_proof_rejects_one_malformed_expected_provider_before_convergence(
         dev_loop_service.run_proof()
 
 
+def test_free_loopback_ports_are_distinct_and_bindable() -> None:
+    ports = dev_loop_service._free_loopback_ports(2)
+
+    assert len(set(ports)) == 2
+    for port in ports:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", port))
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -221,12 +227,11 @@ def test_api_message_convergence_rejects_wrong_or_malformed_response(
 @pytest.mark.parametrize(
     ("environment", "value", "message"),
     [
-        ("POLYLOGUE_API_PORT", None, "POLYLOGUE_API_PORT must be present"),
-        ("POLYLOGUE_BROWSER_CAPTURE_PORT", "48801", "outside the fixed dev-loop service port range"),
         ("SINNIXD_OPERATION", "other", "rejects execution outside its fixed service context"),
+        ("SINNIXD_PROJECT_ID", "other", "rejects execution outside its fixed service context"),
     ],
 )
-def test_service_context_guard_rejects_missing_or_wrong_shell_context(
+def test_operation_context_guard_rejects_missing_or_wrong_shell_context(
     monkeypatch: pytest.MonkeyPatch,
     environment: str,
     value: str | None,
@@ -235,7 +240,7 @@ def test_service_context_guard_rejects_missing_or_wrong_shell_context(
     _fixed_service_context(monkeypatch)
     monkeypatch.setattr(
         dev_loop_service,
-        "require_declared_service_context",
+        "require_declared_operation_context",
         lambda operation: (
             (_ for _ in ()).throw(ValueError("rejects execution outside its fixed service context"))
             if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue" or os.environ.get("SINNIXD_OPERATION") != operation
@@ -248,7 +253,7 @@ def test_service_context_guard_rejects_missing_or_wrong_shell_context(
         monkeypatch.setenv(environment, value)
 
     with pytest.raises(ValueError, match=message):
-        dev_loop_service._require_agentctl_service_context()
+        dev_loop_service._require_agentctl_operation_context()
 
 
 def test_receiver_smoke_proves_auth_rejection_and_accepted_capture(tmp_path: Path) -> None:

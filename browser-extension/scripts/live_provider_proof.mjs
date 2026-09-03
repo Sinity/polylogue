@@ -26,10 +26,10 @@ function requiredEnvironment(name) {
   return value;
 }
 
-function leasedPort(name, range) {
+function receiverPortFromEnvironment(name) {
   const port = Number(requiredEnvironment(name));
-  if (!Number.isInteger(port) || port < range[0] || port > range[1]) {
-    throw new Error(`${name} is outside its declared AgentCTL lease range`);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} is not a loopback port number`);
   }
   return port;
 }
@@ -60,7 +60,7 @@ function requireExpectedServiceContext() {
 
 function fixedInputs() {
   const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const receiverPort = leasedPort("POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT", [49120, 49183]);
+  const receiverPort = receiverPortFromEnvironment("POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT");
   return {
     extensionRoot: path.resolve(scriptDirectory, ".."),
     receiverBaseUrl: `http://127.0.0.1:${receiverPort}`,

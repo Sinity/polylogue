@@ -100,22 +100,6 @@ def require_declared_operation_context(
     return unit
 
 
-def require_declared_service_context(
-    operation: str,
-    *,
-    environment: Mapping[str, str] | None = None,
-    cgroup_reader: Callable[[], str] | None = None,
-    unit_exec_start_reader: Callable[[str], str] | None = None,
-) -> str:
-    """Require the declared operation context for a port-owning service command."""
-    return require_declared_operation_context(
-        operation,
-        environment=environment,
-        cgroup_reader=cgroup_reader,
-        unit_exec_start_reader=unit_exec_start_reader,
-    )
-
-
 def terminate_process_group(process: subprocess.Popen[Any], *, timeout_s: float = 2.0) -> None:
     """Boundedly signal a process group; systemd remains final cgroup reaper."""
     try:
