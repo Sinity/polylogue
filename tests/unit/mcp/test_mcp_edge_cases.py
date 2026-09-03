@@ -57,7 +57,7 @@ class TestSafeCall:
         """A tool body that raises returns a typed error JSON instead of crashing.
 
         Returning rather than raising isolates per-tool failures from the
-        stdio loop — the historical raise propagated through FastMCP and
+        stdio loop — the historical raise propagated through MCPServer and
         killed the server, taking every other tool offline (#1621).
         """
         import json

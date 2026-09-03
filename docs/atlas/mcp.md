@@ -28,7 +28,7 @@ The live MCP surface is a twelve-tool operation algebra. Six read tools are alwa
 1. `_CUTOVER_TOOL_ROWS` declares each name, discovery text, registrar, capability, verb, result semantics, schema source, example, output kind, and operation owner (`polylogue/mcp/declarations/registry.py:65-239`).
 2. `_cutover_declaration` lowers each row into the shared declaration kernel, including handler binding, output contract, and discovery completeness edge (`polylogue/mcp/declarations/registry.py:242-292`).
 3. Import-time registry validation rejects duplicate or incomplete declarations (`polylogue/mcp/declarations/registry.py:295-309`).
-4. `build_server` wraps FastMCP in `DeclaredToolRegistrar`, registers handlers, then requires exact capability-visible parity before adding resources and prompts (`polylogue/mcp/server.py:55-97`).
+4. `build_server` wraps MCPServer in `DeclaredToolRegistrar`, registers handlers, then requires exact capability-visible parity before adding resources and prompts (`polylogue/mcp/server.py:55-97`).
 5. The registrar rejects undeclared handlers, capability violations, wrong implementation modules, discovery-text drift, duplicates, missing handlers, and extras (`polylogue/mcp/declarations/adapter.py:47-84`; `polylogue/mcp/declarations/adapter.py:97-149`).
 
 ## `EXPECTED_TOOL_NAMES`

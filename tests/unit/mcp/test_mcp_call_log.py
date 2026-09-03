@@ -97,7 +97,7 @@ def _read_calls(archive_root: Path, **filters: object) -> tuple[ArchiveMcpCallLo
 def test_registered_tools_persist_success_and_typed_failure_through_daemon(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise FastMCP registration, background HTTP, writer gate, and ops SQL."""
+    """Exercise MCPServer registration, background HTTP, writer gate, and ops SQL."""
     with _running_daemon() as daemon_url:
         monkeypatch.setenv("POLYLOGUE_DAEMON_URL", daemon_url)
         _set_runtime_services(None)
@@ -132,7 +132,7 @@ def test_all_registered_read_transactions_emit_durable_telemetry(
 ) -> None:
     """Capture one durable telemetry event for every live read transaction.
 
-    Production dependencies exercised: the actual FastMCP registration, the
+    Production dependencies exercised: the actual MCPServer registration, the
     six cutover handlers, the daemon HTTP telemetry endpoint, and the ops-tier
     MCP call-log table. Removing a declared handler, changing its telemetry
     name, bypassing ``_async_safe_call``, or dropping durable delivery makes
@@ -174,7 +174,7 @@ def test_all_registered_read_transactions_emit_durable_telemetry(
 def test_session_tools_and_successor_preamble_are_queryable_by_session(
     workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Exercise real FastMCP wrappers for session-scoped call-log correlation.
+    """Exercise real MCPServer wrappers for session-scoped call-log correlation.
 
     Exercise all session-id shapes that previously had source-AST tests:
     refs lowered by ``get``/``read``, the explicit ``context`` resume

@@ -411,7 +411,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """Translate an exception raised by an MCP tool body into a typed error JSON.
 
     The returned string is a serialized :class:`MCPErrorPayload`. Callers must
-    return this from the tool body so FastMCP delivers it as a normal tool
+    return this from the tool body so MCPServer delivers it as a normal tool
     response (with ``is_error=True``) instead of letting the exception escape
     into the stdio loop — an escaping exception kills the entire MCP server
     process and takes every other registered tool offline (#1621).

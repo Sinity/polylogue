@@ -441,7 +441,7 @@ class MCPSurface:
     """MCP server-tool adapter projection.
 
     Invokes ``query(projection="sessions", ...)`` directly on the registered
-    FastMCP tool function, bound to a ``RuntimeServices`` instance pointed at
+    MCPServer tool function, bound to a ``RuntimeServices`` instance pointed at
     the parity database.  This is the same code path MCP clients hit over the
     JSON-RPC transport.
     """

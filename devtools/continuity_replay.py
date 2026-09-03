@@ -20,7 +20,6 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
@@ -229,7 +228,7 @@ class _ReturnedUnitIdentity:
 
 
 class MCPContinuityRoute:
-    """Invoke handlers registered on Polylogue's real FastMCP read server."""
+    """Invoke handlers registered on Polylogue's real MCPServer read server."""
 
     def __init__(
         self,
@@ -250,7 +249,7 @@ class MCPContinuityRoute:
 
     @property
     def transport_name(self) -> str:
-        return "registered-fastmcp-tool"
+        return "registered-mcpserver-tool"
 
     @property
     def discovery(self) -> JSONDocument:
@@ -401,6 +400,7 @@ class StdioMCPContinuityRoute:
     async def __aenter__(self) -> StdioMCPContinuityRoute:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
+        from mcp.types import PaginatedRequestParams
 
         runtime_workdir = TemporaryDirectory(prefix="polylogue-continuity-runtime-")
         runtime_root = Path(runtime_workdir.name)
@@ -424,16 +424,16 @@ class StdioMCPContinuityRoute:
                 ClientSession(
                     read_stream,
                     write_stream,
-                    read_timeout_seconds=timedelta(seconds=self.read_timeout_seconds),
+                    read_timeout_seconds=self.read_timeout_seconds,
                 )
             )
             initialize = await session.initialize()
             tools: list[object] = []
             cursor: str | None = None
             while True:
-                page = await session.list_tools(cursor=cursor)
+                page = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
                 tools.extend(page.tools)
-                cursor = page.nextCursor
+                cursor = page.next_cursor
                 if cursor is None:
                     break
         except Exception as exc:
@@ -537,7 +537,7 @@ class StdioMCPContinuityRoute:
         The disposable server has its sole production admission slot occupied
         before MCP startup, so this single real route call cannot complete
         before cancellation.  That removes both timing sleeps and request-id
-        swarms while still exercising FastMCP, the registered Polylogue tool,
+        swarms while still exercising MCPServer, the registered Polylogue tool,
         QueryExecutionContext, and QueryAdmissionController.
         """
         session = self._session
@@ -549,16 +549,22 @@ class StdioMCPContinuityRoute:
                 elapsed_ms=0.0,
                 detail="MCP stdio route is not open",
             )
-        from mcp.shared.exceptions import McpError
-        from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification
+        from mcp.shared.exceptions import MCPError
+        from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
+        from mcp.shared.transport_context import TransportContext
+        from mcp.types import CancelledNotification, CancelledNotificationParams
 
         call_arguments = dict(arguments)
         started = time.perf_counter()
-        request_id = session._request_id
+        # `call_tool` mints its request id internally, so the id to cancel is
+        # read from the dispatcher's in-flight table rather than predicted.
+        pending = cast(JSONRPCDispatcher[TransportContext], session._dispatcher)._pending
+        before = set(pending)
         probe_task = asyncio.create_task(session.call_tool(tool, arguments=call_arguments))
         for _ in range(3):
             await asyncio.sleep(0)
-            if session._request_id == request_id + 1:
+            reserved = set(pending) - before
+            if len(reserved) == 1:
                 break
         else:
             raise ContinuityReplayError(
@@ -566,13 +572,12 @@ class StdioMCPContinuityRoute:
                 kind="cancellation_request_ids_unavailable",
                 failure_class="execution",
             )
+        request_id = reserved.pop()
         await session.send_notification(
-            ClientNotification(
-                CancelledNotification(
-                    params=CancelledNotificationParams(
-                        requestId=request_id,
-                        reason="continuity-replay-cancellation-exercise",
-                    )
+            CancelledNotification(
+                params=CancelledNotificationParams(
+                    request_id=request_id,
+                    reason="continuity-replay-cancellation-exercise",
                 )
             )
         )
@@ -582,14 +587,14 @@ class StdioMCPContinuityRoute:
         detail: str | None = None
         try:
             await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
-        except McpError as exc:
+        except MCPError as exc:
             message = exc.error.message or ""
             if exc.error.code == 0 and "cancel" in message.lower():
                 confirmed = True
                 outcome = "cancelled_confirmed"
                 detail = "queued production MCP read returned the SDK cancellation response"
             else:
-                detail = message or f"McpError code={exc.error.code}"
+                detail = message or f"MCPError code={exc.error.code}"
         except TimeoutError:
             probe_task.cancel()
             with suppress(BaseException):
@@ -1812,7 +1817,7 @@ def _registered_discovery(server: object, transport_name: str) -> JSONDocument:
     registered_tools = getattr(manager, "_tools", None)
     if not isinstance(registered_tools, Mapping):
         raise ContinuityReplayError(
-            "FastMCP server exposes no registered tool catalog",
+            "MCPServer exposes no registered tool catalog",
             kind="missing_tool_catalog",
             failure_class="discovery",
         )
@@ -1834,20 +1839,20 @@ def _registered_discovery(server: object, transport_name: str) -> JSONDocument:
 
 
 def _stdio_discovery(initialize: object, raw_tools: Sequence[object], transport_name: str) -> JSONDocument:
-    server_info = getattr(initialize, "serverInfo", None)
+    server_info = getattr(initialize, "server_info", None)
     tools: JSONDocument = {}
     for raw_tool in raw_tools:
         name = getattr(raw_tool, "name", None)
         if not isinstance(name, str):
             continue
-        schema = require_json_document(getattr(raw_tool, "inputSchema", {}), context=f"stdio schema {name}")
+        schema = require_json_document(getattr(raw_tool, "input_schema", {}), context=f"stdio schema {name}")
         description = getattr(raw_tool, "description", None)
         tools[name] = _tool_discovery_payload(schema, description if isinstance(description, str) else "")
     server_name = getattr(server_info, "name", "polylogue")
     server_version = getattr(server_info, "version", None)
     return {
         "transport": transport_name,
-        "protocol_version": str(getattr(initialize, "protocolVersion", "unknown")),
+        "protocol_version": str(getattr(initialize, "protocol_version", "unknown")),
         "server_name": str(server_name),
         "server_version": str(server_version) if server_version is not None else None,
         "tool_count": len(tools),
@@ -1864,14 +1869,14 @@ def _tool_discovery_payload(schema: JSONDocument, description: str) -> JSONDocum
 
 
 def _call_tool_response_text(tool: str, result: object) -> str:
-    if getattr(result, "isError", False) is True:
+    if getattr(result, "is_error", False) is True:
         message = _content_text(getattr(result, "content", []))
         raise ContinuityReplayError(
             message or f"MCP tool {tool!r} returned an error",
             kind="mcp_tool_error",
             failure_class="execution",
         )
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if isinstance(structured, Mapping):
         response = structured.get("result")
         if isinstance(response, str):

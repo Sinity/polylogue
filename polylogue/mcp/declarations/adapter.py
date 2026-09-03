@@ -1,7 +1,7 @@
-"""FastMCP registration adapter backed by the executable declaration inventory.
+"""MCPServer registration adapter backed by the executable declaration inventory.
 
 The adapter validates the compatibility surface while deliberately passing the
-original handler object to FastMCP.  It is not an executor and does not acquire
+original handler object to MCPServer.  It is not an executor and does not acquire
 runtime, authorization, storage, or workflow authority.
 """
 
@@ -18,7 +18,7 @@ AnyHandler = Callable[..., Any]
 
 
 class ToolRegistrar(Protocol):
-    """The FastMCP decorator shape used by current registration owners."""
+    """The MCPServer decorator shape used by current registration owners."""
 
     def tool(
         self,
@@ -48,7 +48,7 @@ class DeclaredToolRegistrar:
     """Validate one capability-filtered live tool surface against declarations.
 
     Attribute access other than :meth:`tool` is delegated to the wrapped
-    FastMCP instance so existing registration helpers remain usable.  The
+    MCPServer instance so existing registration helpers remain usable.  The
     decorator returned by :meth:`tool` receives and forwards the exact handler
     object; behavior, signatures, cancellation, and error handling therefore
     remain owned by the existing production implementation.
@@ -87,7 +87,7 @@ class DeclaredToolRegistrar:
     def _resolved_name(handler: Callable[..., Any], explicit_name: str | None) -> str:
         if explicit_name is not None:
             if not explicit_name:
-                raise MCPRegistrationError("FastMCP tool name must be a non-empty string")
+                raise MCPRegistrationError("MCPServer tool name must be a non-empty string")
             return explicit_name
         name = getattr(handler, "__name__", None)
         if not isinstance(name, str) or not name:

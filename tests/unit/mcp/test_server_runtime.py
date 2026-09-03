@@ -17,7 +17,7 @@ def test_build_server_registers_tools_resources_and_prompts() -> None:
     declared_mcp = MagicMock()
 
     with (
-        patch("mcp.server.fastmcp.FastMCP", fake_fast_mcp),
+        patch("mcp.server.mcpserver.MCPServer", fake_fast_mcp),
         patch("polylogue.mcp.server.DeclaredToolRegistrar", return_value=declared_mcp) as registrar_type,
         patch("polylogue.mcp.server.register_tools") as mock_tools,
         patch("polylogue.mcp.server.register_resources") as mock_resources,
@@ -57,7 +57,7 @@ def test_get_server_caches_instance_and_updates_runtime_services() -> None:
 
 
 def test_get_server_singleton_is_race_safe_under_concurrent_first_access() -> None:
-    """Concurrent first access must build exactly one FastMCP server (polylogue-xikl.2).
+    """Concurrent first access must build exactly one MCPServer server (polylogue-xikl.2).
 
     ``_get_server()``'s check-then-set on ``_server_instance``/
     ``_server_instance_capabilities`` used to be unguarded. The daemon's real

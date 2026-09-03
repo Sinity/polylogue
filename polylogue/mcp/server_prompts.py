@@ -19,7 +19,7 @@ from polylogue.mcp.payloads import MCPFencedCodeBlock
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -247,7 +247,7 @@ async def _prompt_session_by_id_from_config(hooks: Any, token: str) -> PromptSes
         return None
 
 
-def register_prompts(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_prompts(mcp: MCPServer, hooks: ServerCallbacks) -> None:
     """Register MCP prompts on the given server."""
 
     # Keep one cache for the lifetime of this server registration.  Compact

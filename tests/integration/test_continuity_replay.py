@@ -53,7 +53,7 @@ def _incident_facts(catalog: JSONDocument) -> JSONDocument:
 async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
-    """Exercises SDK discovery/calls, stdio framing, FastMCP, DSL lowering, SQLite, and continuations."""
+    """Exercises SDK discovery/calls, stdio framing, MCPServer, DSL lowering, SQLite, and continuations."""
 
     archive_root, catalog, _ = continuity_corpus
     report = await replay_archive(archive_root, catalog)
@@ -153,7 +153,7 @@ async def test_all_scenarios_pass_through_official_mcp_stdio_json_rpc(
 async def test_query_continuation_accepts_distinct_multi_page_rows(
     continuity_corpus: tuple[Path, JSONDocument, ContinuityFixtureSeed],
 ) -> None:
-    """The registered FastMCP route preserves actual distinct unit rows across pages."""
+    """The registered MCPServer route preserves actual distinct unit rows across pages."""
 
     archive_root, catalog, _ = continuity_corpus
     report = await replay_archive(

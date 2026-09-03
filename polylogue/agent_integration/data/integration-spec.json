@@ -323,7 +323,7 @@
     "maintenance"
   ],
   "verification": [
-    "Every generated argument is checked against the registered FastMCP signature.",
+    "Every generated argument is checked against the registered MCPServer signature.",
     "Run devtools render agent-manual and devtools render all --check after declaration changes.",
     "Run devtools gate agent-integration --require-live before publishing the package."
   ]
