@@ -889,11 +889,14 @@ class LiveBatchProcessor:
                 continue
             cursor = cursor_records.get(path)
             append_plan = self.plan_append(path, cursor=cursor) if self._can_ingest_appends_directly() else None
+            # Drain unconditionally: an entry left behind would be read by a
+            # later pass as though it described that pass's observation.
+            # Planning may have rebuilt a cursor from durable evidence, and
+            # without it the deferral below has nothing to persist and
+            # re-mints the same resynthesis on every tick.
+            resynthesized = self._resynthesized_cursors.pop(path, None)
             if cursor is None:
-                # Planning may have rebuilt a cursor from durable evidence.
-                # Without it the deferral below has nothing to persist and
-                # re-mints the same resynthesis on every tick.
-                cursor = self._resynthesized_cursors.pop(path, None)
+                cursor = resynthesized
             if isinstance(append_plan, _DeferredAppend):
                 # No new authority-relevant append happened this pass (no
                 # complete trailing newline yet, or -- polylogue-hat0 --
