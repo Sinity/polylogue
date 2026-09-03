@@ -657,10 +657,9 @@ def _assert_planted_contract(root: Path, index_path: Path, raw_ids: RawIds) -> N
             CHAT_OLD: (CHAT_USER, "assistant", 0, 0, 0),
             CHAT_NEW: (CHAT_USER, "assistant", 1, 1, 1),
             PARENT_FIRST: (None, "user", 0, 1, 0),
-            # bd polylogue-ksgg: codex carries no real parent-link evidence of
-            # its own, so fill_linear_parent_chain now correctly chains this
-            # append-added message to the prior active-path message.
-            PARENT_SECOND: (PARENT_FIRST, "assistant", 0, 1, 1),
+            # Codex rollouts carry no message-parent evidence, so an appended
+            # message records no parent coordinate (#4510).
+            PARENT_SECOND: (None, "assistant", 0, 1, 1),
             CHILD_FIRST: (None, "user", 0, 1, 1),
         }
 
