@@ -221,6 +221,19 @@ rules:
       from: [devtools]
       baseline: docs/plans/layering-surface-baseline.json
 
+  - target: polylogue/surfaces
+    description: >-
+      Provider-neutral payload and attribution types shared by every public
+      adapter. This package serializes what an operation already resolved, so
+      it must not reach into storage, pipeline, or source acquisition to
+      reconstruct those facts itself. Archive resolution for the authority
+      envelope lives in polylogue/operations/authority.py. Two pre-existing
+      type-only row imports in payloads.py are baselined and ratcheted like
+      the other surfaces; nothing here resolves archive state at runtime.
+    disallow:
+      from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
+      baseline: docs/plans/layering-surface-baseline.json
+
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
     disallow:

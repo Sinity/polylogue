@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from time import monotonic
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
 
 
 class AuthorityEnvelope(BaseModel):
@@ -39,28 +36,32 @@ AuthorityBlock = AuthorityEnvelope
 
 
 def build_authority_envelope(
-    archive_root: Path,
     *,
+    archive_epoch: str,
+    generation_id: str,
+    tier_schema_versions: dict[str, int],
     server_identity: Literal["daemon", "direct"],
     started_at: float | None = None,
     run_id: str | None = None,
     degraded: tuple[str, ...] = (),
 ) -> AuthorityEnvelope:
-    """Build one immutable snapshot from the current archive binding."""
+    """Assemble the envelope from facts the operation boundary already resolved.
 
-    identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(Path(archive_root)))
-    # Keep the surface contract import-light. Bootstrap imports the complete
-    # tier graph and is only needed when an authority snapshot is built.
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    Archive resolution belongs to the operation boundary
+    (:mod:`polylogue.operations.authority`), which knows which generation the
+    reader opened. A surface that re-resolved the archive here would attribute
+    a result to whichever generation happened to be active at serialization
+    time.
+    """
 
     reasons = list(degraded)
     if server_identity == "direct" and "daemon_unavailable" not in reasons:
         reasons.append("daemon_unavailable")
     return AuthorityEnvelope(
         run_id=run_id or str(uuid.uuid4()),
-        archive_epoch=identity.authority_identity_digest,
-        generation_id=identity.active_generation,
-        tier_schema_versions={tier.value: int(version) for tier, version in ARCHIVE_VERSION_BY_TIER.items()},
+        archive_epoch=archive_epoch,
+        generation_id=generation_id,
+        tier_schema_versions=tier_schema_versions,
         server_identity=server_identity,
         elapsed_ms=max(0, round((monotonic() - started_at) * 1000)) if started_at is not None else 0,
         degraded=tuple(dict.fromkeys(reasons)),

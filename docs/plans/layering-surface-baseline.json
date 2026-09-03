@@ -1493,5 +1493,15 @@
     "target": "polylogue/mcp",
     "file": "polylogue/mcp/server_resources.py",
     "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/surfaces",
+    "file": "polylogue/surfaces/payloads.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.archive"
+  },
+  {
+    "target": "polylogue/surfaces",
+    "file": "polylogue/surfaces/payloads.py",
+    "import": "polylogue.storage.sqlite.archive_tiers.user_write"
   }
 ]

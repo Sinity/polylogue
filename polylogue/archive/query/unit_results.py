@@ -6,6 +6,7 @@ import json
 import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any, Literal, Protocol, cast
 
 from polylogue.archive.query.execution_control import QueryExecutionContext
@@ -36,9 +37,10 @@ from polylogue.archive.query.transaction import (
     query_units_transaction_request,
     validate_continuation_epoch,
 )
+from polylogue.operations.authority import authority_for_reader
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.surfaces import payloads as surface_payloads
-from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
+from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     QueryUnitAggregateRowPayload,
     QueryUnitProjectedRowPayload,
@@ -680,6 +682,7 @@ def query_unit_envelope(
     optional argument retains the established direct-storage API for callers
     that do not cross a transaction boundary.
     """
+    started_at = monotonic()
     canonical_request = transaction_request
     if canonical_request is None:
         canonical_request = query_units_transaction_request(
@@ -723,9 +726,10 @@ def query_unit_envelope(
             "result_ref": result_ref,
             "continuation": continuation,
             "authority": authority
-            or build_authority_envelope(
-                archive.archive_root,
+            or authority_for_reader(
+                archive,
                 server_identity="daemon" if serving_identity == "daemon" else "direct",
+                started_at=started_at,
             ),
         }
     )

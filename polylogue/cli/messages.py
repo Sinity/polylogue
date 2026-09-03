@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from time import monotonic
 from typing import cast
 
 import click
@@ -13,12 +14,12 @@ from polylogue.archive.message.models import Message
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.semantic_cards import (
     build_semantic_transcript,
     lineage_descriptor_from_session,
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
-from polylogue.surfaces.authority import build_authority_envelope
 from polylogue.surfaces.payloads import (
     SessionMessagesResponsePayload,
     message_row_envelope_from_domain,
@@ -40,6 +41,7 @@ def run_messages(
     from polylogue.api import Polylogue
 
     async def _run() -> None:
+        started_at = monotonic()
         async with Polylogue.open(config=cast(Config, request.params.get("_config"))) as api:
             effective_limit = limit
             try:
@@ -84,7 +86,7 @@ def run_messages(
                         offset=offset,
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
-                        authority=build_authority_envelope(api.config.archive_root, server_identity="direct"),
+                        authority=authority_for_config(api.config, server_identity="direct", started_at=started_at),
                     ),
                     exclude_none=True,
                 )

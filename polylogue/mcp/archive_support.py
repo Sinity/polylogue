@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
+from time import monotonic
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from polylogue.archive.query.spec import parse_query_date, resolve_default_root_filter
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
+from polylogue.operations.authority import authority_for_reader
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
-from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
+from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
@@ -430,7 +432,8 @@ def archive_search_payload(
     """Build the generic MCP search envelope from archive block search."""
     from polylogue.surfaces.payloads import build_search_envelope
 
-    authority = build_authority_envelope(archive.archive_root, server_identity="direct")
+    started_at = monotonic()
+    authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
 
     if spec.similar_session_id is not None:
         from polylogue.archive.query.archive_execution import archive_search_hits
@@ -698,6 +701,7 @@ def archive_message_page_payload(
     from polylogue.mcp.payloads import MCPMessagesListPayload
     from polylogue.surfaces.payloads import message_render_envelope_from_archive_row
 
+    started_at = monotonic()
     resolved_session_id = archive.resolve_session_id(session_id)
     if archive.has_prefix_lineage(resolved_session_id):
         # Lineage composition is a logical splice, not a single SQL session.
@@ -714,7 +718,7 @@ def archive_message_page_payload(
             max_chars_per_message=max_chars_per_message,
             excerpt=excerpt,
             match_query=match_query,
-            authority=build_authority_envelope(archive.archive_root, server_identity="direct"),
+            authority=authority_for_reader(archive, server_identity="direct", started_at=started_at),
         )
     total = archive.count_session_messages(
         (resolved_session_id,),
@@ -764,7 +768,7 @@ def archive_message_page_payload(
         next_offset=next_offset,
         suggested_tail_offset=suggested_tail_offset,
         offset_note=offset_note,
-        authority=build_authority_envelope(archive.archive_root, server_identity="direct"),
+        authority=authority_for_reader(archive, server_identity="direct", started_at=started_at),
     )
 
 

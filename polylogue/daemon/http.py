@@ -82,6 +82,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
 )
 from polylogue.logging import get_logger
+from polylogue.operations.authority import authority_for_config, authority_for_reader
 from polylogue.operations.delete_authorization import DELETE_PREVIEW_MAX_SESSION_IDS, DeleteBatchPartialError
 from polylogue.rendering.semantic_card_placement import (
     SemanticCardPlacement,
@@ -94,6 +95,7 @@ from polylogue.rendering.semantic_cards import (
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
+from polylogue.surfaces.authority import serialize_authority
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -4803,6 +4805,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit: int,
         offset: int,
     ) -> object:
+        started_at = monotonic()
         messages, total, completeness = await poly.get_messages_paginated(
             conv_id,
             limit=limit,
@@ -4867,6 +4870,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "offset": offset,
             "lineage_complete": completeness.complete,
             "lineage_truncation_reason": completeness.truncation_reason,
+            "authority": serialize_authority(
+                authority_for_config(poly.config, server_identity="daemon", started_at=started_at)
+            ),
         }
 
     def _do_archive_get_messages(
@@ -4887,12 +4893,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         (``polylogue/cli/messages.py``), which already builds its transcript
         from a bounded page rather than the full session.
         """
+        started_at = monotonic()
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
             arguments={"path": getattr(self, "path", "")},
             projection="http-read",
         ) as archive:
+            authority = serialize_authority(
+                authority_for_reader(archive, server_identity="daemon", started_at=started_at)
+            )
             try:
                 session_id = archive.resolve_session_id(conv_id)
                 envelope = archive.read_session_page(session_id, limit=limit, offset=offset)
@@ -4904,6 +4914,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "offset": offset,
                     "lineage_complete": True,
                     "lineage_truncation_reason": None,
+                    "authority": authority,
                 }
         page = list(envelope.messages)
         total = envelope.total_message_count if envelope.total_message_count is not None else len(page)
@@ -4929,6 +4940,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # compute it); it was just never included in the response body.
             "lineage_complete": envelope.lineage_complete,
             "lineage_truncation_reason": envelope.lineage_truncation_reason,
+            "authority": authority,
         }
 
     # ------------------------------------------------------------------
