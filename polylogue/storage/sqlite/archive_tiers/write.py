@@ -489,18 +489,9 @@ def write_parsed_session_to_archive(
     turns this on.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) is the broader
-    bulk-generation-build lifecycle this session write may be part of: a
-    full source-to-index replay that always finishes with exactly one
-    archive-wide repopulate of ``messages_fts``/``blocks_command_trigram``/
-    ``action_pairs``/``delegation_facts`` before readiness (see
-    ``maintenance/rebuild_index.py``). When ``True``, this write skips every
-    per-session refresh of those four derived surfaces entirely (not just the
-    guard-gated bulk delete+insert ``bulk_fts`` performs) -- the final
-    repopulate covers every session regardless, so per-session work here is
-    pure waste. Only the offline rebuild call passes ``True``; ordinary
-    daemon writes (and ``bulk_fts=True`` used alone, e.g. in
-    ``tests/unit/storage/test_bulk_fts_prefix_reextract.py``) keep those
-    surfaces exactly in sync after every write, unchanged.
+    bulk-generation-build lifecycle this session write may be part of. FTS
+    surfaces remain explicitly rebuilt by the offline path; action and
+    delegation relations are query-time views over canonical rows.
 
     ``defer_fts_rebuild`` is for an authoritative raw-revision replay that
     owns one targeted repair and exactness proof after its writes. It avoids
@@ -1219,7 +1210,6 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
     for table in (
-        "action_pairs",
         "blocks",
         "attachment_refs",
         "paste_spans",
@@ -3363,12 +3353,10 @@ def _replace_full_session_messages_and_blocks(
     merge_append/full-replace tail, so this function cannot restore them
     itself without running before they even exist.
 
-    ``bulk_build`` (polylogue-v6i3, default ``False``) skips this function's
-    own scoped derived-index refresh and its ``action_pairs`` refresh entirely -- see
-    ``write_parsed_session_to_archive``'s docstring for why: a bulk-build
-    caller always repopulates both surfaces archive-wide exactly once at
-    readiness, so per-session maintenance here is pure waste. Ordinary
-    (non-bulk-build) full-session replaces are byte-for-byte unchanged.
+    ``bulk_build`` (polylogue-v6i3, default ``False``) skips the write-side
+    refresh work owned by this function. Action and delegation relations are
+    query-time views; ordinary full-session replacement keeps their results
+    current through the canonical rows.
 
     ``prepared`` (polylogue-623q), when given, is an already-validated
     ``PreparedSessionRows`` -- the caller (``write_parsed_session_to_archive``)
@@ -3522,7 +3510,7 @@ def _replace_full_session_messages_and_blocks(
     replacement_complete = False
     try:
         # polylogue-cs86: ``_clear_session_projection_rows`` (~14 point-DELETEs
-        # across messages/blocks/action_pairs/session_events/session_links/...)
+        # across messages/blocks/session_events/session_links/...)
         # plus the bare messages delete below are a no-op cascade whenever this
         # session_id has never had a ``sessions`` row before -- see
         # ``session_row_existed``'s docstring for the invariant proof. Every
@@ -4668,16 +4656,10 @@ def _resolve_session_graph(
     _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
     record_substage("repair_stale_branch_points", t0)
     t0 = time.perf_counter()
-    old_root_ids = _root_ids(conn, impacted_session_ids)
     projection_seen: set[str] = set()
     for impacted_session_id in impacted_session_ids:
         _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
-    root_ids_to_refresh = old_root_ids | _root_ids(conn, impacted_session_ids)
     record_substage("projection_refresh", t0)
-    t0 = time.perf_counter()
-    for root_session_id in root_ids_to_refresh:
-        _refresh_thread(conn, root_session_id)
-    record_substage("thread_refresh", t0)
 
 
 def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
@@ -4689,33 +4671,7 @@ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
         """,
         (session_id,),
     ).fetchone()
-    if row is None or row[0] != session_id or row[1] is not None:
-        return False
-    thread_row = conn.execute(
-        """
-        SELECT created_at_ms, session_count, depth
-        FROM threads
-        WHERE thread_id = ?
-        """,
-        (session_id,),
-    ).fetchone()
-    if thread_row is None:
-        return False
-    thread_sessions = conn.execute(
-        """
-        SELECT session_id
-        FROM thread_sessions
-        WHERE thread_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return (
-        int(thread_row[0] or 0) == int(row[2] or row[3] or 0)
-        and int(thread_row[1] or 0) == 1
-        and int(thread_row[2] or 0) == 0
-        and [str(thread_session[0]) for thread_session in thread_sessions] == [session_id]
-    )
+    return row is not None and row[0] == session_id and row[1] is None
 
 
 def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
@@ -4884,166 +4840,8 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
 
 
 def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
-    root = conn.execute(
-        """
-        SELECT session_id, origin, created_at_ms, updated_at_ms, COALESCE(root_session_id, session_id) AS actual_root_id
-        FROM sessions
-        WHERE session_id = ?
-        """,
-        (root_session_id,),
-    ).fetchone()
-    if root is None:
-        return
-    if root[4] != root_session_id:
-        conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-        conn.execute("DELETE FROM threads WHERE thread_id = ?", (root_session_id,))
-        return
-    conn.execute(
-        """
-        INSERT INTO threads (thread_id, created_at_ms, session_count, depth)
-        VALUES (?, ?, 0, 0)
-        ON CONFLICT(thread_id) DO UPDATE SET
-            created_at_ms = excluded.created_at_ms
-        """,
-        (root_session_id, root[2] or root[3] or 0),
-    )
-    session_rows = conn.execute(
-        """
-        SELECT session_id
-        FROM sessions
-        WHERE root_session_id = ? OR session_id = ?
-        ORDER BY session_id != ?, sort_key_ms IS NULL, sort_key_ms, session_id
-        """,
-        (root_session_id, root_session_id, root_session_id),
-    ).fetchall()
-    desired_session_ids = [str(row[0]) for row in session_rows]
-    existing_thread = conn.execute(
-        """
-        SELECT created_at_ms, session_count, depth
-        FROM threads
-        WHERE thread_id = ?
-        """,
-        (root_session_id,),
-    ).fetchone()
-    if existing_thread is not None:
-        existing_session_ids = [
-            str(row[0])
-            for row in conn.execute(
-                """
-                SELECT session_id
-                FROM thread_sessions
-                WHERE thread_id = ?
-                ORDER BY position
-                """,
-                (root_session_id,),
-            ).fetchall()
-        ]
-        if (
-            int(existing_thread[0] or 0) == int(root[2] or root[3] or 0)
-            and int(existing_thread[1] or 0) == len(desired_session_ids)
-            and int(existing_thread[2] or 0) == max(len(desired_session_ids) - 1, 0)
-            and existing_session_ids == desired_session_ids
-        ):
-            return
-        if existing_session_ids == desired_session_ids[: len(existing_session_ids)]:
-            new_rows = [
-                (root_session_id, row[0], position)
-                for position, row in enumerate(
-                    session_rows[len(existing_session_ids) :], start=len(existing_session_ids)
-                )
-            ]
-            if new_rows:
-                conn.executemany(
-                    """
-                    INSERT INTO thread_sessions (thread_id, session_id, position)
-                    VALUES (?, ?, ?)
-                    """,
-                    new_rows,
-                )
-            conn.execute(
-                """
-                UPDATE threads
-                SET session_count = ?,
-                    depth = ?
-                WHERE thread_id = ?
-                """,
-                (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
-            )
-            return
-        if len(existing_session_ids) == len(desired_session_ids):
-            # Same membership, different order (a thread member's sort key
-            # moved past siblings without joining/leaving the thread). Since
-            # both lists have equal length, index i names the same numeric
-            # ``position`` in both orderings, so the common leading/trailing
-            # run that already agrees can be left untouched -- only the
-            # differing middle span needs a delete+reinsert. Without this, a
-            # giant long-lived thread (thousands of resumed/forked Codex
-            # sessions) pays a full O(thread_size) rebuild on every reorder,
-            # even when only a handful of rows actually moved
-            # (polylogue-6wnh).
-            n = len(existing_session_ids)
-            common_prefix_len = 0
-            while (
-                common_prefix_len < n
-                and existing_session_ids[common_prefix_len] == desired_session_ids[common_prefix_len]
-            ):
-                common_prefix_len += 1
-            common_suffix_len = 0
-            max_suffix = n - common_prefix_len
-            while (
-                common_suffix_len < max_suffix
-                and existing_session_ids[n - 1 - common_suffix_len] == desired_session_ids[n - 1 - common_suffix_len]
-            ):
-                common_suffix_len += 1
-            span_end = n - common_suffix_len
-            if span_end > common_prefix_len:
-                conn.execute(
-                    """
-                    DELETE FROM thread_sessions
-                    WHERE thread_id = ? AND position >= ? AND position < ?
-                    """,
-                    (root_session_id, common_prefix_len, span_end),
-                )
-                conn.executemany(
-                    """
-                    INSERT INTO thread_sessions (thread_id, session_id, position)
-                    VALUES (?, ?, ?)
-                    """,
-                    [
-                        (root_session_id, session_id, position)
-                        for position, session_id in enumerate(
-                            desired_session_ids[common_prefix_len:span_end], start=common_prefix_len
-                        )
-                    ],
-                )
-            conn.execute(
-                """
-                UPDATE threads
-                SET session_count = ?,
-                    depth = ?
-                WHERE thread_id = ?
-                """,
-                (n, max(n - 1, 0), root_session_id),
-            )
-            return
-    conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-    if session_rows:
-        conn.executemany(
-            """
-            INSERT INTO thread_sessions (thread_id, session_id, position)
-            VALUES (?, ?, ?)
-            """,
-            [(root_session_id, row[0], position) for position, row in enumerate(session_rows)],
-        )
-    conn.execute(
-        """
-        UPDATE threads
-        SET session_count = ?,
-            depth = ?
-        WHERE thread_id = ?
-        """,
-        (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
-    )
+    # Thread membership and summary are query-time views over sessions.
+    del conn, root_session_id
 
 
 def _root_ids(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
@@ -6892,7 +6690,6 @@ def _reextract_prefix_tail_db(
     conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child_session_id,))
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
-    refresh_delegation_facts_for_session(conn, child_session_id)
     conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
 

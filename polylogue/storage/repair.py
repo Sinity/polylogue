@@ -6231,10 +6231,7 @@ def repair_session_insights(
     clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.derived.session.rebuild import (
-        rebuild_archive_session_insights,
-        refresh_session_insight_aggregates_sync,
-    )
+    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     try:
@@ -6310,13 +6307,6 @@ def repair_session_insights(
             )
             rebuilt_count = rebuilt.total()
             refreshed = archive.session_insight_status()
-            if session_ids is None and _session_insight_aggregate_debt_count(refreshed) > 0:
-                aggregate_counts = refresh_session_insight_aggregates_sync(
-                    archive._conn,
-                    progress_callback=progress_callback,
-                )
-                rebuilt_count += aggregate_counts.total()
-                refreshed = archive.session_insight_status()
             # A narrowed rebuild only attests its own slice; do not
             # demand global readiness for a scope-filtered call.
             success = True if session_ids is not None else assess_session_insight_repairs(refreshed).row_debt == 0

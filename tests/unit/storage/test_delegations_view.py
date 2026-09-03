@@ -887,7 +887,7 @@ def _dispatch_chain_level(
     exactly one dispatch action and exactly one resolved child, so the view
     pairs them as ``mapping_state='resolved'`` without needing content-
     identity disambiguation (the trivial-cohort case, see
-    ``delegation_facts_source`` in index.py). Returns the new child's
+    ``delegation_facts`` view in index.py). Returns the new child's
     session id."""
 
     child_id = _insert_session(conn, native_id=child_native_id)

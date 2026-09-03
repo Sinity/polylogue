@@ -1598,7 +1598,7 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_1", text=full_text, is_error=False),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_1", text=full_text),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_1")],
@@ -1657,7 +1657,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_a", text=full_text, is_error=False),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_a", text=full_text),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_a")],
@@ -1685,7 +1685,7 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_b", text=full_text, is_error=False),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_b", text=full_text),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_b")],
@@ -3467,42 +3467,15 @@ async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
             ],
         )
 
-    refresh_thread_roots = AsyncMock(return_value=2)
-    refresh_aggregates = AsyncMock()
-
     monkeypatch.setattr(
         "polylogue.storage.derived.session.refresh._apply_session_insight_session_updates_async",
         _fake_apply,
     )
-    monkeypatch.setattr(
-        "polylogue.storage.derived.session.refresh._refresh_thread_roots_async",
-        refresh_thread_roots,
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.derived.session.refresh.refresh_async_provider_day_aggregates",
-        refresh_aggregates,
-    )
-
     observation = await refresh_session_insights_bulk(
         fake_backend,
         ["conv-1", "conv-2", "conv-3"],
     )
 
-    refresh_thread_roots.assert_awaited_once()
-    thread_args = refresh_thread_roots.await_args
-    assert thread_args is not None
-    assert thread_args.args[0] is fake_conn
-    assert thread_args.args[1] == ["root-a", "root-b"]
-    assert thread_args.kwargs["transaction_depth"] == 1
-    refresh_aggregates.assert_awaited_once()
-    aggregate_args = refresh_aggregates.await_args
-    assert aggregate_args is not None
-    assert aggregate_args.args[0] is fake_conn
-    assert aggregate_args.args[1] == {
-        ("chatgpt", "2026-04-02"),
-        ("chatgpt", "2026-04-03"),
-    }
-    assert aggregate_args.kwargs["transaction_depth"] == 1
     fake_conn.commit_mock.assert_awaited_once()
     assert observation is not None
     assert observation["sessions"] == 3
@@ -3510,8 +3483,6 @@ async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
     assert observation["unique_provider_days"] == 2
     assert _float_value(observation["elapsed_ms"]) >= 0.0
     assert _float_value(observation["update_ms"]) >= 0.0
-    assert _float_value(observation["thread_refresh_ms"]) >= 0.0
-    assert _float_value(observation["aggregate_refresh_ms"]) >= 0.0
     assert observation["update_chunk_count"] == 1
     assert observation["update_slow_chunk_count"] == 0
     assert observation["update_max_chunk_ms"] == 33.2

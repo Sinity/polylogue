@@ -1165,6 +1165,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=87,
+        # Collapse redundant derived relations while retaining bounded action
+        # and delegation maintenance required by archive-scale reads.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

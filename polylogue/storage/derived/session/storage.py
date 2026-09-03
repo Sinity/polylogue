@@ -11,9 +11,7 @@ from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
     SessionPhaseRecord,
     SessionProfileRecord,
-    SessionTagRollupRecord,
     SessionWorkEventRecord,
-    ThreadRecord,
     _json_array_or_none,
     _json_or_none,
 )
@@ -471,132 +469,6 @@ def session_phase_insert_values(
     )
 
 
-# The ``threads`` row has two owners split by column (#1743 P13):
-#
-# * The *spine* — ``created_at_ms``, ``session_count``, ``depth`` — plus the
-#   ``thread_sessions`` membership join is owned by the topology refresh
-#   (``archive_tiers/write.py:_refresh_thread`` at ingest, and the equivalent
-#   spine writer in the insight rebuild). It is derived from the parent/root
-#   chain and the root session's timestamps.
-# * The *analytics* columns below are owned by the session-insight materializer
-#   (``build_thread_records_for_roots_sync``). They are written via an
-#   ``ON CONFLICT(thread_id) DO UPDATE`` upsert that never deletes the row, so
-#   it can neither zero ``created_at_ms`` nor cascade-wipe ``thread_sessions``.
-_THREAD_ANALYTICS_COLUMNS: tuple[str, ...] = (
-    "thread_id",
-    "materializer_version",
-    "materialized_at",
-    "source_updated_at",
-    "input_high_water_mark",
-    "input_high_water_mark_source",
-    "input_row_count",
-    "start_time",
-    "end_time",
-    "dominant_repo",
-    "session_ids_json",
-    "branch_count",
-    "total_messages",
-    "total_cost_usd",
-    "wall_duration_ms",
-    "work_event_breakdown_json",
-    "payload_json",
-    "search_text",
-)
-
-
-def thread_insert_values(record: ThreadRecord) -> SqlBindings:
-    """Bind the full thread column set (spine + analytics).
-
-    Retained for the async thread query path
-    (``session_insight_thread_queries.replace_thread``), which still rewrites
-    the whole row. The sync materializer uses ``thread_analytics_insert_values``
-    plus a dedicated spine writer instead (#1743 P13).
-    """
-    return (
-        record.thread_id,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.start_time,
-        record.end_time,
-        record.dominant_repo,
-        _json_array_or_none(record.session_ids),
-        record.session_count,
-        record.depth,
-        record.branch_count,
-        record.total_messages,
-        record.total_cost_usd,
-        record.wall_duration_ms,
-        _json_or_none(record.work_event_breakdown or {}),
-        _json_or_none(record.payload),
-        record.search_text,
-    )
-
-
-def thread_analytics_insert_values(record: ThreadRecord) -> SqlBindings:
-    """Bind only the analytics columns the insight materializer owns.
-
-    ``session_count``/``depth``/``created_at_ms`` (the topology-owned spine) are
-    intentionally excluded so the analytics upsert preserves them.
-    """
-    return (
-        record.thread_id,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.start_time,
-        record.end_time,
-        record.dominant_repo,
-        _json_array_or_none(record.session_ids),
-        record.branch_count,
-        record.total_messages,
-        record.total_cost_usd,
-        record.wall_duration_ms,
-        _json_or_none(record.work_event_breakdown or {}),
-        _json_or_none(record.payload),
-        record.search_text,
-    )
-
-
-def _thread_analytics_upsert_sql() -> str:
-    update_columns = _THREAD_ANALYTICS_COLUMNS[1:]
-    return f"""
-        INSERT INTO threads (
-            {", ".join(_THREAD_ANALYTICS_COLUMNS)}
-        ) VALUES ({_placeholders(_THREAD_ANALYTICS_COLUMNS)})
-        ON CONFLICT(thread_id) DO UPDATE SET
-            {", ".join(f"{column} = excluded.{column}" for column in update_columns)}
-        """
-
-
-def session_tag_rollup_insert_values(record: SessionTagRollupRecord) -> SqlBindings:
-    return (
-        record.tag,
-        record.bucket_day,
-        record.source_name,
-        record.materializer_version,
-        record.materialized_at,
-        record.source_updated_at,
-        record.source_sort_key,
-        record.input_high_water_mark,
-        record.input_high_water_mark_source,
-        record.input_row_count,
-        record.session_count,
-        record.logical_session_count,
-        _json_array_or_none(record.logical_session_ids),
-        record.explicit_count,
-        record.auto_count,
-        _json_or_none(record.repo_breakdown),
-        record.search_text,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Profile writes
 # ---------------------------------------------------------------------------
@@ -729,72 +601,6 @@ def replace_session_phases_bulk_sync(
 # ---------------------------------------------------------------------------
 
 
-def replace_thread_sync(
-    conn: sqlite3.Connection,
-    thread_id: str,
-    record: ThreadRecord | None,
-) -> None:
-    """Upsert the analytics columns of one thread row without touching the spine.
-
-    A ``None`` record is a no-op: thread-row lifecycle (creation/deletion) is
-    owned by the topology spine writer, not the analytics materializer.
-    """
-    del thread_id
-    if record is not None:
-        conn.execute(_thread_analytics_upsert_sql(), thread_analytics_insert_values(record))
-
-
-def replace_threads_bulk_sync(
-    conn: sqlite3.Connection,
-    records_by_thread_id: Mapping[str, ThreadRecord | None],
-) -> None:
-    records = [record for record in records_by_thread_id.values() if record is not None]
-    if records:
-        conn.executemany(
-            _thread_analytics_upsert_sql(),
-            [thread_analytics_insert_values(record) for record in records],
-        )
-
-
-def replace_session_tag_rollup_rows_sync(
-    conn: sqlite3.Connection,
-    *,
-    source_name: str,
-    bucket_day: str,
-    records: Sequence[SessionTagRollupRecord],
-) -> None:
-    conn.execute(
-        "DELETE FROM session_tag_rollups WHERE source_name = ? AND bucket_day = ?",
-        (source_name, bucket_day),
-    )
-    if records:
-        conn.executemany(
-            build_insert_sql(
-                "session_tag_rollups",
-                (
-                    "tag",
-                    "bucket_day",
-                    "source_name",
-                    "materializer_version",
-                    "materialized_at",
-                    "source_updated_at",
-                    "source_sort_key",
-                    "input_high_water_mark",
-                    "input_high_water_mark_source",
-                    "input_row_count",
-                    "session_count",
-                    "logical_session_count",
-                    "logical_session_ids_json",
-                    "explicit_count",
-                    "auto_count",
-                    "repo_breakdown_json",
-                    "search_text",
-                ),
-            ),
-            [session_tag_rollup_insert_values(record) for record in records],
-        )
-
-
 __all__ = [
     "build_insert_sql",
     "replace_session_phases_bulk_sync",
@@ -802,20 +608,14 @@ __all__ = [
     "replace_session_latency_profiles_bulk_sync",
     "replace_session_profiles_bulk_sync",
     "replace_session_profile_sync",
-    "replace_session_tag_rollup_rows_sync",
     "replace_session_work_events_bulk_sync",
     "replace_session_work_events_sync",
-    "replace_threads_bulk_sync",
-    "replace_thread_sync",
     "session_phase_insert_columns",
     "session_phase_insert_values",
     "session_profile_insert_columns",
     "session_profile_insert_values",
     "session_latency_profile_insert_values",
-    "session_tag_rollup_insert_values",
     "session_work_event_insert_columns",
     "session_work_event_insert_values",
     "table_has_column",
-    "thread_analytics_insert_values",
-    "thread_insert_values",
 ]

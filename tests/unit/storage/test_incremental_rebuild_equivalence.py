@@ -883,9 +883,9 @@ def _assert_planted_contract(root: Path, index_path: Path, raw_ids: RawIds) -> N
                 (CHAT_SESSION,),
                 1,
                 0,
-                1,
+                0,
                 3,
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
+                0,
             ),
             PARENT_SESSION: (
                 (PARENT_SESSION, CHILD_SESSION),
@@ -893,7 +893,7 @@ def _assert_planted_contract(root: Path, index_path: Path, raw_ids: RawIds) -> N
                 1,
                 1,
                 3,
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
+                0,
             ),
         }
 

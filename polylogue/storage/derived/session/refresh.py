@@ -11,10 +11,7 @@ import aiosqlite
 
 from polylogue.core.memory import release_process_memory
 from polylogue.storage.derived.session import rebuild as _rebuild
-from polylogue.storage.derived.session.aggregates import (
-    profile_provider_day,
-    refresh_async_provider_day_aggregates,
-)
+from polylogue.storage.derived.session.aggregates import profile_provider_day
 from polylogue.storage.derived.session.rebuild import (
     SessionInsightRecordBundle,
     build_session_insight_records,
@@ -26,11 +23,7 @@ from polylogue.storage.derived.session.runtime import (
     SessionInsightCounts,
     SessionInsightRefreshChunkPayload,
 )
-from polylogue.storage.derived.session.threads import (
-    build_thread_records_for_roots_async,
-    thread_root_id_async,
-    thread_root_ids_async,
-)
+from polylogue.storage.derived.session.threads import thread_root_id_async, thread_root_ids_async
 from polylogue.storage.runtime import (
     SessionLatencyProfileRecord,
     SessionPhaseRecord,
@@ -126,22 +119,16 @@ async def _refresh_thread_roots_async(
     *,
     transaction_depth: int,
 ) -> int:
-    from polylogue.storage.sqlite.queries.session_insight_thread_queries import (
-        replace_thread,
-    )
-
-    normalized_root_ids = tuple(dict.fromkeys(str(root_id) for root_id in root_ids if str(root_id)))
-    if not normalized_root_ids:
+    del transaction_depth
+    if not root_ids:
         return 0
-
-    thread_records = await build_thread_records_for_roots_async(conn, normalized_root_ids)
-    refreshed = 0
-    for root_id in normalized_root_ids:
-        record = thread_records.get(root_id)
-        await replace_thread(conn, root_id, record, transaction_depth)
-        if record is not None:
-            refreshed += 1
-    return refreshed
+    placeholders = ", ".join("?" for _ in root_ids)
+    cursor = await conn.execute(
+        f"SELECT COUNT(*) FROM threads WHERE thread_id IN ({placeholders})",
+        tuple(root_ids),
+    )
+    row = await cursor.fetchone()
+    return int(row[0]) if row is not None else 0
 
 
 async def refresh_thread_after_session_delete_async(
@@ -178,17 +165,6 @@ async def delete_session_insights_for_session_async(
     await conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,))
     await replace_session_work_events(conn, session_id, [], transaction_depth)
     await replace_session_phases(conn, session_id, [], transaction_depth)
-    if old_group is not None:
-        source_name, bucket_day = old_group
-        await conn.execute(
-            "DELETE FROM session_tag_rollups WHERE source_name = ? AND bucket_day = ?",
-            (source_name, bucket_day),
-        )
-        await refresh_async_provider_day_aggregates(
-            conn,
-            {old_group},
-            transaction_depth=transaction_depth,
-        )
     counts = _empty_refresh_counts()
     counts.add(
         profiles=1 if row is not None else 0,
@@ -211,11 +187,6 @@ async def refresh_session_insights_for_session_async(
     thread_count = await _refresh_thread_root_async(
         conn,
         update.thread_root_id,
-        transaction_depth=transaction_depth,
-    )
-    await refresh_async_provider_day_aggregates(
-        conn,
-        update.affected_groups,
         transaction_depth=transaction_depth,
     )
     update.counts.add(
@@ -702,7 +673,6 @@ async def _apply_session_insight_session_updates_async(
 __all__ = [
     "SessionInsightRefreshChunkObservation",
     "delete_session_insights_for_session_async",
-    "refresh_async_provider_day_aggregates",
     "refresh_session_insights_for_session_async",
     "refresh_thread_after_session_delete_async",
 ]

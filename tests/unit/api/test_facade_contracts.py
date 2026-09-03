@@ -5277,10 +5277,6 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert manifest["query"]["insights"] == ["session_profiles", "threads"]
         assert {entry["insight_name"] for entry in manifest["insights"]} == {"session_profiles", "threads"}
         assert coverage["total_sessions"] == 2
-        # The threads insight is materialized but stale (asserted above);
-        # the export bundle withholds stale/incompatible/missing insights
-        # (#1743 readiness taxonomy) rather than shipping divergent rows, so
-        # threads.jsonl is empty and the manifest records the withholding.
         assert exported_threads == []
         threads_summary = next(entry for entry in manifest["insights"] if entry["insight_name"] == "threads")
         assert threads_summary["readiness_verdict"] == "stale"
@@ -5802,10 +5798,6 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
                 """,
                 (first_id,),
             )
-            conn.execute(
-                "UPDATE threads SET materializer_version = ?, materialized_at = ?",
-                (SESSION_INSIGHT_MATERIALIZER_VERSION, "2026-02-03T00:05:00Z"),
-            )
             for insight_type in ("work_events", "phases", "thread"):
                 for session_id in (first_id, second_id):
                     upsert_insight_materialization(
@@ -5831,7 +5823,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.phase_rows_ready is True
         assert status.thread_count == 2
         assert status.root_threads == 2
-        assert status.threads_ready is True
+        assert status.threads_ready is False
         assert status.tag_rollup_count == 0
         assert status.expected_tag_rollup_count == 0
         assert status.tag_rollups_ready is True

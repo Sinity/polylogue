@@ -13,7 +13,6 @@ import polylogue.storage.derived.session.rebuild as rebuild_mod
 import polylogue.storage.derived.session.refresh as refresh_mod
 from polylogue.daemon import cli as daemon_cli
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.storage.derived.session.aggregates import refresh_async_provider_day_aggregates
 from polylogue.storage.derived.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
     _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
@@ -211,11 +210,6 @@ async def test_session_insight_refresh_materializes_logical_session_identity(
             ],
             transaction_depth=1,
             page_size=10,
-        )
-        await refresh_async_provider_day_aggregates(
-            conn,
-            {("claude-code-session", "2026-05-25")},
-            transaction_depth=1,
         )
         await conn.commit()
 
@@ -551,14 +545,6 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
             conn=conn,
         )
         rebuild_session_insights_sync(conn)
-        conn.execute(
-            "UPDATE session_tag_rollups SET search_text = ? WHERE source_name = ?",
-            ("sentinel tag untouched", "claude-ai-export"),
-        )
-        conn.execute(
-            "UPDATE threads SET search_text = ? WHERE thread_id = ?",
-            ("sentinel thread untouched", _sid("conv-claude-a", "claude-ai-export")),
-        )
         store_records(
             session=make_session(
                 "conv-chatgpt-b",
@@ -598,10 +584,10 @@ def test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roo
         ("claude-ai-export", "2026-04-03", 1),
     ]
     assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai-export"] == [
-        "sentinel tag untouched"
+        "origin:claude-ai-export\nclaude-ai-export"
     ]
     assert claude_thread is not None
-    assert claude_thread["search_text"] == "sentinel thread untouched"
+    assert "conv-claude-a" in claude_thread["search_text"]
 
 
 @pytest.mark.asyncio
@@ -611,13 +597,9 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
     """polylogue-lyv4 RED TWIN: async twin of
     ``test_targeted_session_insight_rebuild_refreshes_only_affected_groups_and_roots``
     above. Before the fix, ``rebuild_session_insights_async(conn, session_ids=
-    [...])`` unconditionally ran ``DELETE FROM threads`` / ``DELETE FROM
-    session_tag_rollups`` then rebuilt every root/group archive-wide,
-    regardless of the requested subset -- with only this multi-session,
-    multi-thread, multi-provider-day fixture does that unscoped wipe become
-    observable (a single-session fixture, e.g. the existing
-    ``test_async_large_session_rebuild_uses_bounded_degraded_profile``, never
-    exercises a second thread/group whose sentinel value would be destroyed).
+    [...])`` unconditionally rebuilt every root/group archive-wide, regardless
+    of the requested subset. The query-time thread and tag views now derive the
+    unaffected rows directly from canonical session/profile evidence.
     Also proves the async function commits its own work internally: the
     assertions read back through a *new* connection after the ``async with``
     block closes, with no caller-side ``commit()`` in between.
@@ -663,14 +645,6 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
             conn=conn,
         )
         rebuild_session_insights_sync(conn)
-        conn.execute(
-            "UPDATE session_tag_rollups SET search_text = ? WHERE source_name = ?",
-            ("sentinel tag untouched", "claude-ai-export"),
-        )
-        conn.execute(
-            "UPDATE threads SET search_text = ? WHERE thread_id = ?",
-            ("sentinel thread untouched", _sid("conv-claude-a", "claude-ai-export")),
-        )
         store_records(
             session=make_session(
                 "conv-chatgpt-b",
@@ -721,10 +695,10 @@ async def test_targeted_session_insight_rebuild_async_refreshes_only_affected_gr
         ("claude-ai-export", "2026-04-03", 1),
     ]
     assert [row["search_text"] for row in tag_rows if row["source_name"] == "claude-ai-export"] == [
-        "sentinel tag untouched"
+        "origin:claude-ai-export\nclaude-ai-export"
     ]
     assert claude_thread is not None
-    assert claude_thread["search_text"] == "sentinel thread untouched"
+    assert "conv-claude-a" in claude_thread["search_text"]
 
 
 def test_targeted_session_insight_rebuild_moves_tag_rollup_between_days(
@@ -1692,12 +1666,7 @@ def test_full_rebuild_chunks_by_message_budget_before_page_size(
 
 
 def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Path) -> None:
-    """A full canonical rebuild (session_ids=None) must leave the threads spine
-    intact: thread_sessions populated, created_at_ms not zeroed, and a 'thread'
-    materialization marker stamped for every member — not just the root — so
-    readiness row_debt reaches 0 on the daemon/repair convergence path (#1743
-    P13). This is the regression that the destructive replace_threads rewrite
-    used to leave broken (thread_sessions empty, created_at_ms = 0)."""
+    """A full canonical rebuild exposes thread membership from session rows."""
     db_path = _current_index_db(tmp_path, "thread-spine-adversarial")
     with open_connection(db_path) as conn:
         store_records(
@@ -2029,7 +1998,7 @@ async def test_refresh_thread_roots_async_batches_root_rebuilds(
 
 
 @pytest.mark.asyncio
-async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
+async def test_session_tag_rollups_are_derived_for_multiple_groups(
     tmp_path: Path,
 ) -> None:
     db_path = _current_index_db(tmp_path, "refresh-provider-day-groups")
@@ -2095,7 +2064,7 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
 
     backend = SQLiteBackend(db_path=db_path)
     async with backend.connection() as conn:
-        update = await _apply_session_insight_session_updates_async(
+        await _apply_session_insight_session_updates_async(
             conn,
             [
                 _sid("conv-chatgpt-a", "chatgpt-export"),
@@ -2104,11 +2073,6 @@ async def test_refresh_async_provider_day_aggregates_batches_multiple_groups(
             ],
             transaction_depth=1,
             page_size=10,
-        )
-        await refresh_async_provider_day_aggregates(
-            conn,
-            update.affected_groups,
-            transaction_depth=1,
         )
         await conn.commit()
 

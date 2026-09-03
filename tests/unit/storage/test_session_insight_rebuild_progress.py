@@ -3,15 +3,12 @@
 Pins the contracts of the bounded-WAL rebuild model (#1607 heartbeats, #2458
 per-chunk commit):
 
-1. ``_delete_tables_with_progress_sync`` still emits one progress event per
-   table it clears (the aggregate-table helper, exercised directly below).
-
-2. The full rebuild no longer clears per-session insight tables upfront. It
+1. The full rebuild no longer clears per-session insight tables upfront. It
    upserts per chunk, commits per chunk (bounded WAL), and prunes orphan rows
    after the chunk loop — emitting a per-table "pruned orphans" heartbeat so
    operators still see forward motion.
 
-3. Because per-session insight rows are upserted (not wiped) and the failing
+2. Because per-session insight rows are upserted (not wiped) and the failing
    chunk never commits, an exception mid-rebuild leaves the prior insights
    intact rather than emptying the archive — now achieved by upsert + no
    upfront delete instead of one giant transaction.
@@ -28,7 +25,6 @@ import pytest
 pytestmark = pytest.mark.storage_scale
 
 from polylogue.api import Polylogue
-from polylogue.storage.derived.session.rebuild import _delete_tables_with_progress_sync
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -47,64 +43,6 @@ def _count_profiles(db_path: Path) -> int:
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()
         return int(row[0])
-
-
-# ---------------------------------------------------------------------------
-# Progress reporting
-# ---------------------------------------------------------------------------
-
-
-def test_delete_tables_with_progress_emits_one_event_per_table(tmp_path: Path) -> None:
-    """The helper that wraps the seven DELETEs must emit a progress event
-    per table so the operator sees forward motion at table granularity."""
-    db_path = tmp_path / "index.db"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("CREATE TABLE a (id INT)")
-        conn.execute("CREATE TABLE b (id INT)")
-        conn.execute("CREATE TABLE c (id INT)")
-        conn.execute("INSERT INTO a VALUES (1), (2), (3)")
-        conn.execute("INSERT INTO b VALUES (1)")
-        # c stays empty
-        conn.commit()
-
-        events: list[tuple[int, str | None]] = []
-
-        def progress(amount: int, desc: str | None = None) -> None:
-            events.append((amount, desc))
-
-        _delete_tables_with_progress_sync(
-            conn,
-            tables=("a", "b", "c"),
-            progress_callback=progress,
-        )
-    finally:
-        conn.close()
-
-    assert [desc for _, desc in events] == [
-        "rebuild: cleared a",
-        "rebuild: cleared b",
-        "rebuild: cleared c",
-    ]
-    # rowcount per table: 3, 1, 0
-    assert [amount for amount, _ in events] == [3, 1, 0]
-
-
-def test_delete_tables_progress_callback_is_optional(tmp_path: Path) -> None:
-    """Missing callback must not raise; the DELETEs still execute."""
-    db_path = tmp_path / "index.db"
-    conn = sqlite3.connect(str(db_path))
-    try:
-        conn.execute("CREATE TABLE t (id INT)")
-        conn.execute("INSERT INTO t VALUES (1), (2)")
-        conn.commit()
-
-        _delete_tables_with_progress_sync(conn, tables=("t",), progress_callback=None)
-
-        remaining = conn.execute("SELECT COUNT(*) FROM t").fetchone()[0]
-        assert remaining == 0
-    finally:
-        conn.close()
 
 
 def test_full_rebuild_emits_orphan_prune_progress_per_table(

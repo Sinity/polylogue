@@ -43,6 +43,7 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
 # One explicit entry per comparable DDL table. Empty sets are declarations:
 # they make an added table fail this test until its volatility is considered.
 _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
+    "agent_meta_sidecar_purge_receipts": frozenset(),
     "action_pairs": frozenset(),
     "attachment_native_ids": frozenset(),
     "attachment_refs": frozenset(),
@@ -58,10 +59,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "raw_revision_heads": frozenset({"decided_at_ms"}),
     "repo_checkouts": frozenset(),
     "repos": frozenset(),
-    # Comparable rather than excluded: a rebuild that produces a different
-    # derived schema identity than the archive it rebuilt is exactly the
-    # drift this differential exists to catch.
-    "schema_identity": frozenset(),
     "session_agent_policies": frozenset(),
     "session_commits": frozenset(),
     "session_events": frozenset(),
@@ -73,11 +70,11 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_provider_usage_events": frozenset(),
     "session_refs": frozenset(),
     "session_repos": frozenset(),
-    "session_tag_rollups": frozenset({"materialized_at"}),
     "session_tags": frozenset(),
     "session_work_events": frozenset(),
     "session_working_dirs": frozenset(),
     "sessions": frozenset(),
+    "session_tag_rollups": frozenset({"materialized_at"}),
     "thread_sessions": frozenset(),
     "threads": frozenset({"materialized_at"}),
     "web_content_constructs": frozenset(),

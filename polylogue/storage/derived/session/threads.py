@@ -18,77 +18,36 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
     ThreadRecord,
 )
-from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
 
 _ROOT_THREAD_IDS_SQL = """
-    SELECT c.session_id
-    FROM sessions c
-    LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
-    WHERE parent.session_id IS NULL
-    ORDER BY c.session_id
+    SELECT DISTINCT COALESCE(root_session_id, session_id) AS session_id
+    FROM sessions
+    ORDER BY session_id
 """
-# These walks use ``UNION`` deliberately.  A parent cycle revisits the same
-# session row, so deduplicating recursive rows terminates the walk while the
-# root predicates still return no fabricated root for the cyclic component.
-# Keep the same cycle boundary across the single-root, batched-root,
-# descendant, and profile-loading queries below.
 _THREAD_ROOT_ID_SQL = """
-    WITH RECURSIVE ancestors(session_id, parent_session_id) AS (
-        SELECT session_id, parent_session_id
-        FROM sessions
-        WHERE session_id = ?
-        UNION
-        SELECT c.session_id, c.parent_session_id
-        FROM sessions c
-        JOIN ancestors a ON a.parent_session_id = c.session_id
-    )
-    SELECT session_id
-    FROM ancestors
-    WHERE parent_session_id IS NULL
-    LIMIT 1
+    SELECT COALESCE(root_session_id, session_id) AS session_id
+    FROM sessions
+    WHERE session_id = ?
 """
 _THREAD_ROOT_IDS_SQL_TEMPLATE = """
-    WITH RECURSIVE ancestors(target_id, session_id, parent_session_id) AS (
-        SELECT session_id, session_id, parent_session_id
-        FROM sessions
-        WHERE session_id IN ({placeholders})
-        UNION
-        SELECT a.target_id, c.session_id, c.parent_session_id
-        FROM sessions c
-        JOIN ancestors a ON a.parent_session_id = c.session_id
-    )
-    SELECT target_id, session_id
-    FROM ancestors
-    WHERE parent_session_id IS NULL
+    SELECT session_id AS target_id,
+           COALESCE(root_session_id, session_id) AS session_id
+    FROM sessions
+    WHERE session_id IN ({placeholders})
 """
 _THREAD_SESSION_IDS_SQL = """
-    WITH RECURSIVE descendants(session_id) AS (
-        SELECT session_id
-        FROM sessions
-        WHERE session_id = ?
-        UNION
-        SELECT c.session_id
-        FROM sessions c
-        JOIN descendants d ON c.parent_session_id = d.session_id
-    )
     SELECT session_id
-    FROM descendants
+    FROM sessions
+    WHERE COALESCE(root_session_id, session_id) = ?
     ORDER BY session_id
 """
 _THREAD_PROFILE_RECORDS_BY_ROOT_SQL_TEMPLATE = """
-    WITH RECURSIVE descendants(root_id, session_id) AS (
-        SELECT session_id, session_id
-        FROM sessions
-        WHERE session_id IN ({placeholders})
-        UNION
-        SELECT d.root_id, c.session_id
-        FROM sessions c
-        JOIN descendants d ON c.parent_session_id = d.session_id
-    )
-    SELECT d.root_id, sp.*
-    FROM descendants d
-    JOIN session_profiles sp ON sp.session_id = d.session_id
-    ORDER BY d.root_id, COALESCE(sp.source_sort_key, 0) DESC, sp.session_id
+    SELECT COALESCE(s.root_session_id, s.session_id) AS root_id, sp.*
+    FROM sessions s
+    JOIN session_profiles sp ON sp.session_id = s.session_id
+    WHERE COALESCE(s.root_session_id, s.session_id) IN ({placeholders})
+    ORDER BY root_id, COALESCE(sp.source_sort_key, 0) DESC, sp.session_id
 """
 _ROOT_BATCH_SIZE = 200
 

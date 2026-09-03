@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import Counter
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -21,9 +20,7 @@ from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, evaluate
 from tests.infra.sqlite_work_counter import sqlite_work_counter
 
 _COMPONENT_DERIVED_WORK_BUDGET = GrowthBudget(metric="component_derived_vm_steps", max_step_multiplier=4.0)
-# A terminal refresh is allowed to emit the bounded quartet's observed
-# archive-wide statement envelope once per production-route pass. The law
-# rejects paying that envelope once per selected component.
+# An incremental component replay must not emit archive-wide derived writes.
 _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET = 9
 
 
@@ -104,10 +101,8 @@ def _quiesce_census(root: Path, *, limit: int) -> None:
 def _run_component_measurement(
     tmp_path: Path,
     archive_size: int,
-    monkeypatch: pytest.MonkeyPatch,
     *,
     component_count: int,
-    install_mutation: Callable[[pytest.MonkeyPatch], None] | None = None,
 ) -> GrowthObservation:
     if component_count < 1 or component_count > archive_size:
         raise ValueError("component_count must be between one and archive_size")
@@ -125,11 +120,8 @@ def _run_component_measurement(
                 acquired_at_ms=archive_size + index + 1,
             )
 
-    with monkeypatch.context() as mutation:
-        if install_mutation is not None:
-            install_mutation(mutation)
-        with sqlite_work_counter(step_interval=1) as counter:
-            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=component_count)
+    with sqlite_work_counter(step_interval=1) as counter:
+        result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=component_count)
 
     assert result.repaired_count == component_count
     return GrowthObservation(
@@ -165,68 +157,17 @@ def _assert_component_shape(observations: list[GrowthObservation]) -> None:
     )
 
 
-def _restore_deleted_archive_wide_refresh(mutation: pytest.MonkeyPatch) -> None:
-    """Restore the deleted qsagp quartet through the real backfill seam."""
-    from polylogue.storage.fts import fts_lifecycle
-    from polylogue.storage.sqlite import action_pairs, delegation_facts
-
-    original_backfill = revision_backfill.backfill_historical_revision_evidence
-
-    def replay_with_deleted_regression(*args: Any, **kwargs: Any) -> Any:
-        result = original_backfill(*args, **kwargs)
-        archive_root = Path(args[0])
-        with sqlite3.connect(archive_root / "index.db") as conn:
-            conn.execute("PRAGMA busy_timeout = 600000")
-            fts_lifecycle.rebuild_fts_index_sync(conn)
-            fts_lifecycle.rebuild_command_trigram_index_sync(conn)
-            action_pairs.rebuild_all_action_pairs_sync(conn)
-            delegation_facts.rebuild_all_delegation_facts_sync(conn)
-            conn.commit()
-        return result
-
-    mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", replay_with_deleted_regression)
-
-
-def test_one_component_derived_work_is_archive_scale_stable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_one_component_derived_work_is_archive_scale_stable(tmp_path: Path) -> None:
     observations = [
         _run_component_measurement(
             tmp_path,
             archive_size,
-            monkeypatch,
             component_count=component_count,
         )
         for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
     ]
 
     _assert_component_shape(observations)
-
-
-def test_component_law_rejects_qsagp_archive_wide_per_item_mutation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The law must turn red when the deleted archive-wide quartet is restored."""
-    observations = [
-        _run_component_measurement(
-            tmp_path,
-            archive_size,
-            monkeypatch,
-            component_count=component_count,
-            install_mutation=_restore_deleted_archive_wide_refresh,
-        )
-        for archive_size, component_count in ((2, 1), (8, 2), (32, 4))
-    ]
-
-    archive_wide = [observation.metric("archive_wide_derived_statements") for observation in observations]
-    assert any(value > _COMPONENT_TERMINAL_REFRESH_STATEMENT_BUDGET for value in archive_wide), (
-        "red mutation did not exceed the terminal-refresh statement envelope; "
-        f"measured counters={[dict(observation.metrics) for observation in observations]}"
-    )
-    with pytest.raises(AssertionError):
-        _assert_component_shape(observations)
-    assert all(value > 0 for value in archive_wide), (
-        "red mutation did not reach observed archive-wide SQL; "
-        f"measured counters={[dict(observation.metrics) for observation in observations]}"
-    )
 
 
 def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(

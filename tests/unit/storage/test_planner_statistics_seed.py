@@ -2,11 +2,10 @@
 
 A database without ``sqlite_stat1`` makes the query planner prefer
 low-cardinality equality indexes (``idx_blocks_type_tool``) over
-session-scoped ones for writer-hot maintenance queries: the per-session
-``action_pairs`` refresh then scans the archive's entire ``tool_use``
-population on every session write — O(N^2) over a bulk rebuild, measured live
-at >20x replay slowdown (polylogue-l3tk, 2026-07-19). Bootstrap therefore
-seeds representative statistics so plans are correct from the first write.
+session-scoped ones for writer-hot maintenance queries. The per-session
+``action_pairs`` refresh must therefore use ``idx_blocks_session_position``
+instead of scanning every tool-use block. Bootstrap seeds representative
+statistics so plans are correct from the first write.
 """
 
 from __future__ import annotations
@@ -46,8 +45,7 @@ def test_fresh_bootstrap_seeds_planner_statistics(tmp_path: Path) -> None:
 
 
 def test_fresh_bootstrap_plans_session_scoped_action_pairs_refresh(tmp_path: Path) -> None:
-    """Without seeded stats this exact query planned three full
-    ``idx_blocks_type_tool (block_type=?)`` scans on a fresh database."""
+    """Every physical block lookup in the refresh stays session-scoped."""
     conn = sqlite3.connect(tmp_path / "index.db")
     try:
         _ensure_schema(conn)
@@ -83,7 +81,7 @@ def test_refresh_generation_planner_statistics_measures_real_tables(tmp_path: Pa
     try:
         measured_tables = {str(row[0]) for row in conn.execute("SELECT DISTINCT tbl FROM sqlite_stat1").fetchall()}
         assert {"sessions", "messages", "blocks", "session_links", "action_pairs"} <= measured_tables
-        # During bulk replay these stores are intentionally empty until final
+        # During bulk replay FTS stores are intentionally empty until final
         # readiness; sampling their backing tables would only add I/O.
         assert "messages_fts_data" not in measured_tables
         assert "blocks_command_trigram_data" not in measured_tables

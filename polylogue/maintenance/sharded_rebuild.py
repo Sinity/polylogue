@@ -25,15 +25,10 @@ internals -- it calls the same public
 every non-sharded rebuild pass already uses, once per shard, against a
 distinct owned inactive generation.
 
-Deferred surfaces are unaffected: ``bulk_build=True`` (passed to every shard
-replay, matching the non-sharded rebuild caller) leaves ``messages_fts``,
-``blocks_command_trigram``, ``action_pairs``, and ``delegation_facts`` empty
-throughout -- exactly like a single-writer bulk-build pass -- so those
-surfaces are never merged here; the existing archive-wide
-``_repopulate_bulk_build_derived_state`` terminal stage in
-``maintenance/rebuild_index.py`` repopulates them once, unchanged, from the
-merged ``blocks``/``messages``/``session_links`` content after this module
-returns.
+``bulk_build=True`` leaves the FTS surfaces empty throughout, so they are
+never merged here; the terminal stage in ``maintenance/rebuild_index.py``
+rebuilds them once from the merged canonical block evidence. The action and
+delegation surfaces are query-time views and require no terminal population.
 
 Measured honestly (``tests/benchmarks/test_sharded_rebuild.py``'s K=1/4/8
 sweep, synthetic corpus, see the polylogue-pzxm PR body for the exact
@@ -81,7 +76,7 @@ logger = get_logger(__name__)
 #: ``PRAGMA foreign_key_check``. Every one of these tables keys off
 #: content-derived identity (``session_id``/``message_id``/``block_id``
 #: generated columns, or an explicit composite PRIMARY KEY) -- see
-#: ``storage/sqlite/archive_tiers/index.py``'s ``CREATE TABLE`` statements --
+#: ``storage/sqlite/archive_tiers/index.py``'s canonical table declarations --
 #: never a bare ``INTEGER PRIMARY KEY`` surrogate referenced elsewhere, so an
 #: ``INSERT OR REPLACE ... SELECT`` merge across independently-built shards
 #: is identity-safe: two shards that (via cohort-completeness expansion,
@@ -117,8 +112,6 @@ MERGE_TABLES: tuple[str, ...] = (
     "session_model_usage",
     "session_provider_usage_events",
     "web_content_constructs",
-    "threads",
-    "thread_sessions",
     "session_tags",
 )
 
@@ -126,10 +119,9 @@ MERGE_TABLES: tuple[str, ...] = (
 #: names explicitly ("byte-identical schema SHA, per-table row counts, and
 #: content SHA over ordered sessions/messages/blocks/session_links/
 #: action_pairs vs a sequential build"). ``action_pairs`` is deliberately
-#: NOT in ``MERGE_TABLES`` (bulk_build leaves it empty per-shard, populated
-#: only by the shared terminal repopulate stage) but IS part of the
-#: equivalence surface, since it is derived from the merged content and
-#: must still match byte-for-byte once that terminal stage runs.
+#: NOT in ``MERGE_TABLES`` because bulk-build replay leaves it for the shared
+#: terminal repopulate stage, but IS part of the equivalence surface, since it
+#: must match byte-for-byte against a sequential build.
 EQUIVALENCE_TABLES: tuple[str, ...] = ("sessions", "messages", "blocks", "session_links", "action_pairs")
 
 

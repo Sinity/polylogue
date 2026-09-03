@@ -245,7 +245,7 @@ def _seed_coherent_archive(root: Path) -> None:
         index_conn.commit()
         index_conn.execute("ANALYZE blocks")
         index_conn.execute("ANALYZE messages")
-        index_conn.execute("ANALYZE action_pairs")
+        index_conn.execute("ANALYZE session_links")
         index_conn.commit()
     finally:
         index_conn.close()
@@ -1206,7 +1206,7 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
-        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'action_pairs'")
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'session_links'")
         conn.commit()
     finally:
         conn.close()
@@ -1215,7 +1215,7 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
 
     check = _check(report, "planner-stats")
     assert check.status is OutcomeStatus.WARNING
-    assert check.evidence["missing_tables"] == ["action_pairs"]
+    assert check.evidence["missing_tables"] == ["session_links"]
 
 
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
@@ -2370,7 +2370,7 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
         conn.commit()
         conn.execute("ANALYZE blocks")
         conn.execute("ANALYZE messages")
-        conn.execute("ANALYZE action_pairs")
+        conn.execute("ANALYZE session_links")
         conn.commit()
     finally:
         conn.close()
