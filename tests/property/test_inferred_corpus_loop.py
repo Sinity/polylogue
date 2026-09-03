@@ -43,6 +43,7 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
+from tests.infra.wire_support import shared_wire_support_receipt
 
 
 def test_actual_catalog_manifest_remains_fail_closed() -> None:
@@ -225,7 +226,7 @@ def test_persisted_catalog_manifest_reaches_real_ingest_and_convergence(
     registry = SchemaRegistry(storage_root=SCHEMA_DIR)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
-        wire_support_receipt=build_wire_support_receipt(registry=registry),
+        wire_support_receipt=shared_wire_support_receipt(storage_root=SCHEMA_DIR),
     )
     manifest_path = tmp_path / "manifest.json"
     write_inferred_corpus_manifest(manifest, manifest_path)

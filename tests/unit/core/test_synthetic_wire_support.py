@@ -15,7 +15,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role
 from polylogue.core.json import JSONValue
 from polylogue.schemas import validator as validator_module
 from polylogue.schemas.packages import SchemaResolution
-from polylogue.schemas.runtime_registry import SchemaRegistry
+from polylogue.schemas.runtime_registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus, wire_formats
 from polylogue.schemas.synthetic.build_wire_formats import validate_wire_payload
 from polylogue.schemas.synthetic.models import SchemaRecord
@@ -26,11 +26,12 @@ from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
+from tests.infra.wire_support import shared_wire_support_receipt
 
 
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
-    registry = SchemaRegistry()
-    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    registry = SchemaRegistry(storage_root=SCHEMA_DIR)
+    receipt = shared_wire_support_receipt()
 
     assert set(receipt.catalog_providers) == set(registry.list_providers())
     assert not receipt.missing_routes
@@ -119,7 +120,7 @@ def test_support_receipt_counts_a_missing_route_before_skipping_unsupported_elem
 
 
 def test_supported_routes_validate_selected_schema_and_parser_entry_point() -> None:
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    receipt = shared_wire_support_receipt()
 
     supported = [entry for entry in receipt.entries if entry.status == "supported"]
     assert supported
@@ -789,8 +790,10 @@ def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.Mon
 
 
 def test_support_receipt_is_deterministic() -> None:
-    first = wire_formats.build_wire_support_receipt(registry=SchemaRegistry()).to_dict()
-    second = wire_formats.build_wire_support_receipt(registry=SchemaRegistry()).to_dict()
+    # One side is the shared build, the other is fresh: two builds of the same
+    # catalog must agree, and only one of them has to be paid for here.
+    first = shared_wire_support_receipt().to_dict()
+    second = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(storage_root=SCHEMA_DIR)).to_dict()
 
     assert first == second
 

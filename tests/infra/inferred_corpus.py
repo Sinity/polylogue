@@ -1043,6 +1043,18 @@ def _validate_inference_handoff(
         )
 
 
+def _is_default_full_catalog_build(
+    registry: RuntimeSchemaRegistryLike, *, witness_seed: int, catalog_scope: object
+) -> bool:
+    """Whether a receipt rebuild has exactly the shared per-process build's inputs."""
+    from inspect import signature
+
+    from polylogue.schemas.runtime_registry import SchemaRegistry
+
+    default_seed = signature(build_wire_support_receipt).parameters["seed"].default
+    return type(registry) is SchemaRegistry and catalog_scope == "registry-default" and witness_seed == default_seed
+
+
 def _validate_current_wire_support_route(
     manifest: InferredCorpusManifest,
     registry: RuntimeSchemaRegistryLike,
@@ -1061,13 +1073,21 @@ def _validate_current_wire_support_route(
     catalog_scope = persisted.get("catalog_scope")
     if catalog_scope not in {"registry-default", "explicit"}:
         raise ValueError("wire_support_receipt catalog_scope must be registry-default or explicit")
-    current = build_wire_support_receipt(
-        registry=registry,
-        seed=witness_seed,
-        providers=None
-        if catalog_scope == "registry-default"
-        else tuple(cast(str, provider) for provider in raw_providers),
-    )
+    if _is_default_full_catalog_build(registry, witness_seed=witness_seed, catalog_scope=catalog_scope):
+        # The same inputs as the per-process shared build: reuse it rather
+        # than paying the full-catalog generation again for this validation.
+        from polylogue.schemas.runtime_registry import SchemaRegistry
+        from tests.infra.wire_support import shared_wire_support_receipt
+
+        current = shared_wire_support_receipt(storage_root=cast(SchemaRegistry, registry).storage_root)
+    else:
+        current = build_wire_support_receipt(
+            registry=registry,
+            seed=witness_seed,
+            providers=None
+            if catalog_scope == "registry-default"
+            else tuple(cast(str, provider) for provider in raw_providers),
+        )
     rebuilt = current.to_dict()
     if rebuilt != persisted:
         changed_fields = sorted(key for key in set(rebuilt) | set(persisted) if rebuilt.get(key) != persisted.get(key))

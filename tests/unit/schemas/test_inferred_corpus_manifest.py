@@ -38,6 +38,7 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
+from tests.infra.wire_support import shared_wire_support_receipt
 from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 
@@ -122,7 +123,7 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
 
 def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -> None:
     registry = _registry()
-    support = build_wire_support_receipt(registry=registry)
+    support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
 
     manifest = compile_inferred_corpus_manifest(registry=registry, wire_support_receipt=support)
 
@@ -147,8 +148,9 @@ def test_wire_support_receipt_is_canonical_across_catalog_reordering() -> None:
             ],
         )
 
+    # The reordered side must be built here; the canonical side is shared.
     assert (
-        build_wire_support_receipt(registry=registry).to_dict()
+        shared_wire_support_receipt(storage_root=SCHEMA_DIR).to_dict()
         == build_wire_support_receipt(registry=reordered).to_dict()
     )
 
@@ -199,7 +201,7 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
     package_receipt = package_receipts[0]
     for other in package_receipts[1:]:
         package_receipt = package_receipt.merged_with(other)
-    wire_support = build_wire_support_receipt(registry=registry)
+    wire_support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
 
     manifest = compile_inferred_corpus_manifest(
         registry=cast(Any, registry),
@@ -475,7 +477,7 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
 
 def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
     registry = _registry()
-    support = build_wire_support_receipt(registry=registry)
+    support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
     missing = next(entry for entry in support.entries if entry.status == "supported")
     reduced_support = replace(
         support,
