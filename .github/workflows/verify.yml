@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # One run per ref: a newer push supersedes the run for the same PR. Host-wide
 # serialisation of pytest is the pueue `pytest` slot, not GitHub; a global
@@ -37,7 +38,24 @@ jobs:
           seed=/realm/project/polylogue/.cache/testmon/testmondata
           nix develop --command python -m devtools.testmon_provision --seed "$seed"
 
+      - name: Check that the pull request is still open
+        id: pr-state
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          state=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            | jq --raw-output .state)
+          if [ "$state" != open ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify
+        if: steps.pr-state.outputs.skip != 'true'
         run: nix develop --command devtools verify
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
