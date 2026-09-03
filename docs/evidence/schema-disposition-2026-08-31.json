@@ -39859,7 +39859,7 @@
   "schema_versions": {
     "audit": 2,
     "embeddings": 5,
-    "index": 88,
+    "index": 89,
     "ops": 1,
     "source": 41,
     "user": 11

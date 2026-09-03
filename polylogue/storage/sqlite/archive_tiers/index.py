@@ -456,7 +456,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # polylogue-avlt5: v83 removes materialized thread/tag-rollup caches while
 # retaining compact indexed action/delegation relations for bounded reads.
 # v88 removes the retired agent-meta sidecar purge receipt from fresh DDL.
-INDEX_SCHEMA_VERSION = 88
+# polylogue-iltbx: v89 makes semantic content identity follow the complete
+# parser field partition. Existing rows need semantic replay to regenerate
+# their content hashes.
+INDEX_SCHEMA_VERSION = 89
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

@@ -1185,6 +1185,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
             ),
         ),
     ),
+    IndexDeltaDeclaration(
+        version=89,
+        # Semantic content identity now follows the complete parser field
+        # partition. Existing rows need parser replay to regenerate hashes.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

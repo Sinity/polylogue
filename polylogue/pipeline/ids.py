@@ -423,6 +423,7 @@ def _message_reference_payload(message: ParsedMessage) -> dict[str, JSONValue]:
         payload["block_references"] = references
     return payload
 
+
 def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     """Build the complete semantic payload used by session content hashing."""
     return _message_payload(message, _HASHED_FIELDS["ParsedMessage"])
