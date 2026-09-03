@@ -60,8 +60,28 @@ def derived_schema_identity(tier: DerivedTier) -> str:
 
 
 def read_schema_identity(conn: sqlite3.Connection, tier: DerivedTier) -> str | None:
-    row = conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier.value,)).fetchone()
+    """Return the stamped identity, or None when the tier declares none.
+
+    A tier written before the ledger existed carries no ledger table at all.
+    That is an absent identity, which this signature already admits -- not a
+    malformed database, and not something to raise about.
+    """
+
+    try:
+        row = conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier.value,)).fetchone()
+    except sqlite3.OperationalError:
+        if not _table_exists(conn, "schema_identity"):
+            return None
+        raise
     return None if row is None else str(row[0])
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (name,),
+    ).fetchone()
+    return row is not None
 
 
 __all__ = [
