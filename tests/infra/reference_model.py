@@ -12,7 +12,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from polylogue.archive.models import Session
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.models import Message, Session
 from polylogue.archive.query.expression import (
     QueryExpressionAST,
     _CountRangeToken,
@@ -27,6 +28,7 @@ from polylogue.archive.query.predicate import (
     QueryBoolPredicate,
     QueryExistsPredicate,
     QueryFieldPredicate,
+    QueryFieldRef,
     QueryLineagePredicate,
     QueryNotPredicate,
     QueryPredicate,
@@ -34,12 +36,22 @@ from polylogue.archive.query.predicate import (
     QuerySequencePredicate,
     QueryTextPredicate,
 )
+from polylogue.archive.query.runtime_matching import matches_action_predicate_sequence
 from polylogue.archive.semantic.facts import build_session_semantic_facts
 from polylogue.archive.semantic.pricing import harmonize_session_cost
 
 
 def _text(session: Session) -> str:
     return "\n".join((message.text or "") for message in session.messages)
+
+
+def _recomposed_session(archive: ReferenceArchive, session: Session) -> Session:
+    """Return the session view with its inherited prefix physically composed."""
+    lineage = archive.lineage(str(session.id))
+    if len(lineage) == 1:
+        return session
+    messages = [message for ancestor in lineage for message in ancestor.messages]
+    return session.model_copy(update={"messages": MessageCollection(messages=messages)})
 
 
 def _value(session: Session, field_name: str) -> object:
@@ -102,7 +114,69 @@ def _field(session: Session, predicate: QueryFieldPredicate) -> bool:
     return any(_compare(actual, value, predicate.op) for value in predicate.values)
 
 
-def evaluate_predicate(session: Session, predicate: QueryPredicate, *, lineage: set[str] | None = None) -> bool:
+def _unit_field(value: object, predicate: QueryFieldPredicate) -> bool:
+    actual = value
+    return any(_compare(actual, expected, predicate.op) for expected in predicate.values)
+
+
+def _message_matches(message: Message, predicate: QueryPredicate) -> bool:
+    if isinstance(predicate, QueryFieldPredicate):
+        field = predicate.field.removeprefix("message.")
+        if field == "role":
+            return _unit_field(str(message.role), predicate)
+        if field == "text":
+            return _unit_field(getattr(message, "text", "") or "", predicate)
+        if field == "words":
+            return _unit_field(len((getattr(message, "text", "") or "").split()), predicate)
+        if field == "time":
+            return _unit_field(getattr(message, "timestamp", None), predicate)
+        return False
+    if isinstance(predicate, QueryTextPredicate):
+        return predicate.text.lower() in (getattr(message, "text", "") or "").lower()
+    if isinstance(predicate, QueryNotPredicate):
+        return not _message_matches(message, predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        values = [_message_matches(message, child) for child in predicate.children]
+        return any(values) if predicate.op == "or" else all(values)
+    return False
+
+
+def _block_matches(message: Message, predicate: QueryPredicate) -> bool:
+    blocks = getattr(message, "blocks", ())
+    if isinstance(predicate, QueryFieldPredicate):
+        field = predicate.field.removeprefix("block.")
+        return any(_unit_field(block.get(field), predicate) for block in blocks if isinstance(block, dict))
+    if isinstance(predicate, QueryTextPredicate):
+        needle = predicate.text.lower()
+        return any(needle in str(block).lower() for block in blocks)
+    if isinstance(predicate, QueryNotPredicate):
+        return not _block_matches(message, predicate.child)
+    if isinstance(predicate, QueryBoolPredicate):
+        values = [_block_matches(message, child) for child in predicate.children]
+        return any(values) if predicate.op == "or" else all(values)
+    return False
+
+
+def _bind_action_predicate(predicate: QueryPredicate) -> QueryPredicate:
+    """Give the shared action matcher the same closed field identity as SQL."""
+    if isinstance(predicate, QueryFieldPredicate):
+        return predicate.with_field_ref(
+            QueryFieldRef(scope="unit", name=predicate.field, source_name=predicate.field, unit="action")
+        )
+    if isinstance(predicate, QueryNotPredicate):
+        return QueryNotPredicate(_bind_action_predicate(predicate.child))
+    if isinstance(predicate, QueryBoolPredicate):
+        return QueryBoolPredicate(predicate.op, tuple(_bind_action_predicate(child) for child in predicate.children))
+    return predicate
+
+
+def evaluate_predicate(
+    session: Session,
+    predicate: QueryPredicate,
+    *,
+    lineage: set[str] | None = None,
+    _unit: str = "session",
+) -> bool:
     """Evaluate one production :class:`QueryPredicate` without re-parsing it."""
     if isinstance(predicate, QueryFieldPredicate):
         return _field(session, predicate)
@@ -111,20 +185,23 @@ def evaluate_predicate(session: Session, predicate: QueryPredicate, *, lineage: 
     if isinstance(predicate, QuerySemanticPredicate):
         raise NotImplementedError("semantic predicates need a vector oracle")
     if isinstance(predicate, QueryNotPredicate):
-        return not evaluate_predicate(session, predicate.child, lineage=lineage)
+        return not evaluate_predicate(session, predicate.child, lineage=lineage, _unit=_unit)
     if isinstance(predicate, QueryBoolPredicate):
-        results = [evaluate_predicate(session, child, lineage=lineage) for child in predicate.children]
+        results = [evaluate_predicate(session, child, lineage=lineage, _unit=_unit) for child in predicate.children]
         return all(results) if predicate.op == "and" else any(results)
     if isinstance(predicate, QueryExistsPredicate):
-        # Structural predicates are intentionally conservative in this first
-        # slice: the common message/block text and role fields are covered.
-        return any(evaluate_predicate(session, predicate.child, lineage=lineage) for _ in session.messages)
+        if predicate.unit == "message":
+            return any(_message_matches(message, predicate.child) for message in session.messages)
+        if predicate.unit == "block":
+            return any(_block_matches(message, predicate.child) for message in session.messages)
+        if predicate.unit == "action":
+            return matches_action_predicate_sequence((_bind_action_predicate(predicate.child),), session)
+        return False
     if isinstance(predicate, QueryLineagePredicate):
         return lineage is not None and predicate.seed_session_id in lineage
     if isinstance(predicate, QuerySequencePredicate):
-        terms = predicate.action_terms
-        text = _text(session).lower()
-        return bool(terms) and all(term.lower() in text for term in terms)
+        steps = tuple(_bind_action_predicate(step) for step in predicate.steps)
+        return matches_action_predicate_sequence(steps, session, predicate.constraints)
     raise TypeError(f"unsupported query predicate: {predicate!r}")
 
 
@@ -194,12 +271,13 @@ class ReferenceArchive:
         selected: list[Session] = []
         for session in self.sessions.values():
             lineage = {str(item.id) for item in self.lineage(str(session.id))}
+            effective = _recomposed_session(self, session)
             if ast.boolean_predicate is not None:
-                matches = evaluate_predicate(session, ast.boolean_predicate, lineage=lineage)
+                matches = evaluate_predicate(effective, ast.boolean_predicate, lineage=lineage)
             else:
-                matches = all(_compact_matches(session, token) for token in ast.clauses)
+                matches = all(_compact_matches(effective, token) for token in ast.clauses)
             if matches:
-                selected.append(session)
+                selected.append(effective)
         selected.sort(key=lambda item: str(item.id))
         origins = sorted(str(session.origin) for session in selected)
         facets = tuple((origin, origins.count(origin)) for origin in sorted(set(origins)))
