@@ -9,6 +9,7 @@ into the canonical one.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import aiosqlite
@@ -34,7 +35,13 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     schema_version_mismatch_message,
     stamp_derived_schema_identity,
 )
-from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+from polylogue.storage.sqlite.schema_manifest import (
+    SchemaManifest,
+    assert_schema_manifest,
+    canonical_schema_manifest,
+    schema_manifest_diff,
+    schema_manifest_diff_is_message_fts_only,
+)
 
 
 def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
@@ -69,7 +76,17 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
         )
     if snapshot.current_version == SCHEMA_VERSION:
         try:
-            assert_schema_manifest(conn, ArchiveTier.INDEX)
+            # A missing message FTS surface degrades search and nothing else,
+            # so a read reports it through the search route's degraded state
+            # rather than refusing every read of the index.
+            diff = schema_manifest_diff(
+                canonical_schema_manifest(ArchiveTier.INDEX),
+                SchemaManifest.from_connection(conn, ArchiveTier.INDEX),
+            )
+            if any(diff.values()) and not schema_manifest_diff_is_message_fts_only(diff):
+                raise RuntimeError(
+                    f"{ArchiveTier.INDEX.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)}"
+                )
         except (RuntimeError, sqlite3.Error) as exc:
             suffix = f" Generation {generation_id}" if generation_id is not None else ""
             raise SchemaVersionMismatchError(

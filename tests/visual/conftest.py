@@ -496,12 +496,34 @@ def seed_reader_assertion_claims(workspace: ReaderWorkspace) -> None:
         user_conn.commit()
 
 
-def seed_reader_archive(workspace: ReaderWorkspace, *, sessions: bool = True) -> None:
+def _degrade_message_fts(workspace: ReaderWorkspace) -> None:
+    """Drop the native message FTS virtual table and its sync triggers so a real
+    query degrades to an explicit "Search index" route-state response, mirroring an
+    interrupted bulk import that never rebuilt the search index."""
+    db = index_db_path(workspace)
+    conn = sqlite3.connect(str(db))
+    try:
+        for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def seed_reader_archive(
+    workspace: ReaderWorkspace,
+    *,
+    sessions: bool = True,
+    message_fts: bool = True,
+) -> None:
     workspace.archive_root.mkdir(parents=True, exist_ok=True)
     if sessions:
         _build_reader_sessions(workspace)
         _rebuild_reader_insights(workspace)
         _seed_reader_user_state(workspace)
+        if not message_fts:
+            _degrade_message_fts(workspace)
     else:
         # An empty archive still needs the index.db to exist (with its
         # full schema, including messages_fts) so the daemon routes through the
@@ -523,10 +545,15 @@ def _rebuild_reader_insights(workspace: ReaderWorkspace) -> None:
 
 
 @contextmanager
-def running_reader_server(workspace: ReaderWorkspace, *, sessions: bool = True) -> Iterator[tuple[HTTPServer, str]]:
+def running_reader_server(
+    workspace: ReaderWorkspace,
+    *,
+    sessions: bool = True,
+    message_fts: bool = True,
+) -> Iterator[tuple[HTTPServer, str]]:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 
-    seed_reader_archive(workspace, sessions=sessions)
+    seed_reader_archive(workspace, sessions=sessions, message_fts=message_fts)
     server = DaemonAPIHTTPServer(("127.0.0.1", 0), DaemonAPIHandler)
     server.auth_token = ""
     server.api_host = "127.0.0.1"

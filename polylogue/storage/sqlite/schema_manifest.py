@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
@@ -94,6 +95,29 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
     return {"missing": missing, "extra": extra, "wrong_definition": wrong}
 
 
+#: The message FTS surface is a derived read model inside the derived index:
+#: contentless, trigger-maintained, and rebuildable from ``blocks``. Its
+#: absence degrades search; the rest of the index stays readable.
+MESSAGE_FTS_OBJECT_PREFIX = "messages_fts"
+
+
+def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool:
+    """Report whether a non-empty manifest diff is confined to message FTS."""
+
+    if diff.get("version"):
+        return False
+    names: list[str] = []
+    for key in ("missing", "extra", "wrong_definition"):
+        entries = diff.get(key)
+        if not isinstance(entries, (list, tuple)):
+            continue
+        for entry in entries:
+            if not isinstance(entry, (list, tuple)) or len(entry) < 2:
+                return False
+            names.append(str(entry[1]))
+    return bool(names) and all(name.startswith(MESSAGE_FTS_OBJECT_PREFIX) for name in names)
+
+
 def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> SchemaManifest:
     expected = canonical_schema_manifest(tier)
     actual = SchemaManifest.from_connection(conn, tier)
@@ -105,4 +129,11 @@ def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> Schem
     return actual
 
 
-__all__ = ["SchemaManifest", "assert_schema_manifest", "canonical_schema_manifest", "schema_manifest_diff"]
+__all__ = [
+    "MESSAGE_FTS_OBJECT_PREFIX",
+    "SchemaManifest",
+    "assert_schema_manifest",
+    "canonical_schema_manifest",
+    "schema_manifest_diff",
+    "schema_manifest_diff_is_message_fts_only",
+]
