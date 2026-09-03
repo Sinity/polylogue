@@ -47,7 +47,28 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 git_repository_url TEXT,
                 provider_project_ref TEXT,
                 message_count INTEGER DEFAULT 0,
-                reported_cost_usd REAL
+                reported_cost_usd REAL,
+                raw_id TEXT,
+                parser_fingerprint TEXT,
+                lowering_fingerprint TEXT,
+                display_name TEXT,
+                run_settings_json TEXT,
+                pending_drafts_json TEXT,
+                commit_hash TEXT,
+                reported_duration_ms INTEGER,
+                word_count INTEGER,
+                tool_use_count INTEGER,
+                thinking_count INTEGER,
+                paste_count INTEGER,
+                user_message_count INTEGER,
+                authored_user_message_count INTEGER,
+                assistant_message_count INTEGER,
+                system_message_count INTEGER,
+                tool_message_count INTEGER,
+                user_word_count INTEGER,
+                authored_user_word_count INTEGER,
+                assistant_word_count INTEGER,
+                content_hash BLOB
             );
             CREATE TABLE session_profiles (
                 session_id TEXT PRIMARY KEY,
@@ -64,7 +85,11 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 evidence_json TEXT,
                 branch_point_message_id TEXT,
                 branch_point_content_address BLOB,
-                inheritance TEXT
+                inheritance TEXT,
+                parent_tool_use_block_id TEXT,
+                confidence REAL,
+                observed_at_ms INTEGER,
+                resolved_at_ms INTEGER
             );
             CREATE TABLE session_working_dirs (
                 session_id TEXT,
@@ -77,15 +102,25 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 media_type TEXT,
                 byte_count INTEGER,
                 blob_hash BLOB,
-                acquisition_status TEXT
+                acquisition_status TEXT,
+                ref_count INTEGER
             );
             CREATE TABLE attachment_refs (
+                ref_id TEXT,
                 session_id TEXT,
                 message_id TEXT,
                 attachment_id TEXT,
+                position INTEGER,
                 upload_origin TEXT,
+                direction TEXT DEFAULT 'user_input',
+                producer_ref TEXT,
                 source_url TEXT,
                 caption TEXT
+            );
+            CREATE TABLE attachment_native_ids (
+                ref_id TEXT,
+                id_kind TEXT,
+                native_id TEXT
             );
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
@@ -107,7 +142,20 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 paste_boundary TEXT,
                 duration_ms INTEGER,
                 parent_message_id TEXT,
-                stop_reason TEXT
+                stop_reason TEXT,
+                identity_source TEXT DEFAULT 'positional',
+                model_name TEXT,
+                model_effort TEXT,
+                sender_name TEXT,
+                recipient TEXT,
+                delivery_status TEXT,
+                end_turn INTEGER,
+                user_context_text TEXT,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER,
+                content_hash BLOB
             );
             CREATE TABLE blocks (
                 block_id TEXT,
@@ -122,7 +170,12 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 tool_result_is_error INTEGER,
                 tool_result_exit_code INTEGER,
                 tool_result_outcome_unknown_reason TEXT,
-                position INTEGER
+                position INTEGER,
+                session_id TEXT,
+                media_type TEXT,
+                tool_outcome TEXT,
+                signature TEXT,
+                content_hash BLOB
             );
             INSERT INTO sessions(session_id, native_id, origin, title, root_session_id, branch_type, message_count)
             VALUES
@@ -214,6 +267,36 @@ def _writer_message(provider_id: str, text: str, position: int, role: Role = Rol
         is_active_leaf=False,
         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
     )
+
+
+# Tables the census reads through the production envelope route. The hand-built
+# index above must declare every production column of these tables, or a schema
+# bump surfaces as "no such column" inside an envelope read instead of here.
+_ROUTE_BACKED_TABLES = (
+    "sessions",
+    "messages",
+    "blocks",
+    "session_links",
+    "attachments",
+    "attachment_refs",
+)
+
+
+def test_hand_built_index_declares_every_production_column_of_route_backed_tables(
+    tmp_path: Path,
+) -> None:
+    """Anti-vacuity: dropping any added column above makes this red by name."""
+    fixture = sqlite3.connect(_make_index_db(tmp_path / "archive"))
+    production = sqlite3.connect(":memory:")
+    try:
+        initialize_archive_tier(production, ArchiveTier.INDEX)
+        for table in _ROUTE_BACKED_TABLES:
+            expected = {row[1] for row in production.execute(f"PRAGMA table_info({table})")}
+            declared = {row[1] for row in fixture.execute(f"PRAGMA table_info({table})")}
+            assert not expected - declared, f"{table} is missing {sorted(expected - declared)}"
+    finally:
+        fixture.close()
+        production.close()
 
 
 def _make_writer_candidate(root: Path) -> Path:

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TextIO
 
 from tests.infra.workload_artifacts import (
+    SEEDED_ARTIFACT_GC_GRACE_PERIOD_S,
     ArtifactGcDisposition,
     ArtifactGcReport,
     SeededArchiveReachabilityInventory,
@@ -70,7 +71,7 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     parser.add_argument(
         "--grace-period-s",
         type=float,
-        default=24 * 60 * 60,
+        default=SEEDED_ARTIFACT_GC_GRACE_PERIOD_S,
         help="Minimum age before an unreachable artifact can be deleted.",
     )
     parser.add_argument(
