@@ -79,7 +79,11 @@ class MaintenanceScopeFilter(SurfacePayloadModel):
         if isinstance(value, str):
             return (value,)
         if isinstance(value, (list, tuple)):
-            return tuple(str(v) for v in value)
+            # An empty sequence is "no session narrowing requested", not a
+            # scope of zero sessions: Click's ``multiple=True`` yields ``()``
+            # for an omitted ``--session-id``, and a target that cannot honor
+            # ``session_ids`` must not refuse that default invocation.
+            return tuple(str(v) for v in value) or None
         return value
 
     @field_validator("time_range", mode="before")

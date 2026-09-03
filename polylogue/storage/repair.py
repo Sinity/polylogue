@@ -5524,7 +5524,7 @@ class RepairResult:
 # ---------------------------------------------------------------------------
 
 
-def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
+def count_empty_sessions_sync(conn: sqlite3.Connection, *, session_ids: tuple[str, ...] | None = None) -> int:
     """Count session rows that are debris: no *content* (zero messages, or
     every message carries zero words -- see ``_empty_session_candidate_ids``)
     AND a raw artifact the current classifier positively refuses to admit as
@@ -5559,8 +5559,12 @@ def count_empty_sessions_sync(conn: sqlite3.Connection) -> int:
     Kept in lockstep with ``repair_empty_sessions``: the counter and the
     deleter must agree, or the report says one thing and the repair does
     another (both call ``_empty_session_debris_session_ids``).
+
+    ``session_ids`` narrows the count to exactly the requested sessions, the
+    same narrowing ``repair_empty_sessions`` applies, so a scoped preview and
+    a scoped execution report the same rows.
     """
-    return len(_empty_session_debris_session_ids(conn))
+    return len(_empty_session_debris_session_ids(conn, session_ids=session_ids))
 
 
 def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: int) -> bool:

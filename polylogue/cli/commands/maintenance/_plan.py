@@ -9,6 +9,7 @@ import click
 from polylogue.cli.commands.maintenance._shared import _apply_scope_filter_options
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+from polylogue.core.enums import OperationStatus
 from polylogue.logging import configure_logging
 from polylogue.maintenance.envelope import envelope_from_operation
 from polylogue.maintenance.planner import preview_backfill
@@ -79,6 +80,8 @@ def plan_command(
     if output_format == "json":
         envelope = envelope_from_operation(result, origin="cli", mode="preview")
         click.echo(json.dumps(envelope.to_dict(), indent=2, sort_keys=True))
+        if result.status is OperationStatus.FAILED:
+            raise SystemExit(1)
         return
 
     click.echo(f"Operation: {result.operation_id}")
@@ -101,3 +104,9 @@ def plan_command(
 
     if result.error:
         click.echo(f"\nError: {result.error}", err=True)
+    for sample in result.failure_samples.samples:
+        click.echo(f"Refused: [{sample.kind}] {sample.locator}: {sample.message}", err=True)
+    if result.status is OperationStatus.FAILED:
+        # A refused plan is not a plan. Exit nonzero so a scripted caller
+        # cannot read "Affected: 0 rows" as a clean archive.
+        raise SystemExit(1)

@@ -19,6 +19,8 @@ Pins:
 
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -51,42 +53,68 @@ def _seeded_config(workspace_env: dict[str, Path], *, sessions: int = 3) -> Conf
     )
 
 
-class TestPlannerNarrowsBySessionIds:
-    """A ``session_ids`` filter clamps preview rows to the filter size."""
+def _debris_session_ids(config: Config) -> tuple[str, ...]:
+    with closing(sqlite3.connect(config.db_path)) as conn:
+        return tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
 
-    def test_single_session_filter_clamps_real_archive_debt(self, workspace_env: dict[str, Path]) -> None:
+
+class TestPlannerNarrowsBySessionIds:
+    """A ``session_ids`` filter previews exactly the requested sessions."""
+
+    def test_single_session_filter_counts_that_session(self, workspace_env: dict[str, Path]) -> None:
         config = _seeded_config(workspace_env)
+        requested = _debris_session_ids(config)[:1]
         narrow = preview_backfill(
             config,
             targets=("empty_sessions",),
-            scope_filter=MaintenanceScopeFilter(session_ids=("only-one",)),
+            scope_filter=MaintenanceScopeFilter(session_ids=requested),
         )
         assert narrow.affected_rows == 1
         # And the filter is echoed back on the returned scope so the
         # envelope can serialize it.
         assert narrow.scope is not None
-        assert narrow.scope.filter.session_ids == ("only-one",)
+        assert narrow.scope.filter.session_ids == requested
 
-    def test_multi_session_filter_clamps_to_filter_size(self, workspace_env: dict[str, Path]) -> None:
+    def test_multi_session_filter_counts_the_requested_sessions(self, workspace_env: dict[str, Path]) -> None:
         config = _seeded_config(workspace_env)
+        requested = _debris_session_ids(config)
+        assert len(requested) == 3
         narrow = preview_backfill(
             config,
             targets=("empty_sessions",),
-            scope_filter=MaintenanceScopeFilter(session_ids=("c1", "c2", "c3")),
+            scope_filter=MaintenanceScopeFilter(session_ids=requested),
         )
         assert narrow.affected_rows == 3
         assert narrow.scope is not None
-        assert narrow.scope.filter.session_ids == ("c1", "c2", "c3")
+        assert narrow.scope.filter.session_ids == requested
 
     def test_session_filter_does_not_inflate_when_debt_is_smaller(self, workspace_env: dict[str, Path]) -> None:
         """A filter naming 100 ids cannot inflate a 2-row debt to 100."""
         config = _seeded_config(workspace_env, sessions=2)
+        requested = _debris_session_ids(config) + tuple(f"c{i}" for i in range(100))
         narrow = preview_backfill(
             config,
             targets=("empty_sessions",),
-            scope_filter=MaintenanceScopeFilter(session_ids=tuple(f"c{i}" for i in range(100))),
+            scope_filter=MaintenanceScopeFilter(session_ids=requested),
         )
         assert narrow.affected_rows == 2
+
+    def test_healthy_requested_sessions_preview_no_rows(self, workspace_env: dict[str, Path]) -> None:
+        """Rows are counted over the requested sessions, not clamped to the request size.
+
+        Anti-vacuity: restoring the ``min(total_rows, len(session_ids))``
+        clamp makes this red -- three unrelated debris sessions plus a
+        one-session request would preview 1 affected row while
+        ``repair_empty_sessions`` scoped to that session deletes none.
+        """
+        config = _seeded_config(workspace_env)
+        narrow = preview_backfill(
+            config,
+            targets=("empty_sessions",),
+            scope_filter=MaintenanceScopeFilter(session_ids=("test:healthy-and-unrelated",)),
+        )
+        assert narrow.affected_rows == 0
+        assert narrow.estimated_time_s == 0.0
 
 
 class TestPlannerRefusesUnsupportedFilters:
@@ -114,6 +142,48 @@ class TestPlannerRefusesUnsupportedFilters:
         assert scoped.scope is not None
         assert scoped.scope.filter == scope_filter
         assert scoped.failure_samples.samples[0].kind == "UnsupportedScopeDimension"
+
+    def test_refused_preview_carries_an_error_message(self, workspace_env: dict[str, Path]) -> None:
+        """A refused preview names its refusal in ``error``.
+
+        Anti-vacuity: dropping the ``error=`` argument from
+        ``preview_backfill``'s refusal receipt makes this red -- the plain
+        CLI reads ``result.error`` and would print nothing but
+        "Affected: 0 rows" for a permanently refused request.
+        """
+        config = _seeded_config(workspace_env)
+        scoped = preview_backfill(
+            config,
+            targets=("empty_sessions",),
+            scope_filter=MaintenanceScopeFilter(origin="claude-code-session"),
+        )
+        assert scoped.status is OperationStatus.FAILED
+        assert scoped.error is not None
+        assert "origin" in scoped.error
+
+
+class TestOmittedSessionFilterIsNotAScope:
+    """An omitted repeatable CLI option is no narrowing at all."""
+
+    def test_empty_session_id_tuple_normalizes_to_none(self, workspace_env: dict[str, Path]) -> None:
+        """``--session-id`` omitted must not refuse a target that ignores it.
+
+        Anti-vacuity: restoring ``_coerce_session_ids``'s ``tuple(...)``
+        without the ``or None`` makes this red -- Click hands ``()`` for an
+        omitted repeatable option, and ``superseded_raw_snapshots`` honors no
+        scope dimension, so the default plan would be refused.
+        """
+        config = _seeded_config(workspace_env)
+        scope_filter = MaintenanceScopeFilter.from_surface_args(session_ids=())
+        assert scope_filter.session_ids is None
+        assert scope_filter.is_empty()
+        plan = preview_backfill(
+            config,
+            targets=("superseded_raw_snapshots",),
+            scope_filter=scope_filter,
+        )
+        assert plan.status is OperationStatus.PENDING
+        assert plan.failure_samples.samples == ()
 
 
 class TestPlannerWithEmptyFilter:
