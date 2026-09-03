@@ -51,8 +51,8 @@ NID_EPOCH = native_session_id_for("claude-code", "conv-epoch")
 NID_HEAVY = native_session_id_for("codex", "conv-heavy")
 
 
-def test_fable_packet_is_available_at_root_insights_command() -> None:
-    result = CliRunner().invoke(cli, ["insights", "fable-packet", "--help"])
+def test_fable_packet_is_available_under_ops_insights() -> None:
+    result = CliRunner().invoke(cli, ["ops", "insights", "fable-packet", "--help"])
 
     assert result.exit_code == 0
     assert "Cold-regenerate the private, descriptive Fable delegation packet." in result.output

@@ -192,11 +192,14 @@ def test_family_fixture_detector_and_streaming_paths_preserve_one_normalized_ide
     # the tie in eager's original append-order).
     assert [(event.event_type, event.source_message_provider_id) for event in main.session_events] == [
         ("message_usage", "main-a1"),
+        # The background result carries an exit code, so the parser records
+        # its structural outcome as an event of its own.
+        ("claude_tool_execution_result", "main-bg-start"),
         ("background_task_completion", "main-bg-notification"),
         ("message_usage", ""),  # polylogue-slshy: no positional fallback
         ("claude_parse_coverage", None),
     ]
-    assert main.session_events[1].payload == {
+    assert main.session_events[2].payload == {
         "task_id": "task-bg",
         "tool_use_id": "tool-bg",
         "output_file": "/tmp/task-bg.output",

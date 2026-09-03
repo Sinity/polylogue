@@ -154,7 +154,9 @@ def test_mcp_query_and_get_round_trip(seeded_demo_archive: Path) -> None:
 def test_status_reports_direct_archive_fallback_when_daemon_is_unreachable(cli_env: dict[str, str]) -> None:
     result = _run(["status", "--daemon-url", "http://127.0.0.1:1"], env=cli_env)
     assert "Sessions:" in result.output
-    assert "daemon not running" in result.output.lower()
+    # The direct fallback names the daemon state and how to start it.
+    assert "daemon idle" in result.output.lower()
+    assert "polylogued run" in result.output
 
 
 @pytest.mark.parametrize("ledger_state", ["empty", "missing_table"])
