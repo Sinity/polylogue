@@ -223,7 +223,7 @@ timeout_seconds = 300
 documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
 
 [operations.publication_sweep]
-description = "Converge open publication PRs: merge on clean hosted review, spool findings and conflicts"
+description = "Converge open publication PRs: merge on clean hosted review, on every finding answered in-thread for two rounds, or fail-open 30 minutes after the reviewed head with no review; spool findings and conflicts"
 exec = ["sinnixd-publication-sweep", "--repo", "Sinity/polylogue", "--project", "polylogue", "--project-root", "/realm/project/polylogue"]
 schedule = "*:0/10"
 pool = "normal"

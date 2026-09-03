@@ -14,7 +14,6 @@ repository tools. For the Python package itself, see
 | `.githooks/` | Canonical product Git hooks for commit and push checks | repo |
 | `.circleci/` | CircleCI jobs, images, and pull-request verification entrypoints | CI |
 | `.claude/` | Claude Code project settings, hooks, and generated agent definitions | repo / Claude Code |
-| `.coderabbit.yaml` | CodeRabbit review policy | repo |
 | `.codex/` | Codex project configuration and repository skills | repo / Codex |
 | `.dockerignore` | Container build exclusions | repo |
 | `.envrc` | direnv entrypoint for the Nix devshell | repo |

@@ -1004,7 +1004,7 @@ defense-in-depth and never proves a publisher is dead.
    or live referent/reservation retains the bytes.
 3. **Intent before unlink.** Commit `gc_generations` and one exact
    `gc_generation_members` row per candidate, including the observed namespace
-   identity, before an unlink is attempted. The member row is the durable,
+   identity, before an unlink is attempted. The member rows are the durable,
    complete inventory for recovery, not a second owner of the blobs.
 4. **Age floor.** A candidate must be older than
    `max(MIN_AGE_S, now - prev_generation.completed_at)`
@@ -1249,13 +1249,23 @@ between strands an unreferenced blob. That is benign (the next identical
 write converges on the same hash) but it makes "no blob without an owning
 row" a checked invariant, never an assumption.
 
-References live in source.db (`blob_refs`, `raw_sessions`, `raw_hook_events`,
-`blob_publication_reservations`, `verified_blob_receipts`) and index.db
-(`attachments`). Retention, integrity repair, and reconciliation operations
-delete references without deleting blobs (`storage/raw_retention.py`,
-`storage/blob_integrity.py`, `archive_tiers/source_write.py` hook-payload
-replacement); physical deletion is daemon-owned GC. While the daemon is
-masked, unreferenced blobs accumulate by design.
+`BLOB_OWNERS` (`storage/blob_liveness.py`) is the sole owner map for
+inspection, projection, integrity, sealing, GC, and blob-ref reconciliation:
+source.db `raw_sessions`, `raw_hook_events`, and `material_observations` bear
+blob hashes directly; `blob_refs` contributes the typed `raw_payload`,
+`attachment`, `hook_payload`, and `sidecar` referents (the last resolving into
+`history_sidecars`); index.db contributes `attachments`. Receipt caches and
+publication reservations are not owners — `blob_publication_reservations`
+blocks collection as a live reservation, not as a referent.
+
+Retention unlinks blobs itself: `cleanup_superseded_raw_snapshots(dry_run=False)`
+deletes the raw rows and then calls `unlink_unreferenced_blob_hashes_under_exclusion`
+for exactly the candidate hashes, returning the deleted blob count and bytes
+(`storage/raw_retention.py`). Integrity repair and hook-payload replacement
+drop references only (`storage/blob_integrity.py`,
+`archive_tiers/source_write.py`); everything they strand is collected by
+daemon-owned GC. While the daemon is masked, those unreferenced blobs
+accumulate by design.
 
 Live SQLite sources (Hermes `state.db`, Codex state databases) are acquired
 through the SQLite backup API (`sources/sqlite_snapshot.py`), never raw byte

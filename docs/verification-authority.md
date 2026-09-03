@@ -14,8 +14,9 @@ children are only interpreted for the individual child process they run.
 
 Foreground `devtools test`, affected verification, quick verification, and
 explicit complete verification remain usable without AgentCTL variables. They
-produce Polylogue semantic receipts and do not claim AgentCTL admission or
-recorded run evidence. Declared AgentCTL operations invoke the same semantic entrypoints;
+produce Polylogue semantic receipts and append them to the checkout-local run
+history (`.cache/verify/history.jsonl`). They claim no AgentCTL admission and
+no AgentCTL run record. Declared AgentCTL operations invoke the same semantic entrypoints;
 their exact-head/workspace, resource, scratch, deadline, cancellation, and
 generic result contracts are owned by the project descriptor and AgentCTL.
 

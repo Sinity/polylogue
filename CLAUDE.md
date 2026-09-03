@@ -146,9 +146,9 @@ explicit-and-retryable or a typed permanent refusal.
   `--quick` is the static gates alone.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
-  `verify --quick` is the fast subset. `render [<surface>|all] [--check]`,
-  `scenario`, `smoke`, `archive <sub>`, `schema <sub>`, `cache gc` are the
-  other verbs; twelve in all.
+  `verify --quick` is the fast subset. `status`, `render [<surface>|all]
+  [--check]`, `scenario`, `smoke`, `archive <sub>`, `schema <sub>`,
+  `bench <sub>`, `cache gc` are the other verbs; twelve in all.
 - `devtools render all --check` can print per-surface `sync OK` yet exit 1 —
   grep for `out of sync`.
 
