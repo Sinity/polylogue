@@ -60,10 +60,6 @@ result = "json"
 cache = "none"
 timeout_seconds = 900
 
-[operations.seeded_archive_cache_gc.parameters.apply]
-type = "bool"
-flag = "--apply"
-
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
@@ -102,78 +98,6 @@ result = "json"
 cache = "none"
 timeout_seconds = 180
 
-[operations.harvest]
-description = "Review a finished lane, then publish it under an authorized receipt"
-exec = ["sinnixd-harvest"]
-pool = "normal"
-result = "json"
-cache = "none"
-timeout_seconds = 7200
-
-[operations.harvest.verdict]
-# The domain verdict decides the terminal phase: a refused publication
-# (red gate, rebase conflict) must not read as a succeeded job (sinnix-u9if).
-success = ["HARVEST_OK", "HARVEST_EMPTY"]
-refusal = ["GATE_RED", "REBASE_CONFLICT", "NO_TEST_EVIDENCE"]
-failure = ["HARVEST_ERROR"]
-
-[operations.harvest.parameters.authorize]
-type = "bool"
-flag = "--authorize"
-
-[operations.harvest.parameters.publish]
-type = "bool"
-flag = "--publish"
-
-[operations.harvest.parameters.close]
-type = "bool"
-flag = "--close"
-
-[operations.harvest.parameters.no_watch]
-type = "bool"
-flag = "--no-watch"
-
-[operations.harvest.parameters.receipt_ref]
-type = "string"
-flag = "--receipt-ref"
-max_length = 128
-grammar = "safe-token"
-
-[operations.harvest.parameters.affected_job]
-type = "string"
-flag = "--affected-job"
-max_length = 64
-
-[operations.harvest.parameters.lane_job_id]
-type = "string"
-flag = "--lane-job-id"
-max_length = 128
-grammar = "safe-token"
-
-[operations.harvest.parameters.bead_id]
-type = "string"
-flag = "--bead-id"
-max_length = 128
-grammar = "safe-token"
-
-[operations.harvest.parameters.title_file]
-type = "string"
-flag = "--title-file"
-max_length = 128
-grammar = "path"
-
-[operations.harvest.parameters.body_file]
-type = "string"
-flag = "--body-file"
-max_length = 128
-grammar = "path"
-
-[operations.harvest.parameters.close_reason_file]
-type = "string"
-flag = "--close-reason-file"
-max_length = 128
-grammar = "path"
-
 [owner_adapters.polylogue_archive]
 namespace = "polylogue.archive"
 owner = "polylogue-archive"
@@ -185,11 +109,3 @@ source_ref = "sinnix://polylogue/archive"
 exec = ["polylogue-agentctl-adapter"]
 timeout_seconds = 300
 documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
-
-[operations.publication_sweep]
-description = "Converge open publication PRs: merge on clean hosted review, on every finding answered in-thread for two rounds, or fail-open 30 minutes after the reviewed head with no review; spool findings and conflicts"
-exec = ["sinnixd-publication-sweep", "--repo", "Sinity/polylogue", "--project", "polylogue", "--project-root", "/realm/project/polylogue"]
-pool = "normal"
-result = "json"
-cache = "none"
-timeout_seconds = 300

@@ -10,10 +10,6 @@ your own isolated git worktree. This file is your standing contract — it
 applies to every task you are given here, in addition to whatever
 task-specific instructions accompany the dispatch.
 
-Every editing dispatch must supply the registered AgentCTL-managed workspace
-ID. If the workspace ID is absent, stop and request a managed workspace before
-editing.
-
 ## Step 0 — prove your isolation (before ANY other command)
 
 Run these three, in order, and report immediately if any disagrees:
@@ -135,7 +131,11 @@ by construction.
 ## Delivery
 
 - Commit every completed logical chunk with an accurate conventional subject.
-- Do **not** open an individual PR or merge to `master` unless the dispatch explicitly assigns you exclusive ownership of a batch branch. The normal delivery unit is a committed lane branch, which the integration queue assimilates into the shared batch.
+- The delivery unit is your pull request: push the branch, `gh pr create`
+  with a conventional subject (≤72 chars; body: Summary, Problem, Solution,
+  Verification with the exact result line, residuals), confirm the PR head
+  SHA equals your local HEAD, then `gh pr merge --squash --auto`. Branch
+  protection and the required checks decide the merge; never bypass them.
 
 ## Final report
 
