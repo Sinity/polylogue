@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
 DEFAULT_WAL_WARN_BYTES = 256 * 1024 * 1024
 DEFAULT_WAL_TRUNCATE_BYTES = 512 * 1024 * 1024
@@ -45,6 +45,16 @@ def _wal_size(db: Path) -> int:
         return 0
 
 
+def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
+    """Run one declared checkpoint mode and return busy/log/checkpointed pages."""
+    if mode not in {"PASSIVE", "RESTART", "TRUNCATE"}:
+        raise ValueError(f"unsupported checkpoint mode: {mode}")
+    row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
+    if row is None:
+        raise sqlite3.OperationalError(f"checkpoint returned no result for {mode}")
+    return tuple(int(value or 0) for value in row)  # type: ignore[return-value]
+
+
 def maybe_checkpoint_wal(
     db: Path,
     *,
@@ -70,17 +80,13 @@ def maybe_checkpoint_wal(
     busy = log = checkpointed = 0
     error: str | None = None
     try:
-        conn = open_connection(db, timeout=timeout_s)
+        conn = open_daemon_connection(db, timeout=timeout_s)
         try:
-            row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
-            if row is not None:
-                busy, log, checkpointed = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+            busy, log, checkpointed = checkpoint_connection(conn, "PASSIVE")
             after_passive = _wal_size(db)
             if allow_truncate and busy == 0 and after_passive >= truncate_bytes:
                 mode = "truncate"
-                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-                if row is not None:
-                    busy, log, checkpointed = int(row[0] or 0), int(row[1] or 0), int(row[2] or 0)
+                busy, log, checkpointed = checkpoint_connection(conn, "TRUNCATE")
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -186,6 +192,7 @@ __all__ = [
     "DEFAULT_WAL_TRUNCATE_BYTES",
     "DEFAULT_WAL_WARN_BYTES",
     "WalCheckpointObservation",
+    "checkpoint_connection",
     "maybe_checkpoint_archive_wals",
     "maybe_checkpoint_wal",
 ]

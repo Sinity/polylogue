@@ -12,6 +12,22 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
+def test_declared_read_profiles_are_query_only() -> None:
+    assert set(connection_profile.TIMEOUT_CLASSES) == {
+        "interactive-read",
+        "background-read",
+        "publication",
+        "offline-bulk",
+    }
+    assert all(profile.role == "read" and profile.query_only for profile in connection_profile.READ_PROFILES.values())
+
+
+def test_writers_retain_bounded_autocheckpoint() -> None:
+    assert connection_profile.WAL_AUTOCHECKPOINT_PAGES == 10000
+    assert "PRAGMA wal_autocheckpoint = 10000" in connection_profile.WRITE_CONNECTION_PROFILE.pragma_statements
+    assert "PRAGMA wal_autocheckpoint = 10000" in connection_profile.DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
+
+
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:
     # A tier-named file makes the factory assert that tier's declared version;
     # this test's subject is descriptor binding.
@@ -96,6 +112,25 @@ def test_open_profiled_connection_applies_the_selected_profile(
                 connection.execute("INSERT INTO evidence VALUES ('blocked')")
     finally:
         connection.close()
+
+
+def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Path) -> None:
+    db_path = tmp_path / "index.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE evidence (value TEXT NOT NULL)")
+
+    with connection_profile.open_readonly_connection(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM evidence").fetchone() == (0,)
+
+    stale_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] - 1
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(f"PRAGMA user_version = {stale_version}")
+
+    with pytest.raises(SchemaSkew) as excinfo:
+        connection_profile.open_readonly_connection(db_path)
+
+    assert excinfo.value.tier == ArchiveTier.INDEX.value
+    assert excinfo.value.found == stale_version
 
 
 @pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])

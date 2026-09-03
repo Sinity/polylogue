@@ -29,6 +29,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -633,7 +634,7 @@ def _connection_main_path(conn: sqlite3.Connection) -> Path:
 
 def _checkpoint_live_tier(conn: sqlite3.Connection) -> None:
     try:
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        row = checkpoint_connection(conn, "TRUNCATE")
     except sqlite3.Error as exc:
         raise MigrationError("migration backup receipt validation could not checkpoint the live tier") from exc
     if row is None:

@@ -18,6 +18,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
@@ -433,7 +434,7 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
         return status
 
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, timeout_class="interactive-read")
         try:
             counts, precision = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=probe.size_bytes)
             status["table_counts"] = counts
@@ -539,7 +540,7 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
         total_wal_bytes += int(tier_status["wal_bytes"])
         if path.exists():
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                conn = open_readonly_connection(path, timeout_class="interactive-read")
                 try:
                     stat_rows = _sqlite_stat1_rows(conn)
                 finally:
@@ -619,7 +620,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
         if not source_db.exists():
             return -1
         try:
-            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
             try:
                 if not _table_exists(source_conn, table):
                     return -1
@@ -639,7 +640,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
     if not source_db.exists():
         return -1
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
         try:
             if not _table_exists(source_conn, table):
                 return -1
@@ -671,7 +672,7 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     if not ops_db.exists():
         return {"available": False, "reason": "missing_ops_tier"}
     try:
-        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(ops_db, timeout_class="interactive-read")
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
     try:
@@ -1859,7 +1860,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
         return component_from_assertion_substrate(table_exists=False).to_dict()
 
     try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(user_db, timeout_class="interactive-read")
         try:
             table_exists = _table_exists(conn, "assertions")
             if not table_exists:

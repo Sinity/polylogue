@@ -655,6 +655,13 @@ async def _periodic_fts_merge() -> None:
             logger.warning("daemon: FTS periodic merge failed", exc_info=True)
 
 
+def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
+    """Expose the daemon's checkpoint seam to offline daemon operations."""
+    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection as run_checkpoint
+
+    return run_checkpoint(conn, mode)
+
+
 async def _periodic_wal_checkpoint() -> None:
     """Run WAL checkpoints every 5 minutes to keep tier WAL files bounded."""
     from polylogue.paths import archive_root

@@ -27,6 +27,7 @@ from typing import Any
 
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 
 class EmbeddingGenerationError(RuntimeError):
@@ -310,10 +311,10 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("embedding active path is not a regular file")
         try:
             with sqlite3.connect(self.active_path, timeout=30.0) as conn:
-                row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                row = checkpoint_connection(conn, "TRUNCATE")
         except (OSError, sqlite3.Error) as exc:
             raise EmbeddingGenerationError("could not checkpoint legacy embedding database") from exc
-        if row is None or int(row[0] or 0) != 0:
+        if int(row[0] or 0) != 0:
             raise EmbeddingGenerationError("legacy embedding database checkpoint is blocked")
         sidecars = tuple(
             path

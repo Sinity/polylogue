@@ -26,6 +26,7 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.repair import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.surfaces.payloads import (
     ArchiveDebtActionPayload,
     ArchiveDebtKind,
@@ -174,7 +175,7 @@ def _tier_missing_severity(durability: str) -> ArchiveDebtSeverity:
 def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
     if not user_db.exists():
         return []
-    conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(user_db, timeout_class="background-read")
     try:
         candidates = list_assertion_candidates(conn)
     finally:
@@ -209,7 +210,7 @@ def _assertion_candidate_rows(user_db: Path) -> list[ArchiveDebtRowPayload]:
 
 def _read_user_version(path: Path) -> int | None:
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, timeout_class="background-read")
     except sqlite3.Error:
         return None
     try:
@@ -226,7 +227,7 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
     index_db = archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return []
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(source_db, timeout_class="background-read")
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
     try:
@@ -845,7 +846,7 @@ def _source_family(subject_type: str, subject_id: str) -> str:
 def _provider_usage_rows(index_db: Path) -> list[ArchiveDebtRowPayload]:
     if not index_db.exists():
         return []
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(index_db, timeout_class="background-read")
     conn.row_factory = sqlite3.Row
     try:
         if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_model_usage"):
