@@ -29,6 +29,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL, SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
+from polylogue.storage.sqlite.durable_change_train import DURABLE_MIGRATION_ADOPTION_FLOORS
 from polylogue.storage.sqlite.migration_runner import MigrationError, migrate_archive_tier
 from tests.infra.durable_schema_reset import reset_source_fixture_to_version
 
@@ -447,15 +448,13 @@ def test_symlinked_user_tier_uses_resolved_attestation_authority(
         conn.close()
 
 
-def _create_source_one_version_behind_head(path: Path) -> None:
-    """Build an empty source tier one numbered migration below head.
+def _create_empty_source_at_version(path: Path, version: int) -> None:
+    """Build an empty source tier at a numbered migration slot.
 
     Derived from canonical DDL -- the production bootstrap route -- then
-    stripped of the objects the newest migration introduces, so migrating it
-    exercises the real runner without depending on which older migrations a
-    fixture would have to replay.
+    stripped of the objects migrations above *version* introduce, so migrating
+    it exercises the real runner rather than a hand-maintained old-DDL fossil.
     """
-    version = SOURCE_SCHEMA_VERSION - 1
     path.unlink(missing_ok=True)
     conn = sqlite3.connect(path)
     try:
@@ -465,6 +464,73 @@ def _create_source_one_version_behind_head(path: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _create_source_one_version_behind_head(path: Path) -> None:
+    _create_empty_source_at_version(path, SOURCE_SCHEMA_VERSION - 1)
+
+
+def test_source_migration_chain_reaches_canonical_ddl_from_every_adopted_version(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Every version a source train may adopt migrates to canonical head DDL.
+
+    The adoption floor is the contract: an archive at or above it must reach
+    the shipped bootstrap schema by replaying numbered SQL alone.  Anti-vacuity:
+    red if any start version in the range diverges -- the range starts at the
+    floor, so lowering the floor without repairing the chain fails here, and so
+    does a new migration that rebuilds a table to a shape canonical DDL does not
+    declare.
+    """
+    floor = DURABLE_MIGRATION_ADOPTION_FLOORS[ArchiveTier.SOURCE]
+    assert floor <= SOURCE_SCHEMA_VERSION
+    db_path = workspace_env["archive_root"] / "source.db"
+
+    for start_version in range(floor, SOURCE_SCHEMA_VERSION + 1):
+        _create_empty_source_at_version(db_path, start_version)
+        manifest = _verified_backup_manifest(tmp_path / f"source-chain-backup-v{start_version}")
+        with sqlite3.connect(db_path) as migrated:
+            result = migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+            assert result.from_version == start_version
+            assert result.to_version == SOURCE_SCHEMA_VERSION
+            with sqlite3.connect(":memory:") as fresh:
+                fresh.executescript(SOURCE_DDL)
+                fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+                parity = migration_runner.prove_durable_fresh_ddl_parity(
+                    ArchiveTier.SOURCE,
+                    SOURCE_SCHEMA_VERSION,
+                    migrated_connection=migrated,
+                    fresh_connection=fresh,
+                    evidence_ref=f"test:source-adoption-chain:v{start_version}",
+                )
+        assert parity.matches, (start_version, parity)
+
+
+def test_source_chain_parity_detects_an_object_the_chain_does_not_produce(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """Anti-vacuity for the chain gate: a fresh-only index is reported missing."""
+    db_path = workspace_env["archive_root"] / "source.db"
+    _create_empty_source_at_version(db_path, SOURCE_SCHEMA_VERSION)
+    manifest = _verified_backup_manifest(tmp_path / "source-chain-antivacuity")
+
+    with sqlite3.connect(db_path) as migrated, sqlite3.connect(":memory:") as fresh:
+        migrate_archive_tier(migrated, ArchiveTier.SOURCE, backup_manifest=manifest)
+        fresh.executescript(SOURCE_DDL)
+        fresh.execute("CREATE INDEX idx_raw_sessions_parity_probe ON raw_sessions(origin, acquired_at_ms)")
+        fresh.execute(f"PRAGMA user_version = {SOURCE_SCHEMA_VERSION}")
+        parity = migration_runner.prove_durable_fresh_ddl_parity(
+            ArchiveTier.SOURCE,
+            SOURCE_SCHEMA_VERSION,
+            migrated_connection=migrated,
+            fresh_connection=fresh,
+            evidence_ref="test:source-adoption-chain:antivacuity",
+        )
+
+    assert parity.matches is False
+    assert parity.missing_objects == ("index:idx_raw_sessions_parity_probe",)
 
 
 def test_additive_no_backup_marker_must_be_the_header_not_a_substring() -> None:

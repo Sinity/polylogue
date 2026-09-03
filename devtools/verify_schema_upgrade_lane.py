@@ -486,6 +486,10 @@ def _durable_slot_reservation_violations(
             if match is None:
                 continue
             sidecar_path = ROOT / relative
+            if not sidecar_path.is_file():
+                # A deleted sidecar reserves nothing. Whether the slot still
+                # requires one is the change-train policy report's subject.
+                continue
             try:
                 payload = json.loads(sidecar_path.read_text(encoding="utf-8"))
                 train = durable_change_train_from_payload(payload)
