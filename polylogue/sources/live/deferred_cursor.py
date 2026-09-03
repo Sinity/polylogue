@@ -13,6 +13,10 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 
+#: A Claude header is a single JSON record; bound the read rather than
+#: trusting an arbitrary on-disk file to contain a newline.
+_HEADER_READ_LIMIT = 1024 * 1024
+
 
 def record_deferred_append_cursor(
     cursor_store: CursorStore,
@@ -56,11 +60,19 @@ def record_deferred_append_cursor(
     if claude_frontier is not None:
         try:
             with path.open("rb") as handle:
-                header_length = len(handle.readline())
+                header_length = len(handle.readline(_HEADER_READ_LIMIT))
         except OSError:
             header_length = 0
         semantic_end_offset = header_length + claude_frontier.body_bytes
-        semantic_authority = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
+        # This frontier is composed from the bytes currently on disk, at the
+        # offset the *recorded* frontier ended. An intact prefix therefore
+        # reproduces the recorded frontier exactly, header and body digests
+        # alike. Anything else means the accepted bytes were rewritten
+        # underneath this cursor -- which a same-length rewrite makes
+        # invisible to every size and offset check -- so it must not be
+        # promoted to semantic authority.
+        recomposed = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
+        semantic_authority = recomposed if recomposed == cursor.tail_hash else None
     else:
         semantic_authority = None
     cursor_store.set(

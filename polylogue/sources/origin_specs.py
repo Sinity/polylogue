@@ -165,9 +165,18 @@ def _source_file_from_reference(reference: str) -> str:
     return path if separator else reference
 
 
-def _source_signature(path: Path) -> tuple[str, int, int]:
-    stat = path.stat()
-    return str(path), stat.st_mtime_ns, stat.st_size
+def _source_signature(path: Path) -> tuple[str, str, int]:
+    """Identify one parser source by its contents, not its stat metadata.
+
+    A fingerprint memo keyed on (path, mtime, size) is reused by any rewrite
+    that preserves both -- a same-length edit under a restored mtime, which
+    checkouts, patch application, and archive extraction all produce -- and
+    the stale parser fingerprint then claims semantics the file no longer
+    has. Digesting the bytes costs one read of a file the compute path
+    already reads and parses.
+    """
+    payload = path.read_bytes()
+    return str(path), hashlib.sha256(payload).hexdigest(), len(payload)
 
 
 def _fingerprint_path_label(path: Path) -> str:
@@ -187,7 +196,7 @@ def _module_path(base: Path) -> Path | None:
 
 
 @lru_cache(maxsize=512)
-def _local_import_paths(signature: tuple[str, int, int]) -> tuple[str, ...]:
+def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     """Return local Python dependencies of one parser-semantic source file."""
     path = Path(signature[0])
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -227,15 +236,15 @@ def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 1
+_FINGERPRINT_ALGORITHM_VERSION = 2
 
 
-def _fingerprint_memo_path(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> Path | None:
+def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
     """Where this exact set of source signatures memoizes its fingerprint.
 
     Parsing and normalizing the closure of parser sources costs tens of
     seconds of CPU per process; every test worker and every CLI start paid
-    it. The signatures already encode path, mtime and size, so a memo keyed
+    it. The signatures encode each source's content digest, so a memo keyed
     by them is invalidated by any edit. Returns None where no cache
     directory can exist (installed packages), which falls back to computing.
     """
@@ -254,7 +263,7 @@ def _fingerprint_memo_path(signatures: tuple[tuple[str, int, int], ...], namespa
 
 
 @lru_cache(maxsize=128)
-def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     memo = _fingerprint_memo_path(signatures, namespace)
     if memo is not None:
         try:
@@ -274,7 +283,7 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, int, int], ...], na
     return fingerprint
 
 
-def _fingerprint_sources_compute(signatures: tuple[tuple[str, int, int], ...], namespace: str) -> str:
+def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
     for path_string, _mtime_ns, _size in signatures:
         tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
@@ -1204,10 +1213,8 @@ def _chatgpt_spec() -> OriginSpec:
             message_parent=TopologyCapability("carried", ("chatgpt.mapping.parent",)),
             message_branch_state=TopologyCapability("carried", ("chatgpt.mapping.children",)),
             session_parent_target=_absent_topology("ChatGPT exports carry no session-parent target"),
-            inheritance_branch_point=TopologyCapability(
-                "positive-derived",
-                ("chatgpt.mapping.parent", "chatgpt.mapping.children"),
-                "branch boundaries are derived from mapping ancestry",
+            inheritance_branch_point=_absent_topology(
+                "ChatGPT mapping ancestry is intra-session message topology, not cross-session inheritance"
             ),
             parent_dispatch=_absent_topology("ChatGPT exports carry no parent-dispatch identity"),
         ),

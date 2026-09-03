@@ -3632,6 +3632,8 @@ def _increment_session_counts_for_append(
 def _attachment_provenance(
     attachment: ParsedAttachment,
     owning_message: ParsedMessage | None,
+    *,
+    resolved_message_id: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Resolve the direction and producer this attachment is persisted with.
 
@@ -3639,15 +3641,30 @@ def _attachment_provenance(
     Records reconstructed from evidence written before the field existed carry
     none, so the owning turn's role supplies it here through the same shared
     derivation the parsers use -- the stored column is never null.
+
+    A model turn carrying no provider-assigned id yields a ``model_output``
+    direction with no producer, because the parser has no identity to name
+    at parse time. That combination is rejected below and would fail the
+    whole session's write. ``resolved_message_id`` is the stored identity
+    this attachment is being written against, which is exactly the producer
+    the parser could not yet name, so it supplies the producer for both the
+    parser-declared and the role-derived path.
     """
+    producer_fallback = f"message:{resolved_message_id}" if resolved_message_id else None
     if attachment.direction is not None:
-        return attachment.direction, attachment.producer_ref
+        producer_ref = attachment.producer_ref
+        if attachment.direction == "model_output" and not producer_ref:
+            producer_ref = producer_fallback
+        return attachment.direction, producer_ref
     if owning_message is None:
         return None, None
     derived_direction, derived_producer = derive_attachment_provenance(
         owning_message.role, owning_message.provider_message_id
     )
-    return derived_direction, attachment.producer_ref or derived_producer
+    producer_ref = attachment.producer_ref or derived_producer
+    if derived_direction == "model_output" and not producer_ref:
+        producer_ref = producer_fallback
+    return derived_direction, producer_ref
 
 
 def _attachment_message_id_maps(
@@ -3745,7 +3762,9 @@ def _write_attachments(
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
             continue
-        direction, producer_ref = _attachment_provenance(attachment, owning_messages.get(message_id))
+        direction, producer_ref = _attachment_provenance(
+            attachment, owning_messages.get(message_id), resolved_message_id=message_id
+        )
         if direction not in {"user_input", "model_output"}:
             raise ValueError(f"attachment direction is not supported: {direction!r}")
         if direction == "model_output" and not producer_ref:

@@ -894,6 +894,25 @@ def _source_recoverability_proofs(
                         payload, error = _append_segment_payload(resolved, start, end)
                         if error is None and payload is not None:
                             payload, error = _replay_append_payload(row, payload, source_name=resolved)
+                        # An append row does not always store the appended
+                        # window. `admit_raw_observation` writes the whole
+                        # observed payload while recording the tail's offsets,
+                        # so for those rows the retained blob is the complete
+                        # prefix [0, end) and hashing the window can never
+                        # match. Fall back to the full prefix when the window
+                        # does not prove the blob.
+                        if payload is None or hashlib.sha256(payload).hexdigest() != blob_hash:
+                            snapshot_payload, snapshot_error = _append_segment_payload(resolved, 0, end)
+                            if snapshot_error is None and snapshot_payload is not None:
+                                replayed, replay_error = _replay_append_payload(
+                                    row, snapshot_payload, source_name=resolved
+                                )
+                                if (
+                                    replay_error is None
+                                    and replayed is not None
+                                    and hashlib.sha256(replayed).hexdigest() == blob_hash
+                                ):
+                                    payload, error = replayed, None
                 elif _legacy_append_without_window(row):
                     payload, error, historical_append_start, historical_append_end = _legacy_append_replay(
                         row, resolved, prior_full_sizes

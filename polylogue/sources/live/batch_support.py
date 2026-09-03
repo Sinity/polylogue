@@ -469,6 +469,32 @@ def sha256_range_from_path(
     return hasher.hexdigest(), bytes_read
 
 
+def file_prefix_sha256(path: Path, end_offset: int, *, chunk_size: int = 1 << 20) -> str | None:
+    """Digest ``path``'s leading ``end_offset`` bytes, or None if unreadable.
+
+    Claude frontier authority is composed from the file that is on disk right
+    now. Comparing this digest against the hash of the bytes actually retained
+    for that prefix is what distinguishes "the retained prefix is still
+    there, and the frontier describes it" from a same-length rewrite, which
+    every offset- and size-based check accepts.
+    """
+    if end_offset < 0:
+        return None
+    digest = hashlib.sha256()
+    remaining = end_offset
+    try:
+        with path.open("rb") as handle:
+            while remaining:
+                chunk = handle.read(min(chunk_size, remaining))
+                if not chunk:
+                    return None
+                digest.update(chunk)
+                remaining -= len(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
 def tail_hash_from_path(path: Path, byte_size: int, *, chunk_size: int = 64 * 1024) -> tuple[str, int]:
     """Return a bounded hash of the recorded file tail."""
     if byte_size <= 0:
