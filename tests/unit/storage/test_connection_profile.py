@@ -13,7 +13,9 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_open_readonly_connection_uses_descriptor_bound_database(tmp_path: Path) -> None:
-    db_path = tmp_path / "index.db"
+    # A tier-named file makes the factory assert that tier's declared version;
+    # this test's subject is descriptor binding.
+    db_path = tmp_path / "descriptor-bound.db"
     with sqlite3.connect(db_path) as connection:
         connection.execute("CREATE TABLE evidence (value TEXT)")
         connection.execute("INSERT INTO evidence VALUES ('selected')")

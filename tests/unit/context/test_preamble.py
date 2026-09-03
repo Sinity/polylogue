@@ -60,7 +60,12 @@ class TestGitProjectStateRealRepo:
         assert len(state.recent_commits) == 1
         assert "initial commit" in state.recent_commits[0]
 
-    def test_non_git_directory_returns_none(self, tmp_path: Path) -> None:
+    def test_non_git_directory_returns_none(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # git discovers a repository by walking upward, and pytest's base
+        # temporary directory may itself sit inside a checkout. Cap the walk so
+        # the test describes the directory rather than where basetemp lives.
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.resolve().parent))
+
         state = _git_project_state(str(tmp_path))
 
         assert state is None
