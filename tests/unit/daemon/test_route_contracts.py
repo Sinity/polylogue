@@ -13,7 +13,9 @@ from polylogue.daemon.http import (
     DaemonAPIHandler,
     _declared_get_routes,
     _parameterized_get_routes,
+    _ParameterizedGetRoute,
     _static_get_routes,
+    _StaticGetRoute,
     implemented_daemon_route_patterns,
     validate_declared_route_reachability,
 )
@@ -95,7 +97,10 @@ def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
         "/api/query-units": ("daemon.query.units", "_handle_query_units"),
         "/api/sessions/:id/read": ("daemon.read.session", "_handle_get_session_read"),
     }
-    installed = {route.pattern: route for route in (*_static_get_routes(), *_parameterized_get_routes())}
+    installed: dict[str, _StaticGetRoute | _ParameterizedGetRoute] = {
+        route.pattern: route for route in _static_get_routes()
+    }
+    installed.update({route.pattern: route for route in _parameterized_get_routes()})
     document = _build_openapi_document()
 
     assert {declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS} == set(expected)
