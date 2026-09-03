@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import Any, cast
 
-from devtools.agent_env import agent_worker_cap
+from devtools.agent_env import agent_worker_cap, inside_agent_job
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -270,6 +270,40 @@ def _has_worker_flag(selection: list[str]) -> bool:
     return any(arg.startswith(("-n", "--numprocesses")) for arg in selection)
 
 
+def _capped_selection(selection: list[str]) -> list[str]:
+    """Rewrite an explicit worker request that exceeds the agent-job cap.
+
+    An agent job shares the host. A caller-supplied ``-n`` used to skip the
+    cap entirely, so an explicit request could claim the whole machine that
+    the cap exists to protect.
+    """
+    if not inside_agent_job(os.environ):
+        return selection
+    request = pytest_command_worker_request(selection)
+    if request is None:
+        return selection
+    try:
+        requested = int(request)
+    except ValueError:
+        return selection
+    capped = agent_worker_cap(requested, os.environ)
+    if capped is None or capped == requested:
+        return selection
+    rewritten: list[str] = []
+    skip_next = False
+    for argument in selection:
+        if skip_next:
+            skip_next = False
+            continue
+        if argument in {"-n", "--numprocesses"}:
+            skip_next = True
+            continue
+        if argument.startswith("--numprocesses=") or (argument.startswith("-n") and len(argument) > 2):
+            continue
+        rewritten.append(argument)
+    return [*rewritten, "-n", str(capped)]
+
+
 def _worker_args(selection: list[str]) -> list[str]:
     """Default focused runs to a single process; honor an explicit override.
 
@@ -297,6 +331,7 @@ def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> li
 
 def build_pytest_cmd(selection: list[str]) -> list[str]:
     """Compose the pytest command for a focused selection."""
+    selection = _capped_selection(selection)
     worker_args = _worker_args(selection)
     collection_args = () if _selection_targets_benchmarks(selection) else IGNORED_COLLECTION_ARGS
     return [
@@ -399,6 +434,11 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_XDIST_WORKER", None)
     env.pop("PYTEST_CURRENT_TEST", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    # A focused run traces into the same datafile `devtools verify` reads, so
+    # it writes graph edges under whatever profile it ran. Recording them under
+    # a reduced Hypothesis budget would let a later selected green stand for
+    # less property coverage than it claims.
+    env["HYPOTHESIS_PROFILE"] = "default"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
 
 

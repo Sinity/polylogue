@@ -25,9 +25,11 @@ def agent_worker_cap(requested: int | None, env: Mapping[str, str]) -> int | Non
     """The worker count a focused run may use; unchanged outside agent jobs."""
     if not inside_agent_job(env):
         return requested
-    if requested is None or requested < 1:
+    if requested is None:
         return AGENT_MAX_PYTEST_WORKERS
-    return min(requested, AGENT_MAX_PYTEST_WORKERS)
+    # Zero is a configuration, not an absent one: it asks for no xdist at all,
+    # which is always within the cap.
+    return min(max(requested, 0), AGENT_MAX_PYTEST_WORKERS)
 
 
 def refuse_verify_tier(argv: list[str], env: Mapping[str, str]) -> str | None:

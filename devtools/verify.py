@@ -325,7 +325,11 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
         summary["flaky"] = len(flaky)
         if not still_failed:
             summary["exitstatus"] = 0
+            # The report carries its exit status twice. A consumer reading the
+            # top-level field would still see the pre-rerun failure.
+            patched["exitcode"] = 0
         patched["summary"] = summary
+        patched["flaky_nodeids"] = list(flaky)
         report_path.write_text(json.dumps(patched), encoding="utf-8")
         # The progress plugin's own summary carries the first exit status;
         # evidence evaluation compares the two, so both tell the same story.
@@ -411,7 +415,11 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
         completed = subprocess.CompletedProcess(command, outcome.returncode)
-        rerun = _rerun_failed_once(command, env=env, artifacts=artifacts) if completed.returncode else None
+        # Exit 1 is "tests failed", the only outcome a rerun can speak to.
+        # Exit 2 (interrupted), 3 (internal error), 4 (usage) and the signal
+        # codes describe the run itself; recovering them would report a
+        # broken run as a recovered flake.
+        rerun = _rerun_failed_once(command, env=env, artifacts=artifacts) if completed.returncode == 1 else None
     else:
         try:
             completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
@@ -661,9 +669,25 @@ def _aggregate_pytest_results(
 
 
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
-    refusal = refuse_verify_tier(list(argv or []), os.environ)
+    arguments = list(argv or [])
+    refusal = refuse_verify_tier(arguments, os.environ)
     if refusal is not None:
-        sys.stderr.write(refusal + "\n")
+        # A caller that asked for JSON gets JSON, refusals included; otherwise
+        # the one machine-readable contract has a prose-only hole in it.
+        if "--json" in arguments:
+            json.dump(
+                {
+                    "kind": "polylogue.verification-refusal",
+                    "status": "refused",
+                    "diagnosis": "agent_tier_refused",
+                    "message": refusal,
+                    "exit_code": 2,
+                },
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+        else:
+            sys.stderr.write(refusal + "\n")
         return 2
     parser = argparse.ArgumentParser(description="Run project semantic verification.")
     parser.add_argument("--quick", action="store_true", help="run the static gates only")
@@ -671,7 +695,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         "--all",
         dest="all_tests",
         action="store_true",
-        help="explicit form of the default: the static gates plus the complete corpus",
+        help="the static gates plus the complete corpus; the default selects from the testmon graph instead",
     )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)

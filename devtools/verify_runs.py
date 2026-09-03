@@ -749,6 +749,15 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 if raw.get("step_id") is not None
                 else None,
             }
+            # A step that went green only because its failures passed alone is
+            # not the same evidence as a step that never failed. The receipt
+            # names the flakes so a reader can tell the two apart.
+            rerun = raw.get("rerun")
+            if isinstance(rerun, Mapping):
+                flaky = [str(nodeid) for nodeid in rerun.get("flaky") or ()]
+                if flaky:
+                    step["flaky"] = flaky
+                    step["flaky_count"] = len(flaky)
             steps.append({key: value for key, value in step.items() if value is not None})
     result: dict[str, Any] = {
         "schema_version": 1,

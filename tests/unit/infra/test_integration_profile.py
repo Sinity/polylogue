@@ -160,3 +160,25 @@ def test_archive_publishes_selected_heterogeneous_contents(tmp_path: Path) -> No
         origins = {row[0] for row in conn.execute("SELECT DISTINCT origin FROM sessions")}
     assert origins == set(selection.profile.required_origins)
     assert {witness.source_class for witness in selection.witnesses} == set(selection.profile.required_source_classes)
+
+
+def test_selection_rejects_two_witnesses_materializing_one_session_identity() -> None:
+    """Anti-vacuity: drop the identity loop from IntegrationSelection.__post_init__
+    and this construction succeeds, seeding an archive where one witness
+    silently overwrites the other.
+
+    The recipe-digest check does not catch this: the two recipes below differ
+    (different seeds, so different digests) while pinning the same
+    ``session_native_ids``, and the archive is keyed on identity, not recipe.
+    """
+
+    profile = default_integration_selection().profile
+    pinned = ("integration-collision-000",)
+    first = IntegrationWitness(CorpusSpec.for_provider("codex", count=1, seed=1, session_native_ids=pinned))
+    second = IntegrationWitness(CorpusSpec.for_provider("codex", count=1, seed=2, session_native_ids=pinned))
+
+    assert first.recipe_digest != second.recipe_digest
+    assert first.origin == second.origin
+
+    with pytest.raises(ValueError, match="materializes"):
+        IntegrationSelection(profile, (first, second))
