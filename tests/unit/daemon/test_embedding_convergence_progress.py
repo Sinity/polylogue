@@ -82,7 +82,7 @@ def _stamp_index_tier(db_path: Path) -> None:
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     with sqlite3.connect(db_path) as conn:
-        conn.execute(f"PRAGMA user_version = {ARCHIVE_TIER_SPECS[ArchiveTier.INDEX.value].version}")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version}")
 
 
 def _seed_embedding_db(db_path: Path) -> None:
