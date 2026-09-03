@@ -162,6 +162,13 @@ def contained_pytest_run(
     scratch.mkdir(parents=True, exist_ok=True)
     contained = dict(env)
     contained.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
+    # The temporary trees live inside the checkout. Repository discovery walks
+    # upward, so a directory a test builds to be outside any repository would
+    # otherwise be inside this one; the ceiling stops discovery below the
+    # checkout while the trees themselves stay searchable.
+    ceiling = str(basetemp.parent.resolve())
+    inherited = env.get("GIT_CEILING_DIRECTORIES", "")
+    contained["GIT_CEILING_DIRECTORIES"] = f"{ceiling}:{inherited}" if inherited else ceiling
     return argv, contained, scratch
 
 

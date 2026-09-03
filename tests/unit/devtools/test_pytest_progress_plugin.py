@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from devtools import pytest_progress_plugin
+from devtools.pytest_invocation import CLEAR_CONFIGURED_ADDOPTS
 from devtools.verify_runs import aggregate_pytest_statistics
 
 
@@ -126,6 +127,10 @@ def test_progress_plugin_observes_real_pytest_xfail_outcome(tmp_path: Path) -> N
             "-m",
             "pytest",
             "-q",
+            # Closed-world like the managed invocation: the configured addopts
+            # name plugin options, and this child inherits the managed run's
+            # disabled plugin autoload.
+            CLEAR_CONFIGURED_ADDOPTS,
             "-p",
             "devtools.pytest_progress_plugin",
             str(test_path),

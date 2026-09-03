@@ -18,6 +18,7 @@ from typing import Any
 
 from devtools.agent_env import refuse_verify_tier
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
@@ -130,10 +131,21 @@ def _anchor_verification_paths() -> None:
 
 
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
-    try:
-        workers = max(0, int(os.environ.get("POLYLOGUE_PYTEST_WORKERS", "8")))
-    except ValueError:
-        workers = 8
+    """xdist arguments for the corpus run.
+
+    ``POLYLOGUE_PYTEST_WORKERS`` is an explicit override, ``0`` included (one
+    process, no xdist). Unset means the corpus width, so a bare ``devtools
+    verify`` and the CI runner (which exports nothing) run at the width the
+    corpus was sized for rather than on a single worker.
+    """
+    configured = os.environ.get("POLYLOGUE_PYTEST_WORKERS")
+    if configured is None or not configured.strip() or cloud_sentinel_declined("POLYLOGUE_PYTEST_WORKERS", configured):
+        workers = CORPUS_MAX_WORKERS
+    else:
+        try:
+            workers = max(0, int(configured))
+        except ValueError:
+            workers = CORPUS_MAX_WORKERS
     if maximum is not None:
         workers = min(workers, maximum)
     return ["--dist=loadgroup", "-n", str(workers)]
