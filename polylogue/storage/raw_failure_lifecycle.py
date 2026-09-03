@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from polylogue.core.errors import SchemaSkewError
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
     raw_failure_outcome_code,
@@ -108,7 +109,13 @@ def read_raw_failure_lifecycle(source_db: Path, *, sample_limit: int = 10) -> Ra
     if not source_db.exists():
         return RawFailureLifecycleSnapshot(False, reason=f"source.db not found: {source_db}")
     try:
-        conn = open_readonly_connection(source_db, validate_schema=False)
+        conn = open_readonly_connection(source_db)
+    except SchemaSkewError as exc:
+        # Admission classifies raws by a schema contract it must therefore
+        # hold. A skewed tier yields an explicit unavailable verdict, never a
+        # classification derived from a shape this runtime cannot read.
+        logger.warning("source.db schema is not served by this runtime", exc_info=exc)
+        return RawFailureLifecycleSnapshot(False, reason=f"source.db schema skew: {exc}")
     except (OSError, sqlite3.Error) as exc:
         logger.warning("could not open source.db read-only", exc_info=exc)
         return RawFailureLifecycleSnapshot(False, reason=f"could not open source.db read-only: {exc}")

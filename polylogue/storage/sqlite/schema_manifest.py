@@ -8,6 +8,7 @@ by the canonical create route.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -29,13 +30,32 @@ def _sql(value: str | None) -> str:
     return _WS.sub(" ", (value or "").strip()).lower()
 
 
+#: The exact table suffixes FTS5 creates to back one virtual table. Matched
+#: exactly rather than by prefix: ``messages_fts_identity`` is a declared
+#: table of ours that shares the ``messages_fts`` prefix, and dropping it from
+#: the manifest would hide real drift in it.
+_FTS5_SHADOW_SUFFIXES = ("_data", "_idx", "_content", "_docsize", "_config")
+
+
+def _fts_shadow_names(conn: sqlite3.Connection) -> frozenset[str]:
+    """Return the shadow tables FTS5 owns for this database's FTS5 tables."""
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE '%USING fts5%' COLLATE NOCASE"
+    ).fetchall()
+    return frozenset(f"{name}{suffix}" for (name,) in rows for suffix in _FTS5_SHADOW_SUFFIXES)
+
+
 def _projection(conn: sqlite3.Connection) -> tuple[tuple[str, str, str], ...]:
     rows = conn.execute(
         """SELECT type, name, sql FROM sqlite_master
            WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
            ORDER BY type, name"""
     ).fetchall()
-    return tuple((str(kind), str(name), _sql(sql)) for kind, name, sql in rows)
+    # FTS5 shadow tables are storage FTS5 owns and reshapes across SQLite
+    # builds; only the virtual table that declares them is our contract, so
+    # comparing them reports library drift as archive schema drift.
+    shadow_names = _fts_shadow_names(conn)
+    return tuple((str(kind), str(name), _sql(sql)) for kind, name, sql in rows if str(name) not in shadow_names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,19 +76,37 @@ class SchemaManifest:
         return cls(tier.value, version, objects, fingerprint)
 
 
-def canonical_schema_manifest(tier: ArchiveTier, *, version: int | None = None) -> SchemaManifest:
-    """Render one tier's declared DDL and return its semantic manifest."""
+@functools.cache
+def _canonical_schema_manifest(tier: ArchiveTier, version: int, ddl: str) -> SchemaManifest:
+    """Render one tier's declared DDL and return its semantic manifest.
+
+    Cached because rendering executes the whole tier DDL into a fresh
+    in-memory database and every read open asserts against the result.
+    ``SchemaManifest`` is immutable, so one rendering is safely shared. The
+    DDL is part of the key rather than re-read inside: it is a module
+    constant in production, but keying on it means a caller that substitutes
+    a different schema gets that schema's manifest and not a stale hit.
+    """
     conn = sqlite3.connect(":memory:")
     try:
-        conn.executescript(ARCHIVE_DDL_BY_TIER[tier])
+        conn.executescript(ddl)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
             ensure_runtime_indexes_sync(conn)
-        conn.execute(f"PRAGMA user_version = {int(ARCHIVE_VERSION_BY_TIER[tier] if version is None else version)}")
+        conn.execute(f"PRAGMA user_version = {version}")
         return SchemaManifest.from_connection(conn, tier)
     finally:
         conn.close()
+
+
+def canonical_schema_manifest(tier: ArchiveTier, *, version: int | None = None) -> SchemaManifest:
+    """Render one tier's declared DDL and return its semantic manifest."""
+    return _canonical_schema_manifest(
+        tier,
+        int(ARCHIVE_VERSION_BY_TIER[tier] if version is None else version),
+        ARCHIVE_DDL_BY_TIER[tier],
+    )
 
 
 def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> dict[str, object]:

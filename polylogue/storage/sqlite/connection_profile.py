@@ -538,18 +538,44 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
         )
 
 
+def _assert_derived_identity_supported(conn: sqlite3.Connection, tier: ArchiveTier | None) -> None:
+    """Check a derived tier's identity, not merely its version cursor.
+
+    ``user_version`` tracks the numbered schema; it says nothing about the
+    lowering, materializer and routing fingerprints the derived identity also
+    covers, and a bootstrap route restamps it before this check ever reads it.
+    A tier stamped by a different runtime therefore passes the version gate
+    while carrying read models this runtime cannot interpret.
+    """
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier
+
+    if tier is None:
+        return
+    try:
+        derived_tier = DerivedTier(tier.value)
+    except ValueError:
+        return
+    from polylogue.storage.sqlite.schema_bootstrap import assert_derived_schema_identity
+
+    assert_derived_schema_identity(conn, derived_tier.value)
+
+
 def assert_tier_schema_supported(
     conn: sqlite3.Connection,
     path: str | Path,
     tier: ArchiveTier | None = None,
 ) -> None:
-    """Reject a known archive tier whose on-disk version is not the runtime's.
+    """Reject a tier this runtime cannot serve, by version and by identity.
 
     Public so a bootstrap route that opens a not-yet-materialised tier with
-    ``validate_schema=False`` can apply the same check once it has stamped the
-    schema.
+    ``validate_schema=False`` can apply the check once it has stamped the
+    schema. That route rewrites ``user_version`` while materialising, so the
+    version alone proves nothing about the tier it just wrote over; the
+    derived identity is what the stamp is for and is checked here rather than
+    on every ordinary open.
     """
     _assert_schema_supported(conn, path, tier)
+    _assert_derived_identity_supported(conn, tier if tier is not None else _archive_tier_for_path(path))
 
 
 def open_connection(

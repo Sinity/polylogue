@@ -252,6 +252,10 @@ def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None
         from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
         stamp_derived_schema_identity(conn, tier.value)
+        # The stamp lands after the materialisation commit, so it is its own
+        # open transaction: without this it rolls back on close and the tier
+        # reads as unstamped to the identity assertion that follows.
+        conn.commit()
 
 
 def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
@@ -822,8 +826,11 @@ def open_initialized_tier_connection(
 
     A tier this route is about to create carries no schema version, so the
     open-time version check is deferred until ``initialize_archive_tier`` has
-    stamped it. The check still runs before the connection is handed back, so a
-    genuinely skewed tier is refused exactly as an ordinary open refuses it.
+    stamped it. Materialisation rewrites ``user_version`` to the current spec,
+    so the stored version is read and admitted BEFORE that happens: a tier
+    already carrying some other version is refused here rather than being
+    restamped into apparent currency and validated against the value this
+    route just wrote.
     """
     from polylogue.storage.sqlite.connection_profile import (
         assert_tier_schema_supported,
@@ -842,6 +849,17 @@ def open_initialized_tier_connection(
     else:
         conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False)
     try:
+        stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        required_version = archive_tier_spec(tier).version
+        if stored_version not in (0, required_version):
+            from polylogue.core.errors import SchemaSkew
+
+            raise SchemaSkew(
+                tier=tier.value,
+                expected=required_version,
+                found=stored_version,
+                remedy="rebuild or migrate the tier with the current runtime before retrying",
+            )
         initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)
     except BaseException:

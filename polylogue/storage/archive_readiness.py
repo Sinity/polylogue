@@ -266,7 +266,13 @@ def raw_materialization_readiness_snapshot(
     if not source_db.exists() or not index_db.exists():
         return {"available": False, "error": "source.db or index.db missing"}
     try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        # Source selection decides which raws the frontier admits, so it reads
+        # through the schema-enforcing open: a bare mode=ro connect would
+        # classify an index this runtime cannot interpret.
+        from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(open_readonly_connection(index_db, tier=ArchiveTier.INDEX)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             raw_columns = _table_columns(conn, "source", "raw_sessions")
