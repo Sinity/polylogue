@@ -572,7 +572,7 @@ def _flake_rerun_fixture(
         )
         return subprocess.CompletedProcess(command, 0 if rerun_outcome == "passed" else 1)
 
-    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     return report_path, launched
 
 
@@ -783,7 +783,7 @@ def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatc
         recorded.update(kwargs)
         return subprocess.CompletedProcess(command, 0, stdout="audit noise\n", stderr="")
 
-    monkeypatch.setattr(schema_promote.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(
         schema_promote,
         "promote_schema_cluster",
