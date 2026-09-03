@@ -34,6 +34,7 @@ from polylogue.core.enums import (
     SessionRefKind,
     StopReason,
     TitleSource,
+    ToolOutcome,
     ToolResultUnknownReason,
     TopologyEdgeStatus,
     WebConstructType,
@@ -300,6 +301,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         _ddl("language", "TEXT"),
         _ddl("tool_result_is_error", "INTEGER CHECK (tool_result_is_error IN (0, 1))"),
         _ddl("tool_result_exit_code", "INTEGER"),
+        ColumnSpec("tool_outcome", "TEXT", ddl_sql=f"tool_outcome TEXT CHECK ({check('tool_outcome', ToolOutcome)})"),
         ColumnSpec(
             "tool_result_outcome_unknown_reason",
             "TEXT",
@@ -336,6 +338,7 @@ def _make_blocks_spec() -> TableColumnSpec:
         "semantic_type": ("semantic_type", None),
         "tool_result_is_error": ("tool_result_is_error", None),
         "tool_result_exit_code": ("tool_result_exit_code", None),
+        "tool_outcome": ("tool_outcome", None),
         "tool_result_outcome_unknown_reason": ("tool_result_outcome_unknown_reason", None),
         "signature": ("signature", None),
     }
