@@ -8,13 +8,12 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
   repo-local pycache prefix);
 - a single-process worker default (``-n 0``) for fast focused runs, overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
-- live, streamed output (unlike ``devtools verify``, which captures);
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
 
-Process placement, cancellation, resource admission, and timeout authority
-belong to AgentCTL when a job needs them. A direct focused invocation is an
-ordinary foreground subprocess and does not create a second local lifecycle.
+pytest runs only while holding the host's single pytest slot
+(``devtools.pytest_slot``). A caller already inside that slot streams its
+output; a caller outside it queues, waits, and reads the captured log.
 
 For the full pre-PR gate use ``devtools verify``; this command is the inner
 loop, not a substitute for it.
@@ -26,7 +25,6 @@ import contextlib
 import json
 import os
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -42,6 +40,7 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
@@ -356,14 +355,35 @@ def _run(
     env: dict[str, str],
     run: VerifyRun,
 ) -> tuple[int, float, dict[str, str]]:
-    """Run focused pytest directly while preserving its project receipt."""
+    """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
     started = time.monotonic()
-    completed = subprocess.run(command, cwd=cwd, env=env)
+    try:
+        outcome = run_pytest(
+            command,
+            cwd=cwd,
+            env=env,
+            root=ROOT,
+            label=f"polylogue:test:{os.getpid()}",
+        )
+    except PytestSlotUnavailableError as exc:
+        sys.stderr.write(f"devtools test: {exc}\n")
+        return (
+            125,
+            time.monotonic() - started,
+            {
+                "diagnosis": "pytest_slot_unavailable",
+                "error": str(exc),
+                "termination_reason": "pytest_slot_unavailable",
+            },
+        )
     return (
-        completed.returncode,
+        outcome.returncode,
         time.monotonic() - started,
-        {"diagnosis": "pytest_passed" if completed.returncode == 0 else "pytest_failed"},
+        {
+            "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
+            "pytest_slot": outcome.slot,
+        },
     )
 
 
