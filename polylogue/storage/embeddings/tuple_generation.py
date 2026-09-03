@@ -236,16 +236,17 @@ def _membership_digest(conn: sqlite3.Connection, recipe: EmbeddingRecipe) -> str
     if not loaded:
         raise EmbeddingTupleGenerationError("embedding candidate requires sqlite-vec") from error
     rows = conn.execute(
-        "SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash "
-        "FROM message_embeddings_meta ORDER BY vector_derivation_hash"
+        "SELECT vector_derivation_hash, model, dimension FROM message_embeddings_meta ORDER BY vector_derivation_hash"
     ).fetchall()
     digest = hashlib.sha256()
-    for vector_hash, model, dimension, recipe_hash, output_contract_hash in rows:
+    # The vector address is a function of the provider request; a meta row
+    # whose recipe/output labels differ from the current recipe is still the
+    # same request's vector. Only model/dimension drift or missing bytes are
+    # conflicts.
+    for vector_hash, model, dimension in rows:
         value = bytes(vector_hash)
         if len(value) != 32 or str(model) != recipe.model or int(dimension) != recipe.dimensions:
             raise EmbeddingTupleGenerationError("embedding membership has an incompatible vector contract")
-        if bytes(recipe_hash) != recipe.recipe_hash or bytes(output_contract_hash) != recipe.output_contract_hash:
-            raise EmbeddingTupleGenerationError("embedding membership has an incompatible recipe")
         if (
             conn.execute(
                 "SELECT 1 FROM message_embeddings WHERE vector_derivation_hash = ? LIMIT 1", (value.hex(),)
@@ -323,16 +324,13 @@ def publish_embedding_partition(
                 raise ValueError("embedding vector does not match recipe dimensions")
             hashes.append(value.hex())
             existing = conn.execute(
-                "SELECT model, dimension, recipe_hash, output_contract_hash "
-                "FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
+                "SELECT model, dimension FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
                 (value,),
             ).fetchone()
             if existing is not None:
                 if (
                     str(existing[0]) != recipe.model
                     or int(existing[1]) != recipe.dimensions
-                    or bytes(existing[2]) != recipe.recipe_hash
-                    or bytes(existing[3]) != recipe.output_contract_hash
                     or conn.execute(
                         "SELECT 1 FROM message_embeddings WHERE vector_derivation_hash = ? LIMIT 1", (value.hex(),)
                     ).fetchone()

@@ -1448,6 +1448,23 @@ class _ProviderRequestError(RuntimeError):
     """Marks an exception raised by the embedding provider call itself."""
 
 
+def _present_vector_addresses(conn: sqlite3.Connection, hashes: Iterable[bytes]) -> set[bytes]:
+    """Return the subset of ``hashes`` that already own a vector in this tier."""
+
+    wanted = sorted(set(hashes))
+    present: set[bytes] = set()
+    chunk = 500
+    for start in range(0, len(wanted), chunk):
+        window = wanted[start : start + chunk]
+        placeholders = ",".join("?" for _ in window)
+        rows = conn.execute(
+            f"SELECT vector_derivation_hash FROM message_embeddings_meta WHERE vector_derivation_hash IN ({placeholders})",
+            window,
+        ).fetchall()
+        present.update(bytes(row[0]) for row in rows)
+    return present
+
+
 def _archive_embedding_source_hash_from_pairs(pairs: Iterable[tuple[str, bytes]]) -> bytes:
     """Session source identity from ``(message_id, vector_derivation_hash)`` pairs.
 
@@ -1676,14 +1693,57 @@ def _embed_archive_session_sync(
             for row in embeddable
             if existing_refs.get(str(row["message_id"])) != input_hash_by_message_id[str(row["message_id"])]
         ]
+        present_hashes = _present_vector_addresses(
+            embeddings_conn,
+            (input_hash_by_message_id[str(row["message_id"])] for row in pending_embeddable),
+        )
+        reusable_writes: list[ArchiveEmbeddingWrite] = []
+        for row in pending_embeddable:
+            message_id = str(row["message_id"])
+            input_hash = input_hash_by_message_id[message_id]
+            if input_hash not in present_hashes:
+                continue
+            reusable_writes.append(
+                ArchiveEmbeddingWrite(
+                    message_id=message_id,
+                    session_id=session_id,
+                    origin=str(session["origin"]),
+                    embedding=[],
+                    model=text_provider.model,
+                    embedded_at_ms=now_ms,
+                    vector_derivation_hash=input_hash,
+                    recipe_hash=attempt.recipe_hash,
+                    derivation_key=message_embedding_derivation_key(
+                        message_id=message_id,
+                        vector_derivation_hash=input_hash,
+                        recipe=recipe,
+                    ).digest(),
+                    generation=attempt.generation,
+                )
+            )
+        if reusable_writes and not publish_embedding_attempt_window(
+            embeddings_conn,
+            attempt=attempt,
+            writes=reusable_writes,
+            completed_at_ms=now_ms,
+        ):
+            return EmbedSessionOutcome(status="error", session_id=session_id, error="embedding attempt superseded")
+        if reusable_writes and lifecycle_store is not None and lifecycle_binding is not None:
+            lifecycle_store.refresh_binding_contract(lifecycle_binding)
+
+        to_embed = [
+            row
+            for row in pending_embeddable
+            if input_hash_by_message_id[str(row["message_id"])] not in present_hashes
+        ]
         batch_size = max(1, ARCHIVE_EMBED_MESSAGE_BATCH_SIZE)
         deferred = False
-        published_count = 0
-        for start in range(0, len(pending_embeddable), batch_size):
+        published_count = len(reusable_writes)
+        for start in range(0, len(to_embed), batch_size):
             if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
                 deferred = True
                 break
-            batch = pending_embeddable[start : start + batch_size]
+            batch = to_embed[start : start + batch_size]
             attempted_message_refs = tuple(str(row["message_id"]) for row in batch)
             try:
                 vectors = text_provider._get_embeddings(
@@ -1727,7 +1787,7 @@ def _embed_archive_session_sync(
                 lifecycle_store.refresh_binding_contract(lifecycle_binding)
             published_count += len(batch)
             if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
-                deferred = start + len(batch) < len(pending_embeddable)
+                deferred = start + len(batch) < len(to_embed)
                 if deferred:
                     break
 

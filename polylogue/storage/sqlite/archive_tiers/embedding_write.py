@@ -303,7 +303,9 @@ def upsert_message_embedding(
 
 
 def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
-    if len(write.embedding) != EMBEDDING_DIMENSION:
+    # An empty embedding is a ref-only write: it reuses the vector its address
+    # already owns, and the write path refuses it when that vector is missing.
+    if write.embedding and len(write.embedding) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
     if len(write.vector_derivation_hash) != 32:
         raise ValueError("vector_derivation_hash must be a SHA-256 value")
@@ -361,6 +363,8 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
             (write.vector_derivation_hash,),
         ).fetchone()
         if existing is None:
+            if not write.embedding:
+                raise ValueError("ref-only embedding write has no vector at its address")
             conn.execute(
                 """
                 INSERT INTO message_embeddings (vector_derivation_hash, embedding, model)
