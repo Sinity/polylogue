@@ -49,18 +49,22 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     except OSError:
         return None
     matches: list[tuple[int, SourceT]] = []
-    accepting: list[tuple[int, SourceT]] = []
     for source in sources:
         try:
             source_root = source.root.resolve()
             if resolved.is_relative_to(source_root):
                 matches.append((len(source_root.parts), source))
-                if _accepts(source, resolved):
-                    accepting.append((len(source_root.parts), source))
         except (OSError, ValueError):
             continue
+    if not matches:
+        return None
+    if len(matches) == 1:
+        # Unambiguous ownership needs no acceptance check, which keeps the
+        # declared-artifact lookup out of the common single-root path.
+        return matches[0][1]
+    accepting = [match for match in matches if _accepts(match[1], resolved)]
     preferred = accepting or matches
-    return max(preferred, key=lambda match: match[0])[1] if preferred else None
+    return max(preferred, key=lambda match: match[0])[1]
 
 
 __all__ = ["deepest_source_for_path"]

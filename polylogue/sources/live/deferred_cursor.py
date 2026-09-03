@@ -64,15 +64,20 @@ def record_deferred_append_cursor(
         except OSError:
             header_length = 0
         semantic_end_offset = header_length + claude_frontier.body_bytes
-        # This frontier is composed from the bytes currently on disk, at the
-        # offset the *recorded* frontier ended. An intact prefix therefore
-        # reproduces the recorded frontier exactly, header and body digests
-        # alike. Anything else means the accepted bytes were rewritten
-        # underneath this cursor -- which a same-length rewrite makes
-        # invisible to every size and offset check -- so it must not be
-        # promoted to semantic authority.
+        # This frontier is composed from the bytes currently on disk. The
+        # header is replaceable by contract, so a rewritten header rebases the
+        # frontier onto it; the body is the accepted content and must still be
+        # the body this cursor accepted. A same-length body rewrite leaves
+        # size, offset, and last-complete-newline identical, so the body
+        # digest is the only evidence that distinguishes it -- without this
+        # comparison those bytes are promoted to semantic authority unread.
         recomposed = claude_semantic_frontier_for_prefix(path, semantic_end_offset) if header_length else None
-        semantic_authority = recomposed if recomposed == cursor.tail_hash else None
+        recomposed_frontier = decode_claude_semantic_frontier(recomposed)
+        semantic_authority = (
+            recomposed
+            if recomposed_frontier is not None and recomposed_frontier.body_sha256 == claude_frontier.body_sha256
+            else None
+        )
     else:
         semantic_authority = None
     cursor_store.set(
