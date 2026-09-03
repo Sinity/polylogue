@@ -794,3 +794,86 @@ def test_parse_chunked_prompt_accepts_synthetic_exports(synthetic_gemini_payload
     assert result.messages
     assert all(message.text for message in result.messages)
     assert all(len(message.blocks) > 0 for message in result.messages)
+
+
+def test_idless_document_only_turns_referencing_distinct_files_write_every_attachment(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """AI Studio exports carry id-less, timestamp-less, text-less user turns whose
+    only content is a Drive reference, one turn per file, all files sharing one
+    display name. The turns differ only in the referenced file id, so the
+    attachment owner resolution must read block reference identity or every
+    such session fails parse (polylogue-prjai / polylogue-gmb3o).
+
+    Anti-vacuity: removing the block-reference tier from
+    ``message_owner_resolution`` makes ``session_content_hash`` raise
+    ``MessageOwnerAmbiguityError`` for this payload.
+    """
+    payload: JSONDocument = {
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "Compare these.", "tokenCount": 3},
+                {"role": "user", "driveDocument": {"id": "file-a", "name": "chapter.md"}, "tokenCount": 900},
+                {"role": "user", "driveDocument": {"id": "file-b", "name": "chapter.md"}, "tokenCount": 950},
+                {"role": "user", "driveDocument": {"id": "file-c", "name": "chapter.md"}, "tokenCount": 910},
+                {"role": "model", "text": "They differ in the third section.", "finishReason": "STOP"},
+            ]
+        }
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "gemini-document-only-turns")
+    assert [message.provider_message_id for message in result.messages] == [""] * 5
+    assert [attachment.provider_attachment_id for attachment in result.attachments] == ["file-a", "file-b", "file-c"]
+
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        write_and_hydrate(PipelineRoundtrip(result, session_content_hash(result)), conn)
+        rows = conn.execute("SELECT message_id, attachment_id FROM attachment_refs ORDER BY message_id").fetchall()
+    assert len(rows) == 3
+    assert len({message_id for message_id, _attachment_id in rows}) == 3
+
+
+def test_idless_inline_image_only_turns_with_distinct_bytes_write_every_attachment(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """Inline media strips its bytes from block metadata; the stripped record must
+    keep a content digest so two image-only turns remain distinguishable.
+
+    Anti-vacuity: leaving the sanitized inline record without a digest makes
+    ``session_content_hash`` raise ``MessageOwnerAmbiguityError`` here.
+    """
+    import base64
+
+    def inline_image(raw: bytes) -> JSONDocument:
+        return {
+            "role": "model",
+            "finishReason": "STOP",
+            "inlineImage": {"mimeType": "image/png", "data": base64.b64encode(raw).decode("ascii")},
+        }
+
+    payload: JSONDocument = {
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "Two renders please."},
+                inline_image(b"first-render"),
+                inline_image(b"second-render"),
+            ]
+        }
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "gemini-inline-image-only-turns")
+    image_blocks = [block for message in result.messages for block in message.blocks if block.type == "image"]
+    assert len(image_blocks) == 2
+    for block in image_blocks:
+        assert block.metadata is not None
+        inline_record = block.metadata["inlineImage"]
+        assert isinstance(inline_record, dict)
+        assert "data" not in inline_record
+    assert image_blocks[0].metadata != image_blocks[1].metadata
+
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        write_and_hydrate(PipelineRoundtrip(result, session_content_hash(result)), conn)
+        rows = conn.execute("SELECT message_id FROM attachment_refs").fetchall()
+    assert len(rows) == 2
+    assert len({message_id for (message_id,) in rows}) == 2

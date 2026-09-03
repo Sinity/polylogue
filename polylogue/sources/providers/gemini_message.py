@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime
 from typing import TypeAlias
 
@@ -79,8 +80,16 @@ def _drive_document_record(value: GeminiDictValue | str | None) -> GeminiDictVal
 
 
 def _without_inline_bytes(payload: GeminiDictValue) -> GeminiDictValue:
+    """Strip inline bytes from a block record, leaving a digest that identifies them.
+
+    Block metadata is not content-addressed, so the bytes must not reach it;
+    the digest keeps two media-only turns with different content
+    distinguishable for attachment ownership.
+    """
     sanitized = dict(payload)
-    sanitized.pop("data", None)
+    data = sanitized.pop("data", None)
+    if isinstance(data, str) and data:
+        sanitized["dataSha256"] = hashlib.sha256(data.encode("utf-8")).hexdigest()
     return sanitized
 
 
