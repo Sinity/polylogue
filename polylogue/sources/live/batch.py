@@ -148,7 +148,12 @@ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggre
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.origin_specs import artifact_rule_for_path, frontier_kind_for_origin, recognize_source_class
+from polylogue.sources.origin_specs import (
+    artifact_rule_for_path,
+    database_capability_for_provider,
+    frontier_kind_for_origin,
+    recognize_source_class,
+)
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
@@ -1997,9 +2002,21 @@ class LiveBatchProcessor:
                 if path.suffix.lower() == ".zip"
                 else recognize_source_class(fallback_provider, path, source_only=source_only)
             )
-            if source_class is not None and source_class.source_class == "unsupported":
-                # Suffixes only make a candidate observable. The declaration
-                # owned recognizer admits provider sessions before parsing.
+            hermes_database_capability = database_capability_for_provider(Provider.HERMES)
+            hermes_member = (
+                hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
+            )
+            hermes_owned_sqlite_name = (
+                source_only
+                and fallback_provider is Provider.HERMES
+                and hermes_member is not None
+                and hermes_member.disposition != "out-of-scope"
+            )
+            if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+                # A broad Hermes root is suffix-enumerated so every candidate
+                # remains observable.  Only the OriginSpec recognizer may
+                # admit a candidate to the Hermes parser; unknown/config/cache
+                # material is a typed non-session observation instead.
                 logger.info(
                     "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
                     path,
@@ -2054,11 +2071,17 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            if (
+            codex_database_capability = database_capability_for_provider(Provider.CODEX)
+            codex_member = (
+                codex_database_capability.member(path.name) if codex_database_capability is not None else None
+            )
+            codex_owned_sqlite_name = (
                 source_only
-                and fallback_provider is Provider.HERMES
-                and path.name in {"state.db", "verification_evidence.db"}
-            ) or (
+                and fallback_provider is Provider.CODEX
+                and codex_member is not None
+                and codex_member.disposition != "out-of-scope"
+            )
+            if (hermes_owned_sqlite_name) or (
                 not source_only
                 and (
                     hermes_state.looks_like_state_db_path(path)
@@ -2099,16 +2122,18 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif (
-                source_only
-                and fallback_provider is Provider.CODEX
-                and source_class is not None
-                and source_class.source_class == "session"
-            ) or (not source_only and codex_state.is_in_scope_codex_sqlite_path(path)):
-                # Snapshot live Codex SQLite state before hashing or storing it.
-                # Normal ingest requires the declared SQLite schema; source-only
-                # ingest accepts a declared filename so a future or mid-write
-                # snapshot remains durable authority for later replay.
+            elif codex_owned_sqlite_name or (
+                codex_member is not None
+                and codex_member.disposition != "out-of-scope"
+                and codex_state.is_in_scope_codex_sqlite_path(path)
+            ):
+                # polylogue-0jf4: acquire live Codex SQLite state the same
+                # way Hermes acquires its state.db -- a consistent
+                # backup/snapshot (never a raw read of a possibly-live-locked
+                # file) into the content-addressed blob store. The filename
+                # gate keeps this cheap for the vast majority of ~/.codex
+                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
+                # then re-confirms the table shape before trusting the name.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -2143,6 +2168,16 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
+            elif codex_member is not None:
+                # Matched a known Codex state-db filename but either failed
+                # structural verification (mid-write, corrupt, or a future
+                # Codex schema change) or is a database CODEX_STATE_FIDELITY
+                # (sources/parsers/codex_state.py) declares out-of-scope
+                # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
+                # automation config) -- exclude cleanly without ever reading
+                # the bytes as a generic session artifact.
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
                 # an ad hoc parse pass. Provider detection and session/artifact
