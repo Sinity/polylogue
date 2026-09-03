@@ -273,46 +273,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "bench ingest-amplification",
-        "benchmarking",
-        "Measure deterministic per-tier ingest write amplification on a synthetic fixture.",
-        "devtools.ingest_amplification_probe",
-        json_flag=True,
-        use_when=(
-            "Establish or compare the post-fix baseline for daemon live-ingest write amplification. "
-            "Drives the public batch-ingest path over a deterministic synthetic corpus in a temp dir "
-            "and attributes bytes written per archive tier per append batch."
-        ),
-        examples=(
-            "devtools bench ingest-amplification --json",
-            "devtools bench ingest-amplification --batches 8 --seed 1851",
-        ),
-    ),
-    CommandSpec(
-        "bench ingest-throughput",
-        "benchmarking",
-        "Measure ingest wall-clock throughput on a synthetic fixture.",
-        "devtools.ingest_throughput_probe",
-        json_flag=True,
-        use_when=(
-            "Measure ingest wall-clock / throughput, the time-based counterpart to the "
-            "bytes-based ingest-amplification probe. Wall-clock is host-variable: diagnostic and "
-            "campaign-comparable, no CI thresholds."
-        ),
-        examples=(
-            "devtools bench ingest-throughput --json",
-            "devtools bench ingest-throughput --batches 20 --seed 2391",
-        ),
-    ),
-    CommandSpec(
-        "bench memory",
-        "benchmarking",
-        "Measure query-memory envelopes on generated fixtures.",
-        "devtools.query_memory_budget",
-        use_when="Assert memory budgets around a concrete query or archive-facing command.",
-        examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
-    ),
-    CommandSpec(
         "bench slo",
         "benchmarking",
         "Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements.",
@@ -325,38 +285,12 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
     ),
     CommandSpec(
-        "bench concurrency",
+        "bench memory",
         "benchmarking",
-        "Run the managed bounded-compute scaling profile across representative workloads.",
-        "devtools.concurrency_profile",
-        json_flag=True,
-        use_when=(
-            "Compare bounded worker and admission configurations for tiny-file, ordinary, whale, mixed-ingest, "
-            "derivation, and interactive-read workloads on the selected free-threaded runtime."
-        ),
-        examples=("devtools bench concurrency", "devtools bench concurrency --json"),
-    ),
-    CommandSpec(
-        "bench cli-interaction",
-        "benchmarking",
-        "Run the complete installed CLI and direct typed-UDS interaction profile.",
-        "devtools.cli_interaction_profile",
-        use_when=(
-            "Measure cold installed status and warm CLI/daemon interaction together, including completion, "
-            "pagination, cancellation, fuzzy-launch declarations, and concurrent-read evidence."
-        ),
-        examples=("devtools bench cli-interaction",),
-    ),
-    CommandSpec(
-        "bench daemon-operation",
-        "benchmarking",
-        "Run the installed CLI and direct typed-UDS daemon operation profile.",
-        "devtools.daemon_performance_profile",
-        use_when=(
-            "Measure the daemon architecture on the production route: installed CLI status, typed UDS find/read, "
-            "completion, concurrent reads, cancellation, and declared background workload denominators."
-        ),
-        examples=("devtools bench daemon-operation",),
+        "Measure query-memory envelopes on generated fixtures.",
+        "devtools.query_memory_budget",
+        use_when="Assert memory budgets around a concrete query or archive-facing command.",
+        examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
         "archive index-fast-forward",

@@ -14,7 +14,6 @@ plane inventory, not a product UX approval record.
 | Terminal layout/accessibility semantics | `tests/infra/terminal_cells.py` | VHS tapes remain bounded human exemplars only |
 | Visual exemplars | `devtools/visual_vhs.py` | `devtools/render_visual_tapes.py` remains the single generated-tape command |
 | CLI/UDS performance workloads | `tests/benchmarks/cli_profile.py` | Existing benchmark tests are route-specific consumers |
-| Managed benchmark entrypoint | `devtools/cli_interaction_profile.py` | `devtools bench daemon-operation` remains a narrower compatibility command |
 
 No screenshot approval store, model-results database, parallel scenario
 registry, or second snapshot authority was added. The existing byte snapshots
@@ -42,8 +41,7 @@ these owners and update this ledger when it retires a legacy helper.
 
 - Shell names now come from `tests/infra/cli_interaction.py`; the completion
   tests only supply Click shell classes.
-- Cold CLI and daemon route measurements share `cli_profile.py` metric names
-  and the `bench cli-interaction` managed entrypoint.
+- Cold CLI and daemon route measurements share `cli_profile.py` metric names.
 - `pty_cli.py` remains the sole subprocess/PTY implementation; eventful tests
   use its event hook rather than a sibling runner.
 - VHS is not a layout oracle. It produces three bounded exemplars, while
