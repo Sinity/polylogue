@@ -15,7 +15,6 @@ import pytest
 import tomllib
 
 from devtools import gate, required_gate, verify, verify_runs, why
-from devtools.testmon_bootstrap import NativeTestmonRepairError
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
