@@ -32,6 +32,7 @@ from tests.infra.workload_artifacts import (
     ArtifactGcReport,
     BenchmarkWorkloadTier,
     CorpusArtifactManifest,
+    ImmutableTreeArtifact,
     SeededArchiveClone,
     SeededArchiveQueryLease,
     SeededArchiveReachabilityInventory,
@@ -369,6 +370,53 @@ def test_immutable_fixture_fast_and_copy_clones_have_equal_authenticated_sets(
     assert fallback.clone_method == "copy"
     assert (fast.root / "nested" / "payload").read_bytes() == (fallback.root / "nested" / "payload").read_bytes()
     assert not (artifact.root / "nested" / "payload").stat().st_mode & stat.S_IWUSR
+
+
+def test_clone_from_unpinned_source_authenticates_the_enumerated_file_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A clone whose source carries no pinned manifest is still authenticated.
+
+    ``clone_pathology_zoo`` clones an already-materialized tree by handing
+    :func:`clone_immutable_tree` an artifact with empty ``files``, so the
+    expected set is enumerated from the source root instead of a manifest.
+
+    Anti-vacuity: the first clone is red if the enumerated records are not
+    normalized into ``(path, size, digest)`` records before comparison; the
+    tampered clone is green (wrongly accepted) if the comparison is dropped.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    def builder(root: Path) -> None:
+        root.joinpath("nested").mkdir()
+        root.joinpath("nested", "payload").write_bytes(b"payload")
+
+    published = build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="unpinned-clone",
+        builder=builder,
+    )
+    unpinned = ImmutableTreeArtifact(root=published.root, key=published.key, files=())
+    clone = clone_immutable_tree(unpinned, tmp_path / "clone")
+    assert (clone.root / "nested" / "payload").read_bytes() == b"payload"
+
+    original_copy = artifacts._copy_tree
+
+    def tamper(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        payload = target / "nested" / "payload"
+        payload.chmod(payload.stat().st_mode | stat.S_IWUSR)
+        payload.write_bytes(b"tampere")
+
+    monkeypatch.setattr(artifacts, "_copy_tree", tamper)
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.CalledProcessError(1, ["cp"])),
+    )
+    with pytest.raises(ValueError, match="authenticated file-set validation"):
+        clone_immutable_tree(unpinned, tmp_path / "tampered")
+    assert not (tmp_path / "tampered").exists()
 
 
 def test_seeded_archive_clone_rejects_symlink_inside_published_tree(tmp_path: Path) -> None:

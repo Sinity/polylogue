@@ -491,6 +491,23 @@ def build_immutable_tree(
         _release_lock_domain(domain)
 
 
+def _describe_file_set_mismatch(
+    expected: dict[str, tuple[int, str]],
+    actual: dict[str, tuple[int, str]],
+) -> str:
+    """Name the diverging paths so a clone failure is diagnosable from its message."""
+
+    def summarize(label: str, paths: list[str]) -> str:
+        head = paths[:8]
+        suffix = f" +{len(paths) - len(head)} more" if len(paths) > len(head) else ""
+        return f"{label}={head}{suffix}"
+
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    changed = sorted(path for path in set(expected) & set(actual) if expected[path] != actual[path])
+    return " ".join((summarize("missing", missing), summarize("extra", extra), summarize("changed", changed)))
+
+
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
     """Clone an immutable tree while pinning its publication capability."""
     with _shared_artifact_read_locks(artifact.root):
@@ -521,7 +538,7 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
         _copy_tree(artifact.root, destination)
         method = "copy"
     _assert_no_symlinks(destination)
-    source_files = _manifest_file_entries(artifact.files) if artifact.files else _archive_files(artifact.root)
+    source_files = _manifest_file_entries(artifact.files or _archive_files(artifact.root))
     expected = {path: (size, digest) for path, size, digest in source_files}
     actual = {
         str(path.relative_to(destination)): (_safe_stat(path).st_size, _sha256(path))
@@ -530,7 +547,10 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
     }
     if actual != expected:
         _remove_tree(destination)
-        raise ValueError("immutable fixture clone failed authenticated file-set validation")
+        raise ValueError(
+            "immutable fixture clone failed authenticated file-set validation "
+            f"({_describe_file_set_mismatch(expected, actual)})"
+        )
     for path in destination.rglob("*"):
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
@@ -2100,6 +2120,11 @@ def _manifest_binds_to_key(manifest: CorpusArtifactManifest, root: Path, key: Se
 _GC_WORKTREE_MARKERS = (".worktree", ".worktree.lock", ".artifact-worktree.lock")
 _GC_LEASE_MARKERS = (".lease", ".artifact.lease", ".query.lease")
 _GC_CONTROL_MARKERS = frozenset((*_GC_WORKTREE_MARKERS, *_GC_LEASE_MARKERS))
+# The cache, per-key, and final-root flocks hold across every inspect/delete
+# interval, so an in-flight build, lease, or clone is already excluded without
+# reference to age. Leases carry no time bound of their own; this covers only
+# the unlocked instant between publication and the first lease of a new tree.
+SEEDED_ARTIFACT_GC_GRACE_PERIOD_S = 10 * 60
 
 
 def _gc_tree_size(root: Path) -> int:
@@ -2197,7 +2222,7 @@ def gc_seeded_archive_artifacts(
     *,
     cache_root: Path,
     reachable_keys: Iterable[SeededArchiveKey | str],
-    grace_period_s: float = 24 * 60 * 60,
+    grace_period_s: float = SEEDED_ARTIFACT_GC_GRACE_PERIOD_S,
     now: float | None = None,
     dry_run: bool = True,
     delete_corrupt: bool = False,
@@ -3345,6 +3370,7 @@ __all__ = [
     "c03_semantic_corpus_spec",
     "clone_seeded_archive",
     "default_cache_root",
+    "SEEDED_ARTIFACT_GC_GRACE_PERIOD_S",
     "gc_seeded_archive_artifacts",
     "named_corpus_specs",
     "named_workload_profile",
