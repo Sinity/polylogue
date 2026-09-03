@@ -65,20 +65,32 @@ from tests.infra.workload_artifacts import (
 pytest_plugins = ("tests.infra.corpus_fixtures",)
 
 
-#: Cache-protocol tests (corruption, forged receipts, placement) assert
-#: refusal semantics, which do not depend on corpus size; two sessions of two
-#: messages make a build seconds instead of a minute.
-_SMALL_SPECS = (
-    CorpusSpec.for_provider(
-        "codex",
-        count=2,
-        messages_min=2,
-        messages_max=2,
-        seed=7,
-        style="tool-heavy",
-        origin="generated.test-workload-small",
-    ),
-)
+def small_specs() -> tuple[CorpusSpec, ...]:
+    """Build the small workload. Spawned probes import this by name.
+
+    Cache-protocol tests (corruption, forged receipts, placement) assert
+    refusal semantics, which do not depend on corpus size; two sessions of
+    two messages make a build seconds instead of a minute.
+
+    A ``python -c`` program has no access to this module's namespace, so the
+    specs a probe builds must come from an importable definition rather than
+    a module-level constant the program cannot see.
+    """
+
+    return (
+        CorpusSpec.for_provider(
+            "codex",
+            count=2,
+            messages_min=2,
+            messages_max=2,
+            seed=7,
+            style="tool-heavy",
+            origin="generated.test-workload-small",
+        ),
+    )
+
+
+_SMALL_SPECS = small_specs()
 
 
 def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) -> None:
@@ -275,8 +287,8 @@ def test_seeded_archive_publishes_valid_immutable_real_pipeline_artifact(
     monkeypatch.setattr("tests.infra.workload_artifacts.parse_sources_archive", record_parse_workers)
     cache_root = tmp_path / "cache"
 
-    first = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
-    second = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    first = build_seeded_archive(cache_root=cache_root)
+    second = build_seeded_archive(cache_root=cache_root)
 
     assert observed_parse_workers == [1]
 
@@ -1284,6 +1296,9 @@ _REUSE_PROBE = """
 import json, os, sys
 from pathlib import Path
 import tests.infra.workload_artifacts as artifacts
+from tests.unit.infra.test_workload_artifacts import small_specs
+
+_SMALL_SPECS = small_specs()
 
 artifacts._build_id = lambda: os.environ["FAKE_BUILD_ID"]
 cache_root = Path(sys.argv[1])
@@ -1548,6 +1563,9 @@ _FRESH_PROCESS_PROBE = """
 import json, sys
 from pathlib import Path
 from tests.infra.workload_artifacts import build_seeded_archive
+from tests.unit.infra.test_workload_artifacts import small_specs
+
+_SMALL_SPECS = small_specs()
 
 cache_root = Path(sys.argv[1])
 artifact = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
@@ -1879,7 +1897,7 @@ def test_artifact_gc_preserves_active_per_key_lock_and_query_lease(tmp_path: Pat
     assert cache_locked.entries[0].disposition is ArtifactGcDisposition.ACTIVE_LOCK
     assert cache_locked.entries[0].name == "<cache>"
 
-    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key((c03_semantic_corpus_spec(),)))
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(_SMALL_SPECS))
     try:
         leased = gc_seeded_archive_artifacts(
             cache_root=cache_root,
