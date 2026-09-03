@@ -618,6 +618,13 @@ def initialize_archive_database(
                 plan = index_fast_forward_plan(current_version, required_version)
                 if plan is not None:
                     apply_index_fast_forward(conn, plan)
+                    from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+
+                    ensure_runtime_indexes_sync(conn)
+                    from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
+
+                    assert_schema_manifest(conn, tier)
+                    conn.commit()
                     return
             rebuild_command = (
                 "polylogue ops reset --index && polylogued run"
