@@ -363,6 +363,7 @@ class TestMessageFromRecord:
                 "tool_input": {"file_path": "/workspace/polylogue/README.md"},
                 "tool_result_is_error": None,
                 "tool_result_exit_code": None,
+                "tool_outcome": None,
                 "tool_result_outcome_unknown_reason": None,
                 "media_type": None,
                 "metadata": {"path": "/workspace/polylogue/README.md"},

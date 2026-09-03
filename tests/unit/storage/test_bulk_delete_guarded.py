@@ -32,6 +32,8 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
@@ -44,7 +46,7 @@ _SESSION_WRITE_GUARD = "session-write"
 _FTS_BULK_GUARD = "fts-bulk-session-write"
 
 
-def _install_canary_triggers(conn: sqlite3.Connection) -> None:
+def _install_canary_triggers(conn: sqlite3.Connection, counts: dict[str, int]) -> None:
     """Install AFTER-DELETE canary triggers on ``blocks`` carrying the exact
     same guard WHEN-clauses as the real ``blocks_action_pairs_ad`` and
     ``blocks_command_trigram_ad`` production triggers.
@@ -54,35 +56,42 @@ def _install_canary_triggers(conn: sqlite3.Connection) -> None:
     after ``delete_sessions`` directly proves the per-row rebuild machinery
     was NOT suppressed, without needing to inspect trigger-body SQL text
     (which SQLite's trace callback does not expose).
+
+    The canaries are TEMP triggers tallying through a scalar function into
+    ``counts``: an opened archive asserts its index semantic manifest against
+    the canonical DDL, so any object durably added to ``sqlite_master``
+    (``main``) makes the next open refuse. ``sqlite_temp_master`` is not
+    enumerated, and a TEMP trigger still fires on ``main.blocks`` deletes.
     """
-    conn.execute("CREATE TABLE IF NOT EXISTS _canary_counts (name TEXT PRIMARY KEY, n INTEGER NOT NULL)")
-    conn.execute("INSERT OR REPLACE INTO _canary_counts (name, n) VALUES ('session_write', 0), ('fts_bulk', 0)")
+
+    def _hit(name: str) -> int:
+        counts[str(name)] = counts.get(str(name), 0) + 1
+        return 0
+
+    counts.setdefault("session_write", 0)
+    counts.setdefault("fts_bulk", 0)
+    conn.create_function("_canary_hit", 1, _hit)
     conn.execute(
         f"""
-        CREATE TRIGGER IF NOT EXISTS _canary_action_pairs_ad
+        CREATE TEMP TRIGGER _canary_action_pairs_ad
         AFTER DELETE ON blocks
         WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{_SESSION_WRITE_GUARD}')
         BEGIN
-            UPDATE _canary_counts SET n = n + 1 WHERE name = 'session_write';
+            SELECT _canary_hit('session_write');
         END;
         """
     )
     conn.execute(
         f"""
-        CREATE TRIGGER IF NOT EXISTS _canary_trigram_ad
+        CREATE TEMP TRIGGER _canary_trigram_ad
         AFTER DELETE ON blocks
         WHEN old.block_type = 'tool_use' AND old.tool_detail_text != ' '
          AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = '{_FTS_BULK_GUARD}')
         BEGIN
-            UPDATE _canary_counts SET n = n + 1 WHERE name = 'fts_bulk';
+            SELECT _canary_hit('fts_bulk');
         END;
         """
     )
-    conn.commit()
-
-
-def _canary_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    return dict(conn.execute("SELECT name, n FROM _canary_counts").fetchall())
 
 
 def _trigram_ghost_posting_count(conn: sqlite3.Connection) -> int:
@@ -275,7 +284,9 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
         conn.close()
 
 
-def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(tmp_path: Path) -> None:
+def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Anti-vacuity: install canary triggers carrying the exact WHEN-clause
     guard conditions of the real ``blocks_action_pairs_ad`` /
     ``blocks_command_trigram_ad`` triggers, then prove neither one fires
@@ -296,16 +307,28 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(tmp_path: Pat
     with ArchiveStore(root) as facade:
         for i in range(2):
             session_ids.append(facade.write_parsed(_tool_session(f"canary-delete-{i}", n_pairs=3)))
-        _install_canary_triggers(facade._conn)
-        deleted = facade.delete_sessions(tuple(session_ids))
-    assert deleted == 2
 
     index_db_path = root / "index.db"
-    verify_conn = sqlite3.connect(index_db_path)
-    try:
-        counts = _canary_counts(verify_conn)
-    finally:
-        verify_conn.close()
+    counts: dict[str, int] = {"session_write": 0, "fts_bulk": 0}
+
+    # ``ArchiveStore.delete_sessions`` runs its deletes on a connection it
+    # opens itself (``sqlite3.connect(self.index_db_path)``), so the canaries
+    # must be installed on that connection as it is created -- neither the
+    # store's own ``_conn`` nor a separate connection observes those deletes.
+    real_connect = sqlite3.connect
+
+    def _connect_with_canaries(database: object, *args: object, **kwargs: object) -> sqlite3.Connection:
+        conn = real_connect(database, *args, **kwargs)  # type: ignore[arg-type]
+        if str(database) == str(index_db_path):
+            _install_canary_triggers(conn, counts)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", _connect_with_canaries)
+    with ArchiveStore(root) as facade:
+        deleted = facade.delete_sessions(tuple(session_ids))
+    monkeypatch.undo()
+    assert deleted == 2
+
     assert counts == {"session_write": 0, "fts_bulk": 0}, (
         f"unguarded per-row trigger canary fired during bulk delete: {counts}"
     )

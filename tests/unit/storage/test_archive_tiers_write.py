@@ -5542,7 +5542,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
         conn.close()
 
 
-def test_repo_edges_skip_bare_directory_with_no_git_evidence() -> None:
+def test_repo_edges_skip_bare_directory_with_no_git_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue-cijx.2 AC4: a directory with no git evidence is a directory, not a repository.
 
     A session whose only location signal is a cwd that resolves to no
@@ -5553,6 +5553,7 @@ def test_repo_edges_skip_bare_directory_with_no_git_evidence() -> None:
     """
     with tempfile.TemporaryDirectory(prefix="polylogue-bare-directory-") as isolated_root:
         isolated_path = Path(isolated_root)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(isolated_path))
         conn = _connect(isolated_path / "index.db")
         try:
             bare_dir = isolated_path / "not_a_repo"

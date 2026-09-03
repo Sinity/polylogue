@@ -5402,10 +5402,15 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert rollups[0].session_count == 1
         assert rollups[0].priced_session_count == 1
         assert rollups[0].unavailable_session_count == 0
-        assert rollups[0].status_counts == {"priced": 1}
-        assert rollups[0].total_usd == pytest.approx(0.0105)
-        assert rollups[0].basis.catalog_priced_usd == pytest.approx(0.0105)
-        assert rollups[0].confidence == 0.9
+        # The session carries a provider-reported total, so its estimate is
+        # "exact" and the rollup sums that into the provider lane. The parallel
+        # catalog lane stays 0.0: the reported cost carries no model, so there
+        # is no catalog price to value the same usage against (#4493).
+        assert rollups[0].status_counts == {"exact": 1}
+        assert rollups[0].total_usd == pytest.approx(1.25)
+        assert rollups[0].basis.provider_reported_usd == pytest.approx(1.25)
+        assert rollups[0].basis.catalog_priced_usd == 0.0
+        assert rollups[0].confidence == 1.0
         assert {rollup.origin for rollup in all_rollups} == {
             Origin.CODEX_SESSION.value,
             Origin.CHATGPT_EXPORT.value,

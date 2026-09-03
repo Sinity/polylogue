@@ -382,17 +382,55 @@ def test_merge_known_verdict_clears_conflicting_legacy_exit_code(
         conn.close()
 
 
-def test_result_without_structural_evidence_refuses_write(tmp_path: Path) -> None:
+def test_result_without_structural_evidence_is_admitted_as_unknown(tmp_path: Path) -> None:
+    """A ChatGPT result with no structural outcome is unknown, never success.
+
+    Anti-vacuity: letting the writer read successful-looking output text as a
+    verdict turns this row into ``ok``/``is_error=0``; dropping the
+    not-reported normalization leaves a flat NULL reason.
+    """
+    conn = _connect(tmp_path / "not-reported.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            _session(
+                Provider.CHATGPT,
+                ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="looks successful"),
+            ),
+        )
+        row = conn.execute(
+            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
+            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
+        ).fetchone()
+        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
+    finally:
+        conn.close()
+
+
+def test_result_without_any_outcome_evidence_refuses_write(tmp_path: Path) -> None:
+    """The writer seam refuses a tool_result carrying no outcome evidence at all.
+
+    ``ParsedContentBlock`` normalizes a missing verdict to ``not_reported``,
+    so the reason is cleared after construction here to reproduce the parser
+    defect the seam exists to catch: a result reaching the writer with neither
+    a verdict nor an unknown reason.
+
+    Anti-vacuity: deleting the ``outcome is None`` refusal in
+    ``derive_tool_outcomes`` writes the block with a NULL ``tool_outcome``
+    instead of raising, and the session-count assertion catches a partial write.
+    """
     conn = _connect(tmp_path / "refused.db")
     try:
+        session = _session(
+            Provider.CHATGPT,
+            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="looks successful"),
+        )
+        block = session.messages[1].blocks[0]
+        block.outcome_unknown_reason = None
+        assert block.is_error is None and block.tool_outcome is None
         with pytest.raises(ValueError, match="chatgpt-export.*unsupported tool_result block shape"):
-            write_parsed_session_to_archive(
-                conn,
-                _session(
-                    Provider.CHATGPT,
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="looks successful"),
-                ),
-            )
+            write_parsed_session_to_archive(conn, session)
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
     finally:
         conn.close()

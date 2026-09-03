@@ -571,7 +571,9 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
     ANTI-VACUITY: reverting ``INDEX_DDL``'s ``session_model_usage`` back to
     declaring ``priced_with``/``priced_at_ms`` (undoing the polylogue-resk
     DDL edit) makes the ``columns`` assertions below fail (both columns
-    would still be present after the copy-forward).
+    would still be present after the copy-forward). Narrowing
+    ``_apply_replace_table``'s copy to the primary key alone drops the
+    surviving token/count/credit values and fails the row assertion.
     """
     from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import _apply_replace_table
     from polylogue.storage.sqlite.lifecycle import resolve_canonical_index_objects
@@ -635,10 +637,10 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
             """
             INSERT INTO session_model_usage (
                 session_id, model_name, input_tokens, output_tokens,
-                message_count, priced_with, priced_at_ms, cost_usd, cost_provenance
+                message_count, priced_with, priced_at_ms, cost_usd, cost_credits, cost_provenance
             ) VALUES (
                 'codex-session:s1', 'gpt-4o', 1000, 500,
-                1, 'legacy-catalog', 1700000000000, 0.05, 'priced'
+                1, 'legacy-catalog', 1700000000000, 0.05, 0.5, 'priced'
             )
             """
         )
@@ -649,7 +651,7 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
 
         columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(session_model_usage)").fetchall()}
         row = conn.execute(
-            "SELECT input_tokens, output_tokens, message_count, cost_usd, cost_provenance "
+            "SELECT input_tokens, output_tokens, message_count, cost_credits "
             "FROM session_model_usage WHERE model_name = 'gpt-4o'"
         ).fetchone()
     finally:
@@ -657,7 +659,11 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
 
     assert "priced_with" not in columns
     assert "priced_at_ms" not in columns
-    assert row == (1000, 500, 1, 0.05, "priced")
+    # The canonical shape splits provider and catalog cost (#4493); the
+    # pre-v61 cost_usd/cost_provenance columns have no counterpart to copy into.
+    assert "cost_usd" not in columns
+    assert "cost_provenance" not in columns
+    assert row == (1000, 500, 1, 0.5)
 
 
 def test_v85_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> None:
