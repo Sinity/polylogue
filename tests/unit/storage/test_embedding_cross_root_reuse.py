@@ -51,6 +51,15 @@ class _CountingFakeVectorProvider:
         self.calls.append(list(texts))
         return [[0.5] * self.dimension for _ in texts]
 
+    def upsert(self, *args: object, **kwargs: object) -> None:
+        raise AssertionError("archive materialization must use the archive embedding route")
+
+    def query(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
+        return []
+
+    def query_by_session(self, *args: object, **kwargs: object) -> list[tuple[str, float]]:
+        return []
+
 
 def _write_session(root: Path, *, native_id: str, message_native_id: str) -> str:
     with ArchiveStore(root) as archive:
@@ -122,7 +131,7 @@ def test_vector_written_under_one_root_is_a_hit_under_a_fresh_root(
             conn, status_table="embeddings.embedding_status", session_ids=[fresh_session]
         )
     # The session ledger is per-root, so the fresh session is selected once...
-    assert pending_before == [fresh_session]
+    assert [pending.session_id for pending in pending_before] == [fresh_session]
 
     # ...but converging it finds every vector already present and spends no provider call.
     outcome = embed_archive_session_sync(fresh_root / "index.db", provider, fresh_session)
