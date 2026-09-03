@@ -29,6 +29,9 @@ class DurableReferenceRelation:
     identity_columns: tuple[str, ...]
     fields: tuple[DurableReferenceField, ...]
     transition: ReferenceTransition = "sealed"
+    #: Tier schema version that introduced this relation. A durable file at an
+    #: earlier version is valid and simply does not carry the table yet.
+    since_version: int = 0
 
 
 def _scalar(column: str, *, grammar: ReferenceGrammar = "public") -> DurableReferenceField:
@@ -53,21 +56,27 @@ _USER_RELATIONS = (
         ),
         "rewrite",
     ),
-    DurableReferenceRelation("user", "query_excision_ledger", ("ledger_id",), (_scalar("actor_ref"),)),
+    DurableReferenceRelation(
+        "user", "query_excision_ledger", ("ledger_id",), (_scalar("actor_ref"),), since_version=11
+    ),
     DurableReferenceRelation(
         "user",
         "result_set_members",
         ("result_set_id", "rank"),
         (_scalar("member_ref"),),
         "successor",
+        since_version=7,
     ),
     DurableReferenceRelation(
         "user",
         "query_evaluation_receipts",
         ("receipt_id",),
         (_scalar("runtime_build_ref", grammar="public-or-opaque"), _list("model_refs_json")),
+        since_version=8,
     ),
-    DurableReferenceRelation("user", "holdout_access_receipts", ("receipt_id",), (_scalar("accessor_ref"),)),
+    DurableReferenceRelation(
+        "user", "holdout_access_receipts", ("receipt_id",), (_scalar("accessor_ref"),), since_version=9
+    ),
     DurableReferenceRelation(
         "user",
         "annotation_batches",
@@ -80,8 +89,9 @@ _USER_RELATIONS = (
             _scalar("prompt_ref"),
             _list("assertion_refs_json"),
         ),
+        since_version=6,
     ),
-    DurableReferenceRelation("user", "user_settings", ("setting_key",), (_scalar("author_ref"),)),
+    DurableReferenceRelation("user", "user_settings", ("setting_key",), (_scalar("author_ref"),), since_version=4),
     DurableReferenceRelation(
         "user",
         "context_deliveries",
@@ -95,6 +105,7 @@ _USER_RELATIONS = (
             _list("assertion_refs_json"),
             _scalar("delivered_by_ref"),
         ),
+        since_version=5,
     ),
 )
 

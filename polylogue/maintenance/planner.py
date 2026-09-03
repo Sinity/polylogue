@@ -414,6 +414,32 @@ def _collect_archive_debt_statuses(
         )
 
 
+def _scoped_preview_counts(
+    config: Config,
+    *,
+    targets: tuple[str, ...],
+    session_ids: tuple[str, ...],
+) -> dict[str, int]:
+    """Count debt over exactly the requested sessions, per target.
+
+    Only targets whose execution route filters by ``session_ids`` and that
+    have a scoped counter appear in the result; the caller falls back to the
+    request-size clamp for the rest.
+    """
+    from contextlib import closing
+
+    from polylogue.storage.repair import count_empty_sessions_sync
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    if "empty_sessions" not in targets:
+        return {}
+    index_db = config.db_path
+    if not index_db.exists():
+        return {}
+    with closing(open_readonly_connection(index_db)) as conn:
+        return {"empty_sessions": count_empty_sessions_sync(conn, session_ids=session_ids)}
+
+
 def preview_backfill(
     config: Config,
     targets: tuple[str, ...],
@@ -496,12 +522,28 @@ def preview_backfill(
             if reason is None:
                 reason = _derive_invalidation_reason(status)
 
-    # When the caller narrows by session_ids, the affected-rows
-    # estimate must shrink to match: a one-session scope cannot
-    # legitimately advertise the full archive's debt as its plan.
+    # When the caller narrows by session_ids, the affected-rows estimate must
+    # be counted over the requested sessions, not clamped by the size of the
+    # request: a filter naming healthy sessions plus unrelated archive debris
+    # would otherwise advertise rows the execution route deletes nowhere.
     if effective_filter.session_ids is not None:
+        scoped_counts = _scoped_preview_counts(
+            config,
+            targets=tuple(name for name in resolved_names if name not in unsupported_targets),
+            session_ids=effective_filter.session_ids,
+        )
         scope_size = len(effective_filter.session_ids)
-        total_rows = min(total_rows, scope_size) if total_rows > 0 else 0
+        total_rows = 0
+        for name in resolved_names:
+            if name in unsupported_targets:
+                continue
+            if name in scoped_counts:
+                total_rows += scoped_counts[name]
+            else:
+                # No scoped counter for this target yet: fall back to the
+                # request-size clamp so the preview still cannot advertise
+                # archive-wide debt as a narrowed plan.
+                total_rows += min(preview.get(name, 0), scope_size)
         estimated_time_s = total_rows / 50.0 if total_rows > 0 else 0.0
 
     return BackfillOperation(
@@ -509,6 +551,7 @@ def preview_backfill(
         kind=BackfillKind.DERIVED_REBUILD,
         targets=resolved_names,
         status=OperationStatus.FAILED if scope_refusals else OperationStatus.PENDING,
+        error="; ".join(sample.message for sample in scope_refusals) or None,
         affected_rows=total_rows,
         estimated_time_s=estimated_time_s,
         results=preview_results,

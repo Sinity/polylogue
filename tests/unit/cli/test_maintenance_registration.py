@@ -258,3 +258,48 @@ def test_maintenance_status_help_output() -> None:
     assert result.exit_code == 0
     assert "--operation-id" in result.output
     assert "--all" in result.output
+
+
+def test_plan_reports_a_refused_scope_and_exits_nonzero(tmp_path: Path) -> None:
+    """A permanently refused plan is not a clean archive.
+
+    Anti-vacuity: removing the ``SystemExit(1)`` and the failure-sample loop
+    from ``plan_command`` makes this red -- the command would print
+    "Affected: 0 rows" and exit 0 for a request no target can apply.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with (
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive_root),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=tmp_path),
+    ):
+        result = CliRunner().invoke(
+            root_cli,
+            ["ops", "maintenance", "plan", "--target", "empty_sessions", "--origin", "claude-code-session"],
+        )
+
+    assert result.exit_code == 1
+    assert "UnsupportedScopeDimension" in result.output
+
+
+def test_plan_without_a_session_filter_is_not_a_scoped_request(tmp_path: Path) -> None:
+    """An omitted ``--session-id`` is no narrowing, so the default plan runs.
+
+    Anti-vacuity: dropping ``_coerce_session_ids``'s empty-tuple
+    normalization makes this red -- Click's ``()`` would read as a session
+    scope and ``superseded_raw_snapshots``, which honors no dimension, would
+    refuse with exit 1.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    with (
+        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive_root),
+        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=tmp_path),
+    ):
+        result = CliRunner().invoke(
+            root_cli,
+            ["ops", "maintenance", "plan", "--target", "superseded_raw_snapshots"],
+        )
+
+    assert result.exit_code == 0
+    assert "UnsupportedScopeDimension" not in result.output

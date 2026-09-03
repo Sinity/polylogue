@@ -1003,6 +1003,32 @@ def execute_replay(
                 kind="InvalidReplayCursor",
             )
 
+    # A target that cannot apply the requested scope is refused permanently,
+    # so decide that before the offline gate: an invalid scoped request under
+    # daemon write ownership must not be reported as a transient blocker the
+    # caller is invited to retry.
+    refused_specs = tuple(
+        spec for spec in pending_specs if unsupported_scope_dimensions(effective_filter, target=spec.name)
+    )
+    if refused_specs:
+        for spec in refused_specs:
+            prior_failures.append(
+                FailureSample(
+                    kind="UnsupportedScopeDimension",
+                    locator=f"target:{spec.name}",
+                    message=(
+                        f"Target {spec.name!r} cannot apply scope dimensions: "
+                        f"{', '.join(unsupported_scope_dimensions(effective_filter, target=spec.name))}"
+                    ),
+                )
+            )
+        if len(prior_failures) > MAX_FAILURE_SAMPLES:
+            prior_failures_truncated = True
+            del prior_failures[MAX_FAILURE_SAMPLES:]
+        refused_names = {spec.name for spec in refused_specs}
+        completed_targets = tuple(dict.fromkeys((*completed_targets, *(spec.name for spec in refused_specs))))
+        pending_specs = tuple(spec for spec in pending_specs if spec.name not in refused_names)
+
     blockers = offline_maintenance_blockers(
         config,
         repair=any(name in SAFE_REPAIR_TARGETS for name in resolved_names),
@@ -1099,7 +1125,7 @@ def execute_replay(
     if not pending_specs:
         state.cursor = CURSOR_DONE
         completed_at = datetime.now(timezone.utc).isoformat()
-        terminal_scope_refusal = _has_terminal_scope_refusal(state.failures)
+        terminal_scope_refusal = _has_terminal_scope_refusal(state.failures, resolved_names)
         final = BackfillOperation(
             operation_id=op_id,
             kind=BackfillKind.DERIVED_REBUILD,
@@ -1186,7 +1212,7 @@ def execute_replay(
 
     completed_at = datetime.now(timezone.utc).isoformat()
     all_targets_completed = all(name in state.completed_targets for name in resolved_names)
-    terminal_scope_refusal = _has_terminal_scope_refusal(state.failures)
+    terminal_scope_refusal = _has_terminal_scope_refusal(state.failures, resolved_names)
     successful = all_targets_completed and not terminal_scope_refusal
     status = OperationStatus.COMPLETED if successful else OperationStatus.FAILED
 
@@ -1275,9 +1301,19 @@ def _record_failure(
         )
 
 
-def _has_terminal_scope_refusal(samples: list[FailureSample]) -> bool:
-    """Return whether a completed replay carries a permanent scope refusal."""
-    return any(sample.kind == "UnsupportedScopeDimension" for sample in samples)
+def _has_terminal_scope_refusal(samples: list[FailureSample], targets: tuple[str, ...]) -> bool:
+    """Return whether a replay over ``targets`` carries a permanent scope refusal.
+
+    A resumed operation may hydrate refusal samples recorded for targets the
+    caller has since dropped from the request. Those name no target in the
+    current selection and must not fail a run that no longer includes them.
+    """
+    selected = {f"target:{name}" for name in targets}
+    return any(
+        sample.kind == "UnsupportedScopeDimension"
+        and (not sample.locator.startswith("target:") or sample.locator in selected)
+        for sample in samples
+    )
 
 
 def _run_one_target(
@@ -1473,7 +1509,11 @@ def _build_in_progress_snapshot(
     cursor = state.cursor
     if cursor == CURSOR_DONE:
         all_completed = all(name in state.completed_targets for name in state.targets)
-        status = OperationStatus.COMPLETED if all_completed else OperationStatus.FAILED
+        # A terminal scope refusal is a permanent failure even though its
+        # target is "attempted": a checkpoint written between the last target
+        # and the final receipt must never persist COMPLETED for it.
+        clean = all_completed and not _has_terminal_scope_refusal(state.failures, state.targets)
+        status = OperationStatus.COMPLETED if clean else OperationStatus.FAILED
         progress = 1.0
         completed_at: str | None = datetime.now(timezone.utc).isoformat()
     else:

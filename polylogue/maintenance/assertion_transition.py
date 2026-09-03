@@ -349,6 +349,14 @@ def apply_assertion_transition(
     _validate_plan_inventory(connections_by_tier, plan)
     _reject_sealed_reference_rewrites(connections_by_tier, plan)
     savepoints = tuple(f"assertion_transition_{index}" for index in range(len(connections)))
+    # Releasing the outermost savepoint on a connection in autocommit would
+    # commit that tier by itself, so a crash between the two releases could
+    # leave the user transition durable with no audit record. Opening an
+    # explicit transaction first makes every release a nested one: nothing is
+    # durable on either tier until the caller commits both.
+    for connection in connections:
+        if not connection.in_transaction:
+            connection.execute("BEGIN")
     for connection, savepoint in zip(connections, savepoints, strict=True):
         connection.execute(f"SAVEPOINT {savepoint}")
     try:
@@ -425,10 +433,17 @@ def _validate_reference_catalog(conn: sqlite3.Connection, tier: DurableTier) -> 
                 raise ObjectRefReconciliationError(
                     f"durable reference column lacks a descriptor: {tier}.{table}.{column}"
                 )
-    if not _has_complete_durable_schema_marker(conn, tier):
-        return
     tables = frozenset(columns_by_table)
+    version = _tier_schema_version(conn)
+    if version <= 0 and not _has_complete_durable_schema_marker(conn, tier):
+        # No migration cursor and no complete-schema marker: nothing here
+        # claims to be a whole durable catalog.
+        return
     for relation in relations:
+        if version and relation.since_version > version:
+            # The file predates the migration that introduced this relation.
+            # A valid older archive is not an incomplete catalog.
+            continue
         if relation.table not in tables:
             raise ObjectRefReconciliationError(f"durable relation is missing: {tier}.{relation.table}")
         present = set(columns_by_table[relation.table])
@@ -441,8 +456,15 @@ def _validate_reference_catalog(conn: sqlite3.Connection, tier: DurableTier) -> 
 
 
 def _has_complete_durable_schema_marker(conn: sqlite3.Connection, tier: DurableTier) -> bool:
+    """Whether an unversioned file still presents a whole durable catalog."""
     marker = "query_unit_frame_state" if tier == "user" else "archive_authority"
     return marker in _tables(conn)
+
+
+def _tier_schema_version(conn: sqlite3.Connection) -> int:
+    """Return the durable file's migration cursor (``PRAGMA user_version``)."""
+    row = conn.execute("PRAGMA user_version").fetchone()
+    return int(row[0] or 0) if row is not None else 0
 
 
 def _field_values(
@@ -591,9 +613,12 @@ def _insert_result_set_successor(
     row: tuple[object, ...],
     member_refs: tuple[str, ...],
 ) -> None:
+    # The successor id is a hash of the manifest it derives from, so an id
+    # that already exists already carries this exact content: a retried
+    # application converges instead of raising.
     conn.execute(
         """
-        INSERT INTO result_sets (
+        INSERT OR IGNORE INTO result_sets (
             result_set_id, query_hash, grain, corpus_epoch, member_count,
             membership_merkle_root, ordered_rank_hash, exactness,
             persistence_class, created_at_ms, privacy_class,
@@ -610,7 +635,7 @@ def _insert_result_set_successor(
         ),
     )
     conn.executemany(
-        "INSERT INTO result_set_members (result_set_id, rank, member_ref) VALUES (?, ?, ?)",
+        "INSERT OR IGNORE INTO result_set_members (result_set_id, rank, member_ref) VALUES (?, ?, ?)",
         ((successor_id, rank, member_ref) for rank, member_ref in enumerate(member_refs)),
     )
 
@@ -621,12 +646,13 @@ def _repoint_result_set_owners(conn: sqlite3.Connection, old: str, new: str) -> 
         and conn.execute("SELECT 1 FROM query_excision_ledger WHERE result_set_id = ?", (old,)).fetchone()
     ):
         raise ObjectRefReconciliationError("cannot replace an excised result-set manifest")
-    _clone_holdout_policy(conn, old, new)
-    owner_columns = (
-        ("retained_query_runs", "result_set_id"),
-        ("query_evaluation_receipts", "result_set_id"),
-        ("watched_query_baselines", "result_set_id"),
-    )
+    _refuse_holdout_result_set(conn, old)
+    # ``retained_query_runs`` and ``query_evaluation_receipts`` record what was
+    # executed against which manifest. That manifest still exists, and their
+    # ``result_set_id`` is the exact-retry identity ``put_retained_query_run``
+    # compares against, so rewriting it would make a replayed execution look
+    # like a conflicting one. Only the forward-looking baseline moves.
+    owner_columns = (("watched_query_baselines", "result_set_id"),)
     tables = frozenset(_tables(conn))
     for table, column in owner_columns:
         if table in tables and column in _columns(conn, table):
@@ -637,33 +663,23 @@ def _repoint_result_set_owners(conn: sqlite3.Connection, old: str, new: str) -> 
             )
 
 
-def _clone_holdout_policy(conn: sqlite3.Connection, old: str, new: str) -> None:
+def _refuse_holdout_result_set(conn: sqlite3.Connection, old: str) -> None:
+    """Refuse to give a holdout manifest a successor id.
+
+    Holdout contamination is recorded per ``result_set_id``
+    (``holdout_cohorts.has_holdout_contamination``) and is permanent once
+    true. Two ids for one cohort would let an undeclared access recorded
+    against either id read as clean under the other, so the cohort keeps
+    exactly one manifest identity.
+    """
     if not _table_exists(conn, "result_set_holdout_policies"):
         return
     policy = conn.execute(
-        """
-        SELECT frame, selection_definition_json, intended_confirmation_use,
-               authority, created_epoch, created_at_ms
-        FROM result_set_holdout_policies WHERE result_set_id = ?
-        """,
+        "SELECT 1 FROM result_set_holdout_policies WHERE result_set_id = ?",
         (old,),
     ).fetchone()
-    if policy is None:
-        return
-    if (
-        _table_exists(conn, "holdout_access_receipts")
-        and conn.execute("SELECT 1 FROM holdout_access_receipts WHERE result_set_id = ?", (old,)).fetchone()
-    ):
-        raise ObjectRefReconciliationError("cannot replace a result set with holdout access receipts")
-    conn.execute(
-        """
-        INSERT INTO result_set_holdout_policies (
-            result_set_id, frame, selection_definition_json,
-            intended_confirmation_use, authority, created_epoch, created_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (new, *policy),
-    )
+    if policy is not None:
+        raise ObjectRefReconciliationError("cannot replace a result set under a holdout policy")
 
 
 def _table_exists(conn: sqlite3.Connection, name: str) -> bool:

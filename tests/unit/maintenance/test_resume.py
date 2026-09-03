@@ -995,3 +995,114 @@ def patched_dispatch_callable(calls: dict[str, list[str]], name: str):  # type: 
 
 def patched_dispatch_table(calls: dict[str, list[str]]) -> dict[str, object]:
     return {name: patched_dispatch_callable(calls, name) for name in calls}
+
+
+def test_unsupported_scope_is_refused_before_the_offline_gate(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]]
+) -> None:
+    """A scope a target cannot apply is terminal, not a retryable blocker.
+
+    Anti-vacuity: moving the refusal back inside ``_run_one_target`` (after
+    ``offline_maintenance_blockers``) makes this red -- the receipt would
+    carry ``OfflineMaintenanceBlocked`` and invite a retry of a request that
+    can never succeed.
+    """
+    config = _make_config(tmp_path)
+    blocker = RepairResult(
+        name="superseded_raw_snapshots",
+        category=MaintenanceCategory.DERIVED_REPAIR,
+        destructive=False,
+        repaired_count=0,
+        success=False,
+        detail="daemon owns writes",
+    )
+    with patch(
+        "polylogue.maintenance.replay.offline_maintenance_blockers",
+        return_value=[blocker],
+    ):
+        operation = execute_replay(
+            config,
+            targets=("superseded_raw_snapshots",),
+            operation_id="op-scope-before-offline",
+            scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+        )
+
+    assert operation.status is OperationStatus.FAILED
+    assert {sample.kind for sample in operation.failure_samples.samples} == {"UnsupportedScopeDimension"}
+
+
+def test_terminal_scope_refusal_checkpoints_as_failed(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The mid-run checkpoint of a permanent refusal is never COMPLETED.
+
+    The checkpoint written after the last target -- before the final receipt
+    exists -- is what a crash leaves behind, so it is read back here through
+    the progress callback that fires immediately after it.
+
+    Anti-vacuity: restoring ``status = COMPLETED if all_completed else
+    FAILED`` in ``_build_in_progress_snapshot`` makes this red -- the crash
+    window would persist COMPLETED for a permanently refused request.
+    """
+    config = _make_config(tmp_path)
+
+    def empty_sessions(cfg: Config, dry_run: bool = False, **kwargs: Any) -> RepairResult:
+        return _ok_result("empty_sessions")
+
+    monkeypatch.setattr(replay_module, "repair_empty_sessions", empty_sessions)
+    monkeypatch.setitem(repair_module.REPAIR_HANDLERS, "empty_sessions", empty_sessions)
+
+    checkpointed: list[str] = []
+
+    def observe(_progress: ReplayProgress) -> None:
+        state = load_state(config, "op-refusal-checkpoint")
+        assert state is not None
+        snapshot = state["operation"]
+        assert isinstance(snapshot, dict)
+        checkpointed.append(str(snapshot["status"]))
+
+    operation = execute_replay(
+        config,
+        targets=("empty_sessions", "superseded_raw_snapshots"),
+        operation_id="op-refusal-checkpoint",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+        progress_callback=observe,
+    )
+    assert operation.status is OperationStatus.FAILED
+    assert checkpointed
+    assert OperationStatus.COMPLETED.value not in checkpointed
+
+
+def test_resume_ignores_a_refusal_from_an_excluded_target(
+    tmp_path: Path, patched_dispatch: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A narrowed resume is judged on its own targets only.
+
+    Anti-vacuity: dropping the ``targets`` filter from
+    ``_has_terminal_scope_refusal`` makes this red -- the hydrated refusal
+    recorded for ``superseded_raw_snapshots`` would fail a resume that no
+    longer requests it.
+    """
+    config = _make_config(tmp_path)
+
+    def empty_sessions(cfg: Config, dry_run: bool = False, **kwargs: Any) -> RepairResult:
+        return _ok_result("empty_sessions")
+
+    monkeypatch.setattr(replay_module, "repair_empty_sessions", empty_sessions)
+    monkeypatch.setitem(repair_module.REPAIR_HANDLERS, "empty_sessions", empty_sessions)
+
+    refused = execute_replay(
+        config,
+        targets=("empty_sessions", "superseded_raw_snapshots"),
+        operation_id="op-narrowed-resume",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+    assert refused.status is OperationStatus.FAILED
+
+    resumed = execute_replay(
+        config,
+        targets=("empty_sessions",),
+        operation_id="op-narrowed-resume",
+        scope_filter=MaintenanceScopeFilter(session_ids=("s-1",)),
+    )
+    assert resumed.status is OperationStatus.COMPLETED

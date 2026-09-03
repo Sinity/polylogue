@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from typing import Any
 
 import pytest
 
@@ -11,6 +12,8 @@ from polylogue.maintenance.assertion_transition import (
     ObjectRefReconciliationError,
     SourceIdentityClaims,
     TransitionBinding,
+    _insert_result_set_successor,
+    _result_set_successor_id,
     apply_assertion_transition,
     enumerate_assertion_object_refs,
     enumerate_durable_reference_inventory,
@@ -20,6 +23,7 @@ from polylogue.storage.sqlite.archive_tiers.audit import AUDIT_DDL
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from polylogue.storage.sqlite.holdout_cohorts import mark_holdout
 from polylogue.storage.sqlite.query_objects import (
     EvaluationReceipt,
     get_result_set,
@@ -323,8 +327,14 @@ def test_result_set_member_transition_clones_the_manifest_and_repoints_owners() 
 
     apply_assertion_transition(conn, plan, binding=binding, verified_backup=True)
 
-    successor = conn.execute("SELECT result_set_id FROM retained_query_runs WHERE run_id = 'qr_finding'").fetchone()[0]
+    successor = conn.execute("SELECT result_set_id FROM result_sets WHERE result_set_id != 'finding'").fetchone()[0]
     assert successor != "finding"
+    # Execution records name the manifest they actually ran against; that
+    # manifest is retained, so they are not repointed.
+    assert (
+        conn.execute("SELECT result_set_id FROM retained_query_runs WHERE run_id = 'qr_finding'").fetchone()[0]
+        == "finding"
+    )
     assert (
         tuple(
             row[0]
@@ -349,7 +359,7 @@ def test_result_set_member_transition_clones_the_manifest_and_repoints_owners() 
     assert manifest.membership_merkle_root == membership_merkle_root(new)
     assert tuple(
         conn.execute("SELECT result_set_id FROM query_evaluation_receipts WHERE receipt_id = 'receipt'").fetchone()
-    ) == (successor,)
+    ) == ("finding",)
     assert tuple(conn.execute("SELECT scope_ref FROM assertions WHERE assertion_id = 'assertion-0'").fetchone()) == (
         f"result-set:{successor}",
     )
@@ -554,3 +564,184 @@ def test_sealed_durable_history_is_never_rewritten(tier: str, ddl: str, select: 
     with pytest.raises(ObjectRefReconciliationError, match=f"sealed durable relation: {tier}."):
         apply_assertion_transition(user, plan, binding=_binding(), verified_backup=True, audit_conn=audit)
     assert connection.execute(select).fetchone()[0] != new
+
+
+def _whole_inventory_plan(conn: sqlite3.Connection, old: str, new: str, audit: sqlite3.Connection | None = None):  # type: ignore[no-untyped-def]
+    """Plan that migrates ``old``→``new`` and preserves every other ref."""
+    refs = tuple(item.value for item in enumerate_durable_reference_inventory(conn, audit))
+    return reconcile_object_refs(
+        refs,
+        candidate_refs=tuple(new if ref == old else ref for ref in refs),
+        source_claims=SourceIdentityClaims.from_refs(()),
+        migration_map=IdentityMigrationMap("producer", ((old, new),)),
+        binding=_binding(),
+    )
+
+
+def _member_transition_fixture(conn: sqlite3.Connection) -> tuple[Any, tuple[str, ...], tuple[str, ...]]:
+    """Seed one promoted result set whose members all need a new identity."""
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, ArchiveTier.USER)
+    query = put_query(
+        conn,
+        {"field": "origin", "value": "claude-code"},
+        grain="message",
+        lane="dialogue",
+        rank_policy="fixture",
+        created_at_ms=1,
+    )
+    old = tuple(f"message:claude-code:legacy:{index}" for index in range(4))
+    new = tuple(f"message:claude-code:current:n:{index}" for index in range(4))
+    put_result_set(
+        conn,
+        result_set_id="finding",
+        query_hash=query.query_hash,
+        grain="message",
+        corpus_epoch="before",
+        member_refs=old,
+        exactness="exact",
+        persistence_class="finding",
+        created_at_ms=2,
+    )
+    return query, old, new
+
+
+def _member_transition_plan(conn: sqlite3.Connection, old: tuple[str, ...], new: tuple[str, ...]):  # type: ignore[no-untyped-def]
+    refs = tuple(item.value for item in enumerate_durable_reference_inventory(conn))
+    return reconcile_object_refs(
+        refs,
+        candidate_refs=tuple(new) + tuple(ref for ref in refs if ref not in old),
+        source_claims=SourceIdentityClaims.from_refs(()),
+        migration_map=IdentityMigrationMap("producer", tuple(zip(old, new, strict=True))),
+        binding=_binding(),
+    )
+
+
+def test_retained_execution_records_survive_a_result_set_transition() -> None:
+    """A replayed execution is still the same execution after a transition.
+
+    Anti-vacuity: putting ``retained_query_runs`` back into
+    ``_repoint_result_set_owners``'s ``owner_columns`` makes this red --
+    ``put_retained_query_run`` compares ``result_set_id`` as exact-retry
+    identity and would raise "conflicts with a different execution".
+    """
+    conn = sqlite3.connect(":memory:")
+    query, old, new = _member_transition_fixture(conn)
+    put_retained_query_run(
+        conn, run_id="qr_finding", query_hash=query.query_hash, result_set_id="finding", retained_at_ms=3
+    )
+    plan = _member_transition_plan(conn, old, new)
+
+    apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
+
+    retry = put_retained_query_run(
+        conn, run_id="qr_finding", query_hash=query.query_hash, result_set_id="finding", retained_at_ms=3
+    )
+    assert retry.result_set_id == "finding"
+
+
+def test_result_set_successor_creation_is_retry_safe() -> None:
+    """Creating the same deterministic successor twice converges.
+
+    The successor id is a hash of the manifest it derives from, so a retried
+    application recomputes exactly this id and this content.
+
+    Anti-vacuity: restoring the plain ``INSERT INTO result_sets`` /
+    ``INSERT INTO result_set_members`` makes this red with
+    ``sqlite3.IntegrityError``.
+    """
+    conn = sqlite3.connect(":memory:")
+    _query, old, new = _member_transition_fixture(conn)
+    row = tuple(conn.execute("SELECT * FROM result_sets WHERE result_set_id = 'finding'").fetchone())
+    successor_id = _result_set_successor_id("finding", old, new)
+
+    _insert_result_set_successor(conn, successor_id, row, new)
+    _insert_result_set_successor(conn, successor_id, row, new)
+
+    assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE result_set_id = ?", (successor_id,)).fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM result_set_members WHERE result_set_id = ?", (successor_id,)).fetchone()[
+        0
+    ] == len(new)
+
+
+def test_a_holdout_result_set_is_never_given_a_second_identity() -> None:
+    """A holdout cohort keeps exactly one manifest id.
+
+    Contamination is recorded per ``result_set_id`` and is permanent once
+    true, so a second id would let an undeclared access under one id read as
+    clean under the other.
+
+    Anti-vacuity: restoring ``_clone_holdout_policy``'s successor INSERT
+    makes this red -- the transition would succeed and
+    ``has_holdout_contamination`` would answer independently for each id.
+    """
+    conn = sqlite3.connect(":memory:")
+    _query, old, new = _member_transition_fixture(conn)
+    mark_holdout(
+        conn,
+        result_set_id="finding",
+        frame="evaluation",
+        selection_definition={"kind": "fixture"},
+        intended_confirmation_use="confirm",
+        authority="user:local",
+        created_epoch="before",
+        created_at_ms=3,
+    )
+    plan = _member_transition_plan(conn, old, new)
+
+    with pytest.raises(ObjectRefReconciliationError, match="holdout policy"):
+        apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
+    assert conn.execute("SELECT COUNT(*) FROM result_sets").fetchone()[0] == 1
+
+
+def test_catalog_completeness_follows_the_tier_schema_version() -> None:
+    """A durable file at an earlier migration is valid, not incomplete.
+
+    Anti-vacuity: restoring the ``query_unit_frame_state`` marker check makes
+    this red -- a user tier at version 10 carries that table but not
+    ``query_excision_ledger``, and every transition against it would be
+    refused as an incomplete catalog.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(USER_DDL)
+    conn.execute("DROP TABLE query_excision_ledger")
+    conn.execute("PRAGMA user_version = 10")
+    old, new = "message:old", "message:new"
+    conn.execute(
+        "INSERT INTO assertions (assertion_id, target_ref, kind, created_at_ms, updated_at_ms) "
+        "VALUES ('a', ?, 'note', 3, 3)",
+        (old,),
+    )
+    plan = _whole_inventory_plan(conn, old, new)
+
+    apply_assertion_transition(conn, plan, binding=_binding(), verified_backup=True)
+    assert conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'a'").fetchone()[0] == new
+
+
+def test_neither_durable_tier_commits_before_the_caller_commits() -> None:
+    """Releasing the savepoints leaves both tiers uncommitted.
+
+    Anti-vacuity: removing the ``BEGIN`` that encloses each connection makes
+    this red -- the outermost savepoint release would commit the user tier by
+    itself, so a crash before the audit release would strand a durable
+    transition with no audit record.
+    """
+    user = sqlite3.connect(":memory:")
+    audit = sqlite3.connect(":memory:")
+    user.executescript(USER_DDL)
+    audit.executescript(AUDIT_DDL)
+    old, new = "message:old", "message:new"
+    user.execute(
+        "INSERT INTO assertions (assertion_id, target_ref, kind, created_at_ms, updated_at_ms) "
+        "VALUES ('a', ?, 'note', 3, 3)",
+        (old,),
+    )
+    user.commit()
+    plan = _whole_inventory_plan(user, old, new, audit)
+
+    apply_assertion_transition(user, plan, binding=_binding(), verified_backup=True, audit_conn=audit)
+
+    assert user.in_transaction
+    assert audit.in_transaction
+    user.rollback()
+    assert user.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'a'").fetchone() == (old,)
