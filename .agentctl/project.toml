@@ -48,7 +48,7 @@ timeout_seconds = 3600
 description = "Run Polylogue's static fast verification gates"
 exec = ["devtools", "verify", "--quick"]
 pool = "normal"
-result = "pytest"
+result = "json"
 cache = "tree+environment"
 timeout_seconds = 900
 
