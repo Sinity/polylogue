@@ -29,6 +29,8 @@ from polylogue.daemon.cursor_lag_status import (
     cursor_lag_summary_info,
 )
 from polylogue.daemon.health import DaemonHealth, HealthSeverity, HealthTier, _check_cursor_lag_medium
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.frozen_clock import FrozenClock
 
 # Pin ``datetime.now`` everywhere the cursor-lag stack reads it so the
@@ -69,33 +71,22 @@ def _seed_live_cursor(
     db: Path,
     rows: list[tuple[str, int, int, int, int, str]],
 ) -> None:
-    """Create + populate the native ``ingest_cursor`` table in the sibling
-    ``ops.db`` with the minimal column set the projection reads.
+    """Populate ``ingest_cursor`` in a bootstrapped sibling ``ops.db``.
 
     ``rows`` = ``(source_path, byte_size, byte_offset, failure_count,
     excluded, updated_at_iso)``. The archive cursor-lag projection
     (``polylogue/daemon/cursor_lag_status.py``) reads ``ingest_cursor``
     columns ``source_path, stat_size, byte_offset, failure_count,
-    excluded, updated_at_ms`` from ops.db.
+    excluded, updated_at_ms`` from ops.db, and opens the tier through the
+    schema-validating reader, so the file must be a real OPS tier.
     """
     from datetime import datetime as _dt
 
     ops_db = db.with_name("ops.db")
     ops_db.parent.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
     conn = sqlite3.connect(str(ops_db))
     try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ingest_cursor (
-                source_path TEXT PRIMARY KEY,
-                stat_size INTEGER,
-                byte_offset INTEGER NOT NULL DEFAULT 0,
-                failure_count INTEGER NOT NULL DEFAULT 0,
-                excluded INTEGER NOT NULL DEFAULT 0,
-                updated_at_ms INTEGER NOT NULL
-            )
-            """
-        )
         native_rows = [
             (
                 source_path,

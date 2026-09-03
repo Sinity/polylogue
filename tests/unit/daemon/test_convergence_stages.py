@@ -39,7 +39,11 @@ from polylogue.storage.derived.session.runtime import SessionInsightCounts
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_active_archive_root,
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import open_connection
@@ -848,7 +852,7 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive_db = tmp_path / "index.db"
-    archive_db.touch()
+    initialize_archive_database(archive_db, ArchiveTier.INDEX)
     source_path = tmp_path / "codex.jsonl"
 
     monkeypatch.setattr(

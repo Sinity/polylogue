@@ -181,7 +181,9 @@ def _active_archive_index_path(db_path: Path) -> Path | None:
     if index_db is None:
         return None
     try:
-        with closing(open_readonly_connection(index_db, timeout=5.0)) as conn:
+        # Presence inspection only: a schema-skewed index must still reach the
+        # reconcile route, which owns the typed refusal.
+        with closing(open_readonly_connection(index_db, timeout=5.0, validate_schema=False)) as conn:
             return index_db if _table_exists(conn, "sessions") else None
     except Exception:
         logger.warning("embed: failed to inspect archive index", exc_info=True)
