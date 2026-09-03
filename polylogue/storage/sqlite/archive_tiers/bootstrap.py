@@ -548,8 +548,12 @@ def initialize_archive_database(
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
+        # ops.db is disposable and converges by re-applying its idempotent
+        # additive DDL, so an absent or superseded identity stamp is a
+        # convergence input rather than a refusal; index.db is rebuilt through
+        # the daemon route and must refuse a foreign identity here.
         derived_tier = None
-        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS) and current_version != 0:
+        if tier is ArchiveTier.INDEX and current_version != 0:
             from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier
 
             derived_tier = DerivedTier(tier.value)
