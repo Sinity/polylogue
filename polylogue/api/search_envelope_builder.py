@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import fields, replace
+from time import monotonic
 from typing import TYPE_CHECKING
 
-from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
+from polylogue.operations.authority import authority_for_config
+from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 from polylogue.surfaces.payloads import (
     InvalidSearchCursorError,
@@ -58,6 +60,7 @@ async def build_search_envelope_for_spec(
     cursor, diagnostics, and hit-payload assembly here prevents those surfaces
     from drifting while still letting each caller own parameter parsing.
     """
+    started_at = monotonic()
     display_limit = limit if limit is not None else (spec.limit or 50)
     display_offset = offset if offset is not None else spec.offset
     request_identity = search_cursor_request_identity(
@@ -133,9 +136,10 @@ async def build_search_envelope_for_spec(
         request_identity=request_identity,
         execution=execution,
         authority=authority
-        or build_authority_envelope(
-            facade.config.archive_root,
+        or authority_for_config(
+            facade.config,
             server_identity="daemon" if serving_identity == "daemon" else "direct",
+            started_at=started_at,
         ),
     )
 

@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from datetime import date, datetime
 from html import escape as html_escape
+from time import monotonic
 from typing import TYPE_CHECKING, TypeAlias
 from urllib.parse import quote
 
@@ -37,8 +38,9 @@ from polylogue.cli.query_stats import (
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
+from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.formatting import format_session
-from polylogue.surfaces.authority import AuthorityEnvelope, build_authority_envelope
+from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     SearchCursor,
     SessionSearchHitPayload,
@@ -591,6 +593,7 @@ async def output_search_hits(
     JSON envelope output uses it to drop hits up to and including the anchor
     and to mint a fresh ``next_cursor`` from the page tail.
     """
+    started_at = monotonic()
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [hit.session_id for hit in hits]
@@ -615,7 +618,7 @@ async def output_search_hits(
                 total=total,
                 message_counts=msg_counts,
                 cursor=cursor,
-                authority=build_authority_envelope(env.config.archive_root, server_identity="direct"),
+                authority=authority_for_config(env.config, server_identity="direct", started_at=started_at),
             )
         )
         return

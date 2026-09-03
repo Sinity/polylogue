@@ -8,8 +8,8 @@ import json
 import logging
 import sqlite3
 import uuid
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
-from contextlib import closing
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1639,6 +1639,33 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     )
 
 
+@contextmanager
+def _readable_user_tier(config: Config) -> Iterator[sqlite3.Connection]:
+    """Open ``user.db`` read-only, refusing an unreadable durable tier.
+
+    The user tier is durable and irreplaceable: an assertion read that cannot
+    reach it must raise, never report an empty result set that a caller would
+    read as "no candidates".
+    """
+
+    user_db = _active_archive_root(config) / "user.db"
+    guidance = "Restore the user tier from a verified backup before reading assertions."
+    if not user_db.is_file():
+        reason = "the path is not a regular file" if user_db.exists() else "the file does not exist"
+        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=reason, guidance=guidance)
+    try:
+        conn = open_readonly_connection(user_db)
+    except sqlite3.Error as exc:
+        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=str(exc), guidance=guidance) from exc
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+    except sqlite3.Error as exc:
+        raise ArchiveTierUnavailableError(tier="user", path=str(user_db), reason=str(exc), guidance=guidance) from exc
+    finally:
+        conn.close()
+
+
 def _archive_list_assertion_candidate_reviews(
     config: Config,
     *,
@@ -1651,24 +1678,14 @@ def _archive_list_assertion_candidate_reviews(
 
     from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidate_reviews
 
-    user_db = _active_archive_root(config) / "user.db"
-    if not user_db.exists():
-        return []
-    try:
-        conn = open_readonly_connection(user_db)
-        conn.row_factory = sqlite3.Row
-        try:
-            return list_assertion_candidate_reviews(
-                conn,
-                target_ref=target_ref,
-                kinds=kinds,
-                statuses=statuses,
-                limit=limit,
-            )
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return []
+    with _readable_user_tier(config) as conn:
+        return list_assertion_candidate_reviews(
+            conn,
+            target_ref=target_ref,
+            kinds=kinds,
+            statuses=statuses,
+            limit=limit,
+        )
 
 
 def _archive_list_assertion_candidates(
@@ -1678,20 +1695,16 @@ def _archive_list_assertion_candidates(
     kinds: Sequence[str | AssertionKind] | None = None,
     limit: int | None = None,
 ) -> list[Any]:
-    """Read every pending candidate kind from the durable judgment queue."""
+    """Read every pending candidate kind from the durable judgment queue.
 
-    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CANDIDATE_REVIEW_STATUSES
+    The actionable queue excludes expired claims. The sibling review read model
+    retains them on purpose, so it cannot stand in for this one.
+    """
 
-    return [
-        review.candidate
-        for review in _archive_list_assertion_candidate_reviews(
-            config,
-            target_ref=target_ref,
-            kinds=kinds,
-            statuses=(ASSERTION_CANDIDATE_REVIEW_STATUSES[0],),
-            limit=limit,
-        )
-    ]
+    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidates
+
+    with _readable_user_tier(config) as conn:
+        return list_assertion_candidates(conn, target_ref=target_ref, kinds=kinds, limit=limit)
 
 
 def _archive_assertion_candidate_queue_health(

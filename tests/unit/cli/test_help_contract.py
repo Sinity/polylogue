@@ -143,3 +143,33 @@ class TestHelpStaysOnStdout:
         assert "Usage:" in result.stdout
         # Click writes successful --help to stdout; stderr stays empty.
         assert "Usage:" not in result.stderr
+
+
+class TestInsightsRoutesAreCanonical:
+    """Operational insight verbs live under one route.
+
+    ``docs/insights.md`` places readiness, audit, and export under
+    ``polylogue ops insights``. Registering the same group at the root as well
+    published a second name for every one of them.
+    """
+
+    def test_operational_insight_verbs_are_reachable_only_under_ops(self, runner: CliRunner) -> None:
+        """Anti-vacuity: re-add ``_L("insights")`` to ROOT_COMMANDS and both the
+        registration assertion and the root dispatch below start succeeding.
+
+        ``--help`` on the root group short-circuits to root help for any token,
+        so the route is probed with a real subcommand instead.
+        """
+
+        under_ops = runner.invoke(cli, ["ops", "insights", "--help"])
+        assert under_ops.exit_code == 0
+        assert TRACEBACK_SENTINEL not in under_ops.output
+        for verb in ("status", "audit", "export"):
+            assert verb in under_ops.output
+
+        assert "insights" not in cli.commands
+
+        at_root = runner.invoke(cli, ["insights", "status"])
+        assert at_root.exit_code != 0
+        assert "No such command" in at_root.output
+        assert TRACEBACK_SENTINEL not in at_root.output

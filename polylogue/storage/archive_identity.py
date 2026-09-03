@@ -283,6 +283,29 @@ class ArchiveIdentity:
         index = next(tier for tier in tiers if tier.name == "index")
         return cls(location.configured_root, tiers, index.stable_id, generation_owner, generation_state)
 
+    @classmethod
+    def resolve_pinned_index(
+        cls,
+        root: Path,
+        index_path: Path,
+        *,
+        generation_owner: str | None = None,
+        generation_state: Literal["active", "inactive"] = "active",
+    ) -> ArchiveIdentity:
+        """Resolve durable tiers under ``root`` against one already-open index.
+
+        A reader pins its index for the life of the read. Identity built for
+        that reader names the generation it holds, not whichever generation the
+        active pointer names now.
+        """
+
+        tiers = tuple(
+            TierFileIdentity.resolve(name, index_path if name == "index" else root / filename)
+            for name, filename in TIER_FILENAMES
+        )
+        index = next(tier for tier in tiers if tier.name == "index")
+        return cls(root, tiers, index.stable_id, generation_owner, generation_state)
+
     def tier(self, name: ArchiveTierName) -> TierFileIdentity:
         return next(tier for tier in self.tiers if tier.name == name)
 
