@@ -11,12 +11,12 @@ on:
 permissions:
   contents: read
 
-# The host has one pytest slot. Serialising here means a queued run waits in
-# GitHub rather than holding a runner while blocked on the slot, and a run that
-# is already proving a revision is never discarded.
+# One run per ref: a newer push supersedes the run for the same PR. Host-wide
+# serialisation of pytest is the pueue `pytest` slot, not GitHub; a global
+# group here cancels every waiting run whenever another PR pushes.
 concurrency:
-  group: pytest
-  cancel-in-progress: false
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
