@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import cast
-
 import aiosqlite
 
 from polylogue.storage.query_models import ThreadListQuery
@@ -23,7 +21,7 @@ async def get_thread(
     from polylogue.storage.derived.session.threads import build_thread_records_for_roots_async
 
     records = await build_thread_records_for_roots_async(conn, [thread_id])
-    return cast(ThreadRecord | None, records.get(thread_id))
+    return records.get(thread_id)
 
 
 async def list_threads(
