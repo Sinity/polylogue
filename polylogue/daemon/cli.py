@@ -1377,20 +1377,10 @@ def _drain_raw_materialization_once(
     function is ever scheduled onto the writer hold; passing ``None``
     (the flag-off default) reproduces the exact unmodified in-hold parse.
     """
-    from polylogue.paths import archive_root
-    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
-
-    # A Codex state snapshot admitted without its terminal receipt is an
-    # incomparable cursor row to the gate below, and every route that could
-    # finalize it sits behind that gate; finalize from the retained blob first.
-    resolve_retained_codex_state_receipts(archive_root())
-    if reason := raw_frontier_source_selection_block_reason(archive_root()):
-        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
-
     from polylogue.config import Config
     from polylogue.maintenance import raw_authority
-    from polylogue.paths import render_root
+    from polylogue.paths import archive_root, render_root
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
     archive = archive_root()
@@ -1399,6 +1389,12 @@ def _drain_raw_materialization_once(
         render_root=render_root(),
         sources=[],
     )
+    # A Codex state snapshot admitted without its terminal receipt is an
+    # incomparable cursor row to the gate below, and every route that could
+    # finalize it sits behind that gate; finalize from the retained blob first.
+    raw_authority.finalize_codex_state_snapshots(config)
+    if reason := raw_frontier_source_selection_block_reason(archive):
+        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
     generation_pin_refused = False
     frontier_repaired = 0
     if prefetch_cache is not None and not _daemon_parse_stage().writer_admission_ready():

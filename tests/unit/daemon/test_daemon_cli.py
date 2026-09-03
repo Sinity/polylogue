@@ -577,20 +577,17 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         order.append("gate")
         return None
 
-    def fake_resolve_codex_state(root: Path) -> int:
+    def fake_finalize_codex_state(config: Config) -> int:
         # polylogue-6q16u: retained Codex state snapshots without a terminal
         # receipt are finalized BEFORE the gate consults them.
         order.append("codex-state-receipts")
-        calls["codex_state_archive_root"] = root
+        calls["codex_state_archive_root"] = config.archive_root
         return 0
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", fake_gate)
-    monkeypatch.setattr(
-        "polylogue.sources.codex_state_evidence.resolve_retained_codex_state_receipts",
-        fake_resolve_codex_state,
-    )
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", fake_finalize_codex_state)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,

@@ -102,6 +102,18 @@ def apply_frontier(
     )
 
 
+def finalize_codex_state_snapshots(config: Config) -> int:
+    """Finalize admitted Codex state snapshots that carry no terminal receipt.
+
+    Must run before the raw-materialization source-selection gate: such a
+    raw is an incomparable cursor row to the gate, and every route that could
+    finalize it sits behind the gate.
+    """
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+
+    return resolve_retained_codex_state_receipts(config.archive_root)
+
+
 def recover_interrupted_frontier(config: Config) -> tuple[str, ...]:
     from polylogue.storage.raw_reconciler import recover_interrupted_raw_authority_frontier
 
