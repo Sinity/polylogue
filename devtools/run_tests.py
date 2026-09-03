@@ -21,7 +21,6 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import shutil
@@ -40,7 +39,12 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
-from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
+from devtools.pytest_slot import (
+    PytestSlotUnavailableError,
+    basetemp_root,
+    remove_temp_tree,
+    run_pytest,
+)
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
@@ -448,19 +452,22 @@ def _copy_focused_pytest_report(artifacts: PytestStepArtifacts) -> None:
         shutil.copyfile(report_path, artifacts.step_dir / "pytest-report.json")
 
 
-def _remove_run_temp(path: Path) -> None:
-    """Delete a pytest basetemp, including the read-only trees tests seal.
+def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
+    """The path selections that name nothing in the checkout.
 
-    Sealed archive generations are written without write permission, so a plain
-    rmtree cannot unlink them and silently leaves the tree behind.
+    Resolved against the checkout root rather than the process working
+    directory: a relative selection means the same file whichever directory
+    ``devtools test`` was invoked from, and reporting every one of them as
+    missing would turn "no tests collected" into a false explanation.
     """
-
-    for parent, directories, files in os.walk(path, topdown=False):
-        for name in (*directories, *files):
-            target = os.path.join(parent, name)
-            with contextlib.suppress(OSError):
-                os.chmod(target, 0o700)
-    shutil.rmtree(path, ignore_errors=True)
+    absent: list[str] = []
+    for argument in selection:
+        if argument.startswith("-") or not (argument.endswith(".py") or "/" in argument):
+            continue
+        candidate = Path(argument.split("::", 1)[0])
+        if not (candidate if candidate.is_absolute() else root / candidate).exists():
+            absent.append(argument)
+    return absent
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -495,17 +502,15 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     cmd = build_pytest_cmd(selection)
-    # pytest keeps its temp trees under a per-shell TMPDIR, where its own
-    # "keep the last three runs" pruning never fires because each shell starts
-    # a fresh root. Owning the directory here means the run can dispose of it
-    # when it is no longer needed instead of relying on an age sweep days
-    # later. A failed run keeps its tree: that is when the fixtures are worth
-    # reading.
+    # Owning the basetemp here means the run can dispose of it when it is no
+    # longer needed instead of relying on pytest's "keep the last three runs"
+    # pruning, which never fires because each shell starts a fresh root. A
+    # failed run keeps its tree: that is when the fixtures are worth reading.
     # Unique per invocation: pytest creates the basetemp itself and fails if it
     # already exists, so a fixed path makes two runs in one checkout collide —
     # and lanes, batches and the coordinator do run concurrently here.
-    run_temp = PYTEST_REPORT_DIR / f"tmp-{os.getpid()}-{time.time_ns():x}"
-    _remove_run_temp(run_temp)
+    run_temp = basetemp_root(os.environ, root=ROOT) / f"tmp-{os.getpid()}-{time.time_ns():x}"
+    remove_temp_tree(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(cmd)
     run = VerifyRun(
@@ -558,13 +563,7 @@ def main(argv: list[str] | None = None) -> int:
         # to a caller. A selection derived from `git diff --name-only` contains
         # files the branch deleted, so the whole run silently collects nothing
         # and reads as "no work to do".
-        absent = [
-            argument
-            for argument in selection
-            if not argument.startswith("-")
-            and (argument.endswith(".py") or "/" in argument)
-            and not Path(argument.split("::", 1)[0]).exists()
-        ]
+        absent = absent_selection_paths(selection, root=ROOT)
         if absent:
             sys.stderr.write(
                 "devtools test: collected nothing because these paths do not exist: " + ", ".join(absent) + "\n"
@@ -575,7 +574,7 @@ def main(argv: list[str] | None = None) -> int:
                 "so check the -k/-m expression or retry if runs are contending.\n"
             )
     if rc == 0:
-        _remove_run_temp(run_temp)
+        remove_temp_tree(run_temp)
     payload = run.finish(
         exit_code=rc,
         duration_s=elapsed,

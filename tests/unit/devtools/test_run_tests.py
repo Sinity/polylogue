@@ -15,6 +15,7 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
+from devtools.pytest_slot import SlotOutcome
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
@@ -175,7 +176,7 @@ def test_parse_outliers_supports_default_and_explicit_limits() -> None:
 def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, Any] = {}
 
-    def direct_subprocess(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run_pytest(cmd: list[str], **kwargs: Any) -> SlotOutcome:
         captured["cmd"] = cmd
         captured["env"] = kwargs["env"]
         env = kwargs["env"]
@@ -189,10 +190,12 @@ def test_main_strips_dispatch_json_flag(monkeypatch: pytest.MonkeyPatch) -> None
         report = run_tests.ROOT / run_tests.PYTEST_REPORT_PATH
         report.parent.mkdir(parents=True, exist_ok=True)
         report.write_text(json.dumps({"tests": [{"nodeid": "test_ok", "outcome": "passed"}]}), encoding="utf-8")
-        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        return SlotOutcome(returncode=0, slot="held")
 
     monkeypatch.setattr("devtools.run_tests._clear_pytest_report", lambda _cmd: None)
-    monkeypatch.setattr("devtools.run_tests.subprocess.run", direct_subprocess)
+    # The seam is the pytest slot, not subprocess: a run outside the slot is
+    # queued rather than executed here.
+    monkeypatch.setattr("devtools.run_tests.run_pytest", fake_run_pytest)
     monkeypatch.setattr("devtools.run_tests.git_head", lambda _root: "abc123")
     monkeypatch.setattr("devtools.run_tests.append_verify_history", lambda payload: captured.update(history=payload))
     assert run_tests.main(["tests/unit/pipeline", "--json"]) == 0
@@ -562,3 +565,30 @@ def test_git_head_degrades_to_none_when_probe_cannot_run(monkeypatch: pytest.Mon
 
     monkeypatch.setattr("devtools.verify_runs.subprocess.run", _fake_run)
     assert git_head(tmp_path) is None
+
+
+def test_absent_paths_are_resolved_against_the_checkout_not_the_caller_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pytest exit 5 must not be explained as "these paths do not exist".
+
+    Anti-vacuity: resolving the selection against the process working
+    directory instead of the checkout root reports every relative path as
+    absent, which is the misleading refusal this guards.
+    """
+    checkout = tmp_path / "checkout"
+    (checkout / "tests" / "unit").mkdir(parents=True)
+    (checkout / "tests" / "unit" / "test_present.py").write_text("", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    selection = [
+        "tests/unit/test_present.py",
+        "tests/unit/test_present.py::test_case",
+        "tests/unit/test_deleted.py",
+        "-k",
+        "hybrid",
+    ]
+
+    assert run_tests.absent_selection_paths(selection, root=checkout) == ["tests/unit/test_deleted.py"]

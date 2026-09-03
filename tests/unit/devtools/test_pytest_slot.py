@@ -3,7 +3,10 @@
 Anti-vacuity: deleting the queueing branch in ``devtools.pytest_slot.run_pytest``
 makes ``test_outside_a_task_the_run_is_queued`` red — the command executes here
 and the marker file appears. Widening ``INHERITED_ENVIRONMENT_KEYS`` makes
-``test_the_adder_environment_carries_only_the_allowed_keys`` red.
+``test_the_adder_environment_carries_only_the_allowed_keys`` red. Dropping
+either half of the temporary-directory containment (the ``--basetemp``
+argument or the exported TMPDIR) makes
+``test_a_queued_run_contains_its_temporary_trees`` red.
 """
 
 from __future__ import annotations
@@ -17,8 +20,14 @@ from typing import Any
 
 import pytest
 
-from devtools import pytest_slot
-from devtools.pytest_slot import PytestSlotUnavailableError, holds_pytest_slot, run_pytest
+from devtools import cloud_sentinels, pytest_slot
+from devtools.pytest_slot import (
+    BASETEMP_ROOT_ENV,
+    PytestSlotUnavailableError,
+    basetemp_root,
+    holds_pytest_slot,
+    run_pytest,
+)
 
 FAKE_PUEUE = """#!/usr/bin/env python3
 import json, os, sys
@@ -201,3 +210,87 @@ def test_the_slot_runner_executes_the_launch_file(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == "value"
     assert "hi" in log_path.read_text(encoding="utf-8")
     assert not launch_path.exists(), "the launch file carries a resolved environment and must not persist"
+
+
+def _launch_document(root: Path) -> dict[str, Any]:
+    """The launch file the (faked) adder left behind, unconsumed."""
+    launches = list((root / pytest_slot.LAUNCH_DIR).glob("pytest-slot-*.json"))
+    assert len(launches) == 1, f"expected one launch file, found {launches}"
+    document: dict[str, Any] = json.loads(launches[0].read_text(encoding="utf-8"))
+    return document
+
+
+def test_a_queued_run_contains_its_temporary_trees(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Neither pytest nor the code under test may write to the ambient TMPDIR.
+
+    ``nix develop`` points TMPDIR at a small tmpfs; a corpus run left there
+    fills the mount and dies on exhausted file descriptors.
+    """
+    _install_fake_pueue(tmp_path, monkeypatch)
+    scratch = tmp_path / ".cache" / "verify"
+
+    run_pytest(
+        _marker_command(tmp_path / "unused"),
+        cwd=str(tmp_path),
+        env=_environment(TMPDIR="/tmp/nix-shell.L3brFS"),
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    launch = _launch_document(tmp_path)
+    assert Path(launch["environment"]["TMPDIR"]).is_relative_to(scratch)
+    argv = launch["argv"]
+    basetemp = Path(argv[argv.index("--basetemp") + 1])
+    assert basetemp.is_relative_to(scratch)
+
+
+def test_a_declared_basetemp_is_kept_and_still_anchors_tmpdir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``devtools test`` names its own basetemp so it can dispose of it."""
+    _install_fake_pueue(tmp_path, monkeypatch)
+    declared = tmp_path / ".cache" / "verify" / "tmp-chosen"
+
+    run_pytest(
+        [*_marker_command(tmp_path / "unused"), "--basetemp", str(declared)],
+        cwd=str(tmp_path),
+        env=_environment(TMPDIR="/tmp/nix-shell.L3brFS"),
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    launch = _launch_document(tmp_path)
+    assert launch["argv"].count("--basetemp") == 1
+    assert launch["argv"][launch["argv"].index("--basetemp") + 1] == str(declared)
+    # pytest empties its own basetemp as it starts, so TMPDIR must be beside it.
+    tmpdir = Path(launch["environment"]["TMPDIR"])
+    assert tmpdir.parent == declared.parent and tmpdir != declared
+
+
+def test_a_run_holding_the_slot_sees_the_contained_tmpdir(tmp_path: Path) -> None:
+    recorded = tmp_path / "tmpdir-seen"
+    command = [sys.executable, "-c", f"import os; open({str(recorded)!r},'w').write(os.environ['TMPDIR'])"]
+
+    run_pytest(
+        command,
+        cwd=str(tmp_path),
+        env=_environment(POLYLOGUE_PYTEST_SLOT="held", TMPDIR="/tmp/nix-shell.L3brFS"),
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    seen = Path(recorded.read_text(encoding="utf-8"))
+    assert seen.is_relative_to(tmp_path / ".cache" / "verify")
+
+
+def test_a_configured_basetemp_root_is_honoured(tmp_path: Path) -> None:
+    """A sandbox with no checkout-local scratch names its own root."""
+    elsewhere = tmp_path / "sandbox-scratch"
+
+    assert basetemp_root({BASETEMP_ROOT_ENV: str(elsewhere)}, root=tmp_path) == elsewhere
+
+
+def test_the_leaked_cloud_basetemp_sentinel_is_declined(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`.claude/settings.json` exports the cloud value into workstation sessions."""
+    monkeypatch.setattr(cloud_sentinels, "_WORKSTATION_SCRATCH_MOUNT", tmp_path)
+    sentinel = cloud_sentinels.CLOUD_SENTINELS[BASETEMP_ROOT_ENV]
+
+    assert basetemp_root({BASETEMP_ROOT_ENV: sentinel}, root=tmp_path) == tmp_path / ".cache" / "verify"
