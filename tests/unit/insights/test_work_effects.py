@@ -111,9 +111,16 @@ def test_git_commit_adapter_time_bounds_exclude_out_of_window_commits(tmp_path: 
     assert windowed == ()
 
 
-def test_git_commit_adapter_raises_explicitly_for_non_repository(tmp_path: Path) -> None:
+def test_git_commit_adapter_raises_explicitly_for_non_repository(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     not_a_repo = tmp_path / "plain-dir"
     not_a_repo.mkdir()
+    # git discovers a repository by walking upward, and pytest's base
+    # temporary directory may itself sit inside a checkout (it does in a
+    # worktree). Cap the walk so "not a repository" is a property of the
+    # directory under test rather than of where basetemp happens to live.
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.resolve()))
 
     with pytest.raises(EffectAdapterUnavailableError):
         GitCommitEffectAdapter(repo_path=not_a_repo).collect()
