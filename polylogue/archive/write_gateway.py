@@ -14,9 +14,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.storage.sqlite.connection_profile import open_connection as _open_conn
+
+if TYPE_CHECKING:
+    from polylogue.archive.write_effects import WriteEffectReceipt
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +41,7 @@ class WriteResult:
     operation: WriteOperation
     rows_affected: int
     status: WriteResultStatus
+    effect_receipts: tuple[WriteEffectReceipt, ...] = ()
 
 
 class ArchiveWriteGateway:
@@ -82,6 +86,7 @@ class ArchiveWriteGateway:
         from polylogue.archive.write_effects import commit_archive_write_effects
 
         payload = dict(payload)
+        payload.setdefault("_db_path", self._db_path)
         conn: sqlite3.Connection | None = payload.pop("_connection", None)
         owns_conn = conn is None
 
