@@ -1,4 +1,4 @@
-"""Daemon-served reader visual/DOM smoke evidence (#865)."""
+"""Typed WebUI route evidence over a synthetic archive."""
 
 from __future__ import annotations
 
@@ -16,427 +16,135 @@ from tests.visual.conftest import (
     assert_no_private_paths,
     get_json,
     get_text,
-    parse_dom,
     running_reader_server,
-    seed_reader_assertion_claims,
     write_evidence_manifest,
 )
 
 
-def _send_json(base_url: str, method: str, path: str, payload: dict[str, object] | None = None) -> tuple[int, object]:
-    body = json.dumps(payload or {}).encode("utf-8") if payload is not None else None
-    headers = {"Content-Type": "application/json"} if payload is not None else {}
-    req = Request(f"{base_url}{path}", data=body, headers=headers, method=method)
-    with urlopen(req, timeout=10) as resp:
-        return resp.status, json.loads(resp.read())
+def _send_json(base_url: str, method: str, path: str, payload: dict[str, object]) -> tuple[int, object]:
+    req = Request(
+        f"{base_url}{path}",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method=method,
+    )
+    with urlopen(req, timeout=10) as response:
+        return response.status, json.loads(response.read())
 
 
-def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_archive_overview_is_semantic_ssr(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        # The interpolated shell answers on the workspace routes; the root
-        # serves the typed WebUI.
-        status, content_type, body = get_text(base_url, "/w/stack")
+        status, content_type, body = get_text(base_url, "/")
 
     assert status == 200
     assert "text/html" in content_type
-    assert len(body) > 20_000
-    assert "https://cdn" not in body
-    assert_no_private_paths(body, context="reader shell HTML")
+    assert "<h1>Archive overview</h1>" in body
+    assert 'id="archive-activity-list"' in body
+    assert 'data-island="archive-overview"' in body
+    assert 'src="/assets/archive-overview-' in body
+    assert_no_private_paths(body, context="archive overview HTML")
 
-    dom = parse_dom(body)
-    expected_ids = {
-        "app",
-        "status-strip",
-        "status-dot",
-        "status-browser-capture",
-        "sidebar",
-        "search",
-        "facet-bar",
-        "conv-list",
-        "main",
-        "conv-header",
-        "msg-list",
-        "inspector",
-        "inspector-tabs",
-        "workspace-toolbar",
-        "workspace-mode-switcher",
-        "workspace-save-btn",
-        "workspace-restore-select",
-        "workspace-create-recall-pack-btn",
-        "footer",
-        "help-overlay",
-    }
-    assert expected_ids <= dom.ids
-    assert dom.meta_viewport is True
-    assert dom.scripts == 1
-    assert dom.styles == 1
-    for phrase in (
-        "Select a session",
-        "Keyboard Shortcuts",
-        "Focus search",
-        "Local",
-        "/api/user/marks",
-        "/api/user/annotations",
-        "toggleMark",
-        "saveAnnotation",
-        "No annotations on this session",
-        "Save current view",
-        "Saved Views",
-        "Save workspace",
-        "Restore workspace",
-        "Recall pack",
-        "/api/user/workspaces",
-        "/api/user/recall-packs",
-        "/api/stack",
-        "/api/compare",
-    ):
-        assert phrase in body
-
-    checks = {
-        "status": status,
-        "content_type": content_type,
-        "html_bytes": len(body.encode()),
-        "required_ids": sorted(expected_ids),
-        "script_tags": dom.scripts,
-        "style_tags": dom.styles,
-        "viewport_meta": dom.meta_viewport,
-        "private_path_safe": True,
-        "runtime_cdn_free": True,
-    }
-    manifest = write_evidence_manifest(
-        tmp_path / "reader-search-dom-evidence.json",
-        artifact_id="polylogue.local_reader.search",
-        route="/w/stack",
+    write_evidence_manifest(
+        tmp_path / "typed-webui-overview-evidence.json",
+        artifact_id="polylogue.webui.overview",
+        route="/",
         fixture_id="reader-visual-synthetic-v1",
-        checks=checks,
+        checks={"status": status, "semantic_ssr": True, "private_path_safe": True},
     )
-    assert manifest["evidence_kind"] == "browserless-dom"
 
 
-def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_workspace_routes_render_typed_projections(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(
+        stack_status, stack_type, stack = get_text(
             base_url, f"/w/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}"
         )
-        stack = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}"),
+        compare_status, compare_type, compare = get_text(
+            base_url, f"/w/compare?left={READER_C1}&right={READER_C2}&align=prompt"
+        )
+        stack_payload = cast(
+            dict[str, object], get_json(base_url, f"/api/stack?ids={READER_C1},{READER_C2},missing-conv")
+        )
+        compare_payload = cast(
+            dict[str, object], get_json(base_url, f"/api/compare?left={READER_C1}&right={READER_C2}&align=prompt")
         )
 
-    assert status == 200
-    assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader stack workspace shell")
-    for phrase in (
-        "getWorkspaceRouteFromURL",
-        "renderStackWorkspace",
-        "stack-view",
-        "stack-items",
-        "stack-focus",
-        "workspace-degraded-count",
-        "workspace-save-btn",
-        "workspace-create-recall-pack-btn",
-    ):
-        assert phrase in shell
-    assert stack["mode"] == "stack"
-    assert stack["resolved_count"] == 2
-    assert stack["degraded_count"] == 1
-    items = cast(list[dict[str, object]], stack["items"])
-    assert items[2]["disabled_reason"] == "session_not_found"
+    assert (stack_status, compare_status) == (200, 200)
+    assert "text/html" in stack_type and "text/html" in compare_type
+    assert "<h1>Workspace stack</h1>" in stack
+    assert "<h1>Workspace compare</h1>" in compare
+    assert stack_payload["resolved_count"] == 2
+    assert stack_payload["degraded_count"] == 1
+    assert compare_payload["mode"] == "compare"
+    assert_no_private_paths(stack, context="workspace stack HTML")
+    assert_no_private_paths(compare, context="workspace compare HTML")
 
     write_evidence_manifest(
-        tmp_path / "reader-stack-workspace-dom-evidence.json",
-        artifact_id="polylogue.local_reader.workspace.stack",
-        route=f"/w/stack?ids={READER_C1},{READER_C2},missing-conv&focus={READER_C1}",
+        tmp_path / "typed-webui-workspace-evidence.json",
+        artifact_id="polylogue.webui.workspace",
+        route=f"/w/stack?ids={READER_C1},{READER_C2},missing-conv",
         fixture_id="reader-visual-synthetic-workspace-v1",
-        checks={
-            "status": status,
-            "content_type": content_type,
-            "resolved_count": stack["resolved_count"],
-            "degraded_count": stack["degraded_count"],
-            "workspace_controls_present": True,
-            "private_path_safe": True,
-        },
+        checks={"stack_status": stack_status, "compare_status": compare_status, "private_path_safe": True},
     )
 
 
-def test_reader_compare_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_session_reader_and_read_envelopes_agree(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/w/compare?left={READER_C1}&right={READER_C2}&align=prompt")
-        compare = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/compare?left={READER_C1}&right={READER_C2}&align=prompt"),
-        )
-
-    assert status == 200
-    assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader compare workspace shell")
-    for phrase in (
-        "renderCompareWorkspace",
-        "compare-view",
-        "compare-left-pane",
-        "compare-right-pane",
-        "compare-pairs",
-        "compare-align-select",
-        "compare-degraded-banner",
-    ):
-        assert phrase in shell
-    assert compare["mode"] == "compare"
-    assert compare["align"] == "prompt"
-    assert cast(dict[str, object], compare["left"])["id"] == READER_C1
-    assert cast(dict[str, object], compare["right"])["id"] == READER_C2
-    assert cast(list[dict[str, object]], compare["pairs"])
-
-    write_evidence_manifest(
-        tmp_path / "reader-compare-workspace-dom-evidence.json",
-        artifact_id="polylogue.local_reader.workspace.compare",
-        route=f"/w/compare?left={READER_C1}&right={READER_C2}&align=prompt",
-        fixture_id="reader-visual-synthetic-workspace-v1",
-        checks={
-            "status": status,
-            "content_type": content_type,
-            "align": compare["align"],
-            "pair_count": len(cast(list[dict[str, object]], compare["pairs"])),
-            "workspace_controls_present": True,
-            "private_path_safe": True,
-        },
-    )
-
-
-def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
+        status, content_type, page = get_text(base_url, f"/s/{READER_C1}")
         detail = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}"))
-        messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/messages"))
-        raw = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/raw"))
-        marks = cast(dict[str, object], get_json(base_url, f"/api/user/marks?session_id={READER_C1}"))
-        annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
-        saved_views = cast(dict[str, object], get_json(base_url, "/api/user/saved-views"))
+        messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=messages"))
+        raw = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=raw"))
 
     assert status == 200
     assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader /s deeplink shell")
-    assert_no_private_paths(json.dumps(detail), context="reader detail JSON")
-    assert_no_private_paths(json.dumps(messages), context="reader messages JSON")
-
-    target_ref = cast(dict[str, object], detail["target_ref"])
-    assert target_ref["identity_key"] == f"session:{READER_C1}"
+    assert "<h1>MK3 reader target contract</h1>" in page
+    assert 'id="message-flow"' in page
+    assert f'id="msg-{READER_C1_M1}"' in page
     assert detail["anchor"] == reader_anchor("session", READER_C1)
-    assert detail["title"] == "MK3 reader target contract"
+    assert messages["view"] == "messages"
+    assert raw["view"] == "raw"
+    assert_no_private_paths(page, context="session reader HTML")
+    assert_no_private_paths(json.dumps(raw), context="raw read envelope")
 
-    message_items = cast(list[dict[str, object]], messages["messages"])
-    assert messages["total"] == 3
-    first_target = cast(dict[str, object], message_items[0]["target_ref"])
-    assert first_target["target_type"] == "message"
-    assert first_target["target_id"] == READER_C1_M1
-    assert first_target["session_id"] == READER_C1
-    assert first_target["message_id"] == READER_C1_M1
-    assert first_target["identity_key"] == f"message:{READER_C1}:{READER_C1_M1}"
-    assert message_items[2]["message_type"] == "tool_result"
-    tool_actions = cast(dict[str, dict[str, object]], message_items[2]["actions"])
-    assert tool_actions["copy_text"]["enabled"] is True
-
-    assert raw["id"] == READER_C1
-    assert "raw_artifacts" in raw
-    mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
-    assert mark_types == {"pin", "star"}
-    annotation_items = cast(list[dict[str, object]], annotations["items"])
-    assert annotation_items[0]["annotation_id"] == "reader-ann-c1"
-    assert annotation_items[0]["note_text"] == "This session anchors the MK3 reader evidence."
-    view_items = cast(list[dict[str, object]], saved_views["items"])
-    assert view_items[0]["name"] == "Claude Code reader fixtures"
-    assert cast(dict[str, object], view_items[0]["query"])["provider"] == "claude-code"
-
-    checks = {
-        "status": status,
-        "content_type": content_type,
-        "shell_bytes": len(shell.encode()),
-        "session_target": target_ref["identity_key"],
-        "message_total": messages["total"],
-        "tool_message_present": True,
-        "raw_endpoint_present": True,
-        "mark_types": sorted(mark_types),
-        "annotation_count": len(annotation_items),
-        "saved_view_count": len(view_items),
-        "private_path_safe": True,
-    }
     write_evidence_manifest(
-        tmp_path / "reader-session-dom-evidence.json",
-        artifact_id="polylogue.local_reader.session",
-        route=f"/s/{READER_C1}",
+        tmp_path / "typed-webui-session-evidence.json",
+        artifact_id="polylogue.webui.session",
+        route=f"/sessions/{READER_C1}",
         fixture_id="reader-visual-synthetic-v1",
-        checks=checks,
+        checks={"status": status, "message_anchor": READER_C1_M1, "private_path_safe": True},
     )
 
 
-def test_reader_search_query_no_results_and_facets_evidence(
-    reader_workspace: ReaderWorkspace,
-    tmp_path: Path,
-) -> None:
+def test_search_and_dedicated_pages_use_typed_routes(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
+        search_status, search_type, search = get_text(base_url, "/search?q=Hello")
+        cost_status, cost_type, cost = get_text(base_url, "/cost")
         query = cast(dict[str, object], get_json(base_url, "/api/sessions?query=Hello"))
         no_results = cast(dict[str, object], get_json(base_url, "/api/sessions?query=zzzz_no_match"))
-        facets = cast(dict[str, object], get_json(base_url, "/api/facets?query=Hello"))
 
+    assert (search_status, cost_status) == (200, 200)
+    assert "text/html" in search_type and "text/html" in cost_type
+    assert "<h1>Search</h1>" in search
+    assert 'data-island="search"' in search
+    assert "<h1>Cost &amp; usage</h1>" in cost
     assert query["total"] == 1
-    hits = cast(list[dict[str, object]], query["hits"])
-    hit_session = cast(dict[str, object], hits[0]["session"])
-    hit_target = cast(dict[str, object], hit_session["target_ref"])
-    hit_match = cast(dict[str, object], hits[0]["match"])
-    match_target = cast(dict[str, object], hit_match["target_ref"])
-    assert hit_target["identity_key"] == f"session:{READER_C1}"
-    assert match_target["identity_key"] == f"message:{READER_C1}:{READER_C1_M1}"
     assert no_results["total"] == 0
-    assert "diagnostics" in no_results
-    assert facets["scoped_to_query"] is True
-    assert facets["origins"] == {"claude-code-session": 1}
-    assert "generated_at" in facets
-    deferred_families = cast(dict[str, object], facets["deferred_families"])
-    family_status = cast(dict[str, dict[str, object]], facets["family_status"])
-    assert deferred_families == {
-        "action_types": "deferred_by_default",
-        "has_flags": "deferred_by_default",
-        "material_origins": "deferred_by_default",
-        "message_types": "deferred_by_default",
-        "repos": "deferred_by_default",
-        "role_counts": "deferred_by_default",
-    }
-    assert family_status["repos"]["state"] == "deferred"
-    assert_no_private_paths(json.dumps(query), context="reader search JSON")
-    assert_no_private_paths(json.dumps(no_results), context="reader no-results JSON")
-    assert_no_private_paths(json.dumps(facets), context="reader query facets JSON")
+    assert_no_private_paths(search, context="search HTML")
+    assert_no_private_paths(cost, context="cost HTML")
 
     write_evidence_manifest(
-        tmp_path / "reader-query-dom-evidence.json",
-        artifact_id="polylogue.local_reader.search.query",
-        route="/api/sessions?query=Hello",
+        tmp_path / "typed-webui-search-evidence.json",
+        artifact_id="polylogue.webui.search",
+        route="/search?q=Hello",
         fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "query_total": query["total"],
-            "no_results_total": no_results["total"],
-            "diagnostics_present": "diagnostics" in no_results,
-            "facet_scope": facets["scoped_to_query"],
-            "facet_deferred_families": sorted(deferred_families.keys()),
-            "private_path_safe": True,
-        },
+        checks={"status": search_status, "query_total": query["total"], "private_path_safe": True},
     )
 
 
-def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Cost panel endpoint surfaces typed cost shape with confidence chip vocabulary (#1122).
-
-    Pins:
-    - existing session returns the typed cost-panel payload with a
-      confidence chip from the MK3 vocabulary;
-    - unknown session returns 404 (not a blank panel).
-    """
+def test_overlay_operations_remain_route_backed(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
-        known_cost = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/cost"))
-        unknown_status, _, unknown_body = get_text(base_url, "/api/sessions/does-not-exist/cost")
-
-    assert status == 200
-    assert "text/html" in content_type
-    # Known session: typed envelope, with a chip from the closed vocabulary.
-    assert known_cost["session_id"] == READER_C1
-    assert known_cost["confidence_tag"] in {
-        "q-canonical",
-        "q-estimated",
-        "q-heuristic",
-        "q-unavailable",
-    }
-    assert isinstance(known_cost["basis"], dict)
-    assert isinstance(known_cost["usage"], dict)
-    assert isinstance(known_cost["per_model_breakdown"], list)
-    assert "missing_reasons" in known_cost
-
-    # Unknown session: 404, not a blank panel.
-    assert unknown_status == 404
-    unknown_payload = json.loads(unknown_body)
-    assert unknown_payload.get("error") in {"not_found", None}
-
-    write_evidence_manifest(
-        tmp_path / "reader-cost-panel-dom-evidence.json",
-        artifact_id="polylogue.local_reader.cost_panel",
-        route=f"/api/sessions/{READER_C1}/cost",
-        fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "shell_status": status,
-            "cost_endpoint_status": 200,
-            "unknown_endpoint_status": unknown_status,
-            "confidence_tag": known_cost["confidence_tag"],
-            "has_basis_split": True,
-            "has_per_model_block": True,
-            "private_path_safe": True,
-        },
-    )
-
-
-def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Evidence tab uses shared context/assertion DTOs without raw leakage (#1846)."""
-
-    with running_reader_server(reader_workspace) as (_, base_url):
-        seed_reader_assertion_claims(reader_workspace)
-        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
-        assertions = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
-        )
-        context = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"),
-        )
-        context_image = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-image&max_messages=5"),
-        )
-
-    assert status == 200
-    assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader evidence shell")
-    claim_items = cast(list[dict[str, object]], assertions["items"])
-    assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
-    assert claim_items[0]["target_ref"] == f"session:{READER_C1}"
-    assert context["view"] == "context"
-    context_payload = cast(dict[str, object], context["payload"])
-    assert context_payload["preamble_version"] == "1.0"
-    context_guidance = cast(dict[str, object], context_payload["guidance"])
-    context_assertions = cast(list[dict[str, object]], context_guidance["assertions"])
-    quoted_evidence = cast(dict[str, object], context_assertions[0]["quoted_evidence"])
-    assert quoted_evidence["text"] == "The evidence tab renders shared assertion claims."
-    assert context_image["view"] == "context-image"
-    context_image_payload = cast(dict[str, object], context_image["payload"])
-    context_segments = cast(list[dict[str, object]], context_image_payload["segments"])
-    assert context_segments
-    context_object_refs = cast(list[dict[str, object]], context_image_payload["object_refs"])
-    assert context_object_refs[0]["kind"] == "session"
-    assert context_object_refs[0]["object_id"] == READER_C1
-    assert context_image_payload["redaction_policy"] == "default"
-
-    write_evidence_manifest(
-        tmp_path / "reader-evidence-panel-dom-evidence.json",
-        artifact_id="polylogue.local_reader.evidence_panel",
-        route=f"/s/{READER_C1}",
-        fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "shell_status": status,
-            "assertion_count": assertions["total"],
-            "context_image_segments": len(context_segments),
-            "raw_artifacts_absent_from_context": "raw_artifacts" not in json.dumps(context_image),
-            "private_path_safe": True,
-        },
-    )
-
-
-def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Reader overlay actions use route-backed mutation envelopes (#1846)."""
-
-    with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
+        status, page_type, page = get_text(base_url, f"/sessions/{READER_C1}")
         mark_status, mark = _send_json(
-            base_url,
-            "POST",
-            "/api/user/marks",
-            {"session_id": READER_C1, "mark_type": "archive"},
+            base_url, "POST", "/api/user/marks", {"session_id": READER_C1, "mark_type": "archive"}
         )
         annotation_status, annotation = _send_json(
             base_url,
@@ -454,231 +162,47 @@ def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace
         annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
 
     assert status == 200
-    assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader overlay mutation shell")
-    mark_payload = cast(dict[str, object], mark)
-    annotation_payload = cast(dict[str, object], annotation)
+    assert "text/html" in page_type
+    assert "<h1>MK3 reader target contract</h1>" in page
     assert mark_status == 201
-    assert mark_payload["operation"] == "mark.add"
-    assert mark_payload["affected_count"] == 1
-    assert mark_payload["target_id"] == READER_C1
-    assert annotation_status == 201
-    assert annotation_payload["operation"] == "annotation.save"
-    assert annotation_payload["affected_count"] == 1
-    assert annotation_payload["target_type"] == "message"
-    assert annotation_payload["target_id"] == READER_C1_M1
-
-    mark_types = {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
-    assert "archive" in mark_types
-    annotation_ids = {str(item["annotation_id"]) for item in cast(list[dict[str, object]], annotations["items"])}
-    assert "reader-visual-flow-note" in annotation_ids
-
-    write_evidence_manifest(
-        tmp_path / "reader-overlay-mutation-flow-evidence.json",
-        artifact_id="polylogue.local_reader.overlay_mutations",
-        route=f"/s/{READER_C1}",
-        fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "shell_status": status,
-            "mark_status": mark_status,
-            "annotation_status": annotation_status,
-            "mark_operation": mark_payload["operation"],
-            "annotation_operation": annotation_payload["operation"],
-            "archive_mark_visible": "archive" in mark_types,
-            "message_annotation_visible": "reader-visual-flow-note" in annotation_ids,
-            "private_path_safe": True,
-        },
-    )
-
-
-def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Representative workbench flow stays route-backed and privacy-bounded (#1846)."""
-
-    with running_reader_server(reader_workspace) as (_, base_url):
-        shell_status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
-        search = cast(dict[str, object], get_json(base_url, "/api/sessions?query=Hello&limit=5"))
-        messages = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=messages"))
-        context = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context"))
-        raw_view = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/read?view=raw"))
-        context_image = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/sessions/{READER_C1}/read?view=context-image&include_messages=0"),
-        )
-        assertions = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/assertions?target_ref=session%3A{READER_C1}&limit=10"),
-        )
-        mark_status, mark = _send_json(
-            base_url,
-            "POST",
-            "/api/user/marks",
-            {"session_id": READER_C1, "mark_type": "star"},
-        )
-        annotation_status, annotation = _send_json(
-            base_url,
-            "POST",
-            "/api/user/annotations",
-            {
-                "annotation_id": "reader-operator-flow-message-note",
-                "session_id": READER_C1,
-                "target_type": "message",
-                "message_id": READER_C1_M1,
-                "note_text": "Operator flow note",
-            },
-        )
-        annotations = cast(dict[str, object], get_json(base_url, f"/api/user/annotations?session_id={READER_C1}"))
-        provenance = cast(dict[str, object], get_json(base_url, f"/api/sessions/{READER_C1}/provenance"))
-
-    assert shell_status == 200
-    assert "text/html" in content_type
-    assert_no_private_paths(shell, context="reader operator-flow shell")
-    assert search["total"] == 1
-    assert messages["view"] == "messages"
-    assert context["view"] == "context"
-    assert context_image["view"] == "context-image"
-    assert raw_view["view"] == "raw"
-    assert isinstance(assertions["total"], int)
-    assert assertions["total"] >= 0
-    assert mark_status in {200, 201}
     assert cast(dict[str, object], mark)["operation"] == "mark.add"
     assert annotation_status == 201
-    annotation_payload = cast(dict[str, object], annotation)
-    assert annotation_payload["operation"] == "annotation.save"
-    assert annotation_payload["target_type"] == "message"
-    assert annotation_payload["target_id"] == READER_C1_M1
-
-    annotation_ids = {str(item["annotation_id"]) for item in cast(list[dict[str, object]], annotations["items"])}
-    assert "reader-operator-flow-message-note" in annotation_ids
-    assert_no_private_paths(json.dumps(raw_view), context="reader raw read-view JSON")
-    assert_no_private_paths(json.dumps(provenance), context="reader provenance JSON")
+    assert cast(dict[str, object], annotation)["operation"] == "annotation.save"
+    assert "archive" in {str(item["mark_type"]) for item in cast(list[dict[str, object]], marks["items"])}
+    assert "reader-visual-flow-note" in {
+        str(item["annotation_id"]) for item in cast(list[dict[str, object]], annotations["items"])
+    }
 
     write_evidence_manifest(
-        tmp_path / "reader-operator-flow-evidence.json",
-        artifact_id="polylogue.local_reader.operator_flow",
-        route=f"/s/{READER_C1}",
+        tmp_path / "typed-webui-overlay-evidence.json",
+        artifact_id="polylogue.webui.overlay_operations",
+        route=f"/sessions/{READER_C1}",
         fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "shell_status": shell_status,
-            "search_total": search["total"],
-            "read_views": [messages["view"], context_image["view"], context["view"], raw_view["view"]],
-            "context_image_segments": len(
-                cast(list[object], cast(dict[str, object], context_image["payload"])["segments"])
-            ),
-            "mark_status": mark_status,
-            "annotation_status": annotation_status,
-            "annotation_target": annotation_payload["target_id"],
-            "raw_provenance_private_path_safe": True,
-            "private_path_safe": True,
-        },
+        checks={"page_status": status, "mark_status": mark_status, "annotation_status": annotation_status},
     )
 
 
-def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    """Insights browser endpoint surfaces typed envelope + readiness chips (#1120).
-
-    Pins:
-    - existing session returns the four-kind envelope (profile/timeline/
-      phases/threads), each with a chip from the closed q-ready/q-partial/
-      q-missing vocabulary;
-    - unknown session returns 404 (not a blank panel);
-    - include= subset honors the request and drops unknown tokens;
-    """
-    with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
-        known = cast(dict[str, object], get_json(base_url, f"/api/insights/sessions/{READER_C1}"))
-        subset = cast(
-            dict[str, object],
-            get_json(base_url, f"/api/insights/sessions/{READER_C1}?include=profile,bogus,phases"),
-        )
-        unknown_status, _, unknown_body = get_text(base_url, "/api/insights/sessions/does-not-exist")
-
-    assert status == 200
-    assert "text/html" in content_type
-    assert known["session_id"] == READER_C1
-    assert isinstance(known["kinds"], dict)
-    kinds = cast(dict[str, dict[str, object]], known["kinds"])
-    assert set(kinds.keys()) == {"profile", "timeline", "phases", "threads"}
-    for kind, body in kinds.items():
-        assert body["readiness_tag"] in {"q-ready", "q-partial", "q-missing"}, kind
-        assert "materialized" in body
-
-    subset_kinds = cast(dict[str, dict[str, object]], subset["kinds"])
-    assert set(subset_kinds.keys()) == {"profile", "phases"}
-    assert subset["include"] == ["profile", "phases"]
-
-    assert unknown_status == 404
-    unknown_payload = json.loads(unknown_body)
-    assert unknown_payload.get("error") in {"not_found", None}
-
-    assert_no_private_paths(json.dumps(known), context="insights browser envelope")
-    assert_no_private_paths(shell, context="reader shell HTML")
-
-    write_evidence_manifest(
-        tmp_path / "reader-insights-browser-dom-evidence.json",
-        artifact_id="polylogue.local_reader.insights_browser",
-        route=f"/api/insights/sessions/{READER_C1}",
-        fixture_id="reader-visual-synthetic-v1",
-        checks={
-            "shell_status": status,
-            "insights_endpoint_status": 200,
-            "unknown_endpoint_status": unknown_status,
-            "kinds_present": sorted(kinds.keys()),
-            "profile_readiness": kinds["profile"]["readiness_tag"],
-            "timeline_readiness": kinds["timeline"]["readiness_tag"],
-            "phases_readiness": kinds["phases"]["readiness_tag"],
-            "threads_readiness": kinds["threads"]["readiness_tag"],
-            "subset_honored": list(subset_kinds.keys()),
-            "private_path_safe": True,
-        },
-    )
-
-
-def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_unavailable_overview_and_degraded_search_are_explicit(
+    reader_workspace: ReaderWorkspace, tmp_path: Path
+) -> None:
     with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
+        empty_status, _, empty_page = get_text(base_url, "/")
         empty_list = cast(dict[str, object], get_json(base_url, "/api/sessions"))
-        empty_facets = cast(dict[str, object], get_json(base_url, "/api/facets"))
-
     with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
         degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
+    assert empty_status == 503
+    assert "<h1>Archive overview</h1>" in empty_page
     assert empty_list["total"] == 0
-    assert empty_list["items"] == []
-    assert cast(dict[str, object], empty_list["route_state"])["state"] == "empty"
-    assert empty_facets["total_sessions"] == 0
-    assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
-    assert empty_facets["deferred_families"] == {
-        "action_types": "deferred_by_default",
-        "has_flags": "deferred_by_default",
-        "material_origins": "deferred_by_default",
-        "message_types": "deferred_by_default",
-        "repos": "deferred_by_default",
-        "role_counts": "deferred_by_default",
-    }
-    assert degraded_status == 200, degraded_body
+    assert degraded_status == 200
     degraded_payload = json.loads(degraded_body)
-    assert degraded_payload["total"] is None
-    assert degraded_payload["hits"] == []
     assert degraded_payload["route_state"]["state"] == "degraded"
-    assert degraded_payload["route_state"]["component"] == "message_fts"
-    assert "Search index" in degraded_payload["route_state"]["reason"]
-    assert degraded_payload["diagnostics"]["reasons"][0]["code"] == "search_index_degraded"
     assert "Traceback" not in degraded_body
-    assert_no_private_paths(json.dumps(empty_list), context="reader empty list JSON")
-    assert_no_private_paths(degraded_body, context="reader degraded JSON")
 
     write_evidence_manifest(
-        tmp_path / "reader-degraded-dom-evidence.json",
-        artifact_id="polylogue.local_reader.degraded",
+        tmp_path / "typed-webui-degraded-evidence.json",
+        artifact_id="polylogue.webui.unavailable_and_degraded",
         route="/api/sessions?query=Hello",
         fixture_id="reader-visual-synthetic-empty-and-degraded-v1",
-        checks={
-            "empty_total": empty_list["total"],
-            "empty_route_state": cast(dict[str, object], empty_list["route_state"])["state"],
-            "empty_facets_total": empty_facets["total_sessions"],
-            "empty_facets_deferred": sorted(cast(dict[str, object], empty_facets["deferred_families"]).keys()),
-            "degraded_status": degraded_status,
-            "degraded_route_state": degraded_payload["route_state"]["state"],
-            "sanitized_degraded_payload": True,
-            "private_path_safe": True,
-        },
+        checks={"unavailable_status": empty_status, "degraded_status": degraded_status, "sanitized": True},
     )

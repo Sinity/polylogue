@@ -2231,6 +2231,7 @@ class TestWebUIV2:
                                     type=BlockType.TOOL_RESULT,
                                     tool_id="tool-mystery",
                                     text="unrecognized response",
+                                    outcome_unknown_reason="not_reported",
                                 ),
                             ],
                         ),

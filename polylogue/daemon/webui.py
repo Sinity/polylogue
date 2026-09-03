@@ -598,7 +598,9 @@ def _render_message_flow_item(raw: object) -> str:
     # A nonempty semantic_entries list whose entries are all malformed or of an
     # unsupported entry_type must still fall back to honest plain text rather
     # than rendering a blank message.
-    body = semantic_body or _render_message_flow_fallback_body(message)
+    body = (
+        semantic_body + _render_message_flags(message) if semantic_body else _render_message_flow_fallback_body(message)
+    )
     return f"""        <li class="message-flow__item" id="msg-{html.escape(message_id, quote=True)}" data-role="{html.escape(role, quote=True)}" data-material-origin="{html.escape(material_origin, quote=True)}">
           <div class="message-flow__meta">
             <span class="message-flow__role">{html.escape(role)}</span>
@@ -618,6 +620,10 @@ def _render_message_flow_fallback_body(message: Mapping[str, object]) -> str:
     """
     text = message.get("text")
     preview = _compact_preview(str(text or ""), limit=600) or "[empty message]"
+    return f'          <p class="message-flow__text">{html.escape(preview)}</p>\n{_render_message_flags(message)}'
+
+
+def _render_message_flags(message: Mapping[str, object]) -> str:
     flags: list[str] = []
     if message.get("has_tool_use"):
         flags.append('<span class="message-flag" data-flag="tool-use">tool use</span>')
@@ -625,11 +631,7 @@ def _render_message_flow_fallback_body(message: Mapping[str, object]) -> str:
         flags.append('<span class="message-flag" data-flag="thinking">thinking</span>')
     if message.get("has_paste_evidence"):
         flags.append('<span class="message-flag" data-flag="paste">paste</span>')
-    flags_markup = " ".join(flags)
-    return (
-        f'          <p class="message-flow__text">{html.escape(preview)}</p>\n'
-        f'          <div class="message-flow__flags">{flags_markup}</div>'
-    )
+    return f'          <div class="message-flow__flags">{" ".join(flags)}</div>'
 
 
 def _render_semantic_entry(raw: object) -> str:
@@ -1576,9 +1578,11 @@ def render_typed_data_page(
     )
     rows: list[str] = []
     scalar_rows: list[str] = []
+    empty_items = False
     if payload:
         for key, value in payload.items():
             if key in {"items", "entries", "results"} and isinstance(value, list):
+                empty_items = empty_items or not value
                 for item in value:
                     if isinstance(item, Mapping):
                         label = (
@@ -1612,7 +1616,9 @@ def render_typed_data_page(
                             f'<li class="activity-row" data-item-kind="{html.escape(key, quote=True)}">'
                             f"<h2>{label_html}</h2><p>{html.escape(str(detail))}</p></li>"
                         )
-            elif key not in {"items", "entries", "results"} and value is not None:
+            elif value is not None and (
+                key not in {"items", "entries", "results", "total"} or (key == "total" and not empty_items)
+            ):
                 scalar_rows.append(
                     f"<div><dt>{html.escape(str(key).replace('_', ' ').title())}</dt>"
                     f"<dd>{html.escape(str(value))}</dd></div>"

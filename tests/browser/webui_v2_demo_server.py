@@ -1,8 +1,7 @@
 """Launch the production daemon over a demo archive for webui-v2 Playwright journeys.
 
-Unlike ``web_auth_server.py`` (which exercises the legacy shell's credential
-flows against a bearer token), this script boots the daemon with NO auth
-token — the "local dev default" per ``DaemonAPIHandler._check_auth`` — so
+Unlike ``web_auth_server.py`` (which exercises typed WebUI credential flows
+against a bearer token), this script boots the daemon with no auth token, so
 ``//*`` SSR pages and their ``/api/*`` island fetches are open, matching
 how a developer runs the daemon locally against `/`.
 

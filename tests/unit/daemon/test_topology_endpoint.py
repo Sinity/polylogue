@@ -27,6 +27,12 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
+from polylogue.analysis.topology import (
+    SessionTopology,
+    TopologyEdge,
+    TopologyEdgeKind,
+    TopologyNode,
+)
 from polylogue.core.types import SessionId
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.daemon.topology_http import (
@@ -37,12 +43,6 @@ from polylogue.daemon.topology_http import (
     READINESS_PARTIAL,
     build_topology_envelope,
     coerce_node_limit,
-)
-from polylogue.analysis.topology import (
-    SessionTopology,
-    TopologyEdge,
-    TopologyEdgeKind,
-    TopologyNode,
 )
 from tests.infra.storage_records import SessionBuilder, db_setup
 

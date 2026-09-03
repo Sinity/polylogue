@@ -227,7 +227,7 @@ def test_attachment_library_empty_state(reader_workspace: ReaderWorkspace, tmp_p
     assert payload["total"] == 0
     assert lib_status == 200
     assert "Attachment library" in lib_body
-    assert "Total" in lib_body
+    assert "No attachments are available in this archive." in lib_body
 
     write_evidence_manifest(
         tmp_path / "reader-attachments-empty-evidence.json",

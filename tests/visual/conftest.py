@@ -216,6 +216,8 @@ def _build_reader_c1(workspace: ReaderWorkspace, *, attachments: bool = False) -
                 {
                     "type": BlockType.TOOL_RESULT.value,
                     "text": "python -m pytest tests/visual\nstatus: passed",
+                    "tool_id": "reader-c1-tool",
+                    "tool_result_is_error": 0,
                 }
             ],
         )
