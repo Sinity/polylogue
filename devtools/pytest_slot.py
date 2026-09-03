@@ -14,27 +14,38 @@ this mechanism. Anything else queues and waits.
 pueue 4 records the full client environment of ``pueue add`` into a user-only
 state file, so the adder runs with a reduced environment and the managed pytest
 environment travels in the launch file instead.
+
+Every run started here also keeps its temporary trees inside the checkout; see
+:func:`basetemp_root`.
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
+from devtools.cloud_sentinels import cloud_sentinel_declined
+
 __all__ = [
+    "BASETEMP_ROOT_ENV",
     "INHERITED_ENVIRONMENT_KEYS",
     "PYTEST_GROUP",
     "PytestSlotUnavailableError",
     "SlotOutcome",
+    "basetemp_root",
+    "contained_pytest_run",
     "holds_pytest_slot",
     "main",
+    "remove_temp_tree",
     "run_pytest",
 ]
 
@@ -73,6 +84,78 @@ class SlotOutcome:
     slot: str
     #: Where the queued run's output landed, or None when it streamed.
     log_path: Path | None = None
+
+
+#: Names the directory managed pytest runs put their temporary trees under.
+BASETEMP_ROOT_ENV: Final = "POLYLOGUE_PYTEST_BASETEMP_ROOT"
+
+
+def basetemp_root(env: Mapping[str, str], *, root: Path) -> Path:
+    """The directory a managed pytest run puts its temporary trees under.
+
+    pytest's default basetemp follows TMPDIR, which ``nix develop`` points at a
+    per-shell directory on the host's small ``/tmp`` tmpfs; a corpus run fills
+    the mount and dies on exhausted space or file descriptors. The checkout's
+    own scratch directory sits on the same disposable filesystem as the rest of
+    the verification artifacts and is sized for it.
+
+    ``POLYLOGUE_PYTEST_BASETEMP_ROOT`` names a different root, for a sandbox
+    with no checkout-local scratch. Its cloud sentinel value leaks into
+    workstation agent sessions through ``.claude/settings.json`` and is
+    declined there, since honouring it is exactly the tmpfs failure above.
+    """
+    configured = env.get(BASETEMP_ROOT_ENV)
+    if configured and not cloud_sentinel_declined(BASETEMP_ROOT_ENV, configured):
+        return Path(configured)
+    return root / LAUNCH_DIR
+
+
+def remove_temp_tree(path: Path) -> None:
+    """Delete a pytest temporary tree, including the read-only trees tests seal.
+
+    Sealed archive generations are written without write permission, so a plain
+    rmtree cannot unlink them and silently leaves the tree behind.
+    """
+    for parent, directories, files in os.walk(path, topdown=False):
+        for name in (*directories, *files):
+            with contextlib.suppress(OSError):
+                os.chmod(os.path.join(parent, name), 0o700)
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _declared_basetemp(command: Sequence[str]) -> str | None:
+    for index, argument in enumerate(command):
+        if argument == "--basetemp" and index + 1 < len(command):
+            return command[index + 1]
+        if argument.startswith("--basetemp="):
+            return argument.split("=", 1)[1]
+    return None
+
+
+def contained_pytest_run(
+    command: Sequence[str], *, env: Mapping[str, str], root: Path
+) -> tuple[list[str], dict[str, str], Path]:
+    """``command`` and ``env`` with every temporary tree inside the checkout.
+
+    Both halves are needed: ``--basetemp`` covers the fixtures pytest hands
+    out, and TMPDIR covers what the code under test asks the standard library
+    for. Returns the scratch directory the caller owns.
+    """
+    argv = list(command)
+    declared = _declared_basetemp(argv)
+    if declared is None:
+        basetemp = basetemp_root(env, root=root) / f"tmp-{os.getpid()}-{time.time_ns():x}"
+        argv += ["--basetemp", str(basetemp)]
+    else:
+        basetemp = Path(declared)
+    if not basetemp.is_absolute():
+        basetemp = root / basetemp
+    # pytest empties its own basetemp as it starts, so TMPDIR is its sibling.
+    scratch = basetemp.parent / f"{basetemp.name}.tmpdir"
+    scratch.mkdir(parents=True, exist_ok=True)
+    contained = dict(env)
+    contained.update({"TMPDIR": str(scratch), "TMP": str(scratch), "TEMP": str(scratch)})
+    return argv, contained, scratch
 
 
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
@@ -209,10 +292,17 @@ def run_pytest(
     held and the command runs here, streaming as before. Otherwise it is queued
     in the host's single-slot ``pytest`` group and its output is captured.
     """
+    argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     if holds_pytest_slot(env):
-        completed = subprocess.run(list(command), cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout)
-        return SlotOutcome(returncode=completed.returncode, slot=SLOT_HELD)
-    return _queue(command, cwd=cwd, env=env, root=root, label=label)
+        completed = subprocess.run(argv, cwd=cwd, env=contained, stdout=stdout, stderr=stdout)
+        outcome = SlotOutcome(returncode=completed.returncode, slot=SLOT_HELD)
+    else:
+        outcome = _queue(argv, cwd=cwd, env=contained, root=root, label=label)
+    # A failed run keeps its scratch: that is when the leftovers are worth
+    # reading.
+    if outcome.returncode == 0:
+        remove_temp_tree(scratch)
+    return outcome
 
 
 def _read_launch(path: Path) -> dict[str, Any]:
