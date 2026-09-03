@@ -198,7 +198,7 @@ def register_source_freshness_mcp_tool(
     server: object,
     handler: Callable[..., Awaitable[object]],
 ) -> object:
-    """Register the handler on a FastMCP-style server.
+    """Register the handler on an MCPServer-style server.
 
     The owning MCP module still controls tool inventory and contracts.  This
     adapter exists so that registration is one line once the full checkout's

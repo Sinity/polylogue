@@ -512,7 +512,7 @@ async def test_registered_read_transactions_match_production_goldens(tmp_path: P
     """Exercise every declared read transaction through its live registration.
 
     Production dependencies exercised: ``build_server`` creates the declared
-    FastMCP handlers, ``ArchiveStore`` writes the seeded index, and each call
+    MCPServer handlers, ``ArchiveStore`` writes the seeded index, and each call
     resolves through the configured ``RuntimeServices`` facade. Removing a
     handler registration, changing a stable result identity, routing a read
     around the bounded transaction, or replacing a production payload with a

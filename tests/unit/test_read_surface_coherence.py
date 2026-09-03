@@ -88,7 +88,7 @@ class TestMCPLatestTyped:
     Before #1749: the field was typed ``str | None`` and the spec builder did
     ``bool(params.get("latest"))``, so ``latest="false"`` was truthy and
     silently collapsed results to one session. After: the field is
-    typed ``bool``, so FastMCP's tool-call coercion parses ``"false"`` as
+    typed ``bool``, so MCPServer's tool-call coercion parses ``"false"`` as
     ``False`` rather than leaving it as a truthy non-empty string.
     """
 
@@ -327,11 +327,11 @@ class TestNegativeCountBoundsRejected:
             SessionQuerySpec.from_params({"min_words": -10})
 
     def test_mcp_count_bound_type_alias_declared_with_ge_zero(self) -> None:
-        """MCPCountBound TypeAlias carries Field(ge=0) for FastMCP schema generation.
+        """MCPCountBound TypeAlias carries Field(ge=0) for MCPServer schema generation.
 
         MCPSessionQueryRequest is a dataclass (not Pydantic), so Python
         itself doesn't validate at construction time. The ge=0 constraint is
-        expressed in the TypeAlias so FastMCP generates a JSON schema that
+        expressed in the TypeAlias so MCPServer generates a JSON schema that
         rejects negatives in the tool binding layer. The actual runtime gate
         is the spec builder's optional_non_negative_int.
         """

@@ -165,7 +165,7 @@ class TestToolErrorEnvelopes:
         """Internal exceptions never reach MCP clients with their raw payload.
 
         The wrapper now returns a typed error JSON instead of raising, so
-        the failure cannot escape into the FastMCP stdio loop and kill the
+        the failure cannot escape into the MCPServer stdio loop and kill the
         server (#1621). The privacy invariant (no raw exception text in the
         response) is preserved.
         """

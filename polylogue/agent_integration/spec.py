@@ -2,7 +2,7 @@
 
 This module owns typed capabilities, checked queries, recipes, client delivery
 declarations, and rendered package assets. Its contracts are derived from the
-live ten-tool MCP declaration algebra and checked against registered FastMCP
+live ten-tool MCP declaration algebra and checked against registered MCPServer
 signatures.
 """
 
@@ -925,7 +925,7 @@ def integration_spec_payload() -> dict[str, object]:
         ],
         "schema_status": TARGET_SCHEMA_STATUS,
         "verification": [
-            "Every generated argument is checked against the registered FastMCP signature.",
+            "Every generated argument is checked against the registered MCPServer signature.",
             "Run devtools render agent-manual and devtools render all --check after declaration changes.",
             "Run devtools gate agent-integration --require-live before publishing the package.",
         ],

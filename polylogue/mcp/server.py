@@ -27,7 +27,7 @@ from polylogue.mcp.server_tools import register_tools
 from polylogue.services import RuntimeServices, build_runtime_services
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
 
 def _instructions_for_capabilities(capabilities: MCPCapabilities) -> str:
@@ -47,14 +47,14 @@ def _instructions_for_capabilities(capabilities: MCPCapabilities) -> str:
 
 def build_server(
     *, capabilities: MCPCapabilities = MCPCapabilities(), services: RuntimeServices | None = None
-) -> FastMCP:
+) -> MCPServer:
     """Construct an MCP server bound to one resolved runtime authority."""
     if services is None:
         services = build_runtime_services(runtime=resolve_runtime_config())
     _set_runtime_services(services)
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
-    mcp = FastMCP(
+    mcp = MCPServer(
         "polylogue",
         instructions=_instructions_for_capabilities(capabilities),
     )
@@ -90,14 +90,14 @@ def build_server(
     return mcp
 
 
-_server_instance: FastMCP | None = None
+_server_instance: MCPServer | None = None
 _server_instance_capabilities: MCPCapabilities | None = None
 _server_instance_lock = threading.Lock()
 
 
 def _get_server(
     services: RuntimeServices | None = None, *, capabilities: MCPCapabilities = MCPCapabilities()
-) -> FastMCP:
+) -> MCPServer:
     global _server_instance, _server_instance_capabilities
     if services is not None:
         _set_runtime_services(services)

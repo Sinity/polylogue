@@ -67,7 +67,7 @@ class MCPResultSemantics(str, Enum):
 
 @dataclass(frozen=True, slots=True)
 class MCPHandlerBinding:
-    """Where the live FastMCP handler is registered and implemented."""
+    """Where the live MCPServer handler is registered and implemented."""
 
     module: str
     symbol: str

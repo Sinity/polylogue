@@ -61,7 +61,7 @@ class _ToolManager(Protocol):
     _tools: dict[str, _ToolSurface]
 
 
-class _FastMCPServer(Protocol):
+class _MCPServerHandle(Protocol):
     _tool_manager: _ToolManager
 
 
@@ -490,8 +490,8 @@ def _packaging_home_manager_lane() -> LaneResult:
         return _fail(name, exc)
 
 
-def _live_fastmcp_signature_lane() -> LaneResult:
-    name = "live-fastmcp-signatures"
+def _live_mcpserver_signature_lane() -> LaneResult:
+    name = "live-mcpserver-signatures"
     try:
         if not target_tool_names_are_registered(_ALL_CAPABILITIES):
             return _unverified(
@@ -500,7 +500,7 @@ def _live_fastmcp_signature_lane() -> LaneResult:
                 runtime_tools=list(declared_runtime_tool_names(_ALL_CAPABILITIES)),
                 target_tools=list(target_tool_names(_ALL_CAPABILITIES)),
                 blocked_checks=(
-                    "exact FastMCP argument names and required/default status",
+                    "exact MCPServer argument names and required/default status",
                     "continuation field and initial-vs-resume signature exclusivity",
                     "read-owned graph/topology selector",
                     "operate preview/token/execute field names",
@@ -509,7 +509,7 @@ def _live_fastmcp_signature_lane() -> LaneResult:
             )
         from polylogue.mcp.server import build_server
 
-        server = cast(_FastMCPServer, build_server(capabilities=_ALL_CAPABILITIES))
+        server = cast(_MCPServerHandle, build_server(capabilities=_ALL_CAPABILITIES))
         surfaces = server._tool_manager._tools
         problems: list[str] = []
         for contract in TOOL_CONTRACTS:
@@ -569,7 +569,7 @@ LANES: tuple[tuple[str, Callable[[], LaneResult]], ...] = (
     ("target-declaration-reconciliation", _target_declaration_lane),
     ("native-installer-roundtrip", _native_installer_lane),
     ("packaging-and-home-manager", _packaging_home_manager_lane),
-    ("live-fastmcp-signatures", _live_fastmcp_signature_lane),
+    ("live-mcpserver-signatures", _live_mcpserver_signature_lane),
 )
 
 

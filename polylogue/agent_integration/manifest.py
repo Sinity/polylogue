@@ -61,7 +61,7 @@ def target_surface_is_registered(capabilities: MCPCapabilities = MCPCapabilities
 def build_live_manifest(capabilities: MCPCapabilities = MCPCapabilities()) -> dict[str, object]:
     """Build an honest capability-scoped manifest from executable declarations.
 
-    The declaration registrar validates the actual FastMCP set against these
+    The declaration registrar validates the actual MCPServer set against these
     names, so this remains dependency-light while preserving runtime authority.
     During the cutover it reports both the current compatibility surface and
     the intended small target surface instead of claiming they are equivalent.

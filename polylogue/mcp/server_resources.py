@@ -24,12 +24,12 @@ from polylogue.mcp.query_contracts import MCPSessionQueryRequest
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 if TYPE_CHECKING:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer
 
     from polylogue.mcp.server_support import ServerCallbacks
 
 
-def register_resources(mcp: FastMCP, hooks: ServerCallbacks) -> None:
+def register_resources(mcp: MCPServer, hooks: ServerCallbacks) -> None:
     """Register MCP resources on the given server."""
 
     @mcp.resource("polylogue://agent/manual")

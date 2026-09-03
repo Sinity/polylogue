@@ -20,7 +20,6 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, suppress
 from dataclasses import dataclass, field
-from datetime import timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias, TypeGuard, cast
@@ -53,6 +52,7 @@ ResponseMutator: TypeAlias = Callable[[str, RouteArguments, int, str], str]
 DiscoveryMutator: TypeAlias = Callable[[JSONDocument], JSONDocument]
 _CONTINUITY_DAEMON_SINK_URL = "http://127.0.0.1:1"
 _CONTINUITY_API_TOKEN_SENTINEL = "continuity-replay-call-log-disabled"
+CANCELLATION_SENTINEL = "polylogue-continuity-cancellation-observed"
 _TEMPLATE_RE = re.compile(r"\{fixture:([A-Za-z0-9_.-]+)\}")
 _ATTEMPT_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+):(?P<value>[A-Za-z0-9_-]+)")
 _ATTEMPT_GRADES: frozenset[str] = frozenset(
@@ -122,6 +122,18 @@ def _serve_saturated_cancellation_probe() -> None:
 
     from polylogue.archive.query import execution_control
     from polylogue.mcp.cli import main
+
+    # mcp 2.x drops the response to a cancelled request, so the client can no
+    # longer read the server's abort off the wire. The probe announces the
+    # production cancellation call itself: `execute_archive_read` invokes
+    # `ctx.cancel()` only on the read it actually interrupted.
+    _context_cancel = execution_control.QueryExecutionContext.cancel
+
+    def _announce_cancel(self: execution_control.QueryExecutionContext) -> None:
+        _context_cancel(self)
+        print(CANCELLATION_SENTINEL, file=sys.stderr, flush=True)
+
+    execution_control.QueryExecutionContext.cancel = _announce_cancel  # type: ignore[method-assign]
 
     controller = execution_control.QueryAdmissionController(capacity=1, reserved_interactive=0)
     holder = execution_control.QueryExecutionContext.create(
@@ -229,7 +241,7 @@ class _ReturnedUnitIdentity:
 
 
 class MCPContinuityRoute:
-    """Invoke handlers registered on Polylogue's real FastMCP read server."""
+    """Invoke handlers registered on Polylogue's real MCPServer read server."""
 
     def __init__(
         self,
@@ -250,7 +262,7 @@ class MCPContinuityRoute:
 
     @property
     def transport_name(self) -> str:
-        return "registered-fastmcp-tool"
+        return "registered-mcpserver-tool"
 
     @property
     def discovery(self) -> JSONDocument:
@@ -386,6 +398,7 @@ class StdioMCPContinuityRoute:
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._runtime_workdir: TemporaryDirectory[str] | None = None
+        self._server_errlog: Path | None = None
         self._discovery: JSONDocument = {}
         self._invocation_count = 0
         self._cancellation_receipts: dict[str, CancellationExerciseReceipt] = {}
@@ -401,6 +414,7 @@ class StdioMCPContinuityRoute:
     async def __aenter__(self) -> StdioMCPContinuityRoute:
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
+        from mcp.types import PaginatedRequestParams
 
         runtime_workdir = TemporaryDirectory(prefix="polylogue-continuity-runtime-")
         runtime_root = Path(runtime_workdir.name)
@@ -418,22 +432,28 @@ class StdioMCPContinuityRoute:
             cwd=str(Path.cwd()),
         )
         stack = AsyncExitStack()
+        server_errlog: Path | None = None
         try:
-            read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters))
+            if self.saturated_cancellation_probe:
+                server_errlog = runtime_root / "server-stderr.log"
+                errlog = stack.enter_context(server_errlog.open("w", encoding="utf-8"))
+                read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters, errlog=errlog))
+            else:
+                read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters))
             session = await stack.enter_async_context(
                 ClientSession(
                     read_stream,
                     write_stream,
-                    read_timeout_seconds=timedelta(seconds=self.read_timeout_seconds),
+                    read_timeout_seconds=self.read_timeout_seconds,
                 )
             )
             initialize = await session.initialize()
             tools: list[object] = []
             cursor: str | None = None
             while True:
-                page = await session.list_tools(cursor=cursor)
+                page = await session.list_tools(params=PaginatedRequestParams(cursor=cursor))
                 tools.extend(page.tools)
-                cursor = page.nextCursor
+                cursor = page.next_cursor
                 if cursor is None:
                     break
         except Exception as exc:
@@ -448,6 +468,7 @@ class StdioMCPContinuityRoute:
         self._stack = stack
         self._session = session
         self._runtime_workdir = runtime_workdir
+        self._server_errlog = server_errlog
         self._discovery = _stdio_discovery(initialize, tools, self.transport_name)
         if self.discovery_mutator is not None:
             self._discovery = require_json_document(
@@ -462,6 +483,7 @@ class StdioMCPContinuityRoute:
         self._stack = None
         self._session = None
         self._runtime_workdir = None
+        self._server_errlog = None
         try:
             if stack is not None:
                 await stack.aclose()
@@ -537,8 +559,12 @@ class StdioMCPContinuityRoute:
         The disposable server has its sole production admission slot occupied
         before MCP startup, so this single real route call cannot complete
         before cancellation.  That removes both timing sleeps and request-id
-        swarms while still exercising FastMCP, the registered Polylogue tool,
+        swarms while still exercising MCPServer, the registered Polylogue tool,
         QueryExecutionContext, and QueryAdmissionController.
+
+        A cancelled request gets no response on the wire, so the confirmation
+        is the probe server's own announcement of the production
+        ``ctx.cancel()`` call on its stderr, not a returned error.
         """
         session = self._session
         if session is None:
@@ -549,16 +575,30 @@ class StdioMCPContinuityRoute:
                 elapsed_ms=0.0,
                 detail="MCP stdio route is not open",
             )
-        from mcp.shared.exceptions import McpError
-        from mcp.types import CancelledNotification, CancelledNotificationParams, ClientNotification
+        errlog = self._server_errlog
+        if errlog is None:
+            return CancellationExerciseReceipt(
+                attempted=False,
+                confirmed=False,
+                outcome="not_applicable",
+                elapsed_ms=0.0,
+                detail="cancellation exercise requires the saturated-admission probe server",
+            )
+        from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
+        from mcp.shared.transport_context import TransportContext
+        from mcp.types import CancelledNotification, CancelledNotificationParams
 
         call_arguments = dict(arguments)
         started = time.perf_counter()
-        request_id = session._request_id
+        # `call_tool` mints its request id internally, so the id to cancel is
+        # read from the dispatcher's in-flight table rather than predicted.
+        pending = cast(JSONRPCDispatcher[TransportContext], session._dispatcher)._pending
+        before = set(pending)
         probe_task = asyncio.create_task(session.call_tool(tool, arguments=call_arguments))
         for _ in range(3):
             await asyncio.sleep(0)
-            if session._request_id == request_id + 1:
+            reserved = set(pending) - before
+            if len(reserved) == 1:
                 break
         else:
             raise ContinuityReplayError(
@@ -566,41 +606,45 @@ class StdioMCPContinuityRoute:
                 kind="cancellation_request_ids_unavailable",
                 failure_class="execution",
             )
+        request_id = reserved.pop()
         await session.send_notification(
-            ClientNotification(
-                CancelledNotification(
-                    params=CancelledNotificationParams(
-                        requestId=request_id,
-                        reason="continuity-replay-cancellation-exercise",
-                    )
+            CancelledNotification(
+                params=CancelledNotificationParams(
+                    request_id=request_id,
+                    reason="continuity-replay-cancellation-exercise",
                 )
             )
         )
 
         confirmed = False
-        outcome: CancellationOutcome = "call_failed"
-        detail: str | None = None
-        try:
-            await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
-        except McpError as exc:
-            message = exc.error.message or ""
-            if exc.error.code == 0 and "cancel" in message.lower():
+        outcome: CancellationOutcome = "not_confirmed_within_grace"
+        detail: str | None = "production ctx.cancel() was not announced within the cancellation grace budget"
+        grace_s = max(1.0, grace_ms / 1000)
+        deadline = time.perf_counter() + grace_s
+        # The receipt reports how long the server took to interrupt the read,
+        # so the clock stops at the observation, not after transport teardown.
+        observed_at: float | None = None
+        while True:
+            if CANCELLATION_SENTINEL in errlog.read_text(encoding="utf-8", errors="replace"):
                 confirmed = True
+                observed_at = time.perf_counter()
                 outcome = "cancelled_confirmed"
-                detail = "queued production MCP read returned the SDK cancellation response"
-            else:
-                detail = message or f"McpError code={exc.error.code}"
-        except TimeoutError:
-            probe_task.cancel()
-            with suppress(BaseException):
-                await probe_task
-            outcome = "not_confirmed_within_grace"
-            detail = "queued production MCP read did not resolve within the cancellation grace budget"
-        else:
+                detail = "queued production MCP read reached execute_archive_read's ctx.cancel()"
+                break
+            if probe_task.done() or time.perf_counter() >= deadline:
+                break
+            await asyncio.sleep(0.01)
+        if not confirmed and probe_task.done():
             outcome = "completed_before_cancel"
             detail = "saturated production admission unexpectedly allowed the probe to complete"
+        elif not confirmed:
+            tail = errlog.read_text(encoding="utf-8", errors="replace")[-500:].strip()
+            detail = f"{detail}; probe server stderr tail: {tail or '(empty)'}"
+        probe_task.cancel()
+        with suppress(BaseException):
+            await probe_task
 
-        # A cancellation response proves the handler stopped, but it does not
+        # The announced cancel proves the handler stopped, but it does not
         # prove the stdio server has consumed every preceding cancellation
         # notification.  Closing the disposable transport at that point can
         # race the SDK's stdin reader: it reads one last notification after
@@ -612,7 +656,7 @@ class StdioMCPContinuityRoute:
         # confirmed cancellation.
         await session.send_ping()
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        elapsed_ms = ((observed_at or time.perf_counter()) - started) * 1000
         return CancellationExerciseReceipt(
             attempted=True,
             confirmed=confirmed,
@@ -1812,7 +1856,7 @@ def _registered_discovery(server: object, transport_name: str) -> JSONDocument:
     registered_tools = getattr(manager, "_tools", None)
     if not isinstance(registered_tools, Mapping):
         raise ContinuityReplayError(
-            "FastMCP server exposes no registered tool catalog",
+            "MCPServer exposes no registered tool catalog",
             kind="missing_tool_catalog",
             failure_class="discovery",
         )
@@ -1834,20 +1878,20 @@ def _registered_discovery(server: object, transport_name: str) -> JSONDocument:
 
 
 def _stdio_discovery(initialize: object, raw_tools: Sequence[object], transport_name: str) -> JSONDocument:
-    server_info = getattr(initialize, "serverInfo", None)
+    server_info = getattr(initialize, "server_info", None)
     tools: JSONDocument = {}
     for raw_tool in raw_tools:
         name = getattr(raw_tool, "name", None)
         if not isinstance(name, str):
             continue
-        schema = require_json_document(getattr(raw_tool, "inputSchema", {}), context=f"stdio schema {name}")
+        schema = require_json_document(getattr(raw_tool, "input_schema", {}), context=f"stdio schema {name}")
         description = getattr(raw_tool, "description", None)
         tools[name] = _tool_discovery_payload(schema, description if isinstance(description, str) else "")
     server_name = getattr(server_info, "name", "polylogue")
     server_version = getattr(server_info, "version", None)
     return {
         "transport": transport_name,
-        "protocol_version": str(getattr(initialize, "protocolVersion", "unknown")),
+        "protocol_version": str(getattr(initialize, "protocol_version", "unknown")),
         "server_name": str(server_name),
         "server_version": str(server_version) if server_version is not None else None,
         "tool_count": len(tools),
@@ -1864,14 +1908,14 @@ def _tool_discovery_payload(schema: JSONDocument, description: str) -> JSONDocum
 
 
 def _call_tool_response_text(tool: str, result: object) -> str:
-    if getattr(result, "isError", False) is True:
+    if getattr(result, "is_error", False) is True:
         message = _content_text(getattr(result, "content", []))
         raise ContinuityReplayError(
             message or f"MCP tool {tool!r} returned an error",
             kind="mcp_tool_error",
             failure_class="execution",
         )
-    structured = getattr(result, "structuredContent", None)
+    structured = getattr(result, "structured_content", None)
     if isinstance(structured, Mapping):
         response = structured.get("result")
         if isinstance(response, str):

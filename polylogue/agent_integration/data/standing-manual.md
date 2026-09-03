@@ -3,7 +3,7 @@
 
 Polylogue is the local evidence system for prior AI work. Use it whenever the task depends on what was tried, decided, changed, observed, paid for, or left unfinished. Do not wait for the operator to say “search the archive.” First establish archive authority, then retrieve evidence, then cite stable refs. Do not use Polylogue for facts that the current repository or live system can answer more directly.
 
-This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`, `context`, `status`, `write`, `judge`, `run`, and `maintenance`. Names and argument contracts are generated from the live declarations and checked against registered FastMCP signatures.
+This manual targets the ten-tool MCP surface: `query`, `read`, `get`, `explain`, `context`, `status`, `write`, `judge`, `run`, and `maintenance`. Names and argument contracts are generated from the live declarations and checked against registered MCPServer signatures.
 
 ## Cold-start decision route
 
