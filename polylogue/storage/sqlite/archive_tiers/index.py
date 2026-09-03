@@ -1039,7 +1039,7 @@ SELECT g.thread_id,
             ELSE MAX(CAST((julianday(g.end_time) - julianday(g.start_time)) * 86400000 AS INTEGER), 0)
        END AS wall_duration_ms,
        COALESCE(w.value, '{{}}') AS work_event_breakdown_json,
-       json_object(
+       '{{}}' AS payload_json /* json_object(
            'thread_id', g.thread_id,
            'root_id', g.thread_id,
            'session_ids', json(g.session_ids_json),
@@ -1085,7 +1085,7 @@ SELECT g.thread_id,
            )) FROM members member
            LEFT JOIN depths md ON md.thread_id = member.thread_id AND md.session_id = member.session_id
            WHERE member.thread_id = g.thread_id)))
-       ) AS payload_json,
+       ) */,
        lower(g.thread_id || char(10) || COALESCE(r.dominant_repo, '') || char(10) || g.session_ids_json)
            AS search_text,
        g.created_at_ms
