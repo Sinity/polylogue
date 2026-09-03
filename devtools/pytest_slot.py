@@ -25,10 +25,11 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
@@ -38,6 +39,7 @@ from devtools.cloud_sentinels import cloud_sentinel_declined
 __all__ = [
     "BASETEMP_ROOT_ENV",
     "INHERITED_ENVIRONMENT_KEYS",
+    "REAPED_SIGNALS",
     "PYTEST_GROUP",
     "PytestSlotUnavailableError",
     "SlotOutcome",
@@ -58,6 +60,11 @@ SLOT_HELD: Final = "held"
 
 #: The host group whose parallelism is one.
 PYTEST_GROUP: Final = "pytest"
+
+#: Signals that end this process while it waits on a task it owns. The task
+#: outlives the waiter, and the slot's parallelism is one, so an unreaped task
+#: starves every other checkout on the host until someone notices.
+REAPED_SIGNALS: Final[tuple[signal.Signals, ...]] = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
 #: The only keys the ``pueue add`` client inherits. Everything pytest needs
 #: travels in the launch file, because pueue persists the adder's environment
@@ -212,6 +219,49 @@ def _task_result(status_json: str, task_id: str) -> int:
     raise PytestSlotUnavailableError(REFUSAL.format(reason=f"pueue task {task_id} ended as {result!r}"))
 
 
+def _reap_task(task_id: str, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:
+    """End a task this process owns and drop it from the queue.
+
+    Best effort by construction: the reason we are here is that the waiter is
+    being killed, so a failing reap must not replace the original cause of
+    death with its own error. ``kill`` first because ``remove`` refuses a
+    running task; ``remove`` after because a killed task still occupies the
+    listing. The launch file carries a resolved environment and must not
+    outlive the run either way.
+    """
+
+    for verb in ("kill", "remove"):
+        with contextlib.suppress(PytestSlotUnavailableError):
+            _pueue([verb, task_id], env=env)
+    if launch_path is not None:
+        with contextlib.suppress(OSError):
+            launch_path.unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def _reaping(task_id: str, *, env: Mapping[str, str], launch_path: Path | None = None) -> Iterator[None]:
+    """Reap ``task_id`` if this process is signalled or unwound while waiting."""
+
+    def handle(signal_number: int, frame: object) -> None:
+        _reap_task(task_id, env=env, launch_path=launch_path)
+        signal.signal(signal_number, previous.get(signal.Signals(signal_number), signal.SIG_DFL))
+        os.kill(os.getpid(), signal_number)
+
+    previous: dict[signal.Signals, Any] = {}
+    for number in REAPED_SIGNALS:
+        with contextlib.suppress(ValueError, OSError):
+            previous[number] = signal.signal(number, handle)
+    try:
+        yield
+    except BaseException:
+        _reap_task(task_id, env=env, launch_path=launch_path)
+        raise
+    finally:
+        for number, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(number, handler)
+
+
 def _write_launch(path: Path, *, argv: Sequence[str], cwd: str, env: Mapping[str, str], log_path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
@@ -269,9 +319,10 @@ def _queue(
         raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`pueue add` printed no task id: {added.stdout!r}"))
     sys.stderr.write(f"  waiting for the host pytest slot (pueue task {task_id}, group {PYTEST_GROUP}) ...\n")
     sys.stderr.flush()
-    _pueue(["wait", task_id], env=adder)
-    status = _pueue(["status", "--json"], env=adder)
-    returncode = _task_result(status.stdout, task_id)
+    with _reaping(task_id, env=adder, launch_path=launch_path):
+        _pueue(["wait", task_id], env=adder)
+        status = _pueue(["status", "--json"], env=adder)
+        returncode = _task_result(status.stdout, task_id)
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
     return SlotOutcome(returncode=returncode, slot=f"pueue task {task_id}", log_path=log_path)
