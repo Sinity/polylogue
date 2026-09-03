@@ -1943,3 +1943,91 @@ def test_backup_verification_refuses_receipt_when_backup_changes_after_scratch_r
     assert result.verified is False
     assert "backup changed after scratch verification" in str(result.error)
     assert not (Path(result.output_path) / "verification-receipt.json").exists()
+
+
+def test_backup_proves_a_full_snapshot_append_row(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """An append row whose retained blob is the whole payload is still provable.
+
+    ``admit_raw_observation``'s append arm stores ``resolved_payload`` -- the
+    complete observation -- while recording the appended tail's offsets. The
+    proof path reads ``[start, end)`` and hashes that window, which can never
+    equal a blob holding ``[0, end)``, so such a row is reported unproven even
+    though its bytes are sitting in the source file.
+
+    Anti-vacuity: removing the full-prefix fallback from
+    ``_source_recoverability_proofs`` leaves the window hash mismatching and
+    turns the ``len(proofs) == 1`` assertion red (``unproven`` gains a
+    ``hash_mismatch`` entry). The companion test below pins that a genuine
+    window-shaped append still proves through the window, so the fix cannot be
+    "always read the full prefix".
+    """
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "full-snapshot-append.jsonl"
+    baseline = b'{"id":"baseline"}\n'
+    tail = b'{"id":"tail"}\n'
+    source_path.write_bytes(baseline + tail)
+    snapshot = baseline + tail
+    blob_hash = hashlib.sha256(snapshot).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind,
+                append_start_offset, append_end_offset
+            ) VALUES ('full-snapshot-append', 'hermes-session', ?, 0, ?, ?, 1, 'passed', 'append', ?, ?)""",
+            (str(source_path), blob_hash, len(snapshot), len(baseline), len(snapshot)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert unproven == []
+    assert len(proofs) == 1
+    assert proofs[0]["blob_hash"] == blob_hash.hex()
+
+
+def test_backup_still_proves_a_window_shaped_append_row(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+) -> None:
+    """A genuine tail-window append row proves through its window, unchanged.
+
+    Anti-vacuity: replacing the window read with an unconditional full-prefix
+    read makes the hash mismatch the retained tail-only blob and turns the
+    ``len(proofs) == 1`` assertion red.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "window-append.jsonl"
+    baseline = b'{"id":"baseline"}\n'
+    tail = b'{"id":"tail"}\n'
+    source_path.write_bytes(baseline + tail)
+    blob_hash = hashlib.sha256(tail).digest()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status, revision_kind,
+                append_start_offset, append_end_offset
+            ) VALUES ('window-append', 'hermes-session', ?, 0, ?, ?, 1, 'passed', 'append', ?, ?)""",
+            (str(source_path), blob_hash, len(tail), len(baseline), len(baseline) + len(tail)),
+        )
+
+    unproven: list[dict[str, str]] = []
+    proofs = backup_mod._source_recoverability_proofs(
+        archive_root / "source.db",
+        root=archive_root,
+        missing_hashes={blob_hash.hex()},
+        unproven=unproven,
+    )
+
+    assert unproven == []
+    assert len(proofs) == 1
+    assert proofs[0]["kind"] == "live_append_segment_sha256"
