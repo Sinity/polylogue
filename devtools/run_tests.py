@@ -320,7 +320,7 @@ def _worker_args(selection: list[str]) -> list[str]:
     if _has_worker_flag(selection):
         return []
     requested = agent_worker_cap(configured_pytest_worker_request(os.environ), os.environ)
-    return ["-n", str(requested if requested is not None else 8)]
+    return ["-n", str(requested if requested is not None else 0)]
 
 
 def _xdist_distribution_args(selection: list[str], worker_args: list[str]) -> list[str]:

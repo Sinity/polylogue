@@ -50,7 +50,7 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
         "devtools.pytest_progress_plugin",
     ]
     assert "tests/unit/pipeline" in cmd
-    assert cmd[-2:] == ["-n", "8"]
+    assert cmd[-2:] == ["-n", "0"]
 
 
 def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
