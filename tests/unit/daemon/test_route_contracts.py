@@ -13,7 +13,9 @@ from polylogue.daemon.http import (
     DaemonAPIHandler,
     _declared_get_routes,
     _parameterized_get_routes,
+    _ParameterizedGetRoute,
     _static_get_routes,
+    _StaticGetRoute,
     implemented_daemon_route_patterns,
     validate_declared_route_reachability,
 )
@@ -82,6 +84,33 @@ def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> No
     generated = {(route.contract.method, route.pattern) for route in _declared_get_routes()}
     declared = {(route.method, route.path) for route in DAEMON_ROUTE_DECLARATIONS}
     assert generated == declared
+
+
+def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
+    """The executable read declarations remain the shared authority."""
+
+    from devtools.render_openapi import _build_openapi_document
+
+    expected = {
+        "/api/sessions": ("daemon.find.sessions", "_handle_list_sessions"),
+        "/api/status": ("daemon.status", "_handle_status"),
+        "/api/query-units": ("daemon.query.units", "_handle_query_units"),
+        "/api/sessions/:id/read": ("daemon.read.session", "_handle_get_session_read"),
+    }
+    installed: dict[str, _StaticGetRoute | _ParameterizedGetRoute] = {
+        route.pattern: route for route in _static_get_routes()
+    }
+    installed.update({route.pattern: route for route in _parameterized_get_routes()})
+    document = _build_openapi_document()
+
+    assert {declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS} == set(expected)
+    for path, (declaration_id, handler_name) in expected.items():
+        declaration = daemon_route_declaration("GET", path)
+        assert declaration.kernel.declaration_id == declaration_id
+        assert installed[path].handler_name == handler_name
+        operation = document["paths"][path.replace(":id", "{session_id}")]["get"]
+        assert operation["x-polylogue-declaration"]["declaration_id"] == declaration_id
+        assert operation["x-polylogue-declaration"]["path"] == path
 
 
 def test_unreachable_generated_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
