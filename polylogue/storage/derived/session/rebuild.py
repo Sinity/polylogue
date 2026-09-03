@@ -16,6 +16,12 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiosqlite
 
+from polylogue.analysis.archive_models import (
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+)
+from polylogue.analysis.fallback import FallbackReason
 from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCostSummary
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
@@ -25,12 +31,6 @@ from polylogue.core.memory import release_process_memory
 from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
-from polylogue.insights.archive_models import (
-    SessionEnrichmentPayload,
-    SessionEvidencePayload,
-    SessionInferencePayload,
-)
-from polylogue.insights.fallback import FallbackReason
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.derived.session.latency_profiles import (
     build_latency_profile_facts,
@@ -909,7 +909,7 @@ def build_session_insight_records(
     # context-snapshot rows are no longer materialized into tables, so
     # building full SessionRunRecord/etc. objects (a search_text join per
     # row) would be wasted work.
-    from polylogue.insights.transforms import compile_session_run_projection
+    from polylogue.analysis.transforms import compile_session_run_projection
 
     run_projection = compile_session_run_projection(session, session_links=())
     add_timing("build_records.run_projection_records", t0)

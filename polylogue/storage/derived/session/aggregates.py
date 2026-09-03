@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.insights.archive import date_from_iso
+from polylogue.analysis.archive import date_from_iso
 from polylogue.storage.runtime import SessionProfileRecord
 
 _PROFILE_BUCKET_DAY_SQL = (
