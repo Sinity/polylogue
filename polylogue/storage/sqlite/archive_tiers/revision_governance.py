@@ -2774,6 +2774,47 @@ def defer_raw_revision_adoption(
             )
 
 
+# Event types whose payload summarizes the WHOLE parsed input rather than a
+# point in the conversation. ``merge_parsed_session_chunks`` reduces these to
+# one event per composed session; the index must carry the same single row.
+_CHAIN_SUMMARY_EVENT_TYPES = ("claude_parse_coverage",)
+
+
+def _reconcile_chain_summary_events(
+    store: RawRevisionGovernanceHost,
+    *,
+    session_id: str,
+    aggregate: ParsedSession,
+) -> None:
+    """Leave one whole-input summary row per type, carrying the chain's totals."""
+    for event_type in _CHAIN_SUMMARY_EVENT_TYPES:
+        composed = [event for event in aggregate.session_events if event.event_type == event_type]
+        if not composed:
+            continue
+        positions = [
+            int(row[0])
+            for row in store._conn.execute(
+                "SELECT position FROM session_events WHERE session_id = ? AND event_type = ? ORDER BY position",
+                (session_id, event_type),
+            ).fetchall()
+        ]
+        if not positions:
+            continue
+        store._conn.execute(
+            "DELETE FROM session_events WHERE session_id = ? AND event_type = ? AND position != ?",
+            (session_id, event_type, positions[-1]),
+        )
+        store._conn.execute(
+            "UPDATE session_events SET payload_json = ? WHERE session_id = ? AND event_type = ? AND position = ?",
+            (
+                json.dumps(composed[-1].payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                session_id,
+                event_type,
+                positions[-1],
+            ),
+        )
+
+
 def apply_raw_revision_replay(
     store: RawRevisionGovernanceHost,
     plan: RevisionReplayPlan,
@@ -2798,11 +2839,10 @@ def apply_raw_revision_replay(
     before use (so a caller can ``submit()`` the CPU-bound build on a
     background thread and let it run concurrently with this function's own
     attachment-preacquisition/blob-flush/head-lookup preamble, then pay only
-    the (likely already-finished) ``Future.result()`` wait). Only ever
-    consulted for ``position == 0`` (the chain's sole full-replace write --
-    every other position is a ``merge_append``, which
-    ``write_parsed_session_to_archive`` never accepts prepared rows for
-    regardless). A missing key, ``None`` value, or a value that turns out
+    the (likely already-finished) ``Future.result()`` wait). Prepared rows
+    describe one chunk's own content and only a full replace accepts them,
+    so they are consulted only when that chunk is the entire composed write.
+    A missing key, ``None`` value, or a value that turns out
     stale (session content hash mismatch, or lineage tail-slicing changed
     ``messages`` after it was built) is always safe: ``write_parsed_session_
     to_archive`` falls back to building rows inline, byte-identical to
@@ -2960,24 +3000,46 @@ def apply_raw_revision_replay(
                 (plan.logical_source_key,),
             )
             existing_head = None
-        for position, raw_id in enumerate(plan.accepted_raw_ids):
-            if position <= already_indexed_upto:
-                # Already durably written by an earlier accepted replay
-                # of this exact byte chain (see ``skip_already_applied``
-                # above) -- its session_id is deterministic from its own
-                # parsed content, so recover it without re-running the
-                # write.
-                parsed = parsed_by_raw_id[raw_id]
-                session_ids.add(str(make_session_id(parsed.source_name, parsed.provider_session_id)))
-                continue
-            # polylogue-fpid: only position 0 is ever a full-replace write
-            # (every later position is merge_append, source_index=-1 above),
-            # so a prepared entry is only ever resolved/consulted there --
-            # see this function's docstring for the resolve-here-not-earlier
-            # rationale and the always-safe stale-prepared fallback.
+        for raw_id in plan.accepted_raw_ids[: already_indexed_upto + 1]:
+            # Already durably written by an earlier accepted replay
+            # of this exact byte chain (see ``skip_already_applied``
+            # above) -- its session_id is deterministic from its own
+            # parsed content, so recover it without re-running the
+            # write.
+            parsed = parsed_by_raw_id[raw_id]
+            session_ids.add(str(make_session_id(parsed.source_name, parsed.provider_session_id)))
+        pending_raw_ids = plan.accepted_raw_ids[already_indexed_upto + 1 :]
+        if pending_raw_ids:
+            # One chain is one session, so the writer sees one session: the
+            # chunks still to be indexed are composed by the same reduction
+            # that produced ``aggregate_content_hash``. Writing each chunk
+            # separately made the persisted read model disagree with that
+            # hash -- every chunk-local summary event (Claude's
+            # ``claude_parse_coverage``, a complete-input summary) landed as
+            # its own row, so the index described the stream schedule rather
+            # than the session.
+            composed_sessions = merge_parsed_session_chunks(parsed_by_raw_id[raw_id] for raw_id in pending_raw_ids)
+            if len(composed_sessions) != 1:
+                raise RuntimeError("one logical revision chain did not compose to exactly one session")
+            composed_session = composed_sessions[0]
+            # Preacquired blobs are keyed by attachment object identity and
+            # the composed session carries the chunks' own attachment
+            # objects, so the per-chunk maps compose by union.
+            composed_attachment_blobs: dict[int, tuple[bytes | None, int, str]] = {}
+            for raw_id in pending_raw_ids:
+                composed_attachment_blobs.update(attachments_by_raw_id[raw_id])
+            # The chain's newest accepted raw carries the composed write:
+            # ``sessions.raw_id`` and the reparse receipt then name the tip
+            # the head row is about to advertise.
+            tip_raw_id = pending_raw_ids[-1]
+            full_replace = already_indexed_upto < 0
+            # polylogue-fpid: prepared rows are built for one chunk's own
+            # content and only a full replace accepts them, so they are
+            # consulted only when that chunk is the whole composed write. A
+            # stale or missing entry always falls back to an inline build.
             resolved_prepared: PreparedSessionRows | None = None
-            if position == 0 and prepared_by_raw_id is not None:
-                prepared_candidate = prepared_by_raw_id.get(raw_id)
+            if full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
+                prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
                 if isinstance(prepared_candidate, Future):
                     resolved_prepared = prepared_candidate.result()
                 else:
@@ -2985,13 +3047,13 @@ def apply_raw_revision_replay(
             index_started = time.perf_counter()
             result = _index_parsed_for_retained_raw(
                 store,
-                parsed_by_raw_id[raw_id],
-                raw_id=raw_id,
-                source_index=0 if position == 0 else -1,
+                composed_session,
+                raw_id=tip_raw_id,
+                source_index=0 if full_replace else -1,
                 stage_timings_s=stage_timings_s,
                 stage_timing_prefix=stage_timing_prefix,
                 manage_transaction=False,
-                preacquired_attachment_blobs=attachments_by_raw_id[raw_id],
+                preacquired_attachment_blobs=composed_attachment_blobs,
                 finalize_raw_parse=False,
                 revision_authoritative=True,
                 bulk_fts=bulk_fts,
@@ -3003,6 +3065,15 @@ def apply_raw_revision_replay(
                 key = f"{stage_timing_prefix}.index_parsed_write"
                 stage_timings_s[key] = stage_timings_s.get(key, 0.0) + (time.perf_counter() - index_started)
             session_ids.add(result.session_id)
+            if not full_replace:
+                # An appended tail carries its own composed summary event
+                # while the prefix's is already stored; the whole chain's
+                # reduction is the one that matches the head content hash.
+                _reconcile_chain_summary_events(
+                    store,
+                    session_id=result.session_id,
+                    aggregate=aggregate_sessions[0],
+                )
         if len(session_ids) != 1:
             raise RuntimeError("one logical revision chain produced multiple session ids")
         session_id = next(iter(session_ids))

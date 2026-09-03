@@ -2326,7 +2326,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
             ],
         )
 
-    indexed_raw_ids: list[str] = []
+    indexed_writes: list[tuple[str, tuple[str, ...]]] = []
     # polylogue-1r9c: _index_parsed_for_retained_raw's real implementation
     # moved to revision_governance.py, and apply_raw_revision_replay (also in
     # that module) calls it as a direct module-internal function reference,
@@ -2342,7 +2342,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         raw_id: str,
         **kwargs: object,
     ) -> object:
-        indexed_raw_ids.append(raw_id)
+        indexed_writes.append((raw_id, tuple(message.provider_message_id or "" for message in session.messages)))
         return original(store, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(archive_revision_governance, "_index_parsed_for_retained_raw", spy)
@@ -2361,8 +2361,8 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         archive.apply_raw_revision_replay(
             plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0, skip_already_applied=True
         )
-        assert indexed_raw_ids == [baseline]
-        indexed_raw_ids.clear()
+        assert indexed_writes == [(baseline, ("m0",))]
+        indexed_writes.clear()
 
         append_one = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2398,8 +2398,8 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
         )
         # Only the NEW tail position was actually indexed -- the baseline
         # was already durably written by the first call above.
-        assert indexed_raw_ids == [append_one]
-        indexed_raw_ids.clear()
+        assert indexed_writes == [(append_one, ("m1",))]
+        indexed_writes.clear()
 
         append_two = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2439,8 +2439,8 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
             skip_already_applied=True,
         )
         # Again: only the newest position, not the two already-applied ones.
-        assert indexed_raw_ids == [append_two]
-        indexed_raw_ids.clear()
+        assert indexed_writes == [(append_two, ("m2",))]
+        indexed_writes.clear()
 
         # Correctness is unaffected by skipping the already-applied writes:
         # every message from every accepted position is still present.
@@ -2464,9 +2464,8 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Backfill/restore/membership callers do not pass ``skip_already_applied``
-    and must keep today's full self-healing re-apply of every historical
-    position -- only the live-append hot path opts into the fast tail-only
-    mode.
+    and must keep the full self-healing re-apply of every historical position
+    -- only the live-append hot path opts into the fast tail-only mode.
     """
     initialize_active_archive_root(tmp_path)
 
@@ -2480,7 +2479,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
             ],
         )
 
-    indexed_raw_ids: list[str] = []
+    indexed_writes: list[tuple[str, tuple[str, ...]]] = []
     # polylogue-1r9c: _index_parsed_for_retained_raw's real implementation
     # moved to revision_governance.py, and apply_raw_revision_replay (also in
     # that module) calls it as a direct module-internal function reference,
@@ -2496,7 +2495,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
         raw_id: str,
         **kwargs: object,
     ) -> object:
-        indexed_raw_ids.append(raw_id)
+        indexed_writes.append((raw_id, tuple(message.provider_message_id or "" for message in session.messages)))
         return original(store, session, raw_id=raw_id, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(archive_revision_governance, "_index_parsed_for_retained_raw", spy)
@@ -2513,7 +2512,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
         )
         plan0 = archive.classify_raw_revision_cohort_for_live_watch("codex-session:session")
         archive.apply_raw_revision_replay(plan0, {baseline: parsed(("m0", "zero"))}, acquired_at_ms=0)
-        indexed_raw_ids.clear()
+        indexed_writes.clear()
 
         append_one = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2543,6 +2542,117 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
             {baseline: parsed(("m0", "zero")), append_one: parsed(("m1", "one"))},
             acquired_at_ms=0,
         )
-        # Default (no skip): the whole chain is re-indexed, exactly as before
-        # this fix -- pinning that non-opted-in callers are unaffected.
-        assert indexed_raw_ids == [baseline, append_one]
+        # Default (no skip): the whole chain's composed content is written,
+        # not just the newly accepted tail.
+        assert indexed_writes == [(append_one, ("m0", "m1"))]
+
+
+def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path: Path) -> None:
+    """polylogue-rkdej: an accepted full-plus-append chain persists the composed
+    session exactly once.
+
+    ``apply_raw_revision_replay`` composes the chain with
+    ``merge_parsed_session_chunks`` to derive ``sessions.content_hash``. If it
+    then hands each ``parsed_by_raw_id`` chunk to the writer separately, the
+    index describes the stream schedule instead of the session: each chunk's
+    ``claude_parse_coverage`` -- a complete-input summary -- lands as its own
+    row, so the persisted read model disagrees with the content hash the same
+    call just stored.
+
+    Anti-vacuity: indexing per chunk (the pre-fix loop) leaves two
+    ``claude_parse_coverage`` rows carrying the chunk-local counts 1 and 2
+    rather than one row carrying the composed total 3, and turns this test red.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(*, message_id: str, text: str, seen: int) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="chat",
+            messages=[ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_parse_coverage",
+                    payload={"sidecar_seen": {"user": seen}},
+                )
+            ],
+        )
+
+    baseline_chunk = parsed(message_id="m0", text="zero", seen=1)
+    append_chunk = parsed(message_id="m1", text="one", seen=2)
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "claude-code-session:chat",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        append_one = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b"b" * 5,
+            source_path="chat.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_one,
+            RawRevisionEnvelope(
+                "claude-code-session:chat",
+                RawRevisionKind.APPEND,
+                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                1,
+                predecessor_source_revision="full-0",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+
+        plan = archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat")
+        assert plan.accepted_raw_ids == (baseline, append_one)
+        session_id, _ = archive.apply_raw_revision_replay(
+            plan,
+            {baseline: baseline_chunk, append_one: append_chunk},
+            acquired_at_ms=0,
+        )
+
+        composed = merge_parsed_session_chunks([baseline_chunk, append_chunk])
+        assert len(composed) == 1
+
+        messages = [
+            row[0]
+            for row in archive._conn.execute(
+                "SELECT native_id FROM messages WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            ).fetchall()
+        ]
+        assert messages == ["m0", "m1"]
+
+        coverage = [
+            json.loads(row[0])
+            for row in archive._conn.execute(
+                """SELECT payload_json FROM session_events
+                   WHERE session_id = ? AND event_type = 'claude_parse_coverage'
+                   ORDER BY position""",
+                (session_id,),
+            ).fetchall()
+        ]
+        assert coverage == [composed[0].session_events[-1].payload]
+        assert coverage[0]["sidecar_seen"] == {"user": 3}
+
+        stored_hash = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert stored_hash is not None
+        assert bytes(stored_hash[0]).hex() == session_content_hash(composed[0])
