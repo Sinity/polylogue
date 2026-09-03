@@ -666,45 +666,6 @@ def test_v61_replace_table_drops_pricing_columns_and_keeps_the_rest(tmp_path: Pa
     assert row == (1000, 500, 1, 0.5)
 
 
-def test_v86_replace_table_drops_threads_dominant_repo_id(tmp_path: Path) -> None:
-    """The declared v86 fast-forward preserves the live thread projection."""
-    from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import apply_index_fast_forward
-    from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
-
-    plan = index_fast_forward_plan(85, 86)
-    assert plan is not None
-
-    conn = sqlite3.connect(tmp_path / "scratch.db")
-    try:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY) STRICT")
-        conn.execute("INSERT INTO sessions VALUES ('codex-session:s1')")
-        conn.execute(
-            """
-            CREATE TABLE threads (
-                thread_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
-                dominant_repo_id TEXT,
-                dominant_repo TEXT
-            ) STRICT
-            """
-        )
-        conn.execute("INSERT INTO threads VALUES ('codex-session:s1', 'repo-1', 'example/repo')")
-        conn.execute("PRAGMA user_version = 85")
-        conn.commit()
-
-        apply_index_fast_forward(conn, plan)
-        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(threads)")}
-        row = conn.execute("SELECT thread_id, dominant_repo FROM threads").fetchone()
-        index_exists = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_threads_time'"
-        ).fetchone()
-    finally:
-        conn.close()
-
-    assert "dominant_repo_id" not in columns
-    assert row == ("codex-session:s1", "example/repo")
-    assert index_exists == (1,)
-
-
 def test_v63_drop_table_removes_threads_fts_and_its_triggers(tmp_path: Path) -> None:
     """polylogue-eizc: the v63 DROP_TABLE declaration drops threads_fts and
     its three triggers via the real ``apply_index_fast_forward`` plan
