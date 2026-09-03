@@ -115,11 +115,17 @@ class TestArchiveRootHonoursConfigFile:
         assert archive_root() == user_root
 
 
-def test_external_active_pointer_changes_only_the_index_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_active_index_pointer_changes_only_the_index_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An active pointer moves the index tier and leaves the durable tiers put.
+
+    The generation lives inside the archive root, which is the shape
+    ``promote()`` writes. A pointer target outside the root is the shape of a
+    copied archive and is refused (#4411), so it cannot carry this contract.
+    """
     root = tmp_path / "archive"
     root.mkdir()
-    canonical = tmp_path / "canonical" / "index.db"
-    canonical.parent.mkdir()
+    canonical = root / ".index-generations" / "gen-0001" / "index.db"
+    canonical.parent.mkdir(parents=True)
     canonical.touch()
     (root / ".index-active-pointer").write_text(str(canonical), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(root))
