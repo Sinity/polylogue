@@ -526,7 +526,9 @@ polylogue import tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.j
 # 2. Full ingest + query. A disposable HOME leaves every typed default source
 #    empty while the explicit inbox remains available to the daemon:
 smoke_home=$(mktemp -d)
-HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" \
+env -u POLYLOGUE_HERMES_ROOT -u POLYLOGUE_CONFIG -u POLYLOGUE_SITE_CONFIG \
+    -u POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH -u POLYLOGUE_HOOK_SIDECAR_DIR \
+    HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" \
   polylogued run --no-browser-capture --no-source-catchup \
   --root "$POLYLOGUE_ARCHIVE_ROOT/inbox" &
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json
@@ -535,6 +537,8 @@ polylogue --origin hermes-session find "hermes" then read --all --format json
 
 `--root` does not isolate a watcher. Use a disposable `HOME` for fixture-only
 daemon runs; `--no-source-catchup` only disables configured non-watch sources.
+A configured root reaches the daemon through its own environment variable, so
+the smoke also clears the five that outrank `HOME`/XDG discovery.
 
 ## Related docs
 

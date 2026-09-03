@@ -807,3 +807,208 @@ def test_scope_namespace_survives_receiver_bearer_rotation(tmp_path: Path) -> No
             server.shutdown()
             thread.join()
     assert namespaces[0] == namespaces[1]
+
+
+def _checkpoint(
+    host: str,
+    port: int,
+    job_id: str,
+    lease: dict[str, Any],
+    revision: int,
+    sequence: int,
+    payload: dict[str, object],
+    request_id: str,
+) -> dict[str, Any]:
+    status, body = request(
+        host,
+        port,
+        "PUT",
+        f"/v1/capture-jobs/{job_id}/checkpoint",
+        {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "lease_id": lease["lease_id"],
+            "generation": lease["generation"],
+            "proof": lease["proof"],
+            "request_id": request_id,
+            "expected_revision": revision,
+            "checkpoint": {"sequence": sequence, "payload": payload, "digest": canonical_digest(payload)},
+        },
+    )
+    assert status == 200, body
+    return body
+
+
+def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -> None:
+    """Anti-vacuity: dropping the legacy-digest branch in update() restores the 409.
+
+    The stored digest is rewritten into the shape a build before retention
+    joined it wrote, which is what a receiver spool carries across that
+    upgrade.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        retry = {
+            "state": "retry_wait",
+            "attempt": 2,
+            "reason": "rate-limit",
+            "next_eligible_at": "2026-01-01T00:00:00Z",
+        }
+        update_body: dict[str, object] = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+            "request_id": "pre-upgrade-retry",
+            "expected_revision": adopted["job"]["revision"],
+            "retry": retry,
+        }
+        status, updated = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
+        assert status == 200 and updated["duplicate"] is False
+
+        legacy = canonical_digest({"retry": retry, "lease_ttl_seconds": None})
+        with sqlite3.connect(capture_job_database_path(tmp_path)) as connection:
+            connection.execute(
+                "UPDATE capture_job_update_receipts SET request_digest=? WHERE request_id=?",
+                (legacy, "pre-upgrade-retry"),
+            )
+        status, replay = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", update_body)
+        assert status == 200
+        assert replay["duplicate"] is True
+        assert replay["receipt"] == updated["receipt"]
+
+        status, conflicting = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {**update_body, "retention": {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}},
+        )
+        assert status == 409 and conflicting["error"]["code"] == "request_id_conflict"
+
+
+def test_terminal_retry_transitions_retention_without_a_client_declaration(tmp_path: Path) -> None:
+    """Anti-vacuity: returning ``current`` unchanged from _retention_after_retry
+    leaves the job ``active`` and this assertion fails.
+
+    No production client sends a retention object, so the terminal transition
+    is the only route out of the creation default.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        checkpointed = _checkpoint(
+            host, port, job["job_id"], adopted["lease"], adopted["job"]["revision"], 0, {"cursor": 1}, "cp-1"
+        )
+        status, completed = request(
+            host,
+            port,
+            "POST",
+            f"/v1/capture-jobs/{job['job_id']}/update",
+            {
+                "provider": "chatgpt",
+                "account_scope": SCOPE,
+                "lease_id": adopted["lease"]["lease_id"],
+                "generation": adopted["lease"]["generation"],
+                "proof": adopted["lease"]["proof"],
+                "request_id": "terminal",
+                "expected_revision": checkpointed["job"]["revision"],
+                "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+            },
+        )
+        assert status == 200
+        assert completed["receipt"]["retention"]["state"] == "eligible"
+        # The checkpoint left an intent-keyed timeline, so this job is the
+        # record of it and housekeeping must not collect it.
+        assert completed["receipt"]["retention"]["timeline_authoritative"] is True
+        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+
+
+def test_checkpoint_persists_a_timeline_the_projection_surfaces(tmp_path: Path) -> None:
+    """Anti-vacuity: deleting the _append_event call in checkpoint() empties
+    ``timelines``, because no production client posts to the event route and
+    the ``created`` event carries no conversation ref.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        named = _checkpoint(
+            host,
+            port,
+            job["job_id"],
+            adopted["lease"],
+            adopted["job"]["revision"],
+            0,
+            {"cursor": 1, "conversation_ref": "conversation:7"},
+            "cp-named",
+        )
+        _checkpoint(
+            host, port, job["job_id"], adopted["lease"], named["job"]["revision"], 1, {"cursor": 2}, "cp-unnamed"
+        )
+        status, page = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}&client_protocol=1",
+            {},
+        )
+        assert status == 200
+        assert [event["kind"] for event in page["events"]] == ["created", "capture-attempted", "capture-attempted"]
+        assert set(page["timelines"]) == {"conversation:7", f"intent:{INTENT_KEY}"}
+        assert [event["payload"]["checkpoint_sequence"] for event in page["timelines"]["conversation:7"]] == [0]
+
+
+def test_event_page_holds_the_newest_events_and_pages_backwards(tmp_path: Path) -> None:
+    """Anti-vacuity: restoring ``ORDER BY event_revision LIMIT`` (oldest-first)
+    drops the newest checkpoints from a short page, and the timeline
+    projection with them.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        revision = adopted["job"]["revision"]
+        for sequence in range(4):
+            body = _checkpoint(
+                host,
+                port,
+                job["job_id"],
+                adopted["lease"],
+                revision,
+                sequence,
+                {"cursor": sequence, "conversation_ref": f"conversation:{sequence}"},
+                f"cp-{sequence}",
+            )
+            revision = body["job"]["revision"]
+
+        query = f"provider=chatgpt&account_scope={SCOPE}&client_protocol=1"
+        status, page = request(host, port, "GET", f"/v1/capture-jobs/{job['job_id']}/events?{query}&limit=2", {})
+        assert status == 200
+        assert page["has_more"] is True
+        assert [event["payload"]["checkpoint_sequence"] for event in page["events"]] == [2, 3]
+        assert set(page["timelines"]) == {"conversation:2", "conversation:3"}
+
+        status, older = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?{query}&limit=2&before_revision={page['next_before_revision']}",
+            {},
+        )
+        assert status == 200
+        assert [event["payload"]["checkpoint_sequence"] for event in older["events"]] == [0, 1]
+        # `created` is older still, so the walk has one more page to go.
+        assert older["has_more"] is True
+
+        status, oldest = request(
+            host,
+            port,
+            "GET",
+            f"/v1/capture-jobs/{job['job_id']}/events?{query}&limit=2&before_revision={older['next_before_revision']}",
+            {},
+        )
+        assert status == 200
+        assert [event["kind"] for event in oldest["events"]] == ["created"]
+        assert oldest["has_more"] is False
+        assert oldest["next_before_revision"] is None

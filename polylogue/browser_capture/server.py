@@ -450,6 +450,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 try:
                     protocol = int(params.get("client_protocol", ["-1"])[0])
                     limit = min(max(int(params.get("limit", ["100"])[0]), 1), 500)
+                    raw_cursor = params.get("before_revision", [""])[0]
+                    before_revision = int(raw_cursor) if raw_cursor else None
                 except ValueError:
                     self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_job_events_query")
                     return
@@ -463,6 +465,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                             "account_scope": params.get("account_scope", [""])[0],
                             "client_protocol": protocol,
                             "limit": limit,
+                            "before_revision": before_revision,
                         },
                     )
                 except CaptureJobError as exc:

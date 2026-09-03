@@ -143,6 +143,52 @@ def test_provision_discards_only_an_unusable_datafile(tmp_path: Path, monkeypatc
     assert path.exists()
 
 
+def test_seeding_snapshots_a_database_with_an_uncommitted_writer(tmp_path: Path) -> None:
+    """Anti-vacuity: a byte copy in place of the backup API makes this red.
+
+    The source is left mid-transaction with its committed tail in the WAL, so
+    a copy of the main file alone either loses the committed row or carries
+    the uncommitted one. The backup API reads under SQLite's locking and
+    writes one consistent, sidecar-free file.
+    """
+    source = tmp_path / "primary" / ".cache" / "testmon" / "testmondata"
+    source.parent.mkdir(parents=True)
+    with sqlite3.connect(source) as setup:
+        setup.execute("PRAGMA journal_mode=WAL")
+        setup.execute("CREATE TABLE fingerprint (value TEXT)")
+        setup.execute("INSERT INTO fingerprint VALUES ('committed')")
+
+    writer = sqlite3.connect(source)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("INSERT INTO fingerprint VALUES ('uncommitted')")
+
+        destination = testmon_provision.testmon_datafile(tmp_path / "worktree")
+        assert testmon_provision.snapshot_testmon_graph(source, destination) is True
+    finally:
+        writer.rollback()
+        writer.close()
+
+    assert not destination.with_name(destination.name + "-wal").exists()
+    with sqlite3.connect(destination) as check:
+        assert [row[0] for row in check.execute("SELECT value FROM fingerprint")] == ["committed"]
+
+
+def test_seeding_an_absent_or_unreadable_source_leaves_no_datafile(tmp_path: Path) -> None:
+    """Anti-vacuity: writing the destination before the source is validated, or
+    keeping a partial destination on failure, makes this red — the provision
+    check would then accept a file no testmon wrote.
+    """
+    destination = testmon_provision.testmon_datafile(tmp_path / "worktree")
+    assert testmon_provision.snapshot_testmon_graph(tmp_path / "missing", destination) is False
+    assert not destination.exists()
+
+    junk = tmp_path / "junk"
+    junk.write_bytes(b"not a database at all")
+    assert testmon_provision.snapshot_testmon_graph(junk, destination) is False
+    assert not destination.exists()
+
+
 def test_discard_removes_the_datafile_and_its_sidecars(tmp_path: Path) -> None:
     path = _seed_with_testmon(tmp_path)
     path.with_name(path.name + "-wal").write_bytes(b"")
