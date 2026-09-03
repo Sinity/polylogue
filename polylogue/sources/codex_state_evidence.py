@@ -164,18 +164,14 @@ def _unreceipted_codex_state_raw_ids(source_db: Path) -> list[str]:
         if not candidates:
             return []
         placeholders = ", ".join("?" for _ in candidates)
-        receipted = {
+        typed_non_session = {
             str(row[0])
             for row in conn.execute(
-                f"""
-                SELECT raw_id FROM raw_membership_census WHERE raw_id IN ({placeholders})
-                UNION
-                SELECT raw_id FROM raw_artifacts WHERE parse_as_session = 0 AND raw_id IN ({placeholders})
-                """,
-                (*candidates, *candidates),
+                f"SELECT raw_id FROM raw_artifacts WHERE parse_as_session = 0 AND raw_id IN ({placeholders})",
+                candidates,
             )
         }
-    return [raw_id for raw_id in candidates if raw_id not in receipted]
+    return [raw_id for raw_id in candidates if raw_id not in typed_non_session]
 
 
 def resolve_retained_codex_state_receipts(archive_root: Path) -> int:

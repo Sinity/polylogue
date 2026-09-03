@@ -24,7 +24,12 @@ polylogued status
 Raw-evidence authority is an ordinary daemon invariant. After bounded raw
 materialization, the daemon records one complete accepted-frontier census,
 applies only byte/provenance-safe plans, and leaves conflicts or missing bytes
-as durable remediation references in status. Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
+as durable remediation references in status. A Codex state snapshot
+(`~/.codex/*.sqlite`) is non-session evidence with no byte frontier; live
+ingest finalizes it with a terminal `non_session` receipt, and each
+materialization pass finalizes any retained snapshot still lacking that
+receipt from its immutable blob before consulting the cursor-authority gate.
+Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
 
 The separate `raw-authority-recovery` command is not part of this daemon-owned convergence route. It is an explicit offline operator-maintenance action: it refuses while `polylogued` is running, takes archive ownership and the rebuild lease, and leaves a restartable receipt trail under the archive root.
 
