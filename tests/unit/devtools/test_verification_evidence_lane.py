@@ -45,6 +45,24 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     assert receipt["artifact_ref"].startswith("polylogue://verification/")
 
 
+def test_history_exposes_declared_agentctl_join_identity_without_lifecycle_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SINNIXD_JOB_ID", "job-join")
+    monkeypatch.setenv("SINNIXD_CORRELATION_ID", "corr-join")
+    run = VerifyRun(
+        tier="quick", argv=["--quick"], git_head="sha:abc", root=tmp_path, agentctl_operation="verify_quick"
+    )
+    payload = run.finish(exit_code=0, duration_s=0.1, final_git_head="sha:def")
+    history = tmp_path / "history.jsonl"
+    append_verify_history(payload, path=history)
+
+    row = json.loads(history.read_text(encoding="utf-8"))
+    assert row["agentctl"] == {"job_id": "job-join", "correlation_id": "corr-join"}
+    assert "status" not in row["agentctl"]
+    assert "phase" not in row["agentctl"]
+
+
 def test_declared_identity_and_interruption_are_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SINNIXD_JOB_ID", "job-17")
     monkeypatch.setenv("SINNIXD_CORRELATION_ID", "corr-17")
