@@ -37,4 +37,4 @@ def test_starting_the_daemon_bounds_its_idle_lifetime(monkeypatch: pytest.Monkey
 
     start = next(argv for argv in calls if "start" in argv)
     assert f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}" in start
-    assert gate.DMYPY_IDLE_TIMEOUT_SECONDS > 0
+    assert gate.DMYPY_IDLE_TIMEOUT_SECONDS == 180
