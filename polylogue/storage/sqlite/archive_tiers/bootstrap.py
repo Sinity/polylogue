@@ -876,6 +876,7 @@ __all__ = [
     "initialize_active_archive_root",
     "initialize_archive_database",
     "initialize_archive_tier",
+    "open_initialized_tier_connection",
     "reconcile_durable_change_trains_on_startup",
     "archive_tier_spec",
 ]
