@@ -95,11 +95,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
-| `devtools bench concurrency` | Run the managed bounded-compute scaling profile across representative workloads. |
-| `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
-| `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture. |
-| `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
@@ -127,7 +122,6 @@ devtools verify
 devtools test tests/unit/path/to/test_file.py
 devtools scenario run archive-smoke --tier 0
 devtools scenario run reader-visual-smoke
-devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
 Campaign outputs live under `.local/`, not in tracked docs trees.
