@@ -113,6 +113,7 @@ def test_open_profiled_connection_applies_the_selected_profile(
     finally:
         connection.close()
 
+
 def test_index_schema_guard_distinguishes_uninitialized_from_stale(tmp_path: Path) -> None:
     db_path = tmp_path / "index.db"
     with sqlite3.connect(db_path) as connection:
