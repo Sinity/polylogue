@@ -51,6 +51,42 @@ def _seed_archive(archive_root: Path) -> str:
         )
 
 
+def test_scope_filter_mcp_envelope_reports_unapplied_dimensions() -> None:
+    """MCP must identify dimensions a maintenance target cannot apply."""
+    from polylogue.core.enums import OperationStatus
+    from polylogue.maintenance.envelope import envelope_from_operation
+    from polylogue.maintenance.planner import BackfillKind, BackfillOperation, MaintenanceScope
+    from polylogue.maintenance.scope import MaintenanceScopeFilter
+
+    operation = BackfillOperation(
+        operation_id="scope-contract",
+        kind=BackfillKind.DERIVED_REBUILD,
+        targets=("session_insights",),
+        status=OperationStatus.FAILED,
+        scope=MaintenanceScope(
+            targets=("session_insights",),
+            filter=MaintenanceScopeFilter(
+                session_ids=("chatgpt-export:one",),
+                origin="chatgpt-export",
+                source_family="chatgpt",
+                source_root=Path("/data/chatgpt"),
+                failure_kind="parse_error",
+                parser_version="v3",
+            ),
+        ),
+    )
+
+    envelope = envelope_from_operation(operation, origin="mcp", mode="execute")
+
+    assert envelope.scope.unsupported_dimensions == (
+        "origin",
+        "source_family",
+        "source_root",
+        "failure_kind",
+        "parser_version",
+    )
+
+
 class TestCapabilityGating:
     """polylogue-800m: write/judge/maintenance are independent config opt-ins, not a role ladder.
 

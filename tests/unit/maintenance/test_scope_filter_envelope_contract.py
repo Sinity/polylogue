@@ -282,6 +282,18 @@ class TestMCPArgsBuildScopeFilter:
         _, captured = _invoke_mcp_preview()
         assert captured == _canonical_filter()
 
+    def test_scope_unhonored_dimensions_are_reported_in_the_mcp_envelope(self) -> None:
+        payload, _ = _invoke_mcp_preview()
+
+        assert payload["scope"]["unsupported_dimensions"] == [
+            "origin",
+            "source_family",
+            "source_root",
+            "time_range",
+            "failure_kind",
+            "parser_version",
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Cross-surface envelope parity
