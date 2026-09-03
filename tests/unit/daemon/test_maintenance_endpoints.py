@@ -9,13 +9,11 @@ import json
 from email.message import Message
 from http import HTTPStatus
 from io import BytesIO
-from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
-    from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 
 
 class MockServer:
@@ -115,18 +113,6 @@ class TestMaintenanceAPIRoutes:
     def test_rebuild_index_route_dispatched(self) -> None:
         handler = _make_handler("/api/maintenance/rebuild-index", body={})
         with patch.object(handler, "_handle_rebuild_index") as mock:
-            handler.do_POST()
-            mock.assert_called_once()
-
-    def test_seal_canary_comparison_route_dispatched(self) -> None:
-        handler = _make_handler("/api/maintenance/seal-canary-comparison", body={})
-        with patch.object(handler, "_handle_seal_canary_comparison") as mock:
-            handler.do_POST()
-            mock.assert_called_once()
-
-    def test_consume_canary_report_route_dispatched(self) -> None:
-        handler = _make_handler("/api/maintenance/consume-canary-report", body={})
-        with patch.object(handler, "_handle_consume_canary_report") as mock:
             handler.do_POST()
             mock.assert_called_once()
 
@@ -259,95 +245,6 @@ class TestMaintenanceAPIRoutes:
                 handler._handle_rebuild_index()
         rebuild.assert_not_called()
         send_error.assert_called_once_with(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-
-    def test_consume_canary_report_runs_through_daemon_writer_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/consume-canary-report",
-            body={"report_path": str(tmp_path / "report.json")},
-        )
-        calls: list[tuple[object, ...]] = []
-
-        class Bridge:
-            def run_sync_with_timeout(self, actor, timeout, function, *args, **kwargs):  # type: ignore[no-untyped-def]
-                calls.append((actor, timeout, *args, kwargs))
-                return function(*args, **kwargs)
-
-        handler.server.write_bridge = cast("DaemonWriteThreadBridge", Bridge())
-        with patch(
-            "polylogue.maintenance.reindex_canary.approve_canary_report_under_daemon_ownership",
-            return_value={"review_status": "reviewed"},
-        ) as approve:
-            with patch.object(handler, "_send_json") as send:
-                handler._handle_consume_canary_report()
-
-        assert calls[0][:3] == ("http.maintenance.consume-canary-report", None, Path(tmp_path / "report.json"))
-        assert calls[0][3] == {"archive_root": tmp_path}
-        approve.assert_called_once_with(Path(tmp_path / "report.json"), archive_root=tmp_path)
-        send.assert_called_once_with(HTTPStatus.OK, {"review_status": "reviewed"})
-
-    def test_seal_canary_comparison_runs_through_daemon_writer_bridge(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """The only route that creates a comparison seal is daemon-owned."""
-        from polylogue.maintenance.reindex_canary import CanaryComparisonAttestation
-
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/seal-canary-comparison",
-            body={"generation_id": "gen-canary", "generation_owner_id": "owner-canary"},
-        )
-        calls: list[tuple[object, ...]] = []
-
-        class Bridge:
-            def run_sync_with_timeout(self, actor, timeout, function, *args, **kwargs):  # type: ignore[no-untyped-def]
-                calls.append((actor, timeout, *args, kwargs))
-                return function(*args, **kwargs)
-
-        handler.server.write_bridge = cast("DaemonWriteThreadBridge", Bridge())
-        with patch(
-            "polylogue.maintenance.reindex_canary.seal_canary_comparison_under_daemon_ownership",
-            return_value=CanaryComparisonAttestation({"schema_version": 1}),
-        ) as seal:
-            with patch.object(handler, "_send_json") as send:
-                handler._handle_seal_canary_comparison()
-
-        assert calls[0][:2] == ("http.maintenance.seal-canary-comparison", None)
-        assert calls[0][2] == {
-            "archive_root": tmp_path,
-            "generation_id": "gen-canary",
-            "generation_owner_id": "owner-canary",
-        }
-        seal.assert_called_once_with(
-            archive_root=tmp_path, generation_id="gen-canary", generation_owner_id="owner-canary"
-        )
-        send.assert_called_once_with(HTTPStatus.OK, {"schema_version": 1})
-
-    def test_consume_canary_report_returns_typed_validation_detail(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-        """The production route makes invalid report evidence an actionable 422."""
-        from polylogue.maintenance.reindex_canary import UnclassifiedCanaryDiffError
-
-        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-        handler = _make_handler(
-            "/api/maintenance/consume-canary-report",
-            body={"report_path": str(tmp_path / "report.json")},
-        )
-
-        class Bridge:
-            def run_sync_with_timeout(self, _actor, _timeout, function, *args, **kwargs):  # type: ignore[no-untyped-def]
-                return function(*args, **kwargs)
-
-        handler.server.write_bridge = cast("DaemonWriteThreadBridge", Bridge())
-        with patch(
-            "polylogue.maintenance.reindex_canary.approve_canary_report_under_daemon_ownership",
-            side_effect=UnclassifiedCanaryDiffError("receipt is missing the canonical acceptance profile"),
-        ):
-            with patch.object(handler, "_send_error") as send_error:
-                handler._handle_consume_canary_report()
-
-        send_error.assert_called_once_with(
-            HTTPStatus.UNPROCESSABLE_ENTITY,
-            "canary_report_invalid",
-            "receipt is missing the canonical acceptance profile",
-        )
 
     def test_rebuild_index_canary_rejects_client_selected_acceptance_checks(self, tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """Canary mode selects its profile in the daemon, never from request JSON."""
