@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from polylogue.storage.sqlite.audit_continuity import AUDIT_CONTINUITY_GENESIS_HEAD_SHA256
 
-SOURCE_SCHEMA_VERSION = 40
+SOURCE_SCHEMA_VERSION = 41
 
 # ddl-lifecycle-waiver: benign CREATE TABLE source_generations vocabulary membership moves to typed write validation; structural checks remain in DDL.
 SOURCE_DDL = f"""
