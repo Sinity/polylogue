@@ -573,9 +573,21 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["frontier_limit"] = limit
         return 3
 
+    def fake_gate(_root: Path) -> None:
+        order.append("gate")
+        return None
+
+    def fake_finalize_codex_state(config: Config) -> int:
+        # polylogue-6q16u: retained Codex state snapshots without a terminal
+        # receipt are finalized BEFORE the gate consults them.
+        order.append("codex-state-receipts")
+        calls["codex_state_archive_root"] = config.archive_root
+        return 0
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", fake_gate)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", fake_finalize_codex_state)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,
@@ -590,7 +602,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     counts = daemon_cli._drain_raw_materialization_once(limit=11)
     assert counts.repaired_sessions == 7
     assert counts.executed_plans == 3
-    assert order == ["restore", "recover-frontier", "materialize", "frontier"]
+    assert order == ["codex-state-receipts", "gate", "restore", "recover-frontier", "materialize", "frontier"]
     # polylogue-de2a: the ordinary trickle pass must always request a
     # declared, enforced per-call wall-clock ceiling on the writer hold --
     # a component-count limit alone did not bound observed hold time.
@@ -598,8 +610,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     order.clear()
     daemon_cli._drain_raw_materialization_once(limit=11, recover=False)
-    assert order == ["restore", "materialize", "frontier"]
+    assert order == ["codex-state-receipts", "gate", "restore", "materialize", "frontier"]
     assert calls == {
+        "codex_state_archive_root": tmp_path / "archive",
         "restore_db_path": tmp_path / "archive" / "source.db",
         "restore_dry_run": False,
         "restore_max_count": 25,

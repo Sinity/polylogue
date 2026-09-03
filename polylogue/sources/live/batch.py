@@ -73,7 +73,7 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
+from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
@@ -2928,27 +2928,25 @@ class LiveBatchProcessor:
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
                         blob_store.blob_path(blob_hash), immutable=True
                     ):
-                        # polylogue-0jf4: Codex state dbs never become
-                        # sessions of their own -- thread_state's evidence
-                        # (titles, spawn edges) attaches to the EXISTING
-                        # codex-session rows it describes via
-                        # _write_codex_thread_state_evidence, never a full
-                        # session replace. goals_1.sqlite/memories_1.sqlite
-                        # are acquire-partial (CODEX_STATE_FIDELITY): the raw
-                        # snapshot admitted above is already durable
-                        # evidence; no derived parse is wired in this change.
+                        # Codex state dbs never become sessions of their
+                        # own: thread_state evidence (titles, spawn edges)
+                        # attaches to the EXISTING codex-session rows it
+                        # describes; goals/memories snapshots are durable raw
+                        # evidence only. Either way the raw ends terminal
+                        # here -- a snapshot has no byte frontier, so the
+                        # cursor-authority gate can only account for it
+                        # through the non-session receipt this writes.
                         state_path = blob_store.blob_path(blob_hash)
-                        state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
-                        if state_kind == "thread_state":
-                            state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
-                            write_codex_thread_state_evidence(
-                                archive,
-                                state_snapshot,
-                                source_path=record.source_path,
-                                acquired_at_ms=acquired_at_ms,
-                                observation_order=archive.raw_revision_observation_order(source_raw_id)[1],
-                            )
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        record_codex_state_snapshot_terminal(
+                            archive,
+                            source_raw_id,
+                            state_path=state_path,
+                            state_kind=codex_state.classify_codex_sqlite_path(state_path, immutable=True),
+                            source_path=record.source_path,
+                            acquired_at_ms=acquired_at_ms,
+                            censused_at_ms=acquired_at_ms,
+                        )
+                        result.terminal_raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     elif is_stream_record_provider(record.source_path, str(provider)):
