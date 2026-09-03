@@ -46,16 +46,20 @@ class ProfileCostLanes(dict[str, object]):
     """The recomputed cost fields overlaid onto a ``SessionProfileRecord``."""
 
 
+def _as_int(value: object) -> int:
+    return int(value) if isinstance(value, (int, float)) else 0
+
+
 def _group(rows: Iterable[Sequence[object]]) -> dict[str, list[ModelUsageTotals]]:
     grouped: dict[str, list[ModelUsageTotals]] = {}
     for row in rows:
         grouped.setdefault(str(row[0]), []).append(
             ModelUsageTotals(
                 model_name=str(row[1] or ""),
-                input_tokens=int(row[2] or 0),
-                output_tokens=int(row[3] or 0),
-                cache_read_tokens=int(row[4] or 0),
-                cache_write_tokens=int(row[5] or 0),
+                input_tokens=_as_int(row[2]),
+                output_tokens=_as_int(row[3]),
+                cache_read_tokens=_as_int(row[4]),
+                cache_write_tokens=_as_int(row[5]),
             )
         )
     return grouped

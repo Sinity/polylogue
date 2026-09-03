@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from polylogue.archive.session.models import SessionProfile
 from polylogue.insights.portfolio import (
-    PostmortemScope,
     compile_portfolio_bundle,
     render_portfolio_markdown,
     render_portfolio_plain,
 )
+from polylogue.insights.postmortem import PostmortemScope
 
 
 def _profile(session_id: str, *, cost: float, provenance: str) -> SessionProfile:
