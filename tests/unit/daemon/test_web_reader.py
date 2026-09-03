@@ -854,53 +854,24 @@ class TestReaderSearchState:
     missing region still fails loudly.
     """
 
-    def test_root_returns_html_with_required_regions(self, workspace_env: dict[str, Path]) -> None:
+    def test_root_serves_the_archive_overview_island_bundle(self, workspace_env: dict[str, Path]) -> None:
+        """``/`` serves the built reader shell: an island mount plus its hashed module.
+
+        The reader is served from the Vite bundle under ``static/dist``; the
+        shell carries no inline application script. Anti-vacuity: a route that
+        stopped mounting the island, or that served an unbundled page with no
+        hashed module, fails here. The bundle's manifest resolution, cache
+        policy and ETag revalidation are proven separately by
+        ``test_app_serves_semantic_ssr_and_manifest_hashed_assets``.
+        """
         with _running_server(workspace_env) as (_, base_url):
             status, content_type, body = _get_text(base_url, "/")
         assert status == 200
         assert "text/html" in content_type
         # The doctype is case-insensitive in HTML5; the renderer emits lowercase.
         assert "<!doctype html>" in body.lower()
-        for region in (
-            "renderSidebarState",
-            "renderSessions",
-            "sessionsFromListPayload",
-            "renderFacets",
-            "renderMain",
-            "renderWorkspaceToolbar",
-            "renderStackWorkspace",
-            "renderCompareWorkspace",
-            "renderInspector",
-            "renderInspectorMission",
-            "Subagent Exchanges",
-            "subagent_exchanges",
-            "returned_final_message",
-            "renderInspectorEvidence",
-            "renderBrowserCaptureChip",
-            "renderReadViewExecution",
-            "loadReadViewProfiles",
-            "renderReadViewSelector",
-            "renderRouteStateNotice",
-            "renderInlineRouteFailure",
-            "sessionList",
-            "data-route-state-name",
-            "data-route-state",
-            "data-sidebar-state",
-            "AbortController",
-            "timeoutMs",
-            "request_timeout_after_",
-            "budget_exceeded",
-            "applyReadViewSelection",
-            "/api/read-view-profiles",
-            "/api/agents/coordination",
-            "/read?view=",
-            "/api/assertions",
-            "Load artifact list",
-            "Load raw preview",
-            'data-tab="evidence"',
-            'data-tab="mission"',
-        ):
-            assert region in body, f"web shell missing region hook {region!r}"
+        assert 'data-island="archive-overview"' in body
+        assert re.search(r'<script type="module" src="/app/assets/[^"]+\.js"></script>', body) is not None
 
     def test_agent_coordination_endpoint_uses_shared_payload(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1495,8 +1466,11 @@ class TestReaderSessionState:
         assert unsafe_text not in link_shell
         assert dangerous_fragment not in root_shell
         assert dangerous_fragment not in link_shell
-        assert prose_fragment not in root_shell
-        assert prose_fragment not in link_shell
+        # The reader server-renders session content, so the prose itself is
+        # expected in the page. What must never survive is live markup: the
+        # dangerous fragment above appears only in escaped form.
+        assert prose_fragment in link_shell
+        assert html_module.escape(dangerous_fragment) in link_shell
 
     def test_unknown_session_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1617,31 +1591,18 @@ class TestReaderWorkspaceRoutes:
         assert compare_status == 200
         assert "renderCompareWorkspace" in compare_body
 
-    def test_session_deep_link_route_serves_web_shell(self, workspace_env: dict[str, Path]) -> None:
-        """The session reader deep link is ``/s/{session_id}`` (schema-v1 vocabulary)."""
+    def test_session_deep_link_serves_the_session_read_bundle(self, workspace_env: dict[str, Path]) -> None:
+        """``/s/{session_id}`` is the reader deep link and serves the read island.
+
+        Anti-vacuity: removing the route, or serving the overview bundle for a
+        session deep link, fails here. What the page renders from that bundle
+        is covered by ``TestWebUIV2``'s session-read cases.
+        """
         with _running_server(workspace_env) as (_, base_url):
             status, content_type, body = _get_text(base_url, "/s/claude-code-session:c1")
         assert status == 200
         assert "text/html" in content_type
-        assert "<title>Polylogue</title>" in body
-        assert "getSessionIdFromURL" in body
-
-    def test_session_deep_link_shell_carries_minimal_evidence_panel(self, workspace_env: dict[str, Path]) -> None:
-        """The web workbench evidence slice is present on real session deep links."""
-
-        with _running_server(workspace_env) as (_, base_url):
-            status, content_type, body = _get_text(base_url, "/s/claude-code-session:c1")
-
-        assert status == 200
-        assert "text/html" in content_type
-        for hook in (
-            'data-tab="evidence"',
-            "renderInspectorEvidence",
-            "/api/sessions/",
-            "/read?view=context-image",
-            "/api/assertions?target_ref=",
-        ):
-            assert hook in body
+        assert re.search(r'<script type="module" src="/app/assets/session-read-[^"]+\.js"></script>', body) is not None
 
     def test_legacy_conversation_route_is_gone(self, workspace_env: dict[str, Path]) -> None:
         """The stale ``/c/{conversation_id}`` route must not resolve — no compat alias."""
@@ -3373,7 +3334,10 @@ class TestCockpitAggregateRoutes:
         assert payload["tool_calls"] == 1
         outcomes = cast(dict[str, object], payload["outcomes"])
         assert outcomes == expected_outcomes
-        assert cast(dict[str, object], payload["cost"])["total_usd"] == 0.0
+        # A session with no priced usage evidence reports absent cost, not a
+        # known-zero bill (#4261). Anti-vacuity: a route that fabricated 0.0
+        # for unpriced evidence fails here.
+        assert cast(dict[str, object], payload["cost"])["total_usd"] is None
 
     def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
         """The evidence strip and transcript must describe the same composed
