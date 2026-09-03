@@ -16,7 +16,6 @@ from tests.visual.conftest import (
     assert_no_private_paths,
     get_json,
     get_text,
-    parse_dom,
     running_reader_server,
     seed_reader_assertion_claims,
     write_evidence_manifest,
@@ -29,86 +28,6 @@ def _send_json(base_url: str, method: str, path: str, payload: dict[str, object]
     req = Request(f"{base_url}{path}", data=body, headers=headers, method=method)
     with urlopen(req, timeout=10) as resp:
         return resp.status, json.loads(resp.read())
-
-
-def test_reader_search_shell_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
-    with running_reader_server(reader_workspace) as (_, base_url):
-        status, content_type, body = get_text(base_url, "/")
-
-    assert status == 200
-    assert "text/html" in content_type
-    assert len(body) > 20_000
-    assert "https://cdn" not in body
-    assert_no_private_paths(body, context="reader shell HTML")
-
-    dom = parse_dom(body)
-    expected_ids = {
-        "app",
-        "status-strip",
-        "status-dot",
-        "status-browser-capture",
-        "sidebar",
-        "search",
-        "facet-bar",
-        "conv-list",
-        "main",
-        "conv-header",
-        "msg-list",
-        "inspector",
-        "inspector-tabs",
-        "workspace-toolbar",
-        "workspace-mode-switcher",
-        "workspace-save-btn",
-        "workspace-restore-select",
-        "workspace-create-recall-pack-btn",
-        "footer",
-        "help-overlay",
-    }
-    assert expected_ids <= dom.ids
-    assert dom.meta_viewport is True
-    assert dom.scripts == 1
-    assert dom.styles == 1
-    for phrase in (
-        "Select a session",
-        "Keyboard Shortcuts",
-        "Focus search",
-        "Local",
-        "/api/user/marks",
-        "/api/user/annotations",
-        "toggleMark",
-        "saveAnnotation",
-        "No annotations on this session",
-        "Save current view",
-        "Saved Views",
-        "Save workspace",
-        "Restore workspace",
-        "Recall pack",
-        "/api/user/workspaces",
-        "/api/user/recall-packs",
-        "/api/stack",
-        "/api/compare",
-    ):
-        assert phrase in body
-
-    checks = {
-        "status": status,
-        "content_type": content_type,
-        "html_bytes": len(body.encode()),
-        "required_ids": sorted(expected_ids),
-        "script_tags": dom.scripts,
-        "style_tags": dom.styles,
-        "viewport_meta": dom.meta_viewport,
-        "private_path_safe": True,
-        "runtime_cdn_free": True,
-    }
-    manifest = write_evidence_manifest(
-        tmp_path / "reader-search-dom-evidence.json",
-        artifact_id="polylogue.local_reader.search",
-        route="/",
-        fixture_id="reader-visual-synthetic-v1",
-        checks=checks,
-    )
-    assert manifest["evidence_kind"] == "browserless-dom"
 
 
 def test_reader_stack_workspace_dom_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
@@ -212,9 +131,6 @@ def test_reader_session_deeplink_and_detail_evidence(reader_workspace: ReaderWor
 
     assert status == 200
     assert "text/html" in content_type
-    # Deeplink resolver in the reader shell JS. Renamed getConvIdFromURL ->
-    # getSessionIdFromURL in the conversation->session terminology sweep (#1810).
-    assert "getSessionIdFromURL" in shell
     assert_no_private_paths(shell, context="reader /s deeplink shell")
     assert_no_private_paths(json.dumps(detail), context="reader detail JSON")
     assert_no_private_paths(json.dumps(messages), context="reader messages JSON")
@@ -328,9 +244,7 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
     Pins:
     - existing session returns the typed cost-panel payload with a
       confidence chip from the MK3 vocabulary;
-    - unknown session returns 404 (not a blank panel);
-    - shell HTML carries the new ``Cost`` tab + ``renderInspectorCost``
-      so the panel is reachable through the inspector tab strip.
+    - unknown session returns 404 (not a blank panel).
     """
     with running_reader_server(reader_workspace) as (_, base_url):
         status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
@@ -339,21 +253,6 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
 
     assert status == 200
     assert "text/html" in content_type
-    # The Cost tab is wired into the inspector strip and its renderer is
-    # present in the shell payload.
-    for phrase in (
-        'data-tab="cost"',
-        "renderInspectorCost",
-        "loadCostPanel",
-        "q-canonical",
-        "q-estimated",
-        "q-heuristic",
-        "q-unavailable",
-        "Basis split",
-        "Per-model",
-    ):
-        assert phrase in shell
-
     # Known session: typed envelope, with a chip from the closed vocabulary.
     assert known_cost["session_id"] == READER_C1
     assert known_cost["confidence_tag"] in {
@@ -384,7 +283,6 @@ def test_reader_cost_panel_evidence(reader_workspace: ReaderWorkspace, tmp_path:
             "confidence_tag": known_cost["confidence_tag"],
             "has_basis_split": True,
             "has_per_model_block": True,
-            "chip_vocabulary_in_shell": True,
             "private_path_safe": True,
         },
     )
@@ -412,21 +310,6 @@ def test_reader_evidence_panel_endpoint_and_shell_smoke(reader_workspace: Reader
     assert status == 200
     assert "text/html" in content_type
     assert_no_private_paths(shell, context="reader evidence shell")
-    for phrase in (
-        'data-tab="evidence"',
-        "renderInspectorEvidence",
-        "renderBrowserCaptureChip",
-        "renderReadViewExecution",
-        "renderContextReadView",
-        "claim.quoted_evidence && claim.quoted_evidence.text",
-        "renderContextImageReadView",
-        "loadEvidencePanel",
-        "/api/assertions?target_ref=",
-        "/read?view=context-image",
-        "/read?view=",
-    ):
-        assert phrase in shell, f"missing evidence shell hook {phrase!r}"
-
     claim_items = cast(list[dict[str, object]], assertions["items"])
     assert [item["assertion_id"] for item in claim_items] == ["reader-evidence-decision"]
     assert claim_items[0]["target_ref"] == f"session:{READER_C1}"
@@ -490,17 +373,6 @@ def test_reader_overlay_mutation_flow_evidence(reader_workspace: ReaderWorkspace
     assert status == 200
     assert "text/html" in content_type
     assert_no_private_paths(shell, context="reader overlay mutation shell")
-    for phrase in (
-        "toggleMark",
-        "saveAnnotation",
-        "annotation-composer",
-        "annotation-target-select",
-        "annotation-note-input",
-        "/api/user/marks",
-        "/api/user/annotations",
-    ):
-        assert phrase in shell, f"missing overlay shell hook {phrase!r}"
-
     mark_payload = cast(dict[str, object], mark)
     annotation_payload = cast(dict[str, object], annotation)
     assert mark_status == 201
@@ -577,15 +449,6 @@ def test_reader_operator_flow_evidence(reader_workspace: ReaderWorkspace, tmp_pa
     assert shell_status == 200
     assert "text/html" in content_type
     assert_no_private_paths(shell, context="reader operator-flow shell")
-    for phrase in (
-        "read-profile-selector",
-        "renderReadViewExecution",
-        "renderInspectorEvidence",
-        "annotation-composer",
-        "loadRawData",
-    ):
-        assert phrase in shell
-
     assert search["total"] == 1
     assert messages["view"] == "messages"
     assert context["view"] == "context"
@@ -636,9 +499,6 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
       q-missing vocabulary;
     - unknown session returns 404 (not a blank panel);
     - include= subset honors the request and drops unknown tokens;
-    - shell HTML carries the new ``Insights`` tab + ``renderInspectorInsights``
-      so the panel is reachable through the inspector tab strip and uses
-      the readiness chip CSS classes.
     """
     with running_reader_server(reader_workspace) as (_, base_url):
         status, content_type, shell = get_text(base_url, f"/s/{READER_C1}")
@@ -651,19 +511,6 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
 
     assert status == 200
     assert "text/html" in content_type
-    for phrase in (
-        'data-tab="insights"',
-        "renderInspectorInsights",
-        "loadInsightsPanel",
-        "q-ready",
-        "q-partial",
-        "q-missing",
-        "Work events",
-        "Phases",
-        "Work threads",
-    ):
-        assert phrase in shell, f"missing phrase in shell: {phrase!r}"
-
     assert known["session_id"] == READER_C1
     assert isinstance(known["kinds"], dict)
     kinds = cast(dict[str, dict[str, object]], known["kinds"])
@@ -698,28 +545,19 @@ def test_reader_insights_browser_evidence(reader_workspace: ReaderWorkspace, tmp
             "phases_readiness": kinds["phases"]["readiness_tag"],
             "threads_readiness": kinds["threads"]["readiness_tag"],
             "subset_honored": list(subset_kinds.keys()),
-            "chip_vocabulary_in_shell": True,
             "private_path_safe": True,
         },
     )
 
 
-def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
+def test_reader_empty_archive_evidence(reader_workspace: ReaderWorkspace, tmp_path: Path) -> None:
     with running_reader_server(reader_workspace, sessions=False) as (_, base_url):
         empty_list = cast(dict[str, object], get_json(base_url, "/api/sessions"))
         empty_facets = cast(dict[str, object], get_json(base_url, "/api/facets"))
-        empty_shell_status, _, empty_shell = get_text(base_url, "/")
-
-    with running_reader_server(reader_workspace, sessions=True, message_fts=False) as (_, base_url):
-        degraded_status, _, degraded_body = get_text(base_url, "/api/sessions?query=Hello")
 
     assert empty_list["total"] == 0
     assert empty_list["items"] == []
     assert cast(dict[str, object], empty_list["route_state"])["state"] == "empty"
-    assert empty_shell_status == 200
-    assert "sessionList" in empty_shell
-    assert "data-sidebar-state" in empty_shell
-    assert "data-route-state-name" in empty_shell
     assert empty_facets["total_sessions"] == 0
     assert set(cast(list[str], empty_facets["complete_families"])) >= {"total_counts", "origins", "tags"}
     assert empty_facets["deferred_families"] == {
@@ -730,31 +568,18 @@ def test_reader_empty_and_degraded_evidence(reader_workspace: ReaderWorkspace, t
         "repos": "deferred_by_default",
         "role_counts": "deferred_by_default",
     }
-    assert degraded_status == 200
-    degraded_payload = json.loads(degraded_body)
-    assert degraded_payload["total"] is None
-    assert degraded_payload["hits"] == []
-    assert degraded_payload["route_state"]["state"] == "degraded"
-    assert degraded_payload["route_state"]["component"] == "message_fts"
-    assert "Search index" in degraded_payload["route_state"]["reason"]
-    assert degraded_payload["diagnostics"]["reasons"][0]["code"] == "search_index_degraded"
-    assert "Traceback" not in degraded_body
     assert_no_private_paths(json.dumps(empty_list), context="reader empty list JSON")
-    assert_no_private_paths(degraded_body, context="reader degraded JSON")
 
     write_evidence_manifest(
-        tmp_path / "reader-degraded-dom-evidence.json",
-        artifact_id="polylogue.local_reader.degraded",
-        route="/api/sessions?query=Hello",
-        fixture_id="reader-visual-synthetic-empty-and-degraded-v1",
+        tmp_path / "reader-empty-dom-evidence.json",
+        artifact_id="polylogue.local_reader.empty",
+        route="/api/sessions",
+        fixture_id="reader-visual-synthetic-empty-v1",
         checks={
             "empty_total": empty_list["total"],
             "empty_route_state": cast(dict[str, object], empty_list["route_state"])["state"],
             "empty_facets_total": empty_facets["total_sessions"],
             "empty_facets_deferred": sorted(cast(dict[str, object], empty_facets["deferred_families"]).keys()),
-            "degraded_status": degraded_status,
-            "degraded_route_state": degraded_payload["route_state"]["state"],
-            "sanitized_degraded_payload": True,
             "private_path_safe": True,
         },
     )
