@@ -174,7 +174,10 @@ def test_semantic_type_policy_is_exhaustive_over_persisted_vocabulary() -> None:
 
 def test_provider_namespace_policy_discloses_open_world_fallback() -> None:
     policies = provider_namespace_documents()
-    assert {item["origin"] for item in policies} == {origin.value for origin in Origin}
+    # The policy set is exhaustive over *executable* origins. beads-issue
+    # keeps its enum token so the durable CHECKs still admit stored rows, but
+    # its route is retired, so it has no rendering policy.
+    assert {item["origin"] for item in policies} == {origin.value for origin in Origin} - {Origin.BEADS_ISSUE.value}
     assert {item["provider_family"] for item in policies} == {
         "antigravity",
         "beads",

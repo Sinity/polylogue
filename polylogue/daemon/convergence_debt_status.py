@@ -85,7 +85,10 @@ def _archive_convergence_debt_summary_info(dbf: Path, ops_db: Path) -> Convergen
     if not ops_db.exists():
         return ConvergenceDebtSummary(available=False, error=f"convergence debt database is missing: {ops_db}")
     try:
-        conn = open_readonly_connection(ops_db)
+        # A status projection reports why the debt view is unavailable,
+        # including a tier the runtime has moved past, so it reads the tier
+        # rather than asserting its version.
+        conn = open_readonly_connection(ops_db, validate_schema=False)
         try:
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"

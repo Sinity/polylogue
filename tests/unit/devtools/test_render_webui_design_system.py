@@ -10,12 +10,16 @@ from polylogue.core.enums import Origin
 def test_generated_contract_exactly_tracks_public_origins() -> None:
     rendered = renderer.render_contracts_ts()
 
+    # Origin carries tokens that are not public badges: unknown-export is a
+    # fallback state, and beads-issue is a reserved origin whose route is
+    # retired but whose token the durable CHECKs still admit.
+    public = set(renderer.PUBLIC_ORIGIN_TOKENS)
     for origin in Origin:
         expected = f'"{origin.value}"'
-        if origin is Origin.UNKNOWN_EXPORT:
-            assert expected not in rendered
-        else:
+        if origin in public:
             assert expected in rendered
+        else:
+            assert expected not in rendered
     assert rendered.count('  "') >= 15
 
     css = renderer.render_tokens_css()

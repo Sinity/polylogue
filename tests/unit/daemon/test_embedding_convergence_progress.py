@@ -71,6 +71,20 @@ class _FakeRepository:
         return None
 
 
+def _stamp_index_tier(db_path: Path) -> None:
+    """Declare the index tier version on a hand-built stub.
+
+    The daemon opens a candidate index through the tier-guarded read profile
+    before draining it, so a stub that claims no version is passed over.
+    """
+
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version}")
+
+
 def _seed_embedding_db(db_path: Path) -> None:
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
@@ -115,6 +129,7 @@ def test_daemon_embedding_backlog_drain_processes_archive(
             INSERT INTO sessions VALUES ('codex-session:v1-b', 'Archive B', 1, 2);
             """
         )
+    _stamp_index_tier(db_anchor_path)
 
     embedded_calls: list[tuple[Path, str]] = []
 
@@ -166,6 +181,7 @@ def test_daemon_embedding_backlog_uses_bounded_pending_window(
             INSERT INTO sessions VALUES ('codex-session:v1-a', 'Archive A', 2, 1);
             """
         )
+    _stamp_index_tier(db_path)
 
     observed_kwargs: dict[str, object] = {}
 
@@ -211,6 +227,7 @@ def test_daemon_embedding_backlog_records_skipped_sessions(
             INSERT INTO sessions VALUES ('codex-session:skip-b', 'Skip B', 1, 1);
             """
         )
+    _stamp_index_tier(db_anchor_path)
 
     def fake_embed(_db_path: Path, _provider: object, session_id: str, **_kwargs: object) -> EmbedSessionOutcome:
         return EmbedSessionOutcome(status="no_embeddable_messages", session_id=session_id)

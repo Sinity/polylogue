@@ -10,7 +10,6 @@ from pathlib import Path
 from polylogue.archive.query.predicate import QueryBoolPredicate
 from polylogue.core.refs import ObjectRef
 from polylogue.insights.delegation_work_evidence import materialize_delegation_work_evidence_graph
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
 
@@ -30,7 +29,10 @@ def materialize_delegation_work_evidence_archive(archive_root: Path) -> int:
 
     archive_root = Path(archive_root)
     snapshot = delegation_work_evidence_snapshot(archive_root)
-    with ArchiveStore.open_existing(archive_root, read_only=True) as archive:
+    from polylogue.archive.query.execution_control import InterruptibleSQLiteRead, QueryExecutionContext
+
+    reader = InterruptibleSQLiteRead(QueryExecutionContext.create(query_text="insights.delegation_work_evidence"))
+    with reader.open_context(archive_root) as archive:
         rows = archive.query_delegations(QueryBoolPredicate("and", ()), limit=100_001)
     if len(rows) > 100_000:
         raise ValueError("delegation work-evidence materialization exceeded its bounded population")

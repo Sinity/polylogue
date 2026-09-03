@@ -80,7 +80,11 @@ def _install_wheel(wheel: Path, install_dir: Path) -> Path:
     """
     install_dir.mkdir(parents=True, exist_ok=True)
     venv_dir = install_dir / "venv"
-    _run(("uv", "venv", str(venv_dir)), cwd=install_dir, env=_uv_env())
+    # Seed from the running interpreter: the package refuses to start unless
+    # its runtime is free-threaded CPython, and an unpinned `uv venv` picks
+    # whatever build uv discovers first. The venv is still fresh and separate,
+    # so the smoke still resolves the wheel's own console scripts.
+    _run(("uv", "venv", "--python", sys.executable, str(venv_dir)), cwd=install_dir, env=_uv_env())
     python = venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
     _run(
         ("uv", "pip", "install", "--python", str(python), str(wheel)),

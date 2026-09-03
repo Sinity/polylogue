@@ -54,8 +54,13 @@ _ATTACHED_SCHEMAS = ("source_tier", "user_tier", "embeddings", "ops_tier")
 
 
 def _seed_attached_archive_tiers(root: Path) -> None:
-    for filename in ("source.db", "user.db", "embeddings.db", "ops.db"):
-        sqlite3.connect(root / filename).close()
+    # The tier filenames are this test's subject, and a connection profile
+    # checks a tier's declared version at open time, so each one is built
+    # through the production bootstrap rather than touched into existence.
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_archive_database
+
+    for spec in ARCHIVE_TIER_SPECS.values():
+        initialize_archive_database(root / spec.filename, spec.tier)
 
 
 def _mmap_values(conn: sqlite3.Connection) -> dict[str, int]:

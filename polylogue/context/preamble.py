@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.context.scheduler import ContextAssembly, ContextItem, record_context_ledger, schedule_context
 from polylogue.core.assertions import derive_assertion_context_trust
+from polylogue.core.errors import DatabaseError
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.logging import get_logger
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -80,7 +81,10 @@ def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> Non
             record_context_ledger(conn, assembly, observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000))
         finally:
             conn.close()
-    except (OSError, TypeError, ValueError, sqlite3.Error):
+    except (OSError, TypeError, ValueError, sqlite3.Error, DatabaseError):
+        # DatabaseError covers a tier this runtime cannot use, including one at
+        # a version it has moved past. A disposable receipt never fails the
+        # preamble it is a receipt for.
         logger.debug("context preamble: scheduler receipt could not be persisted", exc_info=True)
 
 

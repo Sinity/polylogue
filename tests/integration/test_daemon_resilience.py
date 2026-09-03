@@ -180,37 +180,33 @@ def _assert_daemon_alive(proc: subprocess.Popen[bytes]) -> None:
         raise AssertionError(f"Daemon exited prematurely with code {returncode}. stderr:\n{stderr_text}")
 
 
-def _polylogued_binary() -> str:
-    """Return the ``polylogued`` binary path from the current environment.
+def _project_binary(name: str) -> str:
+    """Return the console script belonging to the checkout under test.
 
-    Falls back to ``polylogued`` on PATH when the devshell wrapper is not
-    resolved (e.g. in CI).
+    The running interpreter's own script directory comes first: PATH may
+    resolve a different checkout entirely -- in a worktree it resolves the
+    main checkout -- and an integration test that launches another tree's
+    daemon is not testing this one.
     """
     from shutil import which
 
-    candidate = which("polylogued")
-    if candidate is not None:
-        return candidate
-    # Devshell direct entry
+    sibling = Path(sys.executable).parent / name
+    if sibling.exists():
+        return str(sibling)
     repo_root = Path(__file__).resolve().parents[2]
-    wrapper = repo_root / ".direnv/sinnix-scope/bin/polylogued"
+    wrapper = repo_root / ".direnv/sinnix-scope/bin" / name
     if wrapper.exists():
         return str(wrapper)
-    return "polylogued"
+    candidate = which(name)
+    return candidate if candidate is not None else name
+
+
+def _polylogued_binary() -> str:
+    return _project_binary("polylogued")
 
 
 def _polylogue_binary() -> str:
-    """Return the ``polylogue`` CLI binary path."""
-    from shutil import which
-
-    candidate = which("polylogue")
-    if candidate is not None:
-        return candidate
-    repo_root = Path(__file__).resolve().parents[2]
-    wrapper = repo_root / ".direnv/sinnix-scope/bin/polylogue"
-    if wrapper.exists():
-        return str(wrapper)
-    return "polylogue"
+    return _project_binary("polylogue")
 
 
 def _free_local_port() -> int:

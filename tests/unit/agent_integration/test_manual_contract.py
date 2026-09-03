@@ -94,5 +94,7 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
 def test_origin_teaching_follows_authoritative_enum() -> None:
     """Mutation: using a stale origin count or omitting an Origin token fails here."""
     assert tuple(item.token for item in ORIGIN_MEANINGS) == tuple(item.value for item in Origin)
-    assert len(ORIGIN_MEANINGS) == 11
-    assert "beads-issue" not in {item.token for item in ORIGIN_MEANINGS}
+    assert len(ORIGIN_MEANINGS) == len(Origin)
+    # beads-issue stays in the enum: its route is retired, but the durable
+    # CHECKs still admit the token, so the teaching table names it as reserved.
+    assert {item.token for item in ORIGIN_MEANINGS} >= {"beads-issue"}

@@ -273,7 +273,9 @@ def _sqlite_maintenance_state(db: Path, observed_db: Path | None) -> dict[str, A
         }
         if tier_db.exists():
             try:
-                conn = open_readonly_connection(tier_db)
+                # Planner-statistics presence is reported for whatever the
+                # tier holds, including a version the runtime has moved past.
+                conn = open_readonly_connection(tier_db, validate_schema=False)
                 try:
                     rows = _sqlite_stat1_rows(conn)
                 finally:
@@ -1043,7 +1045,9 @@ def _location_entry(
     exists = False
     if db_path.exists():
         try:
-            conn = open_readonly_connection(db_path)
+            # A location entry reports what is present, including a tier the
+            # runtime has moved past.
+            conn = open_readonly_connection(db_path, validate_schema=False)
             try:
                 exists = _table_exists(conn, table)
             finally:
@@ -1345,7 +1349,10 @@ def _archive_single_tier_state(
         "error": None,
     }
     try:
-        conn = open_readonly_connection(path)
+        # This payload's own fields are user_version and version_status: the
+        # probe exists to report a tier's version, so it must be able to read
+        # one that is not the runtime's.
+        conn = open_readonly_connection(path, validate_schema=False)
         try:
             if integrity_check:
                 integrity_row = conn.execute("PRAGMA quick_check").fetchone()

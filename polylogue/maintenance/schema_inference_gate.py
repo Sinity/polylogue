@@ -565,7 +565,9 @@ def _tier_schema_identity(archive_root: Path, location: ArchiveLocation) -> dict
         }
         if path.exists():
             try:
-                with open_readonly_connection(path) as conn:
+                # Reading the tier's actual identity is this function's whole
+                # job, and a stale identity is exactly what it reports.
+                with open_readonly_connection(path, validate_schema=False) as conn:
                     entry["actual_user_version"] = int(conn.execute("PRAGMA user_version").fetchone()[0])
                     entry["schema_sha256"] = _sqlite_schema_digest(conn)
             except sqlite3.Error as exc:

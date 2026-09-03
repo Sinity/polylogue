@@ -21,7 +21,10 @@ from polylogue.insights.transforms import (
     compile_session_digest,
 )
 from polylogue.storage.sqlite.archive_tiers import user_write
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    initialize_archive_database,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
@@ -1601,8 +1604,10 @@ def test_cross_connection_replay_cannot_resurrect_operator_accept(tmp_path: Path
     """An immediate transaction serializes detector replay before operator acceptance."""
 
     db_path = tmp_path / "user.db"
+    # The tier must exist before the guarded factory opens it: a connection
+    # profile checks the tier's declared version at open time.
+    initialize_archive_database(db_path, ArchiveTier.USER)
     setup = open_connection(db_path)
-    initialize_archive_tier(setup, ArchiveTier.USER)
     try:
         candidate = upsert_assertion(
             setup,
@@ -1712,8 +1717,10 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
     """
 
     db_path = tmp_path / "user.db"
+    # The tier must exist before the guarded factory opens it: a connection
+    # profile checks the tier's declared version at open time.
+    initialize_archive_database(db_path, ArchiveTier.USER)
     setup = open_connection(db_path)
-    initialize_archive_tier(setup, ArchiveTier.USER)
     try:
         candidate = upsert_assertion(
             setup,
@@ -1802,8 +1809,8 @@ def test_cross_connection_replay_inside_caller_owned_deferred_transaction_cannot
 
 def test_assertion_upsert_rolls_back_its_immediate_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db_path = tmp_path / "user.db"
+    initialize_archive_database(db_path, ArchiveTier.USER)
     conn = open_connection(db_path)
-    initialize_archive_tier(conn, ArchiveTier.USER)
     original = user_write.read_assertion_envelope
 
     def fail_after_insert(connection: sqlite3.Connection, assertion_id: str) -> object:
