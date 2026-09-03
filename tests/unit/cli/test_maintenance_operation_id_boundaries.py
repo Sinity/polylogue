@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from polylogue.cli.commands.maintenance import _raw_authority_recovery as raw_module
 from polylogue.cli.commands.maintenance import _rebuild_index_status as rebuild_module
 from polylogue.cli.commands.maintenance import _status as status_module
 from polylogue.cli.shared.types import AppEnv
@@ -50,24 +49,6 @@ def test_rebuild_index_status_rejects_invalid_operation_id_before_status_lookup(
     result = CliRunner().invoke(
         rebuild_module.rebuild_index_status_command,
         ["--operation-id", INVALID_OPERATION_ID],
-    )
-
-    assert result.exit_code != 0
-    assert "operation_id must not contain path separators" in result.output
-
-
-def test_raw_authority_recovery_rejects_invalid_operation_id_before_recovery(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_recovery(*args: object, **kwargs: object) -> object:
-        raise AssertionError("recovery execution must not run for invalid operation IDs")
-
-    monkeypatch.setattr(raw_module, "inspect_raw_authority_recovery", fail_recovery)
-    monkeypatch.setattr(raw_module, "resume_raw_authority_recovery", fail_recovery)
-    result = CliRunner().invoke(
-        raw_module.raw_authority_recovery_command,
-        ["--operation", "reset_raw_authority_census", "--operation-id", INVALID_OPERATION_ID],
-        obj=AppEnv(),
     )
 
     assert result.exit_code != 0

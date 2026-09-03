@@ -197,7 +197,9 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
     classify_raw_revision_cohort_for_live_watch,
+    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
+    classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
@@ -1658,15 +1660,15 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
-        *,
-        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair(
-            self,
-            logical_source_key,
-            manage_transaction=manage_transaction,
-        )
+        return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
+
+    def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
+        self, logical_source_key: str
+    ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
+        return classify_raw_revision_cohort_for_rebuild_repair_in_transaction(self, logical_source_key)
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
@@ -1686,15 +1688,13 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_live_watch(
         self,
         logical_source_key: str,
-        *,
-        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(
-            self,
-            logical_source_key,
-            manage_transaction=manage_transaction,
-        )
+        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
+
+    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
+        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
 
     def classify_untyped_full_revision_groups(self, raw_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         return classify_untyped_full_revision_groups(self, raw_ids)

@@ -241,65 +241,6 @@ Heuristics:
 
 ## Subcommands
 
-### `polylogue ops maintenance blob-namespace-quarantine`: offline filesystem quarantine
-
-Read-only by default. This is the actuator for entries that
-`BlobStore.iter_namespace()` classifies outside the canonical
-`blob/<2-hex>/<62-hex>` layout: historical SQLite `-wal`/`-shm` sidecars,
-stranded `.blob.*` files, malformed shards, and non-regular entries. It does
-not classify orphaned canonical blobs and never runs GC.
-
-```bash
-polylogue ops maintenance blob-namespace-quarantine --output-format json
-polylogue ops maintenance blob-namespace-quarantine --plan \
-  --backup-manifest /path/to/verified-source-backup/manifest.json \
-  --output-format json
-polylogue ops maintenance blob-namespace-quarantine --apply \
-  --backup-manifest /path/to/verified-source-backup/manifest.json \
-  --receipt-dir /path/to/new/namespace-quarantine-receipt \
-  --output-format json
-polylogue ops maintenance blob-namespace-quarantine --recover \
-  --receipt-dir /path/to/existing/namespace-quarantine-receipt
-```
-
-`--plan` is the backup-gated operator audit. It authenticates the supplied
-source-tier backup against an immutable read of `source.db`, then emits a
-typed census of canonical blobs, SQLite `-wal`/`-shm` sidecars, `.blob.*`
-temporary files, and other invalid entries. It does not create receipts,
-checkpoint SQLite, move files, delete files, or change archive rows. Run this
-plan before any later offline quarantine decision.
-
-This plan is an offline safety prerequisite, not a production cleanup receipt
-or a complete bead-closure claim. The full-hash pristine receipt required by
-`r9xsj` remains a separate residual dependency, and production cleanup remains
-a separate operator-authorized residual dependency. No receipt is claimed here.
-
-Apply requires the daemon stopped, no archive writer lease, the archive-wide
-exclusive maintenance lease, a successful attested source-tier backup manifest
-whose live identity still matches `source.db`, and a clean WAL checkpoint. The
-receipt directory must be new and explicit. Before the first move, the command
-writes and fsyncs immutable `before.json`; afterwards it writes immutable
-`after.json`. Invalid entries move with same-filesystem `os.replace()` into a
-sibling `blob-namespace-quarantine/<operation-id>/` tree. Existing destination
-paths, path escapes, symlinks in required directories, stat/read failures, and
-canonical-shaped hash mismatches all refuse the operation.
-
-No SQLite rows are changed, canonical blobs are never moved, and no deletion
-or garbage collection occurs. The after receipt proves the canonical inventory
-is byte-identical, every candidate is present in quarantine with its recorded
-no-follow tree digest, no invalid namespace entries remain, and the full
-canonical hash pass has no failures. Run the independent final operator gate
-before treating a production pass as complete:
-
-```bash
-polylogue ops doctor --blob-integrity --full --format json
-```
-
-`--recover` is read-only and idempotent. It reports `rolled_back` when every
-source still exists and every destination is absent, `committed` when every
-destination matches the before receipt, and `indeterminate` for mixed or
-conflicting state. It never attempts a repair move.
-
 ### `polylogue ops maintenance blob-reference-liveness` - historical blob-ref reconciliation
 
 Read-only by default. It classifies source-tier `blob_refs` rows with the
@@ -353,32 +294,6 @@ only, never deletes or replaces existing refs. The source and index commits are
 recorded separately in the receipt so a retry can safely continue an additive
 repair. Reindex acceptance runs the same closure check against the candidate
 index before promotion.
-
-### `polylogue ops maintenance hook-payload-ref-reconcile` - legacy hook-ref repair
-
-Read-only by default. It classifies historical orphaned `raw_payload` refs and
-only re-keys a row when its deterministic legacy id exactly matches one
-unambiguous `raw_hook_events` candidate. Unmatched rows remain untouched.
-
-```bash
-polylogue ops maintenance hook-payload-ref-reconcile --output-format json
-polylogue ops maintenance hook-payload-ref-reconcile --apply \
-  --backup-manifest /path/to/verified-source-backup-manifest.json \
-  --receipt-file /path/to/new/hook-payload-reconciliation.jsonl \
-  --output-format json
-```
-
-Apply requires the daemon and all archive writers to be offline, a verified
-backup manifest for the current `source.db`, and a new receipt destination.
-The receipt records the tool version, backup-manifest identity, exact
-pre/post classifications, reconciled hook ids, and a terminal committed or
-recovered state. If an interrupted apply leaves a prepared receipt, rerun the
-same command with that receipt path to record recovery; use a fresh path only
-after reviewing the recovered terminal state.
-
-Deletion trigger: retire this apply command and its tests after a read-only
-census reports zero orphaned `raw_payload` refs and zero hook events with a
-missing `blob_hash`. The matcher remains while blob liveness and GC consume it.
 
 ### `polylogue ops maintenance preview` — staleness inventory
 
@@ -796,28 +711,6 @@ only executable proof-backed plans under the writer coordinator and validates
 the typed application receipt. `polylogue ops maintenance raw-authority-frontier`
 records an inspection census only; it has no manual plan selector or apply
 option.
-
-### `polylogue ops maintenance raw-authority-recovery` - guarded offline ledger recovery
-
-This command family is the only operator route for the two callerless raw-authority recovery actuators. It is inspect-only by default. The census reset removes only the five poisoned census-planning tables after a verified source-tier backup. The index-seed prune removes only active-index `raw_revision_heads` and `raw_revision_applications` rows whose source raw is absent. Parser census rows, source raws, blob receipts, and present-source revision rows are outside both target sets.
-
-Write an exact plan first, then apply that same plan with the required backup authority:
-
-```bash
-polylogue ops maintenance raw-authority-recovery \
-  --operation reset_raw_authority_census \
-  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
-  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
-  --output-format json
-
-polylogue ops maintenance raw-authority-recovery \
-  --operation reset_raw_authority_census --apply \
-  --plan-file /realm/tmp/work/raw-authority-census-reset.plan.json \
-  --backup-manifest /realm/staging/polylogue-backup/manifest.json \
-  --output-format json
-```
-
-Apply is explicitly an offline operator-maintenance route, not a daemon-writer route. It refuses a running daemon, stale plan or active pointer, changed tier bytes or schema versions, malformed ledger, unexpected candidate set, mismatched backup authority, or changed unrelated rows. It acquires archive ownership and the rebuild lease before revalidation. Before the SQLite mutation it persists an fsynced immutable intent, including the complete plan, under `<archive-root>/.maintenance-state/raw-authority-recovery/`; a source-ledger reset also persists the established source-train continuity intent before committing. Each receipt-directory parent is fsynced while walked. A restart finalizes that intent into the self-hashed receipt only when the planned candidate rows are absent and every planned retained row matches; later append-only index successors are allowed. An uncommitted intent goes back through PREPARE, AUTHORIZE, and EXECUTE. Receipt destinations are restricted to that archive-owned durable location and are published through descriptor-relative no-follow operations that accept regular files only. If the external plan file was lost after a final-receipt failure, rerun `--apply --operation-id <shown-operation-id>` to resume the archive-owned intent, retaining `--receipt-file` when the original plan used a custom archive-owned receipt destination. It does not invoke the broad index reset or reparse path.
 
 ### `polylogue ops maintenance operation-recovery` - inspecting and adjudicating interrupted mutations
 

@@ -120,12 +120,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Resolve one stale-plan blocker against current source evidence.",
     ),
     (
-        "raw-authority-recovery",
-        "_raw_authority_recovery",
-        "raw_authority_recovery_command",
-        "Inspect or apply one exact guarded raw-authority recovery plan.",
-    ),
-    (
         "operation-recovery",
         "_operation_recovery",
         "operation_recovery_command",
@@ -162,18 +156,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_blob_reference_closure",
         "blob_reference_closure_command",
         "Repair deterministic raw and acquired-attachment reference gaps; dry-run by default.",
-    ),
-    (
-        "hook-payload-ref-reconcile",
-        "_hook_payload_ref_reconciliation",
-        "hook_payload_ref_reconcile_command",
-        "Classify legacy hook refs; apply exact matches with backup and receipt.",
-    ),
-    (
-        "blob-namespace-quarantine",
-        "_blob_namespace_quarantine",
-        "blob_namespace_quarantine_command",
-        "Dry-run-first offline quarantine for invalid blob namespace entries.",
     ),
     (
         "blob-reference-recovery-plan",
@@ -230,12 +212,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_campaign_genesis",
         "verify_campaign_genesis_command",
         "Prove a campaign-genesis record against the immutable Git blobs it pins. Read-only.",
-    ),
-    (
-        "cursor-authority-reconcile",
-        "_cursor_authority",
-        "cursor_authority_reconcile_command",
-        "Plan or apply one backup-gated cursor-authority reconciliation.",
     ),
     (
         "blob-residue-compare",
