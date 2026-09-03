@@ -5884,11 +5884,21 @@ def _seed_session_model_usage_rows(
     for model_name in sorted(model_names):
         conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
     if session.reported_cost_usd is not None and len(model_names) == 1:
+        current_model = next(iter(model_names))
         _write_provider_cost(
             conn,
             session_id,
-            next(iter(model_names)),
+            current_model,
             ProviderCost(session.reported_cost_usd),
+        )
+        # The provider reports one total for the session and it is attributed
+        # to the single model in play. On append the prior model's rows
+        # survive, so leaving their attributed total behind makes the
+        # session's SUM(provider_cost_usd) count the same dollars twice.
+        conn.execute(
+            """UPDATE session_model_usage SET provider_cost_usd = NULL
+               WHERE session_id = ? AND model_name != ? AND provider_cost_usd IS NOT NULL""",
+            (session_id, _sqlite_text(current_model)),
         )
     if aggregate_message_tokens:
         _aggregate_message_tokens_into_model_usage(conn, session_id)
