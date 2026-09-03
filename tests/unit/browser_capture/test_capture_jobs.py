@@ -836,7 +836,7 @@ def _checkpoint(
         },
     )
     assert status == 200, body
-    return cast(dict[str, Any], body)
+    return body
 
 
 def test_pre_retention_update_receipt_replays_without_conflict(tmp_path: Path) -> None:
