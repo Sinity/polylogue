@@ -114,13 +114,24 @@ class ProviderCost:
 
 
 def _write_provider_cost(conn: sqlite3.Connection, session_id: str, model_name: str, cost: ProviderCost) -> None:
-    """Pass through a provider dollar value without catalog computation."""
+    """Pass through a provider dollar value without catalog computation.
+
+    The value is one exact dollar total for the whole session, so it lives on
+    exactly one model row. A merge-append that switches models carries the
+    total to the new row; leaving it on the superseded one would double-count
+    it in every sum over the session.
+    """
     if not isinstance(cost, ProviderCost):
         raise TypeError("provider cost writes require ProviderCost")
     conn.execute(
         """UPDATE session_model_usage SET provider_cost_usd = ?
            WHERE session_id = ? AND model_name = ?""",
         (cost.value, session_id, model_name),
+    )
+    conn.execute(
+        """UPDATE session_model_usage SET provider_cost_usd = NULL
+           WHERE session_id = ? AND model_name <> ?""",
+        (session_id, model_name),
     )
 
 
