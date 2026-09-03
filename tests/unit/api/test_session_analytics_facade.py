@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from polylogue import Polylogue
-from polylogue.insights.archive import ArchiveInferenceProvenance, ArchiveInsightProvenance, SessionProfileInsight
-from polylogue.insights.archive_models import SessionEvidencePayload, SessionInferencePayload
+from polylogue.analysis.archive import ArchiveInferenceProvenance, ArchiveInsightProvenance, SessionProfileInsight
+from polylogue.analysis.archive_models import SessionEvidencePayload, SessionInferencePayload
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.judgment.controls import (
+from polylogue.analysis.judgment.controls import (
     ClaimWithControls,
     ControlOutcome,
     NegativeControl,

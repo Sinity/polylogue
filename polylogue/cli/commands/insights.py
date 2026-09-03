@@ -14,6 +14,32 @@ from typing import cast
 
 import click
 
+from polylogue.analysis.archive import ArchiveInsightUnavailableError
+from polylogue.analysis.audit import (
+    DEFAULT_AUDIT_SAMPLE_LIMIT,
+    InsightRigorAuditQuery,
+    InsightRigorAuditReport,
+    build_insight_rigor_audit_report,
+)
+from polylogue.analysis.export_bundles import (
+    InsightExportBundleError,
+    InsightExportBundleRequest,
+    InsightExportBundleResult,
+    InsightExportFormat,
+)
+from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
+from polylogue.analysis.registry import (
+    INSIGHT_REGISTRY,
+    InsightQueryError,
+    InsightType,
+    fetch_insights,
+    render_insight_items,
+)
+from polylogue.analysis.timeline_renderer import (
+    build_session_timeline,
+    render_markdown,
+    render_plain,
+)
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import (
@@ -24,32 +50,6 @@ from polylogue.cli.shared.insight_command_contracts import (
 )
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
-from polylogue.insights.archive import ArchiveInsightUnavailableError
-from polylogue.insights.audit import (
-    DEFAULT_AUDIT_SAMPLE_LIMIT,
-    InsightRigorAuditQuery,
-    InsightRigorAuditReport,
-    build_insight_rigor_audit_report,
-)
-from polylogue.insights.export_bundles import (
-    InsightExportBundleError,
-    InsightExportBundleRequest,
-    InsightExportBundleResult,
-    InsightExportFormat,
-)
-from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
-from polylogue.insights.registry import (
-    INSIGHT_REGISTRY,
-    InsightQueryError,
-    InsightType,
-    fetch_insights,
-    render_insight_items,
-)
-from polylogue.insights.timeline_renderer import (
-    build_session_timeline,
-    render_markdown,
-    render_plain,
-)
 
 _ROOT_FILTER_KEYS = ("origin", "since", "until")
 
@@ -315,7 +315,7 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
 
 
 def _render_hermes_health_plain(health: object) -> None:
-    from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
 
     assert isinstance(health, HermesIntegrationHealth)
     click.echo(f"Hermes integration: {health.verdict} (enabled={health.enabled})")

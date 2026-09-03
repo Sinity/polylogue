@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
-from polylogue.insights.delegation_work_evidence_materializer import (
+from polylogue.analysis.delegation_work_evidence_materializer import (
     DELEGATION_WORK_EVIDENCE_GRAPH_ID,
     delegation_work_evidence_materialization_needed,
     materialize_delegation_work_evidence_archive,
 )
+from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -141,7 +141,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "polylogue.insights.delegation_work_evidence_materializer.delegation_work_evidence_materialization_needed",
+        "polylogue.analysis.delegation_work_evidence_materializer.delegation_work_evidence_materialization_needed",
         fail_probe,
     )
     with caplog.at_level("WARNING"):
@@ -152,7 +152,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "polylogue.insights.delegation_work_evidence_materializer.materialize_delegation_work_evidence_archive",
+        "polylogue.analysis.delegation_work_evidence_materializer.materialize_delegation_work_evidence_archive",
         fail_materialization,
     )
     with caplog.at_level("WARNING"):

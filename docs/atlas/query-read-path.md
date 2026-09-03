@@ -35,7 +35,7 @@ than silently claiming completeness
 - `polylogue/mcp/` owns capability-gated operation dispatch.
 - `polylogue/daemon/` owns transport, lifecycle, and serialized mutation
   admission; its HTTP/UDS readers use the same product routes.
-- `polylogue/insights/` owns descriptor-driven derived projections.
+- `polylogue/analysis/` owns descriptor-driven derived projections.
 
 Surfaces should call shared operations, query planners, and insight
 descriptors. A surface-specific SQL query is a design smell unless its

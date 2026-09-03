@@ -7645,7 +7645,7 @@ def _repo_name(repository_url: str, root_path: str) -> str | None:
 
     Prefers ``normalize_repo_name`` -- the same remote-URL/git-root
     normalization the attribution pipeline
-    (``storage/insights/session/repo_observations.py``) already uses -- so a
+    (``storage/derived/session/repo_observations.py``) already uses -- so a
     session whose cwd is a deep subdirectory or an agent worktree resolves to
     the real repository name, not a raw path-basename echo (the
     "agent-<hash>" bug: a session's cwd under
@@ -7673,7 +7673,7 @@ def _discovered_repo_root_path(root_path: str) -> str | None:
     written into ``root_path`` to the resolved git root collapses
     same-checkout subdirectory variance and keeps this writer's rows
     consistent with the attribution-based writer
-    (``storage/insights/session/repo_observations.py``), which already
+    (``storage/derived/session/repo_observations.py``), which already
     normalizes this way. As of the ``repo_identity_key`` schema fix below,
     ``root_path`` is no longer part of ``repos.repo_id`` identity when a
     remote is known -- it still matters as the value recorded in

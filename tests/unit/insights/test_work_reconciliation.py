@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
-from polylogue.insights.work_reconciliation import (
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.analysis.work_reconciliation import (
     ObservedRepositoryEffect,
     ReconciliationJudgment,
     reconcile_work_effects,
 )
+from polylogue.core.refs import EvidenceRef, ObjectRef
 
 
 def test_reconciliation_keeps_claim_and_commit_as_distinct_facts() -> None:

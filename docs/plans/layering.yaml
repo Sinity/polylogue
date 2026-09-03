@@ -250,7 +250,7 @@ rules:
     disallow:
       from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
-  - target: polylogue/insights
+  - target: polylogue/analysis
     description: "Derived insights must not import daemon/MCP/UI adapters."
     disallow:
       from: [polylogue/daemon, polylogue/mcp, polylogue/ui]
@@ -282,7 +282,7 @@ rules:
           polylogue/cli,
           polylogue/config,
           polylogue/daemon,
-          polylogue/insights,
+          polylogue/analysis,
           polylogue/maintenance,
           polylogue/mcp,
           polylogue/operations,

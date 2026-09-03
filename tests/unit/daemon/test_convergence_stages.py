@@ -33,10 +33,10 @@ from polylogue.scenarios import (
     partial_convergence_canary_spec,
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-from polylogue.storage.insights.session import storage as session_storage
-from polylogue.storage.insights.session.repair_assessment import session_insight_status_ready
-from polylogue.storage.insights.session.runtime import SessionInsightCounts
-from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.derived.session import storage as session_storage
+from polylogue.storage.derived.session.repair_assessment import session_insight_status_ready
+from polylogue.storage.derived.session.runtime import SessionInsightCounts
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_tier
@@ -986,7 +986,7 @@ def test_insights_stage_rebuilds_sync_against_configured_db(
     )
     monkeypatch.setattr("polylogue.daemon.convergence_stages._hot_insight_session_ids", lambda _conn, _ids: set())
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_record_fts_freshness_after_insights", lambda _conn: None)
 
     assert make_insights_stage(db_path).execute(tmp_path / "source.jsonl") is True
@@ -1264,7 +1264,7 @@ def test_insights_stage_batches_sync_rebuild_chunks(
         return SessionInsightCounts(profiles=2, work_events=0, phases=0, threads=0, tag_rollups=0)
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.open_connection", fake_open_connection)
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_record_fts_freshness_after_insights", lambda _conn: None)
     monkeypatch.setattr(
         stages,
@@ -1293,7 +1293,7 @@ def test_insights_stage_defers_hot_large_session_debt(
     def fail_rebuild(*_args: object, **_kwargs: object) -> object:
         raise AssertionError("hot active sources should wait for convergence debt retry")
 
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fail_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fail_rebuild)
 
     stage = make_insights_stage(db_path)
     assert stage.execute_sessions is not None
@@ -1493,7 +1493,7 @@ def test_insights_session_rebuild_returns_false_when_still_stale(
         del conn, session_ids, page_size, stage_timings_s, stage_timing_prefix
         return SessionInsightCounts(profiles=0, work_events=0, phases=0, threads=0, tag_rollups=0)
 
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", no_op_rebuild)
 
     stage = make_insights_stage(db_path)
     assert stage.execute_sessions is not None
@@ -1758,7 +1758,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
             stage_timings_s["insights.fake"] = 0.25
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: set())
     monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
 
@@ -1805,7 +1805,7 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
             stage_timings_s["insights.fake"] = 0.25
         return SimpleNamespace(profiles=1, work_events=0, phases=0, threads=0)
 
-    monkeypatch.setattr("polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
+    monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(
         stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: {"codex-session:conv-hot"}
     )

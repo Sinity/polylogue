@@ -99,7 +99,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #     a real value to read so the ``status == "exact"`` cost path (audited
 #     polylogue-gt1z: zero production callers behind it, a phantom-verified
 #     feature pinned only by hand-built-payload tests) becomes reachable
-#     through a real caller -- `polylogue/insights/cost_enrichment.py`'s
+#     through a real caller -- `polylogue/analysis/cost_enrichment.py`'s
 #     `enrich_session_cost_insight`, which backs the `insights costs` /
 #     `SessionCostInsight` surface.
 #   - polylogue-shnc: two new session_model_usage CHECK constraints enforcing
@@ -392,7 +392,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #    tool_usage, session_costs, cost_rollups, usage_timeline, archive_debt)
 #    or `session_tag_rollups`, which has its own dedicated non-session-scoped
 #    staleness query (`STALE_SESSION_TAG_ROLLUP_COUNT_SQL` in
-#    `storage/insights/session/status.py`) because it isn't keyed by
+#    `storage/derived/session/status.py`) because it isn't keyed by
 #    session_id at all. `input_high_water_mark_source` is read broadly
 #    across public surfaces (`insights/archive.py`'s `time_confidence_for_
 #    source`, `daemon/http.py` status payloads), not confined to

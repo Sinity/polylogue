@@ -22,7 +22,7 @@ dashboard or an unbounded semantic-memory promise.
 1. **Search** — find sessions, messages, blocks, actions, assertions, and
    insight units with the query DSL (`polylogue/archive/query/expression.py:1-80`).
 2. **Analyze** — read descriptor-driven insights and measurements whose
-   evidence boundaries are explicit (`polylogue/insights/registry.py:1-100`).
+   evidence boundaries are explicit (`polylogue/analysis/registry.py:1-100`).
 3. **Audit** — inspect operation previews, authorization, attempts, and
    continuity, with durable audit records separate from rebuildable indexes
    (`polylogue/storage/sqlite/archive_tiers/audit.py:20-35`).

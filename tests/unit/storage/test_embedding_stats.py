@@ -7,12 +7,12 @@ import sqlite3
 import aiosqlite
 import pytest
 
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.embeddings import embedding_stats as embedding_stats_mod
 from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
 )
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 def _create_embedding_stats_tables(conn: sqlite3.Connection) -> None:

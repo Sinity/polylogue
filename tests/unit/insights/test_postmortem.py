@@ -11,6 +11,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from polylogue.analysis.postmortem import (
+    POSTMORTEM_SCHEMA_VERSION,
+    PostmortemScope,
+    compile_postmortem_bundle,
+    render_postmortem_markdown,
+    render_postmortem_plain,
+)
+from polylogue.analysis.transforms import SessionDigest, compile_session_digest
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
@@ -18,14 +26,6 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.models import SessionProfile
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.insights.postmortem import (
-    POSTMORTEM_SCHEMA_VERSION,
-    PostmortemScope,
-    compile_postmortem_bundle,
-    render_postmortem_markdown,
-    render_postmortem_plain,
-)
-from polylogue.insights.transforms import SessionDigest, compile_session_digest
 
 
 def _profile(

@@ -8,11 +8,7 @@ from typing import TypeAlias, TypeVar
 
 from pydantic import BaseModel
 
-from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
-from polylogue.archive.session.provenance import date_provenance as _date_provenance
-from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
-from polylogue.core.json import JSONDocument, JSONValue, json_document
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
@@ -21,6 +17,10 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
+from polylogue.archive.session.documents import SessionPhaseDocument, WorkEventDocument
+from polylogue.archive.session.provenance import date_provenance as _date_provenance
+from polylogue.archive.session.provenance import range_timing_provenance as _range_timing_provenance
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.storage.sqlite.queries.mappers_support import _parse_json, _row_get
 
 PayloadModel = TypeVar("PayloadModel", bound=BaseModel)

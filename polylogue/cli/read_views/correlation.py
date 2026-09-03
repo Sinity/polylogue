@@ -24,7 +24,7 @@ def build_correlation_options(values: ReadViewOptionValues) -> ReadViewCorrelati
 def run_read_correlation(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Render GitHub/Git correlation evidence around one session."""
 
-    from polylogue.insights.correlation_view import run_correlation_view
+    from polylogue.analysis.correlation_view import run_correlation_view
 
     del request
     assert invocation.session_id is not None

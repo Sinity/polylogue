@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
+from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION
 from tests.infra.archive_scenarios import (
     ArchiveScenario,
     ScenarioAttachment,

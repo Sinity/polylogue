@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.insights.cohorts import (
+from polylogue.analysis.cohorts import (
     CohortCandidate,
     CohortSpec,
     compare_cohort_manifests,

@@ -989,13 +989,13 @@ def _optional_model_dump(value: Any) -> dict[str, object] | None:
 def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
     """Compare a session-profile record's provenance against its session.
 
-    Routes through :func:`polylogue.insights.provenance.is_stale` so the
+    Routes through :func:`polylogue.analysis.provenance.is_stale` so the
     daemon insights browser (#1018/#1120) consumes the typed staleness
     helper rather than re-deriving the high-water-mark comparison inline.
     Returns ``None`` when the record lacks the provenance fields the
     helper expects.
     """
-    from polylogue.insights.provenance import HasProvenance, is_stale
+    from polylogue.analysis.provenance import HasProvenance, is_stale
 
     if record is None:
         return None
@@ -2895,8 +2895,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_webui_insight(self, name: str, params: dict[str, list[str]]) -> None:
         """Return one bounded descriptor panel without a browser query model."""
+        from polylogue.analysis.registry import INSIGHT_REGISTRY
         from polylogue.daemon.webui import build_observability_payload
-        from polylogue.insights.registry import INSIGHT_REGISTRY
 
         descriptor = INSIGHT_REGISTRY.get(name)
         if descriptor is None:
@@ -3914,7 +3914,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
 
     async def _do_get_session_cost(self, poly: Polylogue, conv_id: str) -> object:
-        from polylogue.insights.archive import SessionCostInsightQuery
+        from polylogue.analysis.archive import SessionCostInsightQuery
 
         insights = await poly.list_session_cost_insights(SessionCostInsightQuery(session_id=conv_id))
         if not insights:
@@ -3963,7 +3963,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         includes: tuple[str, ...],
     ) -> object:
-        from polylogue.insights.archive import (
+        from polylogue.analysis.archive import (
             ArchiveInsightUnavailableError,
             SessionPhaseInsightQuery,
             SessionWorkEventInsightQuery,
@@ -3987,8 +3987,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
-            from polylogue.insights.archive import SessionProfileInsight
-            from polylogue.storage.insights.session.profiles import hydrate_session_profile
+            from polylogue.analysis.archive import SessionProfileInsight
+            from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
             try:
                 # Archive read returns the full record directly; hydrate it into
@@ -4013,7 +4013,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
-            # :func:`polylogue.insights.provenance.is_stale` helper so the
+            # :func:`polylogue.analysis.provenance.is_stale` helper so the
             # reader sees explicit staleness, not just q-ready/q-missing
             # presence chips.
             if profile is not None:
@@ -4106,7 +4106,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> None:
         """``GET /api/sessions/{id}/topology[?limit=N]``.
 
-        Returns a bounded :class:`polylogue.insights.topology.SessionTopology`
+        Returns a bounded :class:`polylogue.analysis.topology.SessionTopology`
         envelope rooted at *conv_id*'s lineage root. ``?limit=`` is the
         operator-visible knob; the daemon enforces the hard cap from
         :data:`polylogue.daemon.topology_http.MAX_NODE_LIMIT` regardless of

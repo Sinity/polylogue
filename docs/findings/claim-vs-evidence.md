@@ -114,7 +114,7 @@ existing user-tier writers, and emitted a public-claim declaration only when
 the run's own minimum-sample and classified-outcome gates passed. That
 harness was retired 2026-08 (the closed claim-vs-evidence campaign's
 private-report/calibration/publishing tooling — see #3950); the surviving
-`PublicClaimProjection` (`polylogue/insights/measurement/public_claims.py`)
+`PublicClaimProjection` (`polylogue/analysis/measurement/public_claims.py`)
 still applies publication, privacy, freshness, frame, and evidence-integrity
 state independently on ordinary production routes. This page remains a frozen
 historical record, not a currently regeneratable claim.
@@ -134,7 +134,7 @@ closed campaign it served (`polylogue-sru`) had its terminal artifacts. This
 page is therefore frozen historical text: the numbers above are not
 regeneratable through a current command. The reusable query semantics behind
 them remain on ordinary production routes via `PublicClaimProjection`
-(`polylogue/insights/measurement/public_claims.py`).
+(`polylogue/analysis/measurement/public_claims.py`).
 
 Publication of any future finding of this shape still requires the packet's
 archive cursor, measure version, commit SHA, sample-frame predicate, and run

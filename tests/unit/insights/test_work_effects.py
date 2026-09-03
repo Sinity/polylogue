@@ -16,8 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.core.refs import ObjectRef
-from polylogue.insights.work_effects import (
+from polylogue.analysis.work_effects import (
     BeadsIssueEffectAdapter,
     EffectAdapterUnavailableError,
     GitCommitEffectAdapter,
@@ -27,7 +26,8 @@ from polylogue.insights.work_effects import (
     reconcile_repository_effects,
     referenced_work_item_ids,
 )
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
+from polylogue.core.refs import ObjectRef
 
 _EVIDENCE = ObjectRef(kind="artifact", object_id="raw:test-evidence")
 _SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="snapshot:work-effects-test")
@@ -93,6 +93,27 @@ def test_git_commit_adapter_reads_real_commit_history(tmp_path: Path) -> None:
     assert effect.evidence_ref.kind == "artifact"
     assert effect.occurred_at_ms is not None
     assert effect.repository_snapshot_ref.kind == "context-snapshot"
+
+
+def test_git_commit_adapter_accepts_repository_subdirectory(tmp_path: Path) -> None:
+    """A repository path may identify a directory below the checkout root.
+
+    Anti-vacuity: requiring ``repo_path/.git`` to exist makes this fail because
+    the adapter is deliberately given a nested directory.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    sha = _commit(repo, filename="a.txt", message="fix: collect from a nested path")
+    subdirectory = repo / "nested"
+    subdirectory.mkdir()
+
+    effects = GitCommitEffectAdapter(repo_path=subdirectory).collect()
+    root_effects = GitCommitEffectAdapter(repo_path=repo).collect()
+
+    assert [effect.ref.object_id for effect in effects] == [sha]
+    assert effects[0].evidence_ref == root_effects[0].evidence_ref
+    assert effects[0].repository_snapshot_ref == root_effects[0].repository_snapshot_ref
 
 
 def test_git_commit_adapter_time_bounds_exclude_out_of_window_commits(tmp_path: Path) -> None:

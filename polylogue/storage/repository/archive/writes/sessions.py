@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from polylogue.storage.insights.session.refresh import (
+from polylogue.storage.derived.session.refresh import (
     delete_session_insights_for_session_async,
     refresh_thread_after_session_delete_async,
 )
-from polylogue.storage.insights.session.threads import thread_root_id_async
+from polylogue.storage.derived.session.threads import thread_root_id_async
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
 from polylogue.storage.search.cache import invalidate_search_cache
 

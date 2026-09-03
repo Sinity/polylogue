@@ -838,7 +838,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     )
 
     session_id = write_parsed_session_to_archive(conn, session)
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     rebuild_session_insights_sync(conn, session_ids=[session_id])
     upsert_session_profile_costs(

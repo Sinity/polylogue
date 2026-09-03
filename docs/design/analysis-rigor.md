@@ -5,7 +5,7 @@ mechanisms materialized as polylogue-rxdo.9.1 – rxdo.9.10, plus the
 comparative-judgment extensions polylogue-rxdo.9.11 – rxdo.9.16 (Part II,
 mechanisms K-O). The judgment-mechanism core (K/L/M/F/G/N/O logic, plus a J
 projection against a structural stc-definition protocol) landed under
-`polylogue/insights/judgment/`; the rxdo.9.16 designed-UX-surface layer
+`polylogue/analysis/judgment/`; the rxdo.9.16 designed-UX-surface layer
 (inbox, micro-moments, deliberate sessions) is tracked separately as
 polylogue-7ome pending p5g and rxdo.11 L10.
 

@@ -22,14 +22,14 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.artifact_taxonomy import classify_artifact_path
-from polylogue.config import Source
-from polylogue.core.enums import Provider
-from polylogue.insights.claude_workflow_materializer import (
+from polylogue.analysis.claude_workflow_materializer import (
     claude_workflow_materialization_needed,
     claude_workflow_reparse_plan,
     materialize_claude_workflow_archive,
 )
+from polylogue.archive.artifact_taxonomy import classify_artifact_path
+from polylogue.config import Source
+from polylogue.core.enums import Provider
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore

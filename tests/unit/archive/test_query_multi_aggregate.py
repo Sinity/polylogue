@@ -554,7 +554,7 @@ async def test_codex_mcp_tool_calls_are_reachable_through_existing_tool_and_acti
     # 2. The pre-existing `tool_usage` insight already derives the MCP server
     #    identity from the same naming convention, with no new insight code.
     from polylogue import Polylogue
-    from polylogue.insights.tool_usage import ToolUsageInsightQuery
+    from polylogue.analysis.tool_usage import ToolUsageInsightQuery
 
     async with Polylogue(archive_root=index_db.parent) as api:
         insights = await api.list_tool_usage_insights(ToolUsageInsightQuery(mcp_server="github"))

@@ -30,6 +30,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from polylogue.analysis.archive import (
+    ArchiveInsightProvenance,
+    SessionCostInsight,
+)
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.models import Message
 from polylogue.archive.semantic.pricing import (
@@ -55,10 +59,6 @@ from polylogue.cost.plans import (
     SubscriptionPlan,
     cycle_for,
     plan_by_name,
-)
-from polylogue.insights.archive import (
-    ArchiveInsightProvenance,
-    SessionCostInsight,
 )
 from polylogue.maintenance.cost_backfill import (
     SESSION_PROFILES_REBUILD_TARGET,
@@ -117,7 +117,7 @@ def _exact_estimate() -> CostEstimatePayload:
     ``_session_level_estimate`` actually reads, populated in production from
     ``sessions.reported_cost_usd`` / ``ParsedSession.reported_cost_usd`` for
     claude-code-session/hermes-session) and calls ``estimate_session_cost()``
-    on it -- the same function ``polylogue/insights/cost_enrichment.py``'s
+    on it -- the same function ``polylogue/analysis/cost_enrichment.py``'s
     ``enrich_session_cost_insight`` calls in production.
     """
     session = make_conv(

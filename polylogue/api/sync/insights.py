@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.api.sync.bridge import run_coroutine_sync
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsight,
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsight,
@@ -27,14 +26,15 @@ from polylogue.insights.archive import (
     UsageTimelineInsight,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
+from polylogue.api.sync.bridge import run_coroutine_sync
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 
 if TYPE_CHECKING:
+    from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
     from polylogue.api import Polylogue
-    from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
 
 
 class SyncInsightQueriesMixin:

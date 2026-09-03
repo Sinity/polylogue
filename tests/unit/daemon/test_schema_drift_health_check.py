@@ -23,7 +23,7 @@ def test_schema_drift_ok_when_sentinel_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A fresh/synthetic archive with no ops.db data degrades to OK, not an alert."""
-    import polylogue.insights.schema_drift as schema_drift_module
+    import polylogue.analysis.schema_drift as schema_drift_module
 
     monkeypatch.setattr(schema_drift_module, "schema_drift_status", lambda *a, **kw: {"available": False})
     alert = _check_schema_drift_medium()
@@ -35,7 +35,7 @@ def test_schema_drift_ok_when_no_risky_origins(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import polylogue.insights.schema_drift as schema_drift_module
+    import polylogue.analysis.schema_drift as schema_drift_module
 
     monkeypatch.setattr(
         schema_drift_module,
@@ -56,7 +56,7 @@ def test_schema_drift_warning_when_one_origin_crosses_warn_threshold(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import polylogue.insights.schema_drift as schema_drift_module
+    import polylogue.analysis.schema_drift as schema_drift_module
 
     monkeypatch.setattr(
         schema_drift_module,
@@ -86,7 +86,7 @@ def test_schema_drift_error_outranks_warning_across_origins(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When multiple origins carry drift, the ERROR-severity one wins the message."""
-    import polylogue.insights.schema_drift as schema_drift_module
+    import polylogue.analysis.schema_drift as schema_drift_module
 
     monkeypatch.setattr(
         schema_drift_module,
@@ -120,7 +120,7 @@ def test_schema_drift_recovers_after_error(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import polylogue.insights.schema_drift as schema_drift_module
+    import polylogue.analysis.schema_drift as schema_drift_module
 
     monkeypatch.setattr(
         schema_drift_module,

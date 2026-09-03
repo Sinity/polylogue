@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from polylogue.api import Polylogue
-from polylogue.insights.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from tests.infra.storage_records import SessionBuilder
 
 

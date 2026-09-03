@@ -1,7 +1,7 @@
 """Lineage / topology endpoint contracts for the reader (#1121).
 
 ``GET /api/sessions/{id}/topology`` returns the bounded
-:class:`polylogue.insights.topology.SessionTopology` envelope shaped by
+:class:`polylogue.analysis.topology.SessionTopology` envelope shaped by
 :mod:`polylogue.daemon.topology_http`. Tests cover:
 
 - the pure envelope projection (readiness chip vocabulary, edge filter,
@@ -29,6 +29,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.analysis.topology import (
+    SessionTopology,
+    TopologyEdge,
+    TopologyEdgeKind,
+    TopologyNode,
+)
 from polylogue.core.types import SessionId
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.daemon.topology_http import (
@@ -41,12 +47,6 @@ from polylogue.daemon.topology_http import (
     coerce_node_limit,
 )
 from polylogue.daemon.web_shell import WEB_SHELL_HTML
-from polylogue.insights.topology import (
-    SessionTopology,
-    TopologyEdge,
-    TopologyEdgeKind,
-    TopologyNode,
-)
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 # ---------------------------------------------------------------------------

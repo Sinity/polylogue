@@ -211,7 +211,7 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
     # so the SQL-backed query units have rows to return, mirroring a real
     # post-ingest archive. Run/observed-event/context-snapshot query units are
     # source-derived (polylogue-dab) and need no separate materialization.
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     with sqlite3.connect(index_db) as insight_conn:
         insight_conn.row_factory = sqlite3.Row

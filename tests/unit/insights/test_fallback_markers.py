@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.fallback import FallbackReason
+from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
 from polylogue.api import Polylogue
-from polylogue.insights.fallback import FallbackReason
-from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
-from polylogue.storage.insights.session.profiles import (
+from polylogue.storage.derived.session.profiles import (
     enrichment_fallback_reasons,
     profile_inference_fallback_reasons,
     profile_inference_payload,

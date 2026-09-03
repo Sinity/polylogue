@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 from polylogue.archive.phase.extraction import SessionPhase
 from polylogue.archive.session.extraction import WorkEvent
-from polylogue.storage.insights.insight_read_support import hydrate_sequence
-from polylogue.storage.insights.session.timeline_rows import hydrate_session_phase, hydrate_work_event
+from polylogue.storage.derived.insight_read_support import hydrate_sequence
+from polylogue.storage.derived.session.timeline_rows import hydrate_session_phase, hydrate_work_event
 from polylogue.storage.query_models import SessionTimelineListQuery
 from polylogue.storage.runtime import SessionPhaseRecord, SessionWorkEventRecord
 

@@ -517,7 +517,7 @@ def test_analyze_facets_reports_degraded_when_it_misses_its_declared_budget(
     """A slow default-family read must self-report as degraded, not a silent success (polylogue-duti AC #1/#3).
 
     Regression/mutation coverage: if the budget check in
-    ``polylogue.insights.projection_contracts.facets_availability`` (or its
+    ``polylogue.analysis.projection_contracts.facets_availability`` (or its
     wiring in ``Polylogue.facets``) is removed, this test fails because the
     JSON envelope stops reporting ``budget_exceeded``/``state: degraded`` for
     an execution that overran the declared 2s interactive deadline -- the

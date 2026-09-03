@@ -99,7 +99,7 @@ COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES: tuple[TopologyEdgeStatus, ...] = (
 
 
 #: String form of the excluded set, for the Python-side filters that cannot
-#: use a SQL predicate (``storage/insights/topology/derivation.py`` filters a
+#: use a SQL predicate (``storage/derived/topology/derivation.py`` filters a
 #: materialized row mapping, not a query).
 COMPOSITION_EXCLUDED_STATUS_VALUES: frozenset[str] = frozenset(
     status.value for status in COMPOSITION_EXCLUDED_TOPOLOGY_STATUSES

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.storage.insights.insight_read_support import hydrate_mapping, hydrate_optional, hydrate_sequence
+from polylogue.storage.derived.insight_read_support import hydrate_mapping, hydrate_optional, hydrate_sequence
 from polylogue.storage.repository.insight.profile_reads import RepositoryInsightProfileReadMixin
 from polylogue.storage.repository.insight.summary_reads import RepositoryInsightSummaryReadMixin
 from polylogue.storage.repository.insight.thread_reads import RepositoryInsightThreadReadMixin

@@ -23,8 +23,8 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
-from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.repair_assessment import assess_session_insight_repairs
+from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
@@ -4271,11 +4271,11 @@ def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.status.session_insight_status_sync",
+        "polylogue.storage.derived.session.status.session_insight_status_sync",
         lambda _conn: _ready_session_insight_status(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
+        "polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync",
         fail_rebuild,
     )
 
@@ -4416,7 +4416,7 @@ def test_repair_session_insights_clears_scoped_convergence_debt(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
+        "polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights",
         lambda _archive, **_kwargs: SessionInsightCounts(profiles=1),
     )
 
@@ -4547,7 +4547,7 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
+        "polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 
@@ -4662,7 +4662,7 @@ def test_repair_session_insights_targets_stale_thread_materialization(
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
+        "polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
     result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
@@ -4732,7 +4732,7 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
         lambda _archive_root, read_only=False: FakeArchive(),
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
+        "polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights",
         fake_rebuild,
     )
 

@@ -67,7 +67,7 @@ from polylogue.sources.parsers.base import (
 from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.insights.session.refresh import SessionInsightRefreshChunkObservation
+from polylogue.storage.derived.session.refresh import SessionInsightRefreshChunkObservation
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
@@ -3471,15 +3471,15 @@ async def test_refresh_session_insights_bulk_dedupes_related_refreshes(
     refresh_aggregates = AsyncMock()
 
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.refresh._apply_session_insight_session_updates_async",
+        "polylogue.storage.derived.session.refresh._apply_session_insight_session_updates_async",
         _fake_apply,
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.refresh._refresh_thread_roots_async",
+        "polylogue.storage.derived.session.refresh._refresh_thread_roots_async",
         refresh_thread_roots,
     )
     monkeypatch.setattr(
-        "polylogue.storage.insights.session.refresh.refresh_async_provider_day_aggregates",
+        "polylogue.storage.derived.session.refresh.refresh_async_provider_day_aggregates",
         refresh_aggregates,
     )
 

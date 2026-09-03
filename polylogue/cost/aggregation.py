@@ -3,7 +3,7 @@
 The :func:`build_cycle_outlook` engine in :mod:`polylogue.cost.outlook`
 consumes a sequence of typed :class:`DailyUsage` rows. The archive
 already materializes per-session cost estimates through
-:class:`polylogue.insights.archive.SessionCostInsight`. This module is
+:class:`polylogue.analysis.archive.SessionCostInsight`. This module is
 the pure-function bridge: it folds a list of session-cost insights into
 one :class:`DailyUsage` row per UTC day, in USD basis.
 
@@ -18,8 +18,8 @@ from collections import defaultdict
 from collections.abc import Iterable
 from datetime import datetime
 
+from polylogue.analysis.archive import SessionCostInsight
 from polylogue.cost.outlook import DailyUsage
-from polylogue.insights.archive import SessionCostInsight
 
 __all__ = ["session_costs_to_daily_usd"]
 

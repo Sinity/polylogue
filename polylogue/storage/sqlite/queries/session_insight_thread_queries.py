@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.insights.session.storage import thread_insert_values
+from polylogue.storage.derived.session.storage import thread_insert_values
 from polylogue.storage.query_models import ThreadListQuery
 from polylogue.storage.runtime import ThreadRecord
 from polylogue.storage.sqlite.queries.mappers import _row_to_thread_record

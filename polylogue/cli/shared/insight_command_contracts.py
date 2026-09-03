@@ -6,10 +6,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from polylogue.analysis.registry import InsightType
 from polylogue.archive.query.spec import QuerySpecError, parse_query_date, split_csv
 from polylogue.core.enums import Origin
 from polylogue.core.errors import PolylogueError
-from polylogue.insights.registry import InsightType
 
 if TYPE_CHECKING:
     import click

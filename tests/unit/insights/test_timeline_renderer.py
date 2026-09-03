@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from polylogue.insights.archive import SessionPhaseInsight, SessionWorkEventInsight
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive import SessionPhaseInsight, SessionWorkEventInsight
+from polylogue.analysis.archive_models import (
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     SessionPhaseEvidencePayload,
@@ -21,7 +21,7 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.insights.timeline_renderer import (
+from polylogue.analysis.timeline_renderer import (
     SessionTimeline,
     build_session_timeline,
     build_timeline_entries,

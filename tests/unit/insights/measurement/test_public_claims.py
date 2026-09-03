@@ -5,8 +5,7 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.core.enums import AssertionStatus, AssertionVisibility
-from polylogue.insights.measurement.public_claims import (
+from polylogue.analysis.measurement.public_claims import (
     CapabilityClaimInput,
     EvidenceIntegrityStatus,
     EvidenceIntegrityVerdict,
@@ -18,6 +17,7 @@ from polylogue.insights.measurement.public_claims import (
     project_public_claims,
     render_public_claims_markdown,
 )
+from polylogue.core.enums import AssertionStatus, AssertionVisibility
 
 
 def _finding(**overrides: object) -> PublicFindingInput:

@@ -7,15 +7,14 @@ from dataclasses import replace
 
 import pytest
 
-from polylogue.archive.semantic.pricing import CostBasisPayload
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     CostRollupInsight,
     SessionPhaseInsight,
     SessionProfileInsight,
     SessionTagRollupInsight,
     SessionWorkEventInsight,
 )
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive_models import (
     ArchiveEnrichmentProvenance,
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
@@ -26,14 +25,14 @@ from polylogue.insights.archive_models import (
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.insights.audit import (
+from polylogue.analysis.audit import (
     InsightRigorAuditQuery,
     _audit_one,
     build_insight_rigor_audit_report,
 )
-from polylogue.insights.confidence import ConfidenceBand
-from polylogue.insights.registry import INSIGHT_REGISTRY
-from polylogue.insights.rigor import (
+from polylogue.analysis.confidence import ConfidenceBand
+from polylogue.analysis.registry import INSIGHT_REGISTRY
+from polylogue.analysis.rigor import (
     RigorFieldContract,
     get_rigor_contract,
     invalid_nullable_field_contracts,
@@ -43,6 +42,7 @@ from polylogue.insights.rigor import (
     resolve_payload,
     rigor_contract_names,
 )
+from polylogue.archive.semantic.pricing import CostBasisPayload
 from polylogue.storage.runtime.store_constants import (
     SESSION_ENRICHMENT_VERSION,
     SESSION_INFERENCE_VERSION,
@@ -153,7 +153,7 @@ def test_rigor_matrix_or_exemption_covers_every_registered_insight() -> None:
     exemption list (9e5.28) -- every product is either contracted or an
     explicitly justified exemption."""
 
-    from polylogue.insights.rigor import RIGOR_EXEMPT
+    from polylogue.analysis.rigor import RIGOR_EXEMPT
 
     registry_names = set(INSIGHT_REGISTRY.keys())
     contracted = set(rigor_contract_names())
@@ -469,7 +469,7 @@ def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
     """The audit iterates INSIGHT_REGISTRY, not list_rigor_contracts() (9e5.28):
     a registered product with no contract must appear as coverage_status
     "uncovered", never silently vanish from the report."""
-    import polylogue.insights.audit as audit_mod
+    import polylogue.analysis.audit as audit_mod
 
     operations = _FakeOperations(profiles=[_profile("c1")], work_events=[], phases=[], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)
@@ -484,7 +484,7 @@ def test_build_report_covers_every_registered_insight_not_just_contracted_ones(
 
 
 def test_build_report_marks_exempt_products_distinctly_from_uncovered(monkeypatch: pytest.MonkeyPatch) -> None:
-    import polylogue.insights.audit as audit_mod
+    import polylogue.analysis.audit as audit_mod
 
     operations = _FakeOperations(profiles=[], work_events=[], phases=[], tags=[])
     monkeypatch.setattr(audit_mod, "get_rigor_contract", lambda name: None)

@@ -1,4 +1,4 @@
-from polylogue.insights.command_shapes import (
+from polylogue.analysis.command_shapes import (
     CommandShapeUsageQuery,
     build_command_shape_usage,
     normalize_command_shapes,

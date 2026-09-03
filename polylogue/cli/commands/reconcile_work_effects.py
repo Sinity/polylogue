@@ -111,7 +111,7 @@ def reconcile_work_effects_command(
     reach (no auth, no network, not installed) shows up as an "adapter
     unavailable: github" line rather than silently omitting PR effects.
     """
-    from polylogue.insights.work_effects import (
+    from polylogue.analysis.work_effects import (
         BeadsIssueEffectAdapter,
         GitCommitEffectAdapter,
         GitHubPullRequestEffectAdapter,

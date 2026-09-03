@@ -179,7 +179,7 @@ def test_shared_kernel_has_no_domain_or_runtime_imports() -> None:
         "polylogue.api",
         "polylogue.archive",
         "polylogue.config",
-        "polylogue.insights",
+        "polylogue.analysis",
         "polylogue.maintenance",
         "polylogue.mcp",
         "polylogue.operations",

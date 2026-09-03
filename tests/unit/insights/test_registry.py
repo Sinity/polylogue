@@ -1,4 +1,4 @@
-"""Tests for polylogue.insights.registry — pure function coverage."""
+"""Tests for polylogue.analysis.registry — pure function coverage."""
 
 from __future__ import annotations
 
@@ -7,17 +7,16 @@ from typing import Any, cast
 
 import pytest
 
-from polylogue.archive.semantic.pricing import CostUsagePayload
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     CostRollupInsight,
     SessionProfileInsight,
     SessionProfileInsightQuery,
 )
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive_models import (
     ArchiveInsightProvenance,
 )
-from polylogue.insights.registry import (
+from polylogue.analysis.registry import (
     INSIGHT_REGISTRY,
     InsightQueryError,
     InsightType,
@@ -36,6 +35,7 @@ from polylogue.insights.registry import (
     register,
     render_insight_items,
 )
+from polylogue.archive.semantic.pricing import CostUsagePayload
 
 
 class TestInsightItemsPayload:

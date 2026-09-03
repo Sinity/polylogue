@@ -11,6 +11,13 @@ below fail against this same real projection.
 
 from __future__ import annotations
 
+from polylogue.analysis.incident_evidence_materialization import (
+    incident_corpus_snapshot_ref,
+    materialize_incident_evidence_graph,
+    summarize_incident_graph,
+)
+from polylogue.analysis.transforms import compile_session_run_projection
+from polylogue.analysis.work_evidence import WorkEvidenceGraph
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
@@ -18,13 +25,6 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.refs import ObjectRef
 from polylogue.core.types import SessionId
-from polylogue.insights.incident_evidence_materialization import (
-    incident_corpus_snapshot_ref,
-    materialize_incident_evidence_graph,
-    summarize_incident_graph,
-)
-from polylogue.insights.transforms import compile_session_run_projection
-from polylogue.insights.work_evidence import WorkEvidenceGraph
 
 
 def _incident_session() -> Session:

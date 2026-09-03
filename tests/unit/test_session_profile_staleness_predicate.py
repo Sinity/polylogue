@@ -15,7 +15,7 @@ rebuilds, depending on which path ran first.
 
 Both paths now compose their staleness check from the single
 ``session_profile_stale_predicate`` builder in
-``polylogue/storage/insights/session/runtime.py``. This test proves the fix
+``polylogue/storage/derived/session/runtime.py``. This test proves the fix
 two ways: (1) a fixture with ``sort_key_ms IS NULL`` and a nonzero cached
 ``source_sort_key`` is classified *identically* (both "fresh") by the real
 convergence path (``convergence_stages._stale_session_profile_ids``) and the
@@ -34,7 +34,7 @@ from types import SimpleNamespace
 
 import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.storage.repair as repair
-from polylogue.storage.insights.session.runtime import (
+from polylogue.storage.derived.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -105,7 +105,7 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
         # exact NULL/NULL match). Every non-child session gets a "thread" stamp
         # in production (``_materialize_thread_spine_sync`` stamps it for every
         # member of the session's own singleton-or-larger thread, root included
-        # -- see ``polylogue/storage/insights/session/rebuild.py``), so leaving
+        # -- see ``polylogue/storage/derived/session/rebuild.py``), so leaving
         # it unstamped here is a fixture gap, not a real "timeless session
         # never gets threaded" scenario: it left repair's generic per-type
         # ``NOT EXISTS`` check in ``_targeted_session_insight_rebuild_ids``

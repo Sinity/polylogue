@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from polylogue.core.enums import ComparativeVerdict
-from polylogue.insights.judgment.comparative import (
+from polylogue.analysis.judgment.comparative import (
     build_comparative_judgment,
     comparative_judgment_from_value,
     comparative_judgment_to_value,
 )
-from polylogue.insights.judgment.types import JudgeIdentity
+from polylogue.analysis.judgment.types import JudgeIdentity
+from polylogue.core.enums import ComparativeVerdict
 
 _JUDGE = JudgeIdentity(actor_ref="agent:claude-sonnet-5", execution_context_id="ctx-hash-abc")
 

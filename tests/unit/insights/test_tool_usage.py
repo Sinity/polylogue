@@ -24,8 +24,8 @@ from typing import cast
 import pytest
 
 from polylogue import Polylogue
-from polylogue.insights.archive import ArchiveCoverageInsightQuery
-from polylogue.insights.tool_usage import (
+from polylogue.analysis.archive import ArchiveCoverageInsightQuery
+from polylogue.analysis.tool_usage import (
     TOOL_USAGE_INSIGHT_VERSION,
     ToolUsageInsight,
     ToolUsageInsightQuery,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.analysis.judgment.comparative import build_comparative_judgment
+from polylogue.analysis.judgment.types import JudgeIdentity
 from polylogue.core.enums import AssertionKind, AssertionStatus, ComparativeVerdict
-from polylogue.insights.judgment.comparative import build_comparative_judgment
-from polylogue.insights.judgment.types import JudgeIdentity
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     judge_assertion_candidate,
     list_assertion_claims,

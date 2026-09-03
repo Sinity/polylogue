@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import pytest
 
+from polylogue.analysis.transforms import SessionReportPreset, compile_session_digest, render_session_report
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.insights.transforms import SessionReportPreset, compile_session_digest, render_session_report
 from tests.benchmarks.helpers import BenchmarkFixture
 
 

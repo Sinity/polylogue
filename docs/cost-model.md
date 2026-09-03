@@ -19,7 +19,7 @@ Cost flows through four substrate-owned stages:
    (`polylogue/archive/semantic/pricing.py`).
 2. **Materialize** — the estimate is folded into the typed
    `SessionCostInsight` and `CostRollupInsight` payloads
-   (`polylogue/insights/archive.py`).
+   (`polylogue/analysis/archive.py`).
 3. **Aggregate** — session-cost insights are folded to per-day USD usage
    for the current billing cycle
    (`polylogue/cost/aggregation.py`).

@@ -386,7 +386,7 @@ async def parse_sources_archive(
     index_rows_written = counters["index_rows"]
     if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
         try:
-            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
             workflow_summary = materialize_claude_workflow_archive(archive_root)
             result.batch_observations.append(

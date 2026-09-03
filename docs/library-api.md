@@ -56,7 +56,7 @@ Durable archive insights are public too:
 
 ```python
 from polylogue import Polylogue
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     SessionLatencyProfileInsightQuery,

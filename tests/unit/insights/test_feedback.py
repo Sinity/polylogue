@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.feedback import (
+from polylogue.analysis.feedback import (
     CorrectionKind,
     LearningCorrection,
     UnknownCorrectionKindError,
@@ -143,7 +143,7 @@ class TestFeedbackStorage:
         del workspace_env
         await _seed_session(storage_repository, "conv-A")
 
-        from polylogue.storage.insights.feedback import (
+        from polylogue.storage.derived.feedback import (
             clear_corrections,
             list_corrections,
             upsert_correction,
@@ -176,7 +176,7 @@ class TestFeedbackStorage:
         del workspace_env
         await _seed_session(storage_repository, "conv-B")
 
-        from polylogue.storage.insights.feedback import (
+        from polylogue.storage.derived.feedback import (
             list_corrections,
             upsert_correction,
         )
@@ -209,7 +209,7 @@ class TestFeedbackStorage:
         del workspace_env
         await _seed_session(storage_repository, "conv-lifecycle")
 
-        from polylogue.storage.insights.feedback import upsert_correction
+        from polylogue.storage.derived.feedback import upsert_correction
         from polylogue.storage.sqlite.archive_tiers.user_write import (
             ASSERTION_DEFAULT_AUTHOR_KIND,
             ASSERTION_DEFAULT_AUTHOR_REF,
@@ -260,7 +260,7 @@ class TestFeedbackStorage:
         del workspace_env
         await _seed_session(storage_repository, "conv-flat")
 
-        from polylogue.storage.insights.feedback import list_corrections
+        from polylogue.storage.derived.feedback import list_corrections
 
         async with storage_repository.backend.connection() as conn:
             await conn.execute(
@@ -302,7 +302,7 @@ class TestFeedbackStorage:
         original_hash = await _read_content_hash(storage_repository, session_id)
         assert original_hash is not None and len(original_hash) > 0
 
-        from polylogue.storage.insights.feedback import (
+        from polylogue.storage.derived.feedback import (
             clear_corrections,
             upsert_correction,
         )
@@ -331,7 +331,7 @@ class TestFeedbackStorage:
         del workspace_env
         await _seed_session(storage_repository, "conv-D")
 
-        from polylogue.storage.insights.feedback import (
+        from polylogue.storage.derived.feedback import (
             list_corrections,
             upsert_correction,
         )

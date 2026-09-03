@@ -48,10 +48,10 @@ from polylogue.pipeline.ids import session_content_hash, session_revision_projec
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.insights.session.repair_assessment import (
+from polylogue.storage.derived.session.repair_assessment import (
     assess_session_insight_repairs,
 )
-from polylogue.storage.insights.session.runtime import (
+from polylogue.storage.derived.session.runtime import (
     SESSION_INSIGHT_MATERIALIZATION_TYPES,
     session_profile_stale_predicate,
 )
@@ -88,7 +88,7 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
-    # ``polylogue.insights.archive``) imports this module -- a real,
+    # ``polylogue.analysis.archive``) imports this module -- a real,
     # not merely lint-flagged, circular import at module load time. This
     # type is only ever passed through here (constructed and populated by
     # ``polylogue.daemon.parse_prefetch``), never constructed, so a
@@ -6231,7 +6231,7 @@ def repair_session_insights(
     clearing the active daemon's debt ledger.
     """
     from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.insights.session.rebuild import (
+    from polylogue.storage.derived.session.rebuild import (
         rebuild_archive_session_insights,
         refresh_session_insight_aggregates_sync,
     )

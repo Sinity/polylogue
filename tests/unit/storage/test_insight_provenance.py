@@ -7,7 +7,7 @@ Every materialized insight row must record:
 - ``input_row_count``: number of source rows that produced the insight.
 
 These contracts let downstream readers reason about staleness without
-re-deriving the comparison logic. See ``polylogue/insights/provenance.py``.
+re-deriving the comparison logic. See ``polylogue/analysis/provenance.py``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.provenance import HasProvenance, is_stale
+from polylogue.analysis.provenance import HasProvenance, is_stale
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 

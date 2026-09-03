@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
 from polylogue.core.refs import ObjectRef
-from polylogue.insights.delegation_work_evidence import materialize_delegation_work_evidence_graph
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveDelegationQueryRow
 
 SNAPSHOT = ObjectRef(kind="context-snapshot", object_id="corpus:delegation-2026-07-27")

@@ -24,6 +24,70 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
+from polylogue.analysis.affordance_usage import (
+    clean_patterns as _clean_affordance_patterns,
+)
+from polylogue.analysis.affordance_usage import (
+    evidence_kind_for_row as _affordance_evidence_kind,
+)
+from polylogue.analysis.affordance_usage import (
+    family_for_text as _affordance_family_for_text,
+)
+from polylogue.analysis.affordance_usage import (
+    like_param as _affordance_like_param,
+)
+from polylogue.analysis.affordance_usage import (
+    matched_by_row as _affordance_matched_by,
+)
+from polylogue.analysis.affordance_usage import (
+    normalized_tool_name_for_row as _affordance_normalized_tool_name,
+)
+from polylogue.analysis.archive import (
+    ArchiveCoverageInsight,
+    ArchiveDebtInsight,
+    ArchiveEnrichmentProvenance,
+    ArchiveInferenceProvenance,
+    ArchiveInsightProvenance,
+    CostRollupInsight,
+    SessionCostInsight,
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    SessionLatencyProfileInsight,
+    SessionLatencyProfilePayload,
+    SessionPhaseEvidencePayload,
+    SessionPhaseInsight,
+    SessionProfileInsight,
+    SessionTagRollupInsight,
+    SessionWorkEventInsight,
+    ThreadInsight,
+    UsageTimelineInsight,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
+from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
+from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.analysis.confidence import ConfidenceBand
+from polylogue.analysis.confidence import from_score as confidence_from_score
+from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.objective_posture import structural_objective_posture
+from polylogue.analysis.readiness import (
+    InsightOriginCoverage,
+    InsightReadinessEntry,
+    InsightReadinessQuery,
+    InsightReadinessReport,
+    InsightReadinessVerdict,
+    InsightStorageArtifact,
+    InsightVersionCoverage,
+    known_insight_readiness_names,
+    normalize_insight_readiness_name,
+)
+from polylogue.analysis.rigor import list_rigor_contracts
+from polylogue.analysis.session_label import session_structural_label_for_session
+from polylogue.analysis.temporal_source import time_confidence_for_source
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
@@ -58,74 +122,16 @@ from polylogue.core.json import require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
-from polylogue.insights.affordance_usage import (
-    clean_patterns as _clean_affordance_patterns,
-)
-from polylogue.insights.affordance_usage import (
-    evidence_kind_for_row as _affordance_evidence_kind,
-)
-from polylogue.insights.affordance_usage import (
-    family_for_text as _affordance_family_for_text,
-)
-from polylogue.insights.affordance_usage import (
-    like_param as _affordance_like_param,
-)
-from polylogue.insights.affordance_usage import (
-    matched_by_row as _affordance_matched_by,
-)
-from polylogue.insights.affordance_usage import (
-    normalized_tool_name_for_row as _affordance_normalized_tool_name,
-)
-from polylogue.insights.archive import (
-    ArchiveCoverageInsight,
-    ArchiveDebtInsight,
-    ArchiveEnrichmentProvenance,
-    ArchiveInferenceProvenance,
-    ArchiveInsightProvenance,
-    CostRollupInsight,
-    SessionCostInsight,
-    SessionEnrichmentPayload,
-    SessionEvidencePayload,
-    SessionInferencePayload,
-    SessionLatencyProfileInsight,
-    SessionLatencyProfilePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInsight,
-    SessionProfileInsight,
-    SessionTagRollupInsight,
-    SessionWorkEventInsight,
-    ThreadInsight,
-    UsageTimelineInsight,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
-)
-from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
-from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.insights.confidence import ConfidenceBand
-from polylogue.insights.confidence import from_score as confidence_from_score
-from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
-from polylogue.insights.objective_posture import structural_objective_posture
-from polylogue.insights.readiness import (
-    InsightOriginCoverage,
-    InsightReadinessEntry,
-    InsightReadinessQuery,
-    InsightReadinessReport,
-    InsightReadinessVerdict,
-    InsightStorageArtifact,
-    InsightVersionCoverage,
-    known_insight_readiness_names,
-    normalize_insight_readiness_name,
-)
-from polylogue.insights.rigor import list_rigor_contracts
-from polylogue.insights.session_label import session_structural_label_for_session
-from polylogue.insights.temporal_source import time_confidence_for_source
-from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import Heartbeat, PreparedBlob
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.session.runtime import (
+    SESSION_INSIGHT_MATERIALIZATION_TYPES,
+    SessionInsightStatusSnapshot,
+)
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -133,12 +139,6 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.insights.session.records import SessionProfileRecord
-from polylogue.storage.insights.session.runtime import (
-    SESSION_INSIGHT_MATERIALIZATION_TYPES,
-    SessionInsightStatusSnapshot,
-)
-from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -8299,7 +8299,7 @@ def _session_latency_profile_from_archive_row(
     tool_counts = _latency_tool_category_counts(conn, session_id)
     materialization = _read_archive_materialization(conn, "latency", session_id)
     # Tool latency facts are materialized into session_latency_profiles by
-    # storage/insights/session/latency_profiles.py, which derives stuck_tool_count
+    # storage/derived/session/latency_profiles.py, which derives stuck_tool_count
     # from unpaired tool-start events. Read them rather than reporting zeros: the
     # stuck_sessions projection filters on `stuck_tool_count > 0`, so zeroing here
     # makes that projection unable to return any row at all.

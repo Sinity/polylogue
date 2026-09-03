@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.pathology import (
+from polylogue.analysis.pathology import (
     PATHOLOGY_DETECTOR_VERSION,
     compile_pathology_report,
     detect_session_pathologies,
 )
-from polylogue.insights.run_projection import (
+from polylogue.analysis.run_projection import (
     ContextBoundary,
     ContextInheritanceMode,
     ContextSnapshot,
@@ -19,6 +18,7 @@ from polylogue.insights.run_projection import (
     ProjectedRun,
     RunProjection,
 )
+from polylogue.core.refs import EvidenceRef, ObjectRef
 
 
 def _ev(session_id: str = "s1") -> tuple[EvidenceRef, ...]:

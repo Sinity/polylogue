@@ -6,7 +6,7 @@ import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from polylogue.insights.registry import InsightType
+from polylogue.analysis.registry import InsightType
 from polylogue.mcp.query_contracts import MCPToolLimit, MCPToolOffset
 
 

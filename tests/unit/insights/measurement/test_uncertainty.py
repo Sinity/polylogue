@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.measurement.uncertainty import (
+from polylogue.analysis.measurement.uncertainty import (
     UncertaintyRefusalError,
     bootstrap_interval,
     resolve_uncertainty,

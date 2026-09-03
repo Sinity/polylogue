@@ -16,10 +16,10 @@ from typing import Literal, cast
 
 from pydantic import Field, model_validator
 
+from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
 from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
 from polylogue.core.refs import EvidenceRef, ExecutionContextRef, ObjectRef
-from polylogue.insights.archive_models import ArchiveInsightModel
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
 from polylogue.surfaces.compaction import estimate_tokens
 from polylogue.surfaces.projection_spec import QueryProjectionSpec

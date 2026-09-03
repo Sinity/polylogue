@@ -288,7 +288,7 @@ async def ingest_sources(
     if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
         t0 = time.perf_counter()
         try:
-            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
             summary = await asyncio.to_thread(materialize_claude_workflow_archive, service.archive_root)
             workflow_diagnostics = summary.as_dict()

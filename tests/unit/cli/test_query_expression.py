@@ -93,7 +93,7 @@ def _materialize_run_projection(index_db: Path) -> None:
     (polylogue-dab) and need no materialization; this only exercises that a
     rebuild alongside a source-derived query doesn't interfere with it.
     """
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
     from polylogue.storage.sqlite.connection import open_connection
 
     with open_connection(index_db) as conn:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.measurement.alert_budget import (
+from polylogue.analysis.measurement.alert_budget import (
     AlertBudgetPolicy,
     AlertBudgetState,
     AlertCandidate,

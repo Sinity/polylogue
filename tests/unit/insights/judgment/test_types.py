@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.enums import ComparativeVerdict
-from polylogue.core.refs import ActorRef, ExecutionContextRef
-from polylogue.insights.judgment.types import (
+from polylogue.analysis.judgment.types import (
     NON_DIRECTED_VERDICTS,
     ComparativeJudgment,
     JudgeIdentity,
@@ -14,6 +12,8 @@ from polylogue.insights.judgment.types import (
     decompose_to_pairwise,
     undirected_pair_kind,
 )
+from polylogue.core.enums import ComparativeVerdict
+from polylogue.core.refs import ActorRef, ExecutionContextRef
 
 _JUDGE = JudgeIdentity(actor_ref="user:local", execution_context_id="ctx-1")
 

@@ -11,9 +11,9 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights import rigor as rigor_mod
-from polylogue.insights.registry import INSIGHT_REGISTRY
-from polylogue.insights.rigor import (
+from polylogue.analysis import rigor as rigor_mod
+from polylogue.analysis.registry import INSIGHT_REGISTRY
+from polylogue.analysis.rigor import (
     RIGOR_EXEMPT,
     invalid_nullable_field_contracts,
     missing_numeric_field_coverage,

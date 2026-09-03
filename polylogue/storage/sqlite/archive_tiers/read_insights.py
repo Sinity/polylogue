@@ -11,12 +11,12 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from polylogue.analysis.archive import ArchiveCoverageInsight
+from polylogue.analysis.archive_models import ArchiveInsightProvenance
+from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.archive.query.spec import parse_query_date
-from polylogue.insights.archive import ArchiveCoverageInsight
-from polylogue.insights.archive_models import ArchiveInsightProvenance
-from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery, build_command_shape_usage
-from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery, build_tool_usage_insight
 from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _ACTION_FOLLOWUP_RELATION_SQL
 from polylogue.storage.sqlite.queries.tool_usage import ToolUsageOriginCoverageRow, ToolUsageRow
 

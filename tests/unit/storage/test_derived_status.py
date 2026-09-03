@@ -41,7 +41,7 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.storage.derived import derived_status as derived_status_mod
-    from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+    from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 
     conn = sqlite3.connect(":memory:")
     snapshot = SessionInsightStatusSnapshot(

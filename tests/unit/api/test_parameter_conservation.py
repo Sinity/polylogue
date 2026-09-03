@@ -25,10 +25,7 @@ import pytest
 from pydantic import BaseModel
 
 from polylogue import Polylogue
-from polylogue.api import archive as archive_api
-from polylogue.api import insights as insights_api
-from polylogue.core.enums import Origin
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     CostRollupInsightQuery,
@@ -41,9 +38,12 @@ from polylogue.insights.archive import (
     ThreadInsightQuery,
     UsageTimelineInsightQuery,
 )
-from polylogue.insights.audit import InsightRigorAuditQuery
-from polylogue.insights.readiness import InsightReadinessQuery
-from polylogue.insights.tool_usage import ToolUsageInsightQuery
+from polylogue.analysis.audit import InsightRigorAuditQuery
+from polylogue.analysis.readiness import InsightReadinessQuery
+from polylogue.analysis.tool_usage import ToolUsageInsightQuery
+from polylogue.api import archive as archive_api
+from polylogue.api import insights as insights_api
+from polylogue.core.enums import Origin
 
 
 @dataclass(frozen=True)

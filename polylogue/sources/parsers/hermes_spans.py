@@ -92,7 +92,7 @@ assumed. Read-side correlation by the shared Hermes session id remains
 possible today via :func:`hermes_atif_session_id_for` /
 :func:`hermes_atof_session_id_for`, and is composed across every Hermes
 artifact class (conversational, ATIF, ATOF, verification ledger) by
-``polylogue.insights.hermes_topology_projection.project_hermes_topology``.
+``polylogue.analysis.hermes_topology_projection.project_hermes_topology``.
 
 TOPOLOGY PROJECTION FIX (polylogue-fs1.14): the raw Hermes session id alone
 is not a safe archive join key -- two separate Hermes installs (profiles)
@@ -156,7 +156,7 @@ Hermes session retains two independent, non-colliding archive rows. Read-side
 correlation across every Hermes artifact class for one raw session id
 (conversational state.db session, ATIF, ATOF, verification ledger) is
 composed without any physical merge by
-``polylogue.insights.hermes_topology_projection.project_hermes_topology``,
+``polylogue.analysis.hermes_topology_projection.project_hermes_topology``,
 which also renders an unpaired ATIF/ATOF trace and a conflicting
 producer-reported subagent identity as explicit, visible evidence rather than
 silently picking one side.

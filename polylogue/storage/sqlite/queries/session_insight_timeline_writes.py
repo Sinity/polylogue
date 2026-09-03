@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import aiosqlite
 
-from polylogue.storage.insights.session.storage import (
+from polylogue.storage.derived.session.storage import (
     session_phase_insert_columns,
     session_phase_insert_values,
     session_work_event_insert_columns,

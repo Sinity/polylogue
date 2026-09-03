@@ -9,23 +9,23 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-import polylogue.storage.insights.session.rebuild as rebuild_mod
-import polylogue.storage.insights.session.refresh as refresh_mod
+import polylogue.storage.derived.session.rebuild as rebuild_mod
+import polylogue.storage.derived.session.refresh as refresh_mod
 from polylogue.daemon import cli as daemon_cli
 from polylogue.operations.archive_debt import archive_debt_list
-from polylogue.storage.insights.session.aggregates import refresh_async_provider_day_aggregates
-from polylogue.storage.insights.session.rebuild import (
+from polylogue.storage.derived.session.aggregates import refresh_async_provider_day_aggregates
+from polylogue.storage.derived.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
     _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
     load_sync_batch,
     rebuild_session_insights_sync,
 )
-from polylogue.storage.insights.session.refresh import (
+from polylogue.storage.derived.session.refresh import (
     _apply_session_insight_session_updates_async,
     _refresh_thread_roots_async,
     refresh_session_insights_for_session_async,
 )
-from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
+from polylogue.storage.derived.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root

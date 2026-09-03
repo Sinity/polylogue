@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from polylogue.insights.authored_payloads import PayloadDict
+from polylogue.analysis.authored_payloads import PayloadDict
 
 from .assertions import AssertionSpec
 from .execution import ExecutionSpec

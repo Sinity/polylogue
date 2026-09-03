@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from polylogue import Polylogue
+from polylogue.analysis.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
 from polylogue.core.enums import MaterialOrigin
-from polylogue.insights.archive import ArchiveCoverageInsight, ArchiveCoverageInsightQuery
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.storage_records import SessionBuilder
 

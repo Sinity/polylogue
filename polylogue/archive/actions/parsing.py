@@ -87,7 +87,7 @@ def tool_result_outcome(is_error: int | None, exit_code: int | None) -> ToolResu
     most origins it is the expected, honest outcome, not a gap.
 
     This is the single canonical implementation of the exit_code/is_error
-    precedence rule; :func:`polylogue.insights.transforms._tool_status`
+    precedence rule; :func:`polylogue.analysis.transforms._tool_status`
     delegates to it to avoid two independently-maintained copies drifting.
     """
 

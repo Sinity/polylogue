@@ -11,20 +11,20 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-from polylogue.cli.commands import insights as insights_module
-from polylogue.insights.export_bundles import (
+from polylogue.analysis.export_bundles import (
     InsightExportBundleError,
     InsightExportBundleManifest,
     InsightExportBundleResult,
     InsightExportFileSummary,
 )
-from polylogue.insights.readiness import (
+from polylogue.analysis.readiness import (
     InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessReport,
     InsightVersionCoverage,
 )
-from polylogue.insights.registry import CliOption, InsightQueryError, InsightType, get_insight_type
+from polylogue.analysis.registry import CliOption, InsightQueryError, InsightType, get_insight_type
+from polylogue.cli.commands import insights as insights_module
 
 
 def _root_context(

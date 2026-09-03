@@ -8,10 +8,7 @@ from typing import cast
 import pytest
 
 from polylogue import Polylogue
-from polylogue.api import ArchiveStats
-from polylogue.archive.message.roles import Role
-from polylogue.config import Config
-from polylogue.insights.archive import (
+from polylogue.analysis.archive import (
     ArchiveCoverageInsightQuery,
     ArchiveDebtInsightQuery,
     CostRollupInsightQuery,
@@ -21,6 +18,9 @@ from polylogue.insights.archive import (
     SessionTagRollupQuery,
     ThreadInsightQuery,
 )
+from polylogue.api import ArchiveStats
+from polylogue.archive.message.roles import Role
+from polylogue.config import Config
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.builders import make_conv, make_msg
 from tests.infra.storage_records import SessionBuilder

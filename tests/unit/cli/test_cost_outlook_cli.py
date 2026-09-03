@@ -203,7 +203,7 @@ class TestCostOutlookPlainContract:
         """A deadline-exceeding run must warn in plain output, not silently render (polylogue-duti)."""
         with (
             patch("polylogue.api.Polylogue") as mock_cls,
-            patch("polylogue.insights.projection_contracts.budget_exceeded", return_value=True),
+            patch("polylogue.analysis.projection_contracts.budget_exceeded", return_value=True),
         ):
             poly = mock_cls.return_value
             poly.__aenter__ = AsyncMock(return_value=poly)

@@ -7,6 +7,10 @@ from dataclasses import dataclass, replace
 
 import aiosqlite
 
+from polylogue.storage.derived.session.status import (
+    session_insight_status_async,
+    session_insight_status_sync,
+)
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.sql import (
     DIMENSION_COUNTS_SQL,
@@ -33,10 +37,6 @@ from polylogue.storage.embeddings.support import (
     optional_rows_sync,
     table_exists_async_missing_safe,
     table_exists_sync_missing_safe,
-)
-from polylogue.storage.insights.session.status import (
-    session_insight_status_async,
-    session_insight_status_sync,
 )
 from polylogue.storage.search_providers.sqlite_vec_support import (
     ESTIMATED_TOKENS_PER_MESSAGE,

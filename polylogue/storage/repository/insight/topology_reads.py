@@ -1,7 +1,7 @@
 """Session-topology read mixin for the repository facade.
 
 Exposes the lineage graph derived in
-:mod:`polylogue.storage.insights.topology` through a single async entry
+:mod:`polylogue.storage.derived.topology` through a single async entry
 point. Surface adapters (MCP ``get_session_tree``, future reader panes,
 context image/bundle projections) compose this rather than re-walking parent
 pointers.
@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.insights.topology import SessionTopology
-from polylogue.storage.insights.topology import derive_session_topology_async
+from polylogue.analysis.topology import SessionTopology
+from polylogue.storage.derived.topology import derive_session_topology_async
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
