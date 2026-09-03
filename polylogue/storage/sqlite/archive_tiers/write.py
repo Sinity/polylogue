@@ -2645,6 +2645,41 @@ def _block_structural_keys(rows: list[tuple[object, ...]], b_idx: dict[str, int]
     return keys
 
 
+#: One tool result's outcome, spread across a canonical column and its legacy
+#: compatibility fields. They describe a single verdict, so a merge takes them
+#: from one row together: coalescing them independently can pair a fresh
+#: ``tool_outcome`` with a stale ``is_error``/``exit_code`` that contradicts it.
+_TOOL_VERDICT_COLUMNS = (
+    "tool_outcome",
+    "tool_result_is_error",
+    "tool_result_exit_code",
+    "tool_result_outcome_unknown_reason",
+)
+
+
+def _expresses_tool_verdict(row: tuple[object, ...], b_idx: dict[str, int]) -> bool:
+    """Report whether a row states a tool outcome at all."""
+    if row[b_idx["tool_outcome"]] is not None:
+        return True
+    # A row written before tool_outcome existed states its verdict only
+    # through the legacy pair.
+    return row[b_idx["tool_result_is_error"]] is not None or row[b_idx["tool_result_exit_code"]] is not None
+
+
+def _apply_tool_verdict(
+    merged_values: list[object],
+    new_row: tuple[object, ...],
+    old_row: tuple[object, ...],
+    b_idx: dict[str, int],
+) -> None:
+    """Copy one row's whole tool verdict into the merged row."""
+    source = new_row if _expresses_tool_verdict(new_row, b_idx) else old_row
+    for col_name in _TOOL_VERDICT_COLUMNS:
+        idx = b_idx.get(col_name)
+        if idx is not None:
+            merged_values[idx] = source[idx]
+
+
 def _coalesce_block_row(
     new_row: tuple[object, ...],
     old_row: tuple[object, ...],
@@ -2661,6 +2696,8 @@ def _coalesce_block_row(
     for col_name, idx in b_idx.items():
         if col_name in ("message_id", "session_id", "position", "content_hash"):
             continue
+        if col_name in _TOOL_VERDICT_COLUMNS:
+            continue  # taken as one verdict below
         if col_name == "tool_input":
             new_raw = cast("str | None", new_row[idx])
             old_raw = cast("str | None", old_row[idx])
@@ -2670,6 +2707,7 @@ def _coalesce_block_row(
             merged_values[idx] = _json_dumps(merged_json) if merged_json is not None else None
         else:
             merged_values[idx] = _coalesce_scalar(new_row[idx], old_row[idx])
+    _apply_tool_verdict(merged_values, new_row, old_row, b_idx)
     is_error_value = merged_values[b_idx["tool_result_is_error"]]
     merged_values[b_idx["content_hash"]] = _block_content_hash(
         block_type=cast(str, merged_values[b_idx["block_type"]]),
@@ -4680,6 +4718,22 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
         )
 
 
+def _projected_session_kind(conn: sqlite3.Connection, session_id: str, branch_type: object) -> str | None:
+    """Re-derive the stored session kind from the branch type being projected.
+
+    Admission derives the kind from parser evidence alone, but a subagent
+    child is often only discovered later, from hook evidence resolved into
+    ``session_links``. That evidence refreshes ``branch_type`` here, so the
+    kind must follow it or the session stays PRIMARY forever. Kinds that are
+    not branch-derived (prompt suggestions, temporary sessions) are preserved
+    by ``admitted_session_kind`` itself.
+    """
+    row = conn.execute("SELECT session_kind FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None:
+        return None
+    return admitted_session_kind(row[0], branch_type=cast("str | None", branch_type)).value
+
+
 def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
     if session_id in seen:
         return
@@ -4720,10 +4774,11 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
             UPDATE sessions
             SET parent_session_id = NULL,
                 root_session_id = session_id,
-                branch_type = ?
+                branch_type = ?,
+                session_kind = ?
             WHERE session_id = ?
             """,
-            (branch_type, session_id),
+            (branch_type, _projected_session_kind(conn, session_id, branch_type), session_id),
         )
         return
 
@@ -4738,15 +4793,23 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         (parent_session_id,),
     ).fetchone()
     parent_root_id = str(parent_root_row[0]) if parent_root_row is not None else parent_session_id
+    projected_branch_type = _branch_type_from_link_type(parent_link[1])
     conn.execute(
         """
         UPDATE sessions
         SET parent_session_id = ?,
             root_session_id = ?,
-            branch_type = ?
+            branch_type = ?,
+            session_kind = ?
         WHERE session_id = ?
         """,
-        (parent_session_id, parent_root_id, _branch_type_from_link_type(parent_link[1]), session_id),
+        (
+            parent_session_id,
+            parent_root_id,
+            projected_branch_type,
+            _projected_session_kind(conn, session_id, projected_branch_type),
+            session_id,
+        ),
     )
 
 
