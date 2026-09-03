@@ -789,6 +789,7 @@ def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.Mon
     assert not receipt.complete
 
 
+@pytest.mark.timeout(600)  # subject is a full-catalog build (~20s quiet, more under corpus contention)
 def test_support_receipt_is_deterministic() -> None:
     # One side is the shared build, the other is fresh: two builds of the same
     # catalog must agree, and only one of them has to be paid for here.
