@@ -1379,7 +1379,12 @@ def _drain_raw_materialization_once(
     """
     from polylogue.paths import archive_root
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
 
+    # A Codex state snapshot admitted without its terminal receipt is an
+    # incomparable cursor row to the gate below, and every route that could
+    # finalize it sits behind that gate; finalize from the retained blob first.
+    resolve_retained_codex_state_receipts(archive_root())
     if reason := raw_frontier_source_selection_block_reason(archive_root()):
         raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
 
