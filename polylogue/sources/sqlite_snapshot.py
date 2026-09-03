@@ -17,7 +17,7 @@ from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_l
 from polylogue.storage.blob_store import BlobStore, Heartbeat
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
-_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _STAGING_METADATA_SUFFIX = ".polylogue-import"
 _STAGING_METADATA_VERSION = 1
 _HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v1\0"

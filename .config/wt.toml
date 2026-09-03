@@ -5,10 +5,12 @@
 # lockfile pins the package set, and the interpreter must match it exactly or
 # testmon records a different environment and re-executes everything.
 [[pre-start]]
-venv = "uv sync --extra dev --frozen --python \"$(readlink -f {{ primary_worktree_path }}/.venv/bin/python)\""
+venv = "uv sync --extra dev --frozen --python \"$(readlink -f \"{{ primary_worktree_path }}/.venv/bin/python\")\""
 
 # The testmon graph is keyed by content and repo-relative path, so the
-# primary checkout's datafile is valid here as soon as it is copied; the
-# provision check discards a copy the installed testmon would not read.
+# primary checkout's datafile is valid here as soon as it is snapshotted. The
+# snapshot goes through SQLite's backup API because a concurrent run may be
+# writing the source; the provision check then discards a datafile the
+# installed testmon would not read.
 [[pre-start]]
-seed = "mkdir -p .cache/testmon && cp -f {{ primary_worktree_path }}/.cache/testmon/testmondata .cache/testmon/testmondata 2>/dev/null; .venv/bin/python -m devtools.testmon_provision"
+seed = ".venv/bin/python -m devtools.testmon_provision --seed \"{{ primary_worktree_path }}/.cache/testmon/testmondata\""

@@ -281,9 +281,9 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
         "/v1/capture-jobs/{job_id}/events",
         "capture_job_event_read",
         "bearer_if_configured",
-        "provider + account_scope + client_protocol + optional limit",
+        "provider + account_scope + client_protocol + optional limit + optional before_revision",
         "CaptureJobEvent page v1 | BrowserCaptureErrorPayload",
-        "Reads the receiver-ordered event projection with a bounded page.",
+        "Reads the newest bounded page of the receiver-ordered event projection, oldest-ward by cursor.",
     ),
     BrowserCaptureRouteContract(
         "POST",

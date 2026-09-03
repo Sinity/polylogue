@@ -441,7 +441,7 @@ class CaptureJobRegistry:
                     (job_id,),
                 ).fetchall()
             ]
-            events = read_capture_job_events(connection, job_id, 500)
+            events, _cursor = read_capture_job_events(connection, job_id, 500)
             lifecycle = read_capture_job_retention(connection, job_id)
             return {
                 "job": self._summary(row),
@@ -583,20 +583,23 @@ class CaptureJobRegistry:
         limit = body.get("limit", 100)
         if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 500:
             raise CaptureJobError(400, "invalid_event_limit")
+        before_revision = body.get("before_revision")
+        if before_revision is not None and (
+            not isinstance(before_revision, int) or isinstance(before_revision, bool) or before_revision < 0
+        ):
+            raise CaptureJobError(400, "invalid_event_cursor")
         with self._connection() as connection:
             connection.execute("BEGIN")
             self._require_scoped(
                 connection, job_id, body.get("provider"), body.get("account_scope"), body.get("client_protocol")
             )
-            events = read_capture_job_events(connection, job_id, limit)
-            total = connection.execute("SELECT COUNT(*) FROM capture_job_events WHERE job_id=?", (job_id,)).fetchone()[
-                0
-            ]
+            events, next_cursor = read_capture_job_events(connection, job_id, limit, before_revision)
             return {
                 "events": events,
                 "timelines": project_capture_job_timelines(events),
                 "limit": limit,
-                "has_more": total > limit,
+                "has_more": next_cursor is not None,
+                "next_before_revision": next_cursor,
             }
 
     def _proof(self, job_id: str, lease: dict[str, object]) -> str:
@@ -658,6 +661,38 @@ class CaptureJobRegistry:
             next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
             return {"job": self._summary(next_row), "lease": {**next_lease, "proof": self._proof(job_id, next_lease)}}
 
+    @staticmethod
+    def _retention_after_retry(
+        connection: sqlite3.Connection,
+        job_id: str,
+        current: dict[str, object],
+        next_retry: dict[str, object],
+    ) -> dict[str, object]:
+        """Retire a job that just reached a terminal retry state.
+
+        Clients drive retry to ``completed``/``abandoned`` and never send a
+        retention object, so without this the receiver's own creation default
+        is the only retention any job ever holds and housekeeping collects
+        nothing. A job that a client has already spoken for keeps what it
+        declared. Authoritativeness is read from the evidence that defines it:
+        a job still holding conversation-bearing timeline events is the record
+        of those conversations and outlives its retry state.
+        """
+        if next_retry.get("state") not in {"completed", "abandoned"}:
+            return current
+        if current != {"state": "active", "hold_reason": None, "timeline_authoritative": True}:
+            return current
+        timeline_events = connection.execute(
+            "SELECT COUNT(*) FROM capture_job_events "
+            "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
+            (job_id,),
+        ).fetchone()[0]
+        return {
+            "state": "eligible",
+            "hold_reason": None,
+            "timeline_authoritative": bool(timeline_events),
+        }
+
     def update(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         request_id = body.get("request_id")
         if not isinstance(request_id, str) or not request_id:
@@ -686,6 +721,14 @@ class CaptureJobRegistry:
         if retry is None and ttl is None and retention is None:
             raise CaptureJobError(400, "empty_capture_job_update")
         request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl, "retention": retention})
+        # Retention joined the digest after update receipts were already
+        # durable. A retry/TTL-only request replayed against a receipt written
+        # before that recomputes a different digest, so its stored shape stays
+        # an accepted match. A retention-bearing request has no legacy shape
+        # and can only match the current digest.
+        legacy_digest = (
+            canonical_digest({"retry": retry, "lease_ttl_seconds": ttl}) if retention is None else request_digest
+        )
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
@@ -697,7 +740,9 @@ class CaptureJobRegistry:
                 (job_id, request_id),
             ).fetchone()
             if existing:
-                if not hmac.compare_digest(existing["request_digest"], request_digest):
+                if not hmac.compare_digest(existing["request_digest"], request_digest) and not hmac.compare_digest(
+                    existing["request_digest"], legacy_digest
+                ):
                     raise CaptureJobError(409, "request_id_conflict")
                 return {"job": self._summary(row), "receipt": json.loads(existing["receipt_json"]), "duplicate": True}
             if body.get("expected_revision") != row["revision"]:
@@ -705,7 +750,7 @@ class CaptureJobRegistry:
             current_retry = json.loads(row["retry_json"])
             current_retention = json.loads(row["retention_json"])
             next_retry = retry or current_retry
-            next_retention = retention or current_retention
+            next_retention = retention or self._retention_after_retry(connection, job_id, current_retention, next_retry)
             next_lease = dict(lease)
             now = _now()
             if ttl is not None:
@@ -796,6 +841,21 @@ class CaptureJobRegistry:
                 deleted.append(row["job_id"])
         return {"deleted": deleted, "count": len(deleted)}
 
+    @staticmethod
+    def _checkpoint_refs(row: sqlite3.Row, checkpoint: dict[str, object]) -> dict[str, object]:
+        """Name what a checkpoint advanced, for the conversation timeline.
+
+        A checkpoint payload that names its conversation is used verbatim.
+        Otherwise the job's own intent is the reference: a backfill ledger
+        advances one intent, and that is what its timeline is a timeline of.
+        """
+        payload = checkpoint.get("payload")
+        if isinstance(payload, dict):
+            conversation_ref = payload.get("conversation_ref")
+            if isinstance(conversation_ref, str) and conversation_ref:
+                return {"conversation_ref": conversation_ref}
+        return {"conversation_ref": f"intent:{row['intent_key']}"}
+
     def checkpoint(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         checkpoint = body.get("checkpoint")
         if (
@@ -874,6 +934,22 @@ class CaptureJobRegistry:
             connection.execute(
                 "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?, ?)",
                 (job_id, request_id, checkpoint["sequence"], checkpoint["digest"], canonical_json(receipt)),
+            )
+            # Checkpointing is the only progress the client reports, so it is
+            # the only place a timeline can come from: no client posts to the
+            # event route, and the "created" event carries no refs, which the
+            # projection excludes. The event does not advance the job revision
+            # -- the checkpoint already did, and the client's next CAS is
+            # against that.
+            self._append_event(
+                connection,
+                job_id,
+                "capture-attempted",
+                f"checkpoint:{job_id}:{checkpoint['sequence']}:{checkpoint['digest']}",
+                revision,
+                self._checkpoint_refs(row, checkpoint),
+                {"checkpoint_sequence": checkpoint["sequence"], "checkpoint_digest": checkpoint["digest"]},
+                advance_revision=False,
             )
             next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
             return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}

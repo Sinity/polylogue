@@ -154,12 +154,53 @@ def discard_testmon_graph(root: Path) -> None:
             path.unlink()
 
 
+def snapshot_testmon_graph(source: Path, destination: Path) -> bool:
+    """Copy a datafile another run may be writing, through SQLite's backup API.
+
+    A byte copy of a live database is torn: it can capture a partial
+    transaction, and it leaves the source's ``-wal`` behind, so the committed
+    tail the copy depends on is missing. The backup API reads under SQLite's
+    own locking and writes one self-contained file with no sidecars.
+
+    An absent, unreadable, or non-SQLite source is not a failure: the next run
+    seeds the graph from scratch. Returns whether a snapshot was written.
+    """
+    if not source.is_file() or source.stat().st_size == 0:
+        return False
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30)
+    except sqlite3.Error:
+        return False
+    try:
+        with (
+            contextlib.closing(source_connection),
+            contextlib.closing(sqlite3.connect(destination)) as destination_connection,
+        ):
+            source_connection.backup(destination_connection)
+    except (sqlite3.Error, OSError):
+        # A partial destination is the failure mode this function exists to
+        # prevent; leave nothing behind for the provision check to accept.
+        with contextlib.suppress(FileNotFoundError, OSError):
+            destination.unlink()
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report the provisioned testmon datafile, discarding a broken one.")
     parser.add_argument("--json", action="store_true", help="emit a machine-readable result")
+    parser.add_argument(
+        "--seed",
+        metavar="DATAFILE",
+        help="snapshot this datafile into the checkout before inspecting it",
+    )
     args = parser.parse_args(argv)
 
     root = Path(os.getcwd()).resolve()
+    seeded = False
+    if args.seed:
+        seeded = snapshot_testmon_graph(Path(args.seed), testmon_datafile(root))
     state = inspect_testmon_graph(root)
     # A broken copy is worse than none: an absent datafile reseeds on the next
     # run, a broken one stops the tier.
@@ -173,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         "reason": state.reason,
         "full_rerun_cause": state.full_rerun_cause,
         "discarded": discarded,
+        "seeded": seeded,
     }
     if args.json:
         json.dump(payload, sys.stdout, sort_keys=True)
