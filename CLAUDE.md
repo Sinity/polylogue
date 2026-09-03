@@ -144,6 +144,9 @@ explicit-and-retryable or a typed permanent refusal.
   corrupt or foreign-format datafile stops with `graph_unusable` — delete it
   and rerun. `--all` runs every test and still updates fingerprints;
   `--quick` is the static gates alone.
+- Every managed pytest run holds the host's single `pytest` pueue slot: a
+  caller outside a queued task (`SINNIXD_JOB_ID` unset) queues, waits, and
+  reads the captured log the run prints, and refuses if pueued is unreachable.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `render [<surface>|all] [--check]`,

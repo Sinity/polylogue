@@ -26,6 +26,7 @@ from devtools.pytest_invocation import (
     MANAGED_PLUGIN_ARGS,
     PROGRESS_PLUGIN_NAME,
 )
+from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
@@ -265,7 +266,20 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
     sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")
     sys.stderr.flush()
     rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
-    rerun_completed = subprocess.run(rerun_command, cwd=ROOT, env=rerun_env, stdout=sys.stderr, stderr=sys.stderr)
+    # The rerun is pytest too, so it holds the host's pytest slot like the run
+    # it is adjudicating.
+    try:
+        rerun_completed = run_pytest(
+            rerun_command,
+            cwd=str(ROOT),
+            env=rerun_env,
+            root=ROOT,
+            label=f"polylogue:verify-rerun:{os.getpid()}",
+            stdout=sys.stderr,
+        )
+    except PytestSlotUnavailableError as exc:
+        sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
+        return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
     second = _read_json(rerun_report)
     if not isinstance(second, Mapping) or rerun_completed.returncode not in (0, 1):
         # No report, or pytest itself did not finish cleanly (exit 3 is an
@@ -373,11 +387,30 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         )
         sys.stderr.write("FAILED (missing executable)\n")
         return 127, time.monotonic() - started, early_metadata
+    slot = None
     if pytest_step:
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
-        completed = subprocess.run(command, cwd=ROOT, env=env, stdout=sys.stderr, stderr=sys.stderr)
+        try:
+            outcome = run_pytest(
+                command,
+                cwd=str(ROOT),
+                env=env,
+                root=ROOT,
+                label=f"polylogue:verify:{os.getpid()}",
+                stdout=sys.stderr,
+            )
+        except PytestSlotUnavailableError as exc:
+            early_metadata = {"diagnosis": "pytest_slot_unavailable", "error": str(exc)}
+            run.finish_step(
+                step_id=artifacts.step_id,
+                result=_early_gate_failure_result(started, early_metadata),
+            )
+            sys.stderr.write(f"FAILED ({exc})\n")
+            return 125, time.monotonic() - started, early_metadata
+        slot = outcome.slot
+        completed = subprocess.CompletedProcess(command, outcome.returncode)
         rerun = _rerun_failed_once(command, env=env, artifacts=artifacts) if completed.returncode else None
     else:
         try:
@@ -395,6 +428,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         "diagnosis": "pytest_failed" if pytest_step else "gate_passed" if completed.returncode == 0 else "gate_failed"
     }
     if pytest_step:
+        metadata["pytest_slot"] = slot
         if rerun is not None:
             metadata["rerun"] = rerun
             if not rerun["still_failed"]:
