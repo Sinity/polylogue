@@ -21,7 +21,11 @@ from pathlib import Path
 from typing import cast
 from uuid import uuid4
 
-from polylogue.browser_capture.capture_job_events import read_capture_job_events
+from polylogue.browser_capture.capture_job_events import (
+    project_capture_job_timelines,
+    read_capture_job_events,
+    read_capture_job_retention,
+)
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
 from polylogue.paths import browser_capture_spool_root
 
@@ -114,6 +118,8 @@ class CaptureJobRegistry:
                 checkpoint_json TEXT, checkpoint_sequence INTEGER, checkpoint_digest TEXT,
                 receipt_json TEXT, retry_json TEXT NOT NULL, lease_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                request_budget_json TEXT NOT NULL DEFAULT '{"max_requests":1000,"used":0}',
+                retention_json TEXT NOT NULL DEFAULT '{"state":"active","hold_reason":null,"timeline_authoritative":true}',
                 UNIQUE(provider, account_scope, intent_key)
             ) STRICT"""
         )
@@ -148,6 +154,15 @@ class CaptureJobRegistry:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_job_events)")}
         if "job_revision" not in columns:
             connection.execute("ALTER TABLE capture_job_events ADD COLUMN job_revision INTEGER NOT NULL DEFAULT 0")
+        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(capture_jobs)")}
+        if "request_budget_json" not in job_columns:
+            connection.execute(
+                'ALTER TABLE capture_jobs ADD COLUMN request_budget_json TEXT NOT NULL DEFAULT \'{"max_requests":1000,"used":0}\''
+            )
+        if "retention_json" not in job_columns:
+            connection.execute(
+                'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
+            )
         return connection
 
     @contextmanager
@@ -195,6 +210,8 @@ class CaptureJobRegistry:
         intent = json.loads(row["intent_json"])
         lease = json.loads(row["lease_json"]) if row["lease_json"] else None
         retry = json.loads(row["retry_json"])
+        budget = json.loads(row["request_budget_json"])
+        retention = json.loads(row["retention_json"])
         latest_receipt = json.loads(row["receipt_json"]) if row["receipt_json"] else None
         return {
             "job_id": row["job_id"],
@@ -208,6 +225,8 @@ class CaptureJobRegistry:
             "checkpoint_sequence": row["checkpoint_sequence"],
             "checkpoint_digest": row["checkpoint_digest"],
             "retry": retry,
+            "request_budget": budget,
+            "retention": retention,
             "checkpoint": json.loads(row["checkpoint_json"]) if row["checkpoint_json"] else None,
             "latest_receipt": latest_receipt,
             "checkpoint_updated_at": latest_receipt["acknowledged_at"] if latest_receipt else None,
@@ -344,7 +363,7 @@ class CaptureJobRegistry:
                 return 200, {"created": False, "job": self._summary(found)}
             job_id = str(uuid4())
             connection.execute(
-                "INSERT INTO capture_jobs VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?)",
+                "INSERT INTO capture_jobs VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, NULL, ?, NULL, ?, ?, ?, ?)",
                 (
                     job_id,
                     provider,
@@ -354,6 +373,8 @@ class CaptureJobRegistry:
                     canonical_json({"state": "ready", "attempt": 0}),
                     now,
                     now,
+                    canonical_json({"max_requests": 1000, "used": 0}),
+                    canonical_json({"state": "active", "hold_reason": None, "timeline_authoritative": True}),
                 ),
             )
             row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
@@ -416,7 +437,14 @@ class CaptureJobRegistry:
                 ).fetchall()
             ]
             events = read_capture_job_events(connection, job_id, 500)
-            return {"job": self._summary(row), "receipts": [*receipts, *updates], "events": events}
+            lifecycle = read_capture_job_retention(connection, job_id)
+            return {
+                "job": self._summary(row),
+                "lifecycle": lifecycle,
+                "receipts": [*receipts, *updates],
+                "events": events,
+                "timelines": project_capture_job_timelines(events),
+            }
 
     @staticmethod
     def _append_event(
@@ -559,7 +587,12 @@ class CaptureJobRegistry:
             total = connection.execute("SELECT COUNT(*) FROM capture_job_events WHERE job_id=?", (job_id,)).fetchone()[
                 0
             ]
-            return {"events": events, "limit": limit, "has_more": total > limit}
+            return {
+                "events": events,
+                "timelines": project_capture_job_timelines(events),
+                "limit": limit,
+                "has_more": total > limit,
+            }
 
     def _proof(self, job_id: str, lease: dict[str, object]) -> str:
         message = "\0".join(
@@ -625,12 +658,21 @@ class CaptureJobRegistry:
         if not isinstance(request_id, str) or not request_id:
             raise CaptureJobError(400, "invalid_request_id")
         retry = self._retry(body.get("retry")) if "retry" in body else None
+        retention = body.get("retention") if "retention" in body else None
+        if retention is not None:
+            if not isinstance(retention, dict) or retention.get("state") not in {"active", "held", "eligible"}:
+                raise CaptureJobError(400, "invalid_retention_state")
+            retention = {
+                "state": retention["state"],
+                "hold_reason": retention.get("hold_reason"),
+                "timeline_authoritative": retention.get("timeline_authoritative", True),
+            }
         ttl = body.get("lease_ttl_seconds")
         if ttl is not None and (not isinstance(ttl, int) or isinstance(ttl, bool) or not 1 <= ttl <= 300):
             raise CaptureJobError(400, "invalid_lease_ttl")
-        if retry is None and ttl is None:
+        if retry is None and ttl is None and retention is None:
             raise CaptureJobError(400, "empty_capture_job_update")
-        request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl})
+        request_digest = canonical_digest({"retry": retry, "lease_ttl_seconds": ttl, "retention": retention})
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = self._require_scoped(
@@ -648,12 +690,14 @@ class CaptureJobRegistry:
             if body.get("expected_revision") != row["revision"]:
                 raise CaptureJobError(409, "cas_mismatch", {"revision": row["revision"]})
             current_retry = json.loads(row["retry_json"])
+            current_retention = json.loads(row["retention_json"])
             next_retry = retry or current_retry
+            next_retention = retention or current_retention
             next_lease = dict(lease)
             now = _now()
             if ttl is not None:
                 next_lease["expires_at"] = _stamp(now + timedelta(seconds=ttl))
-            if next_retry == current_retry and next_lease == lease:
+            if next_retry == current_retry and next_retention == current_retention and next_lease == lease:
                 receipt = {
                     "receipt_id": str(uuid4()),
                     "request_id": request_id,
@@ -682,8 +726,15 @@ class CaptureJobRegistry:
                 "acknowledged_at": _stamp(now),
             }
             connection.execute(
-                "UPDATE capture_jobs SET revision=?, retry_json=?, lease_json=?, updated_at=? WHERE job_id=?",
-                (revision, canonical_json(next_retry), canonical_json(next_lease), _stamp(now), job_id),
+                "UPDATE capture_jobs SET revision=?, retry_json=?, retention_json=?, lease_json=?, updated_at=? WHERE job_id=?",
+                (
+                    revision,
+                    canonical_json(next_retry),
+                    canonical_json(next_retention),
+                    canonical_json(next_lease),
+                    _stamp(now),
+                    job_id,
+                ),
             )
             connection.execute(
                 "INSERT INTO capture_job_update_receipts VALUES (?, ?, ?, ?)",
@@ -691,6 +742,34 @@ class CaptureJobRegistry:
             )
             next_row = connection.execute("SELECT * FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
             return {"job": self._summary(next_row), "receipt": receipt, "duplicate": False}
+
+    def gc(self, *, now: datetime | None = None, limit: int = 100) -> dict[str, object]:
+        """Delete only explicitly eligible, acknowledged, non-authoritative jobs."""
+        if not 1 <= limit <= 1000:
+            raise CaptureJobError(400, "invalid_gc_limit")
+        current = now or _now()
+        deleted: list[str] = []
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute("SELECT * FROM capture_jobs ORDER BY updated_at").fetchall()
+            for row in rows:
+                if len(deleted) >= limit:
+                    break
+                retention = json.loads(row["retention_json"])
+                lease = self._lease(row)
+                if retention.get("state") != "eligible" or retention.get("timeline_authoritative", True):
+                    continue
+                expires_at = lease.get("expires_at") if lease else None
+                if isinstance(expires_at, str) and datetime.fromisoformat(expires_at.replace("Z", "+00:00")) > current:
+                    continue
+                if row["checkpoint_sequence"] is None or not row["receipt_json"]:
+                    continue
+                connection.execute("DELETE FROM capture_job_events WHERE job_id=?", (row["job_id"],))
+                connection.execute("DELETE FROM capture_job_receipts WHERE job_id=?", (row["job_id"],))
+                connection.execute("DELETE FROM capture_job_update_receipts WHERE job_id=?", (row["job_id"],))
+                connection.execute("DELETE FROM capture_jobs WHERE job_id=?", (row["job_id"],))
+                deleted.append(row["job_id"])
+        return {"deleted": deleted, "count": len(deleted)}
 
     def checkpoint(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         checkpoint = body.get("checkpoint")
