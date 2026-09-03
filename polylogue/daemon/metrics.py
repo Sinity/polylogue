@@ -1149,7 +1149,10 @@ def format_metrics(
 
     from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-    conn = open_readonly_connection(db)
+    # Metrics report the archive's readiness, including a tier whose schema
+    # does not match the runtime -- that is a blocker series, not a reason to
+    # fail the exposition.
+    conn = open_readonly_connection(db, validate_schema=False)
     try:
         ops_db = configured_root / "ops.db"
         attempts = _attempt_counts(conn, ops_db=ops_db)

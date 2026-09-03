@@ -1162,7 +1162,9 @@ def embedding_status_payload(
             pending_messages_exact=include_detail,
         )
 
-    conn = open_readonly_connection(db_path)
+    # A status projection describes whatever the tier holds, including a
+    # schema the runtime has moved past.
+    conn = open_readonly_connection(db_path, validate_schema=False)
     try:
         total_sessions = _total_sessions(conn)
         embedding_stats = read_embedding_stats_sync(
