@@ -866,7 +866,9 @@ def test_idless_inline_image_only_turns_with_distinct_bytes_write_every_attachme
     assert len(image_blocks) == 2
     for block in image_blocks:
         assert block.metadata is not None
-        assert "data" not in block.metadata["inlineImage"]
+        inline_record = block.metadata["inlineImage"]
+        assert isinstance(inline_record, dict)
+        assert "data" not in inline_record
     assert image_blocks[0].metadata != image_blocks[1].metadata
 
     db_path = db_setup(workspace_env)
