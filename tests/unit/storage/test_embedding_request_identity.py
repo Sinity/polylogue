@@ -27,27 +27,53 @@ def test_request_payload_and_address_share_one_spec() -> None:
     )
 
 
-def test_every_provider_or_output_field_changes_address() -> None:
+def test_only_request_shaping_fields_change_address() -> None:
+    """The address follows the provider request; recipe labels only change recipe_hash.
+
+    Anti-vacuity: folding any label field back into the hashed document makes
+    the second block fail for that field.
+    """
     baseline = EmbeddingRequestSpec(recipe=_recipe(), input_text="same")
-    changes = (
+    request_changes = (
+        {"model": "voyage-4-lite"},
+        {"input_type": "query"},
+        {"request_options": (("truncation", "none"),)},
+        {"dimensions": 512},
+    )
+    label_changes = (
         {"provider": "other"},
         {"model_revision": "rev-2"},
-        {"input_type": "query"},
         {"task": "classification"},
-        {"request_options": (("truncation", "none"),)},
         {"canonicalization": "v2"},
         {"chunking_version": "v2"},
         {"normalization": "unit"},
         {"tool_implementation": "tool-v2"},
-        {"dimensions": 512},
         {"element_type": "float16"},
         {"input_schema_version": "schema-v2"},
     )
-    assert all(
-        EmbeddingRequestSpec(recipe=_recipe(**change), input_text="same").vector_derivation_hash
-        != baseline.vector_derivation_hash
-        for change in changes
-    )
+    for change in request_changes:
+        changed = EmbeddingRequestSpec(recipe=_recipe(**change), input_text="same")
+        assert changed.vector_derivation_hash != baseline.vector_derivation_hash, change
+    for change in label_changes:
+        changed = EmbeddingRequestSpec(recipe=_recipe(**change), input_text="same")
+        assert changed.vector_derivation_hash == baseline.vector_derivation_hash, change
+        assert changed.recipe.recipe_hash != baseline.recipe.recipe_hash, change
+
+
+def test_default_shaped_request_address_is_pinned() -> None:
+    """A default-shaped request hashes as ``domain || len(model)||model || len(text)||text``.
+
+    The literal is the address every vector embedded under the original
+    content-addressing formula carries; a stored archive's vectors are reused
+    only while this holds. Anti-vacuity: any change to the domain string,
+    segment layout, or the set of fields folded into a default-shaped address
+    changes the digest.
+    """
+    spec = EmbeddingRequestSpec(recipe=_recipe(), input_text="same")
+    assert spec.vector_derivation_hash.hex() == "d6042147df31c0513ff15869dce130f425a6c6a9139ffdd502f2145247de6027"
+    # ``input_type=document`` is the default shape, not an extra segment.
+    explicit = EmbeddingRequestSpec(recipe=_recipe(input_type="document"), input_text="same")
+    assert explicit.vector_derivation_hash == spec.vector_derivation_hash
 
 
 def test_complete_requests_deduplicate_without_message_identity() -> None:
