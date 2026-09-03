@@ -71,6 +71,9 @@ _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/archive/session_revision_membership.py",
 )
 _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revision_backfill.py",)
+# Logging is deliberately available to parser code for diagnostics, but its
+# implementation and configuration do not affect normalized parser output.
+_PARSER_DIAGNOSTIC_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/logging.py"})
 
 
 class _ProjectionFingerprintStripper(ast.NodeTransformer):
@@ -237,12 +240,16 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in found))
 
 
-def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
+def _semantic_source_paths(
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+) -> tuple[Path, ...]:
     pending = [_source_path(path) for path in paths]
     found: set[Path] = set()
     while pending:
         path = pending.pop()
         if path in found:
+            continue
+        if _fingerprint_path_label(path) in excluded_labels:
             continue
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
@@ -318,8 +325,10 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _fingerprint_sources(paths: tuple[str, ...], *, namespace: str) -> str:
-    source_paths = _semantic_source_paths(paths)
+def _fingerprint_sources(
+    paths: tuple[str, ...], *, namespace: str, excluded_labels: frozenset[str] = frozenset()
+) -> str:
+    source_paths = _semantic_source_paths(paths, excluded_labels=excluded_labels)
     signatures = tuple(_source_signature(path) for path in source_paths)
     return _fingerprint_sources_cached(signatures, namespace)
 
@@ -735,7 +744,11 @@ class OriginSpec:
             declared_paths.append(self.assembly_spec_path)
         declared_paths.extend(rule.parser_path for rule in self.artifact_rules if rule.parser_path is not None)
         source_paths = tuple(dict.fromkeys(_source_file_from_reference(path) for path in declared_paths))
-        return _fingerprint_sources(source_paths, namespace=f"parser:{self.origin.value}")
+        return _fingerprint_sources(
+            source_paths,
+            namespace=f"parser:{self.origin.value}",
+            excluded_labels=_PARSER_DIAGNOSTIC_FINGERPRINT_PATHS,
+        )
 
 
 def _detector_declaration_fingerprint_payload() -> tuple[dict[str, object], ...]:

@@ -394,6 +394,77 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     assert before != after
 
 
+def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materializer_do_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diagnostic implementation changes do not stale parser cursors.
+
+    Mutation proof: changing the diagnostic helper leaves both origin parser
+    fingerprints unchanged, while the same change remains visible to the
+    explicitly unfiltered lowering and materializer routes. Changing parser
+    output logic still changes each origin's parser fingerprint.
+    """
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    logging_source = source_root / "polylogue" / "logging.py"
+    logging_source.write_text("def get_logger():\n    return 'before'\n", encoding="utf-8")
+    parser_a = source_dir / "parser_a.py"
+    parser_b = source_dir / "parser_b.py"
+    parser_a.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return payload\n", encoding="utf-8"
+    )
+    parser_b.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return {'b': payload}\n", encoding="utf-8"
+    )
+
+    import polylogue.sources.origin_specs as origin_specs
+
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(
+        origin_specs,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/sources/parser_a.py",),
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "_MATERIALIZER_FINGERPRINT_PATHS",
+        ("polylogue/sources/parser_a.py",),
+    )
+    first = replace(
+        next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION),
+        parser_paths=(str(parser_a),),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
+    second = replace(
+        next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT),
+        parser_paths=(str(parser_b),),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    parser_before = (first.parser_fingerprint(), second.parser_fingerprint())
+    lowering_before = origin_specs.lowering_fingerprint()
+    materializer_before = origin_specs.materializer_fingerprint()
+
+    logging_source.write_text("def get_logger():\n    return 'after'\n", encoding="utf-8")
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    assert (first.parser_fingerprint(), second.parser_fingerprint()) == parser_before
+    assert origin_specs.lowering_fingerprint() != lowering_before
+    assert origin_specs.materializer_fingerprint() != materializer_before
+
+    parser_a.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return {'a': payload}\n", encoding="utf-8"
+    )
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    assert first.parser_fingerprint() != parser_before[0]
+
+
 def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_path: Path) -> None:
     """Assembly enrichment is part of the origin's normalized output contract."""
     spec = next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.AISTUDIO_DRIVE)
