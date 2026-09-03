@@ -296,18 +296,11 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(tmp_path: Pat
     with ArchiveStore(root) as facade:
         for i in range(2):
             session_ids.append(facade.write_parsed(_tool_session(f"canary-delete-{i}", n_pairs=3)))
-
-    index_db_path = root / "index.db"
-    setup_conn = sqlite3.connect(index_db_path)
-    try:
-        _install_canary_triggers(setup_conn)
-    finally:
-        setup_conn.close()
-
-    with ArchiveStore(root) as facade:
+        _install_canary_triggers(facade._conn)
         deleted = facade.delete_sessions(tuple(session_ids))
     assert deleted == 2
 
+    index_db_path = root / "index.db"
     verify_conn = sqlite3.connect(index_db_path)
     try:
         counts = _canary_counts(verify_conn)
@@ -355,17 +348,11 @@ def test_delete_sessions_bulk_falls_back_safely_on_pre_guard_archive(tmp_path: P
         for i in range(2):
             session_ids.append(facade.write_parsed(_tool_session(f"legacy-delete-{i}", n_pairs=3)))
 
-    index_db_path = root / "index.db"
-    setup_conn = sqlite3.connect(index_db_path)
-    try:
-        _downgrade_trigram_trigger_to_ungated(setup_conn)
-    finally:
-        setup_conn.close()
-
-    with ArchiveStore(root) as facade:
+        _downgrade_trigram_trigger_to_ungated(facade._conn)
         deleted = facade.delete_sessions(tuple(session_ids))
     assert deleted == 2
 
+    index_db_path = root / "index.db"
     conn = sqlite3.connect(index_db_path)
     conn.row_factory = sqlite3.Row
     try:

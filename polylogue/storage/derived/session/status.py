@@ -266,7 +266,12 @@ MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL = """
           AND ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) = 0
     )
 """
-QUERY_TIME_DERIVED_COUNT_SQL = "SELECT 0"
+MISSING_THREAD_MATERIALIZATION_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM sessions c
+    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
+    WHERE sp.session_id IS NULL
+"""
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 STALE_WORK_EVENT_COUNT_SQL = f"""
@@ -302,7 +307,7 @@ ORPHAN_SESSION_PHASE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = sph.session_id
     WHERE c.session_id IS NULL
 """
-STALE_THREAD_COUNT_SQL = """
+STALE_THREAD_COUNT_SQL = f"""
     WITH RECURSIVE roots(root_id) AS (
         SELECT c.session_id
         FROM sessions c
@@ -317,15 +322,19 @@ STALE_THREAD_COUNT_SQL = """
         JOIN descendants d ON c.parent_session_id = d.session_id
     )
     SELECT COUNT(*)
-    FROM threads wt
-    WHERE wt.materializer_version != ?
-       OR EXISTS (
-            SELECT 1
-            FROM descendants d
-            JOIN session_profiles sp ON sp.session_id = d.session_id
-            WHERE d.root_id = wt.thread_id
-              AND sp.materialized_at > wt.materialized_at
-       )
+    FROM roots r
+    WHERE EXISTS (
+        SELECT 1
+        FROM descendants d
+        LEFT JOIN session_profiles sp ON sp.session_id = d.session_id
+        JOIN sessions c ON c.session_id = d.session_id
+        WHERE d.root_id = r.root_id
+          AND (
+              sp.session_id IS NULL
+              OR sp.materializer_version != ?
+              OR {session_profile_stale_predicate("c", "sp")}
+          )
+    )
 """
 ORPHAN_THREAD_COUNT_SQL = """
     SELECT COUNT(*)
@@ -607,15 +616,19 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="missing_thread_materialization_count",
-        sql=QUERY_TIME_DERIVED_COUNT_SQL,
+        sql=MISSING_THREAD_MATERIALIZATION_COUNT_SQL,
+        fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
-        sql=QUERY_TIME_DERIVED_COUNT_SQL,
+        sql=STALE_THREAD_COUNT_SQL,
+        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_thread_count",
-        sql=QUERY_TIME_DERIVED_COUNT_SQL,
+        sql=ORPHAN_THREAD_COUNT_SQL,
+        requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
         count_key="expected_tag_rollup_count",
@@ -626,7 +639,8 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_tag_rollup_count",
-        sql=QUERY_TIME_DERIVED_COUNT_SQL,
+        sql="SELECT COUNT(*) FROM session_tag_rollups WHERE materialized_at != 'query-time'",
+        requires_freshness=True,
     ),
 )
 

@@ -76,7 +76,7 @@ DEFAULT_SAMPLE_LIMIT = 10
 
 #: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
 #: (polylogue-l3tk: fresh generations without stats pick pathological plans).
-_PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "session_links")
+_PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "action_pairs")
 
 
 @dataclass
@@ -2377,7 +2377,7 @@ def _check_planner_stats(
     return ArchiveVerificationCheck(
         name="planner-stats",
         status=OutcomeStatus.OK,
-        summary="sqlite_stat1 covers blocks/messages/session_links",
+        summary="sqlite_stat1 covers blocks/messages/action_pairs",
         evidence={"covered_tables": sorted(analyzed), "missing_tables": []},
     )
 

@@ -193,8 +193,7 @@ def test_sharded_build_matches_sequential_build(tmp_path: Path) -> None:
     # part" lives in tests/unit/maintenance/test_sharded_rebuild.py instead,
     # via a direct write_parsed_session_to_archive fork scenario.
 
-    # 3. Content SHA over the equivalence relations, including the
-    #    query-time action_pairs view.
+    # 3. Content SHA over the equivalence relations, including action_pairs.
     content_sha_sequential = _content_sha(sequential_index)
     content_sha_sharded = _content_sha(sharded_index)
     assert content_sha_sharded == content_sha_sequential

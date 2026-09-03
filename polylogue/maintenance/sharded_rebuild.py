@@ -119,9 +119,9 @@ MERGE_TABLES: tuple[str, ...] = (
 #: names explicitly ("byte-identical schema SHA, per-table row counts, and
 #: content SHA over ordered sessions/messages/blocks/session_links/
 #: action_pairs vs a sequential build"). ``action_pairs`` is deliberately
-#: NOT in ``MERGE_TABLES`` because it is a query-time view, but IS part of the
-#: equivalence surface, since it is derived from the merged content and must
-#: still match byte-for-byte against a sequential build.
+#: NOT in ``MERGE_TABLES`` because bulk-build replay leaves it for the shared
+#: terminal repopulate stage, but IS part of the equivalence surface, since it
+#: must match byte-for-byte against a sequential build.
 EQUIVALENCE_TABLES: tuple[str, ...] = ("sessions", "messages", "blocks", "session_links", "action_pairs")
 
 

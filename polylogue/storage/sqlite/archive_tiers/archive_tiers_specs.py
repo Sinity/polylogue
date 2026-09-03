@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
 from operator import itemgetter
+from typing import get_args
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -46,6 +47,7 @@ from polylogue.storage.sqlite.archive_tiers.common import (
     literal_check,
     nullable_check,
 )
+from polylogue.storage.sqlite.archive_tiers.types import DelegationMappingState, DelegationResultStatus
 
 
 def _value(name: str) -> Callable[[dict[str, object]], object]:
@@ -777,6 +779,34 @@ SESSION_REFS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(session_id, position)""",),
 )
 
+ACTION_PAIRS_SPEC = _make_table_spec(
+    "action_pairs",
+    (
+        _raw_column(
+            "tool_use_block_id",
+            """tool_use_block_id      TEXT PRIMARY KEY REFERENCES blocks(block_id) ON DELETE CASCADE""",
+        ),
+        _raw_column(
+            "session_id", """session_id             TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""
+        ),
+        _raw_column(
+            "message_id", """message_id             TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"""
+        ),
+        _raw_column("tool_id", """tool_id                TEXT"""),
+        _raw_column("use_rank", """use_rank               INTEGER"""),
+        _raw_column("tool_name", """tool_name              TEXT"""),
+        _raw_column("semantic_type", """semantic_type          TEXT"""),
+        _raw_column("tool_command", """tool_command           TEXT"""),
+        _raw_column("tool_path", """tool_path              TEXT"""),
+        _raw_column(
+            "tool_result_block_id", """tool_result_block_id   TEXT REFERENCES blocks(block_id) ON DELETE SET NULL"""
+        ),
+        _raw_column("is_error", """is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL)"""),
+        _raw_column("exit_code", """exit_code              INTEGER"""),
+    ),
+    table_constraints=("""FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE""",),
+)
+
 SESSION_EVENTS_SPEC = _make_table_spec(
     "session_events",
     (
@@ -1467,6 +1497,61 @@ SESSION_PROFILES_SPEC = _make_table_spec(
     ),
 )
 
+DELEGATION_FACTS_SPEC = _make_table_spec(
+    "delegation_facts",
+    (
+        _raw_column("delegation_id", """delegation_id                         TEXT PRIMARY KEY"""),
+        _raw_column(
+            "parent_session_id",
+            """parent_session_id                     TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column(
+            "child_session_id",
+            """child_session_id                      TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
+        ),
+        _raw_column(
+            "mapping_state",
+            f"""mapping_state                         TEXT NOT NULL
+                                             CHECK ({literal_check("mapping_state", *get_args(DelegationMappingState))})""",
+        ),
+        _raw_column("link_confidence", """link_confidence                       REAL"""),
+        _raw_column("link_method", """link_method                           TEXT"""),
+        _raw_column("inheritance", """inheritance                            TEXT"""),
+        _raw_column("branch_point_message_id", """branch_point_message_id               TEXT"""),
+        _raw_column("instruction_message_id", """instruction_message_id               TEXT"""),
+        _raw_column("instruction_tool_use_block_id", """instruction_tool_use_block_id        TEXT"""),
+        _raw_column("instruction_payload", """instruction_payload                   TEXT"""),
+        _raw_column("dispatch_turn_model", """dispatch_turn_model                  TEXT"""),
+        _raw_column("requested_model", """requested_model                      TEXT"""),
+        _raw_column("artifact_block_id", """artifact_block_id                    TEXT"""),
+        _raw_column("artifact_text", """artifact_text                        TEXT"""),
+        _raw_column("result_is_error", """result_is_error                      INTEGER"""),
+        _raw_column("result_exit_code", """result_exit_code                     INTEGER"""),
+        _raw_column(
+            "result_status",
+            f"""result_status                        TEXT NOT NULL
+                                             CHECK ({literal_check("result_status", *get_args(DelegationResultStatus))})""",
+        ),
+        _raw_column("parent_origin", """parent_origin                        TEXT NOT NULL"""),
+        _raw_column("parent_session_dominant_model", """parent_session_dominant_model        TEXT"""),
+        _raw_column("parent_session_dominant_model_family", """parent_session_dominant_model_family TEXT"""),
+        _raw_column("parent_terminal_state", """parent_terminal_state                TEXT"""),
+        _raw_column("child_session_dominant_model", """child_session_dominant_model         TEXT"""),
+        _raw_column("child_session_dominant_model_family", """child_session_dominant_model_family  TEXT"""),
+        _raw_column("child_cost_usd", """child_cost_usd                       REAL"""),
+        _raw_column("child_cost_is_estimated", """child_cost_is_estimated              INTEGER"""),
+        _raw_column("child_tokens", """child_tokens                         INTEGER"""),
+        _raw_column("child_wall_ms", """child_wall_ms                        INTEGER"""),
+        _raw_column("child_terminal_state", """child_terminal_state                 TEXT"""),
+    ),
+)
+
+DELEGATION_REFRESH_SCOPE_SPEC = _make_table_spec(
+    "delegation_refresh_scope",
+    (_raw_column("parent_session_id", """parent_session_id TEXT PRIMARY KEY"""),),
+)
+
+
 DERIVED_REFRESH_GUARD_SPEC = _make_table_spec(
     "derived_refresh_guard",
     (_raw_column("guard_name", """guard_name TEXT PRIMARY KEY"""),),
@@ -1564,6 +1649,7 @@ INDEX_TABLE_SPECS = {
     "web_content_constructs": WEB_CONTENT_CONSTRUCTS_SPEC,
     "file_edits": FILE_EDITS_SPEC,
     "session_refs": SESSION_REFS_SPEC,
+    "action_pairs": ACTION_PAIRS_SPEC,
     "session_events": SESSION_EVENTS_SPEC,
     "session_agent_policies": SESSION_AGENT_POLICIES_SPEC,
     "session_links": SESSION_LINKS_SPEC,
@@ -1584,6 +1670,8 @@ INDEX_TABLE_SPECS = {
     "session_phases": SESSION_PHASES_SPEC,
     "session_latency_profiles": SESSION_LATENCY_PROFILES_SPEC,
     "session_profiles": SESSION_PROFILES_SPEC,
+    "delegation_facts": DELEGATION_FACTS_SPEC,
+    "delegation_refresh_scope": DELEGATION_REFRESH_SCOPE_SPEC,
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
     "work_evidence_graphs": WORK_EVIDENCE_GRAPHS_SPEC,
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,

@@ -86,6 +86,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.search.query_support import normalize_fts5_query
+from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
 from polylogue.storage.sqlite.archive_tiers import archive_tiers_specs
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import should_skip_stale_replace
 from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
@@ -99,6 +100,7 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     upsert_session_tag,
     upsert_session_work_event,
 )
+from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -957,6 +959,10 @@ def write_parsed_session_to_archive(
                 )
                 add_timing("index.file_edits", t0)
                 t0 = time.perf_counter()
+                if not bulk_build:
+                    refresh_action_pairs(conn, session_id)
+                add_timing("index.action_pairs", t0)
+                t0 = time.perf_counter()
                 _write_web_constructs(
                     conn,
                     session,
@@ -1106,6 +1112,10 @@ def write_parsed_session_to_archive(
                 bulk_build=bulk_build,
             )
             add_timing("index.graph_resolve", t0)
+            t0 = time.perf_counter()
+            if not bulk_build:
+                refresh_delegation_facts_for_session(conn, session_id)
+            add_timing("index.delegation_facts", t0)
             conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
             if bulk_build:
                 conn.execute(
@@ -3543,6 +3553,10 @@ def _replace_full_session_messages_and_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
         add_timing("file_edits", t0)
+        t0 = time.perf_counter()
+        if not bulk_build:
+            refresh_action_pairs(conn, session_id)
+        add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
             conn,

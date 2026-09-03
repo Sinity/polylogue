@@ -10,8 +10,10 @@ from polylogue.storage.fts.sql import (
     FTS_TRIGGER_DDL,
     FTS_UNICODE_TOKENIZER,
 )
+from polylogue.storage.sqlite.action_pairs import action_pairs_refresh_sql
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sql
 
 # polylogue-2qx.4: v46 lands the unread-wire batch (polylogue-cgfy/cuxz.8/
 # 9x22 field-landing decisions):
@@ -798,37 +800,27 @@ END;
 -- ~4.1GB) and turned per-session DELETE into scattered random IO (measured:
 -- hours on a whale session replace). The actions VIEW below re-joins blocks
 -- by block_id to serve tool_input/output_text to readers at query time.
-CREATE VIEW IF NOT EXISTS action_pairs AS
-WITH ranked_uses AS (
-    SELECT u.session_id, u.message_id, u.block_id AS tool_use_block_id,
-           u.tool_id, u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-           ROW_NUMBER() OVER (
-               PARTITION BY u.session_id, u.tool_id
-               ORDER BY um.position, um.variant_index, u.position
-           ) AS use_rank
-    FROM blocks u JOIN messages um ON um.message_id = u.message_id
-    WHERE u.block_type = 'tool_use' AND u.tool_id IS NOT NULL AND u.tool_id != ''
-), ranked_results AS (
-    SELECT r.session_id, r.tool_id, r.block_id AS tool_result_block_id,
-           r.tool_result_is_error AS is_error, r.tool_result_exit_code AS exit_code,
-           ROW_NUMBER() OVER (
-               PARTITION BY r.session_id, r.tool_id
-               ORDER BY rm.position, rm.variant_index, r.position
-           ) AS result_rank
-    FROM blocks r JOIN messages rm ON rm.message_id = r.message_id
-    WHERE r.block_type = 'tool_result' AND r.tool_id IS NOT NULL AND r.tool_id != ''
-)
-SELECT u.tool_use_block_id, u.session_id, u.message_id, u.tool_id, u.use_rank,
-       u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-       r.tool_result_block_id, r.is_error, r.exit_code
-FROM ranked_uses u LEFT JOIN ranked_results r
-  ON r.session_id = u.session_id AND r.tool_id = u.tool_id AND r.result_rank = u.use_rank
-UNION ALL
-SELECT u.block_id, u.session_id, u.message_id, u.tool_id, NULL,
-       u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-       NULL, NULL, NULL
-FROM blocks u
-WHERE u.block_type = 'tool_use' AND (u.tool_id IS NULL OR u.tool_id = '');
+CREATE TABLE IF NOT EXISTS action_pairs (
+    {TABLE_SPECS["action_pairs"].ddl_body}
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_action_pairs_session_order
+ON action_pairs(session_id, message_id, tool_use_block_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_message
+ON action_pairs(message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_tool
+ON action_pairs(tool_name, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_semantic
+ON action_pairs(semantic_type, session_id, message_id);
+CREATE INDEX IF NOT EXISTS idx_action_pairs_path
+ON action_pairs(tool_path, session_id, message_id)
+WHERE tool_path IS NOT NULL AND tool_path != '';
+CREATE INDEX IF NOT EXISTS idx_action_pairs_outcome
+ON action_pairs(is_error, exit_code, session_id, message_id)
+WHERE is_error IS NOT NULL OR exit_code IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_action_pairs_tool_result_block
+ON action_pairs(tool_result_block_id)
+WHERE tool_result_block_id IS NOT NULL;
 
 -- xnkf: a plain equality join on tool_id fans out when a provider re-emits
 -- the same tool_id on distinct messages (verified live: identical toolu_
@@ -869,6 +861,39 @@ SELECT
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id
 LEFT JOIN blocks tr ON tr.block_id = ap.tool_result_block_id;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ai
+AFTER INSERT ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_ad
+AFTER DELETE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = OLD.session_id;
+    {action_pairs_refresh_sql("OLD.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = OLD.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (OLD.session_id);
+    {delegation_facts_insert_sql("OLD.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS blocks_action_pairs_au
+AFTER UPDATE ON blocks
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM action_pairs WHERE session_id = NEW.session_id;
+    {action_pairs_refresh_sql("NEW.session_id")};
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
 
 CREATE TABLE IF NOT EXISTS session_events (
     {TABLE_SPECS["session_events"].ddl_body}
@@ -913,31 +938,161 @@ AFTER DELETE ON session_links BEGIN
 END;
 
 CREATE VIEW IF NOT EXISTS threads AS
-WITH grouped AS (
-    SELECT COALESCE(s.root_session_id, s.session_id) AS thread_id,
-           COUNT(*) AS session_count,
-           SUM(COALESCE(s.message_count, 0)) AS total_messages,
-           MIN(COALESCE(sp.first_message_at, datetime(s.created_at_ms / 1000, 'unixepoch'))) AS start_time,
-           MAX(COALESCE(sp.last_message_at, datetime(s.updated_at_ms / 1000, 'unixepoch'),
-                        datetime(s.created_at_ms / 1000, 'unixepoch'))) AS end_time,
-           SUM(COALESCE((SELECT SUM(u.cost_usd) FROM session_model_usage u
-                         WHERE u.session_id = s.session_id), s.reported_cost_usd, 0.0)) AS total_cost_usd,
-           MAX(CASE WHEN s.session_id = COALESCE(s.root_session_id, s.session_id)
-                    THEN COALESCE(s.created_at_ms, s.updated_at_ms, 0) ELSE 0 END) AS created_at_ms,
-           json_group_array(s.session_id) AS session_ids_json
+WITH RECURSIVE members AS (
+    SELECT s.session_id, s.parent_session_id,
+           COALESCE(s.root_session_id, s.session_id) AS thread_id,
+           s.origin, s.title, s.message_count, s.reported_cost_usd,
+           s.created_at_ms, s.updated_at_ms, sp.*
     FROM sessions s
     LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-    GROUP BY COALESCE(s.root_session_id, s.session_id)
+), depths(thread_id, session_id, depth, path) AS (
+    SELECT m.thread_id, m.session_id, 0, '|' || m.session_id || '|'
+    FROM members m
+    WHERE m.session_id = m.thread_id
+    UNION ALL
+    SELECT child.thread_id, child.session_id, d.depth + 1, d.path || child.session_id || '|'
+    FROM depths d
+    JOIN members child
+      ON child.thread_id = d.thread_id AND child.parent_session_id = d.session_id
+    WHERE instr(d.path, '|' || child.session_id || '|') = 0
+), usage_by_session AS (
+    SELECT session_id, SUM(provider_cost_usd) AS provider_cost_usd,
+           SUM(catalog_cost_usd) AS catalog_cost_usd
+    FROM session_model_usage
+    GROUP BY session_id
+), grouped AS (
+    SELECT m.thread_id,
+           COUNT(*) AS session_count,
+           SUM(COALESCE(m.message_count, 0)) AS total_messages,
+           MIN(COALESCE(m.first_message_at, datetime(m.created_at_ms / 1000, 'unixepoch'))) AS start_time,
+           MAX(COALESCE(m.last_message_at, datetime(m.updated_at_ms / 1000, 'unixepoch'),
+                        datetime(m.created_at_ms / 1000, 'unixepoch'))) AS end_time,
+           SUM(COALESCE(u.provider_cost_usd, u.catalog_cost_usd, m.reported_cost_usd, 0.0)) AS total_cost_usd,
+           MAX(CASE WHEN m.session_id = m.thread_id
+                    THEN COALESCE(m.created_at_ms, m.updated_at_ms, 0) ELSE 0 END) AS created_at_ms,
+           MAX(COALESCE(m.source_updated_at, m.last_message_at, m.updated_at_ms,
+                        datetime(m.created_at_ms / 1000, 'unixepoch'))) AS source_updated_at,
+           json_group_array(m.session_id) AS session_ids_json,
+           MAX(COALESCE(m.materializer_version, 0)) AS materializer_version,
+           MIN(COALESCE(m.materializer_version, 0)) AS min_materializer_version,
+           MAX(COALESCE(m.materialized_at, '')) AS materialized_at
+    FROM members m
+    LEFT JOIN usage_by_session u ON u.session_id = m.session_id
+    GROUP BY m.thread_id
+), repo_counts AS (
+    SELECT m.thread_id, repo.value AS repo, COUNT(*) AS repo_count
+    FROM members m, json_each(COALESCE(m.repo_names_json, '[]')) repo
+    WHERE repo.value IS NOT NULL AND repo.value != ''
+    GROUP BY m.thread_id, repo.value
+), origin_counts AS (
+    SELECT thread_id, origin, COUNT(*) AS origin_count
+    FROM members
+    GROUP BY thread_id, origin
+), origin_json AS (
+    SELECT thread_id, json_group_object(origin, origin_count) AS value
+    FROM origin_counts
+    GROUP BY thread_id
+), work_event_counts AS (
+    SELECT m.thread_id, e.work_event_type, COUNT(*) AS event_count
+    FROM members m
+    JOIN session_work_events e ON e.session_id = m.session_id
+    GROUP BY m.thread_id, e.work_event_type
+), work_event_json AS (
+    SELECT thread_id, json_group_object(work_event_type, event_count) AS value
+    FROM work_event_counts
+    GROUP BY thread_id
+), repo_json AS (
+    SELECT thread_id,
+           (SELECT rc.repo FROM repo_counts rc
+            WHERE rc.thread_id = r.thread_id
+            ORDER BY rc.repo_count DESC, rc.repo
+            LIMIT 1) AS dominant_repo
+    FROM repo_counts r
+    GROUP BY thread_id
 )
-SELECT thread_id, NULL AS dominant_repo_id, 0 AS materializer_version,
-       'query-time' AS materialized_at, NULL AS source_updated_at, NULL AS input_high_water_mark,
-       NULL AS input_high_water_mark_source, session_count AS input_row_count,
-       start_time, end_time, NULL AS dominant_repo, session_ids_json,
-       session_count, MAX(session_count - 1, 0) AS depth, MAX(session_count - 1, 0) AS branch_count,
-       total_messages, total_cost_usd, 0 AS wall_duration_ms,
-       '{{}}' AS work_event_breakdown_json, '{{}}' AS payload_json,
-       lower(thread_id) AS search_text, created_at_ms
-FROM grouped;
+SELECT g.thread_id,
+       NULL AS dominant_repo_id,
+       CASE WHEN g.min_materializer_version = g.materializer_version THEN g.materializer_version ELSE NULL END
+           AS materializer_version,
+       NULLIF(g.materialized_at, '') AS materialized_at,
+       g.source_updated_at,
+       g.source_updated_at AS input_high_water_mark,
+       CASE WHEN g.source_updated_at IS NULL THEN NULL ELSE 'session/profile timestamps' END
+           AS input_high_water_mark_source,
+       g.session_count AS input_row_count,
+       g.start_time,
+       g.end_time,
+       r.dominant_repo,
+       g.session_ids_json,
+       g.session_count,
+       COALESCE((SELECT MAX(d.depth) FROM depths d WHERE d.thread_id = g.thread_id), 0) AS depth,
+       (SELECT COUNT(*)
+        FROM members leaf
+        WHERE leaf.thread_id = g.thread_id
+          AND NOT EXISTS (
+              SELECT 1 FROM members child
+              WHERE child.thread_id = leaf.thread_id AND child.parent_session_id = leaf.session_id
+          )) AS branch_count,
+       g.total_messages,
+       g.total_cost_usd,
+       CASE WHEN g.start_time IS NULL OR g.end_time IS NULL THEN 0
+            ELSE MAX(CAST((julianday(g.end_time) - julianday(g.start_time)) * 86400000 AS INTEGER), 0)
+       END AS wall_duration_ms,
+       COALESCE(w.value, '{{}}') AS work_event_breakdown_json,
+       json_object(
+           'thread_id', g.thread_id,
+           'root_id', g.thread_id,
+           'session_ids', json(g.session_ids_json),
+           'session_count', g.session_count,
+           'depth', COALESCE((SELECT MAX(d.depth) FROM depths d WHERE d.thread_id = g.thread_id), 0),
+           'branch_count', (SELECT COUNT(*) FROM members leaf
+                            WHERE leaf.thread_id = g.thread_id
+                              AND NOT EXISTS (SELECT 1 FROM members child
+                                              WHERE child.thread_id = leaf.thread_id
+                                                AND child.parent_session_id = leaf.session_id)),
+           'start_time', g.start_time,
+           'end_time', g.end_time,
+           'wall_duration_ms', CASE WHEN g.start_time IS NULL OR g.end_time IS NULL THEN 0
+                                    ELSE MAX(CAST((julianday(g.end_time) - julianday(g.start_time)) * 86400000 AS INTEGER), 0)
+                               END,
+           'total_messages', g.total_messages,
+           'total_cost_usd', g.total_cost_usd,
+           'dominant_repo', r.dominant_repo,
+           'origin_breakdown', json(COALESCE(o.value, '{{}}')),
+           'work_event_breakdown', json(COALESCE(w.value, '{{}}')),
+           'confidence', CASE WHEN g.session_count > 1 THEN 1.0 ELSE 0.85 END,
+           'support_level', CASE WHEN g.session_count > 1 THEN 'strong' ELSE 'moderate' END,
+           'support_signals', json((SELECT json_group_array(signal) FROM (
+               SELECT 'explicit_lineage' AS signal
+               UNION ALL SELECT 'multi_session_thread' WHERE g.session_count > 1
+               UNION ALL SELECT 'branching_continuations'
+                   WHERE (SELECT COUNT(*) FROM members leaf
+                          WHERE leaf.thread_id = g.thread_id
+                            AND NOT EXISTS (SELECT 1 FROM members child
+                                            WHERE child.thread_id = leaf.thread_id
+                                              AND child.parent_session_id = leaf.session_id)) > 1
+               UNION ALL SELECT 'dominant_repo' WHERE r.dominant_repo IS NOT NULL
+               UNION ALL SELECT 'wallclock_bounds' WHERE g.start_time IS NOT NULL AND g.end_time IS NOT NULL
+           ))),
+           'member_evidence', json((SELECT json_group_array(json_object(
+               'session_id', member.session_id,
+               'parent_id', member.parent_session_id,
+               'role', CASE WHEN member.session_id = g.thread_id THEN 'root' ELSE 'parent_continuation' END,
+               'depth', COALESCE(md.depth, 0),
+               'confidence', 1.0,
+               'support_signals', json_array('parent_session_id', 'explicit_lineage'),
+               'evidence', json_array('root_id=' || g.thread_id)
+           )) FROM members member
+           LEFT JOIN depths md ON md.thread_id = member.thread_id AND md.session_id = member.session_id
+           WHERE member.thread_id = g.thread_id)))
+       ) AS payload_json,
+       lower(g.thread_id || char(10) || COALESCE(r.dominant_repo, '') || char(10) || g.session_ids_json)
+           AS search_text,
+       g.created_at_ms
+FROM grouped g
+LEFT JOIN repo_json r ON r.thread_id = g.thread_id
+LEFT JOIN origin_json o ON o.thread_id = g.thread_id
+LEFT JOIN work_event_json w ON w.thread_id = g.thread_id;
 
 -- polylogue-eizc: threads_fts (a MATCH index over threads.search_text) was
 -- dropped in INDEX_SCHEMA_VERSION 62 -- its only MATCH reader
@@ -1328,7 +1483,35 @@ ON work_evidence_edges(graph_id, target_ref, edge_kind);
 
 -- 100% derivable from existing tables. Keep the public relation name as the
 -- view so delegation readers do not depend on a materialized copy.
-CREATE VIEW IF NOT EXISTS delegation_facts AS
+CREATE TABLE IF NOT EXISTS delegation_refresh_scope (
+    {TABLE_SPECS["delegation_refresh_scope"].ddl_body}
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS delegation_facts (
+    {TABLE_SPECS["delegation_facts"].ddl_body}
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
+ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
+ON delegation_facts(mapping_state, parent_session_id);
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
+ON delegation_facts(requested_model, dispatch_turn_model, child_session_dominant_model);
+
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_insert
+AFTER INSERT ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_update
+AFTER UPDATE ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_delegation_facts_delete
+AFTER DELETE ON delegation_facts BEGIN
+    UPDATE query_unit_frame_state SET epoch = epoch + 1 WHERE singleton = 1;
+END;
+
+CREATE VIEW IF NOT EXISTS delegation_facts_source AS
 WITH dispatch_actions AS (
     SELECT
         a.session_id                           AS parent_session_id,
@@ -1359,6 +1542,10 @@ WITH dispatch_actions AS (
     FROM actions a
     JOIN messages m ON m.message_id = a.message_id
     WHERE a.semantic_type = 'subagent'
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = a.session_id
+      )
 ),
 resolved_children AS (
     SELECT
@@ -1372,6 +1559,10 @@ resolved_children AS (
     WHERE l.link_type = 'subagent'
       AND l.resolved_dst_session_id IS NOT NULL
       AND {topology_status_composes_sql("l.status")}
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
 ),
 -- The child's own first user turn: for a subagent this literally IS the
 -- text Claude Code/Codex injected as the dispatch's prompt, not a human
@@ -1546,6 +1737,10 @@ quarantined_rows AS (
     WHERE l.link_type = 'subagent'
       AND {topology_status_excluded_sql("l.status")}
       AND l.resolved_dst_session_id IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM delegation_refresh_scope scope
+          WHERE scope.parent_session_id = l.resolved_dst_session_id
+      )
 ),
 attempts AS (
     SELECT * FROM resolved_rows
@@ -1600,6 +1795,56 @@ FROM attempts att
 JOIN sessions p ON p.session_id = att.parent_session_id
 LEFT JOIN session_profiles pp ON pp.session_id = att.parent_session_id
 LEFT JOIN session_profiles cp ON cp.session_id = att.child_session_id;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_ai
+AFTER INSERT ON session_links
+WHEN NEW.resolved_dst_session_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.resolved_dst_session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.resolved_dst_session_id);
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_ai
+AFTER INSERT ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts WHERE parent_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_links_delegation_facts_au
+AFTER UPDATE ON session_links
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    DELETE FROM delegation_facts
+    WHERE parent_session_id IN (OLD.resolved_dst_session_id, NEW.resolved_dst_session_id);
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM (
+        SELECT OLD.resolved_dst_session_id AS parent_session_id
+        UNION
+        SELECT NEW.resolved_dst_session_id
+    )
+    WHERE parent_session_id IS NOT NULL;
+    {delegation_facts_insert_sql("NEW.resolved_dst_session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
+
+CREATE TRIGGER IF NOT EXISTS session_profiles_delegation_facts_au
+AFTER UPDATE ON session_profiles
+WHEN NOT EXISTS (SELECT 1 FROM derived_refresh_guard WHERE guard_name = 'session-write') BEGIN
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id)
+    SELECT parent_session_id
+    FROM delegation_facts
+    WHERE child_session_id = NEW.session_id;
+    DELETE FROM delegation_facts
+    WHERE parent_session_id = NEW.session_id OR child_session_id = NEW.session_id;
+    INSERT OR REPLACE INTO delegation_refresh_scope(parent_session_id) VALUES (NEW.session_id);
+    {delegation_facts_insert_sql("NEW.session_id")};
+    DELETE FROM delegation_refresh_scope;
+END;
 
 CREATE VIEW IF NOT EXISTS delegations AS
 SELECT

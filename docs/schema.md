@@ -86,9 +86,9 @@ The parsed session/message/block tree, full-text search indexes, cross-session
 topology, and rebuildable read models. Rebuildable from `source.db`.
 
 Core tables: `sessions`, `messages`, `blocks`, plus the `actions` **view**
-(not a table — see below), `session_links` (typed cross-session edges),
-query-time `threads`, `thread_sessions`, `action_pairs`, `delegation_facts`,
-and `session_tag_rollups` views, attachment tables (`attachments`,
+(not a table — see below), `session_links` (typed cross-session edges), the
+compact indexed `action_pairs` and `delegation_facts` relations, query-time
+`threads`, `thread_sessions`, and `session_tag_rollups` views, attachment tables (`attachments`,
 `attachment_refs`, `attachment_native_ids`), `paste_spans`, the cost table
 `session_model_usage`, the auto-tag side of
 `session_tags`, and the insight

@@ -10,6 +10,18 @@
   },
   "measured_under_load": true,
   "metrics": {
+    "action_pairs_refresh_mean_ms": {
+      "baseline": 3.3244214973819908,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
+    "action_pairs_refresh_p95_ms": {
+      "baseline": 7.476726997992955,
+      "direction": "lower_is_better",
+      "tolerance_pct": 70.0,
+      "unit": "ms"
+    },
     "census_chain_revisions_per_s": {
       "baseline": 1844.2279717443803,
       "direction": "higher_is_better",

@@ -18,7 +18,7 @@ from polylogue.storage.runtime import (
     SessionProfileRecord,
     ThreadRecord,
 )
-from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
+from polylogue.storage.sqlite.queries.mappers_insight_profiles import _row_to_session_profile_record
 
 _ROOT_THREAD_IDS_SQL = """
     SELECT DISTINCT COALESCE(root_session_id, session_id) AS session_id

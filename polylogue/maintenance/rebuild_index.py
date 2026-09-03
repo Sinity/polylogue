@@ -32,7 +32,9 @@ from polylogue.storage.archive_identity import ArchiveLocation, OwnedArchiveLoca
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_REBUILD_SQL, TRIGRAM_REBUILD_DELETE_ALL_SQL
 from polylogue.storage.introspection import table_exists
+from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
+from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
 
 if TYPE_CHECKING:
     from polylogue.operations.candidate_build import CandidateBuildRequest
@@ -57,6 +59,7 @@ _PLANNER_STATS_ANALYZE_STATEMENTS = (
     "ANALYZE messages",
     "ANALYZE blocks",
     "ANALYZE session_links",
+    "ANALYZE action_pairs",
 )
 
 logger = get_logger(__name__)
@@ -732,6 +735,12 @@ def _repopulate_bulk_build_derived_state(index_path: Path) -> dict[str, float]:
         started_at = time.perf_counter()
         rebuild_command_trigram_index_sync(conn)
         timings_s["command_trigram"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
+        rebuild_all_action_pairs_sync(conn)
+        timings_s["action_pairs"] = time.perf_counter() - started_at
+        started_at = time.perf_counter()
+        rebuild_all_delegation_facts_sync(conn)
+        timings_s["delegation_facts"] = time.perf_counter() - started_at
         started_at = time.perf_counter()
         conn.commit()
         timings_s["commit"] = time.perf_counter() - started_at

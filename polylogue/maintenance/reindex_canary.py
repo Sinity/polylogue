@@ -2587,8 +2587,10 @@ def _fsync_directory(directory: Path) -> None:
 # outside this comparator's scope.
 _EXCLUDED_TABLES = frozenset(
     {
+        "delegation_refresh_scope",
         "derived_refresh_guard",
         "agent_meta_sidecar_purge_receipts",
+        "session_tag_rollups",
     }
 )
 _CORE_TABLES = ("sessions", "messages", "blocks", "session_links")

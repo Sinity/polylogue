@@ -18,7 +18,8 @@ leaves them populated; (b) the readiness repopulate produces byte-identical
 content to trickle-mode population of the same corpus, including a
 prefix-sharing lineage cascade; (c) the guard row never leaks past an
 exception; (d) skipping one readiness surface makes the parity comparison
-fail. ``action_pairs`` remains query-time derived during both modes.
+fail. ``action_pairs`` remains a compact indexed relation without duplicated
+payload text.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.fts.fts_lifecycle import rebuild_command_trigram_index_sync, rebuild_fts_index_sync
 from polylogue.storage.fts.sql import FTS_BULK_SESSION_WRITE_GUARD
+from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
@@ -181,7 +183,7 @@ def test_bulk_build_write_leaves_derived_surfaces_empty(tmp_path: Path) -> None:
 
     assert conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks_command_trigram_docsize").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] > 0
+    assert conn.execute("SELECT COUNT(*) FROM action_pairs WHERE session_id = ?", (session_id,)).fetchone()[0] == 0
     # The guard row must never leak past the write it protected.
     assert (
         conn.execute(
@@ -225,10 +227,11 @@ def test_bulk_build_readiness_repopulate_matches_trickle_mode(tmp_path: Path) ->
     # before repopulating -- otherwise the parity check below could pass
     # vacuously if bulk_build silently did nothing.
     assert conn_bulk.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0] == 0
-    assert conn_bulk.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] > 0
+    assert conn_bulk.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
 
     rebuild_fts_index_sync(conn_bulk)
     rebuild_command_trigram_index_sync(conn_bulk)
+    rebuild_all_action_pairs_sync(conn_bulk)
     conn_bulk.commit()
 
     fts_bulk = _fts_rows(conn_bulk)

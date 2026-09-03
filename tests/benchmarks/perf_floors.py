@@ -56,6 +56,9 @@ _GIT_TIMEOUT_S = 2.0
 
 # Quick mode shrinks corpora for a fast smoke check (local dev / CI dry runs);
 # it still exercises every measured surface, just at a smaller scale.
+_ACTION_PAIRS_TARGET_MESSAGES = 5000
+_ACTION_PAIRS_TARGET_MESSAGES_QUICK = 1000
+_ACTION_PAIRS_SAMPLE_SESSIONS = 20
 _QUERY_TARGET_MESSAGES = 5000
 _QUERY_TARGET_MESSAGES_QUICK = 1000
 _REPLAY_RAW_COUNT = 200
@@ -208,8 +211,54 @@ def _seed_bench_archive(workdir: Path, *, target_messages: int) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Measurement group 3: action_pairs refresh timing
 # ---------------------------------------------------------------------------
-# Measurement group 3: query p50/p95 latency via real route-latency percentiles
+
+
+def measure_action_pairs_refresh(
+    index_db: Path, *, sample_size: int = _ACTION_PAIRS_SAMPLE_SESSIONS
+) -> list[FloorMetric]:
+    import sqlite3
+
+    from polylogue.storage.sqlite.action_pairs import refresh_action_pairs
+
+    conn = sqlite3.connect(str(index_db))
+    try:
+        rows = conn.execute("SELECT session_id FROM sessions ORDER BY session_id LIMIT ?", (sample_size,)).fetchall()
+        session_ids = [row[0] for row in rows]
+        durations_ms: list[float] = []
+        for session_id in session_ids:
+            start = time.perf_counter()
+            refresh_action_pairs(conn, session_id)
+            conn.commit()
+            durations_ms.append((time.perf_counter() - start) * 1000.0)
+    finally:
+        conn.close()
+
+    if not durations_ms:
+        return [FloorMetric("action_pairs_refresh_mean_ms", 0.0, "ms", "lower_is_better", {"sample_size": 0})]
+    durations_ms.sort()
+    p95_index = min(len(durations_ms) - 1, round(0.95 * (len(durations_ms) - 1)))
+    return [
+        FloorMetric(
+            "action_pairs_refresh_mean_ms",
+            sum(durations_ms) / len(durations_ms),
+            "ms",
+            "lower_is_better",
+            {"sample_size": len(durations_ms)},
+        ),
+        FloorMetric(
+            "action_pairs_refresh_p95_ms",
+            durations_ms[p95_index],
+            "ms",
+            "lower_is_better",
+            {"sample_size": len(durations_ms)},
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Measurement group 4: query p50/p95 latency via real route-latency percentiles
 # ---------------------------------------------------------------------------
 
 
@@ -323,8 +372,9 @@ def run_perf_floor_set(workdir: Path | None = None, *, quick: bool = False) -> d
         metrics.extend(measure_census_throughput(base / "census", quick=quick))
         metrics.extend(measure_replay_throughput(base / "replay", quick=quick))
 
-        target_messages = _QUERY_TARGET_MESSAGES_QUICK if quick else _QUERY_TARGET_MESSAGES
+        target_messages = _ACTION_PAIRS_TARGET_MESSAGES_QUICK if quick else _ACTION_PAIRS_TARGET_MESSAGES
         index_db = _seed_bench_archive(base / "seed", target_messages=target_messages)
+        metrics.extend(measure_action_pairs_refresh(index_db))
         metrics.extend(measure_query_latency(index_db))
 
         return {

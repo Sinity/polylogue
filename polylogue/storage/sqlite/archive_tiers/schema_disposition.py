@@ -269,9 +269,7 @@ _PURGE_TABLES = frozenset(
     }
 )
 
-_QUERY_TIME_DERIVED_INDEX_VIEWS = frozenset(
-    {"action_pairs", "threads", "thread_sessions", "delegation_facts", "session_tag_rollups"}
-)
+_QUERY_TIME_DERIVED_INDEX_VIEWS = frozenset({"threads", "thread_sessions", "session_tag_rollups"})
 
 
 def _object_decision(obj: object) -> SchemaDisposition:
@@ -301,6 +299,16 @@ def _object_decision(obj: object) -> SchemaDisposition:
         evidence = (
             "no production writer, reader, hydration, or intended identity join; dominant_repo remains authoritative"
         )
+    elif tier == "index" and object_type == "table" and table_name == "action_pairs":
+        disposition = "KEEP"
+        owner = "indexed action read model"
+        bead = "polylogue-avlt5"
+        evidence = "measured session-scoped action reads require the indexed compact join/rank/outcome relation"
+    elif tier == "index" and object_type == "table" and table_name == "delegation_facts":
+        disposition = "KEEP"
+        owner = "indexed delegation read model"
+        bead = "polylogue-avlt5"
+        evidence = "measured delegation counts require a compact indexed relation rather than an archive-wide view"
     elif tier == "index" and object_type == "view" and name in _QUERY_TIME_DERIVED_INDEX_VIEWS:
         disposition = "DERIVE"
         owner = "query-time index derivation"

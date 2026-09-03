@@ -5253,12 +5253,12 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert readiness.total_sessions == 2
         assert readiness_by_name["session_profiles"].verdict == "partial"
         assert readiness_by_name["session_profiles"].missing_count == 1
-        assert readiness_by_name["threads"].verdict == "ready"
+        assert readiness_by_name["threads"].verdict == "stale"
         assert readiness_by_name["threads"].row_count == 1
         assert readiness_by_name["threads"].expected_row_count == 1
-        assert readiness_by_name["threads"].stale_count == 0
-        assert readiness_by_name["threads"].ready_flags == {"threads_ready": True}
-        assert "threads_ready=True" in readiness_by_name["threads"].evidence
+        assert readiness_by_name["threads"].stale_count == 1
+        assert readiness_by_name["threads"].ready_flags == {"threads_ready": False}
+        assert "threads_ready=False" in readiness_by_name["threads"].evidence
         rigor_by_name = {entry.insight_name: entry for entry in rigor.entries}
         assert rigor.sample_limit == 10
         assert rigor_by_name["session_profiles"].sample_size == 1
@@ -5277,11 +5277,11 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert manifest["query"]["insights"] == ["session_profiles", "threads"]
         assert {entry["insight_name"] for entry in manifest["insights"]} == {"session_profiles", "threads"}
         assert coverage["total_sessions"] == 2
-        assert len(exported_threads) == 1
+        assert exported_threads == []
         threads_summary = next(entry for entry in manifest["insights"] if entry["insight_name"] == "threads")
-        assert threads_summary["readiness_verdict"] == "ready"
-        assert threads_summary["row_count"] == 1
-        assert threads_summary["errors"] == []
+        assert threads_summary["readiness_verdict"] == "stale"
+        assert threads_summary["row_count"] == 0
+        assert any("withheld" in error for error in threads_summary["errors"])
         assert (export_target / "schemas" / "threads.schema.json").exists()
         assert not (export_target / "README.md").exists()
         assert missing is None
@@ -5823,7 +5823,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.phase_rows_ready is True
         assert status.thread_count == 2
         assert status.root_threads == 2
-        assert status.threads_ready is True
+        assert status.threads_ready is False
         assert status.tag_rollup_count == 0
         assert status.expected_tag_rollup_count == 0
         assert status.tag_rollups_ready is True
