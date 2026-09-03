@@ -52,6 +52,7 @@ ResponseMutator: TypeAlias = Callable[[str, RouteArguments, int, str], str]
 DiscoveryMutator: TypeAlias = Callable[[JSONDocument], JSONDocument]
 _CONTINUITY_DAEMON_SINK_URL = "http://127.0.0.1:1"
 _CONTINUITY_API_TOKEN_SENTINEL = "continuity-replay-call-log-disabled"
+CANCELLATION_SENTINEL = "polylogue-continuity-cancellation-observed"
 _TEMPLATE_RE = re.compile(r"\{fixture:([A-Za-z0-9_.-]+)\}")
 _ATTEMPT_TOKEN_RE = re.compile(r"(?P<key>[a-z_]+):(?P<value>[A-Za-z0-9_-]+)")
 _ATTEMPT_GRADES: frozenset[str] = frozenset(
@@ -121,6 +122,18 @@ def _serve_saturated_cancellation_probe() -> None:
 
     from polylogue.archive.query import execution_control
     from polylogue.mcp.cli import main
+
+    # mcp 2.x drops the response to a cancelled request, so the client can no
+    # longer read the server's abort off the wire. The probe announces the
+    # production cancellation call itself: `execute_archive_read` invokes
+    # `ctx.cancel()` only on the read it actually interrupted.
+    _context_cancel = execution_control.QueryExecutionContext.cancel
+
+    def _announce_cancel(self: execution_control.QueryExecutionContext) -> None:
+        _context_cancel(self)
+        print(CANCELLATION_SENTINEL, file=sys.stderr, flush=True)
+
+    execution_control.QueryExecutionContext.cancel = _announce_cancel  # type: ignore[method-assign]
 
     controller = execution_control.QueryAdmissionController(capacity=1, reserved_interactive=0)
     holder = execution_control.QueryExecutionContext.create(
@@ -385,6 +398,7 @@ class StdioMCPContinuityRoute:
         self._stack: AsyncExitStack | None = None
         self._session: ClientSession | None = None
         self._runtime_workdir: TemporaryDirectory[str] | None = None
+        self._server_errlog: Path | None = None
         self._discovery: JSONDocument = {}
         self._invocation_count = 0
         self._cancellation_receipts: dict[str, CancellationExerciseReceipt] = {}
@@ -418,8 +432,14 @@ class StdioMCPContinuityRoute:
             cwd=str(Path.cwd()),
         )
         stack = AsyncExitStack()
+        server_errlog: Path | None = None
         try:
-            read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters))
+            if self.saturated_cancellation_probe:
+                server_errlog = runtime_root / "server-stderr.log"
+                errlog = stack.enter_context(server_errlog.open("w", encoding="utf-8"))
+                read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters, errlog=errlog))
+            else:
+                read_stream, write_stream = await stack.enter_async_context(stdio_client(parameters))
             session = await stack.enter_async_context(
                 ClientSession(
                     read_stream,
@@ -448,6 +468,7 @@ class StdioMCPContinuityRoute:
         self._stack = stack
         self._session = session
         self._runtime_workdir = runtime_workdir
+        self._server_errlog = server_errlog
         self._discovery = _stdio_discovery(initialize, tools, self.transport_name)
         if self.discovery_mutator is not None:
             self._discovery = require_json_document(
@@ -462,6 +483,7 @@ class StdioMCPContinuityRoute:
         self._stack = None
         self._session = None
         self._runtime_workdir = None
+        self._server_errlog = None
         try:
             if stack is not None:
                 await stack.aclose()
@@ -539,6 +561,10 @@ class StdioMCPContinuityRoute:
         before cancellation.  That removes both timing sleeps and request-id
         swarms while still exercising MCPServer, the registered Polylogue tool,
         QueryExecutionContext, and QueryAdmissionController.
+
+        A cancelled request gets no response on the wire, so the confirmation
+        is the probe server's own announcement of the production
+        ``ctx.cancel()`` call on its stderr, not a returned error.
         """
         session = self._session
         if session is None:
@@ -549,7 +575,15 @@ class StdioMCPContinuityRoute:
                 elapsed_ms=0.0,
                 detail="MCP stdio route is not open",
             )
-        from mcp.shared.exceptions import MCPError
+        errlog = self._server_errlog
+        if errlog is None:
+            return CancellationExerciseReceipt(
+                attempted=False,
+                confirmed=False,
+                outcome="not_applicable",
+                elapsed_ms=0.0,
+                detail="cancellation exercise requires the saturated-admission probe server",
+            )
         from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
         from mcp.shared.transport_context import TransportContext
         from mcp.types import CancelledNotification, CancelledNotificationParams
@@ -583,29 +617,34 @@ class StdioMCPContinuityRoute:
         )
 
         confirmed = False
-        outcome: CancellationOutcome = "call_failed"
-        detail: str | None = None
-        try:
-            await asyncio.wait_for(probe_task, timeout=max(1.0, grace_ms / 1000))
-        except MCPError as exc:
-            message = exc.error.message or ""
-            if exc.error.code == 0 and "cancel" in message.lower():
+        outcome: CancellationOutcome = "not_confirmed_within_grace"
+        detail: str | None = "production ctx.cancel() was not announced within the cancellation grace budget"
+        grace_s = max(1.0, grace_ms / 1000)
+        deadline = time.perf_counter() + grace_s
+        # The receipt reports how long the server took to interrupt the read,
+        # so the clock stops at the observation, not after transport teardown.
+        observed_at: float | None = None
+        while True:
+            if CANCELLATION_SENTINEL in errlog.read_text(encoding="utf-8", errors="replace"):
                 confirmed = True
+                observed_at = time.perf_counter()
                 outcome = "cancelled_confirmed"
-                detail = "queued production MCP read returned the SDK cancellation response"
-            else:
-                detail = message or f"MCPError code={exc.error.code}"
-        except TimeoutError:
-            probe_task.cancel()
-            with suppress(BaseException):
-                await probe_task
-            outcome = "not_confirmed_within_grace"
-            detail = "queued production MCP read did not resolve within the cancellation grace budget"
-        else:
+                detail = "queued production MCP read reached execute_archive_read's ctx.cancel()"
+                break
+            if probe_task.done() or time.perf_counter() >= deadline:
+                break
+            await asyncio.sleep(0.01)
+        if not confirmed and probe_task.done():
             outcome = "completed_before_cancel"
             detail = "saturated production admission unexpectedly allowed the probe to complete"
+        elif not confirmed:
+            tail = errlog.read_text(encoding="utf-8", errors="replace")[-500:].strip()
+            detail = f"{detail}; probe server stderr tail: {tail or '(empty)'}"
+        probe_task.cancel()
+        with suppress(BaseException):
+            await probe_task
 
-        # A cancellation response proves the handler stopped, but it does not
+        # The announced cancel proves the handler stopped, but it does not
         # prove the stdio server has consumed every preceding cancellation
         # notification.  Closing the disposable transport at that point can
         # race the SDK's stdin reader: it reads one last notification after
@@ -617,7 +656,7 @@ class StdioMCPContinuityRoute:
         # confirmed cancellation.
         await session.send_ping()
 
-        elapsed_ms = (time.perf_counter() - started) * 1000
+        elapsed_ms = ((observed_at or time.perf_counter()) - started) * 1000
         return CancellationExerciseReceipt(
             attempted=True,
             confirmed=confirmed,
