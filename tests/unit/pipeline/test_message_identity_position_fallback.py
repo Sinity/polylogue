@@ -18,10 +18,10 @@ import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session_revision_membership import MembershipRevision, _relation, classify_membership_revisions
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
-from polylogue.pipeline.ids import session_revision_projection
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
+from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution, session_revision_projection
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 
 
 def _session(messages: list[ParsedMessage], attachments: list[ParsedAttachment] | None = None) -> ParsedSession:
@@ -252,6 +252,79 @@ def test_indistinguishable_duplicate_idless_attachment_owner_fails_closed() -> N
     )
     with pytest.raises(MessageOwnerAmbiguityError):
         session_revision_projection(_session(repeated, [attachment]))
+
+
+def _document_only(reference_id: str, position: int) -> ParsedMessage:
+    """An id-less, timestamp-less, text-less turn whose only content is a document reference."""
+    return ParsedMessage(
+        provider_message_id="",
+        role=Role.USER,
+        text=None,
+        timestamp=None,
+        position=position,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.DOCUMENT,
+                media_type="text/plain",
+                metadata={"driveDocument": {"id": reference_id}},
+            )
+        ],
+    )
+
+
+def _document_attachment(reference_id: str, position: int) -> ParsedAttachment:
+    return ParsedAttachment(
+        provider_attachment_id=reference_id,
+        message_provider_id="",
+        message_position=position,
+        message_variant_index=0,
+        name="shared-name.txt",
+        mime_type="text/plain",
+    )
+
+
+def test_duplicate_idless_turns_distinguished_by_referenced_document_own_their_attachments() -> None:
+    """Block reference identity is content: turns citing different documents are different turns.
+
+    Anti-vacuity: dropping the block-reference discriminator from
+    ``message_owner_resolution`` makes both attachments raise
+    ``MessageOwnerAmbiguityError`` here, because the turns share role,
+    timestamp, text, and block type.
+    """
+    messages = [_document_only("doc-a", 0), _document_only("doc-b", 1)]
+    attachments = [_document_attachment("doc-a", 0), _document_attachment("doc-b", 1)]
+
+    resolution = message_owner_resolution(messages)
+    assert not resolution.ambiguous_keys
+    owner_keys = [attachment_message_owner_key(attachment, resolution) for attachment in attachments]
+    assert owner_keys == list(resolution.keys)
+
+    projection = session_revision_projection(_session(messages, attachments))
+    assert len(projection.attachment_identities) == 2
+
+
+def test_duplicate_idless_turns_with_identical_document_reference_still_fail_closed() -> None:
+    """Two turns citing the same document with nothing else differing stay ambiguous."""
+    messages = [_document_only("doc-a", 0), _document_only("doc-a", 1)]
+    attachment = _document_attachment("doc-a", 0)
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_revision_projection(_session(messages, [attachment]))
+
+
+def test_block_reference_discriminator_leaves_unique_content_keys_unchanged() -> None:
+    """The reference tier only runs after the content tier collides."""
+    timestamp = "2024-01-01T00:00:00Z"
+    first_references = [
+        _document_only("doc-a", 0).model_copy(update={"text": "first", "timestamp": timestamp}),
+        _document_only("doc-b", 1).model_copy(update={"text": "second", "timestamp": timestamp}),
+    ]
+    other_references = [
+        _document_only("doc-x", 0).model_copy(update={"text": "first", "timestamp": timestamp}),
+        _document_only("doc-y", 1).model_copy(update={"text": "second", "timestamp": timestamp}),
+    ]
+
+    assert message_owner_resolution(first_references).keys == message_owner_resolution(other_references).keys
 
 
 def test_duplicate_stable_owner_evidence_without_physical_coordinate_fails_closed() -> None:
