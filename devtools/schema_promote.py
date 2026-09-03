@@ -31,6 +31,13 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _schema_registry_root() -> Path:
+    """The schema package tree promotion writes to."""
+    import polylogue.schemas
+
+    return Path(next(iter(polylogue.schemas.__path__)))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -53,13 +60,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-promote: {exc}", file=sys.stderr)
         return 1
 
-    render_schema_promote_result(result=result, json_output=bool(args.json))
+    json_output = bool(args.json)
+    render_schema_promote_result(result=result, json_output=json_output)
     # Promotion evidence must be complete for what it just promoted; the audit
-    # is a postcondition of this command, not of every static gate.
+    # is a postcondition of this command, not of every static gate. It audits
+    # the registry tree promotion actually writes to, which a relative literal
+    # would only find from one working directory.
     audit = subprocess.run(
-        [sys.executable, "-m", "polylogue.schemas.promotion_audit", "polylogue/schemas"],
+        [sys.executable, "-m", "polylogue.schemas.promotion_audit", str(_schema_registry_root())],
         check=False,
+        # --json promises one document on stdout; the audit's own report goes
+        # to stderr so it cannot be concatenated onto it.
+        capture_output=json_output,
+        text=True,
     )
+    if json_output:
+        for stream in (audit.stdout, audit.stderr):
+            if stream:
+                sys.stderr.write(stream)
     return audit.returncode
 
 

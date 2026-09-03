@@ -21,6 +21,11 @@ from devtools.verify_runs import (
     env_for_pytest_step,
 )
 
+#: `_rerun_failed_once` and `_run` acquire the host's single pytest slot before
+#: executing. These tests drive that code inline through its documented escape
+#: rather than requiring a live pueue queue.
+_SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
+
 
 def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
@@ -287,6 +292,7 @@ def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
 
 
 def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("POLYLOGUE_PYTEST_SLOT", "held")
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
@@ -460,7 +466,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
     monkeypatch.setattr(subprocess, "run", fake_run)
     command = ["python", "-m", "pytest", f"--json-report-file={report_path}"]
 
-    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
 
     assert result is not None
     assert result["flaky"] == ["tests/test_a.py::test_flaky"]
@@ -496,7 +502,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
             SimpleNamespace(returncode=0),
         )[1],
     )
-    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
     assert result is not None and result["still_failed"] == []
     assert json.loads((step_dir / "summary.json").read_text())["exitstatus"] == 0
     assert json.loads(report_path.read_text())["summary"]["exitstatus"] == 0
@@ -520,5 +526,274 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
             SimpleNamespace(returncode=3),
         )[1],
     )
-    result = verify._rerun_failed_once(command, env={}, artifacts=SimpleNamespace(step_dir=step_dir))
+    result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
     assert result is not None and result["still_failed"] == ["tests/test_a.py::test_flaky"] and result["flaky"] == []
+
+
+def _flake_rerun_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rerun_outcome: str = "passed",
+) -> tuple[Path, list[list[str]]]:
+    """Seed a first-run report with one failure and stub the rerun subprocess."""
+
+    report_path = tmp_path / "pytest.json"
+    report_path.write_text(
+        json.dumps(
+            {
+                "exitcode": 1,
+                "summary": {"failed": 1, "passed": 2},
+                "tests": [
+                    {"nodeid": "tests/test_a.py::test_flaky", "outcome": "failed"},
+                    {"nodeid": "tests/test_a.py::test_ok", "outcome": "passed"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    step_dir = tmp_path / "step"
+    step_dir.mkdir()
+    launched: list[list[str]] = []
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+        launched.append(list(command))
+        rerun_file = next(
+            Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")
+        )
+        rerun_file.write_text(
+            json.dumps(
+                {
+                    "exitcode": 0 if rerun_outcome == "passed" else 1,
+                    "tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": rerun_outcome}],
+                }
+            ),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(command, 0 if rerun_outcome == "passed" else 1)
+
+    monkeypatch.setattr(verify.subprocess, "run", fake_run)
+    return report_path, launched
+
+
+def test_accepted_flake_clears_both_recorded_exit_statuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: drop the ``patched["exitcode"] = 0`` line and this fails.
+
+    The json report states its exit status twice. Patching only ``summary``
+    left the top-level field naming the pre-rerun failure, so a consumer
+    reading it saw a red run the verifier had already accepted as flaky.
+    """
+
+    report_path, _ = _flake_rerun_fixture(tmp_path, monkeypatch)
+    command = ["pytest", f"--json-report-file={report_path}"]
+    artifacts = SimpleNamespace(step_dir=tmp_path / "step")
+
+    rerun = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=artifacts)
+
+    assert rerun is not None
+    assert rerun["flaky"] == ["tests/test_a.py::test_flaky"]
+    assert rerun["still_failed"] == []
+    patched = json.loads(report_path.read_text(encoding="utf-8"))
+    assert patched["exitcode"] == 0
+    assert patched["summary"]["exitstatus"] == 0
+    assert patched["flaky_nodeids"] == ["tests/test_a.py::test_flaky"]
+
+
+def test_receipt_names_the_tests_that_only_passed_on_rerun() -> None:
+    """Anti-vacuity: remove the rerun block from canonical_verification_receipt
+    and the step below carries no flake evidence at all.
+
+    A step green only because its failures passed alone is weaker evidence
+    than one that never failed; the durable receipt must let a reader tell
+    them apart.
+    """
+
+    entry = {
+        "run_id": "run-1",
+        "status": "passed",
+        "steps": [
+            {
+                "step_id": "s1",
+                "name": "pytest",
+                "exit": 0,
+                "diagnosis": "gate_passed",
+                "rerun": {
+                    "attempted": ["tests/test_a.py::test_flaky"],
+                    "still_failed": [],
+                    "flaky": ["tests/test_a.py::test_flaky"],
+                },
+            }
+        ],
+    }
+
+    receipt = verify_runs.canonical_verification_receipt(entry)
+    step = receipt["steps"][0]
+
+    assert step["status"] == "passed"
+    assert step["flaky"] == ["tests/test_a.py::test_flaky"]
+    assert step["flaky_count"] == 1
+
+
+def test_receipt_omits_flake_fields_when_no_test_flaked() -> None:
+    """Anti-vacuity: emit the keys unconditionally and this fails.
+
+    An empty flake list must not appear, or every clean step would look like
+    it carried rerun evidence.
+    """
+
+    entry = {
+        "run_id": "run-2",
+        "status": "passed",
+        "steps": [
+            {
+                "step_id": "s1",
+                "name": "pytest",
+                "exit": 0,
+                "rerun": {"attempted": ["t"], "still_failed": ["t"], "flaky": []},
+            }
+        ],
+    }
+
+    step = verify_runs.canonical_verification_receipt(entry)["steps"][0]
+
+    assert "flaky" not in step
+    assert "flaky_count" not in step
+
+
+def test_agent_job_caps_an_explicit_worker_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: return `selection` unchanged from _capped_selection and
+    the explicit -n 32 below survives into the command.
+
+    The cap protects a shared host. Honoring it only when the caller stayed
+    silent let any explicit request claim the whole machine.
+    """
+
+    from devtools import agent_env, run_tests
+
+    monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
+    command = run_tests.build_pytest_cmd(["tests/unit/foo.py", "-n", "32"])
+
+    assert verify_runs.pytest_command_worker_request(command) == str(agent_env.AGENT_MAX_PYTEST_WORKERS)
+    assert "32" not in command
+
+
+def test_agent_job_leaves_a_request_within_the_cap_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: cap unconditionally and this run gets the ceiling instead
+    of the single worker it asked for.
+    """
+
+    from devtools import agent_env, run_tests
+
+    monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
+    command = run_tests.build_pytest_cmd(["tests/unit/foo.py", "-n", "1"])
+
+    assert verify_runs.pytest_command_worker_request(command) == "1"
+
+
+def test_explicit_zero_workers_survives_the_agent_cap() -> None:
+    """Anti-vacuity: restore `requested is None or requested < 1` and an
+    explicit zero becomes the ceiling.
+
+    Zero asks for no xdist at all. Treating it as "unset" silently turned a
+    deliberately serial run into a parallel one.
+    """
+
+    from devtools.agent_env import AGENT_MAX_PYTEST_WORKERS, AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV, agent_worker_cap
+
+    env = {AGENT_PRINCIPAL_ENV: AGENT_PRINCIPAL}
+
+    assert agent_worker_cap(0, env) == 0
+    assert agent_worker_cap(None, env) == AGENT_MAX_PYTEST_WORKERS
+    assert agent_worker_cap(1000, env) == AGENT_MAX_PYTEST_WORKERS
+    assert agent_worker_cap(0, {}) == 0
+
+
+def test_focused_managed_runs_also_force_the_full_hypothesis_profile() -> None:
+    """Anti-vacuity: drop the HYPOTHESIS_PROFILE assignment from run_tests and
+    a shell's `ci` profile survives into a run that writes graph edges.
+
+    `devtools test` traces into the same datafile `devtools verify` selects
+    from. An edge recorded under a reduced property budget would let a later
+    selected green stand for less coverage than it claims.
+    """
+
+    from devtools import run_tests
+
+    env = {"HYPOTHESIS_PROFILE": "ci", "PATH": "/usr/bin"}
+    run_tests._normalize_managed_pytest_environment(env)
+
+    assert env["HYPOTHESIS_PROFILE"] == "default"
+
+
+def test_agent_tier_refusal_honors_the_json_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Anti-vacuity: restore the unconditional stderr write and stdout is empty
+    so the json.loads below raises.
+
+    `--json` is the machine-readable contract. A refusal that answers in prose
+    leaves a hole in it exactly where an automated caller needs a verdict.
+    """
+
+    from devtools import agent_env
+
+    monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
+
+    exit_code = verify._main(["--json"])
+
+    assert exit_code == 2
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["diagnosis"] == "agent_tier_refused"
+    assert payload["exit_code"] == 2
+    assert "devtools test" in payload["message"]
+
+
+def test_schema_promotion_audits_the_tree_it_writes_to(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: restore the "polylogue/schemas" literal and this resolves
+    to a bare relative path that only exists from the checkout root.
+
+    Promotion writes to the installed schema package; auditing a relative
+    literal audits whatever happens to sit under the caller's cwd.
+    """
+
+    from devtools import schema_promote
+
+    root = schema_promote._schema_registry_root()
+
+    assert root.is_absolute()
+    assert root.is_dir()
+    assert root.name == "schemas"
+
+
+def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: drop capture_output and the audit's own stdout lands
+    after the JSON document, so stdout no longer parses as one value.
+    """
+
+    from devtools import schema_promote
+
+    recorded: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        recorded.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, stdout="audit noise\n", stderr="")
+
+    monkeypatch.setattr(schema_promote.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        schema_promote,
+        "promote_schema_cluster",
+        lambda request: SimpleNamespace(ok=True),
+    )
+    monkeypatch.setattr(schema_promote, "build_schema_privacy_config", lambda **kwargs: None)
+    monkeypatch.setattr(schema_promote, "get_config", lambda: SimpleNamespace(db_path=Path("x")))
+    monkeypatch.setattr(schema_promote, "render_schema_promote_result", lambda **kwargs: None)
+
+    exit_code = schema_promote.main(["--provider", "p", "--cluster", "c", "--json"])
+
+    assert exit_code == 0
+    assert recorded["capture_output"] is True

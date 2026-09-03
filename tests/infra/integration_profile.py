@@ -149,6 +149,20 @@ class IntegrationSelection:
             raise ValueError("integration selection requires at least one witness")
         if len({witness.recipe_digest for witness in self.witnesses}) != len(self.witnesses):
             raise ValueError("integration selection cannot repeat a witness recipe")
+        # Distinct recipes can still pin the same session identity. Identity,
+        # not the recipe that produced it, is what the archive is keyed on, so
+        # two such witnesses would silently materialize over each other.
+        materialized: dict[tuple[str, str], str] = {}
+        for witness in self.witnesses:
+            for native_id in witness.session_native_ids:
+                identity = (witness.origin, native_id)
+                previous = materialized.get(identity)
+                if previous is not None:
+                    raise ValueError(
+                        f"integration selection materializes {witness.origin}:{native_id} twice "
+                        f"(recipes {previous[:16]} and {witness.recipe_digest[:16]})"
+                    )
+                materialized[identity] = witness.recipe_digest
         origins = {witness.origin for witness in self.witnesses}
         missing = set(self.profile.required_origins) - origins
         if missing:
