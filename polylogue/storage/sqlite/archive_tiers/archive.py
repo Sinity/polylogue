@@ -123,6 +123,7 @@ from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
 from polylogue.pipeline.ids import SessionRevisionProjection
+from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import Heartbeat, PreparedBlob
@@ -1404,6 +1405,7 @@ class ArchiveStore:
         self._require_writable("write source.db hook evidence")
         if self._blob_publisher is None:
             raise RuntimeError("raw archive writes require a writable archive publisher")
+        policy_snapshot = build_excision_policy_snapshot(self.archive_root)
         raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
         receipt_id = self._blob_publisher.receipt_id(raw_hash)
         self._blob_publisher.flush()
@@ -1428,6 +1430,7 @@ class ArchiveStore:
             carrier_relative_path=carrier_relative_path or source_path,
             carrier_role=carrier_role,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
 
     def delete_hook_event(self, hook_event_id: str) -> bool:

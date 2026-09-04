@@ -15,6 +15,7 @@ from polylogue.pipeline.services.acquisition_persistence import persist_raw_reco
 from polylogue.pipeline.services.acquisition_records import ScanResult
 from polylogue.pipeline.services.acquisition_streams import iter_raw_record_stream
 from polylogue.pipeline.stage_models import AcquireResult
+from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.sources.drive.types import DriveUILike
 from polylogue.sources.source_acquisition import iter_source_raw_data
 from polylogue.sources.source_snapshot import (
@@ -79,8 +80,9 @@ class AcquisitionService:
         record: RawSessionRecord,
         *,
         result: AcquireResult,
+        policy_snapshot: ExcisionPolicySnapshot,
     ) -> None:
-        await persist_raw_record(self.repository, record, result=result)
+        await persist_raw_record(self.repository, record, result=result, policy_snapshot=policy_snapshot)
 
     async def _persist_source_cursors(
         self,
@@ -216,6 +218,7 @@ class AcquisitionService:
             AcquireResult with counts and list of acquired raw_ids
         """
         result = AcquireResult()
+        policy_snapshot = build_excision_policy_snapshot(self.backend.db_path.parent)
         from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
         blob_publisher = ArchiveBlobPublisher(
@@ -279,7 +282,7 @@ class AcquisitionService:
             pending_records.clear()
             async with self.backend.bulk_connection():
                 for pending_record in records:
-                    await self._persist_record(pending_record, result=result)
+                    await self._persist_record(pending_record, result=result, policy_snapshot=policy_snapshot)
 
         async def _store(record: RawSessionRecord) -> None:
             pending_records.append(record)

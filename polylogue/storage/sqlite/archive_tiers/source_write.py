@@ -16,13 +16,14 @@ from typing import Literal
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
 from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
+from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
 
 
-class ContentExcisedError(RuntimeError):
+class ContentExcisedError(ExcisionPolicyError):
     """Raised when acquire attempts to re-store a durably excised blob.
 
     The archive can forget on purpose (polylogue-27m): once a blob hash is
@@ -85,6 +86,16 @@ def is_blob_hash_excised(conn: sqlite3.Connection, blob_hash: bytes, *, schema: 
         (blob_hash,),
     ).fetchone()
     return row is not None
+
+
+def _assert_excision_policy(
+    blob_hash: bytes,
+    *,
+    source_path: str,
+    policy_snapshot: ExcisionPolicySnapshot | None,
+) -> None:
+    if policy_snapshot is not None:
+        policy_snapshot.assert_admissible(blob_hash, source_path=source_path)
 
 
 def record_excised_blob_hash(
@@ -542,6 +553,7 @@ def insert_reconstructed_raw_row(
     row: ReconstructedRawRow,
     *,
     schema: str = "main",
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> None:
     """Insert a raw row RECONSTRUCTED from proven evidence -- not an observation.
 
@@ -576,6 +588,7 @@ def insert_reconstructed_raw_row(
         raise ValueError(f"unsupported source schema: {schema}")
     if len(row.blob_hash) != 32:
         raise ValueError("blob_hash must be a 32-byte SHA-256 digest")
+    _assert_excision_policy(row.blob_hash, source_path=row.source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, row.blob_hash, schema=schema):
         raise ContentExcisedError(blob_hash=row.blob_hash, source_path=row.source_path)
 
@@ -647,6 +660,7 @@ def write_source_raw_session(
     hook_event: ArchiveHookEvent | None = None,
     revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
     """Insert one raw session and its required raw-payload blob reference.
 
@@ -661,6 +675,7 @@ def write_source_raw_session(
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
     blob_hash = deterministic_blob_hash(payload)
+    _assert_excision_policy(blob_hash, source_path=source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
@@ -797,6 +812,7 @@ def write_source_hook_event(
     carrier_relative_path: str | None = None,
     carrier_role: str = "primary-writable",
     manage_transaction: bool = True,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
     """Persist a hook event WITHOUT minting a session.
 
@@ -822,6 +838,7 @@ def write_source_hook_event(
     if require_vocabulary(origin, Origin, field="origin") is None:
         raise ValueError("origin is required for hook events")
     blob_hash = deterministic_blob_hash(payload)
+    _assert_excision_policy(blob_hash, source_path=source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     blob_size = len(payload)
@@ -894,6 +911,7 @@ def write_source_raw_session_blob_ref(
     artifact: ArchiveSourceArtifact | None = None,
     revision: RawRevisionEnvelope | None = None,
     manage_transaction: bool = True,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
 ) -> str:
     """Insert one raw session that already has a materialized raw-payload blob.
 
@@ -905,6 +923,7 @@ def write_source_raw_session_blob_ref(
     origin_value = require_vocabulary(origin, Origin, field="origin")
     if origin_value is None:
         raise ValueError("origin is required for raw sessions")
+    _assert_excision_policy(blob_hash, source_path=source_path, policy_snapshot=policy_snapshot)
     if is_blob_hash_excised(conn, blob_hash):
         raise ContentExcisedError(blob_hash=blob_hash, source_path=source_path)
     resolved_raw_id = raw_id or deterministic_raw_session_id(

@@ -149,6 +149,7 @@ from polylogue.core.timestamp_authority import (
 )
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
@@ -224,6 +225,13 @@ class FrozenSourceRemediationRequiredError(RuntimeError):
 def _is_frozen_candidate(store: RawRevisionGovernanceHost) -> bool:
     """Return whether this host is the owned inactive-generation adapter."""
     return bool(getattr(store, "_inactive_candidate_durable_read_only", False))
+
+
+def _policy_snapshot_for_store(store: RawRevisionGovernanceHost) -> ExcisionPolicySnapshot | None:
+    archive_root = getattr(store, "archive_root", None)
+    if archive_root is None:
+        return None
+    return build_excision_policy_snapshot(Path(archive_root))
 
 
 class RawRevisionGovernanceHost(Protocol):
@@ -654,6 +662,7 @@ def write_raw_payload(
     would normalize away. Treat a NEW production caller of this branch as a
     chokepoint bypass, not as precedent.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -677,6 +686,7 @@ def write_raw_payload(
             post_parse=True,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse raw admission arm: {admission.arm!r}")
@@ -700,6 +710,7 @@ def write_raw_payload(
             baseline_revision=revision,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         return admission.raw_id
     return write_source_raw_session(
@@ -716,6 +727,7 @@ def write_raw_payload(
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
 
 
@@ -741,6 +753,7 @@ def write_raw_blob_ref(
     surveyed fixture-seeding path rather than a migrated admission route
     (polylogue-1fijp); the only caller reaching it here is test infrastructure.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     if post_parse:
@@ -758,6 +771,7 @@ def write_raw_blob_ref(
             file_mtime_ms=file_mtime_ms,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            policy_snapshot=policy_snapshot,
         )
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
@@ -776,6 +790,7 @@ def write_raw_blob_ref(
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
 
 
@@ -804,6 +819,7 @@ def admit_raw_artifact_payload(
     ledger; ``raw_artifacts.raw_id`` has a NOT NULL FK to it), but this arm
     guarantees the payload never reaches any index-tier writer.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -826,6 +842,7 @@ def admit_raw_artifact_payload(
         artifact=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
     with store._ensure_source_conn():
         record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
@@ -847,6 +864,7 @@ def admit_raw_artifact_blob_ref(
     blob_publication_receipt_id: str | None = None,
 ) -> RawAdmissionResult:
     """Admit a prepublished non-session artifact without a pending envelope."""
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     result = admit_raw_artifact_blob_observation(
@@ -862,6 +880,7 @@ def admit_raw_artifact_blob_ref(
         raw_id=raw_id,
         classification=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
+        policy_snapshot=policy_snapshot,
     )
     with store._ensure_source_conn():
         record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
@@ -4047,6 +4066,7 @@ def write_raw_and_parsed_result(
     only the rebuildable index write; holding a source transaction across
     worker results would block the next pre-publication reservation.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is not None:
@@ -4084,6 +4104,7 @@ def write_raw_and_parsed_result(
         blob_publication_receipt_id=blob_publication_receipt_id,
         additional_blob_refs=attachment_blob_refs,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
     if admission.arm is not RawAdmissionArm.BASELINE:
         raise RuntimeError(f"unexpected baseline raw admission arm: {admission.arm!r}")
@@ -4154,6 +4175,7 @@ def admit_raw_and_parsed_result(
     own raw write, so this function creates no ``raw_sessions`` row outside
     the chokepoint on either branch.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is not None:
@@ -4191,6 +4213,7 @@ def admit_raw_and_parsed_result(
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         resolved_raw_id = admission.raw_id
         if admission.arm is not RawAdmissionArm.SHARED_GROUPED:
@@ -4215,6 +4238,7 @@ def admit_raw_and_parsed_result(
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         resolved_raw_id = admission.raw_id
         if admission.arm is not RawAdmissionArm.BASELINE:

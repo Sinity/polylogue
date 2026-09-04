@@ -70,6 +70,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
+from polylogue.security.excision_policy import (
+    ExcisionPolicyError,
+    ExcisionPolicySnapshot,
+    build_excision_policy_snapshot,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     is_blob_hash_excised,
@@ -721,12 +726,15 @@ def apply_session_excision(
 
 
 __all__ = [
+    "ExcisionPolicyError",
+    "ExcisionPolicySnapshot",
     "ExcisionPlan",
     "ExcisionRawTarget",
     "ExcisionReceipt",
     "ExcisionTarget",
     "LineageDependentsError",
     "apply_session_excision",
+    "build_excision_policy_snapshot",
     "find_lineage_dependents",
     "plan_session_excision",
     "resolve_session_excision_target",
