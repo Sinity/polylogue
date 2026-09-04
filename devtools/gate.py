@@ -111,6 +111,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "schema-manifest",
+        "Require durable archive DDL evolution to be versioned or migrated.",
+        "module",
+        ("devtools.verify_schema_manifest", "--check-evolution"),
+        label="gate schema-manifest",
+        in_quick=True,
+    ),
+    Gate(
         "oracle-integrity",
         "Verify tests certify production-reachable code and never read ambient user paths.",
         "module",
