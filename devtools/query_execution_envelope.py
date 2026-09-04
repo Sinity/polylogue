@@ -18,6 +18,7 @@ from shutil import disk_usage
 from typing import Any
 
 from polylogue import Polylogue
+from polylogue.core.errors import SchemaVersionMismatchError
 
 DEFAULT_EXPRESSION = "actions where tool:shell | group by tool | count"
 DEFAULT_ROUNDS = 20
@@ -255,6 +256,22 @@ def main(argv: list[str] | None = None) -> int:
                 max_temp_growth_bytes=args.max_temp_growth_mb * MIB,
             )
         )
+    except SchemaVersionMismatchError as exc:
+        receipt = {
+            "status": "blocked-env",
+            "archive_root": str(args.archive_root.resolve()),
+            "blocking_error": str(exc),
+            "regression_path": (
+                "Re-run against the exact promoted generation after its schema lifecycle action completes; "
+                "do not bypass the archive compatibility check."
+            ),
+        }
+        text = json.dumps(receipt, indent=2, sort_keys=True)
+        print(text)
+        if args.receipt:
+            args.receipt.parent.mkdir(parents=True, exist_ok=True)
+            args.receipt.write_text(text + "\n", encoding="utf-8")
+        return 2
     except (FileNotFoundError, ValueError) as exc:
         parser.error(str(exc))
     text = json.dumps(receipt, indent=2, sort_keys=True)
