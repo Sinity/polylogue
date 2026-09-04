@@ -4823,7 +4823,7 @@ class LiveBatchProcessor:
             if (
                 proof_start.st_dev != plan.st_dev
                 or proof_start.st_ino != plan.st_ino
-                or proof_start.st_size < plan.last_complete_newline
+                or (not is_claude_frontier and proof_start.st_size < plan.last_complete_newline)
             ):
                 raise ValueError("source replaced or truncated")
             if is_claude_frontier:
@@ -4834,6 +4834,8 @@ class LiveBatchProcessor:
                     raise ValueError("Claude header is incomplete")
                 current_append_start = len(current_header) + (plan.accepted_claude_body_bytes or 0)
                 publication_end = current_append_start + (plan.last_complete_newline - plan.start_offset)
+                if proof_start.st_size < publication_end:
+                    raise ValueError("Claude source truncated")
                 current_payload_hash, payload_bytes = sha256_range_from_path(
                     plan.path,
                     start_offset=current_append_start,
@@ -4928,7 +4930,7 @@ class LiveBatchProcessor:
                     body_bytes=plan.accepted_claude_body_bytes + (plan.last_complete_newline - plan.start_offset),
                 )
             else:
-                assert tail_hash is not None
+                tail_hash = plan.accepted_tail_hash or plan.payload_hash
                 stored_tail_hash = (
                     encode_cursor_hash_authority(
                         plan.accepted_prefix_hash,
