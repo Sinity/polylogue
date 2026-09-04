@@ -1,35 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import tomllib
+
 from devtools import agent_env
+from tests.unit.devtools.cgroups import (
+    deployed_agent_cgroup,
+    deployed_pytest_cgroup,
+    outside_cgroup,
+    workflow_runner_cgroup,
+)
 
 AGENT = {agent_env.AGENT_PRINCIPAL_ENV: agent_env.AGENT_PRINCIPAL}
-DEPLOYED_AGENT_CGROUP = (
-    "0::/user.slice/user-1000.slice/user@1000.service/sinnixd.slice/"
-    "sinnixd-pueue.slice/sinnixd-pueue-agent.slice/run-p3557538-i192191396.scope\n"
-)
-DEPLOYED_PYTEST_CGROUP = (
-    "0::/user.slice/user-1000.slice/user@1000.service/sinnixd.slice/"
-    "sinnixd-pueue.slice/sinnixd-pueue-pytest.slice/"
-    "sinnixd-pueue-pytest-verify_affected-job.scope\n"
-)
-OUTSIDE_CGROUP = "0::/user.slice/user-1000.slice/user@1000.service/app.slice/shell.scope\n"
-WORKFLOW_RUNNER_CGROUP = "0::/sinnixd.slice/sinnixd-work.slice/github-runner-polylogue.service\n"
-
-
-def outside_cgroup() -> str:
-    return OUTSIDE_CGROUP
-
-
-def deployed_agent_cgroup() -> str:
-    return DEPLOYED_AGENT_CGROUP
-
-
-def deployed_pytest_cgroup() -> str:
-    return DEPLOYED_PYTEST_CGROUP
-
-
-def workflow_runner_cgroup() -> str:
-    return WORKFLOW_RUNNER_CGROUP
 
 
 def test_outside_agent_jobs_nothing_changes() -> None:
@@ -104,3 +87,30 @@ def test_the_workflow_runner_is_not_an_agent_job() -> None:
     assert agent_env.refuse_verify_tier([], environment, cgroup_reader=workflow_runner_cgroup) is None
     assert agent_env.refuse_bare_pytest(environment, cgroup_reader=workflow_runner_cgroup) is None
     assert agent_env.agent_worker_cap(8, environment, cgroup_reader=workflow_runner_cgroup) == 8
+
+
+def test_every_declared_pytest_pool_operation_classifies_its_own_worker() -> None:
+    """A pytest-pool worker that queues again waits on the slot it already occupies.
+
+    Anti-vacuity: dropping any pytest-pool operation from
+    ``PYTEST_WORKER_OPERATIONS`` makes this red, and that deadlock is what a
+    queue runner not exporting ``SINNIXD_QUEUE_POOL`` would hit.
+    """
+    declarations = tomllib.loads(
+        (Path(__file__).resolve().parents[3] / ".agentctl" / "project.toml").read_text(encoding="utf-8")
+    )
+    declared = {
+        name for name, operation in declarations["operations"].items() if operation.get("pool") == agent_env.PYTEST_POOL
+    }
+
+    assert declared, "the project declares the pytest pool; an empty set would assert nothing"
+    assert declared <= agent_env.PYTEST_WORKER_OPERATIONS, sorted(declared - agent_env.PYTEST_WORKER_OPERATIONS)
+    for operation in sorted(declared):
+        environment = {
+            **AGENT,
+            "SINNIXD_JOB_ID": f"{operation}-1",
+            "SINNIXD_OPERATION": operation,
+            "SINNIXD_QUEUE_WORKER": "1",
+        }
+
+        assert agent_env.inside_declared_pytest_worker(environment, cgroup_reader=deployed_pytest_cgroup), operation
