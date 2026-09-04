@@ -1766,6 +1766,26 @@ def parse_payload(
     return sessions
 
 
+def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocument | None:
+    if not chatgpt.looks_like_shared_decode(record):
+        return None
+    conversation_id = next(
+        (
+            optional_string(record.get(key))
+            for key in ("id", "uuid", "conversation_id", "shared_conversation_id")
+            if optional_string(record.get(key))
+        ),
+        None,
+    )
+    if conversation_id is None:
+        return None
+    return ChatGPTLoweredDocument(
+        conversation_id,
+        cast(PayloadRecord, chatgpt.shared_decode_mapping(record)),
+        "shared_page_decode",
+    )
+
+
 def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLoweredDocument]:
     """Lower direct, bundled, and browser-capture ChatGPT payloads.
 
@@ -1776,21 +1796,10 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     """
     documents: list[ChatGPTLoweredDocument] = []
     shared_record = _payload_record(payload)
-    if shared_record is not None and chatgpt.looks_like_shared_decode(shared_record):
-        conversation_id = (
-            optional_string(shared_record.get("id"))
-            or optional_string(shared_record.get("uuid"))
-            or optional_string(shared_record.get("conversation_id"))
-            or optional_string(shared_record.get("shared_conversation_id"))
-        )
-        if isinstance(conversation_id, str) and conversation_id:
-            return [
-                ChatGPTLoweredDocument(
-                    conversation_id,
-                    cast(PayloadRecord, chatgpt.shared_decode_mapping(shared_record)),
-                    "shared_page_decode",
-                )
-            ]
+    if shared_record is not None:
+        shared_document = _lower_shared_chatgpt_document(shared_record)
+        if shared_document is not None:
+            return [shared_document]
     for spec in _lower_payload_specs(Provider.CHATGPT, payload, fallback_id):
         if spec.provider is not Provider.CHATGPT and spec.mode != "browser_capture":
             continue
@@ -1801,6 +1810,10 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
         )
         record = _payload_record(spec.payload)
         if record is None:
+            continue
+        shared_document = _lower_shared_chatgpt_document(record)
+        if shared_document is not None:
+            documents.append(shared_document)
             continue
         if spec.mode == "browser_capture":
             try:

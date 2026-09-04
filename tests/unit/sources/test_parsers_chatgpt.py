@@ -329,6 +329,17 @@ def test_chatgpt_shared_decode_lowering_preserves_conservation_mapping() -> None
     assert assistant_node["children"] == []
 
 
+def test_chatgpt_shared_decode_sequence_lowering_preserves_conservation_mapping() -> None:
+    """A sequence wrapper must not make the supported shared document vanish."""
+    from polylogue.sources.dispatch import lower_chatgpt_documents
+
+    [document] = lower_chatgpt_documents([_shared_decode_payload()], "fallback")
+
+    assert document.document_id == "shared-conv-id"
+    assert document.artifact_class == "shared_page_decode"
+    assert set(document.mapping) == {"root-node", "user-node", "assistant-node"}
+
+
 def test_chatgpt_shared_decode_dispatch_accepts_source_scan_sequence() -> None:
     from polylogue.sources.dispatch import parse_payload
 
