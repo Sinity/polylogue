@@ -3875,6 +3875,45 @@ def test_writer_skips_orphan_attachment_before_direction_validation(tmp_path: Pa
         conn.close()
 
 
+def test_writer_retains_ambiguous_attachment_as_typed_unowned(tmp_path: Path) -> None:
+    """An ambiguous owner retains attachment evidence without a guessed ref.
+
+    Anti-vacuity: restoring the ambiguity exception from the first attachment
+    pass makes this production-writer test fail before the row can be queried.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        messages = [ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)]
+        attachment = ParsedAttachment(
+            provider_attachment_id="ambiguous-drive-doc",
+            message_provider_id="",
+            message_position=0,
+            name="note.txt",
+            mime_type="text/plain",
+        )
+        session = ParsedSession(
+            source_name=Provider.AISTUDIO_DRIVE,
+            provider_session_id="ambiguous-attachment-owner",
+            messages=messages,
+            attachments=[attachment],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+        attachment_id = archive_tier_write._attachment_id(session_id, attachment)
+        row = conn.execute(
+            "SELECT ref_count FROM attachments WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)).fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # ITEM 1: sessions.instructions_text round-trip
 # ---------------------------------------------------------------------------
