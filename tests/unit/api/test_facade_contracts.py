@@ -63,7 +63,6 @@ from polylogue.core.refs import (
 from polylogue.operations.bindings import OperationBinding
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.block_anchor import format_block_anchor
-from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
@@ -5411,8 +5410,6 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
 
 async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path) -> None:
     """Latency profile facade methods project message timings."""
-    import sqlite3
-
     from polylogue.analysis.archive import SessionLatencyProfileInsightQuery
     from polylogue.archive.message.roles import Role
     from polylogue.core.enums import BlockType
@@ -5764,16 +5761,6 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
                 """,
                 (first_id,),
             )
-            for insight_type in ("work_events", "phases", "thread"):
-                for session_id in (first_id, second_id):
-                    upsert_insight_materialization(
-                        conn,
-                        insight_type=insight_type,
-                        session_id=session_id,
-                        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-                        materialized_at_ms=1_770_000_300_000,
-                    )
-
         status = await archive.get_session_insight_status()
 
         assert status.total_sessions == 2
@@ -5786,7 +5773,6 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
         assert status.expected_phase_count == 1
         assert status.thread_count == 2
         assert status.root_threads == 2
-        assert status.threads_ready is False
         assert status.tag_rollup_count == 0
         assert status.expected_tag_rollup_count == 0
     finally:

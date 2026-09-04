@@ -34,7 +34,6 @@ from polylogue.scenarios import (
 )
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.derived.session import storage as session_storage
-from polylogue.storage.derived.session.repair_assessment import session_insight_status_ready
 from polylogue.storage.derived.session.runtime import SessionInsightCounts
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION

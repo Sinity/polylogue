@@ -11,8 +11,6 @@ import pytest
 
 import polylogue.storage.derived.session.rebuild as rebuild_mod
 import polylogue.storage.derived.session.refresh as refresh_mod
-from polylogue.daemon import cli as daemon_cli
-from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.derived.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
     _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
@@ -24,8 +22,6 @@ from polylogue.storage.derived.session.refresh import (
     _refresh_thread_roots_async,
     refresh_session_insights_for_session_async,
 )
-from polylogue.storage.derived.session.repair_assessment import assess_session_insight_repairs
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend

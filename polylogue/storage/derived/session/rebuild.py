@@ -43,7 +43,6 @@ from polylogue.storage.derived.session.profiles import (
 )
 from polylogue.storage.derived.session.runtime import SessionInsightCounts
 from polylogue.storage.derived.session.storage import (
-    _epoch_ms_or_none,
     replace_session_latency_profiles_bulk_sync,
     replace_session_phases_bulk_sync,
     replace_session_profiles_bulk_sync,
@@ -1866,9 +1865,6 @@ def rebuild_session_insights_sync(
             _lower_marker_candidates(marker_conn, record_bundles)
         # Run-projection cache tables are no longer materialized (polylogue-dab).
         # Reads fall back to source-derived CTEs when the tables are absent.
-        for bundle in record_bundles:
-            _stamp_bundle_materialization(conn, bundle)
-        add_timing("stamp_materialization", t0)
         profile_count += chunk_profiles
         work_event_count += chunk_work_events
         phase_count += chunk_phases

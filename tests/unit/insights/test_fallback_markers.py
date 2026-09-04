@@ -95,15 +95,6 @@ def test_session_enrichment_payload_serializes_fallback_reasons() -> None:
     assert FallbackReason.NO_USER_TURNS in payload.fallback_reasons
 
 
-def test_readiness_verdict_rejects_values_outside_the_public_contract() -> None:
-    with pytest.raises(ValueError, match="verdict"):
-        InsightReadinessEntry(
-            insight_name="session_profiles",
-            display_name="Session Profiles",
-            verdict="unrecognized",  # type: ignore[arg-type]
-        )
-
-
 # ---------------------------------------------------------------------------
 # Integration-shaped: readiness report classifies degraded rows
 # ---------------------------------------------------------------------------

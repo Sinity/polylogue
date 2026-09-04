@@ -10,7 +10,6 @@ import aiosqlite
 
 from polylogue.storage.derived.session.aggregates import _PROFILE_BUCKET_DAY_SQL
 from polylogue.storage.derived.session.runtime import (
-    SessionInsightReadyFlag,
     SessionInsightStatusSnapshot,
     session_profile_stale_predicate,
 )
