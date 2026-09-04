@@ -3,12 +3,12 @@
   "disposition_counts": {
     "COMPLETE": 67,
     "DERIVE": 7,
-    "KEEP": 1713,
+    "KEEP": 1725,
     "PURGE": 99,
     "TRANSITION": 9
   },
   "format": "polylogue-schema-disposition/v1",
-  "object_count": 1895,
+  "object_count": 1907,
   "objects": [
     {
       "campaign_action": "retain and verify the named producer/consumer",
@@ -12907,7 +12907,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "755a1ca9204242e7790961a10153148379d1e877989544d0510dc64bf573842b",
+      "definition_sha256": "268ae286b00b583774a3d22a5dd10135bca6f6be7fd21596bf708b3f856f66ea",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -13054,7 +13054,49 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "2f0d43991019d7d87b3ae1704ed8e4c66f152c71d682c71c6121ac85aa108c53",
+      "definition_sha256": "4b278135e060b28d3f07f4cb22dd7b1481194b5cf8fd785939a05bcbc142de9e",
+      "disposition": "KEEP",
+      "evidence": "reachable canonical declaration; live counts are evidence only",
+      "generated_kind": null,
+      "implementation_bead": "polylogue-20eld",
+      "live_row_denominator": "SELECT COUNT(*) FROM attachment_refs",
+      "name": "direction",
+      "object_ref": "index:column:attachment_refs.direction",
+      "object_type": "column",
+      "producer": "index.db canonical writer route",
+      "reindex_timing": "next derived convergence",
+      "semantic_owner": "canonical schema owner",
+      "successor_or_authorization": "none",
+      "table_name": "attachment_refs",
+      "tier": "index",
+      "tier_durability": "rebuildable",
+      "virtual": false
+    },
+    {
+      "campaign_action": "retain and verify the named producer/consumer",
+      "consumer": "index.db production readers",
+      "definition_sha256": "459d56af412411722991b3037e1cfd6b7d4426267180e4be9e704e648f5fb41a",
+      "disposition": "KEEP",
+      "evidence": "reachable canonical declaration; live counts are evidence only",
+      "generated_kind": null,
+      "implementation_bead": "polylogue-20eld",
+      "live_row_denominator": "SELECT COUNT(*) FROM attachment_refs",
+      "name": "producer_ref",
+      "object_ref": "index:column:attachment_refs.producer_ref",
+      "object_type": "column",
+      "producer": "index.db canonical writer route",
+      "reindex_timing": "next derived convergence",
+      "semantic_owner": "canonical schema owner",
+      "successor_or_authorization": "none",
+      "table_name": "attachment_refs",
+      "tier": "index",
+      "tier_durability": "rebuildable",
+      "virtual": false
+    },
+    {
+      "campaign_action": "retain and verify the named producer/consumer",
+      "consumer": "index.db production readers",
+      "definition_sha256": "807687072bcc1fa0994a9bbb3568a5c7e432b2de0034f0e03558409361c6afa7",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -13075,7 +13117,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "d89de940b4c9928104f6fb42f98ea2c6bbb032c61e2fe3685ecbc8b4c0eb4536",
+      "definition_sha256": "28b090186f9c84b0fddee39ad0468377f7debead4cda0c296fd36664b92a1e95",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -39809,7 +39851,7 @@
   "schema_fingerprints": {
     "audit": "39a2cff1dfbc0d8721f8a29229e6104abbdfa37d6f432d822b412bc580f2b5e9",
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
-    "index": "b11798ff05fa9f0a1be90ef6a16de802795bd59037ee4be1df36230579ec7137",
+    "index": "15f695d2c6b4a09bb2a890e5f0370d9d97aa4fdbf8a90406cae7d2eacae5e7d6",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
     "source": "b6ea0b8cd6f926106f1de584f5a4c1b114ea6749d7375b256c6f91c85f4d7814",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"
@@ -39817,7 +39859,7 @@
   "schema_versions": {
     "audit": 2,
     "embeddings": 5,
-    "index": 90,
+    "index": 91,
     "ops": 1,
     "source": 41,
     "user": 11
@@ -39840,10 +39882,10 @@
       "views": 0
     },
     "index": {
-      "columns": 560,
+      "columns": 571,
       "indexes": 75,
-      "objects": 734,
-      "tables": 56,
+      "objects": 746,
+      "tables": 57,
       "triggers": 37,
       "views": 6
     },

@@ -459,7 +459,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # their content hashes.
 # v90 adds canonical provider identity claims and parent-side dispatch
 # observations. Existing indexes must be replayed to reconstruct topology.
-INDEX_SCHEMA_VERSION = 90
+INDEX_SCHEMA_VERSION = 91
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
