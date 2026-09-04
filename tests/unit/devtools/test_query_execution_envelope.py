@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 import devtools.query_execution_envelope as envelope_module
-from devtools.query_execution_envelope import _proc_memory, _temp_used_bytes, measure_query_envelope
+from devtools.query_execution_envelope import (
+    ResourceProbeUnavailableError,
+    _parse_proc_memory,
+    _proc_memory,
+    _temp_used_bytes,
+    measure_query_envelope,
+)
 
 
 def test_proc_memory_is_nonnegative() -> None:
@@ -19,6 +25,22 @@ def test_proc_memory_is_nonnegative() -> None:
 
 def test_temp_usage_missing_path_is_zero(tmp_path: Path) -> None:
     assert _temp_used_bytes(tmp_path / "missing") == 0
+
+
+def test_parse_proc_memory_reads_every_declared_field() -> None:
+    rss, pss, swap = _parse_proc_memory("VmRSS:\t2048 kB\nVmSwap:\t4 kB\nPss:\t1024 kB\n")
+
+    assert (rss, pss, swap) == (2048 * 1024, 1024 * 1024, 4 * 1024)
+
+
+def test_parse_proc_memory_refuses_a_missing_field() -> None:
+    """A field procfs does not report is refused, never sampled as zero.
+
+    Restoring a zero default makes this green and every declared limit
+    satisfiable without measuring anything.
+    """
+    with pytest.raises(ResourceProbeUnavailableError, match="Pss"):
+        _parse_proc_memory("VmRSS:\t2048 kB\nVmSwap:\t4 kB\n")
 
 
 async def test_measure_query_envelope_runs_the_declared_repetition_shape(
