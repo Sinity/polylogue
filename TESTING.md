@@ -41,6 +41,10 @@ share one workstation, so `devtools test` and the pytest step of
 
 - The pytest-group runner sets `POLYLOGUE_PYTEST_SLOT=held` for the task that
   owns the slot, so pytest runs in place and streams its output as before.
+- A GitHub Actions workflow job (`GITHUB_ACTIONS=true` with a `GITHUB_RUN_ID`)
+  runs pytest in place too. One self-hosted runner executes one job at a time
+  under the job plane's slice, so hosted verification is already serialised and
+  never depends on the workstation's queue tooling being on the runner's PATH.
 - Every other caller, including a generic AgentCTL job, is queued as `pueue add --group pytest --label
   polylogue:{test,verify}:<pid>`, and the command waits for the task, reports
   the exit code pueue recorded, and prints the captured log path under

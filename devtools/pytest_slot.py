@@ -5,11 +5,14 @@ share one workstation. A run started from a session subagent sits outside every
 load control the daemon applies to its own jobs, so concurrent runs contend for
 the same cores and disk until a long job passes its timeout.
 
-Every managed pytest run therefore holds the host's `pytest` pueue group (one
-task at a time). A run already inside the pytest queue task holds the slot
-already, marked explicitly with ``POLYLOGUE_PYTEST_SLOT=held``. Generic
-Sinnixd job identity does not imply pytest-slot ownership: lane jobs queue and
-wait here.
+Every managed pytest run started from a session or a lane therefore holds the
+host's `pytest` pueue group (one task at a time). A run already inside the
+pytest queue task holds the slot already, marked explicitly with
+``POLYLOGUE_PYTEST_SLOT=held``. Generic Sinnixd job identity does not imply
+pytest-slot ownership: lane jobs queue and wait here.
+
+A GitHub Actions workflow job is the other execution context that already runs
+one at a time, and it runs pytest in place; see :func:`inside_workflow_job`.
 
 pueue 4 records the full client environment of ``pueue add`` into a user-only
 state file, so the adder runs with a reduced environment and the managed pytest
@@ -47,6 +50,7 @@ __all__ = [
     "basetemp_root",
     "contained_pytest_run",
     "holds_pytest_slot",
+    "inside_workflow_job",
     "main",
     "remove_temp_tree",
     "run_pytest",
@@ -60,6 +64,14 @@ QUEUE_RUNNER: Final = "sinnixd-queue-run"
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
 SLOT_HELD: Final = "held"
+#: What the receipt records for a run that executed here as a workflow job.
+SLOT_WORKFLOW: Final = "github workflow job"
+
+#: GitHub Actions sets both in every workflow job. The run id is what
+#: distinguishes a job from a shell that merely exported the flag.
+WORKFLOW_MARKER_ENV: Final = "GITHUB_ACTIONS"
+WORKFLOW_MARKER_VALUE: Final = "true"
+WORKFLOW_RUN_ENV: Final = "GITHUB_RUN_ID"
 
 #: The host group whose parallelism is one.
 PYTEST_GROUP: Final = "pytest"
@@ -90,7 +102,8 @@ class PytestSlotUnavailableError(RuntimeError):
 @dataclass(frozen=True)
 class SlotOutcome:
     returncode: int
-    #: What the receipt records: ``pueue task 12`` or ``held``.
+    #: What the receipt records: ``pueue task 12``, ``held``, or the
+    #: context that ran pytest in place.
     slot: str
     #: Where the queued run's output landed, or None when it streamed.
     log_path: Path | None = None
@@ -179,6 +192,31 @@ def contained_pytest_run(
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
     """Whether this process is already inside the host's pytest slot."""
     return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env)
+
+
+def inside_workflow_job(env: Mapping[str, str]) -> bool:
+    """Whether this process is a GitHub Actions workflow job.
+
+    A workflow job is its own serialisation domain: the repository registers a
+    single self-hosted runner, which executes one job at a time, and the verify
+    workflow cancels a superseded run for the same ref. It also runs under the
+    job plane's slice, so it is inside the load control the pytest slot exists
+    to give a session subagent.
+
+    Queueing from here would instead make hosted verification depend on the
+    workstation's private queue installation being on the runner's PATH, and
+    would leave a queued task to outlive its waiter when GitHub cancels a job.
+    """
+    return env.get(WORKFLOW_MARKER_ENV) == WORKFLOW_MARKER_VALUE and bool(env.get(WORKFLOW_RUN_ENV))
+
+
+def _runs_pytest_in_place(env: Mapping[str, str]) -> str | None:
+    """The receipt value for a caller that runs pytest here, or None to queue."""
+    if holds_pytest_slot(env):
+        return SLOT_HELD
+    if inside_workflow_job(env):
+        return SLOT_WORKFLOW
+    return None
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:
@@ -456,14 +494,16 @@ def run_pytest(
     """Run a managed pytest command, acquiring the host's pytest slot first.
 
     When the pytest-group runner sets ``POLYLOGUE_PYTEST_SLOT=held``, the slot
-    is already held and the command runs here, streaming as before. Every other
-    caller is queued in the host's single-slot ``pytest`` group and its output
-    is captured.
+    is already held and the command runs here, streaming as before; a GitHub
+    Actions workflow job runs here for the reason :func:`inside_workflow_job`
+    gives. Every other caller is queued in the host's single-slot ``pytest``
+    group and its output is captured.
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
-    if holds_pytest_slot(env):
+    in_place = _runs_pytest_in_place(env)
+    if in_place is not None:
         completed = subprocess.run(argv, cwd=cwd, env=contained, stdout=stdout, stderr=stdout)
-        outcome = SlotOutcome(returncode=completed.returncode, slot=SLOT_HELD)
+        outcome = SlotOutcome(returncode=completed.returncode, slot=in_place)
     else:
         outcome = _queue(argv, cwd=cwd, env=contained, root=root, label=label)
     # A failed run keeps its scratch: that is when the leftovers are worth
