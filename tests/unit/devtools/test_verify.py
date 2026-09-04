@@ -15,6 +15,7 @@ import pytest
 import tomllib
 
 from devtools import gate, required_gate, verify, verify_runs, why
+from devtools.testmon_provision import TestmonGraphStatus
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -323,17 +324,22 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
         verify,
         "inspect_testmon_graph",
         lambda _root: SimpleNamespace(
-            status=verify.TestmonGraphStatus.USABLE,
+            status=TestmonGraphStatus.USABLE,
             reason="testmon datafile present",
             full_rerun_cause="the installed packages changed",
         ),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_steps(**kwargs: Any) -> list[tuple[str, list[str]]]:
+        captured.update(kwargs)
+        return [("gate lint", ["true"])]
+
     monkeypatch.setattr(
         verify,
         "build_verify_steps",
-        lambda **kwargs: captured.update(kwargs) or [("gate lint", ["true"])],
+        capture_steps,
     )
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
