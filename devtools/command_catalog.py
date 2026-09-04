@@ -302,6 +302,32 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
+        "bench query-envelope",
+        "benchmarking",
+        "Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes.",
+        "devtools.query_execution_envelope",
+        json_flag=False,
+        use_when="Run the opt-in live archive proof for repeated aggregate query_units calls and emit a receipt.",
+        examples=(
+            "devtools bench query-envelope --archive-root /path/to/archive --receipt .cache/query-envelope.json",
+        ),
+    ),
+    CommandSpec(
+        "archive index-fast-forward",
+        "archive",
+        "Plan and prove a declared index fast-forward against retained raw replay.",
+        "devtools.index_fast_forward",
+        use_when=(
+            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
+            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
+            "the production parser/materializer route, then atomically activates the proven generation."
+        ),
+        examples=(
+            "devtools archive index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
+            "devtools archive index-fast-forward activate --receipt /path/to/receipt.json",
+        ),
+    ),
+    CommandSpec(
         "archive lineage-validation",
         "archive",
         "Validate lineage-count evidence before citing archive counts externally.",
