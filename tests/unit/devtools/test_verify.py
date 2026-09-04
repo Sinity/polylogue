@@ -306,6 +306,8 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
     assert complete["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+    assert complete["checkout"] == "default"
+    assert complete["schedule"] == "*-*-* 03:17:00"
     assert complete["pool"] == "pytest"
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
