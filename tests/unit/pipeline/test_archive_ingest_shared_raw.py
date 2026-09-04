@@ -806,3 +806,82 @@ async def test_batched_grouped_ingest_commits_census_before_next_raw(
     assert len(_raw_rows_for_path(archive_root / "source.db", str(second_child))) == 1
     with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 4
+
+
+def _write_stem_identity_husk(root: Path, stem: str) -> Path:
+    """A JSON document under a Claude Code project whose only identity is its filename.
+
+    The record shape satisfies dispatch's loose "looks like a message list"
+    admission but carries no record the Claude Code parser recognizes, so the
+    parse falls back to the discovery walk's ``fallback_id`` (the filename
+    stem) and yields a session with zero authored messages.
+    """
+    path = root / ".claude" / "projects" / "proj" / "notes" / f"{stem}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"messages": [{"role": "user", "content": "tool output shaped like a chat"}]}),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stem", ["toolu_01ABCDEFGHIJKLMNOPQRSTUV", "wf_run_1"])
+async def test_archive_ingest_refuses_filename_stem_identity_without_authored_content(
+    tmp_path: Path, workspace_env: dict[str, Path], stem: str
+) -> None:
+    """polylogue-b508: the one-shot importer must not mint fragment-identity husks.
+
+    ``require_positive_conversational_evidence`` is the archive's admission law
+    for "parsed, but no conversation is present". Every other production write
+    path applies it -- the daemon decode worker, live batch convergence, the
+    incremental append route, and offline replay. ``parse_sources_archive``
+    (reached from the public ``Polylogue.parse_file``/``parse_sources`` API and
+    the demo seeder) did not, so a JSON document that merely satisfies the
+    loose "has a messages list" shape became a session keyed on its own
+    filename stem with zero messages -- the ``toolu_*``/``wf_*`` fragment
+    phantom class this bead exists to make unrepresentable. (The ``*.meta``
+    sibling shape is refused earlier, by its own declared artifact rule.)
+
+    Anti-vacuity: dropping the ``write_pair`` evidence gate writes one session
+    row per parametrized stem, each ``provider_session_id`` equal to the stem
+    and ``COUNT(*) FROM messages`` zero.
+    """
+    archive_root = workspace_env["archive_root"]
+    husk = _write_stem_identity_husk(tmp_path / "corpus", stem)
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=husk)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts.get("sessions", 0) == 0
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_archive_ingest_still_admits_a_real_session_through_the_same_gate(
+    tmp_path: Path, workspace_env: dict[str, Path]
+) -> None:
+    """The evidence gate must not refuse a transcript that carries authored content.
+
+    Pairs with the husk law above: the refusal is keyed on absent authored
+    content, not on the file's location or its identity shape. Anti-vacuity:
+    widening the gate to reject on anything the husk case has in common with
+    this one (same directory, same provider, same one-shot route) turns this
+    red.
+    """
+    archive_root = workspace_env["archive_root"]
+    transcript = _write_session_shaped_workflow_journal(tmp_path / "sessions")
+
+    result = await parse_sources_archive(
+        archive_root,
+        [Source(name="claude-code", path=transcript)],
+        parse_workers=1,
+    )
+
+    assert result.parse_failures == 0
+    assert result.counts["sessions"] == 1

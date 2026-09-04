@@ -26,6 +26,7 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
     zip_entry_session_artifact,
 )
+from polylogue.sources.dispatch import require_positive_conversational_evidence
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.base import ParsedSession, RawSessionData
 from polylogue.sources.source_parsing import (
@@ -158,6 +159,20 @@ async def parse_sources_archive(
             raw_data: RawSessionData | None,
             session: ParsedSession,
         ) -> None:
+            # polylogue-b508: a session requires positive evidence of a
+            # conversation. The daemon decode worker, live batch convergence,
+            # the incremental append route, and offline replay each apply this
+            # law right after dispatch returns; this one-shot importer is the
+            # remaining production write path and must agree, or a document
+            # that merely satisfies dispatch's loose messages-list shape is
+            # written as a session keyed on its own filename stem -- identity
+            # the discovery walk invented, not identity a provider asserted.
+            if not require_positive_conversational_evidence(
+                [session],
+                provider=session.source_name,
+                source_path=_archive_raw_source_path(raw_data, source),
+            ):
+                return
             session = normalize_session_timestamps(
                 session,
                 fallback_timestamp=raw_data.file_mtime if raw_data is not None else None,
