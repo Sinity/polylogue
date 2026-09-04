@@ -173,9 +173,18 @@ def query_cli(archive_root: Path, expression: str) -> QuerySemanticFacts:
         ],
         env={"POLYLOGUE_ARCHIVE_ROOT": str(archive_root)},
     )
-    if result.exit_code != 0:
+    payload = json.loads(result.output)
+    facts = QuerySemanticFacts.from_ids(_ids_from_payload(payload))
+    valid_no_match = (
+        result.exit_code == 2
+        and facts.count == 0
+        and isinstance(payload, Mapping)
+        and payload.get("mode") == "search"
+        and payload.get("total") == 0
+    )
+    if result.exit_code != 0 and not valid_no_match:
         raise AssertionError(f"CLI query failed with {result.exit_code}: {result.output}")
-    return QuerySemanticFacts.from_ids(_ids_from_payload(json.loads(result.output)))
+    return facts
 
 
 def query_mcp(archive_root: Path, expression: str) -> QuerySemanticFacts:
