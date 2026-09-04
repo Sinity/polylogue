@@ -98,6 +98,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
+| `devtools bench query-envelope` | Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 
 ### Archive
@@ -105,6 +106,7 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
+| `devtools archive index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 
 <!-- END GENERATED: devtools-command-catalog -->
