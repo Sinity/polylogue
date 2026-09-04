@@ -85,6 +85,20 @@ def test_session_content_hash_with_missing_message_ids() -> None:
     assert len(digest) == 64
 
 
+def test_session_content_hash_accepts_provider_session_aliases() -> None:
+    """Parser-only provider aliases are classified and do not alter identity."""
+    session = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "Hello", "2024-01-01T00:00:00Z")],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+    )
+    with_alias = session.model_copy(update={"provider_session_aliases": ["legacy-conv-1"]})
+
+    assert session_content_hash(session) == session_content_hash(with_alias)
+
+
 def test_message_none_vs_empty_timestamp_changes_session_hash() -> None:
     none_ts = _parsed_session(
         "conv-1",
