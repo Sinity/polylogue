@@ -350,6 +350,9 @@ class OriginArtifactRule:
     coverage_role: str
     fidelity_note: str
     path_suffixes: tuple[str, ...]
+    # Suffixes safe to project onto a whole watched root. Path-scoped forms
+    # such as opaque sidecars stay governed by ``path_pattern``.
+    watch_suffixes: tuple[str, ...] | None = None
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
@@ -906,10 +909,16 @@ class OriginSpecRegistry:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
                 if not rule.path_suffixes:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires acquisition suffixes")
-                if any(not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.path_suffixes):
+                if any(
+                    suffix and (not suffix.startswith(".") or suffix != suffix.lower()) for suffix in rule.path_suffixes
+                ):
                     raise ValueError(
-                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes"
+                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes or empty"
                     )
+                if rule.watch_suffixes is not None and any(
+                    not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.watch_suffixes
+                ):
+                    raise ValueError(f"{spec.origin.value}: {rule.kind} watch suffixes must be lowercase dot suffixes")
             if any("db" in mode or "sqlite" in mode for mode in spec.acquisition_modes):
                 if spec.database_capability is None:
                     raise ValueError(f"{spec.origin.value}: database acquisition requires a database capability")
@@ -1117,7 +1126,8 @@ def _claude_code_spec() -> OriginSpec:
                 # admits all four forms; only JSON participates in the
                 # ordinary suffix projection because text and HTML are
                 # path-scoped and must not widen the Claude root globally.
-                path_suffixes=(".json",),
+                path_suffixes=(".json", ".txt", ".html", ""),
+                watch_suffixes=(".json",),
             ),
             OriginArtifactRule(
                 kind="workflow_run_snapshot",
@@ -1250,7 +1260,7 @@ def artifact_suffixes_for_provider(
         if provider not in spec.provider_wires:
             continue
         for rule in spec.artifact_rules:
-            suffixes.extend(rule.path_suffixes)
+            suffixes.extend(rule.watch_suffixes if rule.watch_suffixes is not None else rule.path_suffixes)
     return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
 
 

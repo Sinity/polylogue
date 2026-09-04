@@ -16,6 +16,7 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.archive import zip_admission
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
@@ -3033,6 +3034,99 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
         assert (tmp_path / "blob" / blob_hash_hex[:2] / blob_hash_hex[2:]).read_bytes() == expected_payloads[
             Path(source_path).name
         ]
+
+
+def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "claude-export.zip"
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"real-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+    )
+    sidecar_payload = b"opaque tool result"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("projects/project/tool-results/dump.json", b'{"provider":"claude.ai"}')
+        archive.writestr("projects/project/session.jsonl", session_payload)
+        archive.writestr("projects/project/tool-results/toolu.txt", sidecar_payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="unknown", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    sniffed_paths: list[str] = []
+
+    def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
+        sniffed_paths.extend(info.filename for info in entries)
+        return Provider.CLAUDE_CODE
+
+    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+
+    records, _total_bytes = processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+
+    assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in records} == {
+        "projects/project/tool-results/dump.json",
+        "projects/project/session.jsonl",
+        "projects/project/tool-results/toolu.txt",
+    }
+    assert sniffed_paths == ["projects/project/session.jsonl"]
+
+    source_only = processor._extract_source_only_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "source-only-blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+    assert source_only is not None
+    source_only_records, _source_only_bytes = source_only
+    assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in source_only_records} == {
+        "projects/project/tool-results/dump.json",
+        "projects/project/session.jsonl",
+        "projects/project/tool-results/toolu.txt",
+    }
+
+
+def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "claude-export.zip"
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"message-1","sessionId":"session-1"}\n'
+    )
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("projects/project/session.jsonl", session_payload)
+        archive.writestr("projects/project/oversized.json", b"x" * 2048)
+
+    monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 512)
+    processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
+    sniffed_paths: list[str] = []
+
+    def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
+        sniffed_paths.extend(info.filename for info in entries)
+        return Provider.CLAUDE_CODE
+
+    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+
+    processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+
+    assert sniffed_paths == ["projects/project/session.jsonl"]
 
 
 def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:

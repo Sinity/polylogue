@@ -36,6 +36,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -75,7 +76,12 @@ from polylogue.pipeline.ingest_outcomes import (
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
-from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
+from polylogue.sources.decoder_zip import (
+    ZipBombError,
+    is_declared_artifact_path,
+    open_bounded_zip_entry,
+    provider_detection_path,
+)
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
@@ -3544,14 +3550,24 @@ class LiveBatchProcessor:
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
         total_bytes = 0
-        validator = _ZipEntryValidator(
-            fallback_provider,
-            cursor_state=None,
-            zip_path=path,
-        )
         try:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
+                zip_provider_hint = fallback_provider
+                if fallback_provider is Provider.UNKNOWN:
+                    safe_json_entries = list(
+                        ZipAdmission(zip_path=path).filter_entries(
+                            central_directory,
+                            allowed_suffixes=ZIP_JSON_SUFFIXES,
+                        )
+                    )
+                    detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
+                    zip_provider_hint = self._sniff_zip_provider(zf, detection_entries) or fallback_provider
+                validator = _ZipEntryValidator(
+                    zip_provider_hint,
+                    cursor_state=None,
+                    zip_path=path,
+                )
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
@@ -3566,11 +3582,6 @@ class LiveBatchProcessor:
                 # falling back to ``Provider.UNKNOWN`` -> ``unknown-export``
                 # (polylogue-hs3y). A source that already resolved a
                 # provider (a per-provider watched directory) is left alone.
-                zip_provider_hint = fallback_provider
-                if fallback_provider is Provider.UNKNOWN:
-                    zip_provider_hint = (
-                        self._sniff_zip_provider(zf, [info for _ordinal, info in entries]) or fallback_provider
-                    )
                 for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
@@ -3651,7 +3662,8 @@ class LiveBatchProcessor:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                for info in validator.filter_entries(central_directory):
+                allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
+                for info in validator.filter_entries(central_directory, allowed_path=allowed_path):
                     if info.file_size == 0:
                         continue
                     entry_ordinal = entry_ordinals[id(info)]

@@ -21,6 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -31,10 +32,29 @@ from .parsers.base import ParsedSession, RawSessionData
 logger = get_logger(__name__)
 
 
+def is_declared_artifact_path(source_path: str) -> bool:
+    """Return whether any provider declaration owns this archive path."""
+    return any(
+        provider is not Provider.UNKNOWN and artifact_rule_for_path(provider, source_path) is not None
+        for provider in Provider
+    )
+
+
+def provider_detection_path(source_path: str) -> bool:
+    """Exclude declaration-owned non-session evidence from provider sniffing."""
+    rules = [
+        rule
+        for provider in Provider
+        if provider is not Provider.UNKNOWN
+        if (rule := artifact_rule_for_path(provider, source_path)) is not None
+    ]
+    return not rules or any(rule.parse_policy == "session" for rule in rules)
+
+
 class ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 
-    __slots__ = ("_cursor_state", "_zip_path", "_admission")
+    __slots__ = ("_cursor_state", "_zip_path", "_admission", "_provider")
 
     def __init__(
         self,
@@ -43,7 +63,7 @@ class ZipEntryValidator:
         cursor_state: CursorStatePayload | None,
         zip_path: Path,
     ) -> None:
-        del provider_hint
+        self._provider = Provider.from_string(provider_hint)
         self._cursor_state = cursor_state
         self._zip_path = zip_path
         self._admission = ZipAdmission(zip_path=zip_path)
@@ -52,7 +72,8 @@ class ZipEntryValidator:
         self,
         entries: list[zipfile.ZipInfo],
         *,
-        allowed_suffixes: Collection[str] = ZIP_JSON_SUFFIXES,
+        allowed_suffixes: Collection[str] | None = None,
+        allowed_path: Callable[[str], bool] | None = None,
         on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
         """Yield safe, relevant entries and record failures in cursor state.
@@ -76,9 +97,18 @@ class ZipEntryValidator:
             if on_rejected is not None:
                 on_rejected(info, reason)
 
+        infer_declared_paths = allowed_suffixes is None and allowed_path is None
+        if allowed_suffixes is None:
+            allowed_suffixes = ZIP_JSON_SUFFIXES
+        if infer_declared_paths:
+
+            def allowed_path(name: str) -> bool:
+                return artifact_rule_for_path(self._provider, name) is not None
+
         yield from self._admission.filter_entries(
             entries,
             allowed_suffixes=allowed_suffixes,
+            allowed_path=allowed_path,
             on_rejected=reject,
         )
 
