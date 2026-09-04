@@ -3892,7 +3892,7 @@ def test_writer_retains_ambiguous_attachment_as_typed_unowned(tmp_path: Path) ->
             mime_type="text/plain",
         )
         session = ParsedSession(
-            source_name=Provider.AISTUDIO_DRIVE,
+            source_name=Provider.GEMINI,
             provider_session_id="ambiguous-attachment-owner",
             messages=messages,
             attachments=[attachment],
