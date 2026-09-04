@@ -689,7 +689,8 @@ def test_insight_entry_operation_and_catchup_adapters() -> None:
         SimpleNamespace(
             insight_name="session_profiles",
             display_name="Session Profiles",
-            verdict="incompatible",
+            table_present=True,
+            incompatible_count=3,
             row_count=3,
             repair_command="polylogue ops maintenance repair session-insights",
             evidence=("session_insight_status",),

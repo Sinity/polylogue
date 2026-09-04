@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -523,6 +524,43 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         requires_freshness=True,
     ),
 )
+
+# The status counts are splatted into ``SessionInsightStatusSnapshot``, and
+# descriptors index ``tables``/``counts`` by name. Every emitted key must
+# therefore be a snapshot field, every ``table_key`` a table the presence probe
+# reports, and every referenced fallback/source key one some descriptor emits.
+# A key that satisfies none of these raises only when a status call reaches it,
+# so all three are checked at import.
+_SNAPSHOT_COUNT_FIELDS = frozenset(field.name for field in dataclasses.fields(SessionInsightStatusSnapshot))
+_TABLE_PRESENCE_KEYS = frozenset(descriptor.key for descriptor in _TABLE_DESCRIPTORS)
+_EMITTED_COUNT_KEYS = (
+    {"total_sessions", "root_threads"}
+    | {descriptor.count_key for descriptor in _TABLE_DESCRIPTORS if descriptor.count_key is not None}
+    | {descriptor.count_key for descriptor in _FTS_DESCRIPTORS}
+    | {descriptor.duplicate_count_key for descriptor in _FTS_DESCRIPTORS}
+    | {descriptor.count_key for descriptor in _COUNT_DESCRIPTORS}
+)
+
+if _unknown_counts := sorted(_EMITTED_COUNT_KEYS - _SNAPSHOT_COUNT_FIELDS):
+    raise RuntimeError(f"status descriptors emit counts absent from SessionInsightStatusSnapshot: {_unknown_counts}")
+
+if _unknown_tables := sorted(
+    (
+        {descriptor.table_key for descriptor in _COUNT_DESCRIPTORS if descriptor.table_key is not None}
+        | {descriptor.table_key for descriptor in _FTS_DESCRIPTORS}
+    )
+    - _TABLE_PRESENCE_KEYS
+):
+    raise RuntimeError(f"status descriptors gate on tables the presence probe does not report: {_unknown_tables}")
+
+if _unknown_references := sorted(
+    (
+        {descriptor.fallback_count_key for descriptor in _COUNT_DESCRIPTORS if descriptor.fallback_count_key}
+        | {descriptor.source_count_key for descriptor in _FTS_DESCRIPTORS}
+    )
+    - _EMITTED_COUNT_KEYS
+):
+    raise RuntimeError(f"status descriptors reference counts nothing emits: {_unknown_references}")
 
 
 def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:

@@ -808,17 +808,20 @@ def component_from_archive_surface(
 
 
 def component_from_insight_entry(entry: Any, *, scope: str = "insights") -> ComponentReadiness:
-    verdict = str(getattr(entry, "verdict", "unknown"))
-    state = {
-        "ready": CapabilityReadinessState.READY,
-        "partial": CapabilityReadinessState.DEGRADED,
-        "empty": CapabilityReadinessState.MISSING,
-        "missing": CapabilityReadinessState.MISSING,
-        "stale": CapabilityReadinessState.STALE,
-        "incompatible": CapabilityReadinessState.POISONED,
-        "degraded": CapabilityReadinessState.DEGRADED,
-        "unknown": CapabilityReadinessState.UNKNOWN,
-    }.get(verdict, CapabilityReadinessState.UNKNOWN)
+    # Derived from the entry's own counts. There is no insight-private verdict
+    # taxonomy: rows that outlive their source or fail their schema contract are
+    # untrustworthy, rows a source is still waiting on are backlog, everything
+    # else is ready.
+    if not bool(getattr(entry, "table_present", True)):
+        state = CapabilityReadinessState.MISSING
+    elif int(getattr(entry, "incompatible_count", 0) or 0):
+        state = CapabilityReadinessState.POISONED
+    elif int(getattr(entry, "stale_count", 0) or 0) or int(getattr(entry, "orphan_count", 0) or 0):
+        state = CapabilityReadinessState.STALE
+    elif bool(getattr(entry, "incomplete", False)) or int(getattr(entry, "degraded_count", 0) or 0):
+        state = CapabilityReadinessState.DEGRADED
+    else:
+        state = CapabilityReadinessState.READY
     return ComponentReadiness(
         component=str(getattr(entry, "insight_name", "unknown")),
         scope=scope,

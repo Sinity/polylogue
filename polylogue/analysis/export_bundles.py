@@ -28,11 +28,6 @@ from polylogue.version import VERSION_INFO
 
 InsightExportFormat = Literal["jsonl"]
 INSIGHT_EXPORT_BUNDLE_VERSION = 1
-# Readiness verdicts that block an insight's rows from entering the bundle: the
-# materialized read model is stale against its source, built by an incompatible
-# materializer version, or its table is missing. ``degraded``/``partial`` rows are
-# still exported (the rows themselves are valid, just heuristically weak/incomplete).
-_NON_EXPORTABLE_VERDICTS: frozenset[str] = frozenset({"stale", "incompatible", "missing"})
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
     "session_work_events",
@@ -79,7 +74,7 @@ class InsightExportFileSummary(ArchiveInsightModel):
     file: str
     schema_file: str
     row_count: int = 0
-    readiness_verdict: str | None = None
+    withheld_reason: str | None = None
     warnings: tuple[str, ...] = ()
     errors: tuple[str, ...] = ()
 
@@ -199,12 +194,32 @@ def _write_readme(path: Path, manifest: InsightExportBundleManifest) -> None:
     ]
     for insight in manifest.insights:
         lines.append(
-            f"| `{insight.insight_name}` | {insight.row_count} | `{insight.readiness_verdict or '-'}` | `{insight.file}` |"
+            f"| `{insight.insight_name}` | {insight.row_count} | `{insight.withheld_reason or '-'}` | `{insight.file}` |"
         )
     if manifest.warnings:
         lines.extend(["", "## Warnings", ""])
         lines.extend(f"- {warning}" for warning in manifest.warnings)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _withheld_reason(entry: object | None) -> str | None:
+    """Why an insight's rows must not enter a bundle, or ``None`` to export.
+
+    Divergence is the only export blocker. Rows flagged as heuristically weak
+    (``degraded_count``) or merely incomplete are still exported: they are
+    valid rows, just not the whole picture.
+    """
+    if entry is None:
+        return None
+    if not bool(getattr(entry, "table_present", True)):
+        return "insight table is absent"
+    if int(getattr(entry, "incompatible_count", 0) or 0):
+        return "insight rows fail their schema contract"
+    stale = int(getattr(entry, "stale_count", 0) or 0)
+    orphan = int(getattr(entry, "orphan_count", 0) or 0)
+    if stale or orphan:
+        return f"insight rows diverge from their sources (stale={stale} orphan={orphan})"
+    return None
 
 
 def _prepare_target(request: InsightExportBundleRequest) -> Path:
@@ -256,14 +271,13 @@ async def export_insight_bundle(
             errors: list[str] = []
             items: list[ArchiveInsightModel] = []
             readiness_entry = readiness_by_name.get(insight_name)
-            verdict = readiness_entry.verdict if readiness_entry is not None else None
-            if verdict in _NON_EXPORTABLE_VERDICTS:
-                # The materialized read model does not reflect the current source
-                # (stale high-water mark), is built by an incompatible materializer
-                # version, or is absent. Exporting its rows would bundle untrustworthy
-                # data, so record the readiness failure and emit an empty file rather
-                # than silently shipping divergent insights.
-                errors.append(f"insight readiness verdict is '{verdict}'; rows withheld from export")
+            withheld_reason = _withheld_reason(readiness_entry)
+            if withheld_reason is not None:
+                # The rows do not reflect the sources they were built from: the
+                # table is absent, its rows outlive their sessions, or it fails
+                # its schema contract. Exporting them would bundle untrustworthy
+                # data, so emit an empty file and record why.
+                errors.append(f"{withheld_reason}; rows withheld from export")
             else:
                 try:
                     items = await fetch_insights_async(insight_type, operations, **kwargs)
@@ -277,7 +291,7 @@ async def export_insight_bundle(
                     file=insight_file,
                     schema_file=schema_file,
                     row_count=len(items),
-                    readiness_verdict=verdict,
+                    withheld_reason=withheld_reason,
                     warnings=warnings,
                     errors=tuple(errors),
                 )

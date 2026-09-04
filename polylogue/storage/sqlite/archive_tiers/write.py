@@ -6706,9 +6706,10 @@ def _reextract_prefix_tail_db(
     t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
     # Late-parent resolution mutates an already-materialized child outside its
-    # own write path. Rebuild every projection whose input rows just changed;
-    # otherwise incremental convergence can retain the pre-extraction prefix
-    # in usage, delegation, and insight products indefinitely.
+    # own write path, so usage must be rebuilt here: it is aggregated at write
+    # time and nothing else revisits it. Derived session rows converge on their
+    # own -- the refreshed counts move the child's high-water mark, which is
+    # what the staleness comparison reads.
     conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child_session_id,))
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
