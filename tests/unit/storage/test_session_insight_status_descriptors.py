@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 
 import aiosqlite
 
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import (
+    _COUNT_DESCRIPTORS,
+    _FTS_DESCRIPTORS,
+    _TABLE_DESCRIPTORS,
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
     session_insight_status_async,
@@ -16,6 +21,8 @@ from polylogue.storage.derived.session.status import (
     session_profile_repair_candidate_ids_sync,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
 def test_fts_descriptor_reports_duplicate_counts() -> None:
@@ -366,3 +373,37 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
     # populated by any readiness descriptor (the merged-fts index is now
     # tracked via session_work_event_fts). #944 follow-up wires the descriptor.
     assert sync_status.profile_merged_fts_duplicate_count == 0  # not yet populated
+
+
+def test_status_descriptors_resolve_against_declared_tables_and_snapshot_fields() -> None:
+    """Descriptor keys are resolved by subscript, so a descriptor naming a
+    relation or a count that no longer exists fails every status call rather
+    than import. Anti-vacuity: reinstating a descriptor keyed on a retired
+    table, or emitting a count the snapshot does not declare, turns this red.
+    """
+    declared_tables = {descriptor.key for descriptor in _TABLE_DESCRIPTORS}
+    snapshot_fields = {field.name for field in dataclasses.fields(SessionInsightStatusSnapshot)}
+
+    emitted = {descriptor.count_key for descriptor in _TABLE_DESCRIPTORS if descriptor.count_key is not None}
+    emitted |= {descriptor.count_key for descriptor in _COUNT_DESCRIPTORS}
+    emitted |= {descriptor.count_key for descriptor in _FTS_DESCRIPTORS}
+    emitted |= {descriptor.duplicate_count_key for descriptor in _FTS_DESCRIPTORS}
+
+    referenced = {descriptor.table_key for descriptor in _FTS_DESCRIPTORS}
+    referenced |= {descriptor.table_key for descriptor in _COUNT_DESCRIPTORS if descriptor.table_key is not None}
+
+    assert referenced <= declared_tables
+    assert emitted <= snapshot_fields
+
+
+def test_status_snapshot_reads_a_fresh_index_tier(tmp_path: Path) -> None:
+    """The status route runs against real index DDL. Anti-vacuity: a descriptor
+    that queries a relation the index tier does not create raises
+    ``sqlite3.OperationalError`` here.
+    """
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        status = session_insight_status_sync(conn)
+
+    assert status.total_sessions == 0
+    assert status.missing_profile_row_count == 0

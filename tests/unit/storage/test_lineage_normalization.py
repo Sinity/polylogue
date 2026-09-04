@@ -26,7 +26,8 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.parsers.hermes_state import parse_state_db
-from polylogue.storage.runtime import LineageCompleteness
+from polylogue.storage.derived.session.status import session_profile_repair_candidate_ids_sync
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION, LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -56,7 +57,15 @@ def _connect(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _msg(pid: str, role: Role, text: str, position: int, *, variant_index: int = 0) -> ParsedMessage:
+def _msg(
+    pid: str,
+    role: Role,
+    text: str,
+    position: int,
+    *,
+    variant_index: int = 0,
+    timestamp: str | None = None,
+) -> ParsedMessage:
     return ParsedMessage(
         provider_message_id=pid,
         role=role,
@@ -65,8 +74,40 @@ def _msg(pid: str, role: Role, text: str, position: int, *, variant_index: int =
         variant_index=variant_index,
         is_active_path=True,
         is_active_leaf=False,
+        timestamp=timestamp,
         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
     )
+
+
+def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
+    """Materialize the derived session products a converger would have written
+    for ``session_id`` as it stands, copying the session's own freshness
+    carriers so the staleness predicate reports the profile current."""
+    conn.execute(
+        """
+        INSERT INTO session_profiles (
+            session_id, materializer_version, materialized_at, source_updated_at,
+            source_sort_key, input_content_hash, input_row_count, source_name,
+            message_count, work_event_count, phase_count
+        )
+        SELECT session_id, ?, '', datetime(updated_at_ms / 1000, 'unixepoch'),
+               CAST(sort_key_ms AS REAL) / 1000.0, lower(hex(content_hash)), ?, origin, ?, 1, 1
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (SESSION_INSIGHT_MATERIALIZER_VERSION, message_count, message_count, session_id),
+    )
+    conn.execute(
+        "INSERT INTO session_latency_profiles (session_id, materializer_version, materialized_at, source_name)"
+        " VALUES (?, ?, '', '')",
+        (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION),
+    )
+    conn.execute(
+        "INSERT INTO session_work_events (session_id, position, work_event_type, summary)"
+        " VALUES (?, 0, 'edit', 'seeded')",
+        (session_id,),
+    )
+    conn.execute("INSERT INTO session_phases (session_id, position) VALUES (?, 0)", (session_id,))
 
 
 async def _read_texts(path: Path, session_id: str) -> list[str | None]:
@@ -399,6 +440,61 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     conn.close()
     composed = asyncio.run(_read_texts(db, child_id))
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
+
+
+def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Path) -> None:
+    """Re-extraction drops the child's derived session products.
+
+    Their staleness predicate compares the session's sort key, updated-at and
+    content hash, and re-extraction moves none of the three, so a profile
+    materialized over the whole child would report fresh forever. Anti-vacuity:
+    the seeded profile is fresh by construction (asserted before the parent
+    arrives), so dropping the invalidating deletes from
+    ``_reextract_prefix_tail_db`` leaves the stale rows in place and the child
+    out of the repair-candidate set.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0, timestamp="2026-01-01T00:00:00+00:00"),
+            _msg("c1", Role.ASSISTANT, "hi there", 1, timestamp="2026-01-01T00:01:00+00:00"),
+            _msg("cx", Role.USER, "child diverges here", 2, timestamp="2026-01-01T00:02:00+00:00"),
+            _msg("cy", Role.ASSISTANT, "child reply", 3, timestamp="2026-01-01T00:03:00+00:00"),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    _seed_fresh_session_products(conn, child_id, message_count=4)
+    assert child_id not in session_profile_repair_candidate_ids_sync(conn)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0, timestamp="2026-01-01T00:00:00+00:00"),
+            _msg("p1", Role.ASSISTANT, "hi there", 1, timestamp="2026-01-01T00:01:00+00:00"),
+            _msg("p2", Role.USER, "parent continues alone", 2, timestamp="2026-01-01T00:05:00+00:00"),
+        ],
+    )
+    write_parsed_session_to_archive(conn, parent)
+
+    stored = conn.execute(
+        "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
+    ).fetchall()
+    assert [row[0] for row in stored] == [2, 3]
+    for relation in ("session_profiles", "session_latency_profiles", "session_work_events", "session_phases"):
+        retained = conn.execute(f"SELECT COUNT(*) FROM {relation} WHERE session_id = ?", (child_id,)).fetchone()[0]
+        assert retained == 0, f"{relation} retained the pre-extraction projection"
+    assert child_id in session_profile_repair_candidate_ids_sync(conn)
+
+    conn.close()
 
 
 @pytest.mark.parametrize("child_first", [False, True], ids=["parent-first", "child-first"])
