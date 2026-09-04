@@ -166,8 +166,22 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
 
 #: The message FTS surface is a derived read model inside the derived index:
 #: contentless, trigger-maintained, and rebuildable from ``blocks``. Its
-#: absence degrades search; the rest of the index stays readable.
-MESSAGE_FTS_OBJECT_PREFIX = "messages_fts"
+#: absence degrades search; the rest of the index stays readable, so a read
+#: open admits a manifest diff confined to these objects.
+#:
+#: Membership is declared, not matched on the ``messages_fts`` name prefix.
+#: ``messages_fts_identity`` is a plain declared table of ours rather than
+#: FTS5 storage, and a later object sharing the prefix would otherwise be
+#: admitted before anyone decided its absence is survivable.
+MESSAGE_FTS_DEGRADABLE_OBJECTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("table", "messages_fts"),
+        ("table", "messages_fts_identity"),
+        ("trigger", "messages_fts_ai"),
+        ("trigger", "messages_fts_ad"),
+        ("trigger", "messages_fts_au"),
+    }
+)
 
 
 def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool:
@@ -175,7 +189,7 @@ def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool
 
     if diff.get("version"):
         return False
-    names: list[str] = []
+    objects: list[tuple[str, str]] = []
     for key in ("missing", "extra", "wrong_definition"):
         entries = diff.get(key)
         if not isinstance(entries, (list, tuple)):
@@ -183,8 +197,8 @@ def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool
         for entry in entries:
             if not isinstance(entry, (list, tuple)) or len(entry) < 2:
                 return False
-            names.append(str(entry[1]))
-    return bool(names) and all(name.startswith(MESSAGE_FTS_OBJECT_PREFIX) for name in names)
+            objects.append((str(entry[0]), str(entry[1])))
+    return bool(objects) and all(entry in MESSAGE_FTS_DEGRADABLE_OBJECTS for entry in objects)
 
 
 def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> SchemaManifest:
@@ -199,7 +213,7 @@ def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> Schem
 
 
 __all__ = [
-    "MESSAGE_FTS_OBJECT_PREFIX",
+    "MESSAGE_FTS_DEGRADABLE_OBJECTS",
     "SchemaManifest",
     "assert_schema_manifest",
     "canonical_schema_manifest",

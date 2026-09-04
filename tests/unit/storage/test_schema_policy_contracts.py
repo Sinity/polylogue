@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.core.enums import BlockType, Provider, Role
+from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -41,7 +43,12 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     decide_schema_bootstrap,
     schema_version_mismatch_message,
 )
-from polylogue.storage.sqlite.schema_manifest import canonical_schema_manifest, schema_manifest_diff
+from polylogue.storage.sqlite.schema_manifest import (
+    MESSAGE_FTS_DEGRADABLE_OBJECTS,
+    canonical_schema_manifest,
+    schema_manifest_diff,
+    schema_manifest_diff_is_message_fts_only,
+)
 
 # ---------------------------------------------------------------------------
 # Canonical FTS triggers — see docs/internals.md
@@ -604,3 +611,69 @@ def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
     missing = _CANONICAL_FTS_TRIGGERS - triggers
     assert not missing, f"Fresh init is missing canonical FTS triggers: {sorted(missing)}"
     assert triggers == _CANONICAL_FTS_TRIGGERS
+
+
+def test_message_fts_admission_is_a_declared_object_set() -> None:
+    """The degradable surface is declared, not inferred from an object-name prefix.
+
+    ``messages_fts_identity`` is a plain declared table of ours that happens to
+    share the ``messages_fts`` prefix; a future surface could too. Admission
+    names the objects it admits so a new one is refused until it is declared.
+
+    Anti-vacuity: matching on the ``messages_fts`` name prefix admits the
+    undeclared object below and turns this red.
+    """
+    diff = {
+        "missing": [("table", "messages_fts_speculative_surface")],
+        "extra": [],
+        "wrong_definition": [],
+    }
+    assert not schema_manifest_diff_is_message_fts_only(diff)
+
+    declared = {
+        ("table", "messages_fts"),
+        ("table", "messages_fts_identity"),
+        ("trigger", "messages_fts_ai"),
+        ("trigger", "messages_fts_ad"),
+        ("trigger", "messages_fts_au"),
+    }
+    assert set(MESSAGE_FTS_DEGRADABLE_OBJECTS) == declared
+    canonical = {(kind, name) for kind, name, _ in canonical_schema_manifest(ArchiveTier.INDEX).objects}
+    assert declared <= canonical
+
+
+def test_admitted_missing_message_fts_refuses_block_search_with_a_typed_error(tmp_path: Path) -> None:
+    """Every reader of the admitted-absent surface degrades with a typed error.
+
+    ``assert_readable_archive_layout`` admits an index whose message FTS
+    surface is gone on the promise that reads report it as search-route state.
+    That promise holds only if no reader of ``messages_fts`` reaches SQL.
+
+    Anti-vacuity: removing the existence check from ``search_archive_blocks``
+    raises ``sqlite3.OperationalError: no such table: messages_fts`` instead,
+    which is not a ``DatabaseError``.
+    """
+    root = tmp_path / "archive"
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="fts-degraded-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one searchable needle")],
+            )
+        ],
+    )
+    with ArchiveStore(root) as writer:
+        writer.write_parsed(session)
+
+    with sqlite3.connect(root / "index.db") as conn:
+        for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+            conn.execute(f"DROP TRIGGER {trigger}")
+        conn.execute("DROP TABLE messages_fts")
+        conn.commit()
+
+    with ArchiveStore.open_existing(root, read_only=True) as store:
+        with pytest.raises(DatabaseError, match="Search index"):
+            store.search_blocks("needle")
