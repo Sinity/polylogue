@@ -1120,6 +1120,22 @@ def test_blob_recovery_rejects_duplicate_container_member_before_open(
     assert reason == "ambiguous_container_member"
 
 
+def test_blob_recovery_admits_declared_non_json_sidecar(tmp_path: Path) -> None:
+    zip_source = tmp_path / "claude.zip"
+    payload = b"opaque tool result"
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr("session/tool-results/toolu.txt", payload)
+
+    recovered, reason = blob_integrity._current_raw_payload_bytes(
+        f"{zip_source}:session/tool-results/toolu.txt",
+        0,
+        provider_hint="claude-code",
+    )
+
+    assert reason is None
+    assert recovered == payload
+
+
 def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_path: Path) -> None:
     """ZIP coordinates survive one replacement and authorize the next recovery."""
     initialize_active_archive_root(tmp_path)

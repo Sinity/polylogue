@@ -452,3 +452,31 @@ def test_zip_admission_uses_declared_claude_sidecar_paths_for_nonstandard_forms(
         "project/session/tool-results/toolu.html",
         "project/session/tool-results/toolu",
     ]
+
+
+def test_explicit_zip_suffix_filter_does_not_infer_declared_paths() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("project/session/tool-results/toolu.json", "{}")
+        zf.writestr("project/session/tool-results/toolu.txt", "opaque output")
+    buffer.seek(0)
+
+    with zipfile.ZipFile(buffer) as zf:
+        validator = _ZipEntryValidator("claude-code", cursor_state=None, zip_path=Path("export.zip"))
+        accepted = [info.filename for info in validator.filter_entries(zf.infolist(), allowed_suffixes=(".json",))]
+
+    assert accepted == ["project/session/tool-results/toolu.json"]
+
+
+def test_zip_admission_does_not_promote_weak_analysis_classification() -> None:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("analysis/cache.bin", "generated")
+        zf.writestr("session/tool-results/toolu.txt", "opaque output")
+    buffer.seek(0)
+
+    with zipfile.ZipFile(buffer) as zf:
+        validator = _ZipEntryValidator("claude-code", cursor_state=None, zip_path=Path("export.zip"))
+        accepted = [info.filename for info in validator.filter_entries(zf.infolist())]
+
+    assert accepted == ["session/tool-results/toolu.txt"]

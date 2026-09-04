@@ -3035,6 +3035,38 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
         ]
 
 
+def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(tmp_path: Path) -> None:
+    bundle = tmp_path / "claude-export.zip"
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"real-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+    )
+    sidecar_payload = b"opaque tool result"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("projects/project/session.jsonl", session_payload)
+        archive.writestr("projects/project/tool-results/toolu.txt", sidecar_payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="unknown", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    records, _total_bytes = processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+
+    assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in records} == {
+        "projects/project/session.jsonl",
+        "projects/project/tool-results/toolu.txt",
+    }
+
+
 def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
     """Malformed journals remain typed evidence when decoding cannot recover them."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"

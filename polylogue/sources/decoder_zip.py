@@ -21,6 +21,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.logging import get_logger
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -52,7 +53,7 @@ class ZipEntryValidator:
         self,
         entries: list[zipfile.ZipInfo],
         *,
-        allowed_suffixes: Collection[str] = ZIP_JSON_SUFFIXES,
+        allowed_suffixes: Collection[str] | None = None,
         allowed_path: Callable[[str], bool] | None = None,
         on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
@@ -77,10 +78,13 @@ class ZipEntryValidator:
             if on_rejected is not None:
                 on_rejected(info, reason)
 
-        if allowed_path is None:
+        infer_declared_paths = allowed_suffixes is None and allowed_path is None
+        if allowed_suffixes is None:
+            allowed_suffixes = ZIP_JSON_SUFFIXES
+        if infer_declared_paths:
 
             def allowed_path(name: str) -> bool:
-                return classify_artifact_path(name, provider=self._provider) is not None
+                return artifact_rule_for_path(self._provider, name) is not None
 
         yield from self._admission.filter_entries(
             entries,

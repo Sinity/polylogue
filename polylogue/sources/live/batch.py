@@ -3544,14 +3544,17 @@ class LiveBatchProcessor:
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
         total_bytes = 0
-        validator = _ZipEntryValidator(
-            fallback_provider,
-            cursor_state=None,
-            zip_path=path,
-        )
         try:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
+                zip_provider_hint = fallback_provider
+                if fallback_provider is Provider.UNKNOWN:
+                    zip_provider_hint = self._sniff_zip_provider(zf, central_directory) or fallback_provider
+                validator = _ZipEntryValidator(
+                    zip_provider_hint,
+                    cursor_state=None,
+                    zip_path=path,
+                )
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
@@ -3566,11 +3569,6 @@ class LiveBatchProcessor:
                 # falling back to ``Provider.UNKNOWN`` -> ``unknown-export``
                 # (polylogue-hs3y). A source that already resolved a
                 # provider (a per-provider watched directory) is left alone.
-                zip_provider_hint = fallback_provider
-                if fallback_provider is Provider.UNKNOWN:
-                    zip_provider_hint = (
-                        self._sniff_zip_provider(zf, [info for _ordinal, info in entries]) or fallback_provider
-                    )
                 for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
