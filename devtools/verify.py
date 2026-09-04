@@ -26,6 +26,7 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
     PROGRESS_PLUGIN_NAME,
+    managed_plugin_args,
 )
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from devtools.required_gate import executable_gate_result
@@ -75,10 +76,9 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: The corpus runs unpartitioned. Eight workers peak near 10 GB, inside the
-#: pytest pool's 12 GiB ceiling; CPU sits near 22% at that width, so the
-#: ceiling, not the cores, is what bounds this.
-CORPUS_MAX_WORKERS = 8
+#: SQLite archive construction makes the corpus IO-bound. Two workers provide
+#: overlap without multiplying cache churn or exhausting the pytest cgroup.
+CORPUS_MAX_WORKERS = 2
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
@@ -152,12 +152,8 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """The corpus runs as ONE collection.
-
-    testmon drops every recorded test a run did not collect, so a partitioned
-    run keeps only its last partition's edges. One run, always tracing: the
-    graph is advanced by every managed run rather than recomputed.
-    """
+    """Build one complete collection, or an affected collection with tracing."""
+    testmon = selection != "all"
     command = [
         venv_python(root=ROOT),
         "-m",
@@ -172,14 +168,9 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         f"--json-report-file={PYTEST_REPORT_PATH}",
         "-p",
         PROGRESS_PLUGIN_NAME,
-        *MANAGED_PLUGIN_ARGS,
+        *managed_plugin_args(testmon=testmon),
         *CLOSED_WORLD_COLLECTION_ARGS,
-        "--testmon",
-        f"--testmon-env={TESTMON_ENVIRONMENT}",
-        # `all` runs every test and still updates fingerprints; the default
-        # tier selects from what the datafile records, and an empty datafile
-        # selects everything, which is how it seeds.
-        "--testmon-noselect" if selection == "all" else "--testmon-forceselect",
+        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-forceselect"] if testmon else []),
         "-p",
         "no:randomly",
         *worker_args,

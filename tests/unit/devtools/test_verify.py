@@ -42,8 +42,8 @@ def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
     assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "0"
 
-    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "3")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "3"
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "1")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "1"
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "64")
     assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
