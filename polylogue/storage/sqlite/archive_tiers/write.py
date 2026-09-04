@@ -1852,10 +1852,24 @@ def read_session_agent_policies(conn: sqlite3.Connection, session_id: str) -> li
 
 
 def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
-    """Return block ids matched by the archive contentless FTS table."""
+    """Return block ids matched by the archive contentless FTS table.
+
+    A read open admits an index whose message FTS surface is absent
+    (``MESSAGE_FTS_DEGRADABLE_OBJECTS``) because search reports that state
+    itself. Honour that here rather than reaching SQL and raising
+    ``no such table: messages_fts``. Presence, not freshness, is the check:
+    rebuild and differential routes read this surface mid-convergence, when
+    it is legitimately behind ``blocks``.
+    """
+    from polylogue.core.errors import DatabaseError
+    from polylogue.storage.fts.fts_lifecycle import MESSAGE_SEARCH_REPAIR_HINT
+    from polylogue.storage.introspection import table_exists
+
     match_query = normalize_fts5_query(query)
     if match_query is None:
         return []
+    if not table_exists(conn, "messages_fts"):
+        raise DatabaseError(f"Search index not built. {MESSAGE_SEARCH_REPAIR_HINT}")
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
