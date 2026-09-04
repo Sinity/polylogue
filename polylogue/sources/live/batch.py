@@ -113,10 +113,12 @@ from polylogue.sources.live.batch_support import (
     _path_size,
     _throttled_phase_heartbeat,
     claude_semantic_frontier_for_prefix,
+    claude_semantic_frontier_for_prefix_with_bytes,
     codex_append_payload,
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
+    encode_claude_semantic_frontier_digests,
     encode_cursor_hash_authority,
     file_prefix_sha256,
     fingerprint_file,
@@ -4384,6 +4386,9 @@ class LiveBatchProcessor:
             return None
         if claude_frontier is None and expected_prefix_hash is None:
             return None
+        claude_header_sha256: str | None = None
+        claude_publication_body_sha256: str | None = None
+        stable_hasher: Any | None = None
         try:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
@@ -4421,6 +4426,7 @@ class LiveBatchProcessor:
                         json_loads(header_end)
                     except (UnicodeDecodeError, ValueError):
                         return None
+                    claude_header_sha256 = sha256(header_end).hexdigest()
                     start_offset = len(header_end) + claude_frontier.body_bytes
                     handle.seek(len(header_end))
                     stable_hasher = sha256()
@@ -4472,6 +4478,11 @@ class LiveBatchProcessor:
                         accepted_hasher.update(chunk)
                         remaining -= len(chunk)
                     accepted_prefix_hash = accepted_hasher.hexdigest()
+                else:
+                    assert stable_hasher is not None
+                    publication_hasher = stable_hasher.copy()
+                    publication_hasher.update(complete_payload)
+                    claude_publication_body_sha256 = publication_hasher.hexdigest()
                 final_stat = os.fstat(handle.fileno())
         except OSError:
             return None
@@ -4508,6 +4519,8 @@ class LiveBatchProcessor:
             acquisition_native_id_hint=acquisition_native_id_hint,
             accepted_claude_body_sha256=(claude_frontier.body_sha256 if claude_frontier is not None else None),
             accepted_claude_body_bytes=(claude_frontier.body_bytes if claude_frontier is not None else None),
+            accepted_claude_header_sha256=claude_header_sha256,
+            accepted_claude_publication_body_sha256=claude_publication_body_sha256,
             parser_fingerprint=parser_fingerprint,
         )
 
@@ -4789,74 +4802,96 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
-        """Persist a proven append frontier without mistaking later growth for rewrite.
-
-        ``plan`` carries a prefix witness produced before append persistence.
-        A live JSONL writer may append another record before this method runs;
-        that does not invalidate the accepted range. Keep the plan's original
-        observation in the cursor so a same-size replacement is still forced
-        through the full route on the next batch.
-        """
+        """Persist a proven append frontier against one stable observation."""
         latest_stat: os.stat_result | None = None
-        final_stat: os.stat_result | None = None
+        proof_start: os.stat_result | None = None
+        proof_end: os.stat_result | None = None
         tail_hash: str | None = None
+        stored_tail_hash: str | None = None
+        publication_end = plan.last_complete_newline
         self._last_append_cursor_proof_bytes = 0
         is_claude_frontier = (
             frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
             == "claude-header-body"
         )
-        expected_observation = (
-            plan.st_dev,
-            plan.st_ino,
-            plan.stat_size,
-            plan.mtime_ns,
-            plan.ctime_ns,
-        )
+        disappeared_after_admission = False
         try:
             if plan.parser_fingerprint is not None and plan.parser_fingerprint != self._current_parser_fingerprint():
                 raise ValueError("parser semantics changed during append admission")
-            stat = plan.path.stat()
-            latest_stat = stat
-            if stat.st_dev != plan.st_dev or stat.st_ino != plan.st_ino or stat.st_size < plan.last_complete_newline:
-                raise ValueError("source replaced or truncated")
-            payload_hash, payload_bytes = sha256_range_from_path(
-                plan.path,
-                start_offset=plan.start_offset,
-                end_offset=plan.last_complete_newline,
-            )
-            self._last_append_cursor_proof_bytes += payload_bytes
-            tail_hash, tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
-            self._last_append_cursor_proof_bytes += tail_bytes
-            final_stat = plan.path.stat()
-            latest_stat = final_stat
+            proof_start = plan.path.stat()
+            latest_stat = proof_start
             if (
-                final_stat.st_dev != plan.st_dev
-                or final_stat.st_ino != plan.st_ino
-                or final_stat.st_size < plan.last_complete_newline
+                proof_start.st_dev != plan.st_dev
+                or proof_start.st_ino != plan.st_ino
+                or proof_start.st_size < plan.last_complete_newline
             ):
-                raise ValueError("source replaced or truncated during cursor verification")
-            if not is_claude_frontier and payload_hash != plan.payload_hash:
-                raise ValueError("accepted append bytes changed")
-            if not is_claude_frontier and plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
-                raise ValueError("accepted append tail changed")
-            if plan.accepted_prefix_hash is not None:
-                prefix_hash, prefix_bytes = sha256_range_from_path(
+                raise ValueError("source replaced or truncated")
+            if is_claude_frontier:
+                with plan.path.open("rb") as handle:
+                    current_header = handle.readline()
+                self._last_append_cursor_proof_bytes += len(current_header)
+                if not current_header.endswith(b"\n"):
+                    raise ValueError("Claude header is incomplete")
+                current_append_start = len(current_header) + (plan.accepted_claude_body_bytes or 0)
+                publication_end = current_append_start + (plan.last_complete_newline - plan.start_offset)
+                current_payload_hash, payload_bytes = sha256_range_from_path(
                     plan.path,
-                    start_offset=0,
-                    end_offset=plan.last_complete_newline,
+                    start_offset=current_append_start,
+                    end_offset=publication_end,
                 )
-                self._last_append_cursor_proof_bytes += prefix_bytes
-                if prefix_hash != plan.accepted_prefix_hash:
-                    raise ValueError("accepted prefix changed")
+                self._last_append_cursor_proof_bytes += payload_bytes
+                if current_payload_hash != plan.payload_hash:
+                    raise ValueError("accepted Claude append bytes changed")
+                stored_tail_hash, frontier_bytes = claude_semantic_frontier_for_prefix_with_bytes(
+                    plan.path,
+                    publication_end,
+                    expected_stable_body_sha256=plan.accepted_claude_body_sha256,
+                    expected_stable_body_bytes=plan.accepted_claude_body_bytes,
+                )
+                self._last_append_cursor_proof_bytes += frontier_bytes
+                if stored_tail_hash is None:
+                    raise ValueError("accepted Claude semantic body changed")
+            else:
+                publication_end = plan.last_complete_newline
+                payload_hash, payload_bytes = sha256_range_from_path(
+                    plan.path,
+                    start_offset=plan.start_offset,
+                    end_offset=publication_end,
+                )
+                self._last_append_cursor_proof_bytes += payload_bytes
+                tail_hash, tail_bytes = tail_hash_from_path(plan.path, publication_end)
+                self._last_append_cursor_proof_bytes += tail_bytes
+                if payload_hash != plan.payload_hash:
+                    raise ValueError("accepted append bytes changed")
+                if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
+                    raise ValueError("accepted append tail changed")
+                if plan.accepted_prefix_hash is not None:
+                    prefix_hash, prefix_bytes = sha256_range_from_path(
+                        plan.path,
+                        start_offset=0,
+                        end_offset=publication_end,
+                    )
+                    self._last_append_cursor_proof_bytes += prefix_bytes
+                    if prefix_hash != plan.accepted_prefix_hash:
+                        raise ValueError("accepted prefix changed")
+                stored_tail_hash = (
+                    encode_cursor_hash_authority(
+                        plan.accepted_prefix_hash,
+                        tail_hash,
+                        ctime_ns=plan.ctime_ns or 0,
+                    )
+                    if plan.accepted_prefix_hash is not None
+                    else tail_hash
+                )
+            proof_end = plan.path.stat()
+            latest_stat = proof_end
+            if _file_observation(proof_end) != _file_observation(proof_start):
+                raise ValueError("source changed during cursor verification")
         except FileNotFoundError:
-            # The append payload was already admitted before the source can be
-            # removed by a live writer. Preserve that per-plan success and use
-            # the plan-time authority; there is no safe post-admission stat or
-            # tail read left to perform. The next watcher observation will
-            # re-establish the source identity through normal full planning.
-            logger.info("live.watcher: source disappeared after append persistence: %s", plan.path)
-            payload_hash = plan.payload_hash
-            tail_hash = plan.accepted_tail_hash or plan.payload_hash
+            if proof_start is not None:
+                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
+                return False
+            disappeared_after_admission = True
         except (EOFError, OSError, ValueError) as exc:
             logger.warning(
                 "live.watcher: source changed after append persistence; cursor invalidated for full retry: %s: %s",
@@ -4876,82 +4911,57 @@ class LiveBatchProcessor:
                 ),
             )
             return False
-        if final_stat is not None and _file_observation(final_stat) != expected_observation:
-            logger.info(
-                "live.watcher: source changed after append persistence; retained proven append frontier: %s",
-                plan.path,
-            )
-        assert tail_hash is not None
-        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        if is_claude_frontier:
-            try:
-                with plan.path.open("rb") as handle:
-                    current_header = handle.readline()
-                if not current_header.endswith(b"\n"):
-                    raise ValueError("Claude header is incomplete")
-                current_append_start = len(current_header) + (plan.accepted_claude_body_bytes or 0)
-                current_append_end = current_append_start + (plan.last_complete_newline - plan.start_offset)
-                current_payload_hash, current_payload_bytes = sha256_range_from_path(
-                    plan.path,
-                    start_offset=current_append_start,
-                    end_offset=current_append_end,
-                )
-                self._last_append_cursor_proof_bytes += current_payload_bytes
-                if current_payload_hash != plan.payload_hash:
-                    raise ValueError("accepted Claude append bytes changed")
-            except OSError as exc:
-                raise ValueError("Claude header cannot be read") from exc
-            publication_end = current_append_end
-            stored_tail_hash = claude_semantic_frontier_for_prefix(
-                plan.path,
-                publication_end,
-                expected_stable_body_sha256=plan.accepted_claude_body_sha256,
-                expected_stable_body_bytes=plan.accepted_claude_body_bytes,
-            )
-            if stored_tail_hash is None:
-                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
-                return False
-            self._last_append_cursor_proof_bytes += publication_end
-        else:
-            stored_tail_hash = (
-                encode_cursor_hash_authority(
-                    plan.accepted_prefix_hash,
-                    tail_hash,
-                    ctime_ns=plan.ctime_ns or 0,
-                )
-                if plan.accepted_prefix_hash is not None
-                else tail_hash
-            )
+        if disappeared_after_admission:
+            logger.info("live.watcher: source disappeared after append persistence: %s", plan.path)
             publication_end = plan.last_complete_newline
-        try:
-            final_stat = plan.path.stat()
-        except OSError:
-            self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
-            return False
-        latest_stat = final_stat
-        if (
-            final_stat.st_dev != plan.st_dev
-            or final_stat.st_ino != plan.st_ino
-            or final_stat.st_size < publication_end
-            or (
-                final_stat.st_size == plan.stat_size
-                and (final_stat.st_mtime_ns != plan.mtime_ns or final_stat.st_ctime_ns != (plan.ctime_ns or 0))
-            )
-        ):
-            self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=final_stat)
-            return False
+            if is_claude_frontier:
+                if (
+                    plan.accepted_claude_header_sha256 is None
+                    or plan.accepted_claude_publication_body_sha256 is None
+                    or plan.accepted_claude_body_bytes is None
+                ):
+                    self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=None)
+                    return False
+                stored_tail_hash = encode_claude_semantic_frontier_digests(
+                    header_sha256=plan.accepted_claude_header_sha256,
+                    body_sha256=plan.accepted_claude_publication_body_sha256,
+                    body_bytes=plan.accepted_claude_body_bytes + (plan.last_complete_newline - plan.start_offset),
+                )
+            else:
+                assert tail_hash is not None
+                stored_tail_hash = (
+                    encode_cursor_hash_authority(
+                        plan.accepted_prefix_hash,
+                        tail_hash,
+                        ctime_ns=plan.ctime_ns or 0,
+                    )
+                    if plan.accepted_prefix_hash is not None
+                    else tail_hash
+                )
+            cursor_stat_size = plan.stat_size
+            cursor_st_dev = plan.st_dev
+            cursor_st_ino = plan.st_ino
+            cursor_mtime_ns = plan.mtime_ns
+        else:
+            assert proof_end is not None
+            cursor_stat_size = proof_end.st_size
+            cursor_st_dev = proof_end.st_dev
+            cursor_st_ino = proof_end.st_ino
+            cursor_mtime_ns = proof_end.st_mtime_ns
+        assert stored_tail_hash is not None
+        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         updated = self._cursor.set(
             plan.path,
-            plan.stat_size,
-            byte_offset=plan.last_complete_newline,
-            last_complete_newline=plan.last_complete_newline,
+            cursor_stat_size,
+            byte_offset=publication_end,
+            last_complete_newline=publication_end,
             parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
             tail_hash=stored_tail_hash,
             source_name=plan.source_name,
-            st_dev=plan.st_dev,
-            st_ino=plan.st_ino,
-            mtime_ns=plan.mtime_ns,
+            st_dev=cursor_st_dev,
+            st_ino=cursor_st_ino,
+            mtime_ns=cursor_mtime_ns,
         )
         if updated:
             self._cursor.reset_failures(plan.path)
