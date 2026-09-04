@@ -1147,6 +1147,13 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
     IndexDeltaDeclaration(
+        version=90,
+        # Canonical provider identity claims and parent-side dispatch
+        # observations change the normalized topology reconstructed from raw
+        # source; existing indexes must be replayed.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
+    IndexDeltaDeclaration(
         version=86,
         # ``threads.dominant_repo_id`` had no writer or reader. Replacing the
         # projection table preserves every surviving derived value while

@@ -482,6 +482,9 @@ class ParsedSession(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
+    # Exact provider-native names that can refer to this emitted session.
+    # These are parser evidence, never prefix/suffix guesses.
+    provider_session_aliases: list[str] = Field(default_factory=list, exclude=True, repr=False)
     # polylogue-2qx.4 / polylogue-cgfy: Claude Code's ``parentToolUseID``
     # (842,819 records / 185,982 distinct dispatch ids on the wire) --  the
     # provider-native tool_id of the PARENT session's tool_use block that

@@ -984,6 +984,45 @@ def test_parse_code_drops_progress_hook_records() -> None:
     assert all("prog" not in pid for pid in provider_ids)
 
 
+def test_parse_code_retains_exact_delegation_child_identity() -> None:
+    """Agent progress identifies a child without inventing a child-side field."""
+    parent = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "parent-user",
+                "sessionId": "parent-native",
+                "message": {"role": "user", "content": "delegate"},
+            },
+            {
+                "type": "progress",
+                "uuid": "dispatch-progress",
+                "sessionId": "parent-native",
+                "parentToolUseID": "dispatch-1",
+                "data": {"type": "agent_progress", "childSessionId": "agent-child-native"},
+            },
+        ],
+        "parent-fallback",
+    )
+    child = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "child-user",
+                "sessionId": "parent-native",
+                "message": {"role": "user", "content": "do work"},
+            }
+        ],
+        "agent-child-native",
+    )
+
+    [event] = [event for event in parent.session_events if event.event_type == "claude_delegation_progress"]
+    assert event.source_message_provider_id == "dispatch-1"
+    assert event.payload["child_provider_id"] == "agent-child-native"
+    assert child.provider_session_id == "parent-native:agent-child-native"
+    assert child.provider_session_aliases == ["agent-child-native"]
+
+
 def test_parse_code_drops_non_message_sidecars() -> None:
     items: list[object] = [
         {

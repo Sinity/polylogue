@@ -585,6 +585,7 @@ class _DelegationProgressStats:
     count: int = 0
     first_seen: str | None = None
     last_seen: str | None = None
+    child_provider_id: str | None = None
 
 
 def _accumulate_delegation_progress(
@@ -610,6 +611,13 @@ def _accumulate_delegation_progress(
     if not parent_tool_use_id:
         return False
     entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
+    if entry.child_provider_id is None:
+        data_map = data
+        for key in ("childSessionId", "child_session_id", "agentId", "agent_id"):
+            value = _string_field(item, key) or _string_field(data_map, key)
+            if value:
+                entry.child_provider_id = value
+                break
     entry.count += 1
     if timestamp:
         if entry.first_seen is None or timestamp < entry.first_seen:
@@ -1838,6 +1846,11 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # dispatching tool_use, not one per streaming tick.
     for parent_tool_use_id in sorted(acc.delegation_progress):
         stats = acc.delegation_progress[parent_tool_use_id]
+        # Claude's progress record is parent-side evidence.  Newer wire
+        # shapes carry the spawned agent identity alongside the dispatch id;
+        # retain it as an exact claim so the writer can correlate it without
+        # manufacturing a child-side field.
+        child_provider_id = stats.child_provider_id
         acc.session_events.append(
             ParsedSessionEvent(
                 event_type="claude_delegation_progress",
@@ -1848,6 +1861,8 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
                     "progress_tick_count": stats.count,
                     "first_seen": stats.first_seen,
                     "last_seen": stats.last_seen,
+                    "child_provider_id": child_provider_id,
+                    "observation_kind": "parent_dispatch",
                     "summary": f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)",
                 },
             )
@@ -1984,6 +1999,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         git_branch=acc.git_branch_value,
         display_name=acc.session_slug_value,
         session_refs=acc.session_refs,
+        provider_session_aliases=([str(acc.fallback_id)] if str(acc.fallback_id) != str(composed_session_id) else []),
     )
 
 
