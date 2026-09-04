@@ -427,6 +427,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "CLI Operation Kernel Deletion Ledger",
+        "plans/cli-operation-kernel-deletion-ledger.md",
+        "Transport ownership and LOC accounting for the CLI operation-kernel migration.",
+        "design",
+    ),
+    _entry(
         "Typed WebUI Capability Matrix",
         "plans/webui-capability-matrix.md",
         "Cutover inventory for typed and legacy browser capabilities.",

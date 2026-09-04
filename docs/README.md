@@ -123,6 +123,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
 | [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
 | [CLI Interaction Oracle Deletion Ledger](plans/cli-interaction-deletion-ledger.md) | Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles. |
+| [CLI Operation Kernel Deletion Ledger](plans/cli-operation-kernel-deletion-ledger.md) | Transport ownership and LOC accounting for the CLI operation-kernel migration. |
 | [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
 | [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
