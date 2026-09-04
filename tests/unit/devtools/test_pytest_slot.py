@@ -177,7 +177,12 @@ def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monke
 def test_declared_pytest_worker_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
-    holder = {"SINNIXD_JOB_ID": "job-1", "SINNIXD_QUEUE_POOL": "pytest"}
+    holder = {
+        "SINNIXD_JOB_ID": "job-1",
+        "SINNIXD_OPERATION": "verify_affected",
+        "SINNIXD_QUEUE_WORKER": "1",
+        "SINNIXD_QUEUE_POOL": "pytest",
+    }
 
     assert holds_pytest_slot(holder)
     outcome = run_pytest(
@@ -225,6 +230,7 @@ def test_an_agent_pool_worker_queues_its_focused_run_in_the_pytest_pool(
         cwd=str(tmp_path),
         env=_environment(
             SINNIXD_JOB_ID="agent-job",
+            SINNIXD_QUEUE_WORKER="1",
             SINNIXD_QUEUE_POOL="agent",
         ),
         root=tmp_path,

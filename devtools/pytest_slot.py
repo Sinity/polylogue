@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
+from devtools.agent_env import inside_declared_pytest_worker
 from devtools.cloud_sentinels import cloud_sentinel_declined
 
 __all__ = [
@@ -177,9 +178,7 @@ def contained_pytest_run(
 
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
     """Whether this process is already inside the host's pytest slot."""
-    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or (
-        bool(env.get(QUEUE_TASK_ENV)) and env.get("SINNIXD_QUEUE_POOL") == PYTEST_GROUP
-    )
+    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env)
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:
