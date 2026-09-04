@@ -100,10 +100,7 @@ def test_mypy_gate_uses_a_foreground_checkout_local_process() -> None:
 
 
 def test_removed_lab_mode_is_not_accepted() -> None:
-    with pytest.raises(SystemExit) as raised:
-        verify._main(["--lab"])
-
-    assert raised.value.code == 2
+    assert verify._main(["--lab"]) == 2
 
 
 def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
