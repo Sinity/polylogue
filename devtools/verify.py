@@ -89,6 +89,7 @@ DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_sinnixd_parser_accepts_the_unleased_shared_chrome_operation",
     "tests/unit/devtools/test_dev_loop_service.py::test_declared_operation_has_a_json_contract_and_no_retired_keys",
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
+    "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
     "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
 )
 _UNMEASURED_WORKLOAD_DIMENSIONS = (

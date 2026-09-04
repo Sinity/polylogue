@@ -148,11 +148,10 @@ explicit-and-retryable or a typed permanent refusal.
   a lane with SQLite backup, replacing unusable lane copies. If no seed is
   available, the run reports a full seed run; `--all` runs every test and
   updates fingerprints, and `--quick` is the static gates alone.
-- Every managed pytest run holds the host's single `pytest` pueue slot. Direct
-  execution is authorized by the pytest worker's `POLYLOGUE_PYTEST_SLOT=held`
-  marker or by a GitHub Actions workflow job, which the single self-hosted
-  runner already serialises. Every other caller queues, waits, reads the
-  captured log the run prints, and refuses if pueued is unreachable.
+- Every managed pytest run holds the host's single `pytest` pueue slot. Only
+  the pytest worker's `POLYLOGUE_PYTEST_SLOT=held` marker authorizes direct
+  execution. Every other caller queues, waits, reads the captured log the run
+  prints, and refuses if pueued is unreachable.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]

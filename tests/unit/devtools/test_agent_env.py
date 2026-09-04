@@ -9,7 +9,6 @@ from tests.unit.devtools.cgroups import (
     deployed_agent_cgroup,
     deployed_pytest_cgroup,
     outside_cgroup,
-    workflow_runner_cgroup,
 )
 
 AGENT = {agent_env.AGENT_PRINCIPAL_ENV: agent_env.AGENT_PRINCIPAL}
@@ -73,20 +72,6 @@ def test_non_pytest_queue_worker_remains_agent_bound() -> None:
 
     assert not agent_env.inside_declared_pytest_worker(environment, cgroup_reader=deployed_agent_cgroup)
     assert agent_env.refuse_bare_pytest(environment, cgroup_reader=deployed_agent_cgroup) is not None
-
-
-def test_the_workflow_runner_is_not_an_agent_job() -> None:
-    """Hosted verification runs the test tier; widening the agent slices would refuse it.
-
-    Anti-vacuity: adding the runner's ``sinnixd-work.slice`` to the agent slices
-    makes every assertion here red.
-    """
-    environment = {"GITHUB_ACTIONS": "true", "GITHUB_RUN_ID": "33895265963", "CI": "true"}
-
-    assert not agent_env.inside_agent_job(environment, cgroup_reader=workflow_runner_cgroup)
-    assert agent_env.refuse_verify_tier([], environment, cgroup_reader=workflow_runner_cgroup) is None
-    assert agent_env.refuse_bare_pytest(environment, cgroup_reader=workflow_runner_cgroup) is None
-    assert agent_env.agent_worker_cap(8, environment, cgroup_reader=workflow_runner_cgroup) == 8
 
 
 def test_every_declared_pytest_pool_operation_classifies_its_own_worker() -> None:
