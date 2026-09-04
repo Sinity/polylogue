@@ -510,6 +510,23 @@ elif command == "wait":
 sys.exit(0)
 """
 
+#: The cancellation AgentCTL owns, recorded the way the ``pueue`` fake records.
+FAKE_AGENTCTL = """import json, sys
+
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+sys.exit(0)
+"""
+
+#: An AgentCTL that refuses, the way a job id pueue no longer holds refuses.
+FAKE_AGENTCTL_REFUSES = """import json, sys
+
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+sys.stderr.write("agentctl: no such job\\n")
+sys.exit(1)
+"""
+
 _WAITER = """
 import os, sys
 sys.path.insert(0, {repo!r})
@@ -528,16 +545,20 @@ run_pytest(
 def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
     """A task outlives its waiter, and the slot's parallelism is one.
 
-    Anti-vacuity: dropping the ``_reaping`` context leaves the recorded calls
-    at ``add``/``wait`` -- the task stays queued with nothing left to wait on
-    it, which is exactly the starvation this reap exists to prevent.
+    Anti-vacuity: dropping the ``_reaping`` context records no cancellation at
+    all -- the task stays queued with nothing left to wait on it, which is
+    exactly the starvation this reap exists to prevent. Reaping through
+    ``pueue kill`` instead leaves the workload running in its scope, and shows
+    up here as a ``kill`` among the pueue verbs.
     """
     import subprocess
 
     directory = tmp_path / "fakebin"
     _install_fake_queue_runner(directory)
     script = _install_executable(directory, "pueue", FAKE_PUEUE_KILLS_ITS_WAITER)
+    agentctl = _install_executable(directory, "agentctl", FAKE_AGENTCTL)
     record = Path(str(script) + ".calls.jsonl")
+    cancellation_record = Path(str(agentctl) + ".calls.jsonl")
     repo = str(Path(pytest_slot.__file__).resolve().parents[1])
 
     completed = subprocess.run(
@@ -557,8 +578,45 @@ def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
 
     assert completed.returncode == -int(signal.SIGTERM), completed.stderr
     verbs = [call["argv"][0] for call in _calls(record)]
-    assert verbs == ["add", "wait", "kill", "remove"], verbs
+    assert verbs == ["add", "wait"], verbs
+    assert _calls(cancellation_record) == [{"argv": ["job", "cancel", "11"]}]
     leftover = list((tmp_path / "verify").glob("pytest-slot-*.json")) + list(
         (tmp_path / ".cache" / "verify").glob("pytest-slot-*.json")
     )
     assert leftover == [], "the launch file carries a resolved environment and must not survive the reap"
+
+
+def test_a_refused_cancellation_leaves_the_launch_file_for_the_task(tmp_path: Path) -> None:
+    """A task AgentCTL would not stop still reads its launch file when it starts.
+
+    Anti-vacuity: unlinking the launch file regardless of the cancellation's
+    outcome empties the glob below, and the surviving task then starts with no
+    resolved environment to read.
+    """
+    import subprocess
+
+    directory = tmp_path / "fakebin"
+    _install_fake_queue_runner(directory)
+    _install_executable(directory, "pueue", FAKE_PUEUE_KILLS_ITS_WAITER)
+    agentctl = _install_executable(directory, "agentctl", FAKE_AGENTCTL_REFUSES)
+    repo = str(Path(pytest_slot.__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _WAITER.format(repo=repo, cwd=str(tmp_path), root=str(tmp_path)),
+        ],
+        env={
+            "PATH": str(directory),
+            "HOME": os.environ.get("HOME", "/home/nobody"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == -int(signal.SIGTERM), completed.stderr
+    assert _calls(Path(str(agentctl) + ".calls.jsonl")) == [{"argv": ["job", "cancel", "11"]}]
+    surviving = list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
+    assert len(surviving) == 1, surviving

@@ -209,6 +209,28 @@ def _pueue(arguments: Sequence[str], *, env: Mapping[str, str]) -> subprocess.Co
         ) from exc
 
 
+def _cancel_task(task_id: str, *, env: Mapping[str, str]) -> None:
+    """Cancel through the owner that also empties the task's systemd scope."""
+    executable = shutil.which("agentctl", path=env.get("PATH") or os.defpath)
+    if executable is None:
+        raise PytestSlotUnavailableError(REFUSAL.format(reason="`agentctl` is not on PATH"))
+    try:
+        completed = subprocess.run(
+            [executable, "job", "cancel", task_id],
+            env=dict(env),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise PytestSlotUnavailableError(
+            REFUSAL.format(reason=f"`agentctl job cancel` could not start: {exc}")
+        ) from exc
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`agentctl job cancel` failed: {detail}"))
+
+
 def _task_result(status_json: str, task_id: str) -> int:
     try:
         document = json.loads(status_json)
@@ -231,20 +253,26 @@ def _task_result(status_json: str, task_id: str) -> int:
 
 
 def _reap_task(task_id: str, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:
-    """End a task this process owns and drop it from the queue.
+    """End a task this process owns and empty its execution scope.
 
     Best effort by construction: the reason we are here is that the waiter is
     being killed, so a failing reap must not replace the original cause of
-    death with its own error. ``kill`` first because ``remove`` refuses a
-    running task; ``remove`` after because a killed task still occupies the
-    listing. The launch file carries a resolved environment and must not
-    outlive the run either way.
+    death with its own error. AgentCTL owns cancellation because pueue kills
+    the queue runner with SIGKILL, which leaves the workload alive in the
+    transient systemd scope that only AgentCTL names and stops.
+
+    The launch file belongs to whoever ends the run, so deleting it is part of
+    a cancellation that succeeded: a task still on the queue reads it when it
+    starts.
     """
 
-    for verb in ("kill", "remove"):
-        with contextlib.suppress(PytestSlotUnavailableError):
-            _pueue([verb, task_id], env=env)
-    if launch_path is not None:
+    cancelled = False
+    try:
+        _cancel_task(task_id, env=env)
+        cancelled = True
+    except PytestSlotUnavailableError:
+        pass
+    if cancelled and launch_path is not None:
         with contextlib.suppress(OSError):
             launch_path.unlink(missing_ok=True)
 
