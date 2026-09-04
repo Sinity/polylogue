@@ -58,9 +58,9 @@ Archive verification is composed from domain-owned declarations. Each owner supp
 - **Rejected**: a *single* fresh-first-only policy that forces re-ingest for any
   durable-tier change (loses irreplaceable `user.db` assertions); and full
   Alembic-style forward/reverse upgrade chains for derived tiers (unnecessary —
-  they rebuild). The `devtools gate schema-versioning` lint enforces the
-  boundary through numbered durable migration slots, declared derived lifecycle
-  deltas, and clone-safe SQL shapes rather than helper-name pattern matching.
+  they rebuild). The `devtools verify schema-manifest` check enforces the
+  boundary through numbered durable migration slots and canonical schema
+  manifests.
 - **Constraint**: Archive SQLite file set, WAL mode. Durable-tier migration
   requires a backup manifest; derived-tier rebuild is operator-triggered on reject.
 

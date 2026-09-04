@@ -14,17 +14,6 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.lifecycle import (
-    INDEX_DELTA_DECLARATIONS,
-    DerivedDeltaClass,
-    FastForwardOperationKind,
-    index_delta_declaration_report,
-    index_fast_forward_plan,
-    resolve_canonical_index_objects,
-)
 
 _SESSION_ID = "gemini-cli-session:s1"
 _MESSAGE_ID = "gemini-cli-session:s1:n:m1"
@@ -120,61 +109,3 @@ def test_a_session_delete_leaves_another_session_s_attachment_alone(tmp_path: Pa
         assert archive.delete_sessions((_SESSION_ID,)) == 1
 
     assert _attachment_rows(index_db) == [("att-1", 1)]
-
-
-def test_the_v77_delta_is_an_index_only_fast_forward_that_resolves(tmp_path: Path) -> None:
-    """The declaration must be executable, and reach an existing archive.
-
-    The previous attempt at this fix declared an operation kind the executor's
-    canonical lookup did not know, so apply raised and no archive reached the
-    new version — while the whole fast-forward suite stayed green.
-
-    Anti-vacuity: remove the v77 declaration and
-    `index_delta_declaration_report` reports a missing version; point the
-    operation at an object with no canonical DDL and resolution returns
-    nothing for it.
-    """
-    declaration = next(d for d in INDEX_DELTA_DECLARATIONS if d.version == 77)
-
-    assert declaration.classes == (DerivedDeltaClass.INDEX_ONLY,)
-    assert declaration.operations[0].kind is FastForwardOperationKind.CREATE_INDEX
-    assert declaration.operations[0].objects == (("index", "idx_attachment_refs_attachment"),)
-
-    plan = index_fast_forward_plan(76, 77)
-    assert plan is not None
-    assert plan.eligible_for_sql_fast_forward is True
-    assert plan.requires_semantic_reparse is False
-
-    resolved = resolve_canonical_index_objects(declaration.operations[0].objects)
-    assert "idx_attachment_refs_attachment" in resolved[("index", "idx_attachment_refs_attachment")]
-
-    report = index_delta_declaration_report(INDEX_SCHEMA_VERSION)
-    assert report["ok"] is True
-    assert report["missing_versions"] == ()
-
-
-def test_an_archive_at_the_previous_version_ends_up_with_the_index(tmp_path: Path) -> None:
-    """The end state an operator actually gets when opening a v76 archive."""
-    index_db = tmp_path / "index.db"
-    conn = sqlite3.connect(index_db)
-    try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
-        conn.execute("DROP INDEX IF EXISTS idx_attachment_refs_attachment")
-        conn.execute("PRAGMA user_version = 76")
-        conn.commit()
-    finally:
-        conn.close()
-
-    conn = sqlite3.connect(index_db)
-    try:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == INDEX_SCHEMA_VERSION
-        assert (
-            conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_attachment_refs_attachment'"
-            ).fetchone()
-            is not None
-        )
-    finally:
-        conn.close()

@@ -26,6 +26,25 @@ _FTS_BULK_GUARD = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _SameVersionSchemaVariant:
+    introduced_version: int
+    object_names: tuple[tuple[str, str], ...]
+    transformation: str = "remove_fts_bulk_guard"
+
+
+_INDEX_SAME_VERSION_SCHEMA_VARIANTS = (
+    _SameVersionSchemaVariant(
+        introduced_version=63,
+        object_names=(
+            ("trigger", "blocks_command_trigram_ai"),
+            ("trigger", "blocks_command_trigram_ad"),
+            ("trigger", "blocks_command_trigram_au"),
+        ),
+    ),
+)
+
+
 def _sql(value: str | None) -> str:
     return _WS.sub(" ", (value or "").strip()).lower()
 
@@ -91,6 +110,12 @@ def _canonical_schema_manifest(tier: ArchiveTier, version: int, ddl: str) -> Sch
     """
     conn = sqlite3.connect(":memory:")
     try:
+        if tier is ArchiveTier.EMBEDDINGS:
+            from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
+                raise RuntimeError(f"cannot render embeddings schema without sqlite-vec: {error}")
         conn.executescript(ddl)
         if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
             from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
@@ -122,9 +147,9 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
     extra = sorted(set(actual_by_name) - set(expected_by_name))
     variant_objects: dict[tuple[str, str], set[str]] = {}
     if expected.tier == ArchiveTier.INDEX.value and expected.version == actual.version:
-        from polylogue.storage.sqlite.lifecycle import same_version_schema_variants
-
-        for variant in same_version_schema_variants(expected.version):
+        for variant in _INDEX_SAME_VERSION_SCHEMA_VARIANTS:
+            if expected.version < variant.introduced_version:
+                continue
             for object_name in variant.object_names:
                 canonical = expected_by_name.get(object_name)
                 if canonical is not None and variant.transformation == "remove_fts_bulk_guard":
