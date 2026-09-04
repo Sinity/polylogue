@@ -59,6 +59,7 @@ def test_private_packet_reports_coverage_labels_distributions_and_limits() -> No
         ("directive_mode", "direct", 2, 3, 0),
     }
     assert "no_comparative_authoritarianism_success_utility_or_routing_quality_claims" in packet.limits
+    assert packet.aggregate_evidence_refs == ("block:a", "block:b")
 
 
 def test_private_packet_fails_closed_when_accepted_labels_lack_evidence() -> None:

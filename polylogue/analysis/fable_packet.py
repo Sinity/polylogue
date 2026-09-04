@@ -164,6 +164,7 @@ def compile_private_fable_packet(
     specimen_refs: set[str] = set()
     counterexample_refs: set[str] = set()
     label_evidence_refs: list[tuple[str, tuple[str, ...]]] = []
+    aggregate_evidence_refs: set[str] = set()
     for field, field_labels in sorted(labels_by_field.items()):
         counterexample_refs.update(label.delegation_ref for label in field_labels if label.applicable is False)
         applicable = [label for label in field_labels if label.applicable is not False]
@@ -185,6 +186,7 @@ def compile_private_fable_packet(
         labels_by_ref: dict[str, set[str]] = defaultdict(set)
         for label in applicable:
             label_evidence_refs.append((f"{label.delegation_ref}:{field}", tuple(sorted(label.evidence_refs))))
+            aggregate_evidence_refs.update(label.evidence_refs)
             if label.value is not None:
                 labels_by_ref[label.delegation_ref].add(label.value)
                 specimen_refs.add(label.delegation_ref)
@@ -212,7 +214,7 @@ def compile_private_fable_packet(
         ),
         manifest=manifest,
         label_evidence_refs=tuple(sorted(label_evidence_refs)),
-        aggregate_evidence_refs=tuple(sorted(specimen_refs)),
+        aggregate_evidence_refs=tuple(sorted(aggregate_evidence_refs)),
     )
 
 
