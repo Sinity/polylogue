@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -43,16 +43,6 @@ def integration_archive() -> SeededArchiveArtifact:
 def corpus_fidelity_archive(seeded_archive: SeededArchiveArtifact) -> SeededArchiveArtifact:
     """Real production-route archive used by corpus acceptance gate tests."""
     return seeded_archive
-
-
-@pytest.fixture
-def seeded_archive_writable(seeded_archive: SeededArchiveArtifact, tmp_path: Path) -> Iterator[SeededArchiveClone]:
-    """Private full-root clone for a mutating consumer."""
-    clone = clone_seeded_archive(seeded_archive, tmp_path / "seeded-archive-clone")
-    try:
-        yield clone
-    finally:
-        clone.close()
 
 
 @pytest.fixture

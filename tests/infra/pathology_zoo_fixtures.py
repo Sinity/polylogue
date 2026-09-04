@@ -5,8 +5,7 @@ production ingest (real parsing, real writes, real revision-governance
 replay). Several test modules each need that same manifest-backed archive,
 some only to read it and some to mutate a private copy of it. Building it
 once per test session and handing out cheap clones is the same shape as
-``tests.infra.corpus_fixtures.seeded_archive`` /
-``seeded_archive_writable`` for the schema-coverage corpus.
+``tests.infra.corpus_fixtures.seeded_archive`` for the schema-coverage corpus.
 """
 
 from __future__ import annotations
