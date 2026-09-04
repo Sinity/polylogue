@@ -802,12 +802,12 @@ def test_idless_document_only_turns_referencing_distinct_files_write_every_attac
     """AI Studio exports carry id-less, timestamp-less, text-less user turns whose
     only content is a Drive reference, one turn per file, all files sharing one
     display name. The turns differ only in the referenced file id, so the
-    attachment owner resolution must read block reference identity or every
-    such session fails parse (polylogue-prjai / polylogue-gmb3o).
+    attachment owner resolution must read the document block's ``metadata``
+    or every such session fails parse (polylogue-prjai / polylogue-gmb3o).
 
-    Anti-vacuity: removing the block-reference tier from
-    ``message_owner_resolution`` makes ``session_content_hash`` raise
-    ``MessageOwnerAmbiguityError`` for this payload.
+    Anti-vacuity: dropping ``metadata`` from
+    ``_HASHED_FIELDS["ParsedContentBlock"]`` makes ``session_content_hash``
+    raise ``MessageOwnerAmbiguityError`` for this payload.
     """
     payload: JSONDocument = {
         "chunkedPrompt": {
@@ -877,3 +877,53 @@ def test_idless_inline_image_only_turns_with_distinct_bytes_write_every_attachme
         rows = conn.execute("SELECT message_id FROM attachment_refs").fetchall()
     assert len(rows) == 2
     assert len({message_id for (message_id,) in rows}) == 2
+
+
+def test_same_timestamp_document_only_turns_keep_every_attachment_owned(
+    workspace_env: Mapping[str, Path],
+) -> None:
+    """AI Studio stamps a run of id-less, text-less document turns with one shared
+    timestamp. Their role/timestamp revision anchor collides by construction, so
+    the cited Drive file is the only evidence separating them; without it the
+    attachment owner resolves onto an ambiguous key and the whole session fails
+    transform with ``attachment owner coordinate is indistinguishable from
+    another message`` (polylogue-prjai).
+
+    Anti-vacuity: dropping ``metadata`` from
+    ``_HASHED_FIELDS["ParsedContentBlock"]`` makes
+    ``session_revision_projection`` raise ``MessageOwnerAmbiguityError`` at
+    coordinate ``(1, 0)`` and leaves every attachment unowned.
+    """
+    stamp = "2026-04-07T02:20:20.469Z"
+    payload: JSONDocument = {
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "Guidelines follow.", "createTime": "2026-04-06T19:29:05.295Z"},
+                {"role": "user", "driveDocument": {"id": "file-a", "name": "chapter.md"}, "createTime": stamp},
+                {"role": "user", "driveDocument": {"id": "file-b", "name": "chapter.md"}, "createTime": stamp},
+                {"role": "user", "driveDocument": {"id": "file-c", "name": "chapter.md"}, "createTime": stamp},
+                {"role": "user", "driveDocument": {"id": "file-d", "name": "chapter.md"}, "createTime": stamp},
+                {"role": "model", "text": "Read.", "finishReason": "STOP", "createTime": stamp},
+            ]
+        }
+    }
+
+    result = parse_chunked_prompt("gemini", payload, "gemini-same-timestamp-documents")
+    assert [message.provider_message_id for message in result.messages] == [""] * 6
+    assert {message.timestamp for message in result.messages[1:]} == {stamp}
+    assert [attachment.provider_attachment_id for attachment in result.attachments] == [
+        "file-a",
+        "file-b",
+        "file-c",
+        "file-d",
+    ]
+
+    # The strict projection is the path that has no ambiguous-owner tolerance.
+    session_revision_projection(result)
+
+    db_path = db_setup(workspace_env)
+    with open_connection(db_path) as conn:
+        write_and_hydrate(PipelineRoundtrip(result, session_content_hash(result)), conn)
+        rows = conn.execute("SELECT message_id, attachment_id FROM attachment_refs ORDER BY message_id").fetchall()
+    assert len(rows) == 4
+    assert len({message_id for message_id, _attachment_id in rows}) == 4
