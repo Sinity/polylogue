@@ -426,9 +426,10 @@ def run_pytest(
 ) -> SlotOutcome:
     """Run a managed pytest command, acquiring the host's pytest slot first.
 
-    Inside a queued task (or under the explicit escape) the slot is already
-    held and the command runs here, streaming as before. Otherwise it is queued
-    in the host's single-slot ``pytest`` group and its output is captured.
+    When the pytest-group runner sets ``POLYLOGUE_PYTEST_SLOT=held``, the slot
+    is already held and the command runs here, streaming as before. Every other
+    caller is queued in the host's single-slot ``pytest`` group and its output
+    is captured.
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
     if holds_pytest_slot(env):
