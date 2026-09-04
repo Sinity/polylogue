@@ -6664,9 +6664,10 @@ def _reextract_prefix_tail_db(
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
     # Derived session products cache the pre-extraction message set. Their
-    # staleness predicate compares the session's sort key and updated-at, and
-    # re-extraction changes neither, so the rows are dropped outright: a missing
-    # profile is what makes the child a convergence candidate again.
+    # staleness predicate compares the session's sort key, updated-at and
+    # content hash, none of which re-extraction moves, so the rows are dropped
+    # outright: a missing profile is what makes the child a convergence
+    # candidate again.
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_session_id,))
     conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child_session_id,))
     conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (child_session_id,))

@@ -498,12 +498,14 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
+        table_key="session_profiles",
         sql=STALE_THREAD_COUNT_SQL,
         params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_thread_count",
+        table_key="threads",
         sql=ORPHAN_THREAD_COUNT_SQL,
         requires_freshness=True,
     ),
@@ -516,6 +518,7 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_tag_rollup_count",
+        table_key="session_tag_rollups",
         sql="SELECT COUNT(*) FROM session_tag_rollups WHERE materialized_at != 'query-time'",
         requires_freshness=True,
     ),
