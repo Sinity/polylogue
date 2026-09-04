@@ -42,26 +42,43 @@ class ResourceSample:
     temp_delta_bytes: int
 
 
+PROC_MEMORY_FIELDS = ("VmRSS", "Pss", "VmSwap")
+
+
+class ResourceProbeUnavailableError(RuntimeError):
+    """procfs did not report a field the declared envelope is measured against."""
+
+
+def _parse_proc_memory(text: str) -> tuple[int, int, int]:
+    """Return RSS, PSS, and swap in bytes from concatenated procfs reports.
+
+    A missing field is refused rather than defaulted to zero: a zero sample
+    satisfies every declared limit, so the envelope would pass without
+    measuring anything.
+    """
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key not in PROC_MEMORY_FIELDS:
+            continue
+        fields = value.split()
+        if not fields:
+            continue
+        values[key] = int(fields[0]) * 1024
+    missing = [field for field in PROC_MEMORY_FIELDS if field not in values]
+    if missing:
+        raise ResourceProbeUnavailableError(f"procfs did not report {', '.join(missing)}")
+    return values["VmRSS"], values["Pss"], values["VmSwap"]
+
+
 def _proc_memory() -> tuple[int, int, int]:
     """Return current RSS, PSS, and swap from procfs for this process."""
-    rss = pss = swap = 0
     try:
         status = Path("/proc/self/status").read_text(encoding="ascii")
         smaps_rollup = Path("/proc/self/smaps_rollup").read_text(encoding="ascii")
-        for line in (status + smaps_rollup).splitlines():
-            key, _, value = line.partition(":")
-            fields = value.split()
-            if not fields:
-                continue
-            if key == "VmRSS":
-                rss = int(fields[0]) * 1024
-            elif key == "Pss":
-                pss = int(fields[0]) * 1024
-            elif key == "VmSwap":
-                swap = int(fields[0]) * 1024
-    except (OSError, ValueError):
-        pass
-    return rss, pss, swap
+    except (OSError, ValueError) as exc:
+        raise ResourceProbeUnavailableError(f"procfs memory reports are unreadable: {exc}") from exc
+    return _parse_proc_memory(status + smaps_rollup)
 
 
 def _temp_used_bytes(temp_root: Path) -> int:
@@ -127,8 +144,13 @@ async def measure_query_envelope(
         return candidate
 
     def sample() -> None:
+        # The measured loop observes every round on this thread too, so a
+        # persistent probe failure still reaches the caller.
         while not stop.is_set():
-            observe()
+            try:
+                observe()
+            except ResourceProbeUnavailableError:
+                return
             time.sleep(sample_interval_s)
 
     sampler = threading.Thread(target=sample, name="query-envelope-sampler", daemon=True)
@@ -256,15 +278,18 @@ def main(argv: list[str] | None = None) -> int:
                 max_temp_growth_bytes=args.max_temp_growth_mb * MIB,
             )
         )
-    except SchemaVersionMismatchError as exc:
+    except (SchemaVersionMismatchError, ResourceProbeUnavailableError) as exc:
+        regression_path = (
+            "Re-run against the exact promoted generation after its schema lifecycle action completes; "
+            "do not bypass the archive compatibility check."
+            if isinstance(exc, SchemaVersionMismatchError)
+            else "Re-run on a host whose procfs reports VmRSS, Pss, and VmSwap; the envelope is unmeasured here."
+        )
         receipt = {
             "status": "blocked-env",
             "archive_root": str(args.archive_root.resolve()),
             "blocking_error": str(exc),
-            "regression_path": (
-                "Re-run against the exact promoted generation after its schema lifecycle action completes; "
-                "do not bypass the archive compatibility check."
-            ),
+            "regression_path": regression_path,
         }
         text = json.dumps(receipt, indent=2, sort_keys=True)
         print(text)
