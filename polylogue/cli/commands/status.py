@@ -209,7 +209,6 @@ def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
     from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
     client = DaemonClient(
@@ -226,7 +225,6 @@ def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
                 request.operation,
                 dict(request.payload),
                 archive_root=str(config.archive_root),
-                index_schema_version=INDEX_SCHEMA_VERSION,
                 daemon_version=POLYLOGUE_VERSION,
             )
         ).execute(OperationRequest(operation, {}))
