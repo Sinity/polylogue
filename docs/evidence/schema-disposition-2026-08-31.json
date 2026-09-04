@@ -3,12 +3,12 @@
   "disposition_counts": {
     "COMPLETE": 67,
     "DERIVE": 7,
-    "KEEP": 1725,
+    "KEEP": 1715,
     "PURGE": 99,
     "TRANSITION": 9
   },
   "format": "polylogue-schema-disposition/v1",
-  "object_count": 1907,
+  "object_count": 1897,
   "objects": [
     {
       "campaign_action": "retain and verify the named producer/consumer",
@@ -39851,7 +39851,7 @@
   "schema_fingerprints": {
     "audit": "39a2cff1dfbc0d8721f8a29229e6104abbdfa37d6f432d822b412bc580f2b5e9",
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
-    "index": "15f695d2c6b4a09bb2a890e5f0370d9d97aa4fdbf8a90406cae7d2eacae5e7d6",
+    "index": "b40f69d3b16c69fa7aef6bd6d845a4af3c6ca2211b465e39066726907cdb9f70",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
     "source": "b6ea0b8cd6f926106f1de584f5a4c1b114ea6749d7375b256c6f91c85f4d7814",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"
@@ -39882,10 +39882,10 @@
       "views": 0
     },
     "index": {
-      "columns": 571,
+      "columns": 562,
       "indexes": 75,
-      "objects": 746,
-      "tables": 57,
+      "objects": 736,
+      "tables": 56,
       "triggers": 37,
       "views": 6
     },
