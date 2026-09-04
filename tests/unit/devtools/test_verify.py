@@ -316,6 +316,7 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
     captured: dict[str, Any] = {}
     history: dict[str, Any] = {}
     monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({".agentctl/project.toml"}))
