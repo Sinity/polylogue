@@ -39,9 +39,9 @@ share one workstation, so `devtools test` and the pytest step of
 `devtools verify` run only while holding the host's single `pytest` pueue slot
 (group parallelism 1).
 
-- Inside a queued task, the slot is already held: `sinnixd-queue-run` exports
-  `SINNIXD_JOB_ID` and pytest runs in place, streaming its output as before.
-- Outside one, the run is queued as `pueue add --group pytest --label
+- The pytest-group runner sets `POLYLOGUE_PYTEST_SLOT=held` for the task that
+  owns the slot, so pytest runs in place and streams its output as before.
+- Every other caller, including a generic AgentCTL job, is queued as `pueue add --group pytest --label
   polylogue:{test,verify}:<pid>`, and the command waits for the task, reports
   the exit code pueue recorded, and prints the captured log path under
   `.cache/verify/pytest-slot-<pid>.log`. Watch it with `pueue status` or
@@ -53,9 +53,9 @@ share one workstation, so `devtools test` and the pytest step of
 - If pueued is unreachable the run refuses rather than running unqueued:
   `systemctl --user start pueued`, then rerun.
 
-`POLYLOGUE_PYTEST_SLOT=held` asserts the caller already holds the slot. It
-exists for the hermetic test of this mechanism; setting it by hand is how the
-contention this prevents comes back.
+`POLYLOGUE_PYTEST_SLOT=held` is the explicit assertion that the caller already
+holds the slot. Only the pytest-group runner may set it during normal
+execution. Generic `SINNIXD_JOB_ID` does not grant slot ownership.
 
 ### Typed WebUI package checks
 
