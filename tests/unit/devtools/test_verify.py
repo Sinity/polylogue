@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 import tomllib
 
-from devtools import gate, required_gate, verify, verify_runs, why
+from devtools import agent_env, gate, required_gate, verify, verify_runs, why
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -99,8 +99,20 @@ def test_mypy_gate_uses_a_foreground_checkout_local_process() -> None:
     assert gate.mypy_command() == [str(verify.ROOT / ".venv/bin/mypy")]
 
 
-def test_removed_lab_mode_is_not_accepted() -> None:
-    assert verify._main(["--lab"]) == 2
+def test_removed_lab_mode_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordinary caller reaches argparse for the removed option.
+
+    Anti-vacuity: if managed-agent detection remains active, ``_main`` returns
+    the agent-tier refusal before argparse and this assertion fails to protect
+    the removed-option contract.
+    """
+    monkeypatch.delenv(agent_env.AGENT_PRINCIPAL_ENV, raising=False)
+    monkeypatch.setattr(agent_env, "_inside_agent_cgroup", lambda _reader: False)
+
+    with pytest.raises(SystemExit) as raised:
+        verify._main(["--lab"])
+
+    assert raised.value.code == 2
 
 
 def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
