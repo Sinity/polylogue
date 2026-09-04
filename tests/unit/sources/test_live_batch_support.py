@@ -128,6 +128,60 @@ def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
     assert processor._append_plan(path) is None
 
 
+def test_append_prefix_cursor_refuses_a_rewritten_accepted_prefix_after_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: trusting only the unchanged tail would advance this cursor."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="prefix-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    rewritten = path.read_bytes().replace(b"zero", b"zeta", 1)
+    path.write_bytes(rewritten)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.tail_hash_from_path",
+        lambda _path, _end: (cast(str, plan.accepted_tail_hash), 0),
+    )
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_prefix_cursor_refuses_claude_body_rewrite_after_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: recomputing the frontier must not bless a changed stable body."""
+    first_append = b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n'
+    path, first_plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-publication",
+        append=first_append,
+    )
+    assert ingest_append_plans(cast(Any, owner), [first_plan]).succeeded == [first_plan]
+    assert processor._record_append_cursor(first_plan)
+    second_append = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    with path.open("ab") as handle:
+        handle.write(second_append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b"one", b"bad", 1))
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.tail_hash_from_path",
+        lambda _path, _end: (cast(str, plan.accepted_tail_hash), 0),
+    )
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_prefix_cursor_refuses_parser_semantics_drift_after_planning(tmp_path: Path) -> None:
+    """Mutation: publishing under a new parser version would mislabel the proof."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="parser-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    processor._parser_fingerprint = lambda: "new-parser-semantics"
+
+    assert processor._record_append_cursor(plan) is False
+
+
 @pytest.mark.parametrize(
     ("provider", "stable_session_identity", "status"),
     [

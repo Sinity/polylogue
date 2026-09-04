@@ -4327,6 +4327,7 @@ class LiveBatchProcessor:
             # routed through the full/bundle ingest path below instead,
             # which already handles multi-session grouping correctly.
             return None
+        parser_fingerprint = self._current_parser_fingerprint()
         cursor = cursor or self._cursor.get_record(path)
         pending_promotion: Callable[[], bool] | None = None
         if cursor is None:
@@ -4346,11 +4347,7 @@ class LiveBatchProcessor:
             pending_promotion = self._pending_legacy_promotions.pop(path, None)
             if cursor is not None:
                 self._resynthesized_cursors[path] = cursor
-        if (
-            cursor is None
-            or cursor.parser_fingerprint != self._current_parser_fingerprint()
-            or cursor.content_fingerprint is None
-        ):
+        if cursor is None or cursor.parser_fingerprint != parser_fingerprint or cursor.content_fingerprint is None:
             return None
         if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
@@ -4507,6 +4504,9 @@ class LiveBatchProcessor:
             authority_bytes_read=last_complete_newline,
             native_id_hint=native_id_hint,
             acquisition_native_id_hint=acquisition_native_id_hint,
+            accepted_claude_body_sha256=(claude_frontier.body_sha256 if claude_frontier is not None else None),
+            accepted_claude_body_bytes=(claude_frontier.body_bytes if claude_frontier is not None else None),
+            parser_fingerprint=parser_fingerprint,
         )
 
     def _append_payload_for_provider(
@@ -4806,6 +4806,8 @@ class LiveBatchProcessor:
             plan.ctime_ns,
         )
         try:
+            if plan.parser_fingerprint is not None and plan.parser_fingerprint != self._current_parser_fingerprint():
+                raise ValueError("parser semantics changed during append admission")
             stat = plan.path.stat()
             latest_stat = stat
             if stat.st_dev != plan.st_dev or stat.st_ino != plan.st_ino or stat.st_size < plan.last_complete_newline:
@@ -4828,6 +4830,14 @@ class LiveBatchProcessor:
                 raise ValueError("accepted append bytes changed")
             if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
                 raise ValueError("accepted append tail changed")
+            if plan.accepted_prefix_hash is not None:
+                prefix_hash, _prefix_bytes = sha256_range_from_path(
+                    plan.path,
+                    start_offset=0,
+                    end_offset=plan.last_complete_newline,
+                )
+                if prefix_hash != plan.accepted_prefix_hash:
+                    raise ValueError("accepted prefix changed")
         except FileNotFoundError:
             # The append payload was already admitted before the source can be
             # removed by a live writer. Preserve that per-plan success and use
@@ -4867,7 +4877,12 @@ class LiveBatchProcessor:
             frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
             == "claude-header-body"
         ):
-            stored_tail_hash = claude_semantic_frontier_for_prefix(plan.path, plan.last_complete_newline)
+            stored_tail_hash = claude_semantic_frontier_for_prefix(
+                plan.path,
+                plan.last_complete_newline,
+                expected_stable_body_sha256=plan.accepted_claude_body_sha256,
+                expected_stable_body_bytes=plan.accepted_claude_body_bytes,
+            )
             if stored_tail_hash is None:
                 self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
                 return False
@@ -4886,7 +4901,7 @@ class LiveBatchProcessor:
             plan.stat_size,
             byte_offset=plan.last_complete_newline,
             last_complete_newline=plan.last_complete_newline,
-            parser_fingerprint=self._current_parser_fingerprint(),
+            parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
             tail_hash=stored_tail_hash,
             source_name=plan.source_name,
