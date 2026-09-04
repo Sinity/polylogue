@@ -37,24 +37,6 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #   - session_refs (new table) -- pr-link and future issue-tracker
 #     references (20,702 occurrences), tracker-agnostic by design.
 #
-# Every one of these values depends on parser semantics to populate
-# correctly (a shape-only copy-forward would leave every row NULL, exactly
-# the v42/v44/v45 precedent) -- SEMANTIC_REPARSE is the honest
-# classification, matching those versions, and routes through
-# `polylogue ops reset --index && polylogued run` rather than a fast-forward.
-#
-# index.db is rebuildable derived state, but "rebuildable" is not the same as
-# "always rebuilt": every bump above INDEX_FAST_FORWARD_COMPATIBILITY_FLOOR
-# must declare its delta class in storage/sqlite/lifecycle.py, and a declared
-# non-semantic delta upgrades an existing generation in place through
-# index_fast_forward_plan()/apply_index_fast_forward() on connect. Only a
-# SEMANTIC_REPARSE delta -- one whose result depends on parser semantics --
-# routes to `polylogue ops reset --index && polylogued run`.
-#
-# A bump without a declaration is a policy violation, not a free rebuild:
-# `devtools verify schema-versioning` fails, and the archive silently
-# falls back to full raw replay. See polylogue-9rw0 / polylogue-b5l.
-#
 # polylogue-o4j2: v47 adds sessions.pending_drafts_json -- aistudio-drive's
 # chunkedPrompt.pendingInputs non-blank entries (unsent textbox drafts, 7/397
 # real sessions with draft text on the live archive). Landed as a session-row

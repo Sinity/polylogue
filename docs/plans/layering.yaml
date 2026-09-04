@@ -154,12 +154,6 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
-    - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
-      surfaces:
-        - tier: index
-          durability: rebuildable
-          interruption: replayable
-      entrypoints: [apply_index_fast_forward]
   twin_write_contracts:
     - name: raw-membership-classification
       module: polylogue/storage/sqlite/archive_tiers/revision_governance.py

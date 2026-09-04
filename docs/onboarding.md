@@ -99,7 +99,7 @@ polylogue ops doctor --runtime
 consistency, daemon liveness, and validation failures. `--repair`
 recreates dropped FTS triggers and rebuilds the index where it can do
 so safely; deeper recovery still requires the documented in-place
-upgrade scripts described in [internals.md](internals.md#schema-versioning-model).
+schema checks described in [internals.md](internals.md#schema-versioning-model).
 
 For backup boundaries (SQLite WAL, blob store, service state), see
 [daemon.md](daemon.md).

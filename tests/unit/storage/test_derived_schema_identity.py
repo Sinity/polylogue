@@ -12,7 +12,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_database,
     initialize_archive_tier,
 )
-from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_DDL
 from polylogue.storage.sqlite.archive_tiers.schema_identity import (
     DERIVED_SCHEMA_META_DDL,
@@ -21,7 +21,6 @@ from polylogue.storage.sqlite.archive_tiers.schema_identity import (
     read_schema_identity,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.lifecycle import get_latest_sql_fast_forwardable_version, index_fast_forward_plan
 from polylogue.storage.sqlite.schema import _ensure_schema, ensure_schema_async
 from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
 
@@ -103,26 +102,6 @@ def test_current_unstamped_ops_tier_is_adopted_before_identity_validation(tmp_pa
 
     with sqlite3.connect(path) as conn:
         assert read_schema_identity(conn, DerivedTier.OPS) == derived_schema_identity(DerivedTier.OPS)
-
-
-def test_fast_forward_adopts_older_stamped_index_before_identity_validation(tmp_path: Path) -> None:
-    """Lifecycle upgrades run before rejecting an identity from an older schema."""
-    path = tmp_path / "index.db"
-    initialize_archive_database(path, ArchiveTier.INDEX)
-    target_version = INDEX_SCHEMA_VERSION
-    source_version = get_latest_sql_fast_forwardable_version(target_version)
-    assert source_version is not None
-    assert index_fast_forward_plan(source_version, target_version) is not None
-    with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE agent_meta_sidecar_purge_receipts (id INTEGER)")
-        conn.execute(f"PRAGMA user_version = {source_version}")
-        conn.execute("UPDATE schema_identity SET identity = 'old-runtime' WHERE tier = 'index'")
-
-    initialize_archive_database(path, ArchiveTier.INDEX, expected_version=target_version)
-
-    with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == target_version
-        assert read_schema_identity(conn, DerivedTier.INDEX) == derived_schema_identity(DerivedTier.INDEX)
 
 
 def test_canonical_sync_bootstrap_adopts_current_unstamped_index(tmp_path: Path) -> None:

@@ -841,6 +841,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
 
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] == "schema-manifest":
+        from devtools.verify_schema_manifest import main as verify_schema_manifest
+
+        return verify_schema_manifest(raw_argv[1:])
     handlers = {
         signum: signal.signal(signum, _raise_verification_interruption) for signum in (signal.SIGINT, signal.SIGTERM)
     }

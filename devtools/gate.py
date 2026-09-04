@@ -111,14 +111,6 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
-        "schema-versioning",
-        "Verify durable-tier migration and derived-tier rebuild boundaries.",
-        "module",
-        ("devtools.verify_schema_upgrade_lane",),
-        label="gate schema-versioning",
-        in_quick=True,
-    ),
-    Gate(
         "oracle-integrity",
         "Verify tests certify production-reachable code and never read ambient user paths.",
         "module",

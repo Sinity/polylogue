@@ -76,7 +76,7 @@ entire package tree:
 | Add or change a provider/origin route | `sources/origin_specs.py`, `sources/dispatch.py`, and the owning parser | schema/package evidence, positive and collision-negative fixtures, production ingest test | a CLI switch or filename-only detector |
 | Change durable source evidence | `storage/sqlite/archive_tiers/source.py` and `source_write.py` | additive source migration, backup-gated migration proof, source-authority tests | direct SQL in `pipeline/`, `daemon/`, or `maintenance/` |
 | Change normalized session meaning or identity | owning parser plus `archive/` and `pipeline/ids.py` when hashes change | eager/streaming/replay equivalence, semantic fingerprint decision, candidate rebuild impact | a post-hoc repair that rewrites index rows |
-| Change rebuildable index schema | `storage/sqlite/archive_tiers/index.py` and `storage/sqlite/lifecycle.py` | declared delta class, candidate/rebuild tests, generated schema docs | a durable migration chain |
+| Change rebuildable index schema | `storage/sqlite/archive_tiers/index.py` and `storage/sqlite/schema_manifest.py` | manifest check, rebuild tests, generated schema docs | a durable migration chain |
 | Change query semantics | `archive/query/` | SQL lowering and in-memory parity, discovery/reference regeneration, public result tests | bespoke CLI- or MCP-only filtering |
 | Add a reusable operator workflow | `operations/` | operation declaration, ownership/authorization, thin CLI/API/MCP adapters | a large command handler that owns domain logic |
 | Detect or repair violated invariants | `maintenance/` over typed `storage/` primitives | dry-run-first behavior, backup/ownership boundary, immutable receipt, red twin | the primary ingest/write path |
@@ -194,7 +194,7 @@ registry or declaration, not the rendered output.
 | --- | --- |
 | Documentation navigation | `devtools render docs-surface --check` |
 | Package/import boundary | `devtools gate layering` |
-| Durable or derived schema | `devtools gate schema-versioning` plus the owning migration/rebuild tests |
+| Durable or derived schema | `devtools verify schema-manifest` plus the owning migration/rebuild tests |
 | CLI/API/MCP contract | owning focused tests plus generated reference checks |
 | Archive invariant or maintenance route | red-twin test, real command dispatch, and receipt validation |
 | Parser or identity semantics | provider fixture, eager/streaming/replay equivalence, and content-hash/fingerprint tests |

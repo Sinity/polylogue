@@ -284,9 +284,8 @@ tier constant:
   newer runtime as appropriate.
 
 Derived tiers (`index.db`, `embeddings.db`) have no ad hoc migration chain.
-Every index-tier bump declares its delta class in `storage/sqlite/lifecycle.py`.
-A non-semantic delta may fast-forward a clone-validated generation; a semantic
-reparse delta rebuilds from durable evidence:
+Every index-tier bump updates the canonical DDL and schema manifest. Schema
+drift requires a rebuild from durable evidence:
 
 ```bash
 polylogue ops reset --index && polylogued run

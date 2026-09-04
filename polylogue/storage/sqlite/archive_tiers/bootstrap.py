@@ -592,34 +592,6 @@ def initialize_archive_database(
                     f"version {required_version}; run an explicit durable-tier migration with a verified backup "
                     "manifest"
                 )
-            if tier is ArchiveTier.INDEX and current_version < required_version:
-                # index.db is rebuildable, but a bounded set of version gaps
-                # are DECLARED clone-safe (polylogue.storage.sqlite.lifecycle)
-                # -- no raw reparse, no consumer-visible semantic change. Apply
-                # the declared plan instead of forcing the full rebuild the
-                # declaration exists to avoid (polylogue-t3gk). Falls through
-                # to the rebuild-required error below when no eligible plan
-                # covers this exact gap (e.g. a SEMANTIC_REPARSE declaration
-                # is in the span).
-                from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import (
-                    apply_index_fast_forward,
-                )
-                from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
-
-                plan = index_fast_forward_plan(current_version, required_version)
-                if plan is not None:
-                    apply_index_fast_forward(conn, plan)
-                    from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
-
-                    ensure_runtime_indexes_sync(conn)
-                    from polylogue.storage.sqlite.schema_bootstrap import ensure_derived_schema_identity
-
-                    ensure_derived_schema_identity(conn, tier.value)
-                    from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
-
-                    assert_schema_manifest(conn, tier)
-                    conn.commit()
-                    return
             rebuild_command = (
                 "polylogue ops reset --index && polylogued run"
                 if tier is ArchiveTier.INDEX

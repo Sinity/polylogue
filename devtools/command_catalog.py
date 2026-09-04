@@ -138,6 +138,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "schema-manifest",
+        "verification",
+        "Compare canonical SQLite schema manifests with archive tier files.",
+        "devtools.verify_schema_manifest",
+        json_flag=True,
+        use_when="Verify every tier's canonical create route and optionally compare it with an archive root.",
+        examples=("devtools schema-manifest", "devtools schema-manifest --archive-root /path/to/archive --json"),
+    ),
+    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",
@@ -291,21 +300,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.query_memory_budget",
         use_when="Assert memory budgets around a concrete query or archive-facing command.",
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
-    ),
-    CommandSpec(
-        "archive index-fast-forward",
-        "archive",
-        "Plan and prove a declared index fast-forward against retained raw replay.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
-            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
-            "the production parser/materializer route, then atomically activates the proven generation."
-        ),
-        examples=(
-            "devtools archive index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools archive index-fast-forward activate --receipt /path/to/receipt.json",
-        ),
     ),
     CommandSpec(
         "archive lineage-validation",
