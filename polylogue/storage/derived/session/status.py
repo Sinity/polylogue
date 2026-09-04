@@ -219,24 +219,6 @@ ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = slp.session_id
     WHERE c.session_id IS NULL
 """
-MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM sessions c
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM insight_materialization im
-        WHERE im.session_id = c.session_id
-          AND im.insight_type = ?
-          AND im.materializer_version = ?
-          AND ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) = 0
-    )
-"""
-MISSING_THREAD_MATERIALIZATION_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM sessions c
-    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE sp.session_id IS NULL
-"""
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
@@ -513,32 +495,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         table_key="session_phases",
         sql=ORPHAN_SESSION_PHASE_COUNT_SQL,
         requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="missing_run_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("runs", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="missing_observed_event_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("observed_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="missing_context_snapshot_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("context_snapshots", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="missing_thread_materialization_count",
-        sql=MISSING_THREAD_MATERIALIZATION_COUNT_SQL,
-        fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
         count_key="stale_thread_count",
