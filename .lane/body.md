@@ -8,14 +8,12 @@ The ledger duplicated derived freshness state and could drift from normal conver
 
 ## Solution
 
-Remove the marker schema, repair path, readiness flags, and private periodic drain. Use source-bound provenance, migrate legacy `insights` debt to `derived`, and require the v85 semantic rebuild boundary.
+Remove the marker schema, repair path, readiness flags, and private periodic drain. Use source-bound provenance and migrate legacy `insights` debt to `derived`. Remove stale tests for the retired lifecycle and regenerate schema disposition evidence.
 
 ## Verification
 
-`nix develop --accept-flake-config --command devtools verify --quick` passed.
-
-The affected insight, storage, daemon, and source selection initially reported 1,068 passed. The remaining packet fixture failure was fixed and its direct regression test passed. The three residual failures reproduce on `origin/master`: two schema-status tests and `test_git_commit_adapter_raises_explicitly_for_non_repository`.
+`uv run devtools verify --quick` passed all gates, including schema-versioning. The packet command `uv run devtools test tests/unit/storage/insights tests/unit/insights` failed before collection because the first path does not exist. The corrected broad selection was killed by the host pytest queue after unrelated failures; it has no completion receipt.
 
 ## Residual risk
 
-`devtools verify atlas` is blocked by stale citation commits in multiple atlas sheets, including files outside this packet.
+The broad focused selection needs a fresh managed run if full storage and insight test coverage is required.
