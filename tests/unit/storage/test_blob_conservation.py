@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from pathlib import Path
 
 import pytest
@@ -10,15 +9,17 @@ from polylogue.maintenance import blob_conservation
 from polylogue.storage.blob_liveness import BlobLivenessProjection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
-def _empty_archive(root: Path) -> None:
-    sqlite3.connect(root / "source.db").close()
-    sqlite3.connect(root / "index.db").close()
+def _initialized_archive(root: Path) -> None:
+    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
 
 
 def test_conservation_flags_orphan_and_dangling_reference(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     store = BlobStore(tmp_path / "blob")
     orphan, _ = store.write_from_bytes(b"orphan")
     dangling = hashlib.sha256(b"missing").hexdigest()
@@ -45,7 +46,7 @@ def test_conservation_reads_the_active_index_without_immutable_mode(
     Anti-vacuity: restoring the conventional path or ``immutable=True`` makes
     this assertion fail.
     """
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     active_index = tmp_path / "promoted" / "index.db"
     projection = BlobLivenessProjection(frozenset())
     observed: dict[str, object] = {}
@@ -85,7 +86,7 @@ def test_conservation_holds_writer_exclusion_for_its_evidence_window(
     Anti-vacuity: removing the rebuild lease lets ``ActiveWriterLease`` enter
     while the census is collecting its SQLite and filesystem evidence.
     """
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     projection = BlobLivenessProjection(frozenset())
 
     def project(*args: object, **kwargs: object) -> BlobLivenessProjection:
@@ -105,7 +106,7 @@ def test_conservation_holds_writer_exclusion_for_its_evidence_window(
 def test_conservation_excludes_staged_work_from_blob_population(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     store = BlobStore(tmp_path / "blob")
     store.staging_root.mkdir(parents=True)
     (store.staging_root / "in-flight").write_bytes(b"not-yet-published")
@@ -123,7 +124,7 @@ def test_conservation_excludes_staged_work_from_blob_population(
 def test_conservation_treats_pending_publication_reservation_as_live(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     store = BlobStore(tmp_path / "blob")
     reserved, _ = store.write_from_bytes(b"pending-publication")
     monkeypatch.setattr(
@@ -141,7 +142,7 @@ def test_conservation_treats_pending_publication_reservation_as_live(
 def test_conservation_excludes_backup_prover_confirmed_reference(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     recoverable = hashlib.sha256(b"recoverable").hexdigest()
     projection = BlobLivenessProjection(
         frozenset({recoverable}), owner_hashes=(("source.db.raw_sessions", frozenset({recoverable})),)
@@ -166,7 +167,7 @@ def test_conservation_rejects_a_corrupt_referenced_blob(monkeypatch: pytest.Monk
     Anti-vacuity: counting namespace-shaped files as present would make this
     report pass.
     """
-    _empty_archive(tmp_path)
+    _initialized_archive(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"intact")
     store.blob_path(blob_hash).write_bytes(b"truncated")
