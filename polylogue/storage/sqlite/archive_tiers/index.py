@@ -441,6 +441,9 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # their content hashes.
 # v90 adds canonical provider identity claims and parent-side dispatch
 # observations. Existing indexes must be replayed to reconstruct topology.
+# v91 adds attachment reference provenance (`attachment_refs.direction` and
+# `producer_ref`). Both are derived by the writer from the owning turn, so
+# existing indexes must be replayed to recover them.
 # v92 removes content and cardinality pairing from delegation projection;
 # existing materialized rows must be regenerated from exact session links.
 # polylogue-vid0.1: v93 reads dispatch child identity from the progress

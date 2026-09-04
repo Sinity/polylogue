@@ -5642,3 +5642,56 @@ def test_real_writer_persists_current_semantic_fingerprints_on_replay(tmp_path: 
         assert tuple(replay) == (*tuple(first), "raw-replay")
     finally:
         conn.close()
+
+
+def test_fresh_archive_reads_back_attachment_provenance_through_the_envelope(tmp_path: Path) -> None:
+    """A freshly bootstrapped index round-trips attachment direction and producer.
+
+    The envelope reader selects ``attachment_refs.direction``/``producer_ref``
+    unconditionally, so a fresh schema that omits either column fails at
+    statement preparation for every session, with or without attachments.
+
+    Anti-vacuity: drop the ``direction`` and ``producer_ref`` columns from
+    ``ATTACHMENT_REFS_SPEC`` and this fails -- the write raises ``table
+    attachment_refs has no column named direction`` and the envelope read
+    raises ``no such column: r.direction``.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CHATGPT,
+            provider_session_id="attachment-envelope-provenance",
+            messages=[
+                ParsedMessage(provider_message_id="m1", role=Role.USER, text="here is my file"),
+                ParsedMessage(provider_message_id="m2", role=Role.ASSISTANT, text="here is the chart"),
+            ],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="a1",
+                    message_provider_id="m1",
+                    name="input.txt",
+                    mime_type="text/plain",
+                ),
+                ParsedAttachment(
+                    provider_attachment_id="a2",
+                    message_provider_id="m2",
+                    name="chart.png",
+                    mime_type="image/png",
+                ),
+            ],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+        envelope = read_archive_session_envelope(conn, session_id)
+
+        provenance = {
+            attachment.display_name: (attachment.direction, attachment.producer_ref)
+            for message in envelope.messages
+            for attachment in message.attachments
+        }
+        assert provenance["input.txt"] == ("user_input", None)
+        model_direction, model_producer = provenance["chart.png"]
+        assert model_direction == "model_output"
+        assert model_producer is not None
+    finally:
+        conn.close()
