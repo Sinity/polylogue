@@ -11,8 +11,6 @@ import pytest
 
 import polylogue.storage.derived.session.rebuild as rebuild_mod
 import polylogue.storage.derived.session.refresh as refresh_mod
-from polylogue.daemon import cli as daemon_cli
-from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.derived.session.rebuild import (
     _SESSION_INSIGHT_BLOCK_TEXT_PREVIEW_CHARS,
     _SESSION_INSIGHT_MESSAGE_TEXT_PREVIEW_CHARS,
@@ -24,8 +22,6 @@ from polylogue.storage.derived.session.refresh import (
     _refresh_thread_roots_async,
     refresh_session_insights_for_session_async,
 )
-from polylogue.storage.derived.session.repair_assessment import assess_session_insight_repairs
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -76,16 +72,12 @@ def test_rebuild_session_insights_preserves_null_thread_sort_key(tmp_path: Path)
         rebuild_session_insights_sync(conn)
 
         row = conn.execute(
-            """
-            SELECT source_sort_key_ms
-            FROM insight_materialization
-            WHERE insight_type = 'thread' AND session_id = ?
-            """,
+            "SELECT created_at_ms FROM threads WHERE thread_id = ?",
             (session_id,),
         ).fetchone()
 
     assert row is not None
-    assert row["source_sort_key_ms"] is None
+    assert row["created_at_ms"] == 0
 
 
 def test_latency_materialization_uses_latency_record_fallback_sort_key(
@@ -117,17 +109,13 @@ def test_latency_materialization_uses_latency_record_fallback_sort_key(
         monkeypatch.setitem(rebuild_mod.__dict__, "build_session_profile_record", profile_without_sort_key)
         rebuild_session_insights_sync(conn, session_ids=[session_id])
 
-        materialization = conn.execute(
-            """
-            SELECT source_sort_key_ms
-            FROM insight_materialization
-            WHERE session_id = ? AND insight_type = 'latency'
-            """,
+        latency = conn.execute(
+            "SELECT source_sort_key FROM session_latency_profiles WHERE session_id = ?",
             (session_id,),
         ).fetchone()
 
-    assert materialization is not None
-    assert materialization[0] == created_at_ms
+    assert latency is not None
+    assert latency[0] == pytest.approx(created_at_ms / 1000.0)
 
 
 @pytest.mark.asyncio
@@ -924,117 +912,6 @@ def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path)
     assert row["model_name"] == "claude-opus-4-5"
 
 
-def test_stale_provider_usage_self_heals_via_session_insight_rebuild(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """polylogue-f2qv.5: session_model_usage self-heals like session_profile.
-
-    Before this bead, session_model_usage was written once at ingest and never
-    revisited by the insight rebuild path, so a stale/buggy rollup could only
-    be repaired by a full ``ops reset --index``. This seeds a session with a
-    correct rollup, corrupts it to simulate an old materializer, and asserts
-    that the daemon's periodic session-insight drain flags the session purely
-    because its provider_usage stamp is stale/missing even though its
-    session_profile is fresh, then re-derives session_model_usage from the
-    still-intact messages table and restamps the materialization version — with
-    zero manual index rebuild.
-    """
-    db_path = _current_index_db(tmp_path, "provider-usage-self-heal")
-    monkeypatch.setattr("polylogue.storage.archive_identity.resolve_active_index_path", lambda *_a, **_k: db_path)
-    with open_connection(db_path) as conn:
-        store_records(
-            session=make_session(
-                "conv-provider-usage-heal",
-                source_name="codex",
-                title="Provider usage self-heal",
-                created_at="2026-05-12T09:00:00+00:00",
-            ),
-            messages=[
-                make_message(
-                    "conv-provider-usage-heal:msg-1",
-                    "conv-provider-usage-heal",
-                    text="Run the plan",
-                    model_name="gpt-5-codex",
-                    input_tokens=1_000,
-                    output_tokens=500,
-                    cache_read_tokens=200,
-                    cache_write_tokens=100,
-                ),
-            ],
-            attachments=[],
-            conn=conn,
-        )
-        session_id = _sid("conv-provider-usage-heal", "codex-session")
-
-        # Establish a fully fresh session-insight bundle first. The later
-        # daemon drain must therefore select this session solely because the
-        # provider-usage stamp becomes stale, not through the unrelated
-        # missing-session-profile branch.
-        rebuild_session_insights_sync(conn, session_ids=[session_id])
-        assert daemon_cli._drain_session_insights_once() == 0
-
-        # The real write path already materializes a correct rollup at ingest.
-        before = conn.execute(
-            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        assert before is not None
-        assert before["input_tokens"] == 1_000
-        assert before["output_tokens"] == 500
-
-        # Simulate staleness: zero the derived tokens (as a pre-fix materializer
-        # bug might have) and downgrade the provider_usage materialization
-        # stamp to a version older than the current one.
-        conn.execute(
-            """
-            UPDATE session_model_usage
-            SET input_tokens = 0, output_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        )
-        conn.execute(
-            """
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, materialized_at_ms, input_row_count
-            ) VALUES ('provider_usage', ?, ?, 0, 0)
-            ON CONFLICT(insight_type, session_id) DO UPDATE SET materializer_version = excluded.materializer_version
-            """,
-            (session_id, SESSION_INSIGHT_MATERIALIZER_VERSION - 1),
-        )
-        conn.commit()
-
-        debt_before = archive_debt_list(archive_root=db_path.parent, kinds=("provider-usage",))
-        assert {row.debt_ref for row in debt_before.rows} == {"debt:provider-usage:codex-session:zero-token-projection"}
-
-        # Exercise the periodic daemon entry point rather than calling its
-        # selector and executor directly. Removing provider_usage from either
-        # convergence seam makes this return zero and leaves the corrupt rollup.
-        assert daemon_cli._drain_session_insights_once() == 1
-
-        after = conn.execute(
-            "SELECT input_tokens, output_tokens FROM session_model_usage WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        assert after is not None
-        assert after["input_tokens"] == 1_000
-        assert after["output_tokens"] == 500
-
-        stamp = conn.execute(
-            """
-            SELECT materializer_version FROM insight_materialization
-            WHERE insight_type = 'provider_usage' AND session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        assert stamp is not None
-        assert stamp["materializer_version"] == SESSION_INSIGHT_MATERIALIZER_VERSION
-
-        # Once healed, the same bounded periodic pass finds no more work.
-        assert daemon_cli._drain_session_insights_once() == 0
-        assert archive_debt_list(archive_root=db_path.parent, kinds=("provider-usage",)).rows == ()
-
-
 def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     db_path = tmp_path / "refresh-block-filter.db"
     with open_connection(db_path) as conn:
@@ -1072,8 +949,8 @@ def test_session_insight_load_skips_plain_text_blocks(tmp_path: Path) -> None:
     ]
 
 
-def test_archive_insight_materialization_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
-    """The daemon's production insight stage reaches the marker lowering seam."""
+def test_derived_stage_lowers_declared_markers_to_user_assertions(tmp_path: Path) -> None:
+    """The daemon's production derived stage reaches the marker lowering seam."""
     from polylogue.daemon.convergence_stages import _archive_insights_execute_ids
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1186,6 +1063,7 @@ def test_session_insight_load_bounds_large_text_payloads(tmp_path: Path) -> None
                             "type": "tool_result",
                             "tool_id": "call-1",
                             "text": large_tool_output,
+                            "tool_result_is_error": 0,
                         },
                     ],
                 )
@@ -1305,13 +1183,6 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
         ).fetchone()
         assert work_events_row is not None
         work_events = work_events_row[0]
-        markers = {
-            str(row["insight_type"]): int(row["materializer_version"])
-            for row in conn.execute(
-                "SELECT insight_type, materializer_version FROM insight_materialization WHERE session_id = ?",
-                (session_id,),
-            ).fetchall()
-        }
 
     assert counts.profiles == 1
     assert elapsed_s < 2.0
@@ -1330,11 +1201,6 @@ def test_large_session_rebuild_uses_bounded_degraded_profile(
     assert "large_session_bounded" in profile["inference_payload_json"]
     assert "large_session_bounded" in profile["enrichment_payload_json"]
     assert work_events == 0
-    assert markers["session_profile"] == SESSION_INSIGHT_MATERIALIZER_VERSION
-    assert markers["latency"] == SESSION_INSIGHT_MATERIALIZER_VERSION
-    assert markers["work_events"] == SESSION_INSIGHT_MATERIALIZER_VERSION
-    assert markers["phases"] == SESSION_INSIGHT_MATERIALIZER_VERSION
-    assert markers["thread"] == SESSION_INSIGHT_MATERIALIZER_VERSION
 
 
 @pytest.mark.asyncio
@@ -1700,12 +1566,6 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
     root_id = _sid("conv-root", "claude-code-session")
     child_id = _sid("conv-child", "claude-code-session")
     with open_connection(db_path) as conn:
-        thread_markers = {
-            str(row["session_id"]): int(row["materializer_version"])
-            for row in conn.execute(
-                "SELECT session_id, materializer_version FROM insight_materialization WHERE insight_type = 'thread'"
-            ).fetchall()
-        }
         members = {
             str(row["session_id"])
             for row in conn.execute(
@@ -1718,19 +1578,15 @@ def test_full_rebuild_restores_thread_spine_membership_and_markers(tmp_path: Pat
             (root_id,),
         ).fetchone()["created_at_ms"]
 
-    # (a) continuation member carries its own 'thread' marker, not only the root.
-    assert thread_markers == {
-        root_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
-        child_id: SESSION_INSIGHT_MATERIALIZER_VERSION,
-    }
-    # (b) membership join repopulated and created_at_ms re-derived (not zeroed).
+    # Membership is repopulated and created_at_ms is re-derived (not zeroed).
     assert members == {root_id, child_id}
     assert created_at_ms > 0
-    # Convergence: a full rebuild leaves zero readiness debt on the same reader
-    # the repair path uses (ArchiveStore.session_insight_status).
+    # A full rebuild leaves no row debt in the ordinary status snapshot.
     with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
         status = archive.session_insight_status()
-    assert assess_session_insight_repairs(status).row_debt == 0
+    assert status.missing_profile_row_count == 0
+    assert status.stale_profile_row_count == 0
+    assert status.orphan_profile_row_count == 0
 
 
 @pytest.mark.asyncio

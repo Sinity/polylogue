@@ -1,0 +1,20 @@
+id: no-session-insight-ready-flag
+language: Python
+severity: error
+message: "SessionInsightStatusSnapshot readiness must come from convergence debt"
+rule:
+  all:
+    - any:
+        - pattern: "profile_rows_ready: bool = $VALUE"
+        - pattern: "latency_profile_rows_ready: bool = $VALUE"
+        - pattern: "work_event_inference_rows_ready: bool = $VALUE"
+        - pattern: "work_event_inference_fts_ready: bool = $VALUE"
+        - pattern: "phase_inference_rows_ready: bool = $VALUE"
+        - pattern: "run_rows_ready: bool = $VALUE"
+        - pattern: "observed_event_rows_ready: bool = $VALUE"
+        - pattern: "context_snapshot_rows_ready: bool = $VALUE"
+        - pattern: "threads_ready: bool = $VALUE"
+        - pattern: "tag_rollups_ready: bool = $VALUE"
+    - inside:
+        kind: class_definition
+        pattern: "class SessionInsightStatusSnapshot: $$$"

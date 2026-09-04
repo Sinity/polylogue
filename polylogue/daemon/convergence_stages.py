@@ -8,7 +8,7 @@ repair and refresh post-ingest archive state.
 - fts: inspect and converge message-FTS session partitions through the domain
   adapter; source-path checks remain scoped to the affected sessions
 - embed: optional vectorization for changed sessions
-- insights: refresh session profiles
+- derived: refresh session-derived tables
 """
 
 from __future__ import annotations
@@ -483,11 +483,11 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
-# ── Stage: insights ────────────────────────────────────────────────
+# ── Stage: derived ────────────────────────────────────────────────
 
 
-def make_insights_stage(db_path: Path) -> ConvergenceStage:
-    """Refresh session insights for sessions missing them."""
+def make_derived_stage(db_path: Path) -> ConvergenceStage:
+    """Refresh session-derived tables for sessions missing them."""
 
     def check(path: Path) -> bool:
         archive_db = _active_archive_index_path(db_path)
@@ -703,8 +703,8 @@ def make_insights_stage(db_path: Path) -> ConvergenceStage:
             raise
 
     return ConvergenceStage(
-        name="insights",
-        description="Refresh session insights for new sessions",
+        name="derived",
+        description="Refresh session-derived tables for new sessions",
         check=check,
         execute=execute,
         check_many=check_many,
@@ -1106,7 +1106,7 @@ def make_default_convergence_stages(
             make_embed_stage(db_path, defer=embed_defer),
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),
-            make_insights_stage(db_path),
+            make_derived_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
     )
@@ -2240,27 +2240,15 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
-        LEFT JOIN insight_materialization AS im
-          ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
-        LEFT JOIN insight_materialization AS pu
-          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE s.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
-              OR im.materializer_version != ?
-              OR pu.session_id IS NULL
-              OR pu.materializer_version != ?
               OR {stale_predicate}
           )
         ORDER BY s.session_id
         """,
-        unique_ids
-        + (
-            SESSION_INSIGHT_MATERIALIZER_VERSION,
-            SESSION_INSIGHT_MATERIALIZER_VERSION,
-            SESSION_INSIGHT_MATERIALIZER_VERSION,
-        ),
+        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
     return [str(row[0]) for row in rows]
 
@@ -2268,11 +2256,8 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
 def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
     if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    # The OR chain below also catches provider-usage staleness (polylogue-f2qv.5):
-    # a session whose session_profile is fresh but whose session_model_usage
-    # rollup predates a materializer-version bump (or was never stamped) still
-    # needs a rebuild pass so it self-heals like every other session insight
-    # instead of requiring a manual `ops reset --index`.
+    # The row comparison is the ordinary derived freshness predicate shared by
+    # ingest, retry, and repair paths.
     stale_predicate = session_profile_stale_predicate(
         "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
     )
@@ -2280,24 +2265,13 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
-        LEFT JOIN insight_materialization AS im
-          ON im.session_id = s.session_id AND im.insight_type = 'session_profile'
-        LEFT JOIN insight_materialization AS pu
-          ON pu.session_id = s.session_id AND pu.insight_type = 'provider_usage'
         WHERE
           sp.session_id IS NULL
           OR sp.materializer_version != ?
-          OR im.materializer_version != ?
-          OR pu.session_id IS NULL
-          OR pu.materializer_version != ?
           OR {stale_predicate}
         ORDER BY s.session_id
     """
-    params: tuple[object, ...] = (
-        SESSION_INSIGHT_MATERIALIZER_VERSION,
-        SESSION_INSIGHT_MATERIALIZER_VERSION,
-        SESSION_INSIGHT_MATERIALIZER_VERSION,
-    )
+    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION,)
     if limit is not None:
         sql += " LIMIT ?"
         params = params + (max(0, int(limit)),)
@@ -2461,7 +2435,7 @@ def _archive_insights_execute_ids(
                 session_ids=list(session_ids),
                 page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 stage_timings_s=stage_timings_s,
-                stage_timing_prefix="insights",
+                stage_timing_prefix="derived",
             )
         else:
             counts = rebuild_session_insights_sync(
@@ -2470,7 +2444,7 @@ def _archive_insights_execute_ids(
                 marker_conn=marker_conn,
                 page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 stage_timings_s=stage_timings_s,
-                stage_timing_prefix="insights",
+                stage_timing_prefix="derived",
             )
     finally:
         if marker_conn is not None:
@@ -2501,7 +2475,7 @@ __all__ = [
     "make_default_convergence_stages",
     "make_embed_stage",
     "make_fts_stage",
-    "make_insights_stage",
+    "make_derived_stage",
     "make_raw_authority_verdict_cache_stage",
     "make_raw_parse_recovery_stage",
     "make_sinex_publication_stage",

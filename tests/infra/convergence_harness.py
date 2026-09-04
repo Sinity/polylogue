@@ -29,7 +29,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger, SessionState
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
 from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -100,7 +100,7 @@ class SessionMaterializationFacts:
     """Stable terminal facts, excluding attempt-time materialization stamps."""
 
     profile: FactRow | None
-    materializations: tuple[FactRow, ...]
+    latency_profiles: tuple[FactRow, ...]
     work_events: tuple[FactRow, ...]
     phases: tuple[FactRow, ...]
     threads: tuple[FactRow, ...]
@@ -347,7 +347,7 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, Sessi
             str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id")
         )
     converger = DaemonConverger(
-        (make_fts_stage(archive.root / "index.db"), make_insights_stage(archive.root / "index.db"))
+        (make_fts_stage(archive.root / "index.db"), make_derived_stage(archive.root / "index.db"))
     )
     states, _timings = converger.converge_sessions(persisted_session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
@@ -832,15 +832,13 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
             """,
             (session_id,),
         ).fetchone()
-        materializations = conn.execute(
+        latency_profiles = conn.execute(
             """
-            SELECT insight_type, session_id, materializer_version,
-                   source_updated_at_ms, source_sort_key_ms,
-                   input_high_water_mark_ms, input_high_water_mark_source,
-                   input_row_count
-            FROM insight_materialization
+            SELECT session_id, materializer_version, source_updated_at,
+                   source_sort_key, input_high_water_mark,
+                   input_high_water_mark_source, input_row_count
+            FROM session_latency_profiles
             WHERE session_id = ?
-            ORDER BY insight_type
             """,
             (session_id,),
         ).fetchall()
@@ -900,7 +898,7 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
             "messages",
             "blocks",
             "session_profiles",
-            "insight_materialization",
+            "session_latency_profiles",
             "session_work_events",
             "session_phases",
             "threads",
@@ -911,7 +909,7 @@ def session_materialization_facts(index_db: Path, *, session_id: str) -> Session
         )
     return SessionMaterializationFacts(
         profile=None if profile_row is None else cast(FactRow, tuple(profile_row)),
-        materializations=_fact_rows(materializations),
+        latency_profiles=_fact_rows(latency_profiles),
         work_events=_fact_rows(work_events),
         phases=_fact_rows(phases),
         threads=_fact_rows(threads),

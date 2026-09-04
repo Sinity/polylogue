@@ -299,6 +299,7 @@ class CursorStore:
                 return
             initialize_archive_database(self._ops_db_path, ArchiveTier.OPS)
             self._initialized = True
+            self._migrate_legacy_convergence_debt_stages()
             self._mark_interrupted_ops_attempts()
 
     @contextmanager
@@ -375,6 +376,64 @@ class CursorStore:
                 subject_id=source_path,
                 error="daemon stopped before completing this ingest attempt",
             )
+
+    def _migrate_legacy_convergence_debt_stages(self) -> None:
+        """Move retired session-insight debt onto the derived stage."""
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                rows = conn.execute(
+                    """
+                    SELECT debt_id, target_type, target_id, status, priority, attempts,
+                           last_error, next_retry_at, materializer_version,
+                           created_at_ms, updated_at_ms
+                    FROM convergence_debt
+                    WHERE stage = 'insights'
+                    """
+                ).fetchall()
+                for row in rows:
+                    existing = conn.execute(
+                        """
+                        SELECT debt_id, status, priority, attempts, last_error, next_retry_at,
+                               materializer_version, created_at_ms, updated_at_ms
+                        FROM convergence_debt
+                        WHERE stage = 'derived' AND target_type = ? AND target_id = ?
+                        """,
+                        (row[1], row[2]),
+                    ).fetchone()
+                    if existing is None:
+                        conn.execute("UPDATE convergence_debt SET stage = 'derived' WHERE debt_id = ?", (row[0],))
+                        continue
+                    status = "failed" if "failed" in {str(existing[1]), str(row[3])} else "deferred"
+                    retry_at = min(
+                        (value for value in (existing[5], row[7]) if value is not None),
+                        default=None,
+                    )
+                    conn.execute(
+                        """
+                        UPDATE convergence_debt
+                        SET status = ?, priority = MAX(priority, ?), attempts = MAX(attempts, ?),
+                            last_error = COALESCE(last_error, ?), next_retry_at = ?,
+                            materializer_version = COALESCE(materializer_version, ?),
+                            created_at_ms = MIN(created_at_ms, ?), updated_at_ms = MAX(updated_at_ms, ?)
+                        WHERE debt_id = ?
+                        """,
+                        (
+                            status,
+                            int(row[4]),
+                            int(row[5]),
+                            row[6],
+                            retry_at,
+                            row[8],
+                            int(row[9]),
+                            int(row[10]),
+                            existing[0],
+                        ),
+                    )
+                    conn.execute("DELETE FROM convergence_debt WHERE debt_id = ?", (row[0],))
+
+        best_effort_cursor_write("archive ops convergence-debt stage migration", write)
 
     @staticmethod
     def _write_cursor_record_on_conn(conn: sqlite3.Connection, record: CursorRecord) -> None:

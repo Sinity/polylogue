@@ -138,7 +138,7 @@ async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path
                     "name": "mcp__serena__find_symbol",
                     "tool_input": {"name_path": "ArchiveStore/query_runs"},
                 },
-                {"type": "tool_result", "tool_id": "tool-absent", "text": "found"},
+                {"type": "tool_result", "tool_id": "tool-absent", "text": "found", "tool_result_is_error": 0},
             ],
         )
         .save()

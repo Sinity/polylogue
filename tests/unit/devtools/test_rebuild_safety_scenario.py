@@ -66,8 +66,8 @@ def test_differential_detects_logical_fts_drift(tmp_path: Path) -> None:
             "WHERE rowid = (SELECT MIN(rowid) FROM messages_fts_identity)"
         )
         conn.execute(
-            "UPDATE insight_materialization SET input_row_count = input_row_count + 1 "
-            "WHERE rowid = (SELECT MIN(rowid) FROM insight_materialization)"
+            "UPDATE session_profiles SET input_row_count = input_row_count + 1 "
+            "WHERE rowid = (SELECT MIN(rowid) FROM session_profiles)"
         )
         conn.commit()
 
@@ -77,7 +77,7 @@ def test_differential_detects_logical_fts_drift(tmp_path: Path) -> None:
     assert {diff.table for diff in result.diverging_tables} >= {
         "messages_fts logical query",
         "messages_fts_identity",
-        "insight_materialization",
+        "session_profiles",
     }
     assert result.extra_checks["messages_fts_identity_b_is_consistent"] is False
 
@@ -109,7 +109,7 @@ def test_incremental_path_rejects_pending_insights_convergence(tmp_path: Path, m
     archive_root, raw_ids = _seeded_archive(tmp_path)
     monkeypatch.setattr(
         scenario,
-        "make_insights_stage",
+        "make_derived_stage",
         lambda _index_db: SimpleNamespace(execute_sessions=lambda _session_ids: False),
     )
 

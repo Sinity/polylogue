@@ -1135,11 +1135,24 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                 )
             )
             insight_status = archive.session_insight_status()
-            insights_ready = (
-                insight_status.profile_rows_ready
-                and insight_status.work_event_inference_rows_ready
-                and insight_status.phase_rows_ready
-                and insight_status.threads_ready
+            insights_ready = all(
+                value == 0
+                for value in (
+                    insight_status.missing_profile_row_count,
+                    insight_status.stale_profile_row_count,
+                    insight_status.orphan_profile_row_count,
+                    insight_status.stale_work_event_inference_count,
+                    insight_status.orphan_work_event_inference_count,
+                    insight_status.stale_phase_inference_count,
+                    insight_status.orphan_phase_inference_count,
+                    insight_status.stale_thread_count,
+                    insight_status.orphan_thread_count,
+                )
+            ) and (
+                insight_status.profile_row_count == insight_status.total_sessions
+                and insight_status.work_event_inference_count == insight_status.expected_work_event_inference_count
+                and insight_status.phase_count == insight_status.expected_phase_count
+                and insight_status.thread_count == insight_status.root_threads
             )
             checks.append(
                 ReadinessCheck(
@@ -1149,7 +1162,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     summary=(
                         "session insight rows ready"
                         if insights_ready
-                        else "session insight rows missing or stale; run rebuild_insights"
+                        else "session insight rows missing, stale, or inconsistent; run rebuild_insights"
                     ),
                 )
             )

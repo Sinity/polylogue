@@ -50,16 +50,8 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
         profile_row_count=2,
         work_event_inference_count=1,
         expected_work_event_inference_count=4,
-        missing_work_event_materialization_count=3,
         phase_inference_count=2,
         expected_phase_inference_count=5,
-        missing_phase_materialization_count=3,
-        profile_rows_ready=True,
-        work_event_inference_rows_ready=False,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=False,
-        threads_ready=True,
-        tag_rollups_ready=True,
     )
     monkeypatch.setattr(
         derived_status_mod,
@@ -82,6 +74,45 @@ def test_collect_derived_statuses_uses_canonical_session_insight_readiness(
     assert phases.source_rows == 5
     assert phases.materialized_rows == 2
     assert phases.pending_rows == 3
+
+
+def test_collect_derived_statuses_preserves_independent_readiness_conditions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from polylogue.storage.derived import derived_status as derived_status_mod
+    from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+
+    conn = sqlite3.connect(":memory:")
+    snapshot = SessionInsightStatusSnapshot(
+        total_sessions=1,
+        root_threads=1,
+        profile_row_count=1,
+        work_event_inference_count=2,
+        expected_work_event_inference_count=2,
+        phase_inference_count=1,
+        expected_phase_inference_count=1,
+        stale_phase_inference_count=1,
+        thread_count=1,
+        stale_thread_count=1,
+        tag_rollup_count=1,
+        expected_tag_rollup_count=2,
+    )
+    monkeypatch.setattr(
+        derived_status_mod,
+        "session_insight_status_sync",
+        lambda _conn, *, verify_freshness: snapshot,
+    )
+
+    try:
+        statuses = derived_status_mod.collect_derived_model_statuses_sync(conn, verify_full=True)
+    finally:
+        conn.close()
+
+    assert statuses["session_work_events"].ready is True
+    assert statuses["session_work_events_fts"].ready is False
+    assert statuses["session_phases"].ready is False
+    assert statuses["threads"].ready is False
+    assert statuses["session_tag_rollups"].ready is False
 
 
 def test_build_timeline_statuses_names_timeline_rows_by_table() -> None:

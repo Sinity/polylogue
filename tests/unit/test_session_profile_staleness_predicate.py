@@ -34,16 +34,19 @@ from types import SimpleNamespace
 
 import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.storage.repair as repair
-from polylogue.storage.derived.session.runtime import (
-    SESSION_INSIGHT_MATERIALIZATION_TYPES,
-)
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 _SESSION_ID = "ts-null-sort-key"
 _UPDATED_AT_MS = 1_780_000_000_000
 
 
-def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: float) -> None:
+def _build_fixture_db(
+    path: Path,
+    *,
+    source_updated_at: str,
+    source_sort_key: float,
+    materializer_version: int = SESSION_INSIGHT_MATERIALIZER_VERSION,
+) -> None:
     """Minimal schema covering every table ``repair._targeted_session_insight_rebuild_ids`` joins."""
 
     conn = sqlite3.connect(path)
@@ -71,12 +74,6 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
             );
             CREATE TABLE session_work_events (session_id TEXT);
             CREATE TABLE session_phases (session_id TEXT);
-            CREATE TABLE insight_materialization (
-                insight_type TEXT,
-                session_id TEXT,
-                materializer_version INTEGER,
-                source_sort_key_ms INTEGER
-            );
             """
         )
         conn.execute(
@@ -89,7 +86,7 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
                 (session_id, materializer_version, source_sort_key, source_updated_at)
             VALUES (?, ?, ?, ?)
             """,
-            (_SESSION_ID, SESSION_INSIGHT_MATERIALIZER_VERSION, source_sort_key, source_updated_at),
+            (_SESSION_ID, materializer_version, source_sort_key, source_updated_at),
         )
         conn.execute(
             """
@@ -97,28 +94,8 @@ def _build_fixture_db(path: Path, *, source_updated_at: str, source_sort_key: fl
                 (session_id, materializer_version, source_sort_key, source_updated_at)
             VALUES (?, ?, ?, ?)
             """,
-            (_SESSION_ID, SESSION_INSIGHT_MATERIALIZER_VERSION, source_sort_key, source_updated_at),
+            (_SESSION_ID, materializer_version, source_sort_key, source_updated_at),
         )
-        # Every materialization type -- including "thread" -- fully stamped and
-        # sort-key-agreeing (source_sort_key_ms compares directly against
-        # sort_key_ms, which is NULL here, so COALESCE both sides to 0 for an
-        # exact NULL/NULL match). Every non-child session gets a "thread" stamp
-        # in production (``_materialize_thread_spine_sync`` stamps it for every
-        # member of the session's own singleton-or-larger thread, root included
-        # -- see ``polylogue/storage/derived/session/rebuild.py``), so leaving
-        # it unstamped here is a fixture gap, not a real "timeless session
-        # never gets threaded" scenario: it left repair's generic per-type
-        # ``NOT EXISTS`` check in ``_targeted_session_insight_rebuild_ids``
-        # unconditionally true for "thread" (no row at all, regardless of sort
-        # key agreement), which is a different failure axis than the
-        # session-profile/session-latency-profile predicate this test isolates
-        # and was spuriously making these tests fail on that unrelated axis.
-        for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES:
-            conn.execute(
-                "INSERT INTO insight_materialization (insight_type, session_id, materializer_version, "
-                "source_sort_key_ms) VALUES (?, ?, ?, NULL)",
-                (insight_type, _SESSION_ID, SESSION_INSIGHT_MATERIALIZER_VERSION),
-            )
         conn.commit()
     finally:
         conn.close()
@@ -191,3 +168,18 @@ def test_repair_selects_zero_rows_immediately_after_convergence_agrees(tmp_path:
 
     assert _run_convergence_pass(db_path) == []
     assert _run_repair_pass(db_path) == ()
+
+
+def test_materializer_version_staleness_agrees_between_convergence_and_repair(tmp_path: Path) -> None:
+    """A version bump must select rows for both automatic and manual repair."""
+
+    db_path = tmp_path / "version-stale.db"
+    _build_fixture_db(
+        db_path,
+        source_updated_at=str(_UPDATED_AT_MS // 1000),
+        source_sort_key=999.0,
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION - 1,
+    )
+
+    assert _run_convergence_pass(db_path) == [_SESSION_ID]
+    assert _SESSION_ID in _run_repair_pass(db_path)

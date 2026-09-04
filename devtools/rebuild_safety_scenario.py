@@ -13,7 +13,7 @@ executable lane before this module (polylogue-1xc.8, polylogue-hjwr):
    (``polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync``)
    versus live incremental ingest (per-session
    ``write_parsed_session_to_archive``) followed by the daemon's own
-   convergence-stage catch-up (``daemon.convergence_stages.make_insights_stage``)
+   convergence-stage catch-up (``daemon.convergence_stages.make_derived_stage``)
    -- must agree on the derived content they produce. ``polylogue-a7xr.2``
    (closed) was exactly a case where they didn't: the converger and
    ``storage/repair.py`` encoded different staleness predicates for
@@ -43,7 +43,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from polylogue.core.enums import Provider
-from polylogue.daemon.convergence_stages import make_insights_stage
+from polylogue.daemon.convergence_stages import make_derived_stage
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -589,7 +589,7 @@ def _incremental_ingest_and_converge(archive_root: Path, raw_ids: list[str]) -> 
     (``session_profiles``/``session_latency_profiles``/``session_work_events``/
     ``session_phases``/threads) are populated afterward by the SAME
     convergence stage the live daemon runs
-    (``daemon.convergence_stages.make_insights_stage``), not a
+    (``daemon.convergence_stages.make_derived_stage``), not a
     differently-derived approximation of it.
     """
     index_db = archive_root / "index.db"
@@ -624,12 +624,12 @@ def _incremental_ingest_and_converge(archive_root: Path, raw_ids: list[str]) -> 
     finally:
         conn.close()
 
-    insights_stage = make_insights_stage(index_db)
-    execute_sessions = insights_stage.execute_sessions
+    derived_stage = make_derived_stage(index_db)
+    execute_sessions = derived_stage.execute_sessions
     if execute_sessions is None:
-        raise RuntimeError("insights convergence stage does not expose session-scoped execution")
+        raise RuntimeError("derived convergence stage does not expose session-scoped execution")
     if not execute_sessions(session_ids):
-        raise RuntimeError("insights convergence remained pending")
+        raise RuntimeError("derived convergence remained pending")
 
 
 def run_rebuild_differential() -> RebuildComparisonResult:

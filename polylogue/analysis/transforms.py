@@ -572,7 +572,7 @@ def compile_session_run_projection(
     ``compile_session_digest`` builds several presentation-heavy products
     (resume markdown, forensic index, size metrics, decision candidates) that
     are irrelevant when the caller only needs run/observed-event/
-    context-snapshot counts (e.g. rebuild.py's insight_materialization
+    context-snapshot counts (e.g. rebuild.py's derived-row
     ledger stamp -- the rows themselves are source-derived on read by
     ``run_projection_relations.py``, not materialized). This helper keeps
     the run-projection semantics shared while avoiding that extra work.

@@ -1388,7 +1388,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     source.write_text('{"a":1}\n')
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
-        stage="insights",
+        stage="derived",
         subject_type="source_path",
         subject_id=str(source),
         error="legacy payload missing provenance",
@@ -1417,7 +1417,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert convergence["deferred_count"] == 1
     stages = convergence["stage_summaries"]
     assert isinstance(stages, list)
-    assert {stage["stage"] for stage in stages if isinstance(stage, dict)} == {"fts", "insights"}
+    assert {stage["stage"] for stage in stages if isinstance(stage, dict)} == {"derived", "fts"}
     recent = convergence["recent"]
     assert isinstance(recent, list)
     first_recent = recent[0]
@@ -1426,7 +1426,7 @@ def test_daemon_status_reports_convergence_debt_separately(tmp_path: Path) -> No
     assert {item["status"] for item in recent if isinstance(item, dict)} == {"failed", "deferred"}
     lines = format_daemon_status_lines(payload)
     assert "Convergence debt: 1 failed, 1 deferred, 0 retry due" in lines
-    assert "  insights: 1 failed, 0 deferred, 0 retry due" in lines
+    assert "  derived: 1 failed, 0 deferred, 0 retry due" in lines
     assert "  fts: 0 failed, 1 deferred, 0 retry due" in lines
 
 

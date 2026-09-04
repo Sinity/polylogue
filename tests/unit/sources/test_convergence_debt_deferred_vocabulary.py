@@ -1,18 +1,7 @@
-"""Unit coverage for the deferred-vs-failed convergence-debt classification.
+"""Unit coverage for deferred-vs-failed convergence debt.
 
-polylogue-6krh: ``convergence_debt.status`` declares a two-value vocabulary
-(``'failed'``, ``'deferred'``, ``storage/sqlite/archive_tiers/ops.py``'s
-CHECK constraint) but every live ``false_means_pending`` deferral -- a
-convergence stage doing bounded successful work and deferring the rest,
-per ``daemon.convergence.ConvergenceStage.false_means_pending`` -- landed as
-``'failed'`` for every stage except ``insights``, which had its exact error
-string hardcoded into a one-off check. ``StageState.PENDING`` is the actual,
-general signal for "this stage did not fail, it deferred": it is set only
-by a ``false_means_pending`` stage's non-exceptional ``False`` return or by
-downstream-barrier queuing (``daemon/convergence.py``), never by a
-check/execute exception. These tests exercise
-``polylogue.sources.live.convergence_debt`` directly against that signal,
-independent of any one stage's error text.
+``StageState.PENDING`` is the stage-independent signal for a retryable
+deferral. Check and execute exceptions produce ``StageState.FAILED``.
 """
 
 from __future__ import annotations
@@ -101,10 +90,7 @@ def test_is_deferred_stage_state_true_only_for_pending() -> None:
 
 
 def test_convergence_debt_from_state_marks_false_means_pending_stage_deferred() -> None:
-    """A stage other than 'insights' deferring via false_means_pending must
-    still produce ``deferred=True`` -- this is the exact bug: only the
-    'insights' stage's specific error string was special-cased before.
-    """
+    """A pending stage produces retryable deferred debt."""
     path = Path("/tmp/source.jsonl")
     state = FileState(
         path=path,
@@ -145,7 +131,7 @@ def test_convergence_debt_from_state_mixed_stages_classify_independently() -> No
         stages={
             "fts": StageState.PENDING,
             "embed": StageState.FAILED,
-            "insights": StageState.DONE,
+            "derived": StageState.DONE,
         },
         last_error="stage embed returned False",
     )

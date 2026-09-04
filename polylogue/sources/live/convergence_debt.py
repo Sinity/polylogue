@@ -13,8 +13,8 @@ class ConvergenceDebt:
     stage: str
     error: str | None = None
     # True when this row reflects a stage's deliberate bounded-backpressure
-    # deferral (``ConvergenceStage.false_means_pending``, e.g. "insights
-    # deferred until quiet") rather than a genuine check/execute failure.
+    # deferral (``ConvergenceStage.false_means_pending``) rather than a
+    # genuine check/execute failure.
     # Drives ``convergence_debt.status`` ("deferred" vs "failed") so daemon
     # health/alerting doesn't mistake normal backpressure for breakage.
     deferred: bool = False

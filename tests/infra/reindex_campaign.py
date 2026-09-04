@@ -18,7 +18,7 @@ from unittest.mock import patch
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
@@ -309,7 +309,7 @@ def _campaign_manifest(
             ).fetchone()[0]
         )
         materialized_insight_sessions = int(
-            index_conn.execute("SELECT COUNT(DISTINCT session_id) FROM insight_materialization").fetchone()[0]
+            index_conn.execute("SELECT COUNT(DISTINCT session_id) FROM session_profiles").fetchone()[0]
         )
         fts_documents = int(index_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
         attachment_refs = int(index_conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0])
@@ -550,7 +550,7 @@ def build_reindex_campaign_corpus(root: Path) -> ReindexCampaignCorpus:
 
     session_ids = _campaign_session_ids(root)
     states, _timings = DaemonConverger(
-        (make_fts_stage(root / "index.db"), make_insights_stage(root / "index.db"))
+        (make_fts_stage(root / "index.db"), make_derived_stage(root / "index.db"))
     ).converge_sessions(session_ids)
     not_converged = {session_id: state.last_error for session_id, state in states.items() if not state.converged}
     if not_converged:

@@ -9,12 +9,9 @@ from pathlib import Path
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.introspection import table_exists as _table_exists
 
-_HOT_INSIGHT_DEFERRED = "insights deferred until source quiet"
-
 
 def convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
-    if error == _HOT_INSIGHT_DEFERRED:
-        return 60
+    del error
     return int(min(60 * (2 ** (failure_count - 1)), 3600))
 
 
@@ -32,22 +29,8 @@ def convergence_debt_retry_at(
         return now
     delay_s = convergence_debt_retry_delay_s(failure_count, error=error)
     fallback = datetime.fromtimestamp(now.timestamp() + delay_s, tz=UTC)
-    if error != _HOT_INSIGHT_DEFERRED:
-        return fallback
-    source_path = convergence_debt_source_path(
-        conn,
-        subject_type=subject_type,
-        subject_id=subject_id,
-        archive_root=archive_root,
-    )
-    if source_path is None:
-        return fallback
-    try:
-        stat = source_path.stat()
-    except OSError:
-        return fallback
-    quiet_at = datetime.fromtimestamp(stat.st_mtime + delay_s, tz=UTC)
-    return max(now, quiet_at)
+    del conn, subject_id, archive_root
+    return fallback
 
 
 def convergence_debt_source_path(

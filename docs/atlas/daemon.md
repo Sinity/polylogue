@@ -24,7 +24,7 @@ Current default order:
 4. FTS (`polylogue/daemon/convergence_stages.py:1129-1130`).
 5. Embeddings (`polylogue/daemon/convergence_stages.py:1130-1131`).
 6. Claude workflow derivation (`polylogue/daemon/convergence_stages.py:1131-1132`).
-7. Insights (`polylogue/daemon/convergence_stages.py:1132-1133`).
+7. Derived tables (`polylogue/daemon/convergence_stages.py:1132-1133`).
 8. Standing queries (`polylogue/daemon/convergence_stages.py:1133-1136`).
 
 The watcher is constructed with this converger and the shared write coordinator (`polylogue/daemon/cli.py:3238-3243`; `polylogue/daemon/cli.py:3263-3272`).
@@ -37,9 +37,9 @@ The watcher is constructed with this converger and the shared write coordinator 
 
 ## Quiet-window deferral
 
-- Insight rebuilds can rehydrate an entire large session, so actively changing source sessions are removed from the current batch (`polylogue/daemon/convergence_stages.py:1450-1462`; `polylogue/daemon/convergence_stages.py:2363-2375`).
+- Derived-table rebuilds can rehydrate an entire large session, so actively changing source sessions are removed from the current batch (`polylogue/daemon/convergence_stages.py:1450-1462`; `polylogue/daemon/convergence_stages.py:2363-2375`).
 - If every selected session is hot, the stage returns false; if some are cool, those are rebuilt and the stage still returns false to preserve the remaining obligation (`polylogue/daemon/convergence_stages.py:538-557`; `polylogue/daemon/convergence_stages.py:619-653`).
-- Hot-insight debt retries no earlier than 60 seconds and, when the source is available, no earlier than source mtime plus that delay (`polylogue/sources/live/convergence_debt_retry.py:12-18`; `polylogue/sources/live/convergence_debt_retry.py:21-50`).
+- Deferred derived-table work uses ordinary bounded retry backoff (`polylogue/sources/live/convergence_debt_retry.py:12-30`).
 
 ## `convergence_debt`
 

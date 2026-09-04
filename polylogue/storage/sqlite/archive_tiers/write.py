@@ -308,19 +308,6 @@ def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
 
 
 @dataclass(frozen=True, slots=True)
-class ArchiveInsightMaterialization:
-    insight_type: str
-    session_id: str
-    materializer_version: int
-    materialized_at_ms: int
-    source_updated_at_ms: int | None
-    source_sort_key_ms: int | None
-    input_high_water_mark_ms: int | None
-    input_row_count: int
-    input_high_water_mark_source: str | None = None
-
-
-@dataclass(frozen=True, slots=True)
 class SessionEventWriteResult:
     wrote_provider_usage_events: bool = False
 
@@ -349,7 +336,6 @@ def _repair_stale_session_observations(
     revision-governance callers from silently losing the repair that batch ingest
     performs.
     """
-    conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
     candidate_created_at_ms, _candidate_updated_at_ms = session_evidence_timestamps(
         session,
         fallback_timestamp=fallback_timestamp,
@@ -1307,120 +1293,6 @@ def upsert_session_profile_costs(
             "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
             (cost_usd, session_id),
         )
-
-
-def apply_insight_materialization(
-    conn: sqlite3.Connection,
-    *,
-    insight_type: str,
-    session_id: str,
-    materializer_version: int,
-    materialized_at_ms: int,
-    source_updated_at_ms: int | None = None,
-    source_sort_key_ms: int | None = None,
-    input_high_water_mark_ms: int | None = None,
-    input_high_water_mark_source: str | None = None,
-    input_row_count: int = 0,
-) -> None:
-    """Stamp one session-insight materialization row without committing.
-
-    The bulk insight rebuild (``rebuild_session_insights_sync``) materializes
-    every insight table inside one transaction so a SIGKILL mid-rebuild rolls
-    the WAL back to the prior insights. It therefore stamps materialization
-    through this no-commit primitive; the committing ``upsert_*`` wrapper below
-    is for callers that stamp a single insight as its own unit of work.
-    """
-    conn.execute(
-        """
-        INSERT INTO insight_materialization (
-            insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
-            input_high_water_mark_source, input_row_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(insight_type, session_id) DO UPDATE SET
-            materializer_version = excluded.materializer_version,
-            materialized_at_ms = excluded.materialized_at_ms,
-            source_updated_at_ms = excluded.source_updated_at_ms,
-            source_sort_key_ms = excluded.source_sort_key_ms,
-            input_high_water_mark_ms = excluded.input_high_water_mark_ms,
-            input_high_water_mark_source = excluded.input_high_water_mark_source,
-            input_row_count = excluded.input_row_count
-        """,
-        (
-            insight_type,
-            session_id,
-            materializer_version,
-            materialized_at_ms,
-            source_updated_at_ms,
-            source_sort_key_ms,
-            input_high_water_mark_ms,
-            input_high_water_mark_source,
-            input_row_count,
-        ),
-    )
-
-
-def upsert_insight_materialization(
-    conn: sqlite3.Connection,
-    *,
-    insight_type: str,
-    session_id: str,
-    materializer_version: int,
-    materialized_at_ms: int,
-    source_updated_at_ms: int | None = None,
-    source_sort_key_ms: int | None = None,
-    input_high_water_mark_ms: int | None = None,
-    input_high_water_mark_source: str | None = None,
-    input_row_count: int = 0,
-) -> ArchiveInsightMaterialization:
-    """Upsert the shared materialization state for one session insight."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        apply_insight_materialization(
-            conn,
-            insight_type=insight_type,
-            session_id=session_id,
-            materializer_version=materializer_version,
-            materialized_at_ms=materialized_at_ms,
-            source_updated_at_ms=source_updated_at_ms,
-            source_sort_key_ms=source_sort_key_ms,
-            input_high_water_mark_ms=input_high_water_mark_ms,
-            input_high_water_mark_source=input_high_water_mark_source,
-            input_row_count=input_row_count,
-        )
-    return read_insight_materialization(conn, insight_type, session_id)
-
-
-def read_insight_materialization(
-    conn: sqlite3.Connection,
-    insight_type: str,
-    session_id: str,
-) -> ArchiveInsightMaterialization:
-    """Read the shared materialization state for one session insight."""
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        """
-        SELECT insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
-            input_high_water_mark_source, input_row_count
-        FROM insight_materialization
-        WHERE insight_type = ? AND session_id = ?
-        """,
-        (insight_type, session_id),
-    ).fetchone()
-    if row is None:
-        raise KeyError(f"{insight_type}:{session_id}")
-    return ArchiveInsightMaterialization(
-        insight_type=row["insight_type"],
-        session_id=row["session_id"],
-        materializer_version=row["materializer_version"],
-        materialized_at_ms=row["materialized_at_ms"],
-        source_updated_at_ms=row["source_updated_at_ms"],
-        source_sort_key_ms=row["source_sort_key_ms"],
-        input_high_water_mark_ms=row["input_high_water_mark_ms"],
-        input_high_water_mark_source=row["input_high_water_mark_source"],
-        input_row_count=row["input_row_count"],
-    )
 
 
 def read_archive_session_envelope(
@@ -8049,13 +7921,11 @@ def _enum_value(value: object) -> str | None:
 __all__ = [
     "ArchiveAgentPolicy",
     "ArchiveBlockRow",
-    "ArchiveInsightMaterialization",
     "ArchiveMessageRow",
     "ArchiveSessionPhase",
     "ArchiveSessionTag",
     "ArchiveSessionEnvelope",
     "ArchiveSessionWorkEvent",
-    "read_insight_materialization",
     "read_session_agent_policies",
     "read_session_phases",
     "read_session_tags",
@@ -8064,8 +7934,6 @@ __all__ = [
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
     "upsert_session_profile_costs",
-    "apply_insight_materialization",
-    "upsert_insight_materialization",
     "upsert_session_phase",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",

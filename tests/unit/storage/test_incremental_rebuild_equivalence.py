@@ -68,7 +68,6 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_profiles": frozenset({"materialized_at"}),
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_tag_rollups": frozenset({"materialized_at"}),
-    "insight_materialization": frozenset({"materialized_at_ms"}),
     "threads": frozenset({"materialized_at"}),
 }
 
@@ -91,7 +90,6 @@ _CANONICAL_TABLES = (
     "session_model_usage",
     "session_provider_usage_events",
     "session_tag_rollups",
-    "insight_materialization",
     "threads",
     "thread_sessions",
 )
@@ -538,11 +536,7 @@ def _plant_stale_dependents(index_path: Path) -> None:
             (CHAT_SESSION,),
         )
         conn.execute(
-            """
-            UPDATE insight_materialization
-            SET materializer_version = 0
-            WHERE insight_type = 'session_profile' AND session_id = ?
-            """,
+            "UPDATE session_profiles SET materializer_version = 0 WHERE session_id = ?",
             (CHAT_SESSION,),
         )
         conn.commit()
@@ -828,29 +822,6 @@ def _assert_planted_contract(root: Path, index_path: Path, raw_ids: RawIds) -> N
             CHAT_SESSION: (3, 1, None, SESSION_INSIGHT_MATERIALIZER_VERSION),
             PARENT_SESSION: (2, 0, None, SESSION_INSIGHT_MATERIALIZER_VERSION),
             CHILD_SESSION: (1, 0, None, SESSION_INSIGHT_MATERIALIZER_VERSION),
-        }
-
-        materializations = tuple(
-            conn.execute(
-                """
-                SELECT insight_type, session_id, materializer_version
-                FROM insight_materialization
-                ORDER BY session_id, insight_type
-                """
-            )
-        )
-        assert len(materializations) == 27
-        assert {int(row[2]) for row in materializations} == {SESSION_INSIGHT_MATERIALIZER_VERSION}
-        assert {str(row[0]) for row in materializations} == {
-            "context_snapshots",
-            "latency",
-            "observed_events",
-            "phases",
-            "provider_usage",
-            "runs",
-            "session_profile",
-            "thread",
-            "work_events",
         }
 
         thread_rows = {

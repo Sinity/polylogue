@@ -36,20 +36,17 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAgentPolicy,
-    ArchiveInsightMaterialization,
     ArchiveSessionPhase,
     ArchiveSessionTag,
     ArchiveSessionWorkEvent,
     ArchiveWriteOutcome,
     read_archive_session_envelope,
     read_archive_session_page,
-    read_insight_materialization,
     read_session_agent_policies,
     read_session_phases,
     read_session_tags,
     read_session_work_events,
     search_archive_blocks,
-    upsert_insight_materialization,
     upsert_session_phase,
     upsert_session_profile_costs,
     upsert_session_tag,
@@ -933,59 +930,6 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     assert profile["substantive_count"] >= 0
     assert profile["work_event_count"] >= 0
     assert isinstance(profile["search_text"], str)
-
-
-def test_archive_tiers_insight_materialization_upsert_refreshes_shared_state(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "index.db")
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="codex-insight-state",
-        updated_at="2026-01-01T00:00:02+00:00",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="insight state")],
-            )
-        ],
-    )
-    session_id = write_parsed_session_to_archive(conn, session)
-
-    first = upsert_insight_materialization(
-        conn,
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=1,
-        materialized_at_ms=1_767_225_603_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_602_000,
-        input_row_count=1,
-    )
-    refreshed = upsert_insight_materialization(
-        conn,
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=2,
-        materialized_at_ms=1_767_225_604_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_604_000,
-        input_row_count=3,
-    )
-
-    assert isinstance(first, ArchiveInsightMaterialization)
-    assert read_insight_materialization(conn, "session_profile", session_id) == refreshed
-    assert refreshed == ArchiveInsightMaterialization(
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=2,
-        materialized_at_ms=1_767_225_604_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_604_000,
-        input_row_count=3,
-    )
 
 
 def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path: Path) -> None:

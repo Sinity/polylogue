@@ -10,10 +10,11 @@ import aiosqlite
 
 from polylogue.storage.derived.session.aggregates import _PROFILE_BUCKET_DAY_SQL
 from polylogue.storage.derived.session.runtime import (
-    SessionInsightReadyFlag,
     SessionInsightStatusSnapshot,
     session_profile_stale_predicate,
 )
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import column_exists_async as _column_exists_async
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
@@ -23,7 +24,6 @@ from polylogue.storage.sqlite.run_projection_relations import (
 
 TablePresence: TypeAlias = dict[str, bool]
 StatusCounts: TypeAlias = dict[str, int]
-CountEquality: TypeAlias = tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class SessionInsightTableDescriptor:
 
 @dataclass(frozen=True)
 class SessionInsightFtsDescriptor:
-    """FTS projection counts, duplicate checks, and readiness predicate."""
+    """FTS projection counts and duplicate checks."""
 
     table_key: str
     table_name: str
@@ -65,7 +65,6 @@ class SessionInsightFtsDescriptor:
     source_count_key: str
     distinct_sql: str
     duplicate_sql: str
-    ready_key: SessionInsightReadyFlag
 
     def counts_sync(
         self,
@@ -104,13 +103,6 @@ class SessionInsightFtsDescriptor:
             self.count_key: indexed_count,
             self.duplicate_count_key: duplicate_count,
         }
-
-    def ready(self, tables: TablePresence, counts: StatusCounts) -> bool:
-        return (
-            tables[self.table_key]
-            and counts[self.count_key] == counts[self.source_count_key]
-            and counts[self.duplicate_count_key] == 0
-        )
 
 
 @dataclass(frozen=True)
@@ -160,23 +152,6 @@ class SessionInsightCountDescriptor:
         return (self.count_key, self._fallback(counts))
 
 
-@dataclass(frozen=True)
-class SessionInsightReadyDescriptor:
-    """Readiness predicate over an insight table and named status counts."""
-
-    ready_key: SessionInsightReadyFlag
-    table_key: str
-    equal_counts: tuple[CountEquality, ...] = ()
-    zero_counts: tuple[str, ...] = ()
-
-    def ready(self, tables: TablePresence, counts: StatusCounts) -> bool:
-        return (
-            tables[self.table_key]
-            and all(counts[left] == counts[right] for left, right in self.equal_counts)
-            and all(counts[key] == 0 for key in self.zero_counts)
-        )
-
-
 # ---------------------------------------------------------------------------
 # SQL constants for session-insight status and drift checks
 # ---------------------------------------------------------------------------
@@ -214,16 +189,6 @@ MISSING_SESSION_PROFILE_COUNT_SQL = """
       AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
 """
 MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
-STALE_SESSION_PROFILE_COUNT_SQL = f"""
-    SELECT COUNT(*)
-    FROM sessions c
-    JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-      AND (
-           sp.materializer_version != ?
-        OR {session_profile_stale_predicate("c", "sp")}
-      )
-"""
 ORPHAN_SESSION_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_profiles sp
@@ -274,32 +239,11 @@ MISSING_THREAD_MATERIALIZATION_COUNT_SQL = """
 """
 EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
 EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
-STALE_WORK_EVENT_COUNT_SQL = f"""
-    SELECT COUNT(*)
-    FROM sessions c
-    JOIN insight_materialization im
-      ON im.session_id = c.session_id
-     AND im.insight_type = ?
-    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-      AND (
-           im.materializer_version != ?
-        OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
-      )
-"""
 ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
     SELECT COUNT(*)
     FROM session_work_events swe
     LEFT JOIN sessions c ON c.session_id = swe.session_id
     WHERE c.session_id IS NULL
-"""
-STALE_SESSION_PHASE_COUNT_SQL = """
-    SELECT COUNT(*)
-    FROM sessions c
-    JOIN insight_materialization im
-      ON im.session_id = c.session_id
-     AND im.insight_type = ?
-    WHERE im.materializer_version != ?
-       OR ABS(COALESCE(im.source_sort_key_ms, 0) - COALESCE(c.sort_key_ms, 0)) > 0
 """
 ORPHAN_SESSION_PHASE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -405,6 +349,37 @@ SESSION_PROFILE_REPAIR_CANDIDATES_SQL = f"""
 """
 SESSION_PROFILE_REPAIR_CANDIDATES_SQL = SESSION_PROFILE_REPAIR_CANDIDATES_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 
+
+def _stale_session_profile_count_sql(conn: sqlite3.Connection) -> str:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
+    )
+    return f"""
+        SELECT COUNT(*)
+        FROM sessions AS c
+        JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.materializer_version != ? OR {predicate})
+    """
+
+
+async def _stale_session_profile_count_sql_async(conn: aiosqlite.Connection) -> str:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
+    )
+    return f"""
+        SELECT COUNT(*)
+        FROM sessions AS c
+        JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.materializer_version != ? OR {predicate})
+    """
+
+
 _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
     SessionInsightTableDescriptor(
         key="session_profiles",
@@ -466,10 +441,6 @@ _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
         count_sql=THREAD_COUNT_SQL,
     ),
     SessionInsightTableDescriptor(
-        key="insight_materialization",
-        table_name="insight_materialization",
-    ),
-    SessionInsightTableDescriptor(
         key="session_tag_rollups",
         table_name="session_tag_rollups",
         count_key="tag_rollup_count",
@@ -486,7 +457,6 @@ _FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
         source_count_key="work_event_inference_count",
         distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
         duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
-        ready_key="work_event_inference_fts_ready",
     ),
 )
 
@@ -495,20 +465,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="missing_profile_row_count",
         table_key="session_profiles",
         sql=MISSING_SESSION_PROFILE_COUNT_SQL,
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_profile_row_count",
-        table_key="session_profiles",
-        sql=STALE_SESSION_PROFILE_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="missing_session_profile_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("session_profile", SESSION_INSIGHT_MATERIALIZER_VERSION),
         fallback_count_key="total_sessions",
     ),
     SessionInsightCountDescriptor(
@@ -531,13 +487,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
-        count_key="missing_latency_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("latency", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
         count_key="orphan_latency_profile_row_count",
         table_key="session_latency_profiles",
         sql=ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
@@ -549,42 +498,14 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         sql=EXPECTED_WORK_EVENT_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
-        count_key="missing_work_event_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
         count_key="expected_phase_inference_count",
         table_key="session_profiles",
         sql=EXPECTED_PHASE_COUNT_SQL,
     ),
     SessionInsightCountDescriptor(
-        count_key="missing_phase_materialization_count",
-        table_key="insight_materialization",
-        sql=MISSING_INSIGHT_MATERIALIZATION_COUNT_SQL,
-        params=("phases", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        fallback_count_key="total_sessions",
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_work_event_inference_count",
-        table_key="insight_materialization",
-        sql=STALE_WORK_EVENT_COUNT_SQL,
-        params=("work_events", SESSION_INSIGHT_MATERIALIZER_VERSION),
-        requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
         count_key="orphan_work_event_inference_count",
         table_key="session_work_events",
         sql=ORPHAN_SESSION_WORK_EVENT_COUNT_SQL,
-        requires_freshness=True,
-    ),
-    SessionInsightCountDescriptor(
-        count_key="stale_phase_inference_count",
-        table_key="insight_materialization",
-        sql=STALE_SESSION_PHASE_COUNT_SQL,
-        params=("phases", SESSION_INSIGHT_MATERIALIZER_VERSION),
         requires_freshness=True,
     ),
     SessionInsightCountDescriptor(
@@ -641,74 +562,6 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="stale_tag_rollup_count",
         sql="SELECT COUNT(*) FROM session_tag_rollups WHERE materialized_at != 'query-time'",
         requires_freshness=True,
-    ),
-)
-
-_READY_DESCRIPTORS: tuple[SessionInsightReadyDescriptor, ...] = (
-    SessionInsightReadyDescriptor(
-        ready_key="profile_rows_ready",
-        table_key="session_profiles",
-        zero_counts=(
-            "missing_profile_row_count",
-            "missing_session_profile_materialization_count",
-            "stale_profile_row_count",
-            "orphan_profile_row_count",
-        ),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="latency_profile_rows_ready",
-        table_key="session_latency_profiles",
-        equal_counts=(("latency_profile_row_count", "profile_row_count"),),
-        zero_counts=(
-            "missing_latency_profile_row_count",
-            "missing_latency_materialization_count",
-            "stale_latency_profile_row_count",
-            "orphan_latency_profile_row_count",
-        ),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="work_event_inference_rows_ready",
-        table_key="session_work_events",
-        equal_counts=(("work_event_inference_count", "expected_work_event_inference_count"),),
-        zero_counts=(
-            "missing_work_event_materialization_count",
-            "stale_work_event_inference_count",
-            "orphan_work_event_inference_count",
-        ),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="phase_inference_rows_ready",
-        table_key="session_phases",
-        equal_counts=(("phase_inference_count", "expected_phase_inference_count"),),
-        zero_counts=(
-            "missing_phase_materialization_count",
-            "stale_phase_inference_count",
-            "orphan_phase_inference_count",
-        ),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="run_rows_ready",
-        table_key="session_runs",
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="observed_event_rows_ready",
-        table_key="session_observed_events",
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="context_snapshot_rows_ready",
-        table_key="session_context_snapshots",
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="threads_ready",
-        table_key="threads",
-        equal_counts=(("thread_count", "root_threads"),),
-        zero_counts=("missing_thread_materialization_count", "stale_thread_count", "orphan_thread_count"),
-    ),
-    SessionInsightReadyDescriptor(
-        ready_key="tag_rollups_ready",
-        table_key="session_tag_rollups",
-        equal_counts=(("tag_rollup_count", "expected_tag_rollup_count"),),
-        zero_counts=("stale_tag_rollup_count",),
     ),
 )
 
@@ -832,6 +685,11 @@ def _status_counts_sync(
 ) -> StatusCounts:
     counts = _materialized_counts_sync(conn, tables, verify_freshness=verify_freshness)
     counts.update(_descriptor_counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
+    counts["stale_profile_row_count"] = (
+        _count_sync(conn, _stale_session_profile_count_sql(conn), SESSION_INSIGHT_MATERIALIZER_VERSION)
+        if verify_freshness and tables["session_profiles"]
+        else 0
+    )
     return counts
 
 
@@ -839,37 +697,49 @@ def _status_payload(
     tables: TablePresence,
     counts: StatusCounts,
 ) -> SessionInsightStatusSnapshot:
-    ready_flags: dict[SessionInsightReadyFlag, bool] = {
-        descriptor.ready_key: descriptor.ready(tables, counts) for descriptor in _READY_DESCRIPTORS
-    }
-    ready_flags.update({descriptor.ready_key: descriptor.ready(tables, counts) for descriptor in _FTS_DESCRIPTORS})
     return SessionInsightStatusSnapshot(
-        **counts,  # type: ignore[arg-type]
-        profile_rows_ready=ready_flags["profile_rows_ready"],
-        latency_profile_rows_ready=ready_flags["latency_profile_rows_ready"],
-        work_event_inference_rows_ready=ready_flags["work_event_inference_rows_ready"],
-        work_event_inference_fts_ready=ready_flags["work_event_inference_fts_ready"],
-        phase_inference_rows_ready=ready_flags["phase_inference_rows_ready"],
-        run_rows_ready=ready_flags["run_rows_ready"],
-        observed_event_rows_ready=ready_flags["observed_event_rows_ready"],
-        context_snapshot_rows_ready=ready_flags["context_snapshot_rows_ready"],
-        threads_ready=ready_flags["threads_ready"],
-        tag_rollups_ready=ready_flags["tag_rollups_ready"],
+        **counts,
     )
 
 
 def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[str]:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
+    )
+    sql = f"""
+        SELECT c.session_id
+        FROM sessions AS c
+        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
+        ORDER BY c.session_id
+    """
     rows = conn.execute(
-        SESSION_PROFILE_REPAIR_CANDIDATES_SQL,
+        sql,
         (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
     return [str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
 
 
 async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection) -> list[str]:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
+    )
+    sql = f"""
+        SELECT c.session_id
+        FROM sessions AS c
+        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
+        ORDER BY c.session_id
+    """
     rows = await (
         await conn.execute(
-            SESSION_PROFILE_REPAIR_CANDIDATES_SQL,
+            sql,
             (SESSION_INSIGHT_MATERIALIZER_VERSION,),
         )
     ).fetchall()
@@ -930,6 +800,13 @@ async def _status_counts_async(
 ) -> StatusCounts:
     counts = await _materialized_counts_async(conn, tables, verify_freshness=verify_freshness)
     counts.update(await _descriptor_counts_async(conn, tables, counts, verify_freshness=verify_freshness))
+    counts["stale_profile_row_count"] = (
+        await _count_async(
+            conn, await _stale_session_profile_count_sql_async(conn), SESSION_INSIGHT_MATERIALIZER_VERSION
+        )
+        if verify_freshness and tables["session_profiles"]
+        else 0
+    )
     return counts
 
 
@@ -938,12 +815,12 @@ async def session_insight_status_async(
     *,
     verify_freshness: bool = True,
 ) -> SessionInsightStatusSnapshot:
-    """Return session-insight table/readiness status.
+    """Return session-insight table and row-count status.
 
     With `verify_freshness=False`, the result is a lightweight approximation:
-    `root_threads` falls back to `thread_count`, and readiness flags depending
-    on freshness-gated stale/orphan/expected counts can appear ready without
-    fresh verification. Use `verify_freshness=True` for full health checks.
+    `root_threads` falls back to `thread_count`, and freshness-gated
+    stale/orphan/expected counts can be omitted. Convergence debt is the
+    readiness signal for derived tables.
     """
 
     tables = await _tables_async(conn)
@@ -954,7 +831,6 @@ async def session_insight_status_async(
 __all__ = [
     "SessionInsightCountDescriptor",
     "SessionInsightFtsDescriptor",
-    "SessionInsightReadyDescriptor",
     "SessionInsightTableDescriptor",
     "session_insight_status_async",
     "session_insight_status_sync",

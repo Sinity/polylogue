@@ -86,7 +86,6 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     assert profile.fallback_reason_counts
     assert profile.row_count == 1
     assert profile.origin_coverage[0].origin == "codex-session"
-    assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1
 
 
 @pytest.mark.asyncio
@@ -134,15 +133,15 @@ async def test_insight_readiness_report_marks_partial_and_incompatible_insights(
     await _rebuild(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE insight_materialization SET materializer_version = ?",
+            "UPDATE session_profiles SET materializer_version = ?",
             (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
         )
         conn.commit()
 
-    incompatible = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
-    profile = _entry_by_name(incompatible, "session_profiles")
-    assert profile.verdict == "incompatible"
-    assert profile.incompatible_count == 2
+    stale = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    profile = _entry_by_name(stale, "session_profiles")
+    assert profile.verdict == "stale"
+    assert profile.stale_count == 2
 
 
 @pytest.mark.asyncio

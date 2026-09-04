@@ -1227,33 +1227,6 @@ SESSION_TAGS_SPEC = _make_table_spec(
     table_constraints=("""PRIMARY KEY(session_id, tag, tag_source)""",),
 )
 
-INSIGHT_MATERIALIZATION_SPEC = _make_table_spec(
-    "insight_materialization",
-    (
-        _raw_column(
-            "insight_type",
-            """insight_type                 TEXT NOT NULL CHECK(insight_type IN (
-                                    'session_profile', 'work_events', 'phases', 'latency', 'thread',
-                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage'))""",
-        ),
-        _raw_column(
-            "session_id",
-            """session_id                   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE""",
-        ),
-        _raw_column("materializer_version", """materializer_version         INTEGER NOT NULL"""),
-        _raw_column("materialized_at_ms", """materialized_at_ms           INTEGER NOT NULL"""),
-        _raw_column("source_updated_at_ms", """source_updated_at_ms         INTEGER"""),
-        _raw_column("source_sort_key_ms", """source_sort_key_ms           INTEGER"""),
-        _raw_column("input_high_water_mark_ms", """input_high_water_mark_ms     INTEGER"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column(
-            "input_row_count",
-            """input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0)""",
-        ),
-    ),
-    table_constraints=("""PRIMARY KEY(insight_type, session_id)""",),
-)
-
 SESSION_WORK_EVENTS_SPEC = _make_table_spec(
     "session_work_events",
     (
@@ -1653,7 +1626,6 @@ INDEX_TABLE_SPECS = {
     "session_model_usage": SESSION_MODEL_USAGE_SPEC,
     "session_provider_usage_events": SESSION_PROVIDER_USAGE_EVENTS_SPEC,
     "session_tags": SESSION_TAGS_SPEC,
-    "insight_materialization": INSIGHT_MATERIALIZATION_SPEC,
     "session_work_events": SESSION_WORK_EVENTS_SPEC,
     "session_phases": SESSION_PHASES_SPEC,
     "session_latency_profiles": SESSION_LATENCY_PROFILES_SPEC,

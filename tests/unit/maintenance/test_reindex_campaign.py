@@ -22,7 +22,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import _HOT_INSIGHT_SOURCE_BYTES, make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import _HOT_INSIGHT_SOURCE_BYTES, make_derived_stage, make_fts_stage
 from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
 from polylogue.maintenance.reindex_canary import run_reindex_canary
 from polylogue.sources.live.convergence_debt import convergence_debt_from_states
@@ -382,7 +382,7 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(
         conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
         conn.commit()
     uninterrupted_states, _ = DaemonConverger(
-        (make_fts_stage(uninterrupted.root / "index.db"), make_insights_stage(uninterrupted.root / "index.db"))
+        (make_fts_stage(uninterrupted.root / "index.db"), make_derived_stage(uninterrupted.root / "index.db"))
     ).converge_sessions((session_id,))
     assert uninterrupted_states[session_id].converged
 
@@ -403,10 +403,10 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(
         restart_source.truncate(_HOT_INSIGHT_SOURCE_BYTES)
     future = time.time() + 100_000
     os.utime(source_path, (future, future))
-    stages = (make_fts_stage(restarted.root / "index.db"), make_insights_stage(restarted.root / "index.db"))
+    stages = (make_fts_stage(restarted.root / "index.db"), make_derived_stage(restarted.root / "index.db"))
     deferred_states, _ = DaemonConverger(stages).converge_batch((source_path,))
     assert deferred_states[source_path].converged is False
-    assert deferred_states[source_path].last_error == "insights deferred until source quiet"
+    assert deferred_states[source_path].last_error == "batch stage derived returned False"
     record = CursorStore(restarted.root / "index.db")
     record_convergence = convergence_debt_from_states((source_path,), deferred_states)
     assert record_convergence
@@ -421,14 +421,14 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(
     )
     debt = debt_ledger_row(
         restarted.root / "ops.db",
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=restarted_session_id,
     )
     assert debt is not None and debt.status == "deferred"
     set_debt_retry_at(
         restarted.root / "ops.db",
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id=restarted_session_id,
         retry_at="1970-01-01T00:00:00+00:00",
@@ -447,7 +447,7 @@ def test_restart_debt_converges_to_uninterrupted_campaign_state(
     assert (
         debt_ledger_row(
             restarted.root / "ops.db",
-            stage="insights",
+            stage="derived",
             subject_type="session_id",
             subject_id=restarted_session_id,
         )

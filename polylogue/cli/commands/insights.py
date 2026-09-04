@@ -222,9 +222,6 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
                 f"missing={insight.missing_count} stale={insight.stale_count} "
                 f"orphan={insight.orphan_count} incompatible={insight.incompatible_count}"
             )
-        if insight.ready_flags:
-            flags = ", ".join(f"{key}={value}" for key, value in sorted(insight.ready_flags.items()))
-            click.echo(f"  flags: {flags}")
         if insight.origin_coverage:
             origins = ", ".join(
                 f"{origin_label(coverage.origin)}={coverage.row_count}" for coverage in insight.origin_coverage

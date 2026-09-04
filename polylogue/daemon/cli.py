@@ -343,10 +343,6 @@ async def _run_startup_lineage_readiness(coordinator: DaemonWriteCoordinator) ->
     return await coordinator.run_sync("startup.lineage_readiness", _ensure_lineage_startup_readiness_sync)
 
 
-_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS = 60
-_SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT = 100
-_SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT = 10
-_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS = 1
 _DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
@@ -1279,34 +1275,6 @@ async def _periodic_raw_materialization_convergence(
         await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
 
 
-async def _periodic_session_insight_convergence_after(
-    catch_up_complete: asyncio.Event | None = None,
-) -> None:
-    """Continuously converge missing/stale session insights after catch-up."""
-    await _await_catch_up_gate(catch_up_complete, loop_name="session insight convergence")
-    while True:
-        burst_count = 0
-        try:
-            while burst_count < _SESSION_INSIGHT_CONVERGENCE_BURST_LIMIT:
-                refreshed = await daemon_write_coordinator().run_sync(
-                    "maintenance.session_insights",
-                    _drain_session_insights_once,
-                )
-                if not refreshed:
-                    break
-                burst_count += 1
-                logger.info("insights: converged %d session profile(s)", refreshed)
-                await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS)
-        except sqlite3.OperationalError as exc:
-            if is_transient_sqlite_lock(exc):
-                logger.info("insights: archive busy; retrying profile backlog on next tick: %s", exc)
-            else:
-                logger.warning("insights: profile backlog convergence failed", exc_info=True)
-        except Exception:
-            logger.warning("insights: profile backlog convergence failed", exc_info=True)
-        await asyncio.sleep(_SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS)
-
-
 async def _bridge_catch_up_complete(
     source: asyncio.Event,
     target: asyncio.Event,
@@ -2230,30 +2198,6 @@ def _raw_materialization_fts_needs_repair(index_db: Path) -> bool:
             return not bool(recorded["ready"])
         readiness = message_fts_readiness_sync(conn, verify_total_rows=False)
         return bool(readiness["exists"]) and not bool(readiness["ready"])
-
-
-def _drain_session_insights_once(*, limit: int = _SESSION_INSIGHT_CONVERGENCE_BATCH_LIMIT) -> int:
-    """Run one bounded missing/stale session-profile convergence pass."""
-    from polylogue.daemon.convergence_stages import (
-        _archive_insights_execute_ids,
-        _schema_archive_session_ids_missing_profiles,
-    )
-    from polylogue.paths import archive_root
-    from polylogue.storage.archive_identity import resolve_active_index_path
-    from polylogue.storage.sqlite.connection_profile import open_daemon_connection
-
-    db = resolve_active_index_path(archive_root())
-    if not db.exists():
-        return 0
-    conn = open_daemon_connection(db, timeout=30.0)
-    try:
-        ids = _schema_archive_session_ids_missing_profiles(conn, limit=limit)
-        if not ids:
-            return 0
-        result = _archive_insights_execute_ids(conn, ids, archive_root=archive_root())
-        return len(ids) if bool(getattr(result, "success", result)) else 0
-    finally:
-        conn.close()
 
 
 def _drain_convergence_debt_once(db: Path, *, limit: int = 100) -> int:
@@ -3217,7 +3161,6 @@ async def _run_daemon_services_under_active_writer_lease(
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
                 _periodic_raw_materialization_convergence(catch_up_complete=catch_up_complete_gate),
-                _periodic_session_insight_convergence_after(catch_up_complete_gate),
                 _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),

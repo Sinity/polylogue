@@ -149,7 +149,7 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
         stages=[
             _stage("parse", failing=set()),
             _stage("fts", failing=set()),
-            _stage("insights", failing=set()),
+            _stage("derived", failing=set()),
         ]
     )
 
@@ -157,7 +157,7 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
     cycle_started = time.perf_counter()
     converged_states, stage_timings = _stage_timings(converger, good_paths)
     parse_time_s = float(stage_timings.get("parse", 0.0))
-    convergence_time_s = float(stage_timings.get("fts", 0.0) + stage_timings.get("insights", 0.0))
+    convergence_time_s = float(stage_timings.get("fts", 0.0) + stage_timings.get("derived", 0.0))
 
     # Classify the bad input into durable convergence debt instead of blocking
     # the cycle. This is the "errors classified without blocking good" path.
@@ -232,7 +232,7 @@ def test_catch_up_cycle_emits_runtime_observability_evidence(
     assert backlog_end == 0
 
     # ── Per-stage convergence timings: every declared stage must be measured. ──
-    assert set(stage_timings) == {"parse", "fts", "insights"}
+    assert set(stage_timings) == {"parse", "fts", "derived"}
     assert all(value >= 0.0 for value in stage_timings.values())
     # Converger marked every good input DONE for every stage.
     for path in good_paths:
@@ -339,7 +339,7 @@ def test_catch_up_cycle_evidence_payload_is_bounded(tmp_path: Path) -> None:
         cursor_before={"tracked": 0},
         cursor_after={"tracked": 9},
         duration_ms=12.5,
-        stage_timings_s={"parse": 0.01, "fts": 0.02, "insights": 0.03},
+        stage_timings_s={"parse": 0.01, "fts": 0.02, "derived": 0.03},
         repair={"required": 1, "performed": 0, "remaining": 1},
     )
 

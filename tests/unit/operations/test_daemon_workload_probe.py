@@ -303,8 +303,7 @@ def test_daemon_workload_probe_separates_automatic_backlog_from_retry_debt(tmp_p
     assert backlog["checked"] is True
     assert backlog["state"] == "catching_up"
     assert backlog["counts"]["missing_profile_rows"] == 2
-    assert backlog["counts"]["missing_session_profile_materialization"] == 2
-    assert backlog["counts"]["automatic_backlog_total"] > backlog["counts"]["retry_debt_unresolved"]
+    assert backlog["counts"]["automatic_backlog_total"] == backlog["counts"]["missing_profile_rows"]
 
 
 def test_daemon_workload_probe_table_count_uses_sqlite_stats_after_cheap_counts(
@@ -518,13 +517,6 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             ) VALUES ('codex-session:native-1', 0, 'implementation', 'built it', 0.8, 0, 0)
             """
         )
-        conn.execute(
-            """
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, materialized_at_ms
-            ) VALUES ('session_profile', 'codex-session:native-1', 1, 1)
-            """
-        )
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with sqlite3.connect(tmp_path / "user.db") as conn:
         upsert_assertion(
@@ -569,7 +561,6 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert "missing_backup_required_tier:embeddings" in layout["blockers"]
     assert "surface:raw_artifacts:missing_source_raw_sessions" in layout["blockers"]
     assert "surface:session_profiles:missing_profile_rows" in layout["blockers"]
-    assert "surface:session_profiles:missing_session_profile_materialization" in layout["blockers"]
     assert "user_overlay_orphan_session_references" in layout["blockers"]
     assert layout["evidence"]["present_count"] == 4
     assert layout["evidence"]["blocked_surface_count"] >= 1
@@ -609,9 +600,6 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert readiness["counts"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert readiness["counts"]["action_count"] == 0
     assert readiness["counts"]["action_count_exact"] is False
-    assert readiness["materialization_counts"]["session_profile"] == 1
-    assert readiness["missing_materialization_counts"]["session_profile"] == 1
-    assert readiness["missing_materialization_counts"]["work_events"] == 2
     assert readiness["ready"]["raw_links_ready"] is False
     assert readiness["ready"]["messages_fts_ready"] is True
     assert readiness["ready"]["profile_rows_ready"] is False
@@ -644,9 +632,8 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
     assert surfaces["search"]["evidence"]["messages_fts_exact_counts"] is False
     assert surfaces["session_profiles"]["ready"] is False
     assert "missing_profile_rows" in surfaces["session_profiles"]["blockers"]
-    assert "missing_session_profile_materialization" in surfaces["session_profiles"]["blockers"]
-    assert surfaces["timeline_work_events"]["ready"] is False
-    assert surfaces["timeline_work_events"]["blockers"] == ["missing_work_events_materialization"]
+    assert surfaces["timeline_work_events"]["ready"] is True
+    assert surfaces["timeline_work_events"]["blockers"] == []
     assert surfaces["tag_rollups"]["ready"] is True
     assert surfaces["tag_rollups"]["evidence"]["session_tag_count"] == UNKNOWN_TABLE_COUNT
     assert surfaces["tool_usage"]["ready"] is True
@@ -723,8 +710,6 @@ def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(t
         "reason": "schema_mismatch:index",
         "source_check_available": False,
         "counts": {},
-        "materialization_counts": {},
-        "missing_materialization_counts": {},
         "ready": {},
         "surface_readiness": {},
     }
@@ -1054,12 +1039,12 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
     with sqlite3.connect(ops_db) as conn:
         add_convergence_debt(
             conn,
-            stage="insights",
+            stage="derived",
             target_type="session_id",
             target_id="codex-session:hot",
             status="deferred",
             attempts=1,
-            last_error="insights deferred until source quiet",
+            last_error="derived deferred until source quiet",
             next_retry_at="2026-06-30T15:52:22+00:00",
             created_at_ms=1_770_000_000_000,
         )
@@ -1074,7 +1059,7 @@ def test_probe_does_not_count_ops_deferred_convergence_debt_as_failed(tmp_path: 
         "unresolved_count": 1,
         "by_stage": [
             {
-                "stage": "insights",
+                "stage": "derived",
                 "failed_count": 0,
                 "deferred_count": 1,
                 "unresolved_count": 1,
@@ -1266,7 +1251,6 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
     assert readiness["checked_after"] is True
     assert readiness["counts"]["session_count"]["delta"] == 1
     assert readiness["counts"]["missing_profile_row_count"]["delta"] == 1
-    assert readiness["missing_materialization_counts"]["session_profile"]["delta"] == 1
     assert readiness["ready_before"]["profile_rows_ready"] is True
     assert readiness["ready_after"]["profile_rows_ready"] is False
     surfaces = readiness["surface_readiness"]
@@ -1274,7 +1258,6 @@ def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> Non
     assert surfaces["session_profiles"]["ready_after"] is False
     assert surfaces["session_profiles"]["blockers_after"] == [
         "missing_profile_rows",
-        "missing_session_profile_materialization",
     ]
     assert surfaces["session_profiles"]["evidence"]["missing_profile_row_count"]["delta"] == 1
 

@@ -23,10 +23,10 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage import repair as repair_mod
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.derived.session.repair_assessment import assess_session_insight_repairs
 from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -330,7 +330,7 @@ def test_deleted_orphan_repairs_are_unreachable() -> None:
 def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Path) -> None:
     """The daemon's real archive route repairs the same session rows as repair."""
     from polylogue.core.enums import BlockType, Provider, Role
-    from polylogue.daemon.convergence_stages import make_insights_stage
+    from polylogue.daemon.convergence_stages import make_derived_stage
     from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -374,10 +374,10 @@ def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Pat
                 """,
                 (session_id,),
             ).fetchone()
-            materialization = conn.execute(
+            latency = conn.execute(
                 """
-                SELECT insight_type, materializer_version, input_row_count
-                FROM insight_materialization WHERE session_id = ? ORDER BY insight_type
+                SELECT materializer_version, input_row_count
+                FROM session_latency_profiles WHERE session_id = ?
                 """,
                 (session_id,),
             ).fetchall()
@@ -397,7 +397,7 @@ def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Pat
             ).fetchall()
         return (
             tuple(profile) if profile is not None else (),
-            *map(tuple, materialization),
+            *map(tuple, latency),
             *map(tuple, work_events),
             *map(tuple, phases),
         )
@@ -411,10 +411,9 @@ def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Pat
 
     with sqlite3.connect(tmp_path / "index.db") as conn:
         conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
         conn.commit()
 
-    stage = make_insights_stage(tmp_path / "index.db")
+    stage = make_derived_stage(tmp_path / "index.db")
     assert stage.check(source_path) is True
     stage_result = stage.execute(source_path)
     assert getattr(stage_result, "success", stage_result) is True
@@ -4137,18 +4136,7 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
 
 
 def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
-    return SessionInsightStatusSnapshot(
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        run_rows_ready=True,
-        observed_event_rows_ready=True,
-        context_snapshot_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-    )
+    return SessionInsightStatusSnapshot()
 
 
 def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -4183,13 +4171,6 @@ def test_repair_session_insights_dry_run_reports_archive_wide_rebuild(
         def session_insight_status(self) -> SessionInsightStatusSnapshot:
             return SessionInsightStatusSnapshot(
                 total_sessions=16_358,
-                profile_rows_ready=False,
-                latency_profile_rows_ready=True,
-                work_event_inference_rows_ready=True,
-                work_event_inference_fts_ready=True,
-                phase_inference_rows_ready=True,
-                threads_ready=True,
-                tag_rollups_ready=True,
                 missing_profile_row_count=103,
             )
 
@@ -4220,13 +4201,6 @@ def test_repair_session_insights_dry_run_reports_scoped_rebuild(
         def session_insight_status(self) -> SessionInsightStatusSnapshot:
             return SessionInsightStatusSnapshot(
                 total_sessions=16_358,
-                profile_rows_ready=False,
-                latency_profile_rows_ready=True,
-                work_event_inference_rows_ready=True,
-                work_event_inference_fts_ready=True,
-                phase_inference_rows_ready=True,
-                threads_ready=True,
-                tag_rollups_ready=True,
                 missing_profile_row_count=103,
             )
 
@@ -4285,8 +4259,8 @@ def test_repair_session_insights_clears_scoped_convergence_debt(
             VALUES (?, ?, 'session_id', ?, 'deferred', 0, 1, 'quiet window', NULL, NULL, 1, 1)
             """,
             (
-                ("debt-1", "insights", "codex-session:target"),
-                ("debt-2", "insights", "codex-session:other"),
+                ("debt-1", "derived", "codex-session:target"),
+                ("debt-2", "derived", "codex-session:other"),
                 ("debt-3", "fts", "codex-session:target"),
             ),
         )
@@ -4328,7 +4302,7 @@ def test_repair_session_insights_clears_scoped_convergence_debt(
         ).fetchall()
 
     assert rows == [
-        ("insights", "codex-session:other"),
+        ("derived", "codex-session:other"),
         ("fts", "codex-session:target"),
     ]
 
@@ -4355,12 +4329,6 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         );
         CREATE TABLE session_work_events (session_id TEXT);
         CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (
-            insight_type TEXT,
-            session_id TEXT,
-            materializer_version INTEGER,
-            source_sort_key_ms INTEGER
-        );
         """
     )
     conn.executemany(
@@ -4374,33 +4342,15 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
         )
         VALUES ('ready', ?, 1.0, 0, 0)
         """,
-        (repair_mod._session_insight_materializer_version(),),
+        (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     )
     conn.execute(
         """
         INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
         VALUES ('ready', ?, 1.0)
         """,
-        (repair_mod._session_insight_materializer_version(),),
+        (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     )
-    conn.executemany(
-        """
-        INSERT INTO insight_materialization(
-            insight_type, session_id, materializer_version, source_sort_key_ms
-        ) VALUES (?, 'ready', ?, 1000)
-        """,
-        (
-            ("session_profile", repair_mod._session_insight_materializer_version()),
-            ("latency", repair_mod._session_insight_materializer_version()),
-            ("work_events", repair_mod._session_insight_materializer_version()),
-            ("phases", repair_mod._session_insight_materializer_version()),
-            ("thread", repair_mod._session_insight_materializer_version()),
-            ("runs", repair_mod._session_insight_materializer_version()),
-            ("observed_events", repair_mod._session_insight_materializer_version()),
-            ("context_snapshots", repair_mod._session_insight_materializer_version()),
-        ),
-    )
-
     calls: list[tuple[str, ...] | None] = []
 
     class FakeArchive:
@@ -4417,13 +4367,6 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
 
     stale_status = SessionInsightStatusSnapshot(
         total_sessions=2,
-        profile_rows_ready=False,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
         missing_profile_row_count=1,
     )
     statuses = iter((stale_status, _ready_session_insight_status()))
@@ -4448,142 +4391,6 @@ def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.
     assert calls == [("missing",)]
 
 
-def test_repair_session_insights_targets_stale_thread_materialization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL, updated_at_ms INTEGER);
-        CREATE TABLE session_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT,
-            work_event_count INTEGER,
-            phase_count INTEGER
-        );
-        CREATE TABLE session_latency_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT
-        );
-        CREATE TABLE session_work_events (session_id TEXT);
-        CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (
-            insight_type TEXT,
-            session_id TEXT,
-            materializer_version INTEGER,
-            source_sort_key_ms INTEGER
-        );
-        """
-    )
-    conn.execute("INSERT INTO sessions(session_id, sort_key_ms) VALUES ('stale-thread-marker', 1000)")
-    current_version = repair_mod._session_insight_materializer_version()
-    conn.execute(
-        """
-        INSERT INTO session_profiles(
-            session_id, materializer_version, source_sort_key, work_event_count, phase_count
-        )
-        VALUES ('stale-thread-marker', ?, 1.0, 0, 0)
-        """,
-        (current_version,),
-    )
-    conn.execute(
-        """
-        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
-        VALUES ('stale-thread-marker', ?, 1.0)
-        """,
-        (current_version,),
-    )
-    conn.executemany(
-        """
-        INSERT INTO insight_materialization(
-            insight_type, session_id, materializer_version, source_sort_key_ms
-        ) VALUES (?, 'stale-thread-marker', ?, 1000)
-        """,
-        (
-            ("session_profile", current_version),
-            ("latency", current_version),
-            ("work_events", current_version),
-            ("phases", current_version),
-            ("runs", current_version),
-            ("observed_events", current_version),
-            ("context_snapshots", current_version),
-            ("thread", current_version - 1),
-        ),
-    )
-
-    calls: list[tuple[str, tuple[str, ...] | None]] = []
-
-    class FakeArchive:
-        _conn = conn
-
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return next(statuses)
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    stale_status = SessionInsightStatusSnapshot(
-        total_sessions=1,
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=False,
-        tag_rollups_ready=True,
-        missing_thread_materialization_count=1,
-    )
-    statuses = iter((stale_status, _ready_session_insight_status()))
-
-    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
-        calls.append(("rebuild", session_ids))
-        return SessionInsightCounts(threads=1)
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.derived.session.rebuild.rebuild_archive_session_insights",
-        fake_rebuild,
-    )
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 1
-    assert calls == [("rebuild", ("stale-thread-marker",))]
-
-
-def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
-    status = SessionInsightStatusSnapshot(
-        total_sessions=1,
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        run_rows_ready=True,
-        observed_event_rows_ready=True,
-        context_snapshot_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-        missing_run_materialization_count=1,
-        missing_context_snapshot_materialization_count=1,
-    )
-
-    assessment = assess_session_insight_repairs(status)
-
-    assert assessment.row_debt == 0
-
-
 def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     calls: list[tuple[str, tuple[str, ...] | None]] = []
 
@@ -4598,13 +4405,6 @@ def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pyte
             pass
 
     stale_status = SessionInsightStatusSnapshot(
-        profile_rows_ready=False,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=False,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
         stale_profile_row_count=2,
         stale_work_event_inference_count=2,
         work_event_inference_fts_count=4,
