@@ -450,16 +450,9 @@ class ArchiveSessionSearchHit:
 # rows are excluded from traversal by construction. The latter is not a
 # topological cycle, but it is an authoritative verdict that the inferred
 # parent edge is false; composing it would reintroduce rejected topology. A
-# defensive visited-path guard
-# (the `path`/`instr()` machinery below) is still carried on every step
-# despite that exclusion: quarantine is asserted by the topology resolver
-# over `session_links` alone, while `delegations` unions edges resolved by
-# an independent mechanism (`content_pairs`' provider-asserted content-
-# identity match, `delegation_facts_source` in index.py) that the topology
-# resolver's cycle detector never inspects. Two content-identity-matched
-# edges could in principle compose into a cycle the quarantine pass never
-# saw; the guard makes that structurally unreachable rather than assumed
-# absent.
+# defensive visited-path guard (the `path`/`instr()` machinery below) is
+# still carried on every step so traversal terminates even if a malformed
+# derived row bypasses the topology resolver.
 
 
 # polylogue-a7xr.16: table-driving the SELECT side. ``query_messages`` and

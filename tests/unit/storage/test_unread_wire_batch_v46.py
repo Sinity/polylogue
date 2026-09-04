@@ -19,6 +19,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionRef,
     ParsedWebConstruct,
 )
+from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.identity import archive_block_id, archive_message_id
@@ -500,16 +501,7 @@ async def test_web_content_constructs_empty_for_session_without_constructs(tmp_p
 
 
 async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_path: Path) -> None:
-    """session_links.parent_tool_use_block_id: the real delegation join key.
-
-    A child session declares ``parent_tool_use_provider_id`` (the wire's
-    ``parentToolUseID``, a provider tool_id) rather than an ordinal position.
-    Fails if the writer stops resolving it to the parent's actual
-    ``blocks.block_id`` (a revert of ``_resolve_parent_tool_use_block_id``/
-    ``_write_session_link``), or if
-    ``queries.session_links.list_session_links_for_session`` stops reading
-    the column back.
-    """
+    """Parent-side dispatch evidence binds the exact parent tool-use block."""
     from polylogue.storage.sqlite.queries.session_links import list_session_links_for_session
 
     backend = SQLiteBackend(db_path=tmp_path / "parent-tool-use.db")
@@ -535,6 +527,13 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
                         ],
                     ),
                 ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="claude_delegation_progress",
+                        source_message_provider_id="dispatch-tool-1",
+                        payload={"child_provider_id": "child-1"},
+                    )
+                ],
             ),
             backend=backend,
         )
@@ -544,7 +543,6 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
                 provider_session_id="child-1",
                 title="Child session",
                 parent_session_provider_id="parent-1",
-                parent_tool_use_provider_id="dispatch-tool-1",
                 messages=[
                     ParsedMessage(
                         provider_message_id="c1",
@@ -567,6 +565,71 @@ async def test_session_links_parent_tool_use_block_id_resolves_via_tool_id(tmp_p
     link = links[0]
     assert link["parent_tool_use_block_id"] == archive_block_id(
         archive_message_id(parent_id, "m1", position=0), position=0
+    )
+    assert link["method"] == "parent-tool-use-id"
+
+
+async def test_provider_shaped_claude_dispatch_resolves_through_writer(tmp_path: Path) -> None:
+    """Claude parent progress and child records drive the canonical writer."""
+    backend = SQLiteBackend(db_path=tmp_path / "provider-shaped-dispatch.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        parent = parse_code(
+            [
+                {
+                    "type": "assistant",
+                    "uuid": "parent-assistant",
+                    "sessionId": "parent-native",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "id": "dispatch-tool-1",
+                                "name": "Task",
+                                "input": {"description": "spawn"},
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "progress",
+                    "uuid": "parent-progress",
+                    "sessionId": "parent-native",
+                    "parentToolUseID": "dispatch-tool-1",
+                    "data": {"type": "agent_progress", "childSessionId": "agent-child-native"},
+                },
+            ],
+            "parent-file",
+        )
+        child = parse_code(
+            [
+                {
+                    "type": "user",
+                    "uuid": "child-user",
+                    "sessionId": "parent-native",
+                    "message": {"role": "user", "content": "work"},
+                }
+            ],
+            "agent-child-native",
+        )
+        parent_id = await ingest_session(parent, backend=backend)
+        child_id = await ingest_session(child, backend=backend)
+
+        async with backend.connection() as conn:
+            [link] = list(
+                await conn.execute_fetchall(
+                    """SELECT resolved_dst_session_id, parent_tool_use_block_id, method
+                       FROM session_links WHERE src_session_id = ?""",
+                    (child_id,),
+                )
+            )
+    finally:
+        await repo.close()
+
+    assert link["resolved_dst_session_id"] == parent_id
+    assert link["parent_tool_use_block_id"] == archive_block_id(
+        archive_message_id(parent_id, "parent-assistant", position=0), position=0
     )
     assert link["method"] == "parent-tool-use-id"
 

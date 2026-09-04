@@ -1023,6 +1023,31 @@ def test_parse_code_retains_exact_delegation_child_identity() -> None:
     assert child.provider_session_aliases == ["agent-child-native"]
 
 
+def test_parse_code_quarantines_conflicting_dispatch_child_identity() -> None:
+    records = [
+        {
+            "type": "progress",
+            "uuid": "progress-a",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-1",
+            "data": {"type": "agent_progress", "childSessionId": "child-a"},
+        },
+        {
+            "type": "progress",
+            "uuid": "progress-b",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-1",
+            "data": {"type": "agent_progress", "childSessionId": "child-b"},
+        },
+    ]
+
+    parsed = parse_code(records, "parent-native")
+    [event] = [event for event in parsed.session_events if event.event_type == "claude_delegation_progress"]
+    assert event.payload["child_provider_id"] is None
+    assert event.payload["child_provider_ids"] == ["child-a", "child-b"]
+    assert event.payload["resolution_reason"] == "identity-contradiction"
+
+
 def test_parse_code_drops_non_message_sidecars() -> None:
     items: list[object] = [
         {

@@ -62,6 +62,7 @@ from polylogue.sources.parsers.base import (
     ParseAccounting,
     ParsedAttachment,
     ParsedContentBlock,
+    ParsedDispatchObservation,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -4237,6 +4238,9 @@ def _write_session_link(
     parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
     method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    identity_reason = _session_target_resolution_reason(conn, origin, dst_native_id)
+    if identity_reason is not None:
+        evidence["resolution_reason"] = identity_reason
     status: str | None = None
 
     # A conflict is scoped to (child, link_type), NOT to the primary key.
@@ -4254,6 +4258,7 @@ def _write_session_link(
         status = TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
         evidence["codex_thread_spawn_edge_parent"] = hook_parent
         evidence["contradiction"] = "authoritative hook evidence names a different parent"
+        evidence["resolution_reason"] = "identity-contradiction"
 
     _upsert_session_link(
         conn,
@@ -4312,6 +4317,25 @@ def _write_session_link(
         )
 
 
+def _session_target_resolution_reason(conn: sqlite3.Connection, origin: str, provider_value: str) -> str | None:
+    """Return the typed reason an exact session target is not resolvable."""
+    claim_rows = conn.execute(
+        """SELECT DISTINCT claimant_session_id
+           FROM session_identity_claims
+           WHERE origin = ? AND identity_namespace = 'provider-session'
+             AND provider_value = ?""",
+        (origin, provider_value),
+    ).fetchall()
+    if len(claim_rows) > 1:
+        return "identity-contradiction"
+    if claim_rows:
+        return None
+    canonical_id = archive_session_id(origin, provider_value)
+    if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (canonical_id,)).fetchone() is not None:
+        return None
+    return "target-not-yet-observed"
+
+
 def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
     """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
 
@@ -4319,38 +4343,15 @@ def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedS
     session. ``None`` (not found / not supplied) leaves the column NULL,
     never a guess.
     """
-    tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
     parent_id = getattr(session, "parent_session_provider_id", None)
-    parent_session_id = (
-        _existing_parent_session_id(conn, session, origin_from_provider(session.source_name).value)
-        if parent_id
-        else None
-    )
-    if not tool_use_provider_id and parent_id and parent_session_id:
-        child_session_id = archive_session_id(
-            origin_from_provider(session.source_name).value,
-            session.provider_session_id.strip(),
-        )
-        block_id = _resolve_parent_dispatch_block_id(conn, parent_session_id, child_session_id)
-        if block_id is not None:
-            return block_id
-    if not tool_use_provider_id:
+    if not parent_id:
         return None
-    if parent_id and parent_session_id is None:
+    origin = origin_from_provider(session.source_name).value
+    parent_session_id = _existing_parent_session_id(conn, session, origin)
+    if parent_session_id is None:
         return None
-    row = conn.execute(
-        """SELECT b.block_id FROM blocks b
-           JOIN messages m ON m.message_id = b.message_id
-           WHERE b.tool_id = ? AND b.block_type = 'tool_use'
-             AND (? IS NULL OR m.session_id = ?)
-           ORDER BY b.block_id LIMIT 1""",
-        (
-            tool_use_provider_id,
-            parent_session_id,
-            parent_session_id,
-        ),
-    ).fetchone()
-    return str(row[0]) if row is not None else None
+    child_session_id = archive_session_id(origin, session.provider_session_id.strip())
+    return _resolve_parent_dispatch_block_id(conn, parent_session_id, child_session_id)
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:
@@ -4442,6 +4443,7 @@ def _quarantine_session_link(
         }
     else:
         raise ValueError("acyclic session link cannot be quarantined as a cycle risk")
+    evidence_payload["resolution_reason"] = "cycle-quarantine"
     evidence = _json_dumps(evidence_payload)
     conn.execute(
         """
@@ -4560,6 +4562,7 @@ def _resolve_session_graph(
             SET resolved_dst_session_id = ?,
                 resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms),
                 parent_tool_use_block_id = COALESCE(parent_tool_use_block_id, ?),
+                evidence_json = json_remove(evidence_json, '$.resolution_reason'),
                 method = CASE
                     WHEN parent_tool_use_block_id IS NULL AND ? IS NOT NULL THEN 'parent-tool-use-id'
                     ELSE method
@@ -4701,7 +4704,8 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
             """
             UPDATE session_links
                SET resolved_dst_session_id = ?,
-                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
+                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms),
+                   evidence_json = json_remove(evidence_json, '$.resolution_reason')
              WHERE src_session_id = ?
                AND dst_origin = ?
                AND dst_native_id = ?
@@ -7189,23 +7193,37 @@ def _resolve_parent_dispatch_block_id(
            WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
         (parent_session_id,),
     ).fetchall()
+    matching_blocks: set[str] = set()
+    matching_child_ids: set[str] = set()
     for source_id, payload_json in rows:
         try:
             payload = json.loads(str(payload_json))
         except (TypeError, ValueError):
             continue
-        observed = payload.get("child_provider_id") if isinstance(payload, dict) else None
-        if observed is None or str(observed) not in child_ids or not source_id:
+        try:
+            observation_payload = dict(payload) if isinstance(payload, dict) else {}
+            if source_id and "provider_tool_id" not in observation_payload:
+                observation_payload["provider_tool_id"] = str(source_id)
+            observation = ParsedDispatchObservation.model_validate(observation_payload)
+        except (TypeError, ValueError):
             continue
-        row = conn.execute(
+        if observation.resolution_reason is not None:
+            continue
+        child_provider_id = observation.child_provider_id
+        if child_provider_id is None or child_provider_id not in child_ids:
+            continue
+        rows = conn.execute(
             """SELECT b.block_id FROM blocks b
                JOIN messages m ON m.message_id = b.message_id
                WHERE b.tool_id = ? AND b.block_type = 'tool_use' AND m.session_id = ?
-               ORDER BY b.block_id LIMIT 1""",
-            (str(source_id), parent_session_id),
-        ).fetchone()
-        if row is not None:
-            return str(row[0])
+               ORDER BY b.block_id""",
+            (observation.provider_tool_id, parent_session_id),
+        ).fetchall()
+        if len(rows) == 1:
+            matching_blocks.add(str(rows[0][0]))
+            matching_child_ids.add(child_provider_id)
+    if len(matching_blocks) == 1 and len(matching_child_ids) == 1:
+        return next(iter(matching_blocks))
     return None
 
 
@@ -7279,6 +7297,19 @@ def _write_session_identity_claims(
 
     _invalidate_links(retired_values, claimant_only=True)
     _invalidate_links(ambiguous_values, claimant_only=False)
+    if ambiguous_values:
+        value_placeholders = ", ".join("?" for _ in ambiguous_values)
+        conn.execute(
+            f"""UPDATE session_links
+                SET evidence_json = CASE
+                    WHEN json_type(evidence_json) = 'object'
+                    THEN json_set(evidence_json, '$.resolution_reason', 'identity-contradiction')
+                    ELSE '{{\"resolution_reason\":\"identity-contradiction\"}}'
+                END
+                WHERE dst_origin = ? AND dst_native_id IN ({value_placeholders})
+                  AND resolved_dst_session_id IS NULL""",
+            (origin, *sorted(ambiguous_values)),
+        )
     return invalidated_children
 
 

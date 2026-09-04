@@ -232,6 +232,9 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude["message_parent"]["state"] == "carried"
     assert claude["session_parent_target"]["state"] == "positive-derived"
     assert claude["message_branch_state"]["state"] == "positive-derived"
+    assert claude["parent_dispatch"]["state"] == "positive-derived"
+    assert "parentToolUseID" in str(claude["parent_dispatch"]["evidence"])
+    assert codex["parent_dispatch"]["state"] == "structurally-absent"
     assert chatgpt["message_parent"]["state"] == "carried"
     assert chatgpt["message_branch_state"]["state"] == "carried"
     assert hermes["session_parent_target"]["state"] == "carried"

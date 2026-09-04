@@ -2782,7 +2782,7 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
         "status": None,
         "method": "parser-parent",
         "confidence": 1.0,
-        "evidence_json": '{"parent_session_provider_id":"parent-session"}',
+        "evidence_json": '{"parent_session_provider_id":"parent-session","resolution_reason":"target-not-yet-observed"}',
         "observed_at_ms": 1_767_225_603_000,
     }
 

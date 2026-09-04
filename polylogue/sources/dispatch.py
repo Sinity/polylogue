@@ -770,6 +770,9 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "parent_session_provider_id": (
                     existing.parent_session_provider_id or session.parent_session_provider_id
                 ),
+                "provider_session_aliases": sorted(
+                    {*existing.provider_session_aliases, *session.provider_session_aliases}
+                ),
                 "branch_type": existing.branch_type or session.branch_type,
                 "updated_at": chronological(updated_values, newest=True),
                 "messages": messages,
