@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -34,6 +35,7 @@ from devtools.pytest_slot import (
 
 FAKE_PUEUE = """#!/usr/bin/env python3
 import json, os, sys
+import shutil
 
 # The record path is derived from this script's own location: a queued run's
 # adder environment is scrubbed, so nothing can be passed through it.
@@ -42,6 +44,7 @@ with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
 
 command = sys.argv[1] if len(sys.argv) > 1 else ""
 if command == "add":
+    shutil.copyfile(sys.argv[-1], {launch_snapshot!r})
     print("{task_id}")
 elif command == "status":
     print(json.dumps({{"tasks": {{"{task_id}": {{"status": {{"Done": {{"result": {result}}}}}}}}}}}))
@@ -59,7 +62,14 @@ def _install_fake_pueue(
     directory = tmp_path / "fakebin"
     directory.mkdir(exist_ok=True)
     script = directory / "pueue"
-    script.write_text(FAKE_PUEUE.format(task_id=task_id, result=result), encoding="utf-8")
+    script.write_text(
+        FAKE_PUEUE.format(
+            task_id=task_id,
+            result=result,
+            launch_snapshot=str(tmp_path / "queued-launch.json"),
+        ),
+        encoding="utf-8",
+    )
     script.chmod(script.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
     return Path(str(script) + ".calls.jsonl")
@@ -108,7 +118,16 @@ def test_outside_a_task_the_run_is_queued(tmp_path: Path, monkeypatch: pytest.Mo
     assert "--group" in add["argv"] and add["argv"][add["argv"].index("--group") + 1] == "pytest"
     assert add["argv"][add["argv"].index("--label") + 1] == "polylogue:test:1"
     assert "--print-task-id" in add["argv"] and "--escape" in add["argv"]
-    assert "devtools.pytest_slot" in add["argv"]
+    assert add["argv"][-2:] == [
+        shutil.which(pytest_slot.QUEUE_RUNNER),
+        str(tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.json"),
+    ]
+    launch = json.loads((tmp_path / "queued-launch.json").read_text(encoding="utf-8"))
+    assert launch["project_id"] == "polylogue"
+    assert launch["operation"] == "test"
+    assert launch["pool"] == "pytest"
+    assert launch["result_kind"] == "exit"
+    assert launch["timeout_seconds"] == 3600
     assert [call["argv"][0] for call in _calls(record)] == ["add", "wait", "status"]
 
 
@@ -155,6 +174,26 @@ def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monke
     assert _calls(record)[0]["argv"][0] == "add"
 
 
+def test_declared_pytest_worker_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    marker = tmp_path / "pytest-ran"
+    holder = {"SINNIXD_JOB_ID": "job-1", "SINNIXD_QUEUE_POOL": "pytest"}
+
+    assert holds_pytest_slot(holder)
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=_environment(**holder),
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    assert marker.exists()
+    assert outcome.slot == "held"
+    assert outcome.returncode == 0
+    assert _calls(record) == [], "a declared pytest worker must not recursively queue"
+
+
 def test_explicit_slot_holder_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
@@ -173,6 +212,48 @@ def test_explicit_slot_holder_runs_directly(tmp_path: Path, monkeypatch: pytest.
     assert outcome.slot == "held"
     assert outcome.returncode == 0
     assert _calls(record) == [], "a slot holder must not talk to pueue"
+
+
+def test_an_agent_pool_worker_queues_its_focused_run_in_the_pytest_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    marker = tmp_path / "pytest-ran"
+
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=_environment(
+            SINNIXD_JOB_ID="agent-job",
+            SINNIXD_QUEUE_POOL="agent",
+        ),
+        root=tmp_path,
+        label="polylogue:test:agent",
+    )
+
+    assert not marker.exists()
+    assert outcome.slot == "pueue task 7"
+    add = next(call for call in _calls(record) if call["argv"][0] == "add")
+    assert add["argv"][add["argv"].index("--group") + 1] == "pytest"
+
+
+def test_missing_scoped_queue_runner_refuses_before_queueing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_pueue(tmp_path, monkeypatch)
+    original_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: None if name == pytest_slot.QUEUE_RUNNER else original_which(name, path),
+    )
+
+    with pytest.raises(PytestSlotUnavailableError, match="sinnixd-queue-run"):
+        run_pytest(
+            _marker_command(tmp_path / "pytest-ran"),
+            cwd=str(tmp_path),
+            env=_environment(),
+            root=tmp_path,
+            label="polylogue:test:missing-runner",
+        )
 
 
 def test_an_unreachable_queue_refuses_rather_than_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,10 +364,8 @@ def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path)
 
 
 def _launch_document(root: Path) -> dict[str, Any]:
-    """The launch file the (faked) adder left behind, unconsumed."""
-    launches = list((root / pytest_slot.LAUNCH_DIR).glob("pytest-slot-*.json"))
-    assert len(launches) == 1, f"expected one launch file, found {launches}"
-    document: dict[str, Any] = json.loads(launches[0].read_text(encoding="utf-8"))
+    """The launch file captured by the fake pueue adder before consumption."""
+    document: dict[str, Any] = json.loads((root / "queued-launch.json").read_text(encoding="utf-8"))
     return document
 
 
