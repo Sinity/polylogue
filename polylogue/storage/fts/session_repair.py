@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import Any, cast
 
+from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID
 from polylogue.storage.introspection import table_exists as _table_exists
 
 
@@ -18,7 +19,7 @@ def _row_int(row: sqlite3.Row | tuple[object, ...] | None, key: int | str) -> in
 
 
 def session_fts_needs_repair_sync(conn: sqlite3.Connection, session_id: str) -> bool:
-    """Return whether one session has missing message FTS rows."""
+    """Return whether one session has missing or identity-drifted FTS rows."""
     if not session_id:
         return False
     if not _table_exists(conn, "messages_fts_docsize"):
@@ -37,7 +38,26 @@ def session_fts_needs_repair_sync(conn: sqlite3.Connection, session_id: str) -> 
         ).fetchone(),
         0,
     )
-    return missing_blocks > 0
+    if missing_blocks > 0:
+        return True
+    if not _table_exists(conn, "messages_fts_identity"):
+        return False
+    mismatch = _row_int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM messages_fts_docsize AS d
+            JOIN blocks AS b ON b.rowid = d.id AND b.session_id = ? AND b.search_text != ''
+            JOIN messages_fts_identity AS i ON i.rowid = d.id
+            WHERE i.block_id != b.block_id
+               OR i.source_hash IS NOT b.content_hash
+               OR i.recipe_id != ?
+            """,
+            (session_id, FTS_MESSAGES_IDENTITY_RECIPE_ID),
+        ).fetchone(),
+        0,
+    )
+    return mismatch > 0
 
 
 def repair_session_fts_if_needed_sync(conn: sqlite3.Connection, session_id: str) -> bool:
