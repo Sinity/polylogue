@@ -776,7 +776,7 @@ def message_fts_readiness_sync(
 
 
 def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
-    """Return retrieval readiness, using the daemon-maintained freshness row when available."""
+    """Return retrieval readiness measured for the relation used by search."""
     from polylogue.storage.fts.freshness import message_fts_recorded_readiness_sync
 
     recorded_readiness = message_fts_recorded_readiness_sync(conn)
@@ -822,7 +822,7 @@ async def message_fts_readiness_async(
 
 
 async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
-    """Async retrieval readiness with durable-freshness fast path."""
+    """Async retrieval readiness measured for the relation used by search."""
     from polylogue.storage.fts.freshness import message_fts_recorded_readiness_async
 
     recorded_readiness = await message_fts_recorded_readiness_async(conn)
