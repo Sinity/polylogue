@@ -36,9 +36,7 @@ verification-graph = ["devtools/verify.py", "pyproject.toml"]
 
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
-# Eight of these run beside agent lanes; four workers each keeps the host
-# at its thread count instead of three times over it.
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "devtools", "verify"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
 pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
@@ -62,7 +60,7 @@ timeout_seconds = 900
 
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
 # The corpus graph is published from the main checkout; a lane worktree
 # cannot start it.
 checkout = "default"

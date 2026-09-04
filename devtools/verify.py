@@ -76,10 +76,9 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: The corpus runs unpartitioned. Eight workers peak near 10 GB, inside the
-#: pytest pool's 12 GiB ceiling; CPU sits near 22% at that width, so the
-#: ceiling, not the cores, is what bounds this.
-CORPUS_MAX_WORKERS = 8
+#: SQLite archive construction makes the corpus IO-bound. Two workers provide
+#: overlap without multiplying cache churn or exhausting the pytest cgroup.
+CORPUS_MAX_WORKERS = 2
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
