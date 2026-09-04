@@ -1,40 +1,21 @@
-"""The type daemon must not outlive the gates that start it."""
+"""Quick verification must not create a persistent type daemon."""
 
 from __future__ import annotations
 
-import subprocess
-from types import SimpleNamespace
+from pathlib import Path
 
-import pytest
-
-from devtools import gate, verify
+from devtools import gate
 
 
-def test_starting_the_daemon_bounds_its_idle_lifetime(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A started daemon carries an idle timeout, so an unused checkout releases it.
+def test_quick_mypy_uses_a_foreground_checkout_local_process() -> None:
+    """The checker stays in the managed task's process tree and exits with it.
 
-    Anti-vacuity: drop the flag and this is red. Without it every gate leaves a
-    multi-gigabyte daemon resident for as long as its checkout exists, and one
-    accumulates per checkout until the host runs out of memory.
+    Anti-vacuity: changing this to ``dmypy`` makes the assertion red. A daemon
+    is reparented outside the managed task and one accumulates per checkout.
     """
-    calls: list[list[str]] = []
+    assert gate.mypy_command() == [str(gate.ROOT / ".venv/bin/mypy")]
 
-    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
-        calls.append(list(argv))
-        # Report no running daemon so the start path is taken.
-        return SimpleNamespace(returncode=0 if "start" in argv else 1, stdout="", stderr="")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    dmypy = str(verify.ROOT / ".venv/bin/dmypy")
-    assert gate.mypy_command() == [
-        dmypy,
-        "run",
-        f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}",
-        "--",
-        "--no-error-summary",
-    ]
-
-    start = next(argv for argv in calls if "start" in argv)
-    assert f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}" in start
-    assert gate.DMYPY_IDLE_TIMEOUT_SECONDS == 180
+def test_mypy_command_isolated_by_checkout(tmp_path: Path) -> None:
+    """Each lane resolves its own environment, leaving cache ownership to mypy."""
+    assert gate.mypy_command(root=tmp_path) == [str(tmp_path / ".venv/bin/mypy")]
