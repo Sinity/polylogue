@@ -1227,7 +1227,14 @@ def _claude_code_spec() -> OriginSpec:
             "parent session is derived from the Claude sessionId relationship",
         ),
         inheritance_branch_point=_absent_topology("Claude Code wire carries no inheritance boundary"),
-        parent_dispatch=_absent_topology("Claude Code child records do not carry an admitted parent dispatch field"),
+        parent_dispatch=TopologyCapability(
+            "positive-derived",
+            (
+                "claude_code progress.data.type=agent_progress.parentToolUseID",
+                "claude_code progress.data.childSessionId/agentId when present",
+            ),
+            "parent-side dispatch evidence is retained only when the wire carries an exact child identity",
+        ),
     )
     return replace(spec, topology_capabilities=topology_capabilities)
 

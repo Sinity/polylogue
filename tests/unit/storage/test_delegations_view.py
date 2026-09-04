@@ -181,6 +181,7 @@ def _insert_session_link(
     dst_native_id: str,
     parent_session_id: str | None,
     branch_point_message_id: str | None = None,
+    parent_tool_use_block_id: str | None = None,
     link_type: str = "subagent",
     status: str | None = None,
 ) -> None:
@@ -195,8 +196,9 @@ def _insert_session_link(
         """
         INSERT INTO session_links (
             src_session_id, dst_origin, dst_native_id, link_type,
-            resolved_dst_session_id, branch_point_message_id, status, observed_at_ms
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            resolved_dst_session_id, branch_point_message_id, status,
+            parent_tool_use_block_id, observed_at_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             child_session_id,
@@ -206,6 +208,7 @@ def _insert_session_link(
             parent_session_id,
             branch_point_message_id,
             status,
+            parent_tool_use_block_id,
             1_767_225_600_000,
         ),
     )
@@ -261,6 +264,7 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
         dst_native_id="parent",
         parent_session_id=parent_id,
         branch_point_message_id=dispatch_message_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
     row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -313,6 +317,7 @@ def test_delegation_result_status_error_when_dispatch_action_reports_error(tmp_p
         dst_native_id="parent",
         parent_session_id=parent_id,
         branch_point_message_id=dispatch_message_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
     row = conn.execute("SELECT result_status FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -355,6 +360,7 @@ def test_delegation_fresh_spawned_child_with_null_branch_point_resolves(tmp_path
         dst_native_id="parent",
         parent_session_id=parent_id,
         branch_point_message_id=None,  # spawned-fresh: no inherited prefix
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
     row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -362,21 +368,6 @@ def test_delegation_fresh_spawned_child_with_null_branch_point_resolves(tmp_path
     assert row["mapping_state"] == "resolved"
     assert row["child_session_id"] == child_id
     assert row["branch_point_message_id"] is None
-
-
-def _insert_child_first_message(conn: sqlite3.Connection, *, session_id: str, text: str) -> None:
-    """Insert the child's own first user turn -- for a resolved subagent this
-    IS (byte for byte) the dispatching Task's own prompt/message field; see
-    polylogue-1vpm.7. Used to drive the view's content-identity join."""
-    message_id = _insert_message(conn, session_id=session_id, native_id="first-turn", position=0)
-    conn.execute(
-        "UPDATE messages SET role = 'user', message_type = 'message' WHERE message_id = ?",
-        (message_id,),
-    )
-    conn.execute(
-        "INSERT INTO blocks (message_id, session_id, position, block_type, text) VALUES (?, ?, 0, 'text', ?)",
-        (message_id, session_id, text),
-    )
 
 
 def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> None:
@@ -406,14 +397,13 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
         tool_input=json.dumps({"prompt": "audit module b"}),
         result_text="b done",
     )
-    _insert_child_first_message(conn, session_id=child_a, text="audit module a")
-    _insert_child_first_message(conn, session_id=child_b, text="audit module b")
     _insert_session_link(
         conn,
         child_session_id=child_a,
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
     _insert_session_link(
         conn,
@@ -421,6 +411,7 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:2",
     )
 
     rows = conn.execute(
@@ -439,11 +430,7 @@ def test_delegation_two_dispatches_in_one_message_no_fanout(tmp_path: Path) -> N
 
 
 def test_delegation_dispatch_without_matching_content_stays_unresolved(tmp_path: Path) -> None:
-    """polylogue-1vpm.7 AC2/AC3: a parent with N dispatches and M<N captured
-    children (here N=2, M=1) yields exactly M resolved and N-M unresolved --
-    never N 'ambiguous'. Rank-pairing would have guessed a winner for both
-    dispatches; content identity resolves only the one whose own prompt
-    matches the captured child, and leaves the other honestly unresolved."""
+    """A parent dispatch without an exact child observation stays unresolved."""
     conn = _connect(tmp_path / "index.db")
     parent_id = _insert_session(conn, native_id="parent")
     child_id = _insert_session(conn, native_id="child")
@@ -464,13 +451,13 @@ def test_delegation_dispatch_without_matching_content_stays_unresolved(tmp_path:
         tool_id="task-2",
         tool_input=json.dumps({"prompt": "never-captured dispatch"}),
     )
-    _insert_child_first_message(conn, session_id=child_id, text="captured dispatch")
     _insert_session_link(
         conn,
         child_session_id=child_id,
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
     rows = conn.execute(
         "SELECT * FROM delegations WHERE parent_session_id = ? ORDER BY instruction_tool_use_block_id", (parent_id,)
@@ -581,6 +568,7 @@ def test_delegation_separates_dispatch_requested_and_child_observed_model_identi
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
     row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
@@ -659,6 +647,12 @@ def test_delegation_direction_matches_real_link_resolver(tmp_path: Path) -> None
     assert link_row["status"] is None
     assert link_row["resolved_dst_session_id"] == parent_id
 
+    conn.execute(
+        "UPDATE session_links SET parent_tool_use_block_id = ? WHERE src_session_id = ?",
+        (f"{dispatch_message_id}:0", child_id),
+    )
+    conn.commit()
+
     row = conn.execute("SELECT * FROM delegations WHERE parent_session_id = ?", (parent_id,)).fetchone()
     assert row is not None
     assert row["parent_session_id"] == parent_id
@@ -724,6 +718,7 @@ def test_delegation_query_unit_and_card_use_real_attempt_relation(tmp_path: Path
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
+        parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
     conn.commit()
     conn.close()
@@ -883,12 +878,7 @@ def _dispatch_chain_level(
     child_native_id: str,
     tool_id: str,
 ) -> str:
-    """Create one trivial-cohort delegation edge: ``dispatcher_id`` has
-    exactly one dispatch action and exactly one resolved child, so the view
-    pairs them as ``mapping_state='resolved'`` without needing content-
-    identity disambiguation (the trivial-cohort case, see
-    ``delegation_facts`` view in index.py). Returns the new child's
-    session id."""
+    """Create one delegation edge with exact parent dispatch identity."""
 
     child_id = _insert_session(conn, native_id=child_native_id)
     message_id = _insert_message(conn, session_id=dispatcher_id, native_id=f"dispatch-{tool_id}", position=0)
@@ -907,6 +897,7 @@ def _dispatch_chain_level(
         dst_origin="claude-code-session",
         dst_native_id=dispatcher_native_id,
         parent_session_id=dispatcher_id,
+        parent_tool_use_block_id=f"{message_id}:0",
     )
     return child_id
 
@@ -1043,7 +1034,7 @@ def test_delegation_traversals_exclude_authority_contradicted_edges(tmp_path: Pa
 
 
 def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: Path) -> None:
-    """Two independent trivial-cohort (non-quarantined, `mapping_state=
+    """Two independent exact-dispatch (non-quarantined, `mapping_state=
     'resolved'`) edges can compose into a cycle that session_links' own
     quarantine pass never inspects (quarantine is asserted per-edge over
     session_links alone, not over the composed `delegations` chain). The
@@ -1060,7 +1051,12 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
         conn, message_id=message_a, session_id=a_id, position=0, tool_id="task-a-b", tool_input="{}"
     )
     _insert_session_link(
-        conn, child_session_id=b_id, dst_origin="claude-code-session", dst_native_id="cycle-a", parent_session_id=a_id
+        conn,
+        child_session_id=b_id,
+        dst_origin="claude-code-session",
+        dst_native_id="cycle-a",
+        parent_session_id=a_id,
+        parent_tool_use_block_id=f"{message_a}:0",
     )
 
     message_b = _insert_message(conn, session_id=b_id, native_id="dispatch-b-a", position=0)
@@ -1068,7 +1064,12 @@ def test_delegation_subtree_visited_path_guard_stops_a_two_node_cycle(tmp_path: 
         conn, message_id=message_b, session_id=b_id, position=0, tool_id="task-b-a", tool_input="{}"
     )
     _insert_session_link(
-        conn, child_session_id=a_id, dst_origin="claude-code-session", dst_native_id="cycle-b", parent_session_id=b_id
+        conn,
+        child_session_id=a_id,
+        dst_origin="claude-code-session",
+        dst_native_id="cycle-b",
+        parent_session_id=b_id,
+        parent_tool_use_block_id=f"{message_b}:0",
     )
     conn.commit()
     conn.close()

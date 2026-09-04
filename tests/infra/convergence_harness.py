@@ -574,7 +574,6 @@ def _parsed_session(
         created_at=created_timestamp,
         updated_at=timestamp,
         parent_session_provider_id=None if session.parent_id is None else str(session.parent_id),
-        parent_tool_use_provider_id=None if session.parent_id is None else f"dispatch-{session.parent_id}",
         branch_type=session.branch_type,
         messages=messages,
         attachments=[
