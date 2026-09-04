@@ -144,6 +144,9 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "todo_snapshot",
     }
     assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
+    tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
+    assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")
+    assert tool_result_rule.watch_suffixes == (".json",)
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")

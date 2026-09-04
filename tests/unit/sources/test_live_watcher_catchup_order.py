@@ -132,3 +132,13 @@ def test_default_sources_watch_codex_state_db(monkeypatch: Any, tmp_path: Path) 
     # to keep it from ever reasoning about the sessions/ subtree's content.
     assert not codex_state_source.accepts(tmp_path / ".codex" / "history.jsonl")
     assert not codex_state_source.accepts(tmp_path / ".codex" / "config.toml")
+
+
+def test_claude_watcher_admits_all_declared_tool_result_forms_without_global_suffix_widening(
+    tmp_path: Path,
+) -> None:
+    source = live_watcher.WatchSource(name="claude-code", root=tmp_path, suffixes=(".jsonl", ".json"))
+    sidecar_dir = tmp_path / "project" / "session" / "tool-results"
+    for name in ("toolu.json", "toolu.txt", "toolu.html", "toolu"):
+        assert source.accepts(sidecar_dir / name)
+    assert not source.accepts(tmp_path / "project" / "session" / "ordinary.txt")
