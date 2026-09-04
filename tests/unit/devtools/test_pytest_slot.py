@@ -135,12 +135,30 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
         assert recorded <= allowed, f"pueue add inherited {sorted(recorded - allowed)}"
 
 
-@pytest.mark.parametrize("holder", [{"SINNIXD_JOB_ID": "job-1"}, {"POLYLOGUE_PYTEST_SLOT": "held"}])
-def test_inside_the_slot_the_run_is_direct(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, holder: dict[str, str]
-) -> None:
+def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
+    lane_environment = _environment(SINNIXD_JOB_ID="job-1", SINNIXD_OPERATION="lane")
+
+    assert not holds_pytest_slot(lane_environment)
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=lane_environment,
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    assert not marker.exists()
+    assert outcome.slot == "pueue task 7"
+    assert outcome.returncode == 0
+    assert _calls(record)[0]["argv"][0] == "add"
+
+
+def test_explicit_slot_holder_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    marker = tmp_path / "pytest-ran"
+    holder = {"POLYLOGUE_PYTEST_SLOT": "held"}
 
     assert holds_pytest_slot(holder)
     outcome = run_pytest(

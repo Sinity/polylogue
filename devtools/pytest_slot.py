@@ -6,10 +6,10 @@ load control the daemon applies to its own jobs, so concurrent runs contend for
 the same cores and disk until a long job passes its timeout.
 
 Every managed pytest run therefore holds the host's `pytest` pueue group (one
-task at a time). A run already inside a queued task holds the slot already:
-`sinnixd-queue-run` exports ``SINNIXD_JOB_ID``, and
-``POLYLOGUE_PYTEST_SLOT=held`` is the explicit escape for a hermetic test of
-this mechanism. Anything else queues and waits.
+task at a time). A run already inside the pytest queue task holds the slot
+already, marked explicitly with ``POLYLOGUE_PYTEST_SLOT=held``. Generic
+Sinnixd job identity does not imply pytest-slot ownership: lane jobs queue and
+wait here.
 
 pueue 4 records the full client environment of ``pueue add`` into a user-only
 state file, so the adder runs with a reduced environment and the managed pytest
@@ -50,9 +50,6 @@ __all__ = [
     "remove_temp_tree",
     "run_pytest",
 ]
-
-#: Exported into every task started by ``sinnixd-queue-run``.
-QUEUE_TASK_ENV: Final = "SINNIXD_JOB_ID"
 
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
@@ -175,7 +172,7 @@ def contained_pytest_run(
 
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
     """Whether this process is already inside the host's pytest slot."""
-    return bool(env.get(QUEUE_TASK_ENV)) or env.get(SLOT_ESCAPE_ENV) == SLOT_HELD
+    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:
