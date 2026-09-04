@@ -612,11 +612,13 @@ def _accumulate_delegation_progress(
     if not parent_tool_use_id:
         return False
     entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
-    data_map = data
+    # The dispatched child is named only inside the progress payload. The
+    # record envelope's identity fields name the transcript that emitted the
+    # tick -- its own session, which is the dispatching parent.
     for key in ("childSessionId", "child_session_id", "agentId", "agent_id"):
-        for value in (_string_field(item, key), _string_field(data_map, key)):
-            if value:
-                entry.child_provider_ids.add(value)
+        value = _string_field(data, key)
+        if value:
+            entry.child_provider_ids.add(value)
     entry.count += 1
     if timestamp:
         if entry.first_seen is None or timestamp < entry.first_seen:
