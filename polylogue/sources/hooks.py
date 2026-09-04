@@ -446,6 +446,18 @@ def _prune_empty_shards(shards: set[Path], pending_root: Path) -> None:
             shard.rmdir()
 
 
+def read_hook_spool_record(path: Path) -> dict[str, object]:
+    """Read one spool file through the same validation acquisition applies.
+
+    The record acquisition stores is not the file's bytes: ``observed_at_ms``
+    is derived here, and serialization is independent on both sides. Any
+    comparison against stored hook material must go through this route rather
+    than compare bytes.
+    """
+
+    return _read_record(path)
+
+
 def _read_record(path: Path) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -615,5 +627,6 @@ __all__ = [
     "enqueue_hook_event",
     "hook_spool_root",
     "pending_hook_spool_dir",
+    "read_hook_spool_record",
     "validate_hook_spool_topology",
 ]
