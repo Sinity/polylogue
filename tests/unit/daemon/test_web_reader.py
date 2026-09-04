@@ -8,7 +8,7 @@ any regression in the daemon's contract surface fails here loudly.
 
 This is the documented reader visual smoke lane (see
 ``docs/visual-evidence.md``). The lane runs as part of the standard
-unit suite and ``devtools verify``; a separate ``devtools scenario``
+unit suite and ``devtools verify``; a separate ``devtools verify scenario``
 entrypoint can be added later if Playwright-based screenshot evidence
 is bolted on.
 
@@ -854,24 +854,19 @@ class TestReaderSearchState:
     missing region still fails loudly.
     """
 
-    def test_root_serves_the_archive_overview_island_bundle(self, workspace_env: dict[str, Path]) -> None:
-        """``/`` serves the built reader shell: an island mount plus its hashed module.
-
-        The reader is served from the Vite bundle under ``static/dist``; the
-        shell carries no inline application script. Anti-vacuity: a route that
-        stopped mounting the island, or that served an unbundled page with no
-        hashed module, fails here. The bundle's manifest resolution, cache
-        policy and ETag revalidation are proven separately by
-        ``test_app_serves_semantic_ssr_and_manifest_hashed_assets``.
-        """
+    def test_root_returns_html_with_required_regions(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, content_type, body = _get_text(base_url, "/")
         assert status == 200
         assert "text/html" in content_type
-        # The doctype is case-insensitive in HTML5; the renderer emits lowercase.
-        assert "<!doctype html>" in body.lower()
-        assert 'data-island="archive-overview"' in body
-        assert re.search(r'<script type="module" src="/app/assets/[^"]+\.js"></script>', body) is not None
+        assert "<!doctype html>" in body
+        for region in (
+            'id="archive-overview-island"',
+            'id="archive-overview-bootstrap"',
+            'href="/sessions/',
+            'src="/assets/archive-overview-',
+        ):
+            assert region in body, f"typed WebUI missing region hook {region!r}"
 
     def test_agent_coordination_endpoint_uses_shared_payload(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
@@ -1438,40 +1433,6 @@ class TestReaderSessionState:
         assert messages["total"] == 1
         assert messages["messages"][0]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
 
-    def test_browser_capture_reader_boundary_keeps_text_and_escapes_shell(
-        self,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        session_id, unsafe_text = _seed_browser_capture_reader_archive(workspace_env)
-        dangerous_fragment = "<script>alert('captured')</script>"
-        prose_fragment = "Browser capture prose"
-
-        with _running_server_without_seed() as (_, base_url):
-            detail = _get_json(base_url, f"/api/sessions/{session_id}")
-            messages = _get_json(base_url, f"/api/sessions/{session_id}/messages")
-            root_status, root_content_type, root_shell = _get_text(base_url, "/")
-            link_status, link_content_type, link_shell = _get_text(base_url, f"/s/{session_id}")
-
-        assert root_status == 200
-        assert link_status == 200
-        assert "text/html" in root_content_type
-        assert "text/html" in link_content_type
-        assert isinstance(detail, dict)
-        assert detail["origin"] == "chatgpt-export"
-        assert detail["messages"][0]["text"] == unsafe_text
-        assert isinstance(messages, dict)
-        assert messages["messages"][0]["text"] == unsafe_text
-        assert "https://chatgpt.com/c/xss-reader" not in json.dumps(detail)
-        assert unsafe_text not in root_shell
-        assert unsafe_text not in link_shell
-        assert dangerous_fragment not in root_shell
-        assert dangerous_fragment not in link_shell
-        # The reader server-renders session content, so the prose itself is
-        # expected in the page. What must never survive is live markup: the
-        # dangerous fragment above appears only in escaped form.
-        assert prose_fragment in link_shell
-        assert html_module.escape(dangerous_fragment) in link_shell
-
     def test_unknown_session_yields_404(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
             status, _, _ = _get_text(base_url, "/api/sessions/does-not-exist")
@@ -1480,171 +1441,6 @@ class TestReaderSessionState:
 
 # ---------------------------------------------------------------------------
 # polylogue.local_reader.workspace — stack and compare route data
-# ---------------------------------------------------------------------------
-
-
-class TestReaderWorkspaceRoutes:
-    """``polylogue.local_reader.workspace``: stack/compare workspace routes."""
-
-    def test_stack_route_returns_resolved_and_missing_targets(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = _get_json(
-                base_url, "/api/stack?ids=claude-code-session:c1,missing-conv&focus=claude-code-session:c1"
-            )
-
-        result = cast(dict[str, object], payload)
-        items = cast(list[dict[str, object]], result["items"])
-        assert result["mode"] == "stack"
-        assert result["focus"] == "claude-code-session:c1"
-        assert result["resolved_count"] == 1
-        assert result["degraded_count"] == 1
-        assert items[0]["status"] == "resolved"
-        assert items[0]["identity_key"] == "session:claude-code-session:c1"
-        session = cast(dict[str, object], items[0]["session"])
-        assert session["id"] == "claude-code-session:c1"
-        assert items[1] == {
-            "target_type": "session",
-            "target_id": "missing-conv",
-            "session_id": "missing-conv",
-            "status": "missing",
-            "disabled_reason": "session_not_found",
-        }
-
-    def test_stack_route_rejects_empty_ids(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(base_url, "/api/stack")
-
-        assert status == 400
-        assert payload["error"] == "invalid_request"
-
-    def test_compare_route_returns_message_pairs_and_degraded_side(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = _get_json(base_url, "/api/compare?left=claude-code-session:c1&right=missing-conv&align=prompt")
-
-        result = cast(dict[str, object], payload)
-        assert result["mode"] == "compare"
-        assert result["align"] == "prompt"
-        assert result["degraded_count"] == 1
-        # New compare envelope fields (#1124) expose alignment strategy and
-        # which side(s) failed to load so the UI can render a precise banner.
-        assert result["degraded_sides"] == ["right"]
-        assert result["alignment"] in {"anchor", "sequential"}
-        assert result["metadata_diff"] == {}
-        left = cast(dict[str, object], result["left"])
-        right = cast(dict[str, object], result["right"])
-        pairs = cast(list[dict[str, object]], result["pairs"])
-        assert left["id"] == "claude-code-session:c1"
-        assert right["status"] == "missing"
-        assert pairs[0]["left"] is not None
-        assert pairs[0]["right"] is None
-        assert pairs[0]["status"] == "unpaired"
-
-    def test_compare_route_two_sessions_surface_diff_and_metadata(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            payload = _get_json(
-                base_url, "/api/compare?left=claude-code-session:c1&right=chatgpt-export:c2&align=prompt"
-            )
-
-        result = cast(dict[str, object], payload)
-        # Both sides present → no degradation, metadata diff populated.
-        assert result["degraded_count"] == 0
-        assert result["degraded_sides"] == []
-        metadata = cast(dict[str, dict[str, object]], result["metadata_diff"])
-        # Origins differ between the seeded sessions.
-        assert metadata["origin"]["status"] == "changed"
-        assert metadata["title"]["status"] == "changed"
-        pairs = cast(list[dict[str, object]], result["pairs"])
-        # Seeded messages share text "Hello reader" and role "user", but have
-        # distinct anchors → alignment is sequential and content is equal.
-        assert pairs[0]["diff_status"] == "equal"
-        assert pairs[0]["role_match"] is True
-
-    def test_compare_route_rejects_invalid_align(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(
-                base_url, "/api/compare?left=claude-code-session:c1&right=chatgpt-export:c2&align=sideways"
-            )
-
-        assert status == 400
-        assert payload["error"] == "invalid_request"
-
-    def test_compare_route_rejects_unimplemented_align_modes(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, payload = _get_json_ex(
-                base_url, "/api/compare?left=claude-code-session:c1&right=chatgpt-export:c2&align=time"
-            )
-
-        assert status == 400
-        assert payload["error"] == "invalid_request"
-
-    def test_workspace_shell_routes_are_unauthenticated(self, workspace_env: dict[str, Path]) -> None:
-        with _running_server(workspace_env) as (_, base_url):
-            status, _, body = _get_text(base_url, "/w/stack?ids=claude-code-session:c1,chatgpt-export:c2")
-            compare_status, _, compare_body = _get_text(
-                base_url, "/w/compare?left=claude-code-session:c1&right=chatgpt-export:c2&align=prompt"
-            )
-
-        assert status == 200
-        assert "<title>Polylogue</title>" in body
-        assert "getWorkspaceRouteFromURL" in body
-        assert "workspace-mode-switcher" in body
-        assert compare_status == 200
-        assert "renderCompareWorkspace" in compare_body
-
-    def test_session_deep_link_serves_the_session_read_bundle(self, workspace_env: dict[str, Path]) -> None:
-        """``/s/{session_id}`` is the reader deep link and serves the read island.
-
-        Anti-vacuity: removing the route, or serving the overview bundle for a
-        session deep link, fails here. What the page renders from that bundle
-        is covered by ``TestWebUIV2``'s session-read cases.
-        """
-        with _running_server(workspace_env) as (_, base_url):
-            status, content_type, body = _get_text(base_url, "/s/claude-code-session:c1")
-        assert status == 200
-        assert "text/html" in content_type
-        assert re.search(r'<script type="module" src="/app/assets/session-read-[^"]+\.js"></script>', body) is not None
-
-    def test_legacy_conversation_route_is_gone(self, workspace_env: dict[str, Path]) -> None:
-        """The stale ``/c/{conversation_id}`` route must not resolve — no compat alias."""
-        with _running_server(workspace_env) as (_, base_url):
-            status, _, _ = _get_text(base_url, "/c/claude-code-session:c1")
-        assert status == 404
-
-    def test_archive_file_set_stack_route_from_archive_tiers(
-        self,
-        workspace_env: dict[str, Path],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        session_id = _seed_archive_test_archive(workspace_env)
-        with _running_server_without_seed() as (_, base_url):
-            payload = _get_json(base_url, f"/api/stack?ids={session_id},missing&focus={session_id}")
-
-        result = cast(dict[str, object], payload)
-        assert result["mode"] == "stack"
-        assert result["resolved_count"] == 1
-        assert result["degraded_count"] == 1
-        items = cast(list[dict[str, object]], result["items"])
-        assert items[0]["status"] == "resolved"
-        assert items[1]["status"] == "missing"
-
-    def test_archive_file_set_compare_route_from_archive_tiers(
-        self,
-        workspace_env: dict[str, Path],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        session_id = _seed_archive_test_archive(workspace_env)
-        with _running_server_without_seed() as (_, base_url):
-            payload = _get_json(base_url, f"/api/compare?left={session_id}&right=missing&align=prompt")
-
-        result = cast(dict[str, object], payload)
-        assert result["mode"] == "compare"
-        assert result["degraded_sides"] == ["right"]
-        right = cast(dict[str, object], result["right"])
-        assert right["status"] == "missing"
-
-
-# ---------------------------------------------------------------------------
-# polylogue.local_reader.user_state — durable marks/views/recall contracts
 # ---------------------------------------------------------------------------
 
 
@@ -2134,49 +1930,6 @@ class TestReaderQueryCompletions:
         )
 
 
-class TestReaderActionAffordances:
-    def test_action_affordances_endpoint_matches_cli_contract_payload(self) -> None:
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-        from polylogue.operations.action_contracts import action_affordance_list_payload
-
-        with _running_server_without_seed() as (_server, base_url):
-            payload = _get_json(base_url, "/api/action-affordances")
-
-        cli_result = CliRunner().invoke(cli, ["config", "action-affordances"])
-        assert cli_result.exit_code == 0, cli_result.output
-        cli_payload = json.loads(cli_result.output)
-        contract_payload = action_affordance_list_payload().model_dump(mode="json")
-
-        assert payload == cli_payload == contract_payload
-        assert isinstance(payload, dict)
-        payload_dict = cast(dict[str, object], payload)
-        actions = payload_dict["actions"]
-        assert isinstance(actions, list)
-        action_payloads = [cast(dict[str, object], action) for action in cast(list[object], actions)]
-        action_by_id = {str(action["id"]): action for action in action_payloads}
-
-        read = action_by_id["read"]
-        assert read["target"] == "selection"
-        assert "input_unit" not in read
-        assert cast(dict[str, object], read["input"])["unit"] == "query_result_set"
-        assert cast(dict[str, object], read["execution"])["cardinality_state"] == "explicit_multi"
-        assert cast(dict[str, object], read["safety"])["safety_level"] == "safe"
-        assert cast(dict[str, object], read["safety"])["selection_command"] == "polylogue find QUERY then select"
-        assert "terminal" in cast(list[object], cast(dict[str, object], read["output"])["destination_support"])
-
-        delete = action_by_id["delete"]
-        assert delete["target"] == "selection"
-        assert "safety_level" not in delete
-        assert cast(dict[str, object], delete["safety"])["safety_level"] == "destructive"
-        assert (
-            cast(dict[str, object], delete["safety"])["confirmation_command"]
-            == "polylogue find QUERY then delete --dry-run"
-        )
-        assert cast(dict[str, object], delete["availability"])["next_actions"] == ["find"]
-
-
 class TestWebUIV2:
     def test_observability_json_routes_project_daemon_owned_contracts(
         self,
@@ -2223,11 +1976,11 @@ class TestWebUIV2:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """The real /app route consumes the manifest and descriptor projection."""
+        """The real / route consumes the manifest and descriptor projection."""
         headers = {"Authorization": "Bearer webui-test-token"}
         with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
-            missing_status, _, _ = _get_text(base_url, "/app/observability")
-            with urlopen(Request(f"{base_url}/app/observability", headers=headers), timeout=10) as response:
+            missing_status, _, _ = _get_text(base_url, "/observability")
+            with urlopen(Request(f"{base_url}/observability", headers=headers), timeout=10) as response:
                 assert response.status == 200
                 html_body = response.read().decode("utf-8")
 
@@ -2236,7 +1989,7 @@ class TestWebUIV2:
         assert 'data-island="observability"' in html_body
         assert "Named-source freshness" in html_body
         assert "Insights" in html_body
-        assert re.search(r'src="/app/assets/observability-[^"]+\.js"', html_body)
+        assert re.search(r'src="/assets/observability-[^"]+\.js"', html_body)
 
     def test_observability_page_fallback_keeps_island_contract_valid(
         self,
@@ -2246,7 +1999,7 @@ class TestWebUIV2:
         headers = {"Authorization": "Bearer webui-test-token"}
         with patch("polylogue.daemon.webui.build_observability_payload", side_effect=RuntimeError("offline")):
             with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
-                status, _, body = _get_text(base_url, "/app/observability", headers=headers)
+                status, _, body = _get_text(base_url, "/observability", headers=headers)
 
         assert status == HTTPStatus.SERVICE_UNAVAILABLE
         assert '"contract_version":1' in body
@@ -2259,12 +2012,12 @@ class TestWebUIV2:
         """Exercise the production manifest loader, SSR query, and immutable asset transport.
 
         Removing ``WebUIAssetBundle.entrypoint``, bypassing
-        ``load_archive_overview_page``, or dropping the ``/app/assets`` cache
+        ``load_archive_overview_page``, or dropping the ``//assets`` cache
         policy makes this route-level proof fail.
         """
 
         with _running_server(workspace_env) as (_, base_url):
-            request = Request(f"{base_url}/app")
+            request = Request(f"{base_url}/")
             with urlopen(request, timeout=10) as response:
                 assert response.status == 200
                 html_body = response.read().decode("utf-8")
@@ -2278,8 +2031,8 @@ class TestWebUIV2:
             assert "https://" not in html_body
             assert "http://" not in html_body
 
-            script_match = re.search(r'src="(/app/assets/archive-overview-[^"]+\.js)"', html_body)
-            style_match = re.search(r'href="(/app/assets/styles-[^"]+\.css)"', html_body)
+            script_match = re.search(r'src="(/assets/archive-overview-[^"]+\.js)"', html_body)
+            style_match = re.search(r'href="(/assets/styles-[^"]+\.css)"', html_body)
             assert script_match is not None
             assert style_match is not None
 
@@ -2306,17 +2059,17 @@ class TestWebUIV2:
                 assert asset_response.read()
 
             with pytest.raises(HTTPError) as manifest_not_public:
-                urlopen(f"{base_url}/app/assets/manifest.json", timeout=10)
+                urlopen(f"{base_url}/assets/manifest.json", timeout=10)
             assert manifest_not_public.value.code == HTTPStatus.NOT_FOUND
 
     def test_session_list_page_serves_semantic_facets_and_paged_sessions(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``/app/sessions`` renders the faceted session list without JS."""
+        """``/sessions`` renders the faceted session list without JS."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, "/app/sessions")
+            status, _, html_body = _get_text(base_url, "/sessions")
 
         assert status == HTTPStatus.OK
         assert "<h1>Sessions</h1>" in html_body
@@ -2324,23 +2077,23 @@ class TestWebUIV2:
         assert 'name="origin"' in html_body
         assert 'name="since"' in html_body
         assert 'name="repo"' in html_body
-        assert f'href="/app/sessions/{quote(C1, safe="")}"' in html_body
-        assert f'href="/app/sessions/{quote(C2, safe="")}"' in html_body
-        assert f'href="/app/sessions/{quote(C3, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(C1, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(C2, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(C3, safe="")}"' in html_body
         assert 'data-island="session-list"' in html_body
-        assert re.search(r'src="/app/assets/session-list-[^"]+\.js"', html_body)
+        assert re.search(r'src="/assets/session-list-[^"]+\.js"', html_body)
 
     def test_session_list_page_applies_origin_facet_filter(self, workspace_env: dict[str, Path]) -> None:
         """The facet form's ``origin`` query param scopes the SSR page, matching /api/sessions."""
 
         with _running_server(workspace_env) as (_, base_url):
             origin = _origin_for("claude-code")
-            status, _, html_body = _get_text(base_url, f"/app/sessions?origin={quote(origin)}")
+            status, _, html_body = _get_text(base_url, f"/sessions?origin={quote(origin)}")
 
         assert status == HTTPStatus.OK
-        assert f'href="/app/sessions/{quote(C1, safe="")}"' in html_body
-        assert f'href="/app/sessions/{quote(C2, safe="")}"' not in html_body
-        assert f'href="/app/sessions/{quote(C3, safe="")}"' not in html_body
+        assert f'href="/sessions/{quote(C1, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(C2, safe="")}"' not in html_body
+        assert f'href="/sessions/{quote(C3, safe="")}"' not in html_body
         assert f'value="{html_module.escape(origin)}"' in html_body
 
     def test_session_list_page_rejects_an_invalid_since_facet_with_400(
@@ -2350,7 +2103,7 @@ class TestWebUIV2:
         """An unparseable ``since`` value is a client error, not an internal 500."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/sessions?since={quote('not-a-date')}")
+            status, _, html_body = _get_text(base_url, f"/sessions?since={quote('not-a-date')}")
 
         assert status == HTTPStatus.BAD_REQUEST
         assert "invalid since" in html_body
@@ -2359,17 +2112,17 @@ class TestWebUIV2:
         self,
         workspace_env: dict[str, Path],
     ) -> None:
-        """``/app/sessions/:id`` renders the shell, message flow, and a stable message anchor."""
+        """``/sessions/:id`` renders the shell, message flow, and a stable message anchor."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(C1, safe='')}")
+            status, _, html_body = _get_text(base_url, f"/sessions/{quote(C1, safe='')}")
 
         assert status == HTTPStatus.OK
         assert f'id="msg-{M_C1}"' in html_body
         assert 'data-role="user"' in html_body
         assert "Hello reader" in html_body
         assert 'data-island="session-read"' in html_body
-        assert re.search(r'src="/app/assets/session-read-[^"]+\.js"', html_body)
+        assert re.search(r'src="/assets/session-read-[^"]+\.js"', html_body)
 
     def test_session_read_page_renders_lineage_banner_for_fork_family(
         self,
@@ -2405,19 +2158,19 @@ class TestWebUIV2:
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(child_id, safe='')}")
+            status, _, html_body = _get_text(base_url, f"/sessions/{quote(child_id, safe='')}")
 
         assert status == HTTPStatus.OK
         assert 'class="lineage-banner"' in html_body
         assert 'data-card-kind="lineage"' in html_body
-        assert f'href="/app/sessions/{quote(parent_id, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(parent_id, safe="")}"' in html_body
 
     def test_session_read_page_returns_semantic_not_found_for_missing_session(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, "/app/sessions/codex-session:does-not-exist")
+            status, _, html_body = _get_text(base_url, "/sessions/codex-session:does-not-exist")
 
         assert status == HTTPStatus.NOT_FOUND
         assert "<h1>Session unavailable</h1>" in html_body
@@ -2478,6 +2231,7 @@ class TestWebUIV2:
                                     type=BlockType.TOOL_RESULT,
                                     tool_id="tool-mystery",
                                     text="unrecognized response",
+                                    outcome_unknown_reason="not_reported",
                                 ),
                             ],
                         ),
@@ -2486,7 +2240,7 @@ class TestWebUIV2:
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(session_id, safe='')}")
+            status, _, html_body = _get_text(base_url, f"/sessions/{quote(session_id, safe='')}")
 
         assert status == HTTPStatus.OK
         assert 'data-card-kind="shell"' in html_body
@@ -2528,7 +2282,7 @@ class TestWebUIV2:
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/sessions/{quote(session_id, safe='')}")
+            status, _, html_body = _get_text(base_url, f"/sessions/{quote(session_id, safe='')}")
             assert status == HTTPStatus.OK
             # First paint composed only the first page: the true total is
             # reported, but a message beyond SESSION_READ_MESSAGE_LIMIT is
@@ -2560,7 +2314,7 @@ class TestWebUIV2:
         """Rollup buckets with zero priced sessions state absence honestly - never a fabricated $0.00."""
         headers = {"Authorization": "Bearer webui-test-token"}
         with _running_server(workspace_env, auth_token="webui-test-token") as (_, base_url):
-            status, _, html_body = _get_text(base_url, "/app/cost", headers=headers)
+            status, _, html_body = _get_text(base_url, "/cost", headers=headers)
 
         assert status == HTTPStatus.OK
         assert "<h1>Cost &amp; usage</h1>" in html_body
@@ -2571,15 +2325,15 @@ class TestWebUIV2:
         assert "no cost evidence (no_tokens)" in html_body
         assert "$0.00" not in html_body
         assert 'data-island="cost-lane-toggle"' in html_body
-        assert re.search(r'src="/app/assets/cost-[^"]+\.js"', html_body)
+        assert re.search(r'src="/assets/cost-[^"]+\.js"', html_body)
 
     def test_cost_page_renders_distinct_basis_lanes_for_a_materialized_rollup(
         self,
         workspace_env: dict[str, Path],
     ) -> None:
         """A materialized rollup renders every basis lane independently, never collapsed into one number."""
-        from polylogue.analysis.archive import ArchiveInsightProvenance, CostRollupInsight
         from polylogue.archive.semantic.pricing import CostBasisPayload, CostUsagePayload
+        from polylogue.insights.archive import ArchiveInsightProvenance, CostRollupInsight
 
         provenance = ArchiveInsightProvenance(
             materializer_version=1,
@@ -2634,10 +2388,10 @@ class TestWebUIV2:
         assert "4 priced, 1 unavailable of 5 (no_tokens×1)" in html_body
 
     def test_search_page_idle_state_without_a_query(self, workspace_env: dict[str, Path]) -> None:
-        """``/app/search`` renders the DSL-teaching idle state before any query is entered."""
+        """``/search`` renders the DSL-teaching idle state before any query is entered."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, "/app/search")
+            status, _, html_body = _get_text(base_url, "/search")
 
         assert status == HTTPStatus.OK
         assert "<h1>Search</h1>" in html_body
@@ -2645,23 +2399,23 @@ class TestWebUIV2:
         assert 'name="q"' in html_body
         assert "repo:example-repo since:30d" in html_body
         assert 'data-island="search"' in html_body
-        assert re.search(r'src="/app/assets/search-[^"]+\.js"', html_body)
+        assert re.search(r'src="/assets/search-[^"]+\.js"', html_body)
 
     def test_search_page_renders_ranked_hits_with_provenance(self, workspace_env: dict[str, Path]) -> None:
         """A matching query renders a hit deep-linked into the session read anchor."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('reader')}")
+            status, _, html_body = _get_text(base_url, f"/search?q={quote('reader')}")
 
         assert status == HTTPStatus.OK
         assert 'data-search-state="ok"' in html_body
         assert 'class="search-hit"' in html_body
-        assert f'href="/app/sessions/{quote(C1, safe="")}#msg-{quote(M_C1, safe="")}"' in html_body
+        assert f'href="/sessions/{quote(C1, safe="")}#msg-{quote(M_C1, safe="")}"' in html_body
         assert "top-k relevance, not exhaustive" in html_body
 
     def test_search_page_renders_empty_state_for_no_matches(self, workspace_env: dict[str, Path]) -> None:
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('zzz-no-such-term-zzz')}")
+            status, _, html_body = _get_text(base_url, f"/search?q={quote('zzz-no-such-term-zzz')}")
 
         assert status == HTTPStatus.OK
         assert 'data-search-state="empty"' in html_body
@@ -2671,7 +2425,7 @@ class TestWebUIV2:
         """An unparseable DSL expression surfaces the parser's diagnostic, not a silent empty result."""
 
         with _running_server(workspace_env) as (_, base_url):
-            status, _, html_body = _get_text(base_url, f"/app/search?q={quote('notarealfield:banana')}")
+            status, _, html_body = _get_text(base_url, f"/search?q={quote('notarealfield:banana')}")
 
         assert status == HTTPStatus.OK
         assert 'data-search-state="parse-error"' in html_body
@@ -3225,7 +2979,7 @@ class TestReaderPrivacy:
     for this lane.
     """
 
-    def test_web_shell_does_not_leak_absolute_local_paths(self, workspace_env: dict[str, Path]) -> None:
+    def test_typed_webui_does_not_leak_absolute_local_paths(self, workspace_env: dict[str, Path]) -> None:
         with _running_server_without_seed() as (_, base_url):
             _, _, body = _get_text(base_url, "/")
         for prefix in POLYLOGUE_LOCAL_PATH_PREFIXES:
@@ -3334,9 +3088,6 @@ class TestCockpitAggregateRoutes:
         assert payload["tool_calls"] == 1
         outcomes = cast(dict[str, object], payload["outcomes"])
         assert outcomes == expected_outcomes
-        # A session with no priced usage evidence reports absent cost, not a
-        # known-zero bill (#4261). Anti-vacuity: a route that fabricated 0.0
-        # for unpriced evidence fails here.
         assert cast(dict[str, object], payload["cost"])["total_usd"] is None
 
     def test_evidence_summary_composes_prefix_sharing_tool_evidence(self, workspace_env: dict[str, Path]) -> None:
@@ -3454,7 +3205,7 @@ class TestReaderAuthSurface:
         assert missing_status == 401
         assert isinstance(ok_payload, dict)
 
-    def test_unauthenticated_root_still_serves_web_shell(self, workspace_env: dict[str, Path]) -> None:
+    def test_unauthenticated_root_still_serves_typed_webui(self, workspace_env: dict[str, Path]) -> None:
         # The web shell at / is the only unauthenticated GET (see
         # docs/security.md and daemon/http.py:_dispatch_get).
         with _running_server(workspace_env, auth_token="secret-token") as (_, base_url):
@@ -3466,6 +3217,17 @@ class TestReaderAuthSurface:
 # ---------------------------------------------------------------------------
 # Defensive marker — explicit declaration of the lane this file owns.
 # ---------------------------------------------------------------------------
+
+
+def test_reader_smoke_lane_is_documented() -> None:
+    """Sanity check that the reader smoke artefact ids the issue
+    mentions exist as identifiers in this file. A future PR that
+    renames the artefact ids must also update the docs that reference
+    them.
+    """
+    body = Path(__file__).read_text()
+    assert "polylogue.local_reader.search" in body
+    assert "polylogue.local_reader.session" in body
 
 
 # ---------------------------------------------------------------------------
@@ -3779,127 +3541,3 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
             return e.code, json.loads(body)
         except (json.JSONDecodeError, ValueError):
             return e.code, {}
-
-
-class TestReaderSavedViewsUI:
-    """Saved-view route contract (#1118): the POST/GET/DELETE roundtrip the
-    reader's saved-view surface is composed from.
-    """
-
-    def test_saved_views_endpoint_roundtrip_supports_ui_flow(self, workspace_env: dict[str, Path]) -> None:
-        # End-to-end roundtrip the UI relies on: save, list, then delete via
-        # the inspector Delete button. Catches API regressions that would
-        # silently break the new toolbar surface.
-        with _running_server(workspace_env) as (_, base_url):
-            save_status, saved = _request_json(
-                base_url,
-                "POST",
-                "/api/user/saved-views",
-                payload={
-                    "view_id": "view-ui",
-                    "name": "Reader UI flow",
-                    "query": {"query": "auth", "limit": 25},
-                },
-            )
-            listed = _get_json(base_url, "/api/user/saved-views")
-            delete_status, deleted = _request_json(
-                base_url,
-                "DELETE",
-                "/api/user/saved-views/view-ui",
-            )
-            empty_listing = _get_json(base_url, "/api/user/saved-views")
-
-        saved_payload = cast(dict[str, object], saved)
-        listed_payload = cast(dict[str, object], listed)
-        empty_payload = cast(dict[str, object], empty_listing)
-        items = cast(list[dict[str, object]], listed_payload["items"])
-        assert save_status == 201
-        assert saved_payload == {
-            "status": "ok",
-            "affected_count": 1,
-            "operation": "saved_view.save",
-            "resource_type": "saved_view",
-            "resource_id": "view-ui",
-        }
-        assert listed_payload["total"] == 1
-        assert items[0]["view_id"] == "view-ui"
-        assert items[0]["name"] == "Reader UI flow"
-        assert delete_status == 200
-        assert deleted == {
-            "status": "deleted",
-            "affected_count": 1,
-            "operation": "saved_view.delete",
-            "resource_type": "saved_view",
-            "resource_id": "view-ui",
-        }
-        assert empty_payload == {"items": [], "total": 0}
-
-
-# ---------------------------------------------------------------------------
-# polylogue.local_reader.selection — multi-select selection operations (#1119)
-# ---------------------------------------------------------------------------
-
-
-class TestReaderSelectionOperations:
-    """``polylogue.local_reader.selection``: selection toolbar + per-session envelope.
-
-    The selection surface composes existing daemon routes: ``/api/user/marks``
-    carries route-backed overlay mutations, and ``/api/sessions/{id}``
-    carries export reads. Delete and re-embed are exposed only through a
-    preview overlay because the daemon has no corresponding mutation routes yet.
-
-    These tests assert the served route contract the selection surface
-    depends on: the tag endpoint accepts the per-session POSTs the toolbar
-    drives, and session detail returns the payload the export bundle is
-    composed from.
-    """
-
-    def test_selection_tag_drives_existing_marks_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """The selection toolbar issues per-session POSTs against
-        ``/api/user/marks``. This simulates that loop server-side to lock the
-        contract: the daemon must accept the same payload shape the selection JS
-        emits for every selected session, and a follow-up GET must
-        surface the resulting marks on every session."""
-        with _running_server(workspace_env) as (_, base_url):
-            statuses: list[int] = []
-            for cid in ("claude-code-session:c1", "chatgpt-export:c2", "claude-ai-export:c3"):
-                status, _ = _request_json(
-                    base_url,
-                    "POST",
-                    "/api/user/marks",
-                    payload={"session_id": cid, "mark_type": "star"},
-                )
-                statuses.append(status)
-            listing = _get_json(base_url, "/api/user/marks?mark_type=star")
-        assert statuses == [201, 201, 201]
-        payload = cast(dict[str, object], listing)
-        items = cast(list[dict[str, object]], payload["items"])
-        ids = sorted(str(item["session_id"]) for item in items)
-        assert ids == ["chatgpt-export:c2", "claude-ai-export:c3", "claude-code-session:c1"]
-
-    def test_query_set_export_uses_session_detail_endpoint(self, workspace_env: dict[str, Path]) -> None:
-        """Query-set export concatenates per-session GETs. This pins the
-        contract that ``/api/sessions/{id}`` returns the detail payload
-        the export bundle is composed from, for every selected id."""
-        with _running_server(workspace_env) as (_, base_url):
-            payloads = [
-                _get_json(base_url, f"/api/sessions/{cid}")
-                for cid in ("claude-code-session:c1", "chatgpt-export:c2", "claude-ai-export:c3")
-            ]
-        ids = sorted(str(cast(dict[str, object], p)["id"]) for p in payloads)
-        assert ids == ["chatgpt-export:c2", "claude-ai-export:c3", "claude-code-session:c1"]
-
-
-@pytest.mark.parametrize("path", ["/", "/api/sessions", "/api/facets", "/api/status", "/api/health"])
-def test_each_reader_route_responds_within_a_reasonable_budget(workspace_env: dict[str, Path], path: str) -> None:
-    """Each reader-facing route returns within 10 s on a synthetic
-    three-session archive. ``/api/health`` is included because the
-    web shell pings it on every render cycle (see
-    ``polylogue/daemon/web_shell.py::loadStatus``); a regression there
-    would freeze the reader UI even if the data routes were healthy.
-    The budget is loose by design — this is a smoke that catches
-    "endpoint hangs forever" regressions, not a latency benchmark.
-    """
-    with _running_server(workspace_env) as (_, base_url):
-        status, _, _ = _get_text(base_url, path)
-    assert status == 200

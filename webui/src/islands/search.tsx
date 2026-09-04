@@ -12,8 +12,8 @@ export interface SearchIslandProps {
 
 function SearchHitRow({ hit }: { readonly hit: SearchHit }) {
   const href = hit.match.message_id
-    ? `/app/sessions/${encodeURIComponent(hit.session.id)}#msg-${encodeURIComponent(hit.match.message_id)}`
-    : `/app/sessions/${encodeURIComponent(hit.session.id)}`;
+    ? `/sessions/${encodeURIComponent(hit.session.id)}#msg-${encodeURIComponent(hit.match.message_id)}`
+    : `/sessions/${encodeURIComponent(hit.session.id)}`;
   return (
     <li class="search-hit" data-session-id={hit.session.id} data-score-kind={hit.match.score_kind ?? 'unknown'}>
       <div class="search-hit__meta">

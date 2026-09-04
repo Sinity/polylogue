@@ -124,7 +124,7 @@ describe('SessionReadIsland', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more messages' }));
 
     const link = await screen.findByRole('link', { name: 'session:codex-session:parent-1' });
-    expect(link).toHaveAttribute('href', '/app/sessions/codex-session%3Aparent-1');
+    expect(link).toHaveAttribute('href', '/sessions/codex-session%3Aparent-1');
   });
 
   it('renders nothing for a message whose evidence was absorbed into a paired card', async () => {

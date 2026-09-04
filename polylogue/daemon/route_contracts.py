@@ -280,16 +280,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app",
-        "browser_shell",
-        "shell_supported",
-        "unauthenticated_loopback",
-        "semantic archive overview HTML",
-        "SSR-first WebUI v2 strangler mount; Preact enhances only bounded continuation controls.",
-    ),
-    RouteContract(
-        "GET",
-        "/app/observability",
+        "/observability",
         "browser_shell",
         "shell_supported",
         "credential_if_configured",
@@ -298,7 +289,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app/cost",
+        "/cost",
         "browser_shell",
         "shell_supported",
         "credential_if_configured",
@@ -307,7 +298,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app/sessions",
+        "/sessions",
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",
@@ -316,7 +307,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app/sessions/:session_id",
+        "/sessions/:session_id",
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",
@@ -325,7 +316,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app/search",
+        "/search",
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",
@@ -334,7 +325,7 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
     ),
     RouteContract(
         "GET",
-        "/app/assets/:asset",
+        "/assets/:asset",
         "browser_shell",
         "shell_supported",
         "unauthenticated_loopback",

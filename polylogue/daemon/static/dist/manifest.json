@@ -15,7 +15,7 @@
     ]
   },
   "src/entrypoints/archive-overview.tsx": {
-    "file": "archive-overview-CfRMZy-j.js",
+    "file": "archive-overview-BoZc0RkU.js",
     "name": "archive-overview",
     "src": "src/entrypoints/archive-overview.tsx",
     "isEntry": true,
@@ -44,7 +44,7 @@
     ]
   },
   "src/entrypoints/search.tsx": {
-    "file": "search-Cwzr8a1G.js",
+    "file": "search-CgLTq6gF.js",
     "name": "search",
     "src": "src/entrypoints/search.tsx",
     "isEntry": true,
@@ -54,7 +54,7 @@
     ]
   },
   "src/entrypoints/session-list.tsx": {
-    "file": "session-list-B8COcg_R.js",
+    "file": "session-list-C-2uOb-8.js",
     "name": "session-list",
     "src": "src/entrypoints/session-list.tsx",
     "isEntry": true,
@@ -64,7 +64,7 @@
     ]
   },
   "src/entrypoints/session-read.tsx": {
-    "file": "session-read-CN1Rn4yS.js",
+    "file": "session-read-ly9Gi_VU.js",
     "name": "session-read",
     "src": "src/entrypoints/session-read.tsx",
     "isEntry": true,

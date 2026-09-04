@@ -11,7 +11,7 @@ The daemon's two session-detail fast paths must compute an identical
 Both used to independently reimplement the same "join every block's text"
 formula; a message with mixed block types (TEXT + THINKING + TOOL_USE +
 TOOL_RESULT) is exactly the shape most likely to expose a silent
-re-divergence, since ``daemon/web_shell_reader.py``'s client-side rendering
+re-divergence, since the browser reader's client-side rendering
 heuristic dispatches its fold/thinking/tool treatment off this single
 flattened string per message.
 """

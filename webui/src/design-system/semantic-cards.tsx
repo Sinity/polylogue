@@ -7,8 +7,7 @@ import type {
   SemanticProse,
 } from '../contracts/semantic-cards';
 
-/** Matches SEM_CARD_LABEL in polylogue/daemon/web_shell_semantic_cards.py and
- * SEMANTIC_CARD_LABELS in polylogue/daemon/webui.py, so all three surfaces agree. */
+/** Matches the daemon semantic-card vocabulary across browser surfaces. */
 const SEMANTIC_CARD_LABELS: Readonly<Record<string, string>> = {
   shell: 'shell',
   file_read: 'read',
@@ -104,7 +103,7 @@ function CardFieldValue({ value }: { readonly value: string }) {
   if (value.startsWith('session:') && value.length > 'session:'.length) {
     const sessionRef = value.slice('session:'.length);
     return (
-      <a class="card__field-value" href={`/app/sessions/${encodeURIComponent(sessionRef)}`}>
+      <a class="card__field-value" href={`/sessions/${encodeURIComponent(sessionRef)}`}>
         <code>{value}</code>
       </a>
     );
