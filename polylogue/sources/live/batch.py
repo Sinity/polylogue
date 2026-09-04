@@ -586,6 +586,7 @@ class LiveBatchProcessor:
         self._event_emitter = event_emitter
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
+        self._last_append_cursor_proof_bytes = 0
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
         # One-shot channels out of ``_resynthesize_cursor_from_source``, which
         # cannot widen its own return type without rewriting every one of its
@@ -852,6 +853,7 @@ class LiveBatchProcessor:
                 succeeded_paths.add(plan.path)
                 if not self._record_append_cursor(plan):
                     stale_cursor_write_count += 1
+                cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
                 self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
@@ -4798,6 +4800,11 @@ class LiveBatchProcessor:
         latest_stat: os.stat_result | None = None
         final_stat: os.stat_result | None = None
         tail_hash: str | None = None
+        self._last_append_cursor_proof_bytes = 0
+        is_claude_frontier = (
+            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
+            == "claude-header-body"
+        )
         expected_observation = (
             plan.st_dev,
             plan.st_ino,
@@ -4812,12 +4819,14 @@ class LiveBatchProcessor:
             latest_stat = stat
             if stat.st_dev != plan.st_dev or stat.st_ino != plan.st_ino or stat.st_size < plan.last_complete_newline:
                 raise ValueError("source replaced or truncated")
-            payload_hash, _payload_bytes = sha256_range_from_path(
+            payload_hash, payload_bytes = sha256_range_from_path(
                 plan.path,
                 start_offset=plan.start_offset,
                 end_offset=plan.last_complete_newline,
             )
-            tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
+            self._last_append_cursor_proof_bytes += payload_bytes
+            tail_hash, tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
+            self._last_append_cursor_proof_bytes += tail_bytes
             final_stat = plan.path.stat()
             latest_stat = final_stat
             if (
@@ -4826,16 +4835,17 @@ class LiveBatchProcessor:
                 or final_stat.st_size < plan.last_complete_newline
             ):
                 raise ValueError("source replaced or truncated during cursor verification")
-            if payload_hash != plan.payload_hash:
+            if not is_claude_frontier and payload_hash != plan.payload_hash:
                 raise ValueError("accepted append bytes changed")
-            if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
+            if not is_claude_frontier and plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
                 raise ValueError("accepted append tail changed")
             if plan.accepted_prefix_hash is not None:
-                prefix_hash, _prefix_bytes = sha256_range_from_path(
+                prefix_hash, prefix_bytes = sha256_range_from_path(
                     plan.path,
                     start_offset=0,
                     end_offset=plan.last_complete_newline,
                 )
+                self._last_append_cursor_proof_bytes += prefix_bytes
                 if prefix_hash != plan.accepted_prefix_hash:
                     raise ValueError("accepted prefix changed")
         except FileNotFoundError:
@@ -4873,19 +4883,35 @@ class LiveBatchProcessor:
             )
         assert tail_hash is not None
         content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        if (
-            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
-            == "claude-header-body"
-        ):
+        if is_claude_frontier:
+            try:
+                with plan.path.open("rb") as handle:
+                    current_header = handle.readline()
+                if not current_header.endswith(b"\n"):
+                    raise ValueError("Claude header is incomplete")
+                current_append_start = len(current_header) + (plan.accepted_claude_body_bytes or 0)
+                current_append_end = current_append_start + (plan.last_complete_newline - plan.start_offset)
+                current_payload_hash, current_payload_bytes = sha256_range_from_path(
+                    plan.path,
+                    start_offset=current_append_start,
+                    end_offset=current_append_end,
+                )
+                self._last_append_cursor_proof_bytes += current_payload_bytes
+                if current_payload_hash != plan.payload_hash:
+                    raise ValueError("accepted Claude append bytes changed")
+            except OSError as exc:
+                raise ValueError("Claude header cannot be read") from exc
+            publication_end = current_append_end
             stored_tail_hash = claude_semantic_frontier_for_prefix(
                 plan.path,
-                plan.last_complete_newline,
+                publication_end,
                 expected_stable_body_sha256=plan.accepted_claude_body_sha256,
                 expected_stable_body_bytes=plan.accepted_claude_body_bytes,
             )
             if stored_tail_hash is None:
                 self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
                 return False
+            self._last_append_cursor_proof_bytes += publication_end
         else:
             stored_tail_hash = (
                 encode_cursor_hash_authority(
@@ -4896,6 +4922,24 @@ class LiveBatchProcessor:
                 if plan.accepted_prefix_hash is not None
                 else tail_hash
             )
+            publication_end = plan.last_complete_newline
+        try:
+            final_stat = plan.path.stat()
+        except OSError:
+            self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
+            return False
+        latest_stat = final_stat
+        if (
+            final_stat.st_dev != plan.st_dev
+            or final_stat.st_ino != plan.st_ino
+            or final_stat.st_size < publication_end
+            or (
+                final_stat.st_size == plan.stat_size
+                and (final_stat.st_mtime_ns != plan.mtime_ns or final_stat.st_ctime_ns != (plan.ctime_ns or 0))
+            )
+        ):
+            self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=final_stat)
+            return False
         updated = self._cursor.set(
             plan.path,
             plan.stat_size,
