@@ -95,27 +95,8 @@ def test_broken_venv_script_shebang_is_typed_as_missing(monkeypatch: pytest.Monk
     assert result.diagnosis == "gate_missing_executable"
 
 
-def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-    dmypy = str(verify.ROOT / ".venv/bin/dmypy")
-
-    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-        calls.append(command)
-        return SimpleNamespace(returncode=1 if command[-1] == "status" else 0)
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    assert gate.mypy_command() == [
-        dmypy,
-        "run",
-        f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}",
-        "--",
-        "--no-error-summary",
-    ]
-    assert calls == [
-        [dmypy, "status"],
-        [dmypy, "start", f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
-    ]
+def test_mypy_gate_uses_a_foreground_checkout_local_process() -> None:
+    assert gate.mypy_command() == [str(verify.ROOT / ".venv/bin/mypy")]
 
 
 def test_removed_lab_mode_is_not_accepted() -> None:

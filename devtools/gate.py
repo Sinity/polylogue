@@ -48,39 +48,8 @@ class Gate:
         raise ValueError(f"unknown gate kind {self.kind!r}")
 
 
-#: The daemon holds a type cache worth well over a gigabyte and is reparented to
-#: the user manager, so without this it outlives every gate that starts one and
-#: one accumulates per checkout. The idle clock resets on each connection, so a
-#: checkout under active gating keeps its warm daemon.
-# Keep a tight edit-check loop warm without retaining one large daemon per
-# inactive worktree.
-DMYPY_IDLE_TIMEOUT_SECONDS = 180
-
-
 def mypy_command(*, root: Path = ROOT) -> list[str]:
-    """Resolve the type-check command, preferring a warm dmypy daemon."""
-    dmypy = venv_bin("dmypy", root=root)
-    run_argv = [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
-    try:
-        if subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=root).returncode == 0:
-            # run can itself spawn the daemon (races, direct invocations);
-            # the timeout must ride every spawning form or one immortal
-            # daemon per checkout accumulates.
-            return run_argv
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    try:
-        started = subprocess.run(
-            [dmypy, "start", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=root,
-        )
-        if started.returncode == 0:
-            return run_argv
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    """Use the checkout-local foreground checker owned by the verify task."""
     return [venv_bin("mypy", root=root)]
 
 
