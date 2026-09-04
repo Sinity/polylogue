@@ -6,7 +6,10 @@ and the marker file appears. Widening ``INHERITED_ENVIRONMENT_KEYS`` makes
 ``test_the_adder_environment_carries_only_the_allowed_keys`` red. Dropping
 either half of the temporary-directory containment (the ``--basetemp``
 argument or the exported TMPDIR) makes
-``test_a_queued_run_contains_its_temporary_trees`` red.
+``test_a_queued_run_contains_its_temporary_trees`` red. Removing the workflow
+branch of ``devtools.pytest_slot._runs_pytest_in_place`` makes
+``test_a_workflow_job_runs_without_the_local_queue_tools`` red -- the run
+refuses on the absent queue runner instead of executing.
 """
 
 from __future__ import annotations
@@ -27,9 +30,11 @@ import pytest
 from devtools import cloud_sentinels, pytest_slot
 from devtools.pytest_slot import (
     BASETEMP_ROOT_ENV,
+    SLOT_WORKFLOW,
     PytestSlotUnavailableError,
     basetemp_root,
     holds_pytest_slot,
+    inside_workflow_job,
     run_pytest,
 )
 
@@ -217,6 +222,46 @@ def test_explicit_slot_holder_runs_directly(tmp_path: Path, monkeypatch: pytest.
     assert outcome.slot == "held"
     assert outcome.returncode == 0
     assert _calls(record) == [], "a slot holder must not talk to pueue"
+
+
+def test_a_workflow_job_runs_without_the_local_queue_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hosted verification must not depend on the workstation's queue installation."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    marker = tmp_path / "pytest-ran"
+    workflow = _environment(PATH=str(empty), GITHUB_ACTIONS="true", GITHUB_RUN_ID="33895265963")
+
+    assert not holds_pytest_slot(workflow), "a workflow job does not own the host slot"
+    assert inside_workflow_job(workflow)
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=workflow,
+        root=tmp_path,
+        label="polylogue:verify:1",
+    )
+
+    assert marker.exists(), "the workflow job did not run pytest"
+    assert (outcome.returncode, outcome.slot) == (0, SLOT_WORKFLOW)
+
+
+def test_a_workflow_flag_without_a_run_identity_still_queues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exported flag alone is not a workflow job."""
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    marker = tmp_path / "pytest-ran"
+
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=_environment(GITHUB_ACTIONS="true"),
+        root=tmp_path,
+        label="polylogue:verify:1",
+    )
+
+    assert not marker.exists()
+    assert outcome.slot == "pueue task 7"
+    assert _calls(record)[0]["argv"][0] == "add"
 
 
 def test_an_agent_pool_worker_queues_its_focused_run_in_the_pytest_pool(
