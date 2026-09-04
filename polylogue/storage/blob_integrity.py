@@ -873,6 +873,9 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
         return []
     conn.row_factory = sqlite3.Row
     origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    detected_provider_column = (
+        "detected_provider" if _column_exists(conn, "raw_sessions", "detected_provider") else "NULL"
+    )
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
@@ -907,6 +910,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                raw_sessions.raw_id AS ref_id,
                raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
+               {detected_provider_column} AS detected_provider,
                {native_id_column} AS native_id,
                {capture_mode_column} AS capture_mode,
                {acquired_at_ms_column} AS acquired_at_ms,
@@ -1310,6 +1314,9 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
         return []
     conn.row_factory = sqlite3.Row
     origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    detected_provider_column = (
+        "detected_provider" if _column_exists(conn, "raw_sessions", "detected_provider") else "NULL"
+    )
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
@@ -1330,6 +1337,7 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
         SELECT lower(hex(blob_hash)) AS blob_hash,
                raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
+               {detected_provider_column} AS detected_provider,
                {native_id_column} AS native_id,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
@@ -1833,7 +1841,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
-                provider_hint=origin,
+                provider_hint=_optional_str(row.get("detected_provider")),
             )
         except OSError as exc:
             payload_bytes, reason = None, f"error:{exc}"
@@ -1929,7 +1937,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,
-                provider_hint=_optional_str(row.get("origin")),
+                provider_hint=_optional_str(row.get("detected_provider")),
             )
             if payload_bytes is not None:
                 published_hash, _published_size = publisher.write_from_bytes(payload_bytes)

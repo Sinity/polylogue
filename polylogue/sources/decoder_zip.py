@@ -32,6 +32,25 @@ from .parsers.base import ParsedSession, RawSessionData
 logger = get_logger(__name__)
 
 
+def is_declared_artifact_path(source_path: str) -> bool:
+    """Return whether any provider declaration owns this archive path."""
+    return any(
+        provider is not Provider.UNKNOWN and artifact_rule_for_path(provider, source_path) is not None
+        for provider in Provider
+    )
+
+
+def provider_detection_path(source_path: str) -> bool:
+    """Exclude declaration-owned non-session evidence from provider sniffing."""
+    rules = [
+        rule
+        for provider in Provider
+        if provider is not Provider.UNKNOWN
+        if (rule := artifact_rule_for_path(provider, source_path)) is not None
+    ]
+    return not rules or any(rule.parse_policy == "session" for rule in rules)
+
+
 class ZipEntryValidator:
     """Validate ZIP entries for security and relevance."""
 

@@ -1136,6 +1136,80 @@ def test_blob_recovery_admits_declared_non_json_sidecar(tmp_path: Path) -> None:
     assert recovered == payload
 
 
+def test_blob_replacement_uses_stored_provider_for_declared_non_json_sidecar(tmp_path: Path) -> None:
+    source_db = tmp_path / "source.db"
+    store = BlobStore(tmp_path / "blob")
+    zip_source = tmp_path / "claude.zip"
+    member = "session/tool-results/toolu.txt"
+    payload = b"opaque tool result"
+    with zipfile.ZipFile(zip_source, "w") as archive:
+        archive.writestr(member, payload)
+
+    stale_hash = bytes.fromhex("7" * 64)
+    with sqlite3.connect(source_db) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE raw_sessions (
+                raw_id TEXT PRIMARY KEY,
+                origin TEXT,
+                detected_provider TEXT,
+                native_id TEXT,
+                source_path TEXT,
+                source_index INTEGER,
+                blob_hash BLOB,
+                blob_size INTEGER NOT NULL,
+                acquired_at_ms INTEGER,
+                file_mtime_ms INTEGER
+            );
+            CREATE TABLE blob_refs (
+                blob_hash BLOB NOT NULL,
+                ref_id TEXT NOT NULL,
+                ref_type TEXT NOT NULL,
+                source_path TEXT,
+                size_bytes INTEGER NOT NULL,
+                acquired_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(blob_hash, ref_type, ref_id)
+            );
+            CREATE TABLE blob_publication_reservations (
+                publication_id TEXT PRIMARY KEY,
+                blob_hash BLOB NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                publisher_id TEXT NOT NULL,
+                reserved_at_ms INTEGER NOT NULL
+            );
+            """
+        )
+        source_path = f"{zip_source}:{member}"
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, detected_provider, native_id, source_path,
+                source_index, blob_hash, blob_size, acquired_at_ms, file_mtime_ms
+            ) VALUES ('raw-sidecar', 'claude-code-session', 'claude-code', NULL, ?, 0, ?, 1, 1, 1)
+            """,
+            (source_path, stale_hash),
+        )
+        conn.execute(
+            """
+            INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+            VALUES (?, 'raw-sidecar', 'raw_payload', ?, 1, 1)
+            """,
+            (stale_hash, source_path),
+        )
+
+    report = replace_raw_backed_blob_reference_debt_from_source(
+        source_db,
+        store=store,
+        dry_run=False,
+        manifest_path=tmp_path / "replacement.jsonl",
+    )
+
+    assert report.replaced_rows == 1
+    with sqlite3.connect(source_db) as conn:
+        blob_hash = bytes(conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = 'raw-sidecar'").fetchone()[0])
+    assert store.read_all(blob_hash.hex()) == payload
+
+
 def test_blob_recovery_uses_v2_entry_ordinal_without_consuming_split_index(tmp_path: Path) -> None:
     """ZIP coordinates survive one replacement and authorize the next recovery."""
     initialize_active_archive_root(tmp_path)
