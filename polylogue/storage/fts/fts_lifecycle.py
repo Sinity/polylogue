@@ -777,11 +777,24 @@ def message_fts_readiness_sync(
 
 def message_fts_search_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool]:
     """Return retrieval readiness measured for the relation used by search."""
-    from polylogue.storage.fts.freshness import message_fts_recorded_readiness_sync
+    from polylogue.storage.fts.freshness import (
+        message_fts_recorded_exact_stale_sync,
+        message_fts_recorded_readiness_sync,
+    )
 
     recorded_readiness = message_fts_recorded_readiness_sync(conn)
     if recorded_readiness is not None:
         return recorded_readiness
+    if message_fts_recorded_exact_stale_sync(conn):
+        status = fts_index_status_sync(conn)
+        return {
+            "exists": bool(status.get("exists", False)),
+            "indexed_rows": _status_int(status, "count"),
+            "total_rows": _row_int(conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL).fetchone(), 0),
+            "ready": False,
+            "triggers_present": bool(status.get("exists", False))
+            and _triggers_present_sync(conn, _message_trigger_names_for_sync(conn)),
+        }
     readiness = message_fts_readiness_sync(conn, verify_total_rows=True)
     return readiness
 
@@ -823,11 +836,26 @@ async def message_fts_readiness_async(
 
 async def message_fts_search_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool]:
     """Async retrieval readiness measured for the relation used by search."""
-    from polylogue.storage.fts.freshness import message_fts_recorded_readiness_async
+    from polylogue.storage.fts.freshness import (
+        message_fts_recorded_exact_stale_async,
+        message_fts_recorded_readiness_async,
+    )
 
     recorded_readiness = await message_fts_recorded_readiness_async(conn)
     if recorded_readiness is not None:
         return recorded_readiness
+    if await message_fts_recorded_exact_stale_async(conn):
+        status = await fts_index_status_async(conn)
+        exists = bool(status.get("exists", False))
+        row = await (await conn.execute(FTS_INDEXABLE_MESSAGE_COUNT_SQL)).fetchone()
+        return {
+            "exists": exists,
+            "indexed_rows": _status_int(status, "count"),
+            "total_rows": _row_int(row, 0),
+            "ready": False,
+            "triggers_present": exists
+            and await _triggers_present_async(conn, await _message_trigger_names_for_async(conn)),
+        }
     readiness = await message_fts_readiness_async(conn, verify_total_rows=True)
     return readiness
 
