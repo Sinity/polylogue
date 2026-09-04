@@ -10,6 +10,11 @@ argument or the exported TMPDIR) makes
 branch of ``devtools.pytest_slot._runs_pytest_in_place`` makes
 ``test_a_workflow_job_runs_without_the_local_queue_tools`` red -- the run
 refuses on the absent queue runner instead of executing.
+
+Every queueing test here resolves ``pueue`` and ``sinnixd-queue-run`` from
+fakes that are the whole PATH, so a green run says nothing about what the
+workstation has deployed; the cgroup a slot decision depends on is stubbed for
+the same reason.
 """
 
 from __future__ import annotations
@@ -37,9 +42,13 @@ from devtools.pytest_slot import (
     inside_workflow_job,
     run_pytest,
 )
+from tests.unit.devtools.cgroups import DEPLOYED_PYTEST_CGROUP, stub_cgroup
 
-FAKE_PUEUE = """#!/usr/bin/env python3
-import json, os, sys
+#: ``pueue add`` resolves the runner and records it; the fake ``pueue`` never
+#: executes what it was given, so an executable that exits is the whole fake.
+FAKE_QUEUE_RUNNER = "raise SystemExit(0)\n"
+
+FAKE_PUEUE = """import json, os, sys
 import shutil
 
 # The record path is derived from this script's own location: a queued run's
@@ -57,6 +66,24 @@ sys.exit(0)
 """
 
 
+def _install_executable(directory: Path, name: str, source: str) -> Path:
+    """Install ``source`` as an executable that needs nothing else on PATH.
+
+    The shebang names the interpreter absolutely: these fakes are the entire
+    PATH of the run under test, so ``/usr/bin/env python3`` would not resolve.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / name
+    script.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+def _install_fake_queue_runner(directory: Path) -> Path:
+    """The runner ``pueue add`` is handed, so queueing never needs the workstation's."""
+    return _install_executable(directory, pytest_slot.QUEUE_RUNNER, FAKE_QUEUE_RUNNER)
+
+
 def _install_fake_pueue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -65,18 +92,19 @@ def _install_fake_pueue(
     result: str = '"Success"',
 ) -> Path:
     directory = tmp_path / "fakebin"
-    directory.mkdir(exist_ok=True)
-    script = directory / "pueue"
-    script.write_text(
+    _install_fake_queue_runner(directory)
+    script = _install_executable(
+        directory,
+        "pueue",
         FAKE_PUEUE.format(
             task_id=task_id,
             result=result,
             launch_snapshot=str(tmp_path / "queued-launch.json"),
         ),
-        encoding="utf-8",
     )
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    # The fakes are the whole PATH: queueing must resolve its tools from what
+    # the test installed, never from whatever the workstation has deployed.
+    monkeypatch.setenv("PATH", str(directory))
     return Path(str(script) + ".calls.jsonl")
 
 
@@ -124,7 +152,7 @@ def test_outside_a_task_the_run_is_queued(tmp_path: Path, monkeypatch: pytest.Mo
     assert add["argv"][add["argv"].index("--label") + 1] == "polylogue:test:1"
     assert "--print-task-id" in add["argv"] and "--escape" in add["argv"]
     assert add["argv"][-2:] == [
-        shutil.which(pytest_slot.QUEUE_RUNNER),
+        str(tmp_path / "fakebin" / pytest_slot.QUEUE_RUNNER),
         str(tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.json"),
     ]
     launch = json.loads((tmp_path / "queued-launch.json").read_text(encoding="utf-8"))
@@ -180,7 +208,13 @@ def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monke
 
 
 def test_declared_pytest_worker_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Queue identity alone is not the slot: the pytest slice is what binds it.
+
+    Anti-vacuity: pointing the stub at any other slice makes this red, because
+    the worker queues instead of running.
+    """
     record = _install_fake_pueue(tmp_path, monkeypatch)
+    stub_cgroup(DEPLOYED_PYTEST_CGROUP, tmp_path=tmp_path, monkeypatch=monkeypatch)
     marker = tmp_path / "pytest-ran"
     holder = {
         "SINNIXD_JOB_ID": "job-1",
@@ -308,18 +342,27 @@ def test_missing_scoped_queue_runner_refuses_before_queueing(tmp_path: Path, mon
 
 
 def test_an_unreachable_queue_refuses_rather_than_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runner resolves and only the queue is missing, so this names pueue itself.
+
+    Anti-vacuity: dropping the fake runner refuses on the runner instead, which
+    is ``test_missing_scoped_queue_runner_refuses_before_queueing``; asserting
+    only the shared advice line would pass either way.
+    """
     marker = tmp_path / "pytest-ran"
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    runner_only = tmp_path / "runner-only"
+    _install_fake_queue_runner(runner_only)
+    monkeypatch.setenv("PATH", str(runner_only))
 
     with pytest.raises(PytestSlotUnavailableError) as failure:
         run_pytest(
             _marker_command(marker),
             cwd=str(tmp_path),
-            env=_environment(PATH=str(tmp_path / "empty")),
+            env=_environment(PATH=str(runner_only)),
             root=tmp_path,
             label="polylogue:test:1",
         )
 
+    assert "`pueue` is not on PATH" in str(failure.value)
     assert "systemctl --user start pueued" in str(failure.value)
     assert not marker.exists()
 
@@ -498,8 +541,7 @@ def test_the_leaked_cloud_basetemp_sentinel_is_declined(tmp_path: Path, monkeypa
 
 #: A ``pueue`` whose ``wait`` kills the process waiting on it, the way a
 #: session or a wrapper being killed leaves a queued task with no waiter.
-FAKE_PUEUE_KILLS_ITS_WAITER = """#!/usr/bin/env python3
-import json, os, signal, sys, time
+FAKE_PUEUE_KILLS_ITS_WAITER = """import json, os, signal, sys, time
 
 with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
@@ -538,10 +580,8 @@ def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
     import subprocess
 
     directory = tmp_path / "fakebin"
-    directory.mkdir()
-    script = directory / "pueue"
-    script.write_text(FAKE_PUEUE_KILLS_ITS_WAITER, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    _install_fake_queue_runner(directory)
+    script = _install_executable(directory, "pueue", FAKE_PUEUE_KILLS_ITS_WAITER)
     record = Path(str(script) + ".calls.jsonl")
     repo = str(Path(pytest_slot.__file__).resolve().parents[1])
 
@@ -552,7 +592,7 @@ def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
             _WAITER.format(repo=repo, cwd=str(tmp_path), root=str(tmp_path)),
         ],
         env={
-            "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
+            "PATH": str(directory),
             "HOME": os.environ.get("HOME", "/home/nobody"),
         },
         capture_output=True,

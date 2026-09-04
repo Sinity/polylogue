@@ -20,7 +20,12 @@ QUEUE_WORKER_ENV = "SINNIXD_QUEUE_WORKER"
 QUEUE_POOL_ENV = "SINNIXD_QUEUE_POOL"
 QUEUE_WORKER_VALUE = "1"
 PYTEST_POOL = "pytest"
-PYTEST_WORKER_OPERATIONS = frozenset({"test", "verify_affected"})
+#: Every operation declaring ``pool = "pytest"`` in ``.agentctl/project.toml``,
+#: plus the ``test`` operation the pytest slot's own launch document names. A
+#: queue runner that does not export ``SINNIXD_QUEUE_POOL`` leaves this the only
+#: classifier, and a pytest-pool operation missing here re-queues into the
+#: single-slot group its own worker already occupies, which cannot drain.
+PYTEST_WORKER_OPERATIONS = frozenset({"test", "verify_affected", "verify_all"})
 _CGROUP_PATH = Path("/proc/self/cgroup")
 _AGENT_CGROUP_SLICES = frozenset({"agent.slice", "sinnixd-pueue-agent.slice"})
 _PYTEST_CGROUP_SLICES = frozenset({"sinnixd-pueue-pytest.slice"})
