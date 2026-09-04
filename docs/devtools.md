@@ -112,7 +112,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
-| `devtools archive index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools archive tool-outcome-census` | Classify every archived tool result by origin, construct, outcome and unknown reason. |
 | `devtools archive tool-pairing-census` | Classify every tool call/result pairing gap against declared evidence. |
