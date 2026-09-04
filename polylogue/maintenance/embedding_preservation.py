@@ -18,6 +18,8 @@ _VECTOR_TABLES = (
     "message_embeddings_rowids",
     "message_embeddings_vector_chunks00",
 )
+_CURRENT_HASH_COLUMN = "vector_derivation_hash"
+_LEGACY_HASH_COLUMN = "embedding_input_hash"
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +54,15 @@ def _table_digest(conn: sqlite3.Connection) -> tuple[str, dict[str, int]]:
         digest.update(table.encode())
         digest.update(count.to_bytes(8, "big"))
     return digest.hexdigest(), counts
+
+
+def _hash_column(conn: sqlite3.Connection, table: str) -> str:
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+    if _CURRENT_HASH_COLUMN in columns:
+        return _CURRENT_HASH_COLUMN
+    if _LEGACY_HASH_COLUMN in columns:
+        return _LEGACY_HASH_COLUMN
+    raise RuntimeError(f"{table} has no supported embedding hash column")
 
 
 def preserve_embedding_vectors(source: str | Path, destination: str | Path) -> EmbeddingPreservationReceipt:
@@ -94,11 +105,13 @@ def restore_embedding_vectors(
     copy_path = Path(preserved_copy).absolute()
     wanted = sorted(input_hashes)
     with _connect(destination_path, readonly=False) as target, _connect(copy_path, readonly=True) as source:
+        source_meta_hash = _hash_column(source, "message_embeddings_meta")
+        source_vector_hash = _hash_column(source, "message_embeddings")
         if wanted:
             placeholders = ",".join("?" for _ in wanted)
             rows = source.execute(
-                f"SELECT vector_derivation_hash, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash "
-                f"FROM message_embeddings_meta WHERE vector_derivation_hash IN ({placeholders})",
+                f"SELECT {source_meta_hash}, model, dimension, embedded_at_ms, recipe_hash, output_contract_hash "
+                f"FROM message_embeddings_meta WHERE {source_meta_hash} IN ({placeholders})",
                 wanted,
             ).fetchall()
             found = {bytes(row[0]) for row in rows}
@@ -110,7 +123,7 @@ def restore_embedding_vectors(
                     row,
                 )
                 vector = source.execute(
-                    "SELECT embedding, model FROM message_embeddings WHERE vector_derivation_hash = ?",
+                    f"SELECT embedding, model FROM message_embeddings WHERE {source_vector_hash} = ?",
                     (bytes(row[0]).hex(),),
                 ).fetchone()
                 if vector is None:
