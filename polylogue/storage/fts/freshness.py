@@ -559,11 +559,12 @@ async def _recorded_ready_state_async(conn: aiosqlite.Connection, record: dict[s
 def message_fts_recorded_readiness_sync(conn: sqlite3.Connection) -> dict[str, int | bool] | None:
     """Return a trusted recorded search-readiness verdict when one exists.
 
-    ``ready`` rows are trusted only after the full consistency check. ``stale``
-    rows are also useful: they are already a durable negative verdict with
-    recorded counters, so the hot query path can fail fast instead of repeating
-    an exact archive-scale recount. ``unknown``/poisoned rows intentionally
-    return ``None`` so callers recompute and repair the ledger once.
+    ``ready`` rows are trusted only after the full consistency check. A
+    ``stale`` row is a cache miss: its counters may describe a bounded repair
+    scope rather than the relation used by the query, so callers must measure
+    the active relation during this request. ``unknown``/poisoned rows likewise
+    return ``None`` so callers measure the relation instead of refusing it from
+    bookkeeping state.
     """
     record = _message_fts_record_sync(conn)
     if record is None:
@@ -582,13 +583,7 @@ def message_fts_recorded_readiness_sync(conn: sqlite3.Connection) -> dict[str, i
             "triggers_present": True,
         }
     if state == STALE:
-        return {
-            "exists": exists,
-            "indexed_rows": _recorded_counter(record, "indexed_rows"),
-            "total_rows": _recorded_counter(record, "source_rows"),
-            "ready": False,
-            "triggers_present": triggers_present,
-        }
+        return None
     return None
 
 
@@ -611,13 +606,7 @@ async def message_fts_recorded_readiness_async(conn: aiosqlite.Connection) -> di
             "triggers_present": True,
         }
     if state == STALE:
-        return {
-            "exists": exists,
-            "indexed_rows": _recorded_counter(record, "indexed_rows"),
-            "total_rows": _recorded_counter(record, "source_rows"),
-            "ready": False,
-            "triggers_present": triggers_present,
-        }
+        return None
     return None
 
 
