@@ -313,21 +313,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
-        "archive index-fast-forward",
-        "archive",
-        "Plan and prove a declared index fast-forward against retained raw replay.",
-        "devtools.index_fast_forward",
-        use_when=(
-            "Advance a stopped index generation across a declared clone-safe schema gap. The actuator clones the "
-            "active generation, applies lifecycle operations, proves a deterministic retained-raw sample through "
-            "the production parser/materializer route, then atomically activates the proven generation."
-        ),
-        examples=(
-            "devtools archive index-fast-forward prepare --archive-root /path/to/archive --receipt /path/to/receipt.json",
-            "devtools archive index-fast-forward activate --receipt /path/to/receipt.json",
-        ),
-    ),
-    CommandSpec(
         "archive lineage-validation",
         "archive",
         "Validate lineage-count evidence before citing archive counts externally.",
