@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -19,7 +20,7 @@ _OTHER = b"o" * 32
 _MISSING = b"m" * 32
 
 
-def _db(path, *, vector: bytes = _HASH):
+def _db(path: Path, *, vector: bytes = _HASH) -> None:
     initialize_archive_database(path, ArchiveTier.EMBEDDINGS)
     conn = sqlite3.connect(path)
     loaded, error = try_load_sqlite_vec(conn)
@@ -39,7 +40,7 @@ def _db(path, *, vector: bytes = _HASH):
     conn.close()
 
 
-def test_preserve_restore_and_proof_deletion(tmp_path):
+def test_preserve_restore_and_proof_deletion(tmp_path: Path) -> None:
     source = tmp_path / "source.db"
     preserved = tmp_path / "preserved.db"
     fresh = tmp_path / "fresh.db"
@@ -68,7 +69,7 @@ def test_preserve_restore_and_proof_deletion(tmp_path):
     assert not proof.exists()
 
 
-def test_missing_preserved_hash_is_enumerated(tmp_path):
+def test_missing_preserved_hash_is_enumerated(tmp_path: Path) -> None:
     source = tmp_path / "source.db"
     preserved = tmp_path / "preserved.db"
     fresh = tmp_path / "fresh.db"
