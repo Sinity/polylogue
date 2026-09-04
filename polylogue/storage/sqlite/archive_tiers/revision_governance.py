@@ -190,7 +190,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     PreparedSessionRows,
+    _event_summary,
+    _json_dumps,
+    _next_session_event_position,
     _repair_stale_session_observations,
+    _timestamp_ms,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -2822,10 +2826,20 @@ def _reconcile_chain_summary_events(
     session_id: str,
     aggregate: ParsedSession,
 ) -> None:
-    """Leave one whole-input summary row per type, carrying the chain's totals."""
-    for event_type in _CHAIN_SUMMARY_EVENT_TYPES:
-        composed = [event for event in aggregate.session_events if event.event_type == event_type]
-        if not composed:
+    """Store each whole-input summary event as the chain's content hash describes it.
+
+    ``merge_parsed_session_chunks`` reduces a declared summary type to one
+    event carrying the chain's totals, the chain's newest timestamp, and a
+    slot after every point-in-conversation event; that reduction is what
+    ``aggregate_content_hash`` covers. A tail-only write appends the newly
+    accepted chunk's own events and leaves the prefix's chunk-local row
+    where it is, so reduce the stored row on all three axes. Iterating the
+    aggregate's own event order keeps two summary types in the order the
+    reduction gave them.
+    """
+    for composed in aggregate.session_events:
+        event_type = composed.event_type
+        if event_type not in _CHAIN_SUMMARY_EVENT_TYPES:
             continue
         positions = [
             int(row[0])
@@ -2841,9 +2855,16 @@ def _reconcile_chain_summary_events(
             (session_id, event_type, positions[-1]),
         )
         store._conn.execute(
-            "UPDATE session_events SET payload_json = ? WHERE session_id = ? AND event_type = ? AND position = ?",
+            """
+            UPDATE session_events
+               SET payload_json = ?, summary = ?, occurred_at_ms = ?, position = ?
+             WHERE session_id = ? AND event_type = ? AND position = ?
+            """,
             (
-                json.dumps(composed[-1].payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _json_dumps(composed.payload),
+                _event_summary(composed) or "",
+                _timestamp_ms(composed.timestamp),
+                _next_session_event_position(store._conn, session_id),
                 session_id,
                 event_type,
                 positions[-1],
