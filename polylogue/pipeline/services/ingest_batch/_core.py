@@ -2418,4 +2418,25 @@ async def refresh_session_insights_bulk(
         }
 
 
-__all__ = ["_INGEST_RESULT_CHUNK_SIZE", "process_ingest_batch", "refresh_session_insights_bulk"]
+async def repair_message_fts_bulk(
+    backend: _ConnectionBackendLike,
+    changed_session_ids: Sequence[str],
+) -> None:
+    """Repair message FTS once after a multi-batch ingest pass."""
+    session_ids = tuple(dict.fromkeys(changed_session_ids))
+    if not session_ids:
+        return
+
+    from polylogue.storage.fts.fts_lifecycle import repair_fts_index_async
+
+    async with backend.connection() as conn:
+        await repair_fts_index_async(conn, session_ids)
+        await conn.commit()
+
+
+__all__ = [
+    "_INGEST_RESULT_CHUNK_SIZE",
+    "process_ingest_batch",
+    "refresh_session_insights_bulk",
+    "repair_message_fts_bulk",
+]

@@ -630,6 +630,41 @@ class TestParsingServiceStreaming:
         assert "Ingesting batch 1 (0/3 raw, batch 1 raw, 96.0 MiB)" in progress_events
         assert "Ingesting batch 2 (1/3 raw, batch 2 raw, 104.0 MiB)" in progress_events
 
+    async def test_parse_from_raw_batches_fts_repair_after_all_chunks(self, tmp_path: Path) -> None:
+        """Chunk writes defer FTS work until the complete parse pass."""
+        backend = MagicMock()
+        repository = MagicMock()
+        repository.backend = backend
+        repository.get_raw_blob_sizes = AsyncMock(return_value=[("raw-1", 1), ("raw-2", 1)])
+        config = Config(archive_root=tmp_path / "archive", render_root=tmp_path / "render", sources=[])
+        service = ParsingService(
+            repository=repository,
+            archive_root=config.archive_root,
+            config=config,
+            raw_batch_size=1,
+        )
+
+        async def process_batch(*args: object, **_kwargs: object) -> None:
+            result = args[3]
+            assert isinstance(result, ParseResult)
+            result._changed_session_ids.append(f"session-{len(result._changed_session_ids) + 1}")
+
+        with (
+            patch(
+                "polylogue.pipeline.services.ingest_batch.process_ingest_batch",
+                new=AsyncMock(side_effect=process_batch),
+            ) as process,
+            patch(
+                "polylogue.pipeline.services.ingest_batch.repair_message_fts_bulk",
+                new=AsyncMock(),
+            ) as repair,
+        ):
+            await service.parse_from_raw(raw_ids=["raw-1", "raw-2"])
+
+        assert process.await_count == 2
+        assert all(call.kwargs["repair_message_fts"] is False for call in process.await_args_list)
+        repair.assert_awaited_once_with(backend, ("session-1", "session-2"))
+
     async def test_parse_from_raw_splits_streamed_backlog_by_blob_budget(self, tmp_path: Path) -> None:
         backend = MagicMock()
 
