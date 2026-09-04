@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
+from devtools.agent_env import inside_declared_pytest_worker
 from devtools.cloud_sentinels import cloud_sentinel_declined
 
 __all__ = [
@@ -51,6 +52,11 @@ __all__ = [
     "run_pytest",
 ]
 
+#: Exported into every task started by ``sinnixd-queue-run``.
+QUEUE_TASK_ENV: Final = "SINNIXD_JOB_ID"
+#: The installed queue runner moves the workload out of pueued.service and
+#: into the slice selected by the launch document's pool.
+QUEUE_RUNNER: Final = "sinnixd-queue-run"
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
 SLOT_HELD: Final = "held"
@@ -172,7 +178,7 @@ def contained_pytest_run(
 
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
     """Whether this process is already inside the host's pytest slot."""
-    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD
+    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env)
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:
@@ -267,12 +273,26 @@ def _reaping(task_id: str, *, env: Mapping[str, str], launch_path: Path | None =
                 signal.signal(number, handler)
 
 
-def _write_launch(path: Path, *, argv: Sequence[str], cwd: str, env: Mapping[str, str], log_path: Path) -> None:
+def _write_launch(
+    path: Path,
+    *,
+    argv: Sequence[str],
+    cwd: str,
+    env: Mapping[str, str],
+    log_path: Path,
+    job_id: str,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
+        "job_id": job_id,
+        "project_id": "polylogue",
+        "operation": "test",
+        "pool": PYTEST_GROUP,
         "argv": list(argv),
         "working_directory": cwd,
         "environment": dict(env),
+        "timeout_seconds": 3600,
+        "result_kind": "exit",
         "log_path": str(log_path),
     }
     # The launch file carries the resolved environment; keep it off other users.
@@ -292,8 +312,18 @@ def _queue(
     identity = f"{os.getpid()}"
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
-    _write_launch(launch_path, argv=command, cwd=cwd, env=env, log_path=log_path)
     adder = adder_environment(env)
+    queue_runner = shutil.which(QUEUE_RUNNER, path=adder.get("PATH") or os.defpath)
+    if queue_runner is None:
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{QUEUE_RUNNER}` is not on PATH"))
+    _write_launch(
+        launch_path,
+        argv=command,
+        cwd=cwd,
+        env=env,
+        log_path=log_path,
+        job_id=f"polylogue-test-{identity}",
+    )
     added = _pueue(
         [
             "add",
@@ -306,9 +336,7 @@ def _queue(
             str(root),
             "--print-task-id",
             "--",
-            command[0],
-            "-m",
-            "devtools.pytest_slot",
+            queue_runner,
             str(launch_path),
         ],
         env=adder,
@@ -334,6 +362,7 @@ def _queue(
             if receipt is None or receipt.get("status") != "timed_out":
                 raise
             returncode = 124
+    launch_path.unlink(missing_ok=True)
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
     return SlotOutcome(
