@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 from pathlib import Path
 
@@ -10,6 +9,7 @@ from polylogue.maintenance.embedding_preservation import (
     delete_preserved_copy,
     preserve_embedding_vectors,
     restore_embedding_vectors,
+    verify_embedding_reuse,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -64,8 +64,8 @@ def _legacy_db(path: Path, *, vector: bytes = _HASH) -> None:
             (vector.hex(), b"\x00" * (1024 * 4)),
         )
         conn.execute(
-            "INSERT INTO message_embeddings_meta VALUES (?, 'test', 1024, NULL, ?, ?)",
-            (vector, b"a" * 32, b"b" * 32),
+            "INSERT INTO message_embeddings_meta VALUES (?, 'test', 1024, NULL, NULL, NULL)",
+            (vector,),
         )
 
 
@@ -78,6 +78,8 @@ def test_preserve_restore_and_proof_deletion(tmp_path: Path) -> None:
 
     before = preserve_embedding_vectors(source, preserved)
     assert before.metadata_rows == before.vector_rows == 1
+    assert before.table_counts["message_embeddings_meta"] == 1
+    assert before.table_counts["message_embeddings"] == 1
     assert before.table_set_digest
 
     restored = restore_embedding_vectors(fresh, preserved, {_HASH})
@@ -90,9 +92,20 @@ def test_preserve_restore_and_proof_deletion(tmp_path: Path) -> None:
             ).fetchone()[0]
             == 1
         )
+        conn.execute(
+            "INSERT INTO message_embedding_refs (message_id, session_id, origin, vector_derivation_hash) "
+            "VALUES ('message-1', 'session-1', 'test', ?)",
+            (_HASH,),
+        )
 
+    verification = verify_embedding_reuse(
+        fresh,
+        preserved,
+        {"message-1": _HASH},
+        receipt_path=preserved.with_suffix(preserved.suffix + ".proof.json"),
+    )
+    assert verification.ac2_passed
     proof = preserved.with_suffix(preserved.suffix + ".proof.json")
-    proof.write_text(json.dumps({"ac2_passed": True}))
     delete_preserved_copy(preserved, receipt_path=proof)
     assert not preserved.exists()
     assert not proof.exists()
@@ -108,6 +121,39 @@ def test_missing_preserved_hash_is_enumerated(tmp_path: Path) -> None:
     result = restore_embedding_vectors(fresh, preserved, {_HASH, _MISSING})
     assert result.restored_hashes == 1
     assert result.missing_hashes == (_MISSING.hex(),)
+
+
+def test_missing_vector_chunk_fails_reuse_by_exactly_one_hash(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    preserved = tmp_path / "preserved.db"
+    fresh = tmp_path / "fresh.db"
+    _db(source)
+    _db(fresh, vector=_OTHER)
+    preserve_embedding_vectors(source, preserved)
+
+    with sqlite3.connect(preserved) as conn:
+        loaded, error = try_load_sqlite_vec(conn)
+        if not loaded:
+            pytest.skip(str(error))
+        conn.execute("DELETE FROM message_embeddings WHERE vector_derivation_hash = ?", (_HASH.hex(),))
+
+    result = verify_embedding_reuse(fresh, preserved, {_HASH})
+    assert result.restored_hashes == 0
+    assert result.hit_rate == 0.0
+    assert [(miss.input_hash, miss.cause) for miss in result.misses] == [(_HASH.hex(), "preserved_vector_missing")]
+
+
+def test_reuse_verification_requires_fresh_reference_for_message_mapping(tmp_path: Path) -> None:
+    source = tmp_path / "source.db"
+    preserved = tmp_path / "preserved.db"
+    fresh = tmp_path / "fresh.db"
+    _db(source)
+    _db(fresh, vector=_HASH)
+    preserve_embedding_vectors(source, preserved)
+
+    result = verify_embedding_reuse(fresh, preserved, {"message-1": _HASH})
+    assert result.restored_hashes == 0
+    assert result.misses[0].cause == "reference_not_reminted"
 
 
 def test_restore_maps_legacy_embedding_input_hash_to_current_identity(tmp_path: Path) -> None:
