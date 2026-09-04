@@ -1374,6 +1374,15 @@ def _lower_payload_specs(
 
     shaped_payload = _schema_guided_payload(runtime_provider, payload, schema_resolution)
     record = _payload_record(shaped_payload)
+    if runtime_provider is Provider.CHATGPT and record is not None and chatgpt.looks_like_shared_decode(record):
+        return [
+            LoweredPayloadSpec(
+                provider=Provider.CHATGPT,
+                fallback_id=fallback_id,
+                mode="bundle_record",
+                payload=record,
+            )
+        ]
     if record is not None and browser_capture.looks_like(record):
         provider = detect_provider(record) or runtime_provider
         return [
@@ -1385,6 +1394,17 @@ def _lower_payload_specs(
             )
         ]
     sequence = _payload_sequence(shaped_payload)
+    if runtime_provider is Provider.CHATGPT and sequence is not None and len(sequence) == 1:
+        shared_record = _payload_record(sequence[0])
+        if shared_record is not None and chatgpt.looks_like_shared_decode(shared_record):
+            return _lower_payload_specs(
+                runtime_provider,
+                shared_record,
+                fallback_id,
+                depth=depth + 1,
+                schema_resolution=schema_resolution,
+                source_path=source_path,
+            )
     if sequence:
         browser_capture_specs: list[LoweredPayloadSpec] = []
         for index, item in enumerate(sequence):

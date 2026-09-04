@@ -329,6 +329,15 @@ def test_chatgpt_shared_decode_lowering_preserves_conservation_mapping() -> None
     assert assistant_node["children"] == []
 
 
+def test_chatgpt_shared_decode_dispatch_accepts_source_scan_sequence() -> None:
+    from polylogue.sources.dispatch import parse_payload
+
+    sessions = parse_payload("chatgpt", [_shared_decode_payload()], "fallback")
+
+    assert len(sessions) == 1
+    assert len(sessions[0].messages) == 3
+
+
 def test_chatgpt_shared_decode_lowering_uses_parser_conversation_id_precedence() -> None:
     from polylogue.sources.dispatch import lower_chatgpt_documents
 

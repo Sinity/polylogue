@@ -1198,6 +1198,12 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # partition. Existing rows need parser replay to regenerate hashes.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
+    IndexDeltaDeclaration(
+        version=91,
+        # Restore the canonical attachment provenance columns required by the
+        # writer and attachment read model.
+        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
+    ),
 )
 
 

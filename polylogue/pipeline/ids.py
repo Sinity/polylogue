@@ -123,7 +123,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "duration_ms": "provider timing measurement is owned by usage/cost derivation",
     },
     "ParsedSession": {
-        "provider_session_aliases": "parser-only aliases used to resolve provider identity",
+        "provider_session_aliases": "parser-derived alternate session identifiers are retained as lookup metadata",
         "created_at_provenance": "timestamp authority provenance is independent metadata",
         "updated_at_provenance": "timestamp authority provenance is independent metadata",
         "unit_accounting": "parser admission accounting is validated independently before lowering",
