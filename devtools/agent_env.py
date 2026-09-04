@@ -63,7 +63,8 @@ def refuse_verify_tier(
     """Why a ``devtools verify`` invocation is refused inside an agent job, or None."""
     if not inside_agent_job(env, cgroup_reader=cgroup_reader) or "--quick" in argv:
         return None
-    if _MANAGED_VERIFY_ARGV.get(env.get("SINNIXD_OPERATION")) == tuple(argv):
+    operation = env.get("SINNIXD_OPERATION")
+    if operation is not None and _MANAGED_VERIFY_ARGV.get(operation) == tuple(argv):
         return None
     return (
         "devtools verify: test tiers do not run inside agent jobs; the lane's tests run once as "
