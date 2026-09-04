@@ -1,19 +1,21 @@
 ## Summary
 
-Remove the session-insight materialization ledger and converge derived session rows through the generic `derived` stage.
+Remove redundant pytest-testmon state from deliberate complete-corpus verification while retaining testmon for affected selection.
 
 ## Problem
 
-The ledger duplicated derived freshness state and could drift from normal convergence.
+A complete-corpus run already executes every collected test, so loading testmon adds dependency tracing state without changing the selected corpus.
 
 ## Solution
 
-Remove the marker schema, repair path, readiness flags, and private periodic drain. Use source-bound provenance and migrate legacy `insights` debt to `derived`. Remove stale tests for the retired lifecycle and regenerate schema disposition evidence.
+Add a shared managed-plugin profile. Affected runs retain testmon; complete runs omit its plugin and flags. Worker count, xdist distribution, collection roots, and remaining plugins are unchanged.
 
 ## Verification
 
-`uv run devtools verify --quick` passed all gates, including schema-versioning. The packet command `uv run devtools test tests/unit/storage/insights tests/unit/insights` failed before collection because the first path does not exist. The corrected broad selection was killed by the host pytest queue after unrelated failures; it has no completion receipt.
+- The command-contract suite passed: 4 tests.
+- `devtools verify --quick` passed all static gates before publication.
+- PR #4650 quick-gate passed before this rebase.
 
 ## Residual risk
 
-The broad focused selection needs a fresh managed run if full storage and insight test coverage is required.
+The acceptance threshold still needs comparable complete-run PSS and wall-time receipts. This change does not claim that measurement.

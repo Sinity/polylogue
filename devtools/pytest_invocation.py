@@ -15,6 +15,7 @@ __all__ = [
     "CLOSED_WORLD_COLLECTION_ARGS",
     "IGNORED_COLLECTION_ARGS",
     "MANAGED_PLUGIN_ARGS",
+    "managed_plugin_args",
     "MANAGED_PLUGIN_NAMES",
     "PROGRESS_PLUGIN_NAME",
 ]
@@ -44,6 +45,19 @@ MANAGED_PLUGIN_NAMES: Final[tuple[str, ...]] = (
 MANAGED_PLUGIN_ARGS: Final[tuple[str, ...]] = tuple(
     argument for name in MANAGED_PLUGIN_NAMES for argument in ("-p", name)
 )
+
+
+def managed_plugin_args(*, testmon: bool) -> tuple[str, ...]:
+    """Return the explicit plugin profile for a managed pytest mode.
+
+    Complete-corpus runs already execute every collected test. Loading
+    testmon there retains a dependency tracer and graph in every xdist worker
+    without changing coverage, so only selecting and bootstrap runs load it.
+    """
+    if testmon:
+        return MANAGED_PLUGIN_ARGS
+    return tuple(argument for name in MANAGED_PLUGIN_NAMES if name != "pytest-testmon" for argument in ("-p", name))
+
 
 #: Ini overrides plus the collection root. These define the corpus exactly.
 CLOSED_WORLD_COLLECTION_ARGS: Final[tuple[str, ...]] = (

@@ -35,20 +35,19 @@ def test_closed_world_collection_args_reach_the_built_command() -> None:
         assert argument in command, f"missing collection arg {argument!r}"
 
 
-def test_the_default_tier_selects_and_the_all_tier_only_traces() -> None:
-    """`--all` runs everything and still updates fingerprints; the default tier
-    selects from what the datafile records.
+def test_the_default_tier_selects_and_the_all_tier_drops_testmon() -> None:
+    """Affected verification selects from testmon; `--all` runs every test.
 
-    Anti-vacuity: swapping the flags makes `--all` select, which stops it being
-    the honest complete run.
+    Anti-vacuity: adding testmon to the complete route recreates dependency
+    state in every worker without changing the selected corpus.
     """
     affected = _command("affected")
     complete = _command("all")
 
     assert "--testmon" in affected and "--testmon-forceselect" in affected
     assert "--testmon-noselect" not in affected
-    assert "--testmon" in complete and "--testmon-noselect" in complete
-    assert "--testmon-forceselect" not in complete
+    assert "--testmon" not in complete
+    assert "pytest-testmon" not in complete
 
 
 def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
