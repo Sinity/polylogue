@@ -478,6 +478,7 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 ) STRICT;
 """
 
+# ddl-lifecycle-waiver: derived CREATE TABLE insight_materialization retirement removes the obsolete marker; ordinary convergence regenerates surviving rows.
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
 

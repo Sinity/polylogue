@@ -1198,14 +1198,6 @@ INDEX_DELTA_DECLARATIONS: tuple[IndexDeltaDeclaration, ...] = (
         # partition. Existing rows need parser replay to regenerate hashes.
         classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
     ),
-    IndexDeltaDeclaration(
-        version=85,
-        # The session-insight materialization ledger is retired. Existing
-        # derived rows must be regenerated through ordinary convergence from
-        # source-bound row provenance; a clone-safe fast-forward cannot remove
-        # the lifecycle dependency from already-derived state.
-        classes=(DerivedDeltaClass.SEMANTIC_REPARSE,),
-    ),
 )
 
 
