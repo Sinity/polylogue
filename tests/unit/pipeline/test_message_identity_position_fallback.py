@@ -291,8 +291,8 @@ def _document_attachment(reference_id: str, position: int) -> ParsedAttachment:
 def test_duplicate_idless_turns_distinguished_by_referenced_document_own_their_attachments() -> None:
     """Block reference identity is content: turns citing different documents are different turns.
 
-    Anti-vacuity: dropping the block-reference discriminator from
-    ``message_owner_resolution`` makes both attachments raise
+    Anti-vacuity: dropping ``metadata`` from
+    ``_HASHED_FIELDS["ParsedContentBlock"]`` makes both attachments raise
     ``MessageOwnerAmbiguityError`` here, because the turns share role,
     timestamp, text, and block type.
     """
@@ -315,21 +315,6 @@ def test_duplicate_idless_turns_with_identical_document_reference_still_fail_clo
 
     with pytest.raises(MessageOwnerAmbiguityError):
         session_revision_projection(_session(messages, [attachment]))
-
-
-def test_block_reference_discriminator_leaves_unique_content_keys_unchanged() -> None:
-    """The reference tier only runs after the content tier collides."""
-    timestamp = "2024-01-01T00:00:00Z"
-    first_references = [
-        _document_only("doc-a", 0).model_copy(update={"text": "first", "timestamp": timestamp}),
-        _document_only("doc-b", 1).model_copy(update={"text": "second", "timestamp": timestamp}),
-    ]
-    other_references = [
-        _document_only("doc-x", 0).model_copy(update={"text": "first", "timestamp": timestamp}),
-        _document_only("doc-y", 1).model_copy(update={"text": "second", "timestamp": timestamp}),
-    ]
-
-    assert message_owner_resolution(first_references).keys == message_owner_resolution(other_references).keys
 
 
 def test_session_content_hash_degrades_ambiguous_attachment_to_unowned() -> None:
