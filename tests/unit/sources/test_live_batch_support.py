@@ -235,6 +235,28 @@ def test_append_cursor_publishes_current_claude_header_boundary_and_observation(
     )
 
 
+def test_append_cursor_publishes_after_shorter_claude_header_rewrite(tmp_path: Path) -> None:
+    """Mutation: a shorter mutable header must not resemble body truncation."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-shorter-header-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    _header, body = path.read_bytes().split(b"\n", 1)
+    replacement = (
+        b'{"type":"user","message":{"role":"user","content":"x"},"sessionId":"claude-shorter-header-publication"}\n'
+    )
+    assert len(replacement) < plan.start_offset
+    path.write_bytes(replacement + body)
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_size == path.stat().st_size
+    assert cursor.byte_offset == len(replacement) + len(body)
+
+
 def test_append_cursor_counts_failed_claude_frontier_proof_bytes(tmp_path: Path) -> None:
     """Mutation: omitting a failed semantic proof understates cursor-read amplification."""
     first_append = b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n'
@@ -4957,7 +4979,6 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     with path.open("ab") as handle:
         handle.write(append_a)
     pre_rewrite_stat = path.stat()
-    accepted_tail_before_rewrite = path.read_bytes()[-64 * 1024 :]
     replaced = False
 
     def replace_after_append(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
@@ -5007,23 +5028,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
             ("zeroa",),
         ]
 
-    if rewrite_mode == "in-place-prefix":
-        # The append range itself is still byte-proven, so keep it as a
-        # frontier. The old observation embedded in its tail authority makes
-        # the watcher force this same-size prefix rewrite through the full
-        # route before it can be skipped or appended past.
-        assert appended.stale_cursor_write_count == 0
-        assert stale_cursor.byte_offset == len(baseline_a + append_a)
-        assert stale_cursor.content_fingerprint is not None
-        assert b"zerob" in path.read_bytes()
-        assert path.read_bytes()[-64 * 1024 :] == accepted_tail_before_rewrite
-        retried = asyncio.run(processor.ingest_files([path]))
-        assert retried.full_file_count == 1
-        assert retried.append_file_count == 0
-        assert retried.succeeded_file_count == 0
-        assert retried.failed_file_count == 1
-        return
-
+    # Exact prefix proof rejects every rewrite before publication.
     assert appended.stale_cursor_write_count == 1
     assert stale_cursor.byte_offset == 0
     assert stale_cursor.content_fingerprint is None
@@ -5031,6 +5036,11 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     retried = asyncio.run(processor.ingest_files([path]))
 
     assert retried.full_file_count == 1
+    if rewrite_mode == "in-place-prefix":
+        assert retried.append_file_count == 0
+        assert retried.succeeded_file_count == 0
+        assert retried.failed_file_count == 1
+        return
     assert retried.succeeded_file_count == 1
     assert retried.stale_cursor_write_count == 0
     final_cursor = cursor.get_record(path)
