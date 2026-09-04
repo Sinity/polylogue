@@ -28,6 +28,10 @@ class OperationUnavailableError(OperationKernelError):
     """The daemon is absent and the operation cannot execute directly."""
 
 
+class OperationEnvelopeError(OperationKernelError):
+    """The selected transport did not return the declared operation envelope."""
+
+
 class OperationFailedError(OperationKernelError):
     """The selected executor returned a typed operation error."""
 
@@ -83,10 +87,19 @@ class OperationKernel:
         spec = request.spec
         envelope = self._daemon_call(request)
         if envelope is not None:
+            if envelope.get("operation") not in (None, request.operation):
+                raise OperationEnvelopeError("daemon returned a different operation")
             error = envelope.get("error")
             if isinstance(error, Mapping):
                 code = error.get("code")
                 raise OperationFailedError(str(code or "operation_failed"), error.get("detail"))
+            if error is not None:
+                raise OperationEnvelopeError("daemon returned a malformed error envelope")
+            outcome = envelope.get("outcome", "complete")
+            if outcome not in {"complete", "accepted"}:
+                raise OperationFailedError(str(outcome), envelope.get("detail"))
+            if "result" not in envelope:
+                raise OperationEnvelopeError("daemon response omitted the operation result")
             value = envelope.get("result")
             authority = envelope.get("authority")
             return OperationResult(
@@ -107,6 +120,7 @@ class OperationKernel:
 
 __all__ = [
     "OperationFailedError",
+    "OperationEnvelopeError",
     "OperationKernel",
     "OperationKernelError",
     "OperationRequest",
