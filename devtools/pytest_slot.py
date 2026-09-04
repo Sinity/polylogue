@@ -91,6 +91,7 @@ class SlotOutcome:
     slot: str
     #: Where the queued run's output landed, or None when it streamed.
     log_path: Path | None = None
+    receipt: dict[str, Any] | None = None
 
 
 #: Names the directory managed pytest runs put their temporary trees under.
@@ -329,10 +330,92 @@ def _queue(
     with _reaping(task_id, env=adder, launch_path=launch_path):
         _pueue(["wait", task_id], env=adder)
         status = _pueue(["status", "--json"], env=adder)
-        returncode = _task_result(status.stdout, task_id)
+        receipt = _read_timeout_receipt(log_path)
+        try:
+            returncode = _task_result(status.stdout, task_id)
+        except PytestSlotUnavailableError:
+            if receipt is None or receipt.get("status") != "timed_out":
+                raise
+            returncode = 124
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
-    return SlotOutcome(returncode=returncode, slot=f"pueue task {task_id}", log_path=log_path)
+    return SlotOutcome(
+        returncode=returncode,
+        slot=f"pueue task {task_id}",
+        log_path=log_path,
+        receipt=receipt,
+    )
+
+
+def _timeout_receipt_path(log_path: Path) -> Path:
+    return log_path.with_suffix(".result.json")
+
+
+def _read_timeout_receipt(log_path: Path) -> dict[str, Any] | None:
+    path = _timeout_receipt_path(log_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _progress_counts(environment: Mapping[str, str]) -> dict[str, Any]:
+    """Extract the last durable progress facts without making them authoritative."""
+    counts: dict[str, Any] = {}
+    selection_path = environment.get("POLYLOGUE_PYTEST_SELECTION_PATH")
+    if selection_path:
+        try:
+            selection = json.loads(Path(selection_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            selection = None
+        if isinstance(selection, Mapping):
+            for key in ("selected_count", "deselected_count"):
+                value = selection.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    counts[key] = value
+    events_path = environment.get("POLYLOGUE_PYTEST_EVENTS_PATH")
+    if events_path:
+        outcomes: dict[str, int] = {}
+        try:
+            lines = Path(events_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            lines = []
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, Mapping) or event.get("event") != "test_report":
+                continue
+            outcome = event.get("outcome")
+            if isinstance(outcome, str):
+                outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        if outcomes:
+            counts["outcomes"] = outcomes
+            counts["terminal_count"] = sum(outcomes.values())
+    return counts
+
+
+def _write_timeout_receipt(
+    log_path: Path, *, environment: Mapping[str, str], started: float, signal_number: int
+) -> dict[str, Any]:
+    """Atomically preserve a typed timeout result before the worker dies."""
+    receipt = {
+        "schema_version": 1,
+        "kind": "polylogue.pytest-slot-result",
+        "status": "timed_out",
+        "diagnosis": "pytest_deadline",
+        "signal": signal.Signals(signal_number).name,
+        "elapsed_s": round(time.monotonic() - started, 3),
+        "progress": _progress_counts(environment),
+    }
+    path = _timeout_receipt_path(log_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+    return receipt
 
 
 def run_pytest(
@@ -392,19 +475,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     environment[SLOT_ESCAPE_ENV] = SLOT_HELD
     log_path = Path(launch["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    child: subprocess.Popen[Any] | None = None
+    started = time.monotonic()
+    terminating = False
+
+    def terminate_on_signal(signal_number: int, _frame: object) -> None:
+        nonlocal terminating
+        if terminating:
+            return
+        terminating = True
+        if child is not None and child.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(child.pid, signal.SIGTERM)
+            try:
+                child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(child.pid, signal.SIGKILL)
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    child.wait(timeout=2)
+        with contextlib.suppress(OSError):
+            _write_timeout_receipt(
+                log_path,
+                environment=environment,
+                started=started,
+                signal_number=signal_number,
+            )
+        os._exit(128 + signal_number)
+
+    previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
     with open(log_path, "wb") as log:
         try:
-            completed = subprocess.run(
+            child = subprocess.Popen(
                 list(launch["argv"]),
                 cwd=launch["working_directory"],
                 env=environment,
                 stdout=log,
                 stderr=log,
+                start_new_session=True,
             )
+            returncode = child.wait()
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125
-    return completed.returncode
+        finally:
+            for number, handler in previous.items():
+                with contextlib.suppress(ValueError, OSError):
+                    signal.signal(number, handler)
+    return returncode
 
 
 if __name__ == "__main__":  # pragma: no cover - console entry point

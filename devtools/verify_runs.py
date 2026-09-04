@@ -754,6 +754,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
+                "pytest_slot_receipt": raw.get("pytest_slot_receipt"),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
                 else None,

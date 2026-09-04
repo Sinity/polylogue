@@ -15,7 +15,9 @@ import json
 import os
 import signal
 import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -211,6 +213,55 @@ def test_the_slot_runner_executes_the_launch_file(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8") == "value"
     assert "hi" in log_path.read_text(encoding="utf-8")
     assert not launch_path.exists(), "the launch file carries a resolved environment and must not persist"
+
+
+@pytest.mark.uses_real_clock("exercises a real signal deadline and process-group reap")
+def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path) -> None:
+    """An external deadline retains progress even when pytest cannot finalize reports.
+
+    Anti-vacuity: removing the signal handler loses the sibling receipt; omitting
+    ``start_new_session`` leaves the sleeping descendant alive after the runner
+    exits.
+    """
+    log_path = tmp_path / "pytest-slot-1.log"
+    launch_path = tmp_path / "launch.json"
+    events_path = tmp_path / "events.jsonl"
+    started = tmp_path / "started"
+    survivor = tmp_path / "survivor"
+    events_path.write_text(json.dumps({"event": "test_report", "outcome": "passed"}) + "\n", encoding="utf-8")
+    child = f"touch {started}; (sleep 2; touch {survivor}) & sleep 30"
+    launch_path.write_text(
+        json.dumps(
+            {
+                "argv": ["sh", "-c", child],
+                "working_directory": str(tmp_path),
+                "environment": {
+                    "PATH": os.environ["PATH"],
+                    "POLYLOGUE_PYTEST_EVENTS_PATH": str(events_path),
+                },
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen([sys.executable, "-m", "devtools.pytest_slot", str(launch_path)])
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5) == 128 + signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    receipt = json.loads(log_path.with_suffix(".result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "timed_out"
+    assert receipt["diagnosis"] == "pytest_deadline"
+    assert receipt["elapsed_s"] >= 0
+    assert receipt["progress"]["terminal_count"] == 1
+    time.sleep(0.1)
+    assert not survivor.exists()
 
 
 def _launch_document(root: Path) -> dict[str, Any]:
