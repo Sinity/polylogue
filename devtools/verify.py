@@ -398,6 +398,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         sys.stderr.write("FAILED (missing executable)\n")
         return 127, time.monotonic() - started, early_metadata
     slot = None
+    metadata_receipt = None
     if pytest_step:
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
@@ -421,6 +422,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
         completed = subprocess.CompletedProcess(command, outcome.returncode)
+        metadata_receipt = outcome.receipt
         # Exit 1 is "tests failed", the only outcome a rerun can speak to.
         # Exit 2 (interrupted), 3 (internal error), 4 (usage) and the signal
         # codes describe the run itself; recovering them would report a
@@ -443,6 +445,8 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        if metadata_receipt is not None:
+            metadata["pytest_slot_receipt"] = metadata_receipt
         if rerun is not None:
             metadata["rerun"] = rerun
             if not rerun["still_failed"]:

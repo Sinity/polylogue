@@ -411,7 +411,7 @@ def _run(
     cwd: str,
     env: dict[str, str],
     run: VerifyRun,
-) -> tuple[int, float, dict[str, str]]:
+) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
     started = time.monotonic()
@@ -440,6 +440,7 @@ def _run(
         {
             "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
         },
     )
 
