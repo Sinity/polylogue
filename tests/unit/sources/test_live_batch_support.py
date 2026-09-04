@@ -173,6 +173,123 @@ def test_append_prefix_cursor_refuses_claude_body_rewrite_after_persistence(
     assert processor._record_append_cursor(plan) is False
 
 
+def test_append_cursor_hands_off_claude_plan_when_source_disappears_after_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: treating disappearance as a failed proof loses an admitted append."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-disappeared-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+
+    def missing(_self: Path) -> os.stat_result:
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(Path, "stat", missing)
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_offset == plan.last_complete_newline
+
+
+def test_append_cursor_retries_claude_payload_mismatch_instead_of_raising(tmp_path: Path) -> None:
+    """Mutation: a changed admitted append must become a stale-cursor retry, not escape the batch."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-payload-mismatch",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b'"one"', b'"two"', 1))
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_cursor_publishes_current_claude_header_boundary_and_observation(tmp_path: Path) -> None:
+    """Mutation: plan-time offsets would point inside a rewritten mutable header."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-header-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    header, body = path.read_bytes().split(b"\n", 1)
+    path.write_bytes(header.replace(b'"zero"', b'"a longer mutable header"') + b"\n" + body)
+    current_stat = path.stat()
+    current_header_end = path.read_bytes().index(b"\n") + 1
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_size == current_stat.st_size
+    assert cursor.byte_offset == current_header_end + len(plan.payload)
+    assert cursor.last_complete_newline == current_header_end + len(plan.payload)
+    assert (cursor.st_dev, cursor.st_ino, cursor.mtime_ns) == (
+        current_stat.st_dev,
+        current_stat.st_ino,
+        current_stat.st_mtime_ns,
+    )
+
+
+def test_append_cursor_counts_failed_claude_frontier_proof_bytes(tmp_path: Path) -> None:
+    """Mutation: omitting a failed semantic proof understates cursor-read amplification."""
+    first_append = b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n'
+    path, first_plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-failed-proof-metrics",
+        append=first_append,
+    )
+    assert ingest_append_plans(cast(Any, owner), [first_plan]).succeeded == [first_plan]
+    assert processor._record_append_cursor(first_plan)
+    second_append = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    with path.open("ab") as handle:
+        handle.write(second_append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b'"one"', b'"bad"', 1))
+
+    assert processor._record_append_cursor(plan) is False
+    header_bytes = path.read_bytes().index(b"\n") + 1
+    assert processor._last_append_cursor_proof_bytes == header_bytes + len(plan.payload) + plan.last_complete_newline
+
+
+def test_append_cursor_retries_when_source_grows_during_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: accepting a changed observation allows a concurrent writer to race proof publication."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="growth-during-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    original_hash = sha256_range_from_path
+    grew = False
+
+    def grow_after_first_hash(
+        source_path: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> tuple[str, int]:
+        nonlocal grew
+        result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        if not grew:
+            with path.open("ab") as handle:
+                handle.write(
+                    b'{"type":"response_item","payload":{"type":"message","id":"later","role":"assistant",'
+                    b'"content":[{"type":"output_text","text":"later"}]}}\n'
+                )
+            grew = True
+        return result
+
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_after_first_hash)
+
+    assert processor._record_append_cursor(plan) is False
+
+
 def test_append_prefix_cursor_refuses_parser_semantics_drift_after_planning(tmp_path: Path) -> None:
     """Mutation: publishing under a new parser version would mislabel the proof."""
     path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="parser-publication")
