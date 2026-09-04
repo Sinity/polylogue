@@ -588,7 +588,7 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Insight Readiness: degraded" in result.output
+    assert "Convergence: caught up" in result.output
     assert "session_profiles: degraded" in result.output
 
 

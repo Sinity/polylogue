@@ -192,7 +192,7 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
     insights_module._render_export_plain(_export_result(tmp_path))
 
     output = capsys.readouterr().out
-    assert "Insight Readiness: partial" in output
+    assert "Convergence: debt in derived" in output
     assert "Scope: origin=codex-session since=2026-04-01 until=2026-04-30" in output
     assert "session_profiles: partial rows=7 expected=10" in output
     assert "missing=1 stale=2 orphan=3 incompatible=4" in output
