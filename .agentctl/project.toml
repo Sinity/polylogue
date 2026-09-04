@@ -37,7 +37,9 @@ verification-graph = ["devtools/verify.py", "pyproject.toml"]
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
-pool = "pytest"
+# The verifier queues its actual pytest run into the single-worker host slot.
+# Keep the outer verifier out of that same pool so it can wait for the slot.
+pool = "normal"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 3600
