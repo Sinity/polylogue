@@ -37,6 +37,24 @@ def test_agent_jobs_get_bounded_focused_runs_and_no_test_tiers() -> None:
     assert agent_env.refuse_verify_tier(["--quick"], AGENT, cgroup_reader=deployed_agent_cgroup) is None
     assert agent_env.refuse_verify_tier([], AGENT, cgroup_reader=deployed_agent_cgroup) is not None
     assert agent_env.refuse_verify_tier(["--all"], AGENT, cgroup_reader=deployed_agent_cgroup) is not None
+    assert (
+        agent_env.refuse_verify_tier(
+            [], {**AGENT, "SINNIXD_OPERATION": "verify_affected"}, cgroup_reader=deployed_agent_cgroup
+        )
+        is None
+    )
+    assert (
+        agent_env.refuse_verify_tier(
+            ["--all"], {**AGENT, "SINNIXD_OPERATION": "verify_all"}, cgroup_reader=deployed_agent_cgroup
+        )
+        is None
+    )
+    assert (
+        agent_env.refuse_verify_tier(
+            ["--all"], {**AGENT, "SINNIXD_OPERATION": "verify_affected"}, cgroup_reader=deployed_agent_cgroup
+        )
+        is not None
+    )
     assert agent_env.refuse_bare_pytest(AGENT, cgroup_reader=deployed_agent_cgroup) is not None
     assert (
         agent_env.refuse_bare_pytest({**AGENT, agent_env.HARNESS_RUN_ENV: "run-1"}, cgroup_reader=deployed_agent_cgroup)

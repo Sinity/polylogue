@@ -18,6 +18,10 @@ AGENT_MAX_PYTEST_WORKERS = 2
 HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
 _CGROUP_PATH = Path("/proc/self/cgroup")
 _AGENT_CGROUP_SLICES = frozenset({"agent.slice", "sinnixd-pueue-agent.slice"})
+_MANAGED_VERIFY_ARGV = {
+    "verify_affected": (),
+    "verify_all": ("--all",),
+}
 
 
 def _inside_agent_cgroup(cgroup_reader: Callable[[], str] | None) -> bool:
@@ -58,6 +62,8 @@ def refuse_verify_tier(
 ) -> str | None:
     """Why a ``devtools verify`` invocation is refused inside an agent job, or None."""
     if not inside_agent_job(env, cgroup_reader=cgroup_reader) or "--quick" in argv:
+        return None
+    if _MANAGED_VERIFY_ARGV.get(env.get("SINNIXD_OPERATION")) == tuple(argv):
         return None
     return (
         "devtools verify: test tiers do not run inside agent jobs; the lane's tests run once as "
