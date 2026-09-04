@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import json
+import time
 import zipfile
+from collections.abc import Callable, Mapping
 from concurrent.futures import as_completed
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +22,10 @@ from polylogue.core.timestamp_authority import normalize_session_timestamps, tim
 from polylogue.logging import get_logger
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.pipeline.services.process_pool import (
+    PoolKind,
     process_pool_executor,
     resolve_archive_ingest_dispatch,
+    resolve_parse_worker_count,
 )
 from polylogue.sources.decoder_zip import (
     ZipBombError,
@@ -55,6 +62,41 @@ logger = get_logger(__name__)
 # restores per-session index commit (escape hatch).
 COMMIT_BATCH_MESSAGE_THRESHOLD = 8000
 POST_COMMIT_UPKEEP_REASON = "archive_ingest_commit"
+
+
+@dataclass(frozen=True, slots=True)
+class _ParseSubmission:
+    """One walked source file and everything its parse worker needs."""
+
+    source: Source
+    path: Path
+    file_mtime: Any
+    sidecar_data: Mapping[str, Any] | None
+
+
+def _record_stage(result: ParseResult, name: str, started_at: float) -> None:
+    """Accumulate one ingest phase into the run's stage ledger.
+
+    Keeps the walk and parse phases inside the same ``append.*`` namespace the
+    archive write path already reports, so the ledger sums toward wall time
+    instead of describing the write alone.
+    """
+    key = f"append.{name}"
+    result.stage_timings_s[key] = result.stage_timings_s.get(key, 0.0) + (time.perf_counter() - started_at)
+
+
+def _submission_payload_bytes(submissions: list[_ParseSubmission]) -> int:
+    """Total on-disk size of the files this walk will parse.
+
+    Sizes the parse dispatch. A path that vanished between the walk and here
+    contributes nothing, which biases the plan toward sequential -- the safe
+    direction, since the pool only pays off above the byte tiers.
+    """
+    total = 0
+    for submission in submissions:
+        with suppress(OSError):
+            total += submission.path.stat().st_size
+    return total
 
 
 def _commit_batch_message_threshold() -> int:
@@ -113,6 +155,10 @@ async def parse_sources_archive(
     resolve out-of-order. Blob writes from workers are
     content-addressed and atomic, so concurrent worker writes are process-safe.
 
+    The pool is sized from the work the walk actually found
+    (:func:`resolve_archive_ingest_dispatch`), so a small walk parses
+    in-process instead of paying a spawn per worker for it.
+
     ``parse_workers`` overrides the ambient/env-resolved worker count for this
     call only (used by the demo seeder to force sequential parsing -- see
     ``polylogue/demo/seed.py``). ``None`` preserves the normal
@@ -122,7 +168,7 @@ async def parse_sources_archive(
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
-    workers = resolve_archive_ingest_dispatch(parse_workers=parse_workers).worker_count
+    workers = resolve_parse_worker_count() if parse_workers is None else max(1, parse_workers)
     blob_root = archive_root / "blob"
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
@@ -322,53 +368,91 @@ async def parse_sources_archive(
                     await write_pair(source, raw_data, session)
 
             failed = 0
-            total_paths = 0
-            with process_pool_executor(max_workers=workers) as pool:
-                future_to_source: dict[Any, tuple[Source, Path]] = {}
-                for source in sources:
-                    walk = _setup_source_walk(
-                        source,
-                        cursor_state=None,
-                        include_mtime=True,
-                        known_mtimes=None,
-                        discover_sidecars=True,
-                        blob_store=parse_blob_publisher,
-                    )
-                    if walk is None:
+            submissions: list[_ParseSubmission] = []
+            walk_started_at = time.perf_counter()
+            for source in sources:
+                walk = _setup_source_walk(
+                    source,
+                    cursor_state=None,
+                    include_mtime=True,
+                    known_mtimes=None,
+                    discover_sidecars=True,
+                    blob_store=parse_blob_publisher,
+                )
+                if walk is None:
+                    continue
+                for path, file_mtime in walk.paths_to_process:
+                    if (
+                        Provider.from_string(source.name) is Provider.ANTIGRAVITY
+                        and antigravity.classify_source_path(path).role
+                        is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+                    ):
                         continue
-                    for path, file_mtime in walk.paths_to_process:
-                        if (
-                            Provider.from_string(source.name) is Provider.ANTIGRAVITY
-                            and antigravity.classify_source_path(path).role
-                            is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
-                        ):
-                            continue
-                        future = pool.submit(
-                            _parse_source_path_worker,
-                            str(path),
-                            file_mtime,
-                            source.name,
-                            walk.sidecar_data,
-                            True,
-                            str(blob_root),
-                            str(archive_root / "source.db"),
-                        )
-                        future_to_source[future] = (source, path)
-                        total_paths += 1
+                    submissions.append(_ParseSubmission(source, path, file_mtime, walk.sidecar_data))
+            total_paths = len(submissions)
+            _record_stage(result, "walk", walk_started_at)
 
-                for future in as_completed(future_to_source):
-                    source, path = future_to_source[future]
-                    try:
-                        pairs = future.result()
-                    except Exception as exc:
-                        # Worker error isolation: one bad file must not kill the
-                        # run. Mirror the sequential iterator's failure handling.
-                        failed += 1
-                        result.parse_failures += 1
-                        logger.error("Failed to parse %s in worker: %s", path, exc)
-                        continue
-                    for raw_data, session in pairs:
-                        await write_pair(source, raw_data, session)
+            def _parse_args(submission: _ParseSubmission) -> tuple[Any, ...]:
+                return (
+                    str(submission.path),
+                    submission.file_mtime,
+                    submission.source.name,
+                    submission.sidecar_data,
+                    True,
+                    str(blob_root),
+                    str(archive_root / "source.db"),
+                )
+
+            async def consume(source: Source, path: Path, produce: Callable[[], Any]) -> None:
+                nonlocal failed
+                parse_started_at = time.perf_counter()
+                try:
+                    pairs = produce()
+                except Exception as exc:
+                    # Worker error isolation: one bad file must not kill the
+                    # run. Mirror the sequential iterator's failure handling.
+                    _record_stage(result, "parse", parse_started_at)
+                    failed += 1
+                    result.parse_failures += 1
+                    logger.error("Failed to parse %s in worker: %s", path, exc)
+                    return
+                _record_stage(result, "parse", parse_started_at)
+                for raw_data, session in pairs:
+                    await write_pair(source, raw_data, session)
+
+            plan = resolve_archive_ingest_dispatch(
+                path_count=total_paths,
+                total_bytes=_submission_payload_bytes(submissions),
+                worker_ceiling=workers,
+            )
+            if plan.pool_kind is PoolKind.SEQUENTIAL:
+                for submission in submissions:
+                    await consume(
+                        submission.source,
+                        submission.path,
+                        partial(_parse_source_path_worker, *_parse_args(submission)),
+                    )
+            elif submissions:
+                pool_started_at = time.perf_counter()
+                with process_pool_executor(max_workers=plan.worker_count) as pool:
+                    future_to_source: dict[Any, tuple[Source, Path]] = {
+                        pool.submit(_parse_source_path_worker, *_parse_args(submission)): (
+                            submission.source,
+                            submission.path,
+                        )
+                        for submission in submissions
+                    }
+                    _record_stage(result, "parse_pool", pool_started_at)
+                    # Workers spawn lazily behind `submit`, so the parse itself
+                    # is the wait between completions, not `future.result()`.
+                    wait_started_at = time.perf_counter()
+                    for future in as_completed(future_to_source):
+                        _record_stage(result, "parse", wait_started_at)
+                        source, path = future_to_source[future]
+                        await consume(source, path, future.result)
+                        wait_started_at = time.perf_counter()
+                    shutdown_started_at = time.perf_counter()
+                _record_stage(result, "parse_pool", shutdown_started_at)
 
             if failed > 0:
                 logger.warning(
