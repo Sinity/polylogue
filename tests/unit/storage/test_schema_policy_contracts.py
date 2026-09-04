@@ -454,6 +454,27 @@ def test_readable_layout_rejects_extra_object_with_typed_refusal(tmp_path: Path)
         conn.close()
 
 
+def test_read_only_archive_open_rejects_semantic_manifest_drift(tmp_path: Path) -> None:
+    """The production read-only route validates the complete manifest.
+
+    An extra table is the anti-vacuity mutation: the legacy sessions-column
+    sentinel still passes, while the archive contains an object outside the
+    current schema contract.
+    """
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("CREATE TABLE unexpected_read_object (value TEXT NOT NULL)")
+        conn.commit()
+
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(tmp_path, read_only=True)
+    error = caught.value
+    assert error.current_version == SCHEMA_VERSION
+    assert error.expected_version == SCHEMA_VERSION
+    assert error.lifecycle_action == "rebuild_index"
+    assert "schema semantic manifest mismatch" in str(error)
+
+
 def test_readable_layout_admits_a_missing_message_fts_surface(tmp_path: Path) -> None:
     """A degraded search index is a reported read state, not a closed archive.
 
