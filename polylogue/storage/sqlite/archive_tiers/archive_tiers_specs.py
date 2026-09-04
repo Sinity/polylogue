@@ -367,20 +367,39 @@ def _make_blocks_spec() -> TableColumnSpec:
 # Index-tier table specs. Each rendered table body is sourced from these
 # column definitions plus its table-level constraints; indexes, triggers,
 # and virtual tables remain in index.py because they are not row schemas.
-def _raw_column(name: str, ddl_sql: str) -> ColumnSpec:
-    return ColumnSpec(name=name, is_generated="GENERATED ALWAYS" in ddl_sql, ddl_sql=ddl_sql)
+def _raw_column(
+    name: str,
+    ddl_sql: str,
+    *,
+    record_name: str | None = None,
+    select_expression: str | None = None,
+) -> ColumnSpec:
+    """Declare a stored column and, where it has one, its record projection.
+
+    ``record_name`` is the label the record mapper consumes; a column without
+    one is storage-only and never reaches a runtime record.
+    """
+    return ColumnSpec(
+        name=name,
+        is_generated="GENERATED ALWAYS" in ddl_sql,
+        ddl_sql=ddl_sql,
+        record_name=record_name,
+        select_expression=select_expression,
+    )
 
 
 def _make_table_spec(
     table_name: str,
     columns: tuple[ColumnSpec, ...],
     *,
+    record_only_columns: tuple[ColumnSpec, ...] = (),
     table_constraints: tuple[str, ...] = (),
 ) -> TableColumnSpec:
     return TableColumnSpec(
         table_name=table_name,
         all_columns=columns,
         writable_columns=tuple(column for column in columns if not column.is_generated),
+        record_only_columns=record_only_columns,
         table_constraints=table_constraints,
     )
 
@@ -534,16 +553,23 @@ SESSIONS_SPEC = _make_table_spec(
         _raw_column(
             "session_id",
             """session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE""",
+            record_name="session_id",
         ),
-        _raw_column("native_id", """native_id               TEXT NOT NULL"""),
-        _raw_column("origin", f"""origin                  TEXT NOT NULL CHECK ({check("origin", Origin)})"""),
+        _raw_column("native_id", """native_id               TEXT NOT NULL""", record_name="native_id"),
         _raw_column(
-            "parent_session_id", """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL"""
+            "origin",
+            f"""origin                  TEXT NOT NULL CHECK ({check("origin", Origin)})""",
+            record_name="origin",
+        ),
+        _raw_column(
+            "parent_session_id",
+            """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
+            record_name="parent_session_id",
         ),
         _raw_column(
             "root_session_id", """root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL"""
         ),
-        _raw_column("raw_id", """raw_id                  TEXT"""),
+        _raw_column("raw_id", """raw_id                  TEXT""", record_name="raw_id"),
         _raw_column(
             "parser_fingerprint",
             """-- Written by the parsed-session chokepoint in the same transaction as
@@ -552,13 +578,16 @@ SESSIONS_SPEC = _make_table_spec(
         ),
         _raw_column("lowering_fingerprint", """lowering_fingerprint    TEXT"""),
         _raw_column(
-            "branch_type", f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})"""
+            "branch_type",
+            f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})""",
+            record_name="branch_type",
         ),
         _raw_column("active_leaf_message_id", """active_leaf_message_id  TEXT"""),
-        _raw_column("title", """title                   TEXT"""),
+        _raw_column("title", """title                   TEXT""", record_name="title"),
         _raw_column(
             "session_kind",
             f"""session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)})""",
+            record_name="session_kind",
         ),
         _raw_column(
             "title_source",
@@ -593,6 +622,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- resolved title): this is a display label for the session's identity,
     -- not its content.
     display_name            TEXT""",
+            record_name="display_name",
         ),
         _raw_column(
             "run_settings_json",
@@ -603,6 +633,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- into typed columns would couple this schema to one provider for no
     -- query benefit; nothing here is queried across origins today.
     run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)})""",
+            record_name="run_settings_json",
         ),
         _raw_column(
             "pending_drafts_json",
@@ -617,10 +648,11 @@ SESSIONS_SPEC = _make_table_spec(
     -- and polylogue-nuec were fixed for, on a third axis (mutable session
     -- state rather than acquisition state or provider-remeasurement).
     pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)})""",
+            record_name="pending_drafts_json",
         ),
-        _raw_column("git_branch", """git_branch              TEXT"""),
-        _raw_column("git_repository_url", """git_repository_url      TEXT"""),
-        _raw_column("provider_project_ref", """provider_project_ref    TEXT"""),
+        _raw_column("git_branch", """git_branch              TEXT""", record_name="git_branch"),
+        _raw_column("git_repository_url", """git_repository_url      TEXT""", record_name="git_repository_url"),
+        _raw_column("provider_project_ref", """provider_project_ref    TEXT""", record_name="provider_project_ref"),
         _raw_column("commit_hash", """commit_hash             TEXT"""),
         _raw_column("instructions_text", """instructions_text       TEXT"""),
         _raw_column(
@@ -640,6 +672,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- table's header) -- this column is a parallel exact-dollar figure, not
     -- a token source.
     reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0)""",
+            record_name="reported_cost_usd",
         ),
         _raw_column(
             "message_count", """message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0)"""
@@ -683,12 +716,38 @@ SESSIONS_SPEC = _make_table_spec(
             "assistant_word_count",
             """assistant_word_count    INTEGER NOT NULL DEFAULT 0 CHECK(assistant_word_count >= 0)""",
         ),
-        _raw_column("content_hash", f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}"""),
-        _raw_column("created_at_ms", """created_at_ms           INTEGER"""),
-        _raw_column("updated_at_ms", """updated_at_ms           INTEGER"""),
+        _raw_column(
+            "content_hash",
+            f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}""",
+            record_name="content_hash",
+            select_expression="lower(hex({alias}.content_hash))",
+        ),
+        _raw_column(
+            "created_at_ms",
+            """created_at_ms           INTEGER""",
+            record_name="created_at",
+            select_expression="datetime({alias}.created_at_ms / 1000, 'unixepoch')",
+        ),
+        _raw_column(
+            "updated_at_ms",
+            """updated_at_ms           INTEGER""",
+            record_name="updated_at",
+            select_expression="datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
+        ),
         _raw_column(
             "sort_key_ms",
             """sort_key_ms             INTEGER GENERATED ALWAYS AS (COALESCE(updated_at_ms, created_at_ms)) STORED""",
+            record_name="sort_key",
+            select_expression="{alias}.sort_key_ms / 1000.0",
+        ),
+    ),
+    record_only_columns=(
+        ColumnSpec("metadata", record_name="metadata", select_expression="'{{}}'"),
+        ColumnSpec("version", record_name="version", select_expression="1"),
+        ColumnSpec(
+            "working_directories_json",
+            record_name="working_directories_json",
+            select_expression="(SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = {alias}.session_id ORDER BY position)",
         ),
     ),
     table_constraints=("""PRIMARY KEY(origin, native_id)""",),
