@@ -52,7 +52,9 @@ class Gate:
 #: the user manager, so without this it outlives every gate that starts one and
 #: one accumulates per checkout. The idle clock resets on each connection, so a
 #: checkout under active gating keeps its warm daemon.
-DMYPY_IDLE_TIMEOUT_SECONDS = 900
+# Keep a tight edit-check loop warm without retaining one large daemon per
+# inactive worktree.
+DMYPY_IDLE_TIMEOUT_SECONDS = 180
 
 
 def mypy_command(*, root: Path = ROOT) -> list[str]:
