@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import multiprocessing
 import re
 import webbrowser
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -15,9 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
-from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
-from urllib.request import Request, urlopen
 
 import click
 from typing_extensions import NotRequired, TypedDict
@@ -110,7 +107,6 @@ _PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit
 
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
-_DAEMON_FAST_PATH_TIMEOUT_S = 0.75
 _DAEMON_MUTATION_TIMEOUT_S: float | None = None
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
@@ -1603,111 +1599,6 @@ def _submit_daemon_mutation(
     if payload is not None and client.last_elapsed_ms is not None:
         payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
     return payload
-
-
-def _fetch_daemon_sessions_payload_with_deadline(
-    daemon_url: str,
-    auth_token: str | None,
-    query_params: Mapping[str, object],
-    *,
-    expected_archive_root: Path | None = None,
-) -> dict[str, object] | None:
-    ctx = multiprocessing.get_context("fork")
-    queue: multiprocessing.Queue[dict[str, object] | None] = ctx.Queue(maxsize=1)
-    worker = ctx.Process(
-        target=_fetch_daemon_sessions_payload_worker,
-        args=(daemon_url, auth_token, dict(query_params), expected_archive_root, queue),
-        daemon=True,
-    )
-    worker.start()
-    worker.join(_DAEMON_FAST_PATH_TIMEOUT_S)
-    if worker.is_alive():
-        worker.terminate()
-        worker.join(0.2)
-        return None
-    if worker.exitcode != 0:
-        return None
-    try:
-        payload = queue.get_nowait()
-    except Exception:
-        return None
-    return payload if isinstance(payload, dict) else None
-
-
-def _fetch_daemon_sessions_payload_worker(
-    daemon_url: str,
-    auth_token: str | None,
-    query_params: Mapping[str, object],
-    expected_archive_root: Path | None,
-    queue: multiprocessing.Queue[dict[str, object] | None],
-) -> None:
-    queue.put(
-        _fetch_daemon_sessions_payload_once(
-            daemon_url,
-            auth_token,
-            query_params,
-            expected_archive_root=expected_archive_root,
-        )
-    )
-
-
-def _fetch_daemon_sessions_payload_once(
-    daemon_url: str,
-    auth_token: str | None,
-    query_params: Mapping[str, object],
-    *,
-    expected_archive_root: Path | None = None,
-) -> dict[str, object] | None:
-    if expected_archive_root is not None and not _daemon_matches_archive_root(
-        daemon_url,
-        auth_token,
-        expected_archive_root,
-    ):
-        return None
-    query_string = urlencode(tuple(_daemon_query_pairs(query_params)), doseq=True)
-    url = f"{daemon_url}/api/sessions"
-    if query_string:
-        url = f"{url}?{query_string}"
-    headers = {"Accept": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    try:
-        req = Request(url, headers=headers, method="GET")
-        with urlopen(req, timeout=_DAEMON_FAST_PATH_TIMEOUT_S) as resp:
-            if int(resp.status) != 200:
-                return None
-            data = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _daemon_matches_archive_root(daemon_url: str, auth_token: str | None, expected_archive_root: Path) -> bool:
-    status = _fetch_daemon_status_once(daemon_url, auth_token)
-    if not isinstance(status, Mapping):
-        return False
-    active_root = status.get("active_archive_root")
-    if not isinstance(active_root, str) or not active_root:
-        return False
-    try:
-        return Path(active_root).expanduser().resolve() == expected_archive_root.expanduser().resolve()
-    except OSError:
-        return False
-
-
-def _fetch_daemon_status_once(daemon_url: str, auth_token: str | None) -> dict[str, object] | None:
-    headers = {"Accept": "application/json"}
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    try:
-        req = Request(f"{daemon_url}/api/status", headers=headers, method="GET")
-        with urlopen(req, timeout=_DAEMON_FAST_PATH_TIMEOUT_S) as resp:
-            if int(resp.status) != 200:
-                return None
-            data = json.loads(resp.read().decode("utf-8"))
-    except (HTTPError, URLError, OSError, TimeoutError, ValueError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
 
 
 def _daemon_query_pairs(query_params: Mapping[str, object]) -> Iterable[tuple[str, str]]:

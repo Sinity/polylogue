@@ -5,11 +5,33 @@ from __future__ import annotations
 import pytest
 
 from polylogue.cli.operation_kernel import (
+    OperationEnvelopeError,
     OperationFailedError,
     OperationKernel,
     OperationRequest,
     OperationUnavailableError,
 )
+
+
+def test_daemon_envelope_is_validated_before_renderer_handoff() -> None:
+    request = OperationRequest("cli.query", {})
+    with pytest.raises(OperationEnvelopeError, match="omitted"):
+        OperationKernel(lambda _request: {"operation": "cli.query"}).execute(request)
+
+
+def test_failed_outcome_is_typed_and_never_directly_retried() -> None:
+    called = False
+
+    def direct(_request: OperationRequest) -> object:
+        nonlocal called
+        called = True
+        return {"items": []}
+
+    with pytest.raises(OperationFailedError, match="cancelled"):
+        OperationKernel(lambda _request: {"outcome": "cancelled", "result": None}, direct).execute(
+            OperationRequest("cli.query", {})
+        )
+    assert called is False
 
 
 def test_daemon_and_direct_reads_share_the_result_contract() -> None:

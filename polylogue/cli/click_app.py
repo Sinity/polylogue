@@ -283,6 +283,7 @@ def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
     """Fetch the minimal recent-session page from a config-matched daemon."""
 
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
     from polylogue.cli.select import SelectSessionRow
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
@@ -297,14 +298,19 @@ def _bare_tty_daemon_rows(config: Config) -> list[SelectSessionRow] | None:
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
-    envelope = client.operation(
-        "cli.query",
-        {"params": {"query": (), "limit": 5}},
-        archive_root=str(config.archive_root),
-        index_schema_version=INDEX_SCHEMA_VERSION,
-        daemon_version=POLYLOGUE_VERSION,
-    )
-    payload = envelope.get("result") if envelope and envelope.get("error") is None else None
+    try:
+        result = OperationKernel(
+            lambda request: client.operation(
+                request.operation,
+                dict(request.payload),
+                archive_root=str(config.archive_root),
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                daemon_version=POLYLOGUE_VERSION,
+            )
+        ).execute(OperationRequest("cli.query", {"params": {"query": (), "limit": 5}}))
+    except OperationKernelError:
+        return None
+    payload = result.value if isinstance(result.value, dict) else None
     items = payload.get("items") if payload is not None else None
     if not isinstance(items, list):
         return None

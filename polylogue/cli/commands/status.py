@@ -203,11 +203,13 @@ def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
 
 
 def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
-    """Fetch a typed daemon operation without a health/probe round trip."""
+    """Fetch one typed daemon operation without a health/probe round trip."""
 
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
     client = DaemonClient(
@@ -218,16 +220,19 @@ def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    envelope = client.operation(
-        operation,
-        {},
-        archive_root=str(config.archive_root),
-        daemon_version=POLYLOGUE_VERSION,
-    )
-    if envelope is None or envelope.get("error") is not None:
+    try:
+        result = OperationKernel(
+            lambda request: client.operation(
+                request.operation,
+                dict(request.payload),
+                archive_root=str(config.archive_root),
+                index_schema_version=INDEX_SCHEMA_VERSION,
+                daemon_version=POLYLOGUE_VERSION,
+            )
+        ).execute(OperationRequest(operation, {}))
+    except OperationKernelError:
         return None
-    result = envelope.get("result")
-    return result if isinstance(result, dict) else None
+    return result.value if isinstance(result.value, dict) else None
 
 
 def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
