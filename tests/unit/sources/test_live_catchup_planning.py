@@ -319,6 +319,7 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_BYTES", 100)
 
     calls: list[tuple[list[Path], int | None, int]] = []
+    whole_archive_flags: list[bool] = []
     retry_scan_calls: list[int] = []
 
     async def fake_ingest_files(
@@ -326,8 +327,10 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        whole_archive_convergence: bool = True,
     ) -> None:
         calls.append((paths, queued_file_count, skipped_file_count))
+        whole_archive_flags.append(whole_archive_convergence)
 
     watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
     watcher._schedule_failed_retry_scan = lambda: retry_scan_calls.append(len(calls))  # type: ignore[method-assign]
@@ -338,6 +341,8 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert calls[0][1:] == (5, 0)
     assert calls[1][1:] == (2, 0)
     assert calls[2][1:] == (1, 0)
+    # Whole-archive convergence stages run once, on the last chunk.
+    assert whole_archive_flags == [False, False, True]
     assert retry_scan_calls == [3]
 
 

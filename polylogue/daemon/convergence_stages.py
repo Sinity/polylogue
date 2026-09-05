@@ -426,6 +426,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        whole_archive=True,
     )
 
 
@@ -480,6 +481,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
         execute=execute,
         check_many=check_many,
         execute_many=execute_many,
+        whole_archive=True,
     )
 
 
@@ -539,7 +541,6 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=session_ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
-                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 logger.info(
                     "insights: refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
@@ -614,7 +615,6 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=session_ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
-                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 logger.info(
                     "insights: batch refreshed paths=%d sessions=%d profiles=%d work_events=%d phases=%d threads=%d",
@@ -681,7 +681,6 @@ def make_derived_stage(db_path: Path) -> ConvergenceStage:
                     session_ids=ids,
                     page_size=_DAEMON_INSIGHT_REBUILD_PAGE_SIZE,
                 )
-                _record_fts_freshness_after_insights(conn)
                 conn.commit()
                 remaining = _stale_session_profile_ids(conn, ids)
                 logger.info(
@@ -1067,6 +1066,70 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         false_means_pending=True,
+        whole_archive=True,
+    )
+
+
+def make_fts_readiness_stage(db_path: Path) -> ConvergenceStage:
+    """Publish the exact archive-wide FTS readiness audit once per pass.
+
+    The audit aggregates every ``blocks`` and ``messages_fts`` row, so it is
+    whole-archive work: partition-scoped FTS repair and per-session insight
+    rebuilds leave it to this stage, which runs after both, once per
+    whole-archive convergence pass.
+    """
+
+    def archive_db() -> Path:
+        return _active_archive_index_path(db_path) or db_path
+
+    def publish() -> StageExecuteReturn:
+        database = archive_db()
+        if not database.exists():
+            return True
+        try:
+            conn = _open_archive_insight_write_connection(database)
+            try:
+                _record_fts_freshness_after_insights(conn)
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            if _is_transient_sqlite_lock(exc):
+                logger.info("fts readiness: audit deferred because sqlite is busy: %s", exc)
+                return False
+            logger.warning("fts readiness: audit failed", exc_info=True)
+            raise
+        return True
+
+    def check(path: Path) -> bool:
+        return archive_db().exists()
+
+    def execute(path: Path) -> StageExecuteReturn:
+        return publish()
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        return set(paths) if paths and archive_db().exists() else set()
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
+        return publish() if paths else True
+
+    def check_sessions(session_ids: Sequence[str]) -> set[str]:
+        return set(session_ids) if session_ids and archive_db().exists() else set()
+
+    def execute_sessions(session_ids: Sequence[str]) -> StageExecuteReturn:
+        return publish() if session_ids else True
+
+    return ConvergenceStage(
+        name="fts_readiness",
+        description="Publish the exact archive-wide FTS readiness audit",
+        check=check,
+        execute=execute,
+        check_many=check_many,
+        execute_many=execute_many,
+        check_sessions=check_sessions,
+        execute_sessions=execute_sessions,
+        false_means_pending=True,
+        whole_archive=True,
     )
 
 
@@ -1107,6 +1170,7 @@ def make_default_convergence_stages(
             make_claude_workflow_stage(db_path),
             make_delegation_work_evidence_stage(db_path),
             make_derived_stage(db_path),
+            make_fts_readiness_stage(db_path),
             make_standing_query_stage(db_path, evaluator=ArchiveCanonicalPlanEvaluator(db_path)),
         )
     )
@@ -2449,9 +2513,8 @@ def _archive_insights_execute_ids(
     finally:
         if marker_conn is not None:
             marker_conn.close()
-    # The rebuild commits its own rows. Publish and commit the final exact FTS
-    # state in the same production stage before reporting success.
-    _record_fts_freshness_after_insights(conn)
+    # The rebuild commits its own rows; the exact archive-wide FTS audit is
+    # published once per whole-archive pass by ``make_fts_readiness_stage``.
     conn.commit()
     remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
     logger.info(
@@ -2474,6 +2537,7 @@ __all__ = [
     "make_delegation_work_evidence_stage",
     "make_default_convergence_stages",
     "make_embed_stage",
+    "make_fts_readiness_stage",
     "make_fts_stage",
     "make_derived_stage",
     "make_raw_authority_verdict_cache_stage",

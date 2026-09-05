@@ -109,3 +109,69 @@ def test_hook_paste_enrichment_never_reads_a_sibling_archives_hooks_dir(
     updated = hook_paste_enrichment.enrich_paste_from_hooks(scratch_ops_db)
 
     assert updated == 0
+
+
+def _seed_paste_candidate(index_db: Path, native_id: str, hook_time_ms: int) -> None:
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, ?)
+            """,
+            (native_id, native_id.encode().ljust(32, b"s")[:32], hook_time_ms, hook_time_ms),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, content_hash, occurred_at_ms
+            ) VALUES (?, 'm1', 0, 'user', ?, ?)
+            """,
+            (f"codex-session:{native_id}", native_id.encode().ljust(32, b"m")[:32], hook_time_ms + 100),
+        )
+
+
+def _write_sidecar(hooks_dir: Path, native_id: str) -> Path:
+    path = hooks_dir / f"codex-{native_id}.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "event_type": "UserPromptSubmit",
+                "timestamp": "2026-05-07T12:00:00Z",
+                "payload": {"session_id": native_id, "prompt": "Inspect [Pasted text #1]"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_hook_paste_enrichment_reads_only_the_batch_sessions_sidecars(tmp_path: Path) -> None:
+    """Anti-vacuity: a scan of every sidecar journal would enrich the untouched session too.
+
+    A session's hook journal is ``<provider>-<native_id>.jsonl``; the batch
+    passes its archive session ids and only those journals are read, so the
+    scan is bounded by the batch instead of the archive's whole hook history.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    _seed_paste_candidate(index_db, "batch-native", hook_time_ms)
+    _seed_paste_candidate(index_db, "other-native", hook_time_ms)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    batch_sidecar = _write_sidecar(hooks_dir, "batch-native")
+    _write_sidecar(hooks_dir, "other-native")
+
+    assert hook_paste_enrichment._sidecar_paths(hooks_dir, ("codex-session:batch-native",)) == [batch_sidecar]
+    assert len(hook_paste_enrichment._sidecar_paths(hooks_dir, None)) == 2
+
+    updated = hook_paste_enrichment.enrich_paste_from_hooks(
+        tmp_path / "ops.db", session_ids=("codex-session:batch-native",)
+    )
+
+    assert updated == 1
+    with sqlite3.connect(index_db) as conn:
+        rows = conn.execute("SELECT session_id, has_paste FROM messages ORDER BY session_id").fetchall()
+    assert rows == [("codex-session:batch-native", 1), ("codex-session:other-native", 0)]
