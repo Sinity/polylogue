@@ -1,6 +1,6 @@
 """Claude AI session parser helpers.
 
-Three distinct wire shapes live under the ``claude-ai`` acquisition family:
+Four distinct wire shapes live under the ``claude-ai`` acquisition family:
 
 - ordinary claude.ai conversation exports (``chat_messages``) -- ``parse_ai``.
 - Claude Design agentic chats (``design_chats/*.json``, bd polylogue-tbun) --
@@ -12,6 +12,12 @@ Three distinct wire shapes live under the ``claude-ai`` acquisition family:
   carries no session identity at all (no ``chat_messages``/``messages`` key) --
   represented as a synthetic ``generated_context_pack`` session under the
   existing claude.ai origin -- see ``parse_memories``.
+- the ``projects/<uuid>.json`` project export (bd polylogue-lus6e), which is
+  a project's standing knowledge rather than a conversation: a
+  ``prompt_template`` plus ``docs[]`` entries the user uploaded, injected as
+  context into every chat in that project. Represented as a synthetic session
+  under the existing claude.ai origin, one message per document -- see
+  ``parse_project``.
 """
 
 from __future__ import annotations
@@ -48,6 +54,7 @@ from .common import (
 
 CLAUDE_TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
 CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG = "capture:claude-account-memory"
+CLAUDE_PROJECT_KNOWLEDGE_INGEST_FLAG = "capture:claude-project-knowledge"
 
 logger = get_logger(__name__)
 
@@ -620,6 +627,142 @@ def parse_memories(payload: Mapping[str, object], fallback_id: str) -> ParsedSes
 
 
 # ---------------------------------------------------------------------------
+# claude.ai project export (bd polylogue-lus6e)
+# ---------------------------------------------------------------------------
+
+
+def looks_like_claude_project(payload: object) -> bool:
+    """Detect the ``projects/<uuid>.json`` export shape.
+
+    A project record carries a ``uuid`` plus a ``docs`` list and at least one
+    of the project-only keys ``prompt_template`` / ``is_starter_project``.
+    Requiring ``docs`` to be a list alongside one of those keys keeps it from
+    colliding with a conversation export (which has ``chat_messages`` and
+    neither project key) or with ``memories.json`` (``account_uuid``, no
+    ``docs``).
+    """
+    if not isinstance(payload, dict):
+        return False
+    if not isinstance(payload.get("uuid"), str):
+        return False
+    if not isinstance(payload.get("docs"), list):
+        return False
+    return "prompt_template" in payload or "is_starter_project" in payload
+
+
+@parser_admission("claude_project")
+def parse_project(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
+    """Parse one claude.ai project export into a synthetic session.
+
+    A project is not a conversation: it is the standing context every chat in
+    the project is started with -- the user's ``prompt_template`` and the
+    documents they uploaded as project knowledge. It is represented as a
+    session because that is this archive's only container for provider-
+    reported content, and because it is re-derived on every export exactly
+    like conversation content -- rebuildable, not a durable user assertion.
+
+    Material origin is ``HUMAN_AUTHORED``: the user wrote the prompt template
+    and chose and supplied the documents. ``GENERATED_CONTEXT_PACK`` is the
+    marker for *provider*-generated bundles (``memories.json``) and would
+    misattribute this material.
+
+    ``provider_session_id`` is ``project:<uuid>``, so re-importing a later
+    export batch updates the same session in place.
+    """
+    project_uuid = str(payload.get("uuid") or fallback_id)
+    messages: list[ParsedMessage] = []
+    position = 0
+
+    prompt_template = payload.get("prompt_template")
+    if isinstance(prompt_template, str) and prompt_template.strip():
+        messages.append(
+            ParsedMessage(
+                provider_message_id="prompt-template",
+                role=Role.USER,
+                text=prompt_template,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                message_type=MessageType.MESSAGE,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=prompt_template)],
+                position=position,
+                is_active_path=True,
+            )
+        )
+        position += 1
+
+    raw_docs = payload.get("docs")
+    docs = raw_docs if isinstance(raw_docs, list) else []
+    for doc_index, doc in enumerate(docs):
+        if not isinstance(doc, Mapping):
+            continue
+        content = doc.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        doc_uuid = str(doc.get("uuid") or f"doc-{doc_index}")
+        filename = doc.get("filename")
+        block_metadata: dict[str, object] = {"doc_uuid": doc_uuid}
+        if isinstance(filename, str) and filename:
+            block_metadata["filename"] = filename
+        messages.append(
+            ParsedMessage(
+                provider_message_id=f"doc:{doc_uuid}",
+                role=Role.USER,
+                text=content,
+                timestamp=normalize_timestamp(doc.get("created_at"))
+                if isinstance(doc.get("created_at"), str)
+                else None,
+                material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                message_type=MessageType.MESSAGE,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.DOCUMENT,
+                        text=content,
+                        metadata=block_metadata,
+                    )
+                ],
+                position=position,
+                is_active_path=True,
+            )
+        )
+        position += 1
+
+    active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
+    if active_leaf_message_provider_id is not None:
+        messages[-1] = messages[-1].model_copy(update={"is_active_leaf": True})
+
+    creator = payload.get("creator")
+    session_events = [
+        ParsedSessionEvent(
+            event_type="claude_project_metadata",
+            timestamp=_session_timestamp(payload, "updated_at", "created_at"),
+            payload={
+                "project_uuid": project_uuid,
+                "description": payload.get("description"),
+                "is_private": payload.get("is_private"),
+                "is_starter_project": payload.get("is_starter_project"),
+                "creator_uuid": creator.get("uuid") if isinstance(creator, Mapping) else None,
+                "document_count": sum(1 for message in messages if message.provider_message_id.startswith("doc:")),
+                "summary": str(payload.get("name") or project_uuid),
+            },
+        )
+    ]
+
+    project_name = payload.get("name")
+    return ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id=f"project:{project_uuid}",
+        title=str(project_name) if isinstance(project_name, str) and project_name else "Claude AI project",
+        title_source=TitleSource.ORIGIN if isinstance(project_name, str) and project_name else TitleSource.HEURISTIC,
+        session_kind=SessionKind.STANDARD,
+        created_at=_session_timestamp(payload, "created_at"),
+        updated_at=_session_timestamp(payload, "updated_at"),
+        messages=messages,
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        session_events=session_events,
+        ingest_flags=[CLAUDE_PROJECT_KNOWLEDGE_INGEST_FLAG],
+    )
+
+
+# ---------------------------------------------------------------------------
 # claude.ai conversation export
 # ---------------------------------------------------------------------------
 
@@ -681,6 +824,8 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # before they were split into their own Origin/Provider.
     if looks_like_claude_memories(payload):
         return parse_memories(payload, fallback_id)
+    if looks_like_claude_project(payload):
+        return parse_project(payload, fallback_id)
 
     raw_messages = payload.get("chat_messages")
     chat_messages = raw_messages if isinstance(raw_messages, list) else []
