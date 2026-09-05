@@ -1275,6 +1275,78 @@ def raw_frontier_integrity_projection(
     )
 
 
+@dataclass(frozen=True)
+class RawFrontierBlockedPaths:
+    """Which source paths the frontier proof refuses, and what it cannot attribute.
+
+    ``source_paths`` holds every path a violation or authority gap names. A
+    batch may proceed with its other paths. ``unattributed_reason`` is set
+    when something blocks that no path explains (an unreadable tier, a raw
+    with no source path, missing source raws); that still blocks everything.
+    """
+
+    source_paths: frozenset[str]
+    unattributed_reason: str | None
+
+
+def raw_frontier_blocked_source_paths(
+    archive_root: Path,
+    raw_materialization_readiness: Mapping[str, object],
+) -> RawFrontierBlockedPaths:
+    """Attribute the frontier proof's refusals to exact source paths."""
+
+    projection = raw_frontier_integrity_projection(
+        archive_root,
+        raw_materialization_readiness,
+        sample_limit=1_000_000,
+    )
+    if projection.available and projection.overall_status == "healthy":
+        return RawFrontierBlockedPaths(frozenset(), None)
+    paths: set[str] = set()
+    unattributed: list[str] = []
+    if not projection.available:
+        unattributed.append(projection.summary)
+    if projection.missing_source_raw_count:
+        unattributed.append(projection.missing_source_raw_reason)
+    if projection.broken_head_status == "unknown" and not projection.broken_head_count:
+        unattributed.append(projection.broken_head_reason)
+    if projection.cursor_ahead_status == "unknown" and not (
+        projection.cursor_ahead_count or projection.cursor_authority_gap_count
+    ):
+        unattributed.append(projection.cursor_ahead_reason)
+    for ahead in projection.cursor_ahead_samples:
+        paths.add(ahead.source_path)
+    for gap in projection.cursor_authority_gap_samples:
+        if gap.source_path is None:
+            unattributed.append(gap.reason)
+        else:
+            paths.add(gap.source_path)
+    if projection.broken_head_samples:
+        raw_ids = {sample.accepted_raw_id for sample in projection.broken_head_samples}
+        source_db_path = archive_root / "source.db"
+        try:
+            from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+            conn = open_readonly_connection(source_db_path, validate_schema=False)
+        except (OSError, sqlite3.Error) as exc:
+            unattributed.append(f"source tier is unreadable: {exc}")
+        else:
+            try:
+                by_raw = _source_paths_for_raw_ids(conn, raw_ids)
+            except sqlite3.Error as exc:
+                unattributed.append(f"source raw path lookup failed: {exc}")
+                by_raw = {}
+            finally:
+                conn.close()
+            for sample in projection.broken_head_samples:
+                path = by_raw.get(sample.accepted_raw_id)
+                if path is None:
+                    unattributed.append(f"broken head {sample.accepted_raw_id} has no source path")
+                else:
+                    paths.add(path)
+    return RawFrontierBlockedPaths(frozenset(paths), "; ".join(unattributed) or None)
+
+
 def unknown_raw_frontier_integrity_projection(
     reason: str,
     *,

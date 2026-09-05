@@ -198,6 +198,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
+    from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 
 logger = get_logger(__name__)
 
@@ -585,6 +586,7 @@ class LiveBatchProcessor:
         sync_runner: LiveBatchSyncRunner | None = None,
         parse_stage: LiveParseStage | None = None,
     ) -> None:
+        self._refused_paths: frozenset[Path] = frozenset()
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._cursor = cursor
@@ -700,7 +702,42 @@ class LiveBatchProcessor:
             for path in paths
         ):
             return None
+        # The proof names the paths it refuses. Refusing only those keeps one
+        # anomalous file from stalling the other 45,000; a refusal that no
+        # path explains still blocks everything.
+        blocked = self._blocked_source_paths()
+        if blocked.unattributed_reason is None:
+            if paths is None:
+                logger.warning(
+                    "live.watcher: cursor authority refuses %d source path(s); path-less route proceeds: %s",
+                    len(blocked.source_paths),
+                    reason,
+                )
+                return None
+            selected = [Path(path) for path in paths]
+            refused = frozenset(
+                path
+                for path in selected
+                if str(path) in blocked.source_paths or str(path.resolve()) in blocked.source_paths
+            )
+            if len(refused) < len(selected):
+                self._refused_paths = refused
+                if refused:
+                    logger.warning(
+                        "live.watcher: cursor authority refused %d of %d path(s) in this batch: %s",
+                        len(refused),
+                        len(selected),
+                        reason,
+                    )
+                return None
         raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
+
+    def _blocked_source_paths(self) -> RawFrontierBlockedPaths:
+        archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
+        from polylogue.storage.raw_retention import raw_frontier_blocked_source_paths
+
+        return raw_frontier_blocked_source_paths(archive_root, raw_materialization_readiness_snapshot(archive_root))
 
     async def ingest_files(
         self,
@@ -713,6 +750,11 @@ class LiveBatchProcessor:
     ) -> LiveBatchMetrics:
         """Ingest files in batch, run post-ingest convergence, and return metrics."""
         authorization = self.require_cursor_authority(paths)
+        refused_paths = self._refused_paths
+        self._refused_paths = frozenset()
+        if refused_paths:
+            paths = [path for path in paths if path not in refused_paths]
+            skipped_file_count += len(refused_paths)
         if is_fully_degraded():
             # The daemon has been marked structurally unable to ingest (e.g.
             # schema mismatch detected at preflight or on the first batch).

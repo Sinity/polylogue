@@ -393,6 +393,38 @@ async def test_cursor_authority_seam_blocks_normal_live_route_before_writes(tmp_
     watcher.stop()
 
 
+@pytest.mark.asyncio
+async def test_cursor_authority_refuses_only_the_named_path(tmp_path: Path) -> None:
+    """One path's violation refuses that path; its healthy siblings still ingest.
+
+    Anti-vacuity: restoring the global refusal (raising whenever the block
+    reason is non-None) makes this batch raise instead of ingesting the
+    sibling, and the sibling's raw never lands in source.db.
+    """
+    _processor, watcher, _cursor, blocked_path = _seed_live_cursor_authority_case(tmp_path)
+    sibling = blocked_path.parent / "sibling.jsonl"
+    sibling.write_bytes(
+        json.dumps(_codex_session_meta("session-2")).encode()
+        + b"\n"
+        + json.dumps(
+            _codex_message(message_id="m9", role="user", text="sibling", timestamp="2026-05-01T00:00:00Z")
+        ).encode()
+        + b"\n"
+    )
+    before = _live_archive_snapshot(tmp_path)
+
+    metrics = await watcher._ingest_files([blocked_path, sibling])
+
+    assert metrics.skipped_file_count == 1
+    assert metrics.succeeded_file_count == 1
+    assert _live_archive_snapshot(tmp_path) != before
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        paths = {row[0] for row in conn.execute("SELECT source_path FROM raw_sessions")}
+    assert str(sibling) in paths
+    assert str(blocked_path) in paths  # the seeded prefix raw, unchanged
+    watcher.stop()
+
+
 def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
