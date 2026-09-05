@@ -266,6 +266,12 @@ class CatchUpPlan:
     needed_bytes: int
 
 
+def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
+    """SQLite lock contention, as opposed to a broken database."""
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message or "busy" in message
+
+
 class LiveWatcher:
     """Async watcher that ingests grown JSONL files in batches.
 
@@ -598,11 +604,13 @@ class LiveWatcher:
             # planning pass. ``_plan_catch_up`` can reconcile missing cursors
             # and rebase matching filesystem observations before ingestion has
             # a chance to apply its own gate.
-            self._batch_processor.require_cursor_authority()
+            admitted = self._batch_processor.admit_paths([candidate.path for candidate in candidates])
             await self._run_writer_sync("watcher.catch_up.cursor_initialize", self._cursor.initialize)
-            self._batch_processor.require_cursor_authority()
-            logger.info("live.watcher: catch-up scan over %d file(s)", len(candidates))
-            plan_holder.append(self._plan_catch_up(candidates))
+            admitted = self._batch_processor.admit_paths(admitted)
+            admitted_set = set(admitted)
+            planned = tuple(candidate for candidate in candidates if candidate.path in admitted_set)
+            logger.info("live.watcher: catch-up scan over %d file(s)", len(planned))
+            plan_holder.append(self._plan_catch_up(planned))
 
         try:
             await self._run_coordinated("watcher.catch_up.prefilter", prepare_catch_up)
@@ -688,7 +696,23 @@ class LiveWatcher:
                         ):
                             self._defer_unaccounted_failed_retries(chunk_paths)
 
-                await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
+                try:
+                    await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
+                except sqlite3.OperationalError as exc:
+                    if not _is_retryable_lock_error(exc):
+                        raise
+                    # A write that lost a lock race is this chunk's failure,
+                    # never the daemon's death: the cursor retry policy brings
+                    # the chunk back. Rehearsal 2026-09-05 died here while the
+                    # Drive catch-up held source.db for 112 s.
+                    failed += len(chunk_paths)
+                    logger.warning(
+                        "live.watcher: catch-up chunk %d/%d deferred, archive write lost a lock race: %s",
+                        chunk_index,
+                        len(chunks),
+                        exc,
+                    )
+                    self._defer_unaccounted_failed_retries(chunk_paths)
             if self._stop.is_set():
                 await self._emit_catch_up_terminal(
                     operation_id, "stopped", plan, attempted, ingested, failed, stage_timings_s, cycle_started
@@ -1008,12 +1032,13 @@ class LiveWatcher:
             self._forced_reparse_paths.difference_update(paths)
 
         async def flush_batch() -> None:
+            nonlocal paths
             # Filtering a changed-file batch invokes cursor reconciliation and
             # lifecycle actuators, so the source-selection proof must be
             # consumed before initialization or any stateful decision.
-            self._batch_processor.require_cursor_authority()
+            paths = self._batch_processor.admit_paths(paths)
             await self._run_writer_sync("watcher.live_batch.cursor_initialize", self._cursor.initialize)
-            self._batch_processor.require_cursor_authority()
+            paths = self._batch_processor.admit_paths(paths)
             # Filter to files that actually need work.
             cursor_records = self._cursor.get_records(paths)
             needed = []
@@ -1032,11 +1057,18 @@ class LiveWatcher:
                 return
 
             logger.info("live.watcher: batching %d changed file(s)", len(needed))
-            metrics = await self._ingest_files(
-                needed,
-                queued_file_count=len(paths),
-                skipped_file_count=len(paths) - len(needed),
-            )
+            try:
+                metrics = await self._ingest_files(
+                    needed,
+                    queued_file_count=len(paths),
+                    skipped_file_count=len(paths) - len(needed),
+                )
+            except sqlite3.OperationalError as exc:
+                if not _is_retryable_lock_error(exc):
+                    raise
+                logger.warning("live.watcher: changed-file batch deferred, archive write lost a lock race: %s", exc)
+                self._defer_unaccounted_failed_retries(needed)
+                return
             if metrics is not None:
                 _log_ingest_metrics("live.watcher: changed-file batch", metrics)
                 if (
@@ -1671,7 +1703,7 @@ class LiveWatcher:
         skipped_file_count: int = 0,
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
-        self._batch_processor.require_cursor_authority()
+        self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
 
             async def ingest() -> LiveBatchMetrics:
