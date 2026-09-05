@@ -120,6 +120,24 @@ def _claude_code_task_dispatch_payload(*, session_id: str) -> list[dict[str, obj
                 "content": [{"type": "tool_result", "tool_use_id": "toolu_task1", "content": "Subagent finished."}],
             },
         },
+        # Real wire shape read by _accumulate_delegation_progress
+        # (code_parser.py:1841-1884): a top-level "progress" record whose
+        # "data" is an "agent_progress" tick naming the dispatching
+        # parentToolUseID and the spawned child's composed session id.
+        # Without this record parentToolUseID is never wired to
+        # session_links.parent_tool_use_block_id (origin_specs.py:1040-1043).
+        {
+            "type": "progress",
+            "uuid": "p1",
+            "parentUuid": "a1",
+            "sessionId": session_id,
+            "timestamp": "2025-01-01T10:00:06Z",
+            "parentToolUseID": "toolu_task1",
+            "data": {
+                "type": "agent_progress",
+                "childSessionId": f"{session_id}:agent-delegation-child",
+            },
+        },
     ]
 
 
