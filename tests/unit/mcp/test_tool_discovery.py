@@ -134,13 +134,14 @@ def test_retired_maintenance_operations_are_not_declared() -> None:
     to the ``operation`` Literal in
     ``server_cutover.register_cutover_privileged_tools`` turns this red.
     """
-    import inspect
     import typing
 
     server = cast(MCPServerUnderTest, build_server(capabilities=ALL_CAPABILITIES))
     tool = server._tool_manager._tools["maintenance"]
-    annotation = inspect.signature(tool.fn).parameters["operation"].annotation
-    declared = set(typing.get_args(annotation))
+    # The handler is defined under ``from __future__ import annotations``, so the
+    # Literal only resolves through get_type_hints.
+    hints = typing.get_type_hints(tool.fn)
+    declared = set(typing.get_args(hints["operation"]))
 
     assert declared
     assert not (declared & _RETIRED_MAINTENANCE_OPERATIONS), (
