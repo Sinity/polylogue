@@ -79,7 +79,7 @@ For the managed deployed-reader browser smoke, use the declared AgentCTL
 operation:
 
 ```bash
-agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
+agentctl job start polylogue deployment_browser_smoke --workspace <path>
 ```
 
 ### First-party browser credential journey
