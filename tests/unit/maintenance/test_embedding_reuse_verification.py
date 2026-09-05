@@ -225,3 +225,17 @@ def test_immutable_preservation_leaves_the_source_sidecars_alone(tmp_path: Path)
     preserve_embedding_vectors(source, tmp_path / "preserved.db", immutable=True)
 
     assert not Path(str(source) + "-shm").exists()
+
+
+def test_the_reuse_proof_does_not_overwrite_the_preservation_record(tmp_path: Path) -> None:
+    """Red if both receipts share a path: proving reuse would erase what was copied."""
+    from polylogue.maintenance.embedding_preservation import ac2_receipt_path
+
+    fresh, preserved, recomputed = _reuse_fixture(tmp_path)
+    preservation = Path(str(preserved) + ".receipt.json")
+    before = preservation.read_text(encoding="utf-8")
+
+    verify_embedding_reuse(fresh, preserved, recomputed, model=_MODEL, receipt_path=ac2_receipt_path(preserved))
+
+    assert preservation.read_text(encoding="utf-8") == before
+    assert json.loads(ac2_receipt_path(preserved).read_text(encoding="utf-8"))["schema"] == AC2_RECEIPT_SCHEMA

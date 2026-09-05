@@ -111,6 +111,16 @@ def _receipt_path(copy_path: Path) -> Path:
     return copy_path.with_suffix(copy_path.suffix + ".receipt.json")
 
 
+def ac2_receipt_path(copy_path: str | Path) -> Path:
+    """Where a copy's reuse proof lives.
+
+    Distinct from the preservation receipt so proving reuse cannot overwrite
+    the record of what was copied.
+    """
+    path = Path(copy_path).absolute()
+    return path.with_suffix(path.suffix + ".ac2.json")
+
+
 def _fsync_file(path: Path) -> None:
     handle = os.open(path, os.O_RDONLY)
     try:
@@ -406,7 +416,9 @@ def recomputed_vector_hashes(index_db: str | Path, *, model: str) -> dict[str, b
     """
     from polylogue.storage.embeddings.materialization import archive_embeddable_messages_relation
 
-    with closing(_connect(Path(index_db).absolute(), readonly=True, immutable=True)) as conn:
+    # A plain read-only open, never immutable: this index is the rebuilt
+    # archive's, which convergence may still be writing.
+    with closing(_connect(Path(index_db).absolute(), readonly=True)) as conn:
         relation = archive_embeddable_messages_relation(conn, alias="embeddable", model=model)
         rows = conn.execute(
             f"SELECT embeddable.message_id, embeddable.vector_derivation_hash FROM {relation} "
@@ -512,7 +524,7 @@ def delete_preserved_copy(path: str | Path, *, receipt_path: str | Path | None =
     copy_path = Path(path).absolute()
     if not copy_path.is_file() or copy_path.is_symlink():
         raise FileNotFoundError(copy_path)
-    receipt = Path(receipt_path).absolute() if receipt_path is not None else _receipt_path(copy_path)
+    receipt = Path(receipt_path).absolute() if receipt_path is not None else ac2_receipt_path(copy_path)
     if not receipt.is_file() or receipt.is_symlink():
         raise FileNotFoundError(receipt)
     try:
@@ -541,6 +553,7 @@ __all__ = [
     "RestoreMissReason",
     "ReuseMiss",
     "ReuseMissReason",
+    "ac2_receipt_path",
     "archive_tier_paths",
     "delete_preserved_copy",
     "preserve_embedding_vectors",

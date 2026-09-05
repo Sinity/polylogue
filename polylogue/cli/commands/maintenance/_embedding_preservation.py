@@ -110,7 +110,7 @@ def restore_command(copy_path: Path, root: Path | None, model: str | None, outpu
     "receipt_path",
     type=click.Path(path_type=Path),
     default=None,
-    help="Write the AC2 proof here. Only this proof authorizes `discard`.",
+    help="Write the AC2 proof here (default: the copy's own `.ac2.json`).",
 )
 @click.option("--output-format", "output_format", type=click.Choice(["plain", "json"]), default="plain")
 def verify_command(
@@ -124,6 +124,7 @@ def verify_command(
     """AC2: prove the rebuilt archive reuses the preserved vectors. Read-only."""
     from polylogue.maintenance.embedding_preservation import (
         DEFAULT_MINIMUM_HIT_RATE,
+        ac2_receipt_path,
         recomputed_vector_hashes,
         verify_embedding_reuse,
     )
@@ -137,7 +138,7 @@ def verify_command(
         recomputed,
         model=resolved,
         minimum_hit_rate=DEFAULT_MINIMUM_HIT_RATE if minimum_hit_rate is None else minimum_hit_rate,
-        receipt_path=receipt_path,
+        receipt_path=ac2_receipt_path(copy_path) if receipt_path is None else receipt_path,
     )
     proof = verification.as_receipt()
     if output_format == "json":
@@ -163,7 +164,7 @@ def verify_command(
     "receipt_path",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     default=None,
-    help="AC2 proof authorizing deletion (default: the copy's own receipt file).",
+    help="AC2 proof authorizing deletion (default: the copy's own `.ac2.json`).",
 )
 def discard_command(copy_path: Path, receipt_path: Path | None) -> None:
     """AC3: delete the preserved copy once its AC2 proof matches it."""
