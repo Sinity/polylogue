@@ -59,7 +59,12 @@ TopologyCapabilityDimension = Literal[
     "inheritance_branch_point",
     "parent_dispatch",
 ]
-SourceFrontierKind = Literal["exact-prefix", "claude-header-body"]
+#: ``whole-snapshot``: one logical session is written as complete files
+#: that share no byte prefix, so successive observations are competing
+#: snapshots rather than continuations and byte revision authority has
+#: nothing to be a proof about. Such an origin is governed by membership
+#: authority from its first observation.
+SourceFrontierKind = Literal["exact-prefix", "claude-header-body", "whole-snapshot"]
 DatabaseMemberDisposition = Literal["acquire", "acquire-partial", "out-of-scope"]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -1360,6 +1365,7 @@ def _executable_spec(
     tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
     database_capability: DatabaseSourceCapability | None = None,
+    frontier_kind: SourceFrontierKind = "exact-prefix",
     topology_capabilities: TopologyCapabilities,
 ) -> OriginSpec:
     return OriginSpec(
@@ -1384,6 +1390,7 @@ def _executable_spec(
         public_filter=public_filter,
         topology_capabilities=topology_capabilities,
         database_capability=database_capability,
+        frontier_kind=frontier_kind,
     )
 
 
@@ -1457,6 +1464,26 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
+        # A Codex state database is a snapshot of a mutable source, not a
+        # byte stream: successive snapshots share no prefix, so the byte
+        # frontier has nothing to be a frontier over. Declaring the family
+        # here makes admission write the terminal non-session receipt in the
+        # same transaction as the raw, which is what keeps the snapshot out
+        # of the cursor/head comparison entirely.
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="state_database_snapshot",
+                path_pattern=r"(?:^|/)\.codex/(?:[^/]+/)*[^/]+\.(?:sqlite|db)$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="state_snapshot",
+                fidelity_note=(
+                    "Complete snapshot of a live Codex state database; every retained revision is "
+                    "a whole blob and none is a continuation of another."
+                ),
+                path_suffixes=(".sqlite", ".db"),
+            ),
+        ),
         tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
@@ -1508,6 +1535,10 @@ def _gemini_cli_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
         display_description="Gemini CLI local sessions (lab: Google)",
+        # Gemini CLI writes one session as several complete checkpoint
+        # files that share a ``sessionId`` and no byte prefix, so the
+        # cohort has no byte revision chain to accept a head from.
+        frontier_kind="whole-snapshot",
         topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "

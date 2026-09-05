@@ -1400,7 +1400,15 @@ class CursorStore:
         for callers that have not adopted the fingerprint check.
 
         Keeps the prior cursor observation intact so the caller still routes
-        the replacement through full acquisition.
+        the replacement through full acquisition, and keeps ``excluded`` set:
+        a quarantine is lifted by an admission that retains evidence, never
+        by the observation that merely asks for one. Clearing it here left a
+        row with a stale ``byte_offset`` and ``excluded = 0`` for the whole
+        window before re-acquisition, which the raw-frontier cursor map
+        reads as committed ingest authority with no accepted head. A live
+        database whose stat changes on every poll re-entered that window on
+        every poll, so the gate refused the backlog for a path that was
+        never admitted in the first place.
         """
 
         def mutate(current: CursorRecord | None) -> CursorRecord | None:
@@ -1422,7 +1430,6 @@ class CursorStore:
                 updated_at=datetime.now(UTC).isoformat(),
                 failure_count=0,
                 next_retry_at=None,
-                excluded=False,
             )
 
         self._read_modify_write_cursor_record(path, mutate, actuator="revive_replaced_exclusion")

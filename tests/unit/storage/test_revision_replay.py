@@ -2931,3 +2931,78 @@ def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(
         ).fetchone()
         assert replayed_hash is not None
         assert bytes(replayed_hash[0]) == bytes(stored_hash[0])
+
+
+def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: Path) -> None:
+    """An ordinary path classification may not take back a terminal failure carrier.
+
+    polylogue-lqo6a: a raw refused with a typed terminal outcome owns its
+    ``raw_artifacts`` row; ``_terminal_artifact_paths`` reads that carrier to
+    settle the path for the raw-frontier gate. Re-observing the same
+    coordinate re-derives an ordinary path classification, and overwriting
+    the carrier with it leaves the path neither terminal nor headed.
+
+    Anti-vacuity: dropping ``terminal_carrier_overwrite_predicate`` from
+    either upsert lets the ordinary row land, and the final assertions read
+    ``coordinator_session_stream``/``parse_as_session = 1``.
+    """
+    from polylogue.storage.runtime import ArchiveSourceArtifact
+    from polylogue.storage.sqlite.archive_tiers.source_write import upsert_raw_artifact
+
+    source_path = "projects/-home-user/summary-only.jsonl"
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b'{"type":"summary","summary":"only a summary"}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+        archive.record_raw_failure_evidence(
+            raw_id,
+            provider=Provider.CLAUDE_CODE,
+            source_path=source_path,
+            source_index=0,
+            acquired_at_ms=1,
+            kind=RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE,
+        )
+        archive.mark_raw_parse_failed(
+            raw_id,
+            provider=Provider.CLAUDE_CODE,
+            error=ValueError("parsed raw payload produced no sessions with positive conversational evidence"),
+            preserve_existing_failure_evidence=True,
+        )
+        with sqlite3.connect(tmp_path / "source.db") as probe:
+            carrier_id, carrier_kind = probe.execute(
+                "SELECT artifact_id, artifact_kind FROM raw_artifacts WHERE raw_id = ?",
+                (raw_id,),
+            ).fetchone()
+        assert carrier_id.startswith("raw-failure:")
+        assert carrier_kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+
+        # The ordinary Claude path rule re-observing the exact same carrier id.
+        upsert_raw_artifact(
+            archive._ensure_source_conn(),
+            raw_id,
+            ArchiveSourceArtifact(
+                artifact_id=carrier_id,
+                origin="claude-code-session",
+                source_path=source_path,
+                source_index=0,
+                artifact_kind="coordinator_session_stream",
+                support_status="supported_parseable",
+                classification_reason="OriginSpec Claude artifact rule: coordinator_invocation_stream",
+                parse_as_session=True,
+                schema_eligible=True,
+                first_observed_at_ms=2,
+                last_observed_at_ms=2,
+            ),
+        )
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        kind, parse_as_session = conn.execute(
+            "SELECT artifact_kind, parse_as_session FROM raw_artifacts WHERE artifact_id = ?",
+            (carrier_id,),
+        ).fetchone()
+    assert kind == RawFailureEvidenceKind.TERMINAL_UNSUPPORTED_SHAPE.value
+    assert parse_as_session == 0

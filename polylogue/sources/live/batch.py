@@ -3171,8 +3171,15 @@ class LiveBatchProcessor:
                         # from the first observation. Replacement snapshots
                         # can then advance only through strict parsed-content
                         # growth while every prior raw blob remains retained.
+                        # An origin declared ``whole-snapshot`` says the same
+                        # thing about its own files: one logical session is
+                        # written as several complete files that share no byte
+                        # prefix, so a byte-revision cohort can only ever fail
+                        # to order them. Admit both through the same typed
+                        # membership authority.
                         is_browser_capture_snapshot = (
                             self._source_name_for(Path(record.source_path)) == "browser-capture"
+                            or frontier_kind_for_origin(origin_from_provider(provider)) == "whole-snapshot"
                         )
                         if is_browser_capture_snapshot or archive.raw_membership_raw_ids(logical_source_key):
                             archive.replace_raw_membership_census(
@@ -3283,12 +3290,32 @@ class LiveBatchProcessor:
                                     logical_source_key
                                 )
                                 if not retired_siblings:
+                                    # Competing full revisions of one logical
+                                    # key with no orderable byte chain. The
+                                    # bytes are retained and a later
+                                    # observation can still order them, so
+                                    # this is a deferred frontier conflict --
+                                    # but it must leave a typed carrier.
+                                    # Dropping straight through left the raw
+                                    # quarantined with no receipt at all,
+                                    # which the raw-frontier gate can neither
+                                    # settle nor resolve.
                                     logger.warning(
                                         "live.watcher: no unique byte-revision candidate accepted for %s "
-                                        "(logical_source_key=%s) -- surfacing as failed",
+                                        "(logical_source_key=%s) -- deferring as a frontier conflict",
                                         record.source_path,
                                         logical_source_key,
                                     )
+                                    archive.record_raw_failure_evidence(
+                                        source_raw_id,
+                                        provider=provider,
+                                        source_path=record.source_path,
+                                        source_index=record.source_index or 0,
+                                        acquired_at_ms=acquired_at_ms,
+                                        kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                                    )
+                                    result.deferred_raw_ids[record.raw_id] = source_raw_id
+                                    _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
                                 logger.info(
                                     "live.watcher: reunifying %s with %d retired sibling(s) under membership "
