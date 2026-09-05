@@ -3849,7 +3849,7 @@ def _write_attachment_row(
     conn: sqlite3.Connection,
     attachment_id: str,
     attachment: ParsedAttachment,
-    preacquired_blobs: dict[int, tuple[str | None, int | None, str]] | None,
+    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None,
 ) -> None:
     """Upsert the attachment's identity and bytes, leaving refs to the caller."""
     acquired_blob = (preacquired_blobs or {}).get(id(attachment))
