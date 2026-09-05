@@ -1158,14 +1158,14 @@
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 15,
+          "sqlite_stat1_rows": 14,
           "planner_stats_present": true
         },
         "index": {
           "path": "<PATH>",
           "exists": true,
           "wal_bytes": 0,
-          "sqlite_stat1_rows": 38,
+          "sqlite_stat1_rows": 37,
           "planner_stats_present": true
         },
         "embeddings": {
