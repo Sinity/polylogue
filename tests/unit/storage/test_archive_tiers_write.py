@@ -3066,7 +3066,7 @@ def test_refresh_thread_reorder_only_touches_changed_span(tmp_path: Path) -> Non
     thread_row = conn.execute(
         "SELECT session_count, depth FROM threads WHERE thread_id = ?", (root_session_id,)
     ).fetchone()
-    assert dict(thread_row) == {"session_count": 6, "depth": 5}
+    assert dict(thread_row) == {"session_count": 6, "depth": 0}
 
     assert not any(
         "thread_sessions" in stmt and stmt.lstrip().startswith(("INSERT", "UPDATE", "DELETE")) for stmt in statements

@@ -3765,22 +3765,10 @@ def _write_attachments(
         )
         attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
     touched_attachment_ids: set[str] = set()
+    unowned_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(id(attachment))
-        if message_id is None:
-            continue
-        direction, producer_ref = _attachment_provenance(
-            attachment, owning_messages.get(message_id), resolved_message_id=message_id
-        )
-        if direction not in {"user_input", "model_output"}:
-            raise ValueError(f"attachment direction is not supported: {direction!r}")
-        if direction == "model_output" and not producer_ref:
-            raise ValueError(
-                "model_output attachment requires producer provenance: "
-                f"attachment_id={attachment.provider_attachment_id!r}"
-            )
-        touched_attachment_ids.add(attachment_id)
         acquired_blob = (preacquired_blobs or {}).get(id(attachment))
         blob_hash, byte_count, acquisition_status = (
             acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
@@ -3808,6 +3796,20 @@ def _write_attachments(
                 acquisition_status,
             ),
         )
+        if message_id is None:
+            unowned_attachment_ids.add(attachment_id)
+            continue
+        direction, producer_ref = _attachment_provenance(
+            attachment, owning_messages.get(message_id), resolved_message_id=message_id
+        )
+        if direction not in {"user_input", "model_output"}:
+            raise ValueError(f"attachment direction is not supported: {direction!r}")
+        if direction == "model_output" and not producer_ref:
+            raise ValueError(
+                "model_output attachment requires producer provenance: "
+                f"attachment_id={attachment.provider_attachment_id!r}"
+            )
+        touched_attachment_ids.add(attachment_id)
         ref_position = attachment_positions[id(attachment)]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
@@ -3851,7 +3853,7 @@ def _write_attachments(
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
-    affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
+    affected_attachment_ids = (touched_attachment_ids | (refresh_attachment_ids or set())) - unowned_attachment_ids
     # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
     # can no longer be matched to a message via the shared owner key, e.g.
     # the owning message became a duplicate-native-id exclusion or dropped
