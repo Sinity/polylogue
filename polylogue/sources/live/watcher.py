@@ -1210,17 +1210,12 @@ class LiveWatcher:
             # parser fingerprint change is exactly the other legitimate
             # reason a previously-poisoned observation deserves a fresh
             # attempt: the code that failed to parse it no longer exists.
-            if identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT:
-                return False
-            self._cursor.revive_replaced_exclusion(
-                path,
-                byte_size=size,
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-                current_parser_fingerprint=_PARSER_FINGERPRINT,
-            )
-            return True
+            # The quarantine itself is lifted by the acquisition pass that
+            # re-decides this path, not by noticing that it deserves one; see
+            # ``BatchLiveIngestor._ingest_full_records``. Reporting work here
+            # without clearing ``excluded`` keeps the row out of the
+            # raw-frontier cursor map until something is actually admitted.
+            return not (identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT)
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False

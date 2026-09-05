@@ -1464,26 +1464,6 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
-        # A Codex state database is a snapshot of a mutable source, not a
-        # byte stream: successive snapshots share no prefix, so the byte
-        # frontier has nothing to be a frontier over. Declaring the family
-        # here makes admission write the terminal non-session receipt in the
-        # same transaction as the raw, which is what keeps the snapshot out
-        # of the cursor/head comparison entirely.
-        artifact_rules=(
-            OriginArtifactRule(
-                kind="state_database_snapshot",
-                path_pattern=r"(?:^|/)\.codex/(?:[^/]+/)*[^/]+\.(?:sqlite|db)$",
-                parse_policy="raw-only",
-                parser_path=None,
-                coverage_role="state_snapshot",
-                fidelity_note=(
-                    "Complete snapshot of a live Codex state database; every retained revision is "
-                    "a whole blob and none is a continuation of another."
-                ),
-                path_suffixes=(".sqlite", ".db"),
-            ),
-        ),
         tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",

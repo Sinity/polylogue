@@ -2946,8 +2946,7 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
     either upsert lets the ordinary row land, and the final assertions read
     ``coordinator_session_stream``/``parse_as_session = 1``.
     """
-    from polylogue.storage.runtime import ArchiveSourceArtifact
-    from polylogue.storage.sqlite.archive_tiers.source_write import upsert_raw_artifact
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 
     source_path = "projects/-home-user/summary-only.jsonl"
     initialize_active_archive_root(tmp_path)

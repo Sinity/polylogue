@@ -1480,6 +1480,26 @@ class LiveBatchProcessor:
             )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
+        if raw_fingerprint is None and self._archive_source_db_path().exists():
+            # A cursor commit is a claim that these bytes were consumed and
+            # their evidence retained. With the source tier present and no
+            # raw row for this path, nothing was retained, so advancing would
+            # make the bytes unreachable: the frontier gate then reads the
+            # path as a cursor absent from the source tier, and no route can
+            # ever re-read it. Leave the cursor where it is with a typed,
+            # retryable reason instead.
+            self._last_cursor_write_stale = True
+            logger.warning(
+                "live.watcher: refusing to advance cursor past bytes that left no source evidence: %s",
+                path,
+            )
+            self._cursor.record_convergence_debt(
+                stage="raw_parse_recovery",
+                subject_type="source_path",
+                subject_id=str(path),
+                error="cursor advance refused: ingest retained no source-tier evidence for this path",
+            )
+            return 0
         # SQLite-backed sources are identified by an acquisition revision,
         # not by the snapshot file's byte length. Record the live database
         # observation so a stable source does not look perpetually grown when
@@ -2076,6 +2096,9 @@ class LiveBatchProcessor:
                 )
                 ingested.append(path)
 
+        # One ops-tier read for the whole batch: only a quarantined path has a
+        # quarantine to lift, and the per-path revival below takes a lock.
+        excluded_paths = frozenset(self._cursor.list_excluded())
         for path in (path for path in paths if path not in antigravity_pb_paths):
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
@@ -2085,6 +2108,23 @@ class LiveBatchProcessor:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
+            # Lift a quarantine here, in the pass that re-decides the path,
+            # rather than when the watcher merely notices it is worth
+            # re-deciding. Lifting it at notice time left the row
+            # ``excluded = 0`` carrying its old byte offset for the whole
+            # window before this pass ran, and the raw-frontier cursor map
+            # reads exactly that shape as committed ingest authority with no
+            # accepted head. A source whose stat changes on every poll --
+            # a live database -- re-entered that window on every poll.
+            if str(path) in excluded_paths:
+                self._cursor.revive_replaced_exclusion(
+                    path,
+                    byte_size=stat.st_size,
+                    st_dev=stat.st_dev,
+                    st_ino=stat.st_ino,
+                    mtime_ns=stat.st_mtime_ns,
+                    current_parser_fingerprint=self._current_parser_fingerprint(),
+                )
             source_class = (
                 None
                 if path.suffix.lower() == ".zip"
