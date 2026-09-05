@@ -147,19 +147,28 @@ class ParseDispatchPlan:
     worker_count: int
 
 
-def resolve_archive_ingest_dispatch(*, parse_workers: int | None = None) -> ParseDispatchPlan:
-    """Worker-count decision for ``archive_ingest.py``'s re-ingest file-walk parse.
+def resolve_archive_ingest_dispatch(*, path_count: int, total_bytes: int, worker_ceiling: int) -> ParseDispatchPlan:
+    """Pool-kind + worker-count decision for ``archive_ingest.py``'s file-walk parse.
 
-    Unchanged formula: an explicit ``parse_workers`` override (clamped to at
-    least 1) wins; otherwise :func:`resolve_parse_worker_count` (CPU count,
-    ceiling adjusted for a free-threaded build). Always a process pool -- the
-    caller's own ``workers <= 1`` branch is the escape hatch to sequential,
-    preserved unchanged at the call site rather than folded into
-    :data:`PoolKind` here, since that branch also skips constructing the pool
-    context entirely (a real, not merely nominal, sequential path).
+    Sized by the work the walk actually found, on the same byte tiers as
+    :func:`resolve_ingest_batch_dispatch`: ``<= 8 MiB`` sequential, ``<= 64
+    MiB`` capped at 4 workers, above that ``min(path_count, cpus, ceiling)``.
+    A spawn pool costs a fresh interpreter and a full ``polylogue`` import per
+    worker; below the first tier that setup exceeds the parse it replaces, and
+    a spawn failure under host pressure is absorbed by the driver's per-file
+    ``except`` as a silently dropped file rather than surfacing as an error.
+
+    ``worker_ceiling`` is the caller's already-resolved
+    :func:`resolve_parse_worker_count` value, so the operator knob keeps one
+    home. A ceiling of 1 never reaches here: it selects the caller's
+    source-iterator escape hatch, which is a different route from the walk.
     """
-    worker_count = resolve_parse_worker_count() if parse_workers is None else max(1, parse_workers)
-    return ParseDispatchPlan(PoolKind.PROCESS, worker_count)
+    if path_count <= 1 or total_bytes <= 8 * 1024 * 1024:
+        return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
+    cpus = available_cpus() or 4
+    if total_bytes <= 64 * 1024 * 1024:
+        return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(path_count, cpus, worker_ceiling, 4)))
+    return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(path_count, cpus, worker_ceiling)))
 
 
 def resolve_validation_dispatch(*, record_count: int) -> ParseDispatchPlan:

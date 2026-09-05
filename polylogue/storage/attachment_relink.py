@@ -39,6 +39,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import attachment_message_owner_key, message_owner_resolution
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
@@ -72,6 +73,10 @@ _MESSAGE_MISSING_REASON = (
     "matched raw content but the owning message is no longer present in the current index "
     "(session likely re-ingested without it since)"
 )
+_OWNER_AMBIGUOUS_REASON = (
+    "the raw session reproduces this attachment but more than one message claims its owner "
+    "coordinate, so no ref may be guessed"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +99,7 @@ class RelinkableAttachment:
 class UnrecoverableAttachmentReason(StrEnum):
     NO_AUTHORITATIVE_RAW = "no_authoritative_raw"
     MESSAGE_MISSING = "message_missing"
+    OWNER_AMBIGUOUS = "owner_ambiguous"
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +385,20 @@ def _match_session_payload(
     attachments_by_message: dict[str, list[ParsedAttachment]] = {}
     for attachment in payload.parsed_session.attachments:
         attachment_id = _attachment_id(session_id, attachment)
-        owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        try:
+            owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        except MessageOwnerAmbiguityError:
+            # The writer retains such an attachment as typed unowned evidence
+            # (write.py:_write_attachments), so its ref-less row reaches this
+            # scan. The ambiguity is the same at re-parse time: report it as a
+            # typed unrecoverable outcome rather than propagating out of the
+            # plan.
+            if attachment_id in pending:
+                ineligible_reasons.setdefault(
+                    attachment_id,
+                    (UnrecoverableAttachmentReason.OWNER_AMBIGUOUS, _OWNER_AMBIGUOUS_REASON),
+                )
+            continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is None:
             if attachment_id in pending:

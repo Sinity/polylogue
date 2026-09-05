@@ -12,7 +12,8 @@ import json
 import os
 from pathlib import Path
 
-from polylogue.core.enums import BlockType
+from polylogue.config import Source
+from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.live.tool_result_sidecars import (
     SidecarDebt,
     SidecarMatch,
@@ -20,7 +21,10 @@ from polylogue.sources.live.tool_result_sidecars import (
     join_tool_result_sidecars_session_scoped,
     resolve_sibling_transcript_paths,
 )
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.code_parser import apply_tool_result_sidecars, parse_code
+from polylogue.sources.revision_backfill import _parse_one
+from polylogue.sources.source_parsing import iter_source_sessions_with_raw
 
 _TRUNCATED_NEEDLE = "zz_sentinel_needle_only_in_full_output"
 
@@ -299,3 +303,85 @@ def test_session_scoped_join_never_emits_debt_for_subagent_meta_companion_files(
 
     assert result.matched == ()
     assert result.debt == ()
+
+
+def test_tool_results_sidecar_never_becomes_a_session_on_either_chokepoint(tmp_path: Path) -> None:
+    """polylogue-b508: a ``tool-results/`` file is raw-only, whatever it contains.
+
+    A tool call's own output can reproduce a genuine session-document shape --
+    a messages list, even an ``id`` field shaped like the ``toolu_*`` id the
+    sidecar is named for. Content heuristics alone therefore cannot refuse this
+    family; the ``tool_result_sidecar`` path rule is the gate, and both parse
+    chokepoints must honour it: the discovery/acquisition walk that the one-shot
+    importer and the live watcher share, and the offline replay engine that
+    rebuilds from retained raws.
+
+    Anti-vacuity: widening ``tool_result_sidecar``'s ``path_pattern`` so it no
+    longer matches, or relaxing its ``parse_policy`` from ``raw-only``, admits
+    a session whose ``provider_session_id`` is the ``toolu_*`` fragment id --
+    the phantom shape this law forbids.
+    """
+    body = json.dumps(
+        {
+            "id": "toolu_01ABCDEFGHIJKLMNOPQRSTUV",
+            "messages": [
+                {"role": "user", "content": "tool output that happens to look like a chat"},
+                {"role": "assistant", "content": "reply"},
+            ],
+        }
+    ).encode("utf-8")
+
+    sidecar = (
+        tmp_path / ".claude" / "projects" / "proj" / "sess" / "tool-results" / "toolu_01ABCDEFGHIJKLMNOPQRSTUV.json"
+    )
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_bytes(body)
+
+    rule = artifact_rule_for_path(Provider.CLAUDE_CODE, str(sidecar))
+    assert rule is not None
+    assert (rule.kind, rule.parse_policy) == ("tool_result_sidecar", "raw-only")
+
+    replayed = _parse_one(Provider.CLAUDE_CODE, body, str(sidecar))
+    assert replayed == []
+
+    acquired = list(iter_source_sessions_with_raw(Source(name="claude-code", path=sidecar), capture_raw=False))
+    assert [session.provider_session_id for _raw, session in acquired] == []
+
+
+def test_sidecar_event_time_stays_unknown_when_the_file_carries_no_mtime_evidence() -> None:
+    """polylogue-x1gd: absent time evidence stays typed unknown, never invented.
+
+    The sidecar file's own mtime is the only timestamp evidence this join has --
+    sidecars carry no embedded time, and for genuine debt the owning
+    ``tool_result`` block is by definition unresolvable. When ``stat`` cannot
+    supply it (``file_mtime_ms`` stays ``None``), the emitted
+    ``claude_tool_result_sidecar`` event must carry no timestamp, leaving
+    ``occurred_at_ms`` NULL, rather than an ingestion-time stamp that would
+    read downstream as "this sidecar was written at import".
+
+    Anti-vacuity: defaulting the missing-mtime branch to the current clock or
+    to the transcript's own timestamp makes both ``event.timestamp`` values
+    non-None and turns this red.
+    """
+    from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+
+    payload = [_record("m-aaa", "toolu_AAA", "small full text")]
+    join_result = SidecarJoinResult(
+        matched=(
+            SidecarMatch(
+                tool_use_id="toolu_AAA",
+                filename="toolu_AAA.txt",
+                byte_size=15,
+                content_hash="0" * 64,
+                was_truncated=False,
+                full_text="small full text",
+            ),
+        ),
+        debt=(SidecarDebt(filename="orphan123.txt", byte_size=7, reason="no_owning_tool_result_block"),),
+    )
+
+    acquired = parse_code(payload, "fallback-sidecar", tool_result_sidecars=join_result)
+
+    sidecar_events = [event for event in acquired.session_events if event.event_type == "claude_tool_result_sidecar"]
+    assert len(sidecar_events) == 2
+    assert [event.timestamp for event in sidecar_events] == [None, None]

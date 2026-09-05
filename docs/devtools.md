@@ -97,6 +97,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
+| `devtools bench query-envelope` | Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
 
 ### Archive
