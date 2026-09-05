@@ -286,7 +286,7 @@ def test_missing_scoped_queue_runner_refuses_before_queueing(tmp_path: Path, mon
         lambda name, path=None: None if name == pytest_slot.QUEUE_RUNNER else original_which(name, path),
     )
 
-    with pytest.raises(PytestSlotUnavailableError, match="sinnixd-queue-run"):
+    with pytest.raises(PytestSlotUnavailableError, match="agentctl-run"):
         run_pytest(
             _marker_command(tmp_path / "pytest-ran"),
             cwd=str(tmp_path),
