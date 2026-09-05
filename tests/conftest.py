@@ -62,14 +62,19 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 #: A test's own working set of descriptors. Legitimate per-test use is a
-#: handful of tier connections and their WAL/SHM peers; a leak opens one per
-#: operation and runs into the hundreds. The gap between the two is wide, so
-#: the bound is set to fail leaks without policing ordinary fixtures.
+#: handful of tier connections and their WAL/SHM peers, plus whatever a
+#: session-scoped fixture opens on first use; a single test that retains more
+#: than this is leaking outright.
 FD_LEAK_ALLOWANCE = 64
 #: A descriptor table this full ends the next test with EMFILE, whoever opened
-#: them. Failing here attributes the exhaustion to a test that is still
-#: running rather than to its successor.
+#: them. Exhaustion is usually reached by accumulation -- the 2026-09-05 cascade
+#: retained three descriptors per test across hundreds of tests, so no
+#: single-test bound would have caught it -- which is why the report at this
+#: point names the largest cumulative retainers rather than only the current
+#: test.
 FD_EXHAUSTION_FRACTION = 0.75
+#: How many retainers the exhaustion report names.
+FD_RETAINER_REPORT_COUNT = 8
 
 
 def _open_fd_count() -> int | None:
@@ -97,20 +102,30 @@ def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
     yield
 
 
+#: Cumulative descriptor retention per test, for the exhaustion report.
+FD_RETAINED: dict[str, int] = {}
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
-    """Fail the test that leaks descriptors, not the later test that runs out.
+    """Name the test that leaks descriptors, not the later test that runs out.
 
     A descriptor opened and never closed survives its test, so exhaustion
     surfaces as an unrelated ``OSError: [Errno 24]`` in whichever test happens
     to run next -- eleven such victims in one xdist worker on 2026-09-05.
     Counting after the wrapped teardown means fixture finalizers have already
     released what they own, so what remains is genuinely retained; raising here
-    marks this item's teardown, which is what attributes the leak to it.
+    marks this item's teardown rather than the next item's setup.
     """
     del nextitem
     yield
     check_descriptor_balance(item)
+
+
+def _retainer_report() -> str:
+    ranked = sorted(FD_RETAINED.items(), key=lambda entry: entry[1], reverse=True)
+    named = [f"    {retained:+d}  {nodeid}" for nodeid, retained in ranked[:FD_RETAINER_REPORT_COUNT] if retained > 0]
+    return "\n".join(["  largest cumulative retainers in this worker:", *named]) if named else ""
 
 
 def check_descriptor_balance(item: pytest.Item) -> None:
@@ -119,16 +134,18 @@ def check_descriptor_balance(item: pytest.Item) -> None:
     after = _open_fd_count()
     if before is None or after is None:
         return
+    retained = after - before
+    if retained:
+        FD_RETAINED[item.nodeid] = FD_RETAINED.get(item.nodeid, 0) + retained
     limit = _fd_soft_limit()
     if after >= limit * FD_EXHAUSTION_FRACTION:
         raise AssertionError(
             f"file-descriptor table is {after}/{limit} full after {item.nodeid}; "
-            "the next test would fail with EMFILE for reasons that are not its own"
+            "the next test would fail with EMFILE for reasons that are not its own.\n" + _retainer_report()
         )
-    leaked = after - before
-    if leaked > FD_LEAK_ALLOWANCE:
+    if retained > FD_LEAK_ALLOWANCE:
         raise AssertionError(
-            f"{item.nodeid} leaked {leaked} file descriptors ({before} -> {after}); "
+            f"{item.nodeid} leaked {retained} file descriptors ({before} -> {after}); "
             "close what the test opens, or close it in the production object that opened it"
         )
 
