@@ -620,7 +620,7 @@ def test_drain_raw_materialization_once_refuses_only_the_broken_paths(
     """A broken path is left out and recorded as debt; the rest of the backlog converges.
 
     Anti-vacuity: raising on any attributed refusal (the pre-split gate)
-    never reaches ``repair_materialization``; dropping the
+    never reaches ``converge_materialization``; dropping the
     ``excluded_source_paths`` passthrough materializes the refused path; and
     not recording the refusal leaves ``convergence_debt`` empty. Each turns
     one assertion red.
@@ -654,7 +654,7 @@ def test_drain_raw_materialization_once_refuses_only_the_broken_paths(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: SimpleNamespace(restored_count=0),
     )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_repair)
     monkeypatch.setattr(
         "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
         lambda _config: (),
@@ -747,10 +747,10 @@ def test_whale_writer_route_refuses_a_seed_on_a_refused_path(
     )
 
     def fake_repair(*_args: object, **_kwargs: object) -> object:
-        mutations.append("repair_materialization")
+        mutations.append("converge_materialization")
         return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
 
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_repair)
     monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
