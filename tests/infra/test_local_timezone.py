@@ -8,7 +8,7 @@ goes red.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -31,4 +31,4 @@ def test_pin_restores_the_previous_zone(monkeypatch: pytest.MonkeyPatch) -> None
 
     _rendered(monkeypatch)
 
-    assert datetime(2026, 7, 1, 19, 48, tzinfo=timezone.utc).astimezone().utcoffset().total_seconds() == 0
+    assert datetime(2026, 7, 1, 19, 48, tzinfo=timezone.utc).astimezone().utcoffset() == timedelta(0)
