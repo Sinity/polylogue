@@ -161,7 +161,7 @@ boundary from somewhere else.
 
 **What it is:** `_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES = 64 * 1024 * 1024`
 (`polylogue/daemon/cli.py:89`), threaded as `max_payload_bytes` into every
-daemon-driven `repair_materialization` call
+daemon-driven `converge_materialization` call
 (`polylogue/daemon/cli.py:154` and `:850`). It caps how large a raw's blob
 the daemon's conveyor will parse per pass; a raw above this envelope is
 deferred (`record_resource_blocked_revision_census`,
