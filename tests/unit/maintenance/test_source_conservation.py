@@ -447,3 +447,67 @@ def test_check_json_carries_every_term_with_its_rule(tmp_path: Path) -> None:
         assert isinstance(term, dict)
         assert isinstance(term["rule"], str) and term["rule"]
         assert isinstance(term["blocking"], bool)
+
+
+def _insert_attachment(conn: sqlite3.Connection, *, attachment_id: str, ref_count: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO attachments(attachment_id, display_name, media_type, byte_count, acquisition_status, ref_count)
+        VALUES (?, 'a.png', 'image/png', 0, 'unfetched', ?)
+        """,
+        (attachment_id, ref_count),
+    )
+
+
+def test_owner_ambiguous_attachment_types_as_unowned_and_does_not_block(tmp_path: Path) -> None:
+    """An attachment written unreferenced because its owner is ambiguous is explained.
+
+    The writer inserts such a row with ``ref_count`` 0 and deliberately keeps
+    it out of the ref-count sweep, so it never had a ref to lose.
+
+    Anti-vacuity: without the ``ref_count`` split every ref-less attachment
+    types as ``attachment_unreferenced``, which blocks, and the check goes red.
+    """
+    _seed(tmp_path)
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_attachment(index_conn, attachment_id="unowned-1", ref_count=0)
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert _count(check, "attachment_unowned") == 1
+    assert _terms(check)["attachment_unowned"]["blocking"] is False
+    assert _terms(check)["attachment_unowned"]["sample"] == ["unowned-1"]
+    assert _count(check, "attachment_unreferenced") == 0
+    assert check.evidence["blocking_count"] == 0
+    assert "attachment_unreferenced" not in check.summary
+
+
+def test_refless_attachment_with_stale_ref_count_still_blocks(tmp_path: Path) -> None:
+    """A row whose refs went away without the sweep is unreachable and blocks.
+
+    Its non-zero ``ref_count`` is the evidence that refs once existed: the
+    sweep would have recomputed it to 0 and deleted the row.
+
+    Anti-vacuity: if the split classified every ref-less attachment as the
+    explained ``attachment_unowned`` term, this archive would verify green and
+    the genuine orphan would go unreported.
+    """
+    _seed(tmp_path)
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_attachment(index_conn, attachment_id="orphan-1", ref_count=2)
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "attachment_unreferenced") == 1
+    assert _terms(check)["attachment_unreferenced"]["blocking"] is True
+    assert _terms(check)["attachment_unreferenced"]["sample"] == ["orphan-1"]
+    assert _count(check, "attachment_unowned") == 0
+    assert check.evidence["blocking_count"] == 1

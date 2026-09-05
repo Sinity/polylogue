@@ -190,3 +190,37 @@ def test_trigger_loss_is_incompatible_and_never_runtime_repaired(test_conn: sqli
     assert test_conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'messages_fts_ad'").fetchone() is None
 
     restore_fts_triggers_sync(test_conn)
+
+
+def test_partition_inspection_and_publish_search_the_block_id_index(test_conn: sqlite3.Connection) -> None:
+    """Anti-vacuity: a ``substr(block_id, ...)`` prefix predicate plans as a table scan.
+
+    Every statement the partition inspection and publish issue against
+    ``messages_fts_identity`` must be served by the ``block_id`` index, so a
+    partition's cost is bounded by its own rows rather than the archive's.
+    The sibling key ``s1`` / ``s10`` proves the range is exact at the ``:``
+    boundary.
+    """
+    adapter = FtsDerivationAdapter()
+    short_key, _short_rowid = _seed_session(test_conn, "s1")
+    long_key, long_rowid = _seed_session(test_conn, "s10")
+    test_conn.execute("DELETE FROM messages_fts_identity WHERE rowid = ?", (long_rowid,))
+    test_conn.commit()
+
+    statements: list[str] = []
+    test_conn.set_trace_callback(statements.append)
+    try:
+        short_inspection = adapter.inspect(test_conn, short_key)
+        assert adapter.publish(test_conn, adapter.input_for(test_conn, short_key))
+    finally:
+        test_conn.set_trace_callback(None)
+
+    assert short_inspection.status is FtsKeyStatus.VALID
+    assert adapter.inspect(test_conn, long_key).status is FtsKeyStatus.STALE
+    identity_statements = [
+        sql for sql in statements if "messages_fts_identity" in sql and sql.lstrip().upper().startswith("SELECT")
+    ]
+    assert identity_statements, "inspection and publish must consult the identity ledger"
+    for sql in identity_statements:
+        plan = " | ".join(str(row[3]) for row in test_conn.execute(f"EXPLAIN QUERY PLAN {sql}").fetchall())
+        assert "SCAN i" not in plan and "SCAN messages_fts_identity" not in plan, (sql, plan)

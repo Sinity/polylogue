@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
 from hashlib import sha256
 from pathlib import Path
 
@@ -32,12 +33,32 @@ _PASTE_EVENT_TYPE = "UserPromptSubmit"
 _TIMESTAMP_TOLERANCE_MS = 3000
 
 
-def _iter_hook_paste_events(hooks_dir: Path) -> list[dict[str, object]]:
+def _sidecar_paths(hooks_dir: Path, session_ids: Iterable[str] | None) -> list[Path]:
+    """Sidecar journals to scan: every one, or only the given sessions'.
+
+    ``polylogue-hook`` journals each session to ``<provider>-<native_id>.jsonl``
+    in the sidecar dir, so a session's paste events live in the one file named
+    by its native id. Scoping to the batch's sessions keeps the scan bounded by
+    the batch instead of by the archive's whole hook history.
+    """
+    if not hooks_dir.exists():
+        return []
+    if session_ids is None:
+        return sorted(hooks_dir.glob("*.jsonl"))
+    paths: dict[Path, None] = {}
+    for session_id in session_ids:
+        native_id = str(session_id).split(":", 1)[-1]
+        if not native_id:
+            continue
+        for candidate in sorted(hooks_dir.glob(f"*-{native_id}.jsonl")):
+            paths[candidate] = None
+    return list(paths)
+
+
+def _iter_hook_paste_events(hooks_dir: Path, session_ids: Iterable[str] | None = None) -> list[dict[str, object]]:
     """Scan hook sidecar JSONL files, return UserPromptSubmit events with paste."""
     events: list[dict[str, object]] = []
-    if not hooks_dir.exists():
-        return events
-    for jsonl_path in hooks_dir.glob("*.jsonl"):
+    for jsonl_path in _sidecar_paths(hooks_dir, session_ids):
         try:
             with open(jsonl_path, encoding="utf-8") as fh:
                 for line in fh:
@@ -163,7 +184,7 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
     return updated
 
 
-def enrich_paste_from_hooks(db_path: Path) -> int:
+def enrich_paste_from_hooks(db_path: Path, *, session_ids: Iterable[str] | None = None) -> int:
     """Scan hook sidecar files and update has_paste on matching messages.
 
     ``db_path`` is the caller's ops.db path (``archive_root / "ops.db"``), so
@@ -172,9 +193,12 @@ def enrich_paste_from_hooks(db_path: Path) -> int:
     archive it was actually called for, never a different one that happens to
     be the process-wide default.
 
+    ``session_ids`` (archive ``origin:native_id`` ids) bounds the scan to those
+    sessions' sidecar journals; ``None`` scans every journal in the directory.
+
     Returns the number of messages updated.
     """
-    events = _iter_hook_paste_events(db_path.parent / "hooks")
+    events = _iter_hook_paste_events(db_path.parent / "hooks", session_ids)
     if not events:
         return 0
 

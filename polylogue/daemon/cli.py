@@ -914,13 +914,21 @@ async def _periodic_convergence_check(
     sources: tuple[WatchSource, ...],
     *,
     catch_up_complete: asyncio.Event | None = None,
+    catch_up_active: Callable[[], bool] | None = None,
 ) -> None:
-    """Periodically retry recorded derived convergence debt."""
+    """Periodically retry recorded derived convergence debt.
+
+    The archive-wide exact FTS audit is whole-archive work; while the watcher
+    is inside a chunked catch-up it is skipped (the catch-up's last chunk
+    publishes readiness) instead of rescanning the growing archive between
+    chunks.
+    """
     db = _active_index_db_path()
     await _await_catch_up_gate(catch_up_complete, loop_name="convergence debt retry")
     while True:
         await _retry_convergence_debt_once(db)
-        await _run_periodic_fts_convergence_once(db)
+        if catch_up_active is None or not catch_up_active():
+            await _run_periodic_fts_convergence_once(db)
         await asyncio.sleep(_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS)
 
 
@@ -2865,6 +2873,9 @@ async def _run_daemon_services_under_active_writer_lease(
         # generation before publishing either HTTP socket.  Otherwise an
         # immediate similarity request can recreate legacy WAL sidecars after
         # the lifecycle checkpoint and turn a clean restart into a failure.
+        # Filled once the watcher exists; maintenance loops consult it for
+        # catch-up activity without holding the watcher before creation.
+        watcher_holder: list[LiveWatcher] = []
         if not watcher_blocked:
             await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
             if lifecycle_events_enabled:
@@ -2949,7 +2960,11 @@ async def _run_daemon_services_under_active_writer_lease(
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
             periodic_loops = [
                 _periodic_raw_materialization_convergence(catch_up_complete=catch_up_complete_gate),
-                _periodic_convergence_check(sources, catch_up_complete=catch_up_complete_gate),
+                _periodic_convergence_check(
+                    sources,
+                    catch_up_complete=catch_up_complete_gate,
+                    catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
+                ),
                 _periodic_wal_checkpoint(),
                 _periodic_fts_merge(),
                 _periodic_heartbeat(),
@@ -3009,6 +3024,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         catch_up_event_emitter=emit_catch_up_cycle,
                         write_coordinator=write_coordinator,
                     )
+                    watcher_holder.append(watcher)
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
                     if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
                         maintenance_tasks.append(

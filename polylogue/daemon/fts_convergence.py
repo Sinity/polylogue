@@ -80,7 +80,11 @@ class FtsConvergenceOwner:
                 )
             with open_daemon_connection(self._db_path, timeout=30.0) as conn:
                 result = FtsDerivationAdapter().converge(conn, keys=partition_keys)
-                if result.outcome is FtsOutcome.DONE:
+                # The readiness projection is an exact archive-wide audit;
+                # a partition-scoped pass cannot claim it and must not pay
+                # for it (``make_fts_readiness_stage`` publishes it once per
+                # whole-archive convergence pass).
+                if result.outcome is FtsOutcome.DONE and partition_keys is None:
                     self._publish_readiness_projection(conn)
             state = {
                 FtsOutcome.DONE: FtsOwnerState.READY_EXACT,

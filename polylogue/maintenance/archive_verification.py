@@ -71,6 +71,7 @@ from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.maintenance import PLANNER_STATS_COVERED_TABLES
 
 logger = get_logger(__name__)
 
@@ -78,9 +79,8 @@ logger = get_logger(__name__)
 DEFAULT_SAMPLE_LIMIT = 10
 
 
-#: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
-#: (polylogue-l3tk: fresh generations without stats pick pathological plans).
-_PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "session_links", "action_pairs")
+#: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for.
+_PLANNER_STATS_COVERED_TABLES = PLANNER_STATS_COVERED_TABLES
 
 
 @dataclass

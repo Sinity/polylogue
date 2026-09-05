@@ -323,3 +323,28 @@ def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
         conn = archive._ensure_source_conn()
         rows = conn.execute("SELECT logical_source_key FROM raw_authority_verdicts WHERE raw_id = 'moved'").fetchall()
     assert [row[0] for row in rows] == ["codex:s1"]
+
+
+def test_find_work_classifies_every_cohort_in_two_statements(tmp_path: Path) -> None:
+    """Anti-vacuity: a per-cohort probe issues two statements per cohort, red at three cohorts."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _bind_full(archive, raw_id="fresh-1", payload=b"fresh\n", logical_source_key="codex:fresh")
+        _bind_full(archive, raw_id="stale-1", payload=b"stale\n", logical_source_key="codex:stale")
+        _bind_full(archive, raw_id="cold-1", payload=b"cold\n", logical_source_key="codex:cold")
+        get_or_compute_raw_authority_verdicts(archive, "codex:fresh", now_ms=1000)
+        get_or_compute_raw_authority_verdicts(archive, "codex:stale", now_ms=1000)
+        _bind_full(archive, raw_id="stale-2", payload=b"stale\nmore\n", logical_source_key="codex:stale")
+
+        conn = archive._ensure_source_conn()
+        statements: list[str] = []
+        conn.set_trace_callback(statements.append)
+        try:
+            work = find_raw_authority_verdict_cache_work(conn)
+            bounded = find_raw_authority_verdict_cache_work(conn, max_cohorts=1)
+        finally:
+            conn.set_trace_callback(None)
+
+    assert work == RawAuthorityVerdictCacheWork(("codex:cold", "codex:stale"))
+    assert bounded == RawAuthorityVerdictCacheWork(("codex:cold",))
+    assert len(statements) == 4
