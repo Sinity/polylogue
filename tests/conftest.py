@@ -61,6 +61,63 @@ def pytest_configure(config: pytest.Config) -> None:
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
 
 
+#: A test's own working set of descriptors. Legitimate per-test use is a
+#: handful of tier connections and their WAL/SHM peers; a leak opens one per
+#: operation and runs into the hundreds. The gap between the two is wide, so
+#: the bound is set to fail leaks without policing ordinary fixtures.
+FD_LEAK_ALLOWANCE = 64
+#: A descriptor table this full ends the next test with EMFILE, whoever opened
+#: them. Failing here attributes the exhaustion to a test that is still
+#: running rather than to its successor.
+FD_EXHAUSTION_FRACTION = 0.75
+
+
+def _open_fd_count() -> int | None:
+    """Descriptors this process holds, or None where /proc is unavailable."""
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:
+        return None
+
+
+def _fd_soft_limit() -> int:
+    import resource
+
+    return int(resource.getrlimit(resource.RLIMIT_NOFILE)[0])
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+    """Fail the test that leaks descriptors, not the later test that runs out.
+
+    A descriptor opened and never closed survives its test, so exhaustion
+    surfaces as an unrelated ``OSError: [Errno 24]`` in whichever test happens
+    to run next -- eleven such victims in one xdist worker on 2026-09-05. The
+    count is taken around the whole protocol, so fixture teardown has already
+    released what it owns and what remains is genuinely retained.
+    """
+    del nextitem
+    before = _open_fd_count()
+    yield
+    after = _open_fd_count()
+    if before is None or after is None:
+        return
+    limit = _fd_soft_limit()
+    if after >= limit * FD_EXHAUSTION_FRACTION:
+        pytest.fail(
+            f"file-descriptor table is {after}/{limit} full after {item.nodeid}; "
+            "the next test would fail with EMFILE for reasons that are not its own",
+            pytrace=False,
+        )
+    leaked = after - before
+    if leaked > FD_LEAK_ALLOWANCE:
+        pytest.fail(
+            f"{item.nodeid} leaked {leaked} file descriptors ({before} -> {after}); "
+            "close what the test opens, or close it in the production object that opened it",
+            pytrace=False,
+        )
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
         "--polylogue-file-batch",

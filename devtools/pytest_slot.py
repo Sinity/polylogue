@@ -179,9 +179,69 @@ def contained_pytest_run(
     return argv, contained, scratch
 
 
-def holds_pytest_slot(env: Mapping[str, str]) -> bool:
-    """Whether this process is already inside the host's pytest slot."""
-    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env)
+def _process_ancestry(pid: int, *, proc: Path) -> Iterator[int]:
+    """This process and each of its parents, ending at pid 1 or an unreadable one."""
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        yield pid
+        try:
+            fields = (proc / str(pid) / "stat").read_text(encoding="utf-8").rpartition(")")[2].split()
+        except OSError:
+            return
+        try:
+            pid = int(fields[1])
+        except (IndexError, ValueError):
+            return
+
+
+def _launch_document_of(pid: int, *, proc: Path) -> Path | None:
+    """The launch document a queue-runner process was started with, if this is one."""
+    try:
+        argv = (proc / str(pid) / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+    except OSError:
+        return None
+    words = [word for word in argv if word]
+    if not any(Path(word).name.removeprefix(".").removesuffix("-wrapped") in QUEUE_RUNNERS for word in words):
+        return None
+    return Path(words[-1]) if words and words[-1].endswith(".json") else None
+
+
+def declared_pool_of_enclosing_job(env: Mapping[str, str], *, proc: Path = Path("/proc")) -> str | None:
+    """The pool declared by the queue task this process runs inside, if any.
+
+    The queue runner exports nothing that names the job's pool, and the pool's
+    systemd slice is not visible from every host configuration, so neither the
+    environment nor the cgroup classifies the process reliably. The launch
+    document does: the runner is an ancestor of this process and carries the
+    document's path as its final argument, and the document declares ``pool``.
+    """
+    del env
+    for pid in _process_ancestry(os.getpid(), proc=proc):
+        document_path = _launch_document_of(pid, proc=proc)
+        if document_path is None:
+            continue
+        try:
+            document = json.loads(document_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        pool = document.get("pool") if isinstance(document, Mapping) else None
+        if isinstance(pool, str):
+            return pool
+    return None
+
+
+def holds_pytest_slot(env: Mapping[str, str], *, proc: Path = Path("/proc")) -> bool:
+    """Whether this process is already inside the host's pytest slot.
+
+    A task in the pytest pool holds the single slot for as long as it runs, so
+    enqueueing from inside one waits on a group only it can drain. That is a
+    deadlock, not contention: it starved every queued check for thirty minutes
+    on 2026-09-05 until the job was killed by hand.
+    """
+    if env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env):
+        return True
+    return declared_pool_of_enclosing_job(env, proc=proc) == PYTEST_GROUP
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:

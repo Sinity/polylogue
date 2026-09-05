@@ -71,10 +71,43 @@ def _resolved(executable: str, env: Mapping[str, str] | None) -> bool:
     return shutil.which(executable, path=(env or os.environ).get("PATH")) is not None
 
 
+#: Told to whoever hits an unprovisioned checkout. The devshell's shellHook
+#: builds and syncs the venv; sharing another checkout's venv is not a
+#: substitute, because its editable install resolves the product to that tree.
+UNPROVISIONED_ENVIRONMENT_REMEDY = (
+    "this checkout has no .venv: run `nix develop --accept-flake-config --command true` here. "
+    "Never share or symlink another checkout's .venv -- its editable install would run that tree's product."
+)
+
+
+def unprovisioned_environment(executable: str | None) -> str | None:
+    """The absent virtualenv root a gate executable was resolved against, if any.
+
+    ``venv_bin`` addresses tools inside the invoking checkout deliberately, so
+    a missing tool is normally a real gate failure. An entirely absent ``.venv``
+    is a different fact: nothing is installed, the tool is not missing, and
+    reporting the first tool as unavailable describes neither.
+    """
+    if not executable:
+        return None
+    parts = Path(executable).parts
+    if len(parts) < 3 or parts[-2] != "bin" or parts[-3] != ".venv":
+        return None
+    venv_root = Path(*parts[:-2])
+    return None if venv_root.is_dir() else str(venv_root)
+
+
 def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[str, str] | None = None) -> GateResult:
     """Preflight the executable owned by a required subprocess gate."""
     executable = str(command[0]) if command else None
     available = executable is not None and _resolved(executable, env)
+    if available:
+        diagnosis, details = "gate_passed", ()
+    elif (venv_root := unprovisioned_environment(executable)) is not None:
+        diagnosis = "gate_unprovisioned_environment"
+        details = (f"{venv_root}: {UNPROVISIONED_ENVIRONMENT_REMEDY}",)
+    else:
+        diagnosis, details = "gate_missing_executable", (str(executable),)
     return GateResult(
         gate=gate,
         executable=executable,
@@ -82,8 +115,8 @@ def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[st
         required_count=1,
         inspected_count=1 if available else 0,
         missing_count=0 if available else 1,
-        diagnosis="gate_passed" if available else "gate_missing_executable",
-        details=() if available else (str(executable),),
+        diagnosis=diagnosis,
+        details=details,
     )
 
 

@@ -485,7 +485,9 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             step_id=artifacts.step_id,
             result=_early_gate_failure_result(started, early_metadata),
         )
-        sys.stderr.write("FAILED (missing executable)\n")
+        sys.stderr.write(f"FAILED ({executable_result.diagnosis})\n")
+        for detail in executable_result.details:
+            sys.stderr.write(f"    {detail}\n")
         return 127, time.monotonic() - started, early_metadata
     slot = None
     metadata_receipt = None
