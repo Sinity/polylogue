@@ -18,14 +18,12 @@ require = ["POLYLOGUE_ARCHIVE_ROOT"]
 POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 
 [workspace]
-provider = "git-worktree"
 root = "/realm/worktrees"
 default_base = "origin/master"
-identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
-checkpoint_untracked = true
-# Pre-publication: the static gates. Affected tests are the pull request's
-# hosted `verify` check; the corpus is the nightly master-boundary run.
-verification_operations = ["verify_quick"]
+# Focused runs go through the pytest pool; a candidate's tests are the pull
+# request's hosted `verify` check; the corpus is the nightly master-boundary run.
+verify = { focused = "pytest_focused", candidate = "hosted:verify", corpus = "verify_all" }
+publish = "pr"
 
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]

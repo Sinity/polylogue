@@ -54,19 +54,25 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # `devtools verify` names the run it produced in .cache/verify/current-run.json;
+      # the receipt check below is bound to that run id, never to the newest file.
       - name: Verify
+        id: verify
         if: steps.pr-state.outputs.skip != 'true'
         run: |
           export PATH="/run/current-system/sw/bin:$PATH"
           nix develop --command devtools verify
+          echo "run_id=$(jq --raw-output .run_id .cache/verify/current-run.json)" >> "$GITHUB_OUTPUT"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
 
       # A zero exit is not the evidence; the run receipt is. The check fails
-      # unless the newest receipt succeeded and either a pytest step ran to
+      # unless this run's receipt succeeded and either a pytest step ran to
       # success or the selection was "none" for a recorded reason.
       - name: Require test evidence in the run receipt
         if: steps.pr-state.outputs.skip != 'true'
+        env:
+          VERIFY_RUN_ID: ${{ steps.verify.outputs.run_id }}
         run: |
           export PATH="/run/current-system/sw/bin:$PATH"
-          nix develop --command python -m devtools.verify_receipt_check
+          nix develop --command python -m devtools.verify_receipt_check --run-id "$VERIFY_RUN_ID"

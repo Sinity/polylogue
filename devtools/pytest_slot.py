@@ -257,6 +257,18 @@ def _wait_for(job_id: int, *, env: Mapping[str, str]) -> dict[str, Any]:
         time.sleep(POLL_INTERVAL_S)
 
 
+#: Terminal phases ``agentctl job get`` reports for a job that never ran its
+#: command to an end of its own, with what each one means to the caller.
+_DID_NOT_RUN: Final[dict[str, str]] = {
+    "cancelled": "the job was cancelled",
+    "vanished": "the job vanished before it finished",
+    "slot_occupied": "the pytest pool was occupied and the runtime did not retry",
+    "refused": "the runtime refused the job",
+    "dependency-failed": "a job it depended on failed",
+    "launch-failed": "the job could not be launched",
+}
+
+
 def _job_exit_status(view: Mapping[str, Any], *, receipt: Mapping[str, Any] | None) -> int:
     phase = view.get("phase")
     exit_code = view.get("exit_code")
@@ -265,12 +277,14 @@ def _job_exit_status(view: Mapping[str, Any], *, receipt: Mapping[str, Any] | No
         return 0
     if phase == "failed":
         return status or 1
-    if phase == "timed-out" or (receipt is not None and receipt.get("status") == "timed_out"):
+    if phase == "timeout" or (receipt is not None and receipt.get("status") == "timed_out"):
         return 124
-    # Cancelled, refused, vanished, slot-occupied: the run did not happen.
-    raise PytestSlotUnavailableError(
-        REFUSAL.format(reason=f"{AGENTCTL} job {view.get('job_id')} ended {phase!r} (exit {status!r})")
-    )
+    job = f"{AGENTCTL} job {view.get('job_id')}"
+    meaning = _DID_NOT_RUN.get(str(phase))
+    detail = f"{job} ended {phase!r} (exit {status!r})"
+    if meaning is not None:
+        detail = f"{meaning}: {detail}"
+    raise PytestSlotUnavailableError(REFUSAL.format(reason=detail))
 
 
 def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:

@@ -1,32 +1,47 @@
-"""Require test evidence in the newest ``devtools verify`` run receipt.
+"""Require test evidence in the receipt of one ``devtools verify`` run.
 
 A hosted ``verify`` job that exits zero has not shown that tests ran: pytest
 may have been skipped, refused, or never started. The receipt at
 ``.cache/verify/runs/<id>/run.json`` records what happened, and this check
 accepts it only when the run succeeded and either a pytest step ran to success
 or the selection was ``none`` for a recorded reason.
+
+The run is named explicitly (``--run-id``) or read from
+``.cache/verify/current-run.json``, which ``devtools verify`` writes for the
+run it produced; the check never picks a receipt by age.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from devtools.verify_runs import VERIFY_RUNS_DIR
+from devtools.verify_runs import CURRENT_RUN_PATH, VERIFY_RUNS_DIR
 
-__all__ = ["main", "newest_run_receipt", "refusal"]
+__all__ = ["current_run_id", "main", "refusal", "run_receipt_path"]
 
 
-def newest_run_receipt(root: Path) -> Path | None:
-    """The most recently written ``run.json`` under the verify runs directory."""
-    candidates = sorted(
-        (root / VERIFY_RUNS_DIR).glob("*/run.json"),
-        key=lambda path: (path.stat().st_mtime_ns, path.name),
-    )
-    return candidates[-1] if candidates else None
+def current_run_id(root: Path) -> str:
+    """The run id ``devtools verify`` last wrote to ``current-run.json`` under ``root``."""
+    path = root / CURRENT_RUN_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"no current verify run at {path}: {exc}") from exc
+    run_id = payload.get("run_id") if isinstance(payload, dict) else None
+    if not isinstance(run_id, str) or not run_id:
+        raise ValueError(f"{path} names no run_id")
+    return run_id
+
+
+def run_receipt_path(root: Path, run_id: str) -> Path:
+    if not run_id or "/" in run_id or run_id in {".", ".."}:
+        raise ValueError(f"not a run id: {run_id!r}")
+    return root / VERIFY_RUNS_DIR / run_id / "run.json"
 
 
 def refusal(payload: Mapping[str, Any]) -> str | None:
@@ -53,11 +68,16 @@ def refusal(payload: Mapping[str, Any]) -> str | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    root = Path(arguments[0]) if arguments else Path.cwd()
-    receipt = newest_run_receipt(root)
-    if receipt is None:
-        sys.stderr.write(f"verify receipt check: no run receipt under {root / VERIFY_RUNS_DIR}\n")
+    parser = argparse.ArgumentParser(prog="verify_receipt_check")
+    parser.add_argument("root", nargs="?", type=Path, default=None)
+    parser.add_argument("--run-id", help="the verify run to check (default: the run current-run.json names)")
+    arguments = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    root = arguments.root or Path.cwd()
+    try:
+        run_id = arguments.run_id or current_run_id(root)
+        receipt = run_receipt_path(root, run_id)
+    except ValueError as exc:
+        sys.stderr.write(f"verify receipt check: {exc}\n")
         return 1
     try:
         payload = json.loads(receipt.read_text(encoding="utf-8"))
@@ -66,6 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if not isinstance(payload, dict):
         sys.stderr.write(f"verify receipt check: {receipt} is not a receipt document\n")
+        return 1
+    if payload.get("run_id") != run_id:
+        sys.stderr.write(f"verify receipt check: {receipt} records run {payload.get('run_id')!r}, not {run_id!r}\n")
         return 1
     reason = refusal(payload)
     if reason is not None:

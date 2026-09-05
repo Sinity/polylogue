@@ -22,8 +22,6 @@ RUNTIME_ENV_PREFIX = "AGENTCTL_"
 LEGACY_RUNTIME_ENV_PREFIX = "SINNIXD_"
 #: Variables whose legacy name is not the mechanical prefix swap.
 _LEGACY_RUNTIME_ENV_NAMES = {"AGENTCTL_POOL": "SINNIXD_QUEUE_POOL"}
-#: The runtime's transient job unit, ``<prefix>-job-<uuid>.service``.
-RUNTIME_UNIT_PREFIXES = ("agentctl", "sinnixd")
 
 AGENT_PRINCIPAL_ENV = "AGENTCTL_PRINCIPAL"
 AGENT_PRINCIPAL = "agent-control"
@@ -33,8 +31,15 @@ HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
 QUEUE_POOL_ENV = "AGENTCTL_POOL"
 PYTEST_POOL = "pytest"
 _CGROUP_PATH = Path("/proc/self/cgroup")
-_AGENT_CGROUP_SLICES = frozenset({"agent.slice", "agentctl-agent.slice", "sinnixd-pueue-agent.slice"})
-_PYTEST_CGROUP_SLICES = frozenset({"agentctl-pytest.slice", "sinnixd-pueue-pytest.slice"})
+
+
+def pool_slices(pool: str) -> frozenset[str]:
+    """The slices the runtime places a ``pool`` job in: current and older host."""
+    return frozenset({f"agentctl-{pool}.slice", f"sinnixd-pueue-{pool}.slice"})
+
+
+_AGENT_CGROUP_SLICES = frozenset({"agent.slice"}) | pool_slices("agent")
+_PYTEST_CGROUP_SLICES = pool_slices(PYTEST_POOL)
 
 
 def runtime_env_names(variable: str) -> tuple[str, str]:
@@ -68,6 +73,11 @@ def _inside_cgroup(cgroup_reader: Callable[[], str] | None, slices: frozenset[st
         if separator and any(part in slices for part in PurePosixPath(path).parts):
             return True
     return False
+
+
+def inside_pool_cgroup(pool: str, *, cgroup_reader: Callable[[], str] | None = None) -> bool:
+    """Whether this process's cgroup is under the slice of the runtime's ``pool``."""
+    return _inside_cgroup(cgroup_reader, pool_slices(pool))
 
 
 def _inside_agent_cgroup(cgroup_reader: Callable[[], str] | None) -> bool:

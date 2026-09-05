@@ -153,9 +153,10 @@ explicit-and-retryable or a typed permanent refusal.
   place; every other caller, lanes included, submits `pytest_focused` through
   `agentctl job start`, waits, reads the captured log the run prints, and
   refuses if the runtime is unreachable. A job id is never slot ownership.
-- Lane publication runs `verify_quick` only; affected tests are the pull
-  request's hosted `verify` check, which fails unless its run receipt shows a
-  pytest step or a recorded `selection = "none"` reason.
+- `.agentctl/project.toml` declares `workspace.verify`: focused runs are
+  `pytest_focused`, a candidate's tests are the pull request's hosted `verify`
+  check (which fails unless the run receipt it names shows a pytest step or a
+  recorded `selection = "none"` reason), the corpus is `verify_all`.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]

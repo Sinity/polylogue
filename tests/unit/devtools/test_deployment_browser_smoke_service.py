@@ -60,7 +60,7 @@ print(json.dumps({
     "operation_count": len(adapter.operations),
     "proof": {"command": proof.command, "pool": proof.pool, "result": proof.result},
     "publish": adapter.workspace.publish,
-    "verification_operations": list(adapter.workspace.verification_operations),
+    "verify": dict(adapter.workspace.verify),
 }))
 """
     completed = subprocess.run(
@@ -81,9 +81,10 @@ print(json.dumps({
         "pool": "interactive",
         "result": "json",
     }
-    # Publication runs the static gates only; affected tests are the hosted
+    # Focused runs queue on the pytest pool; a candidate's tests are the hosted
     # PR check and the corpus is the nightly run (no local corpus per lane).
-    assert parsed["verification_operations"] == ["verify_quick"]
+    assert parsed["publish"] == "pr"
+    assert parsed["verify"] == {"focused": "pytest_focused", "candidate": "hosted:verify", "corpus": "verify_all"}
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
@@ -138,7 +139,7 @@ def test_live_provider_accepts_a_parked_control_plane_window() -> None:
 
 def test_live_provider_module_rejects_forged_environment_before_node_can_launch(tmp_path: Path) -> None:
     environment = os.environ | {
-        "AGENTCTL_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
+        "AGENTCTL_JOB_ID": "polylogue-live_provider_proof-8e3c63a7",
         "AGENTCTL_PROJECT_ID": "polylogue",
         "AGENTCTL_OPERATION": "live_provider_proof",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT": "49120",
@@ -155,7 +156,7 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
     )
 
     assert completed.returncode == 1
-    assert "matching runtime transient unit" in completed.stderr
+    assert "not inside the interactive pool" in completed.stderr
 
 
 def test_shared_browser_service_launches_only_the_fixed_control_proof(

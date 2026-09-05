@@ -38,7 +38,7 @@ def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_loop_service, "require_declared_operation_context", lambda operation: f"unit-{operation}")
     monkeypatch.setenv("AGENTCTL_PROJECT_ID", "polylogue")
     monkeypatch.setenv("AGENTCTL_OPERATION", "dev_loop_proof")
-    monkeypatch.setenv("AGENTCTL_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
+    monkeypatch.setenv("AGENTCTL_JOB_ID", "polylogue-dev_loop_proof-8e3c63a7")
 
 
 def test_run_proof_uses_self_bound_free_ports_and_product_convergence(

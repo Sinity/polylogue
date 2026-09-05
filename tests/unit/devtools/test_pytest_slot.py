@@ -308,16 +308,36 @@ def test_a_failed_job_reports_its_exit_code(tmp_path: Path, monkeypatch: pytest.
     assert (outcome.returncode, outcome.slot) == (1, "agentctl job 12")
 
 
-@pytest.mark.parametrize("phase", ["cancelled", "refused", "slot-occupied", "vanished"])
-def test_a_job_that_did_not_run_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str) -> None:
+@pytest.mark.parametrize(
+    ("phase", "meaning"),
+    [
+        ("cancelled", "the job was cancelled"),
+        ("vanished", "the job vanished"),
+        ("slot_occupied", "the pytest pool was occupied"),
+        ("refused", "the runtime refused"),
+        ("dependency-failed", "depended on failed"),
+        ("launch-failed", "could not be launched"),
+    ],
+)
+def test_a_job_that_did_not_run_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str, meaning: str
+) -> None:
+    """The phases are agentctl's own (``run.Outcome`` plus the launch-side ones)."""
     _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase=phase, exit_code=130)
 
-    with pytest.raises(PytestSlotUnavailableError, match=f"agentctl job 12 ended '{phase}'"):
+    with pytest.raises(PytestSlotUnavailableError, match=f"{meaning}.*agentctl job 12 ended '{phase}'"):
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+
+def test_an_unknown_terminal_phase_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="something-new", exit_code=3)
+
+    with pytest.raises(PytestSlotUnavailableError, match="agentctl job 12 ended 'something-new' \\(exit 3\\)"):
         run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
 
 
 def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timed-out", exit_code=124)
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124)
     receipt_path = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
