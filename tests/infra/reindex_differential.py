@@ -38,6 +38,7 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
     "messages_fts_identity": "FTS support relation compared through public search and FtsReadiness",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
+    "schema_identity": "stores a hash of the DDL identity itself, not derived model data",
 }
 
 # One explicit entry per comparable DDL table. Empty sets are declarations:
@@ -61,6 +62,7 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "session_agent_policies": frozenset(),
     "session_commits": frozenset(),
     "session_events": frozenset(),
+    "session_identity_claims": frozenset(),
     "session_latency_profiles": frozenset({"materialized_at"}),
     "session_links": frozenset({"observed_at_ms", "resolved_at_ms"}),
     "session_model_usage": frozenset(),

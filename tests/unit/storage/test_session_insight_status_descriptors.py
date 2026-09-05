@@ -351,6 +351,7 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
                 phase_count INTEGER NOT NULL
             );
             CREATE TABLE session_profiles_fts (session_id TEXT NOT NULL);
+            CREATE TABLE session_work_events (session_id TEXT NOT NULL);
             CREATE TABLE threads (thread_id TEXT PRIMARY KEY);
 
             INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
