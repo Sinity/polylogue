@@ -2433,7 +2433,7 @@ def test_fts_readiness_requires_recorded_freshness_when_available(tmp_path: Path
     with sqlite3.connect(db_path) as conn:
         conn.executescript(
             """
-            CREATE TABLE blocks (text TEXT);
+            CREATE TABLE blocks (text TEXT, search_text TEXT NOT NULL DEFAULT '');
             CREATE TABLE messages_fts (text TEXT);
             CREATE TRIGGER messages_fts_ai AFTER INSERT ON blocks BEGIN SELECT 1; END;
             CREATE TRIGGER messages_fts_ad AFTER DELETE ON blocks BEGIN SELECT 1; END;
