@@ -48,8 +48,5 @@ the typed operation profile.
 | added | 1259 | 493 tracked additions plus 766 lines in eight new files, including tests/docs/tooling. |
 | net maintained | 1198 | Added minus gross deleted; no physical file relocation was claimed. |
 
-The sharded rebuild implementation is not deleted in this lane because its
-current callers and dedicated provenance laws remain live in this checkout;
-the packet's historical K=4/K=8 result is recorded as a rejected optimization,
-not as evidence that those callers are abandoned. A follow-up deletion must
-remove its option, callers, and oracle together.
+The packet's historical K=4/K=8 sharded-rebuild result is recorded as a
+rejected optimization; the sharded rebuild and its callers no longer exist.

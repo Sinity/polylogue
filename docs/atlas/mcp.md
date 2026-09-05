@@ -19,7 +19,7 @@ The live MCP surface is a twelve-tool operation algebra. Six read tools are alwa
 | `emit_decision` | `write` | Append a decision event with evidence references (`polylogue/mcp/declarations/registry.py:181-194`) |
 | `judge` | `judge` | Decide assertion candidates (`polylogue/mcp/declarations/registry.py:195-208`) |
 | `run` | `write` | Execute saved query or recipe refs (`polylogue/mcp/declarations/registry.py:209-222`) |
-| `maintenance` | `maintenance` | Preview, execute, inspect, and rebuild (`polylogue/mcp/declarations/registry.py:223-238`) |
+| `maintenance` | `maintenance` | Rebuild derived indexes and inspect or adjudicate operation recovery (`polylogue/mcp/declarations/registry.py:223-238`) |
 
 `write`, `judge`, and `maintenance` are independent booleans, not a role ladder. `run` shares the `write` gate (`polylogue/mcp/declarations/models.py:16-40`; `tests/unit/mcp/test_tool_declarations.py:26-41`).
 

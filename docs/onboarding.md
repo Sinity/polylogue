@@ -91,15 +91,15 @@ records), run the health-check command:
 
 ```bash
 polylogue ops doctor
-polylogue ops doctor --repair
+polylogue ops doctor --deep
 polylogue ops doctor --runtime
 ```
 
 `ops doctor` reports schema mismatches, FTS coverage gaps, blob-store
-consistency, daemon liveness, and validation failures. `--repair`
-recreates dropped FTS triggers and rebuilds the index where it can do
-so safely; deeper recovery still requires the documented in-place
-upgrade scripts described in [internals.md](internals.md#schema-versioning-model).
+consistency, daemon liveness, and validation failures. It is read-only:
+a running `polylogued` converges FTS, insights, and embeddings from
+source evidence; schema recovery follows
+[internals.md](internals.md#schema-versioning-model).
 
 For backup boundaries (SQLite WAL, blob store, service state), see
 [daemon.md](daemon.md).

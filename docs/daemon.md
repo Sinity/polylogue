@@ -116,7 +116,7 @@ classified with explicit auth and response posture.
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
 | Browser-accessible user-state mutations | bearer or scoped web credential plus exact-origin browser request | `POST /api/user/marks`, `DELETE /api/user/saved-views/:id` |
-| Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest`, `POST /api/maintenance/run` |
+| Archive control mutations | machine bearer when configured plus exact-origin browser request | `POST /api/reset`, `POST /api/ingest` |
 | WebUI observability reads | bearer or scoped web credential when configured | `GET /api/webui/observability`, `GET /api/webui/insights/:name`, `GET /api/webui/freshness?source=...` |
 
 User overlay mutation routes return the shared mutation result envelope

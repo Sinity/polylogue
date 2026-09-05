@@ -30,7 +30,7 @@ loopback ports.
 
 - Raw archive data (session content, raw artifacts, blob store)
 - Local filesystem paths surfaced via `/api/sources`
-- Daemon control operations (`/api/reset`, `/api/ingest`, `/api/maintenance/*`)
+- Daemon control operations (`/api/reset`, `/api/ingest`)
 
 ### Attack Surface
 
@@ -45,7 +45,6 @@ loopback ports.
 | `/api/raw_artifacts/:id` | GET | Returns raw session payload | Bearer or web credential | Credential-bound |
 | `/api/reset` | POST | **Destructive** — resets archive state | Bearer only when auth is configured | Exact origin |
 | `/api/ingest` | POST | **Mutating** — schedules ingestion | Bearer only when auth is configured | Exact origin |
-| `/api/maintenance/plan`, `/api/maintenance/run` | POST | **Mutating** — runs maintenance backfills | Bearer only when auth is configured | Exact origin |
 
 ## Mitigations
 
