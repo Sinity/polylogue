@@ -48,7 +48,17 @@ EMBEDDING_DERIVATION_KEY_SQL_FUNCTION = "polylogue_embedding_derivation_key"
 VECTOR_DERIVATION_HASH_SQL_FUNCTION = "polylogue_vector_derivation_hash"
 
 _SOURCE_HASH_DOMAIN = b"polylogue.embedding-source.v2\x00"
-_VECTOR_ADDRESS_DOMAIN = "polylogue.embedding-vector-address.v1"
+# Vector address domain. The address is a function of the provider request
+# only (model, non-default request fields, normalized text): recipe labels and
+# schema tokens live in ``message_embeddings_meta.recipe_hash`` and the
+# session ledger, never in the address, so relabeling a recipe cannot orphan
+# a vector whose request is unchanged. A default-shaped request (input_type
+# ``document``, 1024 dimensions, no request options) hashes as exactly
+# ``domain || len(model) || model || len(text) || text`` -- the address every
+# vector embedded before request-shaping fields existed already carries.
+_VECTOR_ADDRESS_DOMAIN = b"polylogue.embedding-input.v1\x00"
+_DEFAULT_REQUEST_INPUT_TYPE = "document"
+_DEFAULT_REQUEST_DIMENSIONS = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -158,38 +168,63 @@ class EmbeddingRequestSpec:
         return unicodedata.normalize("NFC", self.input_text)
 
     @property
+    def _request_shape(self) -> dict[str, object]:
+        """Provider request fields other than the input text and the model."""
+        shape: dict[str, object] = {"input_type": self.recipe.input_type}
+        shape.update(dict(self.recipe.request_options))
+        if self.recipe.dimensions != _DEFAULT_REQUEST_DIMENSIONS:
+            shape["output_dimension"] = self.recipe.dimensions
+        return shape
+
+    @property
     def provider_request(self) -> dict[str, object]:
         request: dict[str, object] = {
             "input": [self.normalized_input],
             "model": self.recipe.model,
-            "input_type": self.recipe.input_type,
         }
-        request.update(dict(self.recipe.request_options))
-        if self.recipe.dimensions != 1024:
-            request["output_dimension"] = self.recipe.dimensions
+        request.update(self._request_shape)
         return request
 
     @property
     def vector_derivation_hash(self) -> bytes:
-        document = {
-            "domain": _VECTOR_ADDRESS_DOMAIN,
-            "recipe": json.loads(self.recipe.identity().canonical_bytes()),
-            "output": json.loads(self.recipe.output_contract().canonical_bytes()),
-            "input": self.normalized_input,
-        }
-        encoded = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8", errors="surrogatepass"
-        )
-        return hashlib.sha256(encoded).digest()
+        """SHA-256 over the provider request: model, non-default shape, text.
+
+        Segments are length-prefixed. A default-shaped request contributes
+        exactly two segments (model, text); any non-default request field
+        (``input_type`` other than ``document``, request options, a non-1024
+        ``output_dimension``) adds one canonical-JSON segment between them,
+        so such requests can never collide with a default-shaped address.
+        """
+        shape = self._request_shape
+        if shape.get("input_type") == _DEFAULT_REQUEST_INPUT_TYPE:
+            del shape["input_type"]
+        segments = [self.recipe.model.encode("utf-8", errors="surrogatepass")]
+        if shape:
+            segments.append(
+                json.dumps(shape, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                    "utf-8", errors="surrogatepass"
+                )
+            )
+        segments.append(self.normalized_input.encode("utf-8", errors="surrogatepass"))
+        hasher = hashlib.sha256()
+        hasher.update(_VECTOR_ADDRESS_DOMAIN)
+        for segment in segments:
+            hasher.update(len(segment).to_bytes(8, "big"))
+            hasher.update(segment)
+        return hasher.digest()
 
 
 def vector_derivation_hash(
     *, recipe: EmbeddingRecipe | None = None, input_text: str, model: str | None = None
 ) -> bytes:
-    """Address the complete request/output contract and exact normalized input.
+    """Address the provider request and exact normalized input.
 
     This is a pure function of what is actually sent to the embedding
-    provider -- nothing else. Session id, message id, position, variant
+    provider -- nothing else. Recipe labels (canonicalization, chunking,
+    tool implementation, input schema token) and the output contract are
+    tracked in ``message_embeddings_meta`` and the session ledger, not in
+    the address, so they can change without invalidating vectors whose
+    request is unchanged. Session id, message id, position, variant
     index, role, material_origin, and every other identity-bearing field
     that ``messages.content_hash`` includes are excluded by construction, so
     a re-ingest, index rebuild, or lineage-normalization shift cannot

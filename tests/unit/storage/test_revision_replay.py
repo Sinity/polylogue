@@ -29,6 +29,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.enums import Provider
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
+from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import merge_parsed_session_chunks, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
@@ -847,6 +848,23 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
     }
 
 
+def test_public_cohort_classification_commits_source_authority_before_return(tmp_path: Path) -> None:
+    """The public classification route makes its source transaction visible."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = _write_chain_full(archive, "transaction-owner", 0)
+        plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
+        assert plan.accepted_raw_ids == (baseline,)
+
+        with sqlite3.connect(tmp_path / "source.db") as source:
+            authority = source.execute(
+                "SELECT revision_authority FROM raw_sessions WHERE raw_id = ?",
+                (baseline,),
+            ).fetchone()
+
+    assert authority == (RawRevisionAuthority.BYTE_PROVEN.value,)
+
+
 def _write_full_raw(archive: ArchiveStore, *, raw_id: str, payload: bytes, acquired_at_ms: int) -> str:
     written_id = archive.write_raw_payload(
         provider=Provider.CODEX,
@@ -1569,6 +1587,94 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
             archive.raw_revision_replay_plan("codex-session:session"), {folded: folded_session}, acquired_at_ms=0
         )
         assert archive.raw_revision_head_raw_id("codex-session:session") == folded
+
+
+def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+
+    def parsed(message_id: str, text: str, *, seen: int, persisted: int) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="session",
+            messages=[ParsedMessage(provider_message_id=message_id, role=Role.USER, text=text)],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_parse_coverage",
+                    payload={
+                        "sidecar_seen": {"summary": seen},
+                        "sidecar_persisted": {"summary": persisted},
+                        "empty_dropped_by_record_type": {},
+                    },
+                )
+            ],
+        )
+
+    baseline_session = parsed("m1", "baseline", seen=3, persisted=2)
+    append_session = parsed("m2", "append", seen=5, persisted=4)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE, payload=b"base", source_path="session.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "claude-code:session", RawRevisionKind.FULL, "base", 0, authority=RawRevisionAuthority.BYTE_PROVEN
+            ),
+        )
+        append = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b"tail!",
+            source_path="session.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append,
+            RawRevisionEnvelope(
+                "claude-code:session",
+                RawRevisionKind.APPEND,
+                append_source_revision("base", hashlib.sha256(b"tail!").hexdigest()),
+                1,
+                predecessor_source_revision="base",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=4,
+                append_end_offset=9,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+
+        plan = archive.raw_revision_replay_plan("claude-code:session")
+        session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+            plan,
+            {baseline: baseline_session, append: append_session},
+            acquired_at_ms=0,
+        )
+
+        coverage = archive._conn.execute(
+            "SELECT payload_json FROM session_events WHERE event_type = 'claude_parse_coverage'"
+        ).fetchall()
+        assert len(coverage) == 1
+        assert json.loads(coverage[0][0]) == {
+            "sidecar_seen": {"summary": 8},
+            "sidecar_persisted": {"summary": 6},
+            "empty_dropped_by_record_type": {},
+        }
+        stored_hash = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
+        ).fetchone()
+        assert stored_hash is not None
+        assert bytes(stored_hash[0]) == bytes.fromhex(
+            session_content_hash(merge_parsed_session_chunks([baseline_session, append_session])[0])
+        )
+        assert applied_raw_ids == (baseline, append)
+        assert (
+            archive._conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_applications WHERE logical_source_key = ?",
+                ("claude-code:session",),
+            ).fetchone()[0]
+            == 2
+        )
 
 
 def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(tmp_path: Path) -> None:
@@ -2656,3 +2762,172 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
         ).fetchone()
         assert stored_hash is not None
         assert bytes(stored_hash[0]).hex() == session_content_hash(composed[0])
+
+
+def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(tmp_path: Path) -> None:
+    """polylogue-ylrba: the live-append path persists the reduced event projection.
+
+    ``sources/live/append_ingest.py`` replays with ``skip_already_applied``, so
+    only the newly accepted tail is written while the prefix's
+    ``claude_parse_coverage`` row -- a complete-input summary -- is already
+    stored. ``sessions.content_hash`` describes the chain's reduction, which
+    carries the chain's totals, the chain's newest timestamp, and a position
+    after every point-in-conversation event. All three must be what the index
+    holds.
+
+    Anti-vacuity: reconciling the summary row's payload alone leaves it at the
+    prefix's position (before the tail's ``claude_session_kind`` event) and
+    stamped with the prefix's ``updated_at``, so the persisted projection
+    differs from the reduction the stored hash describes in both order and
+    timestamp, and this test is red.
+    """
+    initialize_active_archive_root(tmp_path)
+
+    baseline_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="chat",
+        created_at="2026-01-01T00:00:00Z",
+        updated_at="2026-01-01T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="m0", role=Role.USER, text="zero", timestamp="2026-01-01T00:00:00Z")
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="claude_parse_coverage",
+                timestamp="2026-01-01T00:00:00Z",
+                payload={
+                    "sidecar_seen": {"user": 1},
+                    "sidecar_persisted": {"user": 1},
+                    "empty_dropped_by_record_type": {},
+                },
+            )
+        ],
+    )
+    # A tail that carries no coverage of its own is the ordinary live append:
+    # the parser emits the event only when the chunk saw sidecar records.
+    append_chunk = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="chat",
+        created_at="2026-01-02T00:00:00Z",
+        updated_at="2026-01-02T00:00:00Z",
+        messages=[
+            ParsedMessage(provider_message_id="m1", role=Role.USER, text="one", timestamp="2026-01-02T00:00:00Z")
+        ],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="claude_session_kind",
+                timestamp="2026-01-02T00:00:00Z",
+                payload={"session_kind": "resume"},
+            )
+        ],
+    )
+
+    def stored_event_projection(archive: ArchiveStore, session_id: str) -> list[tuple[str, int | None, object]]:
+        return [
+            (str(row[0]), None if row[1] is None else int(row[1]), json.loads(str(row[2])))
+            for row in archive._conn.execute(
+                "SELECT event_type, occurred_at_ms, payload_json FROM session_events"
+                " WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            ).fetchall()
+        ]
+
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        baseline = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE, payload=b"a" * 10, source_path="chat.jsonl", acquired_at_ms=1
+        )
+        archive.bind_raw_revision(
+            baseline,
+            RawRevisionEnvelope(
+                "claude-code-session:chat",
+                RawRevisionKind.FULL,
+                "full-0",
+                0,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        archive.apply_raw_revision_replay(
+            archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat"),
+            {baseline: baseline_chunk},
+            acquired_at_ms=0,
+            skip_already_applied=True,
+        )
+
+        append_one = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=b"b" * 5,
+            source_path="chat.jsonl",
+            source_index=-1,
+            acquired_at_ms=2,
+        )
+        archive.bind_raw_revision(
+            append_one,
+            RawRevisionEnvelope(
+                "claude-code-session:chat",
+                RawRevisionKind.APPEND,
+                append_source_revision("full-0", hashlib.sha256(b"b" * 5).hexdigest()),
+                1,
+                predecessor_source_revision="full-0",
+                predecessor_raw_id=baseline,
+                baseline_raw_id=baseline,
+                append_start_offset=10,
+                append_end_offset=15,
+                authority=RawRevisionAuthority.BYTE_PROVEN,
+            ),
+        )
+        plan = archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat")
+        assert plan.accepted_raw_ids == (baseline, append_one)
+        session_id, _ = archive.apply_raw_revision_replay(
+            plan,
+            {baseline: baseline_chunk, append_one: append_chunk},
+            acquired_at_ms=0,
+            skip_already_applied=True,
+        )
+
+        composed = merge_parsed_session_chunks([baseline_chunk, append_chunk])
+        assert len(composed) == 1
+        expected_events = [
+            (event.event_type, timestamp_millis(event.timestamp), event.payload) for event in composed[0].session_events
+        ]
+        assert stored_event_projection(archive, session_id) == expected_events
+
+        stored_hash = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert stored_hash is not None
+        assert bytes(stored_hash[0]).hex() == session_content_hash(composed[0])
+
+        # Raw provenance and the accepted-chain receipts survive the projection fix.
+        head = archive._conn.execute(
+            "SELECT accepted_raw_id, session_id FROM raw_revision_heads WHERE logical_source_key = ?",
+            ("claude-code-session:chat",),
+        ).fetchone()
+        assert head is not None
+        assert (str(head[0]), str(head[1])) == (append_one, session_id)
+        applied = {
+            (str(row[0]), str(row[1]))
+            for row in archive._conn.execute(
+                "SELECT raw_id, decision FROM raw_revision_applications WHERE logical_source_key = ?",
+                ("claude-code-session:chat",),
+            ).fetchall()
+        }
+        assert applied == {
+            (baseline, ApplicationDecision.SELECTED_BASELINE.value),
+            (append_one, ApplicationDecision.APPLIED_APPEND.value),
+        }
+
+        # Replaying the same accepted chain again changes nothing.
+        archive.apply_raw_revision_replay(
+            archive.classify_raw_revision_cohort_for_live_watch("claude-code-session:chat"),
+            {baseline: baseline_chunk, append_one: append_chunk},
+            acquired_at_ms=0,
+            skip_already_applied=True,
+        )
+        assert stored_event_projection(archive, session_id) == expected_events
+        replayed_hash = archive._conn.execute(
+            "SELECT content_hash FROM sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        assert replayed_hash is not None
+        assert bytes(replayed_hash[0]) == bytes(stored_hash[0])

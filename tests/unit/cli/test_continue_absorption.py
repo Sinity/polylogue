@@ -8,7 +8,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
+from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_scenarios import native_session_id_for
 from tests.infra.storage_records import SessionBuilder

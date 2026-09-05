@@ -9,15 +9,15 @@ from typing import get_args
 
 import pytest
 
-from polylogue.insights.archive import SessionProfileInsight, SessionWorkEventInsight, records_provenance
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive import SessionProfileInsight, SessionWorkEventInsight, records_provenance
+from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.insights.temporal_source import (
+from polylogue.analysis.temporal_source import (
     TIME_CONFIDENCE_VALUES,
     TemporalSource,
     time_confidence_for_record,
@@ -25,8 +25,8 @@ from polylogue.insights.temporal_source import (
     time_confidence_for_sources,
     weakest_source,
 )
-from polylogue.storage.insights.session.records import SessionProfileRecord
-from polylogue.storage.insights.timeline.records import SessionWorkEventRecord
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.timeline.records import SessionWorkEventRecord
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 _TEMPORAL_SOURCES: tuple[TemporalSource, ...] = get_args(TemporalSource)

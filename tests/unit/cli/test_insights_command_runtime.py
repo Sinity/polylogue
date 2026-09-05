@@ -11,20 +11,20 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
-from polylogue.cli.commands import insights as insights_module
-from polylogue.insights.export_bundles import (
+from polylogue.analysis.export_bundles import (
     InsightExportBundleError,
     InsightExportBundleManifest,
     InsightExportBundleResult,
     InsightExportFileSummary,
 )
-from polylogue.insights.readiness import (
+from polylogue.analysis.readiness import (
     InsightOriginCoverage,
     InsightReadinessEntry,
     InsightReadinessReport,
     InsightVersionCoverage,
 )
-from polylogue.insights.registry import CliOption, InsightQueryError, InsightType, get_insight_type
+from polylogue.analysis.registry import CliOption, InsightQueryError, InsightType, get_insight_type
+from polylogue.cli.commands import insights as insights_module
 
 
 def _root_context(
@@ -85,7 +85,8 @@ def _command_callback(command: click.Command) -> Callable[..., object]:
 def _status_report() -> InsightReadinessReport:
     return InsightReadinessReport(
         checked_at="2026-04-23T00:00:00+00:00",
-        aggregate_verdict="partial",
+        converged=False,
+        debt_stages=("derived",),
         total_sessions=10,
         origin="codex-session",
         since="2026-04-01",
@@ -94,14 +95,12 @@ def _status_report() -> InsightReadinessReport:
             InsightReadinessEntry(
                 insight_name="session_profiles",
                 display_name="Session Profiles",
-                verdict="partial",
                 row_count=7,
                 expected_row_count=10,
                 missing_count=1,
                 stale_count=2,
                 orphan_count=3,
                 incompatible_count=4,
-                ready_flags={"fts": True},
                 origin_coverage=(InsightOriginCoverage(origin="codex-session", row_count=7),),
                 version_coverage=(
                     InsightVersionCoverage(field="materializer_version", current_version=4, versions={"4": 7}),
@@ -129,7 +128,7 @@ def _export_result(tmp_path: Path) -> InsightExportBundleResult:
                     file="insights/session_profiles.jsonl",
                     schema_file="schemas/session_profiles.schema.json",
                     row_count=7,
-                    readiness_verdict="partial",
+                    withheld_reason=None,
                     warnings=("stale rows",),
                     errors=("schema drift",),
                 ),
@@ -193,11 +192,10 @@ def test_render_status_plain_and_export_plain_cover_optional_sections(
     insights_module._render_export_plain(_export_result(tmp_path))
 
     output = capsys.readouterr().out
-    assert "Insight Readiness: partial" in output
+    assert "Convergence: debt in derived" in output
     assert "Scope: origin=codex-session since=2026-04-01 until=2026-04-30" in output
     assert "session_profiles: partial rows=7 expected=10" in output
     assert "missing=1 stale=2 orphan=3 incompatible=4" in output
-    assert "flags: fts=True" in output
     assert "origins: codex-session=7" in output
     assert "versions: materializer_version={'4': 7}" in output
     assert "schema: missing field" in output

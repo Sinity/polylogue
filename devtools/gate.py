@@ -48,37 +48,8 @@ class Gate:
         raise ValueError(f"unknown gate kind {self.kind!r}")
 
 
-#: The daemon holds a type cache worth well over a gigabyte and is reparented to
-#: the user manager, so without this it outlives every gate that starts one and
-#: one accumulates per checkout. The idle clock resets on each connection, so a
-#: checkout under active gating keeps its warm daemon.
-DMYPY_IDLE_TIMEOUT_SECONDS = 900
-
-
 def mypy_command(*, root: Path = ROOT) -> list[str]:
-    """Resolve the type-check command, preferring a warm dmypy daemon."""
-    dmypy = venv_bin("dmypy", root=root)
-    run_argv = [dmypy, "run", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"]
-    try:
-        if subprocess.run([dmypy, "status"], capture_output=True, text=True, timeout=5, cwd=root).returncode == 0:
-            # run can itself spawn the daemon (races, direct invocations);
-            # the timeout must ride every spawning form or one immortal
-            # daemon per checkout accumulates.
-            return run_argv
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    try:
-        started = subprocess.run(
-            [dmypy, "start", f"--timeout={DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-            cwd=root,
-        )
-        if started.returncode == 0:
-            return run_argv
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    """Use the checkout-local foreground checker owned by the verify task."""
     return [venv_bin("mypy", root=root)]
 
 
@@ -140,11 +111,11 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
-        "schema-versioning",
-        "Verify durable-tier migration and derived-tier rebuild boundaries.",
+        "schema-manifest",
+        "Require durable archive schema changes to use a complete migration chain.",
         "module",
-        ("devtools.verify_schema_upgrade_lane",),
-        label="gate schema-versioning",
+        ("devtools.verify_schema_manifest", "--check-evolution"),
+        label="gate schema-manifest",
         in_quick=True,
     ),
     Gate(
@@ -153,6 +124,14 @@ GATES: tuple[Gate, ...] = (
         "module",
         ("devtools.verify_oracle_integrity",),
         label="gate oracle-integrity",
+        in_quick=True,
+    ),
+    Gate(
+        "testmon-selection",
+        "Prove a generated fixture uses a small affected selection with the managed worker default.",
+        "module",
+        ("devtools.verify_testmon_selection",),
+        label="gate testmon-selection",
         in_quick=True,
     ),
     Gate(

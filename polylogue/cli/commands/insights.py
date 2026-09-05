@@ -14,6 +14,32 @@ from typing import cast
 
 import click
 
+from polylogue.analysis.archive import ArchiveInsightUnavailableError
+from polylogue.analysis.audit import (
+    DEFAULT_AUDIT_SAMPLE_LIMIT,
+    InsightRigorAuditQuery,
+    InsightRigorAuditReport,
+    build_insight_rigor_audit_report,
+)
+from polylogue.analysis.export_bundles import (
+    InsightExportBundleError,
+    InsightExportBundleRequest,
+    InsightExportBundleResult,
+    InsightExportFormat,
+)
+from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
+from polylogue.analysis.registry import (
+    INSIGHT_REGISTRY,
+    InsightQueryError,
+    InsightType,
+    fetch_insights,
+    render_insight_items,
+)
+from polylogue.analysis.timeline_renderer import (
+    build_session_timeline,
+    render_markdown,
+    render_plain,
+)
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import fail
 from polylogue.cli.shared.insight_command_contracts import (
@@ -24,32 +50,6 @@ from polylogue.cli.shared.insight_command_contracts import (
 )
 from polylogue.cli.shared.machine_errors import emit_success
 from polylogue.cli.shared.types import AppEnv
-from polylogue.insights.archive import ArchiveInsightUnavailableError
-from polylogue.insights.audit import (
-    DEFAULT_AUDIT_SAMPLE_LIMIT,
-    InsightRigorAuditQuery,
-    InsightRigorAuditReport,
-    build_insight_rigor_audit_report,
-)
-from polylogue.insights.export_bundles import (
-    InsightExportBundleError,
-    InsightExportBundleRequest,
-    InsightExportBundleResult,
-    InsightExportFormat,
-)
-from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport, known_insight_readiness_names
-from polylogue.insights.registry import (
-    INSIGHT_REGISTRY,
-    InsightQueryError,
-    InsightType,
-    fetch_insights,
-    render_insight_items,
-)
-from polylogue.insights.timeline_renderer import (
-    build_session_timeline,
-    render_markdown,
-    render_plain,
-)
 
 _ROOT_FILTER_KEYS = ("origin", "since", "until")
 
@@ -206,7 +206,12 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     def origin_label(value: str | None) -> str:
         return value or "-"
 
-    click.echo(f"Insight Readiness: {report.aggregate_verdict}")
+    if report.converged is None:
+        click.echo("Convergence: unknown (debt ledger unreadable)")
+    elif report.converged:
+        click.echo("Convergence: caught up")
+    else:
+        click.echo(f"Convergence: debt in {', '.join(report.debt_stages)}")
     click.echo(f"Total sessions: {report.total_sessions}")
     if report.origin or report.since or report.until:
         click.echo(
@@ -215,16 +220,14 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     click.echo("")
     for insight in report.insights:
         expected = f" expected={insight.expected_row_count}" if insight.expected_row_count is not None else ""
-        click.echo(f"{insight.insight_name}: {insight.verdict} rows={insight.row_count}{expected}")
+        presence = "" if insight.table_present else " (table absent)"
+        click.echo(f"{insight.insight_name}: rows={insight.row_count}{expected}{presence}")
         if insight.missing_count or insight.stale_count or insight.orphan_count or insight.incompatible_count:
             click.echo(
                 "  "
                 f"missing={insight.missing_count} stale={insight.stale_count} "
                 f"orphan={insight.orphan_count} incompatible={insight.incompatible_count}"
             )
-        if insight.ready_flags:
-            flags = ", ".join(f"{key}={value}" for key, value in sorted(insight.ready_flags.items()))
-            click.echo(f"  flags: {flags}")
         if insight.origin_coverage:
             origins = ", ".join(
                 f"{origin_label(coverage.origin)}={coverage.row_count}" for coverage in insight.origin_coverage
@@ -243,7 +246,8 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
     click.echo(f"Coverage: {result.coverage_path}")
     click.echo("")
     for insight in result.manifest.insights:
-        click.echo(f"{insight.insight_name}: rows={insight.row_count} readiness={insight.readiness_verdict or '-'}")
+        withheld = f" withheld={insight.withheld_reason}" if insight.withheld_reason else ""
+        click.echo(f"{insight.insight_name}: rows={insight.row_count}{withheld}")
         for warning in insight.warnings:
             click.echo(f"  warning: {warning}")
         for error in insight.errors:
@@ -315,7 +319,7 @@ def insights_hermes_health_command(ctx: click.Context, output_format: str | None
 
 
 def _render_hermes_health_plain(health: object) -> None:
-    from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
 
     assert isinstance(health, HermesIntegrationHealth)
     click.echo(f"Hermes integration: {health.verdict} (enabled={health.enabled})")

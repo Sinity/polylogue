@@ -19,7 +19,7 @@ import pytest
 
 import polylogue.sources.live.watcher as live_watcher
 from polylogue import Polylogue
-from polylogue.insights.hermes_verification_coverage import correlate_verification_coverage
+from polylogue.analysis.hermes_verification_coverage import correlate_verification_coverage
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore

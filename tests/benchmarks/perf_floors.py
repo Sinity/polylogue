@@ -11,10 +11,6 @@ those harnesses into a floor-checked measurement:
 * **replay throughput** (sessions/min) via
   ``backfill_historical_revision_evidence`` end to end (census + replay) on a
   fresh corpus.
-* **action_pairs refresh timing** (ms/session) via the real production
-  ``refresh_action_pairs`` over a realistically-shaped seeded archive -- the
-  exact regression class polylogue-l3tk fixed (missing planner statistics on
-  a fresh generation turning a session-scoped refresh into a full-table scan).
 * **query latency** (p50/p95 ms) for ``search_summaries``/``list_summaries``,
   computed through the real production
   ``polylogue.operations.route_observation.compute_latency_percentiles``.
@@ -63,6 +59,8 @@ _GIT_TIMEOUT_S = 2.0
 _ACTION_PAIRS_TARGET_MESSAGES = 5000
 _ACTION_PAIRS_TARGET_MESSAGES_QUICK = 1000
 _ACTION_PAIRS_SAMPLE_SESSIONS = 20
+_QUERY_TARGET_MESSAGES = 5000
+_QUERY_TARGET_MESSAGES_QUICK = 1000
 _REPLAY_RAW_COUNT = 200
 _REPLAY_RAW_COUNT_QUICK = 40
 _QUERY_TERMS: tuple[str, ...] = ("analysis", "error", "function", "test")
@@ -193,7 +191,7 @@ def measure_replay_throughput(workdir: Path, *, quick: bool = False) -> list[Flo
 
 
 # ---------------------------------------------------------------------------
-# Shared seeded archive for groups 3 + 4 (action_pairs timing, query latency)
+# Shared seeded archive for query latency
 # ---------------------------------------------------------------------------
 
 
@@ -213,7 +211,7 @@ def _seed_bench_archive(workdir: Path, *, target_messages: int) -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Measurement group 3: action_pairs refresh timing (polylogue-l3tk regression class)
+# Measurement group 3: action_pairs refresh timing
 # ---------------------------------------------------------------------------
 
 
@@ -238,30 +236,20 @@ def measure_action_pairs_refresh(
         conn.close()
 
     if not durations_ms:
-        return [
-            FloorMetric(
-                "action_pairs_refresh_mean_ms",
-                0.0,
-                "ms",
-                "lower_is_better",
-                {"sample_size": 0, "note": "no sessions found in seeded archive"},
-            )
-        ]
-
+        return [FloorMetric("action_pairs_refresh_mean_ms", 0.0, "ms", "lower_is_better", {"sample_size": 0})]
     durations_ms.sort()
-    mean_ms = sum(durations_ms) / len(durations_ms)
-    p95_ms = durations_ms[min(len(durations_ms) - 1, round(0.95 * (len(durations_ms) - 1)))]
+    p95_index = min(len(durations_ms) - 1, round(0.95 * (len(durations_ms) - 1)))
     return [
         FloorMetric(
             "action_pairs_refresh_mean_ms",
-            mean_ms,
+            sum(durations_ms) / len(durations_ms),
             "ms",
             "lower_is_better",
             {"sample_size": len(durations_ms)},
         ),
         FloorMetric(
             "action_pairs_refresh_p95_ms",
-            p95_ms,
+            durations_ms[p95_index],
             "ms",
             "lower_is_better",
             {"sample_size": len(durations_ms)},

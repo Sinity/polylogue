@@ -11,10 +11,10 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
+from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.types import SessionId
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.runtime import (
     SessionContextSnapshotRecord,
     SessionObservedEventRecord,

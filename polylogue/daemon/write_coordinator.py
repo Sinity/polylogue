@@ -204,6 +204,7 @@ class DaemonWriteCoordinator:
         self._last_event: DaemonWriteEvent | None = None
         self._accepting = True
         self._executions: set[asyncio.Task[object]] = set()
+        self._managed: set[asyncio.Task[object]] = set()
         self._idle = asyncio.Event()
         self._idle.set()
         self._detached_writer_failures = 0
@@ -245,7 +246,10 @@ class DaemonWriteCoordinator:
             raise RuntimeError(
                 "daemon write lease was inherited by a child task; nested writes must run in the owning task"
             )
-        if not self._accepting:
+        if not self._accepting and current_task not in self._managed:
+            # Shutdown drains managed post-write tasks, so their writes stay
+            # admissible: refusing them would strand the terminal receipt the
+            # drain exists to deliver. New external callers are still refused.
             raise RuntimeError("daemon write coordinator is shutting down")
 
         self._sequence += 1
@@ -480,6 +484,8 @@ class DaemonWriteCoordinator:
             return await operation
 
         task: asyncio.Task[object] = asyncio.create_task(managed_operation(), name=f"polylogue-managed:{actor}")
+        self._managed.add(task)
+        task.add_done_callback(self._managed.discard)
         self._track_execution(task, actor=actor)
         return task
 

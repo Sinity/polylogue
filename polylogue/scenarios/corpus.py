@@ -9,7 +9,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.insights.authored_payloads import (
+from polylogue.analysis.authored_payloads import (
     PayloadDict,
     PayloadMap,
     merge_unique_string_tuples,

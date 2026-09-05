@@ -68,8 +68,6 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Atlas: Query and Read Path](atlas/query-read-path.md) | Agent-orientation sheet: query planning, stable reads, and surface ownership. |
 | [Atlas: MCP](atlas/mcp.md) | Agent-orientation sheet: tool dispatch, declarations, contract flow. |
 | [Daemon](daemon.md) | Daemon ownership, convergence, HTTP serving, and service operation. |
-| [Daemon Concurrency Profile](daemon-concurrency-profile.md) | Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger. |
-| [Runtime and Concurrency Contract](runtime-concurrency.md) | Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger. |
 | [Daemon Threat Model](daemon-threat-model.md) | Local API assets, threats, mitigations, and roles. |
 | [Security](security.md) | Security boundaries for local archives and readers. |
 | [Archive Backup](archive-backup.md) | Archive-tier backup profiles, restore boundaries, and blob-GC safety rules. |
@@ -125,6 +123,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Convergence Law Deletion Ledger](convergence-laws-deletion-ledger.md) | Deletion candidates and exact four-law, production-seam mutation conditions for convergence machinery. |
 | [GitHub Merge Queue Evaluation](design/merge-queue-evaluation.md) | Evidence-based decision on whether GitHub merge queue can replace the local harvest merge train. |
 | [CLI Interaction Oracle Deletion Ledger](plans/cli-interaction-deletion-ledger.md) | Single-owner inventory and LOC accounting for CLI interaction, terminal-cell, PTY, and benchmark oracles. |
+| [CLI Operation Kernel Deletion Ledger](plans/cli-operation-kernel-deletion-ledger.md) | Transport ownership and LOC accounting for the CLI operation-kernel migration. |
 | [Typed WebUI Capability Matrix](plans/webui-capability-matrix.md) | Cutover inventory for typed and legacy browser capabilities. |
 | [Second Brain](design/second-brain.md) | Vision note for remembered work. |
 | [Time Machine](design/time-machine.md) | Vision note for reconstructing work over time. |
@@ -138,7 +137,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [1498 Cascade Retrospective](retro/2026-05-24-1498-cascade.md) | Historical cascade incident retrospective. |
 | [Retrospective Index](retro/README.md) | Index of historical incident retrospectives. |
 | [MCP Surface Report 2026-08](mcp-surface-report-2026-08.md) | Dated closure evidence for the 103-tool-to-10-verb MCP collapse (polylogue-t46.8). |
-| [Schema Disposition Audit](schema-disposition-2026-08-19.md) | Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr). |
+| [Schema Disposition Audit](schema-disposition-2026-08-19.md) | Generated six-tier target schema disposition and canonical DDL inventory (polylogue-gvzkr). |
 
 ## Contributor Workflow
 

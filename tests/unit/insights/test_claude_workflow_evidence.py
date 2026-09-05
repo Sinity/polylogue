@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.insights.claude_workflow_evidence import (
+from polylogue.analysis.claude_workflow_evidence import (
     ClaudeWorkflowCoordinatorInvocation,
     ClaudeWorkflowPromptEvidence,
     ClaudeWorkflowSessionEvidence,
     project_claude_workflow_evidence,
 )
+from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
 from polylogue.sources.parsers.claude.orchestration import ClaudeOrchestrationArtifact, ClaudeOrchestrationFact
 

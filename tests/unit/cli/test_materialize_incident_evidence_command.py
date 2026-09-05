@@ -11,9 +11,9 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
+from polylogue.analysis.work_evidence import WorkEvidenceGraph
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli import cli
-from polylogue.insights.work_evidence import WorkEvidenceGraph
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository

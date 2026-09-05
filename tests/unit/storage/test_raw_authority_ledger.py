@@ -1160,6 +1160,19 @@ def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: 
     assert census.plan_count == 0
 
 
+def test_frontier_census_is_ephemeral_before_durable_ledger_migration(tmp_path: Path) -> None:
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute("DROP TABLE raw_authority_blockers")
+        conn.execute("DROP TABLE raw_authority_censuses")
+
+    census = inspect_raw_authority_frontier(_config(tmp_path))
+
+    assert census.census_id.startswith("ephemeral:")
+    assert census.query_handle == "raw-authority-frontier:ephemeral"
+    assert census.plan_count == 0
+
+
 @pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
 def test_application_receipt_requires_exact_application_authority(tmp_path: Path, field: str) -> None:
     initialize_active_archive_root(tmp_path)

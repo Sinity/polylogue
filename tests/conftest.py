@@ -179,6 +179,9 @@ _MANAGED_VERIFY_ENV = frozenset(
         "POLYLOGUE_PYTEST_SUMMARY_PATH",
         "POLYLOGUE_PYTEST_SELECTION_NODEID_LIMIT",
         "POLYLOGUE_VISUAL_EVIDENCE_DIR",
+        # The run's own slot marker: a test that starts a nested managed run
+        # must run it inline, not queue on the slot the outer run holds.
+        "POLYLOGUE_PYTEST_SLOT",
     }
 )
 

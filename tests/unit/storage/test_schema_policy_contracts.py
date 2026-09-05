@@ -26,7 +26,9 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.core.enums import BlockType, Provider, Role
+from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -41,7 +43,12 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     decide_schema_bootstrap,
     schema_version_mismatch_message,
 )
-from polylogue.storage.sqlite.schema_manifest import canonical_schema_manifest, schema_manifest_diff
+from polylogue.storage.sqlite.schema_manifest import (
+    MESSAGE_FTS_DEGRADABLE_OBJECTS,
+    canonical_schema_manifest,
+    schema_manifest_diff,
+    schema_manifest_diff_is_message_fts_only,
+)
 
 # ---------------------------------------------------------------------------
 # Canonical FTS triggers — see docs/internals.md
@@ -352,7 +359,6 @@ def test_every_prior_index_schema_version_is_rejected_not_silently_reopened(tmp_
     fresh-first rebuild (``polylogue ops reset --index && polylogued run``)
     instead of being silently reopened with stale DDL that a subsequent
     write could violate (see commit that added
-    ``insight_materialization.insight_type = 'provider_usage'``: it bumped
     ``INDEX_SCHEMA_VERSION`` specifically so this scenario is caught here,
     not as a runtime CHECK-constraint failure deep in convergence).
     """
@@ -454,6 +460,27 @@ def test_readable_layout_rejects_extra_object_with_typed_refusal(tmp_path: Path)
         conn.close()
 
 
+def test_read_only_archive_open_rejects_semantic_manifest_drift(tmp_path: Path) -> None:
+    """The production read-only route validates the complete manifest.
+
+    An extra table is the anti-vacuity mutation: the legacy sessions-column
+    sentinel still passes, while the archive contains an object outside the
+    current schema contract.
+    """
+    initialize_active_archive_root(tmp_path)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("CREATE TABLE unexpected_read_object (value TEXT NOT NULL)")
+        conn.commit()
+
+    with pytest.raises(SchemaVersionMismatchError) as caught:
+        ArchiveStore.open_existing(tmp_path, read_only=True)
+    error = caught.value
+    assert error.current_version == SCHEMA_VERSION
+    assert error.expected_version == SCHEMA_VERSION
+    assert error.lifecycle_action == "rebuild_index"
+    assert "schema semantic manifest mismatch" in str(error)
+
+
 def test_readable_layout_admits_a_missing_message_fts_surface(tmp_path: Path) -> None:
     """A degraded search index is a reported read state, not a closed archive.
 
@@ -479,6 +506,46 @@ def test_readable_layout_admits_a_missing_message_fts_surface(tmp_path: Path) ->
         conn.commit()
         with pytest.raises(SchemaVersionMismatchError, match="session_links"):
             assert_readable_archive_layout(conn, generation_id="gen-degraded-fts")
+    finally:
+        conn.close()
+
+
+def test_readable_layout_rejects_current_version_with_cost_usage_shape_drift(tmp_path: Path) -> None:
+    """The read guard checks the complete canonical index schema.
+
+    Dropping both cost columns is the anti-vacuity mutation: the old
+    ``sessions.reported_cost_usd`` sentinel remains present, while coverage
+    reads still fail when they select the usage columns.
+    """
+    db_path = tmp_path / "cost-usage-drift.db"
+    conn = sqlite3.connect(db_path)
+    _ensure_schema(conn)
+    conn.executescript(
+        """
+        ALTER TABLE session_model_usage RENAME TO session_model_usage_current;
+        CREATE TABLE session_model_usage (
+            session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+            model_name TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0),
+            output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0),
+            cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0),
+            cache_write_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0),
+            message_count INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0),
+            cost_credits REAL,
+            PRIMARY KEY(session_id, model_name)
+        ) STRICT;
+        DROP TABLE session_model_usage_current;
+        """
+    )
+    conn.commit()
+    try:
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_readable_archive_layout(conn, generation_id="gen-cost-drift")
+        error = caught.value
+        assert error.current_version == SCHEMA_VERSION
+        assert error.expected_version == SCHEMA_VERSION
+        assert error.generation_id == "gen-cost-drift"
+        assert error.lifecycle_action == "rebuild_index"
     finally:
         conn.close()
 
@@ -544,3 +611,69 @@ def test_fresh_init_creates_canonical_fts_trigger_set(tmp_path: Path) -> None:
     missing = _CANONICAL_FTS_TRIGGERS - triggers
     assert not missing, f"Fresh init is missing canonical FTS triggers: {sorted(missing)}"
     assert triggers == _CANONICAL_FTS_TRIGGERS
+
+
+def test_message_fts_admission_is_a_declared_object_set() -> None:
+    """The degradable surface is declared, not inferred from an object-name prefix.
+
+    ``messages_fts_identity`` is a plain declared table of ours that happens to
+    share the ``messages_fts`` prefix; a future surface could too. Admission
+    names the objects it admits so a new one is refused until it is declared.
+
+    Anti-vacuity: matching on the ``messages_fts`` name prefix admits the
+    undeclared object below and turns this red.
+    """
+    diff = {
+        "missing": [("table", "messages_fts_speculative_surface")],
+        "extra": [],
+        "wrong_definition": [],
+    }
+    assert not schema_manifest_diff_is_message_fts_only(diff)
+
+    declared = {
+        ("table", "messages_fts"),
+        ("table", "messages_fts_identity"),
+        ("trigger", "messages_fts_ai"),
+        ("trigger", "messages_fts_ad"),
+        ("trigger", "messages_fts_au"),
+    }
+    assert set(MESSAGE_FTS_DEGRADABLE_OBJECTS) == declared
+    canonical = {(kind, name) for kind, name, _ in canonical_schema_manifest(ArchiveTier.INDEX).objects}
+    assert declared <= canonical
+
+
+def test_admitted_missing_message_fts_refuses_block_search_with_a_typed_error(tmp_path: Path) -> None:
+    """Every reader of the admitted-absent surface degrades with a typed error.
+
+    ``assert_readable_archive_layout`` admits an index whose message FTS
+    surface is gone on the promise that reads report it as search-route state.
+    That promise holds only if no reader of ``messages_fts`` reaches SQL.
+
+    Anti-vacuity: removing the existence check from ``search_archive_blocks``
+    raises ``sqlite3.OperationalError: no such table: messages_fts`` instead,
+    which is not a ``DatabaseError``.
+    """
+    root = tmp_path / "archive"
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="fts-degraded-1",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one searchable needle")],
+            )
+        ],
+    )
+    with ArchiveStore(root) as writer:
+        writer.write_parsed(session)
+
+    with sqlite3.connect(root / "index.db") as conn:
+        for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):
+            conn.execute(f"DROP TRIGGER {trigger}")
+        conn.execute("DROP TABLE messages_fts")
+        conn.commit()
+
+    with ArchiveStore.open_existing(root, read_only=True) as store:
+        with pytest.raises(DatabaseError, match="Search index"):
+            store.search_blocks("needle")

@@ -37,12 +37,12 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.insights.session.records"
+    "import": "polylogue.storage.derived.session.records"
   },
   {
     "target": "polylogue/api",
     "file": "polylogue/api/archive.py",
-    "import": "polylogue.storage.insights.session.runtime"
+    "import": "polylogue.storage.derived.session.runtime"
   },
   {
     "target": "polylogue/api",
@@ -187,7 +187,7 @@
   {
     "target": "polylogue/api",
     "file": "polylogue/api/sync/insights.py",
-    "import": "polylogue.storage.insights.session.runtime"
+    "import": "polylogue.storage.derived.session.runtime"
   },
   {
     "target": "polylogue/api",
@@ -287,11 +287,6 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.embedding_write"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
     "import": "polylogue.storage.sqlite.archive_tiers.ops_write"
   },
   {
@@ -308,16 +303,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/excise.py",
     "import": "polylogue.storage.sqlite.archive_tiers.bootstrap"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/excise.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.types"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/facets.py",
-    "import": "polylogue.storage.sqlite.archive_tiers.index"
   },
   {
     "target": "polylogue/cli",
@@ -837,22 +822,17 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.fts.sql"
+    "import": "polylogue.storage.derived.session.rebuild"
   },
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.insights.session.rebuild"
+    "import": "polylogue.storage.derived.session.runtime"
   },
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.insights.session.runtime"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/convergence_stages.py",
-    "import": "polylogue.storage.insights.session.status"
+    "import": "polylogue.storage.derived.session.status"
   },
   {
     "target": "polylogue/daemon",
@@ -1207,7 +1187,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/http.py",
-    "import": "polylogue.storage.insights.session.profiles"
+    "import": "polylogue.storage.derived.session.profiles"
   },
   {
     "target": "polylogue/daemon",

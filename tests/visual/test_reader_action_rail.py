@@ -15,4 +15,4 @@ def test_reader_session_shell_contract(reader_workspace: ReaderWorkspace) -> Non
     assert "message-flow" in dom.ids
     assert "message-flow-more" in dom.ids
     assert f"msg-{READER_C1}:n:reader-c1-m1" in dom.ids
-    assert "/app/assets/session-read-" in body
+    assert "/assets/session-read-" in body

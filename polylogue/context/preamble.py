@@ -76,6 +76,11 @@ def _record_preamble_ledger(polylogue: object, assembly: ContextAssembly) -> Non
         return
     ops_db = Path(archive_root) / "ops.db"
     try:
+        if not ops_db.exists():
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+            from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
         conn = open_connection(ops_db)
         try:
             record_context_ledger(conn, assembly, observed_at_ms=int(datetime.now(timezone.utc).timestamp() * 1000))

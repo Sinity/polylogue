@@ -27,10 +27,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.daemon.web_shell_attachments import (
+from polylogue.daemon.webui_data import (
     PREVIEW_SIZE_BUDGET,
     attachment_to_envelope,
-    classify_state,
+    classify_attachment_state,
 )
 from tests.visual.conftest import (
     READER_C1,
@@ -48,13 +48,13 @@ from tests.visual.conftest import (
 
 
 def test_classify_state_pure_function() -> None:
-    """``classify_state`` derives the MK3 state token without I/O."""
+    """The typed attachment state rule derives its token without I/O."""
 
-    assert classify_state(path="blob/aa/x", size_bytes=10, mime_type="text/plain") == "available"
-    assert classify_state(path=None, size_bytes=10, mime_type="text/plain") == "missing-blob"
-    assert classify_state(path="blob/x", size_bytes=10, mime_type="application/zip") == "unsupported-kind"
+    assert classify_attachment_state(path="blob/aa/x", size_bytes=10, mime_type="text/plain") == "available"
+    assert classify_attachment_state(path=None, size_bytes=10, mime_type="text/plain") == "missing-blob"
+    assert classify_attachment_state(path="blob/x", size_bytes=10, mime_type="application/zip") == "unsupported-kind"
     assert (
-        classify_state(
+        classify_attachment_state(
             path="blob/x",
             size_bytes=PREVIEW_SIZE_BUDGET + 1,
             mime_type="video/mp4",
@@ -100,21 +100,12 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
         library = get_json(base_url, "/api/attachments?limit=100")
         lib_status, lib_ctype, lib_body = get_text(base_url, "/a")
 
-    # Reader shell carries the attachment slice.
+    # Typed SSR carries only the bounded bootstrap and delegates attachment
+    # data to the canonical JSON envelope.
     assert status == 200
     assert "text/html" in content_type
     assert_no_private_paths(body, context="reader shell HTML")
-    for phrase in (
-        "_polyAttachmentCardHtml",
-        "_polyRenderAttachmentCards",
-        "_polyAttachmentStripHtml",
-        "_polyAttachmentInspectorHtml",
-        "renderInspectorAttachments",
-        ".msg-attachment",
-        ".att-inspector-list",
-        'data-tab="attachments"',
-    ):
-        assert phrase in body, f"reader shell missing {phrase!r}"
+    assert 'id="archive-overview-island"' in body
 
     # Session envelope embeds attachments at both levels. Under the
     # content-addressed model (#1743) each attachment carries a derived
@@ -177,20 +168,12 @@ def test_reader_attachment_surface_contract(reader_workspace: ReaderWorkspace, t
     assert lib_status == 200
     assert "text/html" in lib_ctype
     assert_no_private_paths(lib_body, context="attachment library HTML")
-    for phrase in (
-        'id="att-list"',
-        'id="att-empty"',
-        'id="att-filter-mime"',
-        'id="att-filter-state"',
-        'id="att-filter-session"',
-        "initAttachmentLibrary",
-        "/api/attachments",
-    ):
+    for phrase in ("Attachment library", "Total", "screenshot.png", "missing-blob"):
         assert phrase in lib_body, f"library page missing {phrase!r}"
 
     dom = parse_dom(lib_body)
-    assert "att-list" in dom.ids
-    assert "att-filter-state" in dom.ids
+    assert "main" in dom.ids
+    assert "typed-data-title" in dom.ids
 
     write_evidence_manifest(
         tmp_path / "reader-attachments-evidence.json",
@@ -243,8 +226,8 @@ def test_attachment_library_empty_state(reader_workspace: ReaderWorkspace, tmp_p
     assert payload["items"] == []
     assert payload["total"] == 0
     assert lib_status == 200
-    assert 'id="att-list"' in lib_body
-    assert 'id="att-empty"' in lib_body
+    assert "Attachment library" in lib_body
+    assert "No attachments are available in this archive." in lib_body
 
     write_evidence_manifest(
         tmp_path / "reader-attachments-empty-evidence.json",
@@ -300,4 +283,4 @@ def test_raw_html_attachment_renders_no_inline_script(
 def test_size_budget_boundary(size: int, expected: str) -> None:
     """The size-budget boundary is inclusive of ``PREVIEW_SIZE_BUDGET``."""
 
-    assert classify_state(path="blob/x", size_bytes=size, mime_type="text/plain") == expected
+    assert classify_attachment_state(path="blob/x", size_bytes=size, mime_type="text/plain") == expected

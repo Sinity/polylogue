@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -211,7 +210,7 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
     # so the SQL-backed query units have rows to return, mirroring a real
     # post-ingest archive. Run/observed-event/context-snapshot query units are
     # source-derived (polylogue-dab) and need no separate materialization.
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     with sqlite3.connect(index_db) as insight_conn:
         insight_conn.row_factory = sqlite3.Row
@@ -1126,28 +1125,6 @@ def test_async_execute_query_archive_keeps_stats_local(
     assert payload["items"] == [{"count": 1, "group": "codex-session"}]
 
 
-def test_daemon_session_fetch_has_wall_clock_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
-    from polylogue.cli import archive_query
-
-    def slow_fetch(*_args: object, **_kwargs: object) -> dict[str, object]:
-        time.sleep(0.2)
-        return {"items": [], "total": 0}
-
-    monkeypatch.setattr(archive_query, "_DAEMON_FAST_PATH_TIMEOUT_S", 0.01)
-    monkeypatch.setattr(archive_query, "_fetch_daemon_sessions_payload_once", slow_fetch)
-
-    started = time.monotonic()
-    payload = archive_query._fetch_daemon_sessions_payload_with_deadline(
-        "http://127.0.0.1:9876",
-        None,
-        {"limit": 1},
-    )
-    elapsed = time.monotonic() - started
-
-    assert payload is None
-    assert elapsed < 0.1
-
-
 def test_async_execute_query_archive_sorts_lists(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -1385,6 +1362,54 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
 
     payload = json.loads(capsys.readouterr().out)
     assert payload == {"mode": "count", "origin": "codex-session", "count": 2}
+
+
+def test_async_execute_query_archive_analyze_id_keeps_exact_session_scope(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An identity predicate must reach aggregate execution, not mean all rows."""
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    (archive_root / "index.db").touch()
+    config = MagicMock()
+    config.archive_root = archive_root
+    env = _make_env(repo=MagicMock(), config=config)
+
+    class FakeArchiveStore:
+        def __enter__(self) -> FakeArchiveStore:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def resolve_session_id(self, token: str) -> str:
+            assert token == "codex-session:one"
+            return token
+
+        def count_sessions(self, **kwargs: object) -> int:
+            assert kwargs["session_id"] == "codex-session:one"
+            return 1
+
+    monkeypatch.setattr(
+        "polylogue.cli.archive_query.ArchiveStore.open_existing",
+        classmethod(lambda cls, root: FakeArchiveStore()),
+    )
+
+    asyncio.run(
+        _execute_query_params(
+            env,
+            {
+                "archive": True,
+                "conv_id": "codex-session:one",
+                "count_only": True,
+                "output_format": "json",
+            },
+        )
+    )
+
+    assert json.loads(capsys.readouterr().out)["count"] == 1
 
 
 def test_async_execute_query_archive_count_applies_boolean_predicate(

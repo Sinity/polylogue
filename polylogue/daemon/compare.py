@@ -3,7 +3,7 @@
 This module owns the diff/alignment semantics for ``/api/compare`` (issue
 #1124). The HTTP layer (``workspace_routes``) is a thin wrapper that loads two
 session payloads from the existing reader detail loader and forwards them
-here. Keeping the diff in its own module means UI surfaces (``web_shell``) and
+here. Keeping the diff in its own module means UI surfaces and
 tests can exercise alignment + metadata-diff behaviour without spinning up the
 daemon.
 

@@ -32,9 +32,9 @@ from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
 
 if TYPE_CHECKING:
-    from polylogue.insights.judgment.types import ComparativeJudgment
-    from polylogue.insights.pathology import PathologyFinding
-    from polylogue.insights.transforms import DecisionCandidate, SessionDigest, TransformRawRef
+    from polylogue.analysis.judgment.types import ComparativeJudgment
+    from polylogue.analysis.pathology import PathologyFinding
+    from polylogue.analysis.transforms import DecisionCandidate, SessionDigest, TransformRawRef
 
 
 ASSERTION_DEFAULT_STATUS: Final[AssertionStatus] = AssertionStatus.ACTIVE
@@ -573,7 +573,7 @@ class FindingAssertion:
     public_claim: PublicClaimDeclaration | None = None
     controls: Sequence[Mapping[str, JSONValue]] = ()
     """Paired negative controls (rxdo.9.7, mechanism G). Each entry mirrors
-    :class:`~polylogue.insights.judgment.controls.NegativeControl`'s fields
+    :class:`~polylogue.analysis.judgment.controls.NegativeControl`'s fields
     (``control_kind``, ``query_ref``, ``result_ref``, ``matching_variables``,
     ``expected_null``, ``confounds_checked``) plus ``observed_null_held``
     (bool) -- the detector/analyst runs the control comparison and declares
@@ -583,7 +583,7 @@ class FindingAssertion:
     dropped or stored unvalidated -- see :func:`_finding_value`."""
     control_frame_variables: Sequence[str] = ()
     """Frame variables the finding's claim varies over -- required for
-    :func:`~polylogue.insights.judgment.controls.validate_control` to check
+    :func:`~polylogue.analysis.judgment.controls.validate_control` to check
     that a declared matched-shape control isolates the right mechanism, or
     that an ``unrelated_cohort`` control declares every frame variable as a
     checked confound."""
@@ -1407,7 +1407,7 @@ def upsert_comparative_judgment_assertion(
     """Store one comparative judgment (rxdo.9.11, mechanism K) as an assertion row.
 
     ``judgment.judgment_id`` (a content hash -- see
-    :func:`polylogue.insights.judgment.comparative.build_comparative_judgment`)
+    :func:`polylogue.analysis.judgment.comparative.build_comparative_judgment`)
     is used verbatim as the assertion id, so recording an identical verdict
     twice is idempotent rather than duplicative.
 
@@ -1419,7 +1419,7 @@ def upsert_comparative_judgment_assertion(
     to the operator; this function does not decide routing).
     """
 
-    from polylogue.insights.judgment.comparative import comparative_judgment_to_value
+    from polylogue.analysis.judgment.comparative import comparative_judgment_to_value
 
     timestamp = now_ms if now_ms is not None else _now_ms()
     value = comparative_judgment_to_value(judgment)
@@ -1463,7 +1463,7 @@ def list_comparative_judgments(conn: sqlite3.Connection) -> list[ComparativeJudg
     candidates only reach ``ACTIVE`` via the promoted row once accepted.
     """
 
-    from polylogue.insights.judgment.comparative import comparative_judgment_from_value
+    from polylogue.analysis.judgment.comparative import comparative_judgment_from_value
 
     judgments: list[ComparativeJudgment] = []
     for envelope in list_assertions_by_kind(conn, AssertionKind.COMPARATIVE_JUDGMENT):
@@ -1604,13 +1604,13 @@ def _finding_value(finding: FindingAssertion) -> dict[str, object]:
 def _finding_controls_value(finding: FindingAssertion) -> list[dict[str, object]]:
     """Validate declared negative controls, failing the write closed on any rejection.
 
-    Reuses :func:`~polylogue.insights.judgment.controls.validate_control`
+    Reuses :func:`~polylogue.analysis.judgment.controls.validate_control`
     (rxdo.9.7, mechanism G) -- a control is stored only if it isolates the
     challenged mechanism (matched-shape) or declares every frame variable a
     checked confound (``unrelated_cohort``); a deliberately divergent
     baseline never silently passes as a control.
     """
-    from polylogue.insights.judgment.controls import NegativeControl, validate_control
+    from polylogue.analysis.judgment.controls import NegativeControl, validate_control
 
     frame_variables = tuple(finding.control_frame_variables)
     validated: list[dict[str, object]] = []

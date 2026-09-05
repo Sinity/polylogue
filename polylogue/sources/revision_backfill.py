@@ -50,7 +50,7 @@ from polylogue.pipeline.services.process_pool import (
     parallel_threads_effective,
     resolve_revision_backfill_census_dispatch,
 )
-from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
+from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
     detect_provider_evidence,
@@ -2238,10 +2238,9 @@ def backfill_historical_revision_evidence(
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
     threading to the same two apply calls, enabling the broader
-    bulk-generation-build lifecycle: every per-session
-    messages_fts/blocks_command_trigram/action_pairs/delegation_facts refresh
-    is skipped during replay, deferred to one archive-wide repopulate at
-    readiness. Only the offline rebuild caller passes ``True``.
+    bulk-generation-build lifecycle: per-session FTS refresh is skipped during
+    replay and deferred to one archive-wide repopulate at readiness. The
+    action and delegation surfaces are query-time views and need no refresh.
 
     ``prefetch_cache`` (polylogue-gd6v, default ``None``) is threaded to the
     census phase exactly like ``census_historical_revision_evidence``'s own
@@ -2430,13 +2429,10 @@ def backfill_historical_revision_evidence(
                 plan = (
                     archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
                     if owned_inactive_generation is not None
-                    else archive.classify_raw_revision_cohort_for_rebuild_repair(
-                        logical_key,
-                        # Batched replay defers the classification's source.db
-                        # authority updates into the same batch window as the replay
-                        # writes (idempotent, re-derived on resume -- see
-                        # classify_raw_revision_cohort_for_rebuild_repair's docstring).
-                        manage_transaction=not replay_batched,
+                    else (
+                        archive.classify_raw_revision_cohort_for_rebuild_repair_in_transaction(logical_key)
+                        if replay_batched
+                        else archive.classify_raw_revision_cohort_for_rebuild_repair(logical_key)
                     )
                 )
                 stage_timings["replay.classify_cohort"] = stage_timings.get("replay.classify_cohort", 0.0) + (
@@ -3280,23 +3276,15 @@ def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) ->
     if descriptor is None:
         return False
     state_path, source_path, state_kind = descriptor
-    if state_kind == "thread_state":
-        write_codex_thread_state_evidence(
-            archive,
-            codex_state.parse_codex_state_db(state_path, immutable=True),
-            source_path=source_path,
-            acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
-            observation_order=archive.raw_revision_observation_order(raw_id)[1],
-        )
-    archive.replace_raw_membership_census(
+    record_codex_state_snapshot_terminal(
+        archive,
         raw_id,
-        [],
-        parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
+        state_path=state_path,
+        state_kind=state_kind,
+        source_path=source_path,
+        acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
         censused_at_ms=0,
-        detail="retained Codex state evidence applied",
-        retire_full_revision_governance=True,
     )
-    archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
     return True
 
 

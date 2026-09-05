@@ -24,11 +24,6 @@ from polylogue.cli.commands.maintenance._migrate_tier import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import json_document
 from polylogue.daemon.backup import backup_archive
-from polylogue.maintenance.raw_authority_recovery import (
-    RawAuthorityRecoveryOperation,
-    inspect_raw_authority_recovery,
-    write_recovery_plan,
-)
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
@@ -1920,138 +1915,6 @@ def test_archive_maintenance_help_omits_copy_activation_surface(cli_runner: CliR
         assert removed not in result.output
 
 
-def test_cursor_authority_reconcile_cli_exposes_only_scoped_inputs(cli_runner: CliRunner) -> None:
-    result = cli_runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", "--help"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert "--source-path-file" in result.output
-    assert "--output-plan" in result.output
-    assert "--plan" in result.output
-    assert "--backup-manifest" in result.output
-    assert "--receipt" in result.output
-    assert "--apply" in result.output
-    assert "--force" not in result.output
-    assert "--bypass" not in result.output
-
-
-def test_cursor_authority_reconcile_cli_accepts_verified_backup_directory(
-    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.maintenance import cursor_authority_reconcile
-
-    backup = tmp_path / "verified-backup"
-    backup.mkdir()
-    (backup / "manifest.json").write_text("{}", encoding="utf-8")
-    observed: dict[str, Path] = {}
-    configured_root = tmp_path / "configured-archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured_root))
-
-    def fake_apply(
-        *,
-        plan_path: Path,
-        backup_manifest: Path,
-        receipt: Path,
-        archive_root: Path,
-    ) -> dict[str, object]:
-        observed["backup"] = backup_manifest
-        observed["archive_root"] = archive_root
-        return {"verdict": "failed"}
-
-    monkeypatch.setattr(cursor_authority_reconcile, "apply_reconciliation", fake_apply)
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "cursor-authority-reconcile",
-            "--apply",
-            "--plan",
-            str(tmp_path / "plan.json"),
-            "--backup-manifest",
-            str(backup),
-            "--receipt",
-            str(tmp_path / "receipt.json"),
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert observed["backup"] == backup
-    assert observed["archive_root"] == configured_root
-
-
-def test_cursor_authority_reconcile_cli_passes_configured_root_to_plan(
-    cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.maintenance import cursor_authority_reconcile
-
-    configured_root = tmp_path / "configured-archive"
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured_root))
-    observed: dict[str, Path] = {}
-
-    def fake_build(*, source_path_file: Path, output_plan: Path, archive_root: Path) -> dict[str, object]:
-        observed["source_path_file"] = source_path_file
-        observed["output_plan"] = output_plan
-        observed["archive_root"] = archive_root
-        return {"status": "planned"}
-
-    monkeypatch.setattr(cursor_authority_reconcile, "build_reconciliation_plan", fake_build)
-    source_path_file = tmp_path / "selected-path"
-    output_plan = tmp_path / "plan.json"
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "cursor-authority-reconcile",
-            "--source-path-file",
-            str(source_path_file),
-            "--output-plan",
-            str(output_plan),
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert observed == {
-        "source_path_file": source_path_file,
-        "output_plan": output_plan,
-        "archive_root": configured_root,
-    }
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
-        ["--apply", "--backup-manifest", "backup", "--receipt", "receipt"],
-        ["--apply", "--plan", "plan", "--receipt", "receipt"],
-        ["--apply", "--plan", "plan", "--backup-manifest", "backup"],
-        ["--source-path-file", "source", "--output-plan", "plan", "--plan", "existing"],
-        ["--source-path-file", "source", "--output-plan", "plan", "--receipt", "receipt"],
-        ["--plan", "plan", "--backup-manifest", "backup", "--receipt", "receipt"],
-    ],
-)
-def test_cursor_authority_reconcile_cli_rejects_mixed_or_missing_mode_options(
-    cli_runner: CliRunner,
-    args: list[str],
-) -> None:
-    result = cli_runner.invoke(
-        cli,
-        ["--plain", "ops", "maintenance", "cursor-authority-reconcile", *args],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 2
-    assert "requires" in result.output or "accepts only" in result.output
-
-
 def test_raw_authority_frontier_cli_inspects_without_applying_plans(
     cli_workspace: dict[str, Path],
     cli_runner: CliRunner,
@@ -2123,38 +1986,6 @@ def test_raw_authority_frontier_cli_rejects_removed_apply_options(
     )
     assert rejected.exit_code == 2
     assert f"No such option {option!r}." in rejected.output
-
-
-def test_raw_authority_recovery_cli_refuses_plan_for_another_operation(
-    cli_workspace: dict[str, Path], cli_runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The required operation is bound before a destructive plan artifact is consumed."""
-    from polylogue.version import VERSION_INFO
-
-    monkeypatch.setattr(VERSION_INFO, "dirty", False)
-
-    plan = inspect_raw_authority_recovery(cli_workspace["archive_root"], RawAuthorityRecoveryOperation.RESET_CENSUS)
-    plan_file = tmp_path / "census-reset.plan.json"
-    write_recovery_plan(plan, plan_file)
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "maintenance",
-            "raw-authority-recovery",
-            "--operation",
-            RawAuthorityRecoveryOperation.PRUNE_INDEX_SEEDS.value,
-            "--apply",
-            "--plan-file",
-            str(plan_file),
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 1
-    assert "plan file declares operation 'reset_raw_authority_census'" in result.output
 
 
 def test_raw_authority_frontier_cli_refuses_durable_census_while_daemon_runs(

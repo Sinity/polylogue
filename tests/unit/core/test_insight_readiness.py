@@ -2,20 +2,16 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
-import aiosqlite
 import pytest
 
-from polylogue.api import Polylogue
-from polylogue.insights.readiness import (
+from polylogue.analysis.readiness import (
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
-    build_insight_readiness_report,
 )
-from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.api import Polylogue
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from tests.infra.storage_records import SessionBuilder
 
@@ -69,9 +65,8 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
     report = await archive.insight_readiness_report()
 
     # The sparse seed deliberately lacks the evidence needed for a fully
-    # grounded profile. Rebuild is complete, but readiness must surface its
-    # fallback rather than falsely claiming a ready insight.
-    assert report.aggregate_verdict == "degraded"
+    # grounded profile. Rebuild is complete, so the rows do not diverge from
+    # their sources, but coverage must still surface the fallback.
     assert {insight.insight_name for insight in report.insights} >= {
         "session_profiles",
         "session_work_events",
@@ -81,12 +76,11 @@ async def test_insight_readiness_report_marks_rebuilt_insights_ready(cli_workspa
         "archive_coverage",
     }
     profile = _entry_by_name(report, "session_profiles")
-    assert profile.verdict == "degraded"
+    assert not profile.diverged
     assert profile.degraded_count == 1
     assert profile.fallback_reason_counts
     assert profile.row_count == 1
     assert profile.origin_coverage[0].origin == "codex-session"
-    assert profile.version_coverage[0].versions[str(SESSION_INSIGHT_MATERIALIZER_VERSION)] == 1
 
 
 @pytest.mark.asyncio
@@ -96,8 +90,9 @@ async def test_insight_readiness_report_marks_empty_insights(cli_workspace: dict
     report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
 
     profile = _entry_by_name(report, "session_profiles")
-    assert report.aggregate_verdict == "empty"
-    assert profile.verdict == "empty"
+    assert profile.table_present
+    assert not profile.diverged
+    assert not profile.incomplete
     assert profile.row_count == 0
     assert profile.expected_row_count == 0
 
@@ -129,20 +124,22 @@ async def test_insight_readiness_report_marks_partial_and_incompatible_insights(
 
     archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
     partial = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
-    assert _entry_by_name(partial, "session_profiles").verdict == "partial"
+    incomplete = _entry_by_name(partial, "session_profiles")
+    assert incomplete.incomplete
+    assert not incomplete.diverged
 
     await _rebuild(db_path)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
-            "UPDATE insight_materialization SET materializer_version = ?",
+            "UPDATE session_profiles SET materializer_version = ?",
             (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
         )
         conn.commit()
 
-    incompatible = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
-    profile = _entry_by_name(incompatible, "session_profiles")
-    assert profile.verdict == "incompatible"
-    assert profile.incompatible_count == 2
+    stale = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
+    profile = _entry_by_name(stale, "session_profiles")
+    assert profile.diverged
+    assert profile.stale_count == 2
 
 
 @pytest.mark.asyncio
@@ -166,64 +163,53 @@ async def test_insight_readiness_report_marks_stale_insights(cli_workspace: dict
     report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
 
     profile = _entry_by_name(report, "session_profiles")
-    assert report.aggregate_verdict == "stale"
-    assert profile.verdict == "stale"
+    assert profile.diverged
     assert profile.stale_count == 1
 
 
+def test_absent_table_is_divergence_not_an_honest_zero() -> None:
+    """``table_present`` decides divergence; an empty present table does not.
+
+    This is the derivation that replaced the ``missing``/``empty`` verdicts.
+    Goes red if ``diverged`` stops reading ``table_present`` -- an absent table
+    would then be indistinguishable from a table that legitimately holds no rows.
+    """
+    absent = InsightReadinessEntry(
+        insight_name="session_profiles",
+        display_name="Session Profiles",
+        table_present=False,
+    )
+    empty = InsightReadinessEntry(
+        insight_name="session_profiles",
+        display_name="Session Profiles",
+        table_present=True,
+        expected_row_count=0,
+    )
+
+    assert absent.diverged
+    assert not empty.diverged
+    assert not empty.incomplete
+    assert absent.row_count == empty.row_count == 0
+
+
 @pytest.mark.asyncio
-async def test_insight_readiness_report_marks_missing_insight_tables(tmp_path: Path) -> None:
-    db_path = tmp_path / "missing.db"
-    with sqlite3.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                parent_session_id TEXT,
-                source_name TEXT,
-                origin TEXT,
-                branch_type TEXT,
-                title TEXT,
-                git_branch TEXT,
-                native_id TEXT,
-                message_count INTEGER,
-                tool_use_count INTEGER,
-                created_at_ms INTEGER,
-                updated_at_ms INTEGER,
-                sort_key REAL,
-                updated_at TEXT
-            );
-            CREATE TABLE blocks (
-                block_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                block_type TEXT,
-                message_id TEXT,
-                position INTEGER,
-                semantic_type TEXT,
-                tool_command TEXT,
-                tool_id TEXT,
-                tool_name TEXT,
-                tool_result_exit_code INTEGER,
-                tool_result_is_error INTEGER,
-                tool_outcome TEXT,
-                search_text TEXT
-            );
-            INSERT INTO sessions (session_id, parent_session_id, source_name, sort_key, updated_at)
-            VALUES ('missing-root', NULL, 'codex', 1.0, '2026-04-01T00:00:00Z');
-            """
-        )
-        status = session_insight_status_sync(conn)
+async def test_permanently_absent_storage_artifact_reports_absent(cli_workspace: dict[str, Path]) -> None:
+    """The presence probe reads sqlite_master rather than assuming presence.
 
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = aiosqlite.Row
-        report = await build_insight_readiness_report(
-            conn,
-            status,
-            InsightReadinessQuery(insights=("session_profiles",)),
-        )
+    ``session_runs`` is a source-derived CTE relation whose legacy table never
+    exists, so its storage artifact must report ``present=False`` while the
+    surface itself still counts rows. Goes red if artifact presence is
+    hardcoded true, which would hide a genuinely missing table.
+    """
+    db_path = cli_workspace["db_path"]
+    _seed_readiness_sessions(db_path)
+    await _rebuild(db_path)
 
-    profile = _entry_by_name(report, "session_profiles")
-    assert profile.verdict == "missing"
-    assert profile.row_count == 0
-    assert profile.expected_row_count == 1
+    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
+    report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_runs",)))
+
+    runs = _entry_by_name(report, "session_runs")
+    assert [artifact.name for artifact in runs.storage_artifacts] == ["session_runs"]
+    assert runs.storage_artifacts[0].present is False
+    # The surface is still reported; only its legacy cache table is absent.
+    assert runs.table_present

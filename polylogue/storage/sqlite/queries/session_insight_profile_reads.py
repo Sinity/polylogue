@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import aiosqlite
 
-from polylogue.storage.insights.session.profile_cost import (
+from polylogue.storage.derived.session.profile_cost import (
     apply_profile_cost_lanes,
     read_model_usage_batch_async,
 )

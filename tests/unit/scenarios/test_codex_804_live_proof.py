@@ -498,7 +498,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     clone_blob_tree(root / "blob", source_ready_root / "blob")
     with sqlite3.connect(source_ready_root / "source.db") as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
-    whale_repair = raw_authority.repair_materialization(
+    whale_repair = raw_authority.converge_materialization(
         Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
         dry_run=False,
         raw_artifact_id=whale_candidate,
@@ -512,7 +512,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert whale_repair.metrics["raw_materialization_selected_count"] == 1.0
     assert whale_repair.plan_outcomes
     assert all(whale_candidate in outcome.input_raw_ids for outcome in whale_repair.plan_outcomes)
-    followup_repair = raw_authority.repair_materialization(
+    followup_repair = raw_authority.converge_materialization(
         Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
         dry_run=False,
         raw_artifact_limit=1,
@@ -659,6 +659,15 @@ print(result.status)
     interrupted_generation = store.load(persisted.generation_id)
     with sqlite3.connect(interrupted_generation.index_path) as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
+        # polylogue-b5l.1 (#4285): the generation-local sealed membership is
+        # the resume authority, so what the restart owes is the sealed order
+        # minus every raw already committed -- which includes the page the
+        # pre-checkpoint crash committed before exiting without a checkpoint.
+        committed_before_restart = frozenset(
+            str(row[0])
+            for row in conn.execute("SELECT raw_id FROM candidate_source_membership WHERE status = 'committed'")
+        )
+    assert set(committed_page_raw_ids) <= committed_before_restart
     assert store.active_pointer.resolve(strict=True) == active_before
     phases.append(
         _phase(
@@ -745,11 +754,24 @@ print(result.generation["generation_id"])
         all_raw_sequence = tuple(
             str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY blob_hash, raw_id")
         )
+    with sqlite3.connect(candidate.index_path) as conn:
+        sealed_raw_sequence = tuple(
+            str(row[0])
+            for row in conn.execute("SELECT raw_id FROM candidate_source_membership ORDER BY blob_hash, raw_id")
+        )
     assert all(isinstance(raw_id, str) for page in resumed_raw_pages for raw_id in page)
     assert len(resumed_raw_sequence) == len(set(resumed_raw_sequence)), "restart replayed a raw more than once"
     assert len(all_raw_sequence) == len(set(all_raw_sequence))
+    # No raw of this fixture carries a resolved-superseded membership row
+    # (``membership_rows == ()`` below), so the seal is the whole source head:
+    # a seal that silently dropped an eligible raw fails here, not merely in
+    # the suffix comparison.
+    assert sealed_raw_sequence == all_raw_sequence
     assert set(committed_page_raw_ids).isdisjoint(set(resumed_raw_sequence))
-    assert resumed_raw_sequence == all_raw_sequence[len(committed_page_raw_ids) :]
+    assert resumed_raw_sequence == tuple(
+        raw_id for raw_id in sealed_raw_sequence if raw_id not in committed_before_restart
+    )
+    assert set(resumed_raw_sequence) | committed_before_restart == set(sealed_raw_sequence)
 
     idempotence_script = """
 import json

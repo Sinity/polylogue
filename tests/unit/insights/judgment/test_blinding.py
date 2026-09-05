@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.judgment.blinding import (
+from polylogue.analysis.judgment.blinding import (
     DEFAULT_MASKED_PROVENANCE_FIELDS,
     assert_no_leak,
     blind_items,

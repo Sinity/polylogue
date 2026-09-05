@@ -5,7 +5,7 @@ production callers -- the corrective AC's second consumer path depends on
 ``polylogue-9l5.7``'s statistics registry, which remains unstarted (that
 whole registry/composition epic is out of scope for this wiring pass). This
 test proves the bounded, honest slice that IS wired: the process-wide
-``DEFAULT_METRIC_REGISTRY`` (``polylogue/insights/measurement/
+``DEFAULT_METRIC_REGISTRY`` (``polylogue/analysis/measurement/
 registered_metrics.py``) resolves through the real MCP ``get`` tool, not
 just its own unit tests.
 """
@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from polylogue.insights.measurement.registered_metrics import SESSION_COST_USD_METRIC
+from polylogue.analysis.measurement.registered_metrics import SESSION_COST_USD_METRIC
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 from tests.unit.mcp.test_contract_evidence import _seeded_runtime_services
 

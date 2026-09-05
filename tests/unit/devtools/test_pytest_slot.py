@@ -7,15 +7,23 @@ and the marker file appears. Widening ``INHERITED_ENVIRONMENT_KEYS`` makes
 either half of the temporary-directory containment (the ``--basetemp``
 argument or the exported TMPDIR) makes
 ``test_a_queued_run_contains_its_temporary_trees`` red.
+
+Every queueing test here resolves ``pueue`` and ``sinnixd-queue-run`` from
+fakes that are the whole PATH, so a green run says nothing about what the
+workstation has deployed; the cgroup a slot decision depends on is stubbed for
+the same reason.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
+import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,9 +37,14 @@ from devtools.pytest_slot import (
     holds_pytest_slot,
     run_pytest,
 )
+from tests.unit.devtools.cgroups import DEPLOYED_PYTEST_CGROUP, stub_cgroup
 
-FAKE_PUEUE = """#!/usr/bin/env python3
-import json, os, sys
+#: ``pueue add`` resolves the runner and records it; the fake ``pueue`` never
+#: executes what it was given, so an executable that exits is the whole fake.
+FAKE_QUEUE_RUNNER = "raise SystemExit(0)\n"
+
+FAKE_PUEUE = """import json, os, sys
+import shutil
 
 # The record path is derived from this script's own location: a queued run's
 # adder environment is scrubbed, so nothing can be passed through it.
@@ -40,11 +53,30 @@ with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
 
 command = sys.argv[1] if len(sys.argv) > 1 else ""
 if command == "add":
+    shutil.copyfile(sys.argv[-1], {launch_snapshot!r})
     print("{task_id}")
 elif command == "status":
     print(json.dumps({{"tasks": {{"{task_id}": {{"status": {{"Done": {{"result": {result}}}}}}}}}}}))
 sys.exit(0)
 """
+
+
+def _install_executable(directory: Path, name: str, source: str) -> Path:
+    """Install ``source`` as an executable that needs nothing else on PATH.
+
+    The shebang names the interpreter absolutely: these fakes are the entire
+    PATH of the run under test, so ``/usr/bin/env python3`` would not resolve.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / name
+    script.write_text(f"#!{sys.executable}\n{source}", encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+def _install_fake_queue_runner(directory: Path) -> Path:
+    """The runner ``pueue add`` is handed, so queueing never needs the workstation's."""
+    return _install_executable(directory, pytest_slot.QUEUE_RUNNER, FAKE_QUEUE_RUNNER)
 
 
 def _install_fake_pueue(
@@ -55,11 +87,19 @@ def _install_fake_pueue(
     result: str = '"Success"',
 ) -> Path:
     directory = tmp_path / "fakebin"
-    directory.mkdir(exist_ok=True)
-    script = directory / "pueue"
-    script.write_text(FAKE_PUEUE.format(task_id=task_id, result=result), encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
-    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    _install_fake_queue_runner(directory)
+    script = _install_executable(
+        directory,
+        "pueue",
+        FAKE_PUEUE.format(
+            task_id=task_id,
+            result=result,
+            launch_snapshot=str(tmp_path / "queued-launch.json"),
+        ),
+    )
+    # The fakes are the whole PATH: queueing must resolve its tools from what
+    # the test installed, never from whatever the workstation has deployed.
+    monkeypatch.setenv("PATH", str(directory))
     return Path(str(script) + ".calls.jsonl")
 
 
@@ -106,7 +146,16 @@ def test_outside_a_task_the_run_is_queued(tmp_path: Path, monkeypatch: pytest.Mo
     assert "--group" in add["argv"] and add["argv"][add["argv"].index("--group") + 1] == "pytest"
     assert add["argv"][add["argv"].index("--label") + 1] == "polylogue:test:1"
     assert "--print-task-id" in add["argv"] and "--escape" in add["argv"]
-    assert "devtools.pytest_slot" in add["argv"]
+    assert add["argv"][-2:] == [
+        str(tmp_path / "fakebin" / pytest_slot.QUEUE_RUNNER),
+        str(tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.json"),
+    ]
+    launch = json.loads((tmp_path / "queued-launch.json").read_text(encoding="utf-8"))
+    assert launch["project_id"] == "polylogue"
+    assert launch["operation"] == "test"
+    assert launch["pool"] == "pytest"
+    assert launch["result_kind"] == "exit"
+    assert launch["timeout_seconds"] == 3600
     assert [call["argv"][0] for call in _calls(record)] == ["add", "wait", "status"]
 
 
@@ -133,12 +182,61 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
         assert recorded <= allowed, f"pueue add inherited {sorted(recorded - allowed)}"
 
 
-@pytest.mark.parametrize("holder", [{"SINNIXD_JOB_ID": "job-1"}, {"POLYLOGUE_PYTEST_SLOT": "held"}])
-def test_inside_the_slot_the_run_is_direct(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, holder: dict[str, str]
-) -> None:
+def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
+    lane_environment = _environment(SINNIXD_JOB_ID="job-1", SINNIXD_OPERATION="lane")
+
+    assert not holds_pytest_slot(lane_environment)
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=lane_environment,
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    assert not marker.exists()
+    assert outcome.slot == "pueue task 7"
+    assert outcome.returncode == 0
+    assert _calls(record)[0]["argv"][0] == "add"
+
+
+def test_declared_pytest_worker_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Queue identity alone is not the slot: the pytest slice is what binds it.
+
+    Anti-vacuity: pointing the stub at any other slice makes this red, because
+    the worker queues instead of running.
+    """
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    stub_cgroup(DEPLOYED_PYTEST_CGROUP, tmp_path=tmp_path, monkeypatch=monkeypatch)
+    marker = tmp_path / "pytest-ran"
+    holder = {
+        "SINNIXD_JOB_ID": "job-1",
+        "SINNIXD_OPERATION": "verify_affected",
+        "SINNIXD_QUEUE_WORKER": "1",
+        "SINNIXD_QUEUE_POOL": "pytest",
+    }
+
+    assert holds_pytest_slot(holder)
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=_environment(**holder),
+        root=tmp_path,
+        label="polylogue:test:1",
+    )
+
+    assert marker.exists()
+    assert outcome.slot == "held"
+    assert outcome.returncode == 0
+    assert _calls(record) == [], "a declared pytest worker must not recursively queue"
+
+
+def test_explicit_slot_holder_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _install_fake_pueue(tmp_path, monkeypatch)
+    marker = tmp_path / "pytest-ran"
+    holder = {"POLYLOGUE_PYTEST_SLOT": "held"}
 
     assert holds_pytest_slot(holder)
     outcome = run_pytest(
@@ -155,19 +253,71 @@ def test_inside_the_slot_the_run_is_direct(
     assert _calls(record) == [], "a slot holder must not talk to pueue"
 
 
-def test_an_unreachable_queue_refuses_rather_than_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_an_agent_pool_worker_queues_its_focused_run_in_the_pytest_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    outcome = run_pytest(
+        _marker_command(marker),
+        cwd=str(tmp_path),
+        env=_environment(
+            SINNIXD_JOB_ID="agent-job",
+            SINNIXD_QUEUE_WORKER="1",
+            SINNIXD_QUEUE_POOL="agent",
+        ),
+        root=tmp_path,
+        label="polylogue:test:agent",
+    )
+
+    assert not marker.exists()
+    assert outcome.slot == "pueue task 7"
+    add = next(call for call in _calls(record) if call["argv"][0] == "add")
+    assert add["argv"][add["argv"].index("--group") + 1] == "pytest"
+
+
+def test_missing_scoped_queue_runner_refuses_before_queueing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_fake_pueue(tmp_path, monkeypatch)
+    original_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, path=None: None if name == pytest_slot.QUEUE_RUNNER else original_which(name, path),
+    )
+
+    with pytest.raises(PytestSlotUnavailableError, match="sinnixd-queue-run"):
+        run_pytest(
+            _marker_command(tmp_path / "pytest-ran"),
+            cwd=str(tmp_path),
+            env=_environment(),
+            root=tmp_path,
+            label="polylogue:test:missing-runner",
+        )
+
+
+def test_an_unreachable_queue_refuses_rather_than_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The runner resolves and only the queue is missing, so this names pueue itself.
+
+    Anti-vacuity: dropping the fake runner refuses on the runner instead, which
+    is ``test_missing_scoped_queue_runner_refuses_before_queueing``; asserting
+    only the shared advice line would pass either way.
+    """
+    marker = tmp_path / "pytest-ran"
+    runner_only = tmp_path / "runner-only"
+    _install_fake_queue_runner(runner_only)
+    monkeypatch.setenv("PATH", str(runner_only))
 
     with pytest.raises(PytestSlotUnavailableError) as failure:
         run_pytest(
             _marker_command(marker),
             cwd=str(tmp_path),
-            env=_environment(PATH=str(tmp_path / "empty")),
+            env=_environment(PATH=str(runner_only)),
             root=tmp_path,
             label="polylogue:test:1",
         )
 
+    assert "`pueue` is not on PATH" in str(failure.value)
     assert "systemctl --user start pueued" in str(failure.value)
     assert not marker.exists()
 
@@ -213,11 +363,58 @@ def test_the_slot_runner_executes_the_launch_file(tmp_path: Path) -> None:
     assert not launch_path.exists(), "the launch file carries a resolved environment and must not persist"
 
 
+@pytest.mark.uses_real_clock("exercises a real signal deadline and process-group reap")
+def test_slot_timeout_writes_typed_receipt_and_reaps_child_group(tmp_path: Path) -> None:
+    """An external deadline retains progress even when pytest cannot finalize reports.
+
+    Anti-vacuity: removing the signal handler loses the sibling receipt; omitting
+    ``start_new_session`` leaves the sleeping descendant alive after the runner
+    exits.
+    """
+    log_path = tmp_path / "pytest-slot-1.log"
+    launch_path = tmp_path / "launch.json"
+    events_path = tmp_path / "events.jsonl"
+    started = tmp_path / "started"
+    survivor = tmp_path / "survivor"
+    events_path.write_text(json.dumps({"event": "test_report", "outcome": "passed"}) + "\n", encoding="utf-8")
+    child = f"touch {started}; (sleep 2; touch {survivor}) & sleep 30"
+    launch_path.write_text(
+        json.dumps(
+            {
+                "argv": ["sh", "-c", child],
+                "working_directory": str(tmp_path),
+                "environment": {
+                    "PATH": os.environ["PATH"],
+                    "POLYLOGUE_PYTEST_EVENTS_PATH": str(events_path),
+                },
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+    process = subprocess.Popen([sys.executable, "-m", "devtools.pytest_slot", str(launch_path)])
+    try:
+        deadline = time.monotonic() + 5
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=5) == 128 + signal.SIGTERM
+    finally:
+        if process.poll() is None:
+            process.kill()
+
+    receipt = json.loads(log_path.with_suffix(".result.json").read_text(encoding="utf-8"))
+    assert receipt["status"] == "timed_out"
+    assert receipt["diagnosis"] == "pytest_deadline"
+    assert receipt["elapsed_s"] >= 0
+    assert receipt["progress"]["terminal_count"] == 1
+    time.sleep(0.1)
+    assert not survivor.exists()
+
+
 def _launch_document(root: Path) -> dict[str, Any]:
-    """The launch file the (faked) adder left behind, unconsumed."""
-    launches = list((root / pytest_slot.LAUNCH_DIR).glob("pytest-slot-*.json"))
-    assert len(launches) == 1, f"expected one launch file, found {launches}"
-    document: dict[str, Any] = json.loads(launches[0].read_text(encoding="utf-8"))
+    """The launch file captured by the fake pueue adder before consumption."""
+    document: dict[str, Any] = json.loads((root / "queued-launch.json").read_text(encoding="utf-8"))
     return document
 
 
@@ -299,8 +496,7 @@ def test_the_leaked_cloud_basetemp_sentinel_is_declined(tmp_path: Path, monkeypa
 
 #: A ``pueue`` whose ``wait`` kills the process waiting on it, the way a
 #: session or a wrapper being killed leaves a queued task with no waiter.
-FAKE_PUEUE_KILLS_ITS_WAITER = """#!/usr/bin/env python3
-import json, os, signal, sys, time
+FAKE_PUEUE_KILLS_ITS_WAITER = """import json, os, signal, sys, time
 
 with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
     handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
@@ -312,6 +508,23 @@ elif command == "wait":
     os.kill(os.getppid(), signal.SIGTERM)
     time.sleep(2)
 sys.exit(0)
+"""
+
+#: The cancellation AgentCTL owns, recorded the way the ``pueue`` fake records.
+FAKE_AGENTCTL = """import json, sys
+
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+sys.exit(0)
+"""
+
+#: An AgentCTL that refuses, the way a job id pueue no longer holds refuses.
+FAKE_AGENTCTL_REFUSES = """import json, sys
+
+with open(sys.argv[0] + ".calls.jsonl", "a", encoding="utf-8") as handle:
+    handle.write(json.dumps({"argv": sys.argv[1:]}) + "\\n")
+sys.stderr.write("agentctl: no such job\\n")
+sys.exit(1)
 """
 
 _WAITER = """
@@ -332,18 +545,20 @@ run_pytest(
 def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
     """A task outlives its waiter, and the slot's parallelism is one.
 
-    Anti-vacuity: dropping the ``_reaping`` context leaves the recorded calls
-    at ``add``/``wait`` -- the task stays queued with nothing left to wait on
-    it, which is exactly the starvation this reap exists to prevent.
+    Anti-vacuity: dropping the ``_reaping`` context records no cancellation at
+    all -- the task stays queued with nothing left to wait on it, which is
+    exactly the starvation this reap exists to prevent. Reaping through
+    ``pueue kill`` instead leaves the workload running in its scope, and shows
+    up here as a ``kill`` among the pueue verbs.
     """
     import subprocess
 
     directory = tmp_path / "fakebin"
-    directory.mkdir()
-    script = directory / "pueue"
-    script.write_text(FAKE_PUEUE_KILLS_ITS_WAITER, encoding="utf-8")
-    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    _install_fake_queue_runner(directory)
+    script = _install_executable(directory, "pueue", FAKE_PUEUE_KILLS_ITS_WAITER)
+    agentctl = _install_executable(directory, "agentctl", FAKE_AGENTCTL)
     record = Path(str(script) + ".calls.jsonl")
+    cancellation_record = Path(str(agentctl) + ".calls.jsonl")
     repo = str(Path(pytest_slot.__file__).resolve().parents[1])
 
     completed = subprocess.run(
@@ -353,7 +568,7 @@ def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
             _WAITER.format(repo=repo, cwd=str(tmp_path), root=str(tmp_path)),
         ],
         env={
-            "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}",
+            "PATH": str(directory),
             "HOME": os.environ.get("HOME", "/home/nobody"),
         },
         capture_output=True,
@@ -363,8 +578,45 @@ def test_a_killed_waiter_reaps_the_task_it_queued(tmp_path: Path) -> None:
 
     assert completed.returncode == -int(signal.SIGTERM), completed.stderr
     verbs = [call["argv"][0] for call in _calls(record)]
-    assert verbs == ["add", "wait", "kill", "remove"], verbs
+    assert verbs == ["add", "wait"], verbs
+    assert _calls(cancellation_record) == [{"argv": ["job", "cancel", "11"]}]
     leftover = list((tmp_path / "verify").glob("pytest-slot-*.json")) + list(
         (tmp_path / ".cache" / "verify").glob("pytest-slot-*.json")
     )
     assert leftover == [], "the launch file carries a resolved environment and must not survive the reap"
+
+
+def test_a_refused_cancellation_leaves_the_launch_file_for_the_task(tmp_path: Path) -> None:
+    """A task AgentCTL would not stop still reads its launch file when it starts.
+
+    Anti-vacuity: unlinking the launch file regardless of the cancellation's
+    outcome empties the glob below, and the surviving task then starts with no
+    resolved environment to read.
+    """
+    import subprocess
+
+    directory = tmp_path / "fakebin"
+    _install_fake_queue_runner(directory)
+    _install_executable(directory, "pueue", FAKE_PUEUE_KILLS_ITS_WAITER)
+    agentctl = _install_executable(directory, "agentctl", FAKE_AGENTCTL_REFUSES)
+    repo = str(Path(pytest_slot.__file__).resolve().parents[1])
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _WAITER.format(repo=repo, cwd=str(tmp_path), root=str(tmp_path)),
+        ],
+        env={
+            "PATH": str(directory),
+            "HOME": os.environ.get("HOME", "/home/nobody"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == -int(signal.SIGTERM), completed.stderr
+    assert _calls(Path(str(agentctl) + ".calls.jsonl")) == [{"argv": ["job", "cancel", "11"]}]
+    surviving = list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
+    assert len(surviving) == 1, surviving

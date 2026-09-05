@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 import time
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import uuid4
@@ -39,13 +41,9 @@ WriteEffectPhase = Literal["in-transaction", "post-commit", "async-deferred"]
   transaction as the row writes (atomicity argument — FTS trigger
   drop/restore must not straddle a commit, see docs/internals.md).
 - ``post-commit``: runs after ``conn.commit()``, on the same connection.
-- ``async-deferred``: declared but not scheduled by this synchronous
-  registry walker — reserved for effects that must never delay the commit
-  (future embedding-scheduling/SSE-announce/webhook consumers). The
-  registry walker below only executes ``in-transaction`` and ``post-commit``
-  phases; an ``async-deferred`` entry is inert until a scheduler consumes
-  it, which keeps the phase declaration meaningful ahead of the consumer
-  existing (slice 2 of polylogue-0aj).
+- ``async-deferred``: queued after commit and delivered outside the request
+  path. Deferred failures are recorded as retryable and cannot affect the
+  committed transaction.
 """
 
 WriteEffectFailurePolicy = Literal["abort", "log-and-continue"]
@@ -68,6 +66,17 @@ class WriteEffectContext:
     op: WriteOperation
     payload: dict[str, Any]
     changed_session_ids: tuple[str, ...]
+    staleness_key: str
+    deferred_scheduler: Callable[[WriteEffect, WriteEffectContext], None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class WriteEffectReceipt:
+    name: str
+    phase: WriteEffectPhase
+    disposition: Literal["applied", "enqueued", "skipped", "failed"]
+    retryable: bool = False
+    error: str | None = None
 
 
 def _always_run(_ctx: WriteEffectContext) -> bool:
@@ -88,6 +97,47 @@ class WriteEffect:
     run: Callable[[WriteEffectContext], None]
     should_run: Callable[[WriteEffectContext], bool] = _always_run
     failure_policy: WriteEffectFailurePolicy = "abort"
+
+
+class DeferredEffectQueue:
+    """Bounded process-local delivery for effects that must not delay writes."""
+
+    def __init__(self, *, max_workers: int = 1) -> None:
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="polylogue-write-effect")
+        self._lock = threading.Lock()
+        self._pending: set[str] = set()
+        self._receipts: dict[str, WriteEffectReceipt] = {}
+
+    def enqueue(self, effect: WriteEffect, ctx: WriteEffectContext) -> None:
+        key = f"{effect.name}:{ctx.staleness_key}"
+        with self._lock:
+            if key in self._pending:
+                return
+            self._pending.add(key)
+            self._receipts[key] = WriteEffectReceipt(effect.name, effect.phase, "enqueued", retryable=True)
+        self._executor.submit(self._deliver, key, effect, ctx)
+
+    def _deliver(self, key: str, effect: WriteEffect, ctx: WriteEffectContext) -> None:
+        try:
+            effect.run(ctx)
+        except Exception as exc:
+            logger.exception("deferred_write_effect_failed effect=%s key=%s", effect.name, key)
+            with self._lock:
+                self._pending.discard(key)
+                self._receipts[key] = WriteEffectReceipt(
+                    effect.name, effect.phase, "failed", retryable=True, error=str(exc)
+                )
+            return
+        with self._lock:
+            self._pending.discard(key)
+            self._receipts[key] = WriteEffectReceipt(effect.name, effect.phase, "applied")
+
+    def receipt(self, effect_name: str, staleness_key: str) -> WriteEffectReceipt | None:
+        with self._lock:
+            return self._receipts.get(f"{effect_name}:{staleness_key}")
+
+
+DEFERRED_EFFECT_QUEUE = DeferredEffectQueue()
 
 
 def _ensure_fts_triggers_effect(ctx: WriteEffectContext) -> None:
@@ -116,6 +166,27 @@ def _invalidate_search_cache_effect(_ctx: WriteEffectContext) -> None:
     invalidate_search_cache()
 
 
+def _invalidate_insights_should_run(ctx: WriteEffectContext) -> bool:
+    return bool(ctx.changed_session_ids)
+
+
+def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
+    """Mark session insight inputs stale in a separate post-commit connection."""
+    db_path = ctx.payload.get("_db_path")
+    if not db_path:
+        raise RuntimeError("deferred insight invalidation requires _db_path")
+    from polylogue.storage.sqlite.connection import open_connection
+
+    with open_connection(db_path) as conn:
+        placeholders = ", ".join("?" for _ in ctx.changed_session_ids)
+        conn.execute(
+            f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
+            f"WHERE session_id IN ({placeholders})",
+            ctx.changed_session_ids,
+        )
+        conn.commit()
+
+
 WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
     WriteEffect(
         name="ensure_fts_triggers",
@@ -133,6 +204,13 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
         phase="post-commit",
         run=_invalidate_search_cache_effect,
         should_run=_invalidate_search_cache_should_run,
+    ),
+    WriteEffect(
+        name="invalidate_session_insights",
+        phase="async-deferred",
+        run=_invalidate_insights_effect,
+        should_run=_invalidate_insights_should_run,
+        failure_policy="log-and-continue",
     ),
 )
 """Ordered, declared effects for the archive write choke point.
@@ -156,9 +234,23 @@ def _run_registered_effects(
     phase: WriteEffectPhase,
     ctx: WriteEffectContext,
     timings: dict[str, float],
-) -> None:
+) -> list[WriteEffectReceipt]:
+    receipts: list[WriteEffectReceipt] = []
     for effect in registry:
-        if effect.phase != phase or not effect.should_run(ctx):
+        if effect.phase != phase:
+            continue
+        if not effect.should_run(ctx):
+            receipts.append(WriteEffectReceipt(effect.name, effect.phase, "skipped"))
+            continue
+        if phase == "async-deferred":
+            scheduler = ctx.deferred_scheduler or DEFERRED_EFFECT_QUEUE.enqueue
+            try:
+                scheduler(effect, ctx)
+            except Exception as exc:
+                logger.exception("deferred_write_effect_enqueue_failed effect=%s", effect.name)
+                receipts.append(WriteEffectReceipt(effect.name, effect.phase, "failed", retryable=True, error=str(exc)))
+            else:
+                receipts.append(WriteEffectReceipt(effect.name, effect.phase, "enqueued", retryable=True))
             continue
         started_at = time.perf_counter()
         try:
@@ -174,6 +266,8 @@ def _run_registered_effects(
                 continue
             raise
         timings[effect.name] = time.perf_counter() - started_at
+        receipts.append(WriteEffectReceipt(effect.name, effect.phase, "applied"))
+    return receipts
 
 
 def commit_archive_write_effects(
@@ -209,15 +303,28 @@ def commit_archive_write_effects(
     """
     changed_ids: Sequence[str] = payload.get("changed_session_ids", [])
     sorted_ids: tuple[str, ...] = tuple(sorted(set(changed_ids))) if changed_ids else ()
-    ctx = WriteEffectContext(conn=conn, op=op, payload=payload, changed_session_ids=sorted_ids)
+    if "_db_path" not in payload:
+        database_row = conn.execute("PRAGMA database_list").fetchall()
+        if database_row and database_row[0][2]:
+            payload = {**payload, "_db_path": database_row[0][2]}
+    staleness_key = f"{op.value}:{','.join(sorted_ids)}"
+    ctx = WriteEffectContext(
+        conn=conn,
+        op=op,
+        payload=payload,
+        changed_session_ids=sorted_ids,
+        staleness_key=staleness_key,
+        deferred_scheduler=payload.get("deferred_scheduler"),
+    )
 
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
-    _run_registered_effects(WRITE_EFFECT_REGISTRY, "in-transaction", ctx, timings)
+    receipts = _run_registered_effects(WRITE_EFFECT_REGISTRY, "in-transaction", ctx, timings)
     t_commit = time.perf_counter()
     conn.commit()
     commit_elapsed_s = time.perf_counter() - t_commit
-    _run_registered_effects(WRITE_EFFECT_REGISTRY, "post-commit", ctx, timings)
+    receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "post-commit", ctx, timings))
+    receipts.extend(_run_registered_effects(WRITE_EFFECT_REGISTRY, "async-deferred", ctx, timings))
     total_effect_elapsed_s = time.perf_counter() - t0
 
     if total_effect_elapsed_s >= 1.0:
@@ -236,6 +343,7 @@ def commit_archive_write_effects(
         operation=op,
         rows_affected=len(sorted_ids),
         status="committed",
+        effect_receipts=tuple(receipts),
     )
 
 
@@ -243,6 +351,9 @@ __all__ = [
     "WRITE_EFFECT_REGISTRY",
     "WriteEffect",
     "WriteEffectContext",
+    "WriteEffectReceipt",
+    "DeferredEffectQueue",
+    "DEFERRED_EFFECT_QUEUE",
     "WriteEffectFailurePolicy",
     "WriteEffectPhase",
     "commit_archive_write_effects",

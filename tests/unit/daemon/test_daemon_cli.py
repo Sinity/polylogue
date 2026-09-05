@@ -216,9 +216,14 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     ):
         result = CliRunner().invoke(main, ["status", "--format", "json"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     payload = loads(result.output)
     assert isinstance(payload, dict)
+    # The refused index tier leaves raw frontier integrity uncollectable, so
+    # the daemon is not ready and the command exits non-zero.
+    integrity = cast(dict[str, object], payload["raw_frontier_integrity"])
+    assert integrity["available"] is False
+    assert integrity["overall_status"] == "unknown"
     storage_raw = payload["archive_storage"]
     assert isinstance(storage_raw, dict)
     storage = cast(dict[str, object], storage_raw)
@@ -274,7 +279,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
     ):
         result = CliRunner().invoke(main, ["status"])
 
-    assert result.exit_code == 0
+    assert result.exit_code == 1
     assert (
         "Storage: archive_file_set (source, index, embeddings, user, ops); final split complete; schema mismatch index"
         in result.output
@@ -283,7 +288,7 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_retries_due_items_without_source_failure(
+def test_drain_convergence_debt_migrates_retired_insights_stage(
     tmp_path: Path,
     frozen_clock: FrozenClock,
 ) -> None:
@@ -305,7 +310,7 @@ def test_drain_convergence_debt_retries_due_items_without_source_failure(
         )
         conn.commit()
     stage = ConvergenceStage(
-        name="insights",
+        name="derived",
         description="retry test",
         check=lambda candidate: candidate == source,
         execute=lambda candidate: candidate == source,
@@ -330,7 +335,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     db = tmp_path / "index.db"
     cursor = CursorStore(db)
     cursor.record_convergence_debt(
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id="conv-1",
         error="initial failure",
@@ -341,7 +346,7 @@ def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
         )
         conn.commit()
     stage = ConvergenceStage(
-        name="insights",
+        name="derived",
         description="retry test",
         check=lambda _candidate: False,
         execute=lambda _candidate: False,
@@ -523,9 +528,21 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["frontier_limit"] = limit
         return 3
 
+    def fake_gate(_root: Path) -> None:
+        order.append("gate")
+        return None
+
+    def fake_finalize_codex_state(config: Config) -> int:
+        # polylogue-6q16u: retained Codex state snapshots without a terminal
+        # receipt are finalized BEFORE the gate consults them.
+        order.append("codex-state-receipts")
+        calls["codex_state_archive_root"] = config.archive_root
+        return 0
+
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", lambda _root: None)
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", fake_gate)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", fake_finalize_codex_state)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,
@@ -542,7 +559,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
     counts = daemon_cli._drain_raw_materialization_once(limit=11)
     assert counts.repaired_sessions == 7
     assert counts.executed_plans == 3
-    assert order == ["restore", "recover-frontier", "materialize", "frontier"]
+    assert order == ["codex-state-receipts", "gate", "restore", "recover-frontier", "materialize", "frontier"]
     # polylogue-de2a: the ordinary trickle pass must always request a
     # declared, enforced per-call wall-clock ceiling on the writer hold --
     # a component-count limit alone did not bound observed hold time.
@@ -550,8 +567,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     order.clear()
     daemon_cli._drain_raw_materialization_once(limit=11, recover=False)
-    assert order == ["restore", "materialize", "frontier"]
+    assert order == ["codex-state-receipts", "gate", "restore", "materialize", "frontier"]
     assert calls == {
+        "codex_state_archive_root": tmp_path / "archive",
         "restore_db_path": tmp_path / "archive" / "source.db",
         "restore_dry_run": False,
         "restore_max_count": 25,
@@ -1700,103 +1718,6 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
 
     records[capture] = cursor_record(failure_count=3)
     assert daemon_cli._browser_capture_spool_has_pending_files() is False
-
-
-def test_periodic_session_insight_convergence_waits_for_catch_up_complete(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        calls.append("drain")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        catch_up_complete = asyncio.Event()
-        monkeypatch.setattr(
-            daemon_cli,
-            "daemon_write_coordinator",
-            lambda: SimpleNamespace(run_sync=fake_run_sync),
-        )
-        task = asyncio.create_task(
-            daemon_cli._periodic_session_insight_convergence_after(catch_up_complete=catch_up_complete)
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        catch_up_complete.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drain"]
-
-
-def test_periodic_session_insight_convergence_bursts_successful_backlog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    drains: list[int] = []
-    sleeps: list[float] = []
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> int:
-        drains.append(len(drains))
-        return 100 if len(drains) <= 2 else 0
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        if seconds == daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-
-    with (
-        patch("asyncio.sleep", side_effect=fake_sleep),
-        patch.object(
-            daemon_cli,
-            "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
-        ),
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
-
-    assert drains == [0, 1, 2]
-    assert sleeps == [
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_BURST_PAUSE_SECONDS,
-        daemon_cli._SESSION_INSIGHT_CONVERGENCE_INTERVAL_SECONDS,
-    ]
-
-
-def test_periodic_session_insight_convergence_treats_sqlite_lock_as_retry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    async def fake_sleep(_seconds: float) -> None:
-        raise asyncio.CancelledError
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        raise sqlite3.OperationalError("database is locked")
-
-    with (
-        patch("asyncio.sleep", side_effect=fake_sleep),
-        patch.object(
-            daemon_cli,
-            "daemon_write_coordinator",
-            return_value=SimpleNamespace(run_sync=fake_run_sync),
-        ),
-        patch.object(daemon_cli.logger, "info") as info,
-        patch.object(daemon_cli.logger, "warning") as warning,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        asyncio.run(daemon_cli._periodic_session_insight_convergence_after())
-
-    info.assert_called_once()
-    assert info.call_args.args[0] == "insights: archive busy; retrying profile backlog on next tick: %s"
-    warning.assert_not_called()
 
 
 def test_periodic_wal_checkpoint_targets_archive_root_tiers(
@@ -3423,7 +3344,7 @@ def test_shutdown_lifecycle_event_is_bounded_when_writer_gate_is_stuck(tmp_path:
     asyncio.run(exercise())
 
 
-def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
+def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
 
@@ -3464,7 +3385,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
 
     def fake_embedding_lifecycle_startup(_archive_root_path: Path) -> Path:
         events.append("embedding-lifecycle")
-        return Path("/tmp/polylogue-test-archive/embeddings.db")
+        return tmp_path / "embeddings.db"
 
     def fake_lineage_startup() -> int:
         events.append("lineage")
@@ -3528,7 +3449,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", fake_lineage_startup))
         stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", fake_reconcile_blob_publications))
         stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
-        stack.enter_context(patch("polylogue.paths.archive_root", return_value=Path("/tmp/polylogue-test-archive")))
+        stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
         stack.enter_context(
@@ -3555,13 +3476,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
                 lambda **_kwargs: fake_loop("raw-materialization"),
             )
         )
-        stack.enter_context(
-            patch.object(
-                daemon_cli,
-                "_periodic_session_insight_convergence_after",
-                lambda _gate=None: fake_loop("session-insights"),
-            )
-        )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
         stack.enter_context(
             patch.object(
@@ -3586,6 +3500,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher() -> None:
         )
         stack.enter_context(patch("polylogue.daemon.http.DaemonAPIHTTPServer", api_server_factory))
         stack.enter_context(patch("polylogue.daemon.events.emit_daemon_event", side_effect=fake_emit_daemon_event))
+        stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
         stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
         asyncio.run(
             daemon_cli.run_daemon_services(

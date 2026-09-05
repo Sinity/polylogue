@@ -36,20 +36,17 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveAgentPolicy,
-    ArchiveInsightMaterialization,
     ArchiveSessionPhase,
     ArchiveSessionTag,
     ArchiveSessionWorkEvent,
     ArchiveWriteOutcome,
     read_archive_session_envelope,
     read_archive_session_page,
-    read_insight_materialization,
     read_session_agent_policies,
     read_session_phases,
     read_session_tags,
     read_session_work_events,
     search_archive_blocks,
-    upsert_insight_materialization,
     upsert_session_phase,
     upsert_session_profile_costs,
     upsert_session_tag,
@@ -108,6 +105,67 @@ def test_message_content_hash_tracks_same_identity_body_edits(tmp_path: Path) ->
         ).fetchone()[0]
 
         assert first_hash != second_hash
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("is_error, expected_outcome", [(False, "ok"), (True, "error")])
+def test_merge_append_reconciles_tool_use_from_prior_batch(
+    tmp_path: Path, is_error: bool, expected_outcome: str
+) -> None:
+    """A result arriving in a later batch must update its stored FIFO use."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id=f"append-tool-result-{expected_outcome}",
+            messages=[
+                ParsedMessage(
+                    provider_message_id="use",
+                    role=Role.ASSISTANT,
+                    blocks=[ParsedContentBlock(type=BlockType.TOOL_USE, tool_id="tool-1", tool_name="run")],
+                )
+            ],
+        )
+        session_id = write_parsed_session_to_archive(conn, session)
+        prior_use_hash = conn.execute(
+            "SELECT content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+            (session_id,),
+        ).fetchone()["content_hash"]
+
+        appended = session.model_copy(
+            update={
+                "messages": [
+                    ParsedMessage(
+                        provider_message_id="result",
+                        role=Role.TOOL,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="tool-1",
+                                text="output",
+                                is_error=is_error,
+                            )
+                        ],
+                    )
+                ]
+            }
+        )
+        write_parsed_session_to_archive(conn, appended, merge_append=True)
+
+        use = conn.execute(
+            "SELECT tool_outcome, content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+            (session_id,),
+        ).fetchone()
+        action = conn.execute(
+            "SELECT result_state FROM actions WHERE session_id = ? AND tool_use_block_id = ?",
+            (session_id, f"{session_id}:n:use:0"),
+        ).fetchone()
+        assert use is not None
+        assert action is not None
+        assert use["tool_outcome"] == expected_outcome
+        assert action["result_state"] == ("outcome_error" if is_error else "outcome_success")
+        assert use["content_hash"] != prior_use_hash
     finally:
         conn.close()
 
@@ -838,7 +896,7 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     )
 
     session_id = write_parsed_session_to_archive(conn, session)
-    from polylogue.storage.insights.session.rebuild import rebuild_session_insights_sync
+    from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
     rebuild_session_insights_sync(conn, session_ids=[session_id])
     upsert_session_profile_costs(
@@ -872,59 +930,6 @@ def test_archive_tiers_writer_preserves_session_profile_defaults_with_cost_upser
     assert profile["substantive_count"] >= 0
     assert profile["work_event_count"] >= 0
     assert isinstance(profile["search_text"], str)
-
-
-def test_archive_tiers_insight_materialization_upsert_refreshes_shared_state(tmp_path: Path) -> None:
-    conn = _connect(tmp_path / "index.db")
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="codex-insight-state",
-        updated_at="2026-01-01T00:00:02+00:00",
-        messages=[
-            ParsedMessage(
-                provider_message_id="m1",
-                role=Role.USER,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="insight state")],
-            )
-        ],
-    )
-    session_id = write_parsed_session_to_archive(conn, session)
-
-    first = upsert_insight_materialization(
-        conn,
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=1,
-        materialized_at_ms=1_767_225_603_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_602_000,
-        input_row_count=1,
-    )
-    refreshed = upsert_insight_materialization(
-        conn,
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=2,
-        materialized_at_ms=1_767_225_604_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_604_000,
-        input_row_count=3,
-    )
-
-    assert isinstance(first, ArchiveInsightMaterialization)
-    assert read_insight_materialization(conn, "session_profile", session_id) == refreshed
-    assert refreshed == ArchiveInsightMaterialization(
-        insight_type="session_profile",
-        session_id=session_id,
-        materializer_version=2,
-        materialized_at_ms=1_767_225_604_000,
-        source_updated_at_ms=1_767_225_602_000,
-        source_sort_key_ms=1_767_225_602_000,
-        input_high_water_mark_ms=1_767_225_604_000,
-        input_row_count=3,
-    )
 
 
 def test_archive_tiers_timeline_insight_rows_have_deterministic_targets(tmp_path: Path) -> None:
@@ -2777,7 +2782,7 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
         "status": None,
         "method": "parser-parent",
         "confidence": 1.0,
-        "evidence_json": '{"parent_session_provider_id":"parent-session"}',
+        "evidence_json": '{"parent_session_provider_id":"parent-session","resolution_reason":"target-not-yet-observed"}',
         "observed_at_ms": 1_767_225_603_000,
     }
 
@@ -3063,16 +3068,9 @@ def test_refresh_thread_reorder_only_touches_changed_span(tmp_path: Path) -> Non
     ).fetchone()
     assert dict(thread_row) == {"session_count": 6, "depth": 5}
 
-    deletes = [stmt for stmt in statements if "DELETE FROM thread_sessions" in stmt]
-    # The unchanged leading run (root, child1) must not be touched by any
-    # delete -- a full unconditional rebuild would issue a bare
-    # "DELETE FROM thread_sessions WHERE thread_id = ?" here instead.
-    assert len(deletes) == 1
-    assert "position >=" in deletes[0] and "position <" in deletes[0]
-    inserts = [stmt for stmt in statements if "INSERT INTO thread_sessions" in stmt]
-    # Only the 4 rows in the affected span (child2's old slot through the
-    # new tail) get reinserted, not all 6 members.
-    assert len(inserts) == 4
+    assert not any(
+        "thread_sessions" in stmt and stmt.lstrip().startswith(("INSERT", "UPDATE", "DELETE")) for stmt in statements
+    )
 
 
 def test_archive_tiers_writer_resolves_existing_child_link_when_parent_arrives_later(tmp_path: Path) -> None:
@@ -3201,7 +3199,6 @@ def test_graph_resolve_records_late_parent_substage_timings(tmp_path: Path) -> N
         "append.index.graph_resolve.reextract_prefix_tails.edge_update",
         "append.index.graph_resolve.reextract_prefix_tails.count_refresh",
         "append.index.graph_resolve.projection_refresh",
-        "append.index.graph_resolve.thread_refresh",
     }
     assert expected_substages <= timings.keys()
     assert "append.index.graph_resolve" in timings
@@ -3816,6 +3813,45 @@ def test_writer_skips_orphan_attachment_before_direction_validation(tmp_path: Pa
                 "SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?",
                 (session_id,),
             ).fetchone()[0]
+            == 0
+        )
+    finally:
+        conn.close()
+
+
+def test_writer_retains_ambiguous_attachment_as_typed_unowned(tmp_path: Path) -> None:
+    """An ambiguous owner retains attachment evidence without a guessed ref.
+
+    Anti-vacuity: restoring the ambiguity exception from the first attachment
+    pass makes this production-writer test fail before the row can be queried.
+    """
+    conn = _connect(tmp_path / "index.db")
+    try:
+        messages = [ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)]
+        attachment = ParsedAttachment(
+            provider_attachment_id="ambiguous-drive-doc",
+            message_provider_id="",
+            message_position=0,
+            name="note.txt",
+            mime_type="text/plain",
+        )
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="ambiguous-attachment-owner",
+            messages=messages,
+            attachments=[attachment],
+        )
+
+        session_id = write_parsed_session_to_archive(conn, session)
+        attachment_id = archive_tier_write._attachment_id(session_id, attachment)
+        row = conn.execute(
+            "SELECT ref_count FROM attachments WHERE attachment_id = ?",
+            (attachment_id,),
+        ).fetchone()
+        assert row is not None
+        assert row[0] == 0
+        assert (
+            conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)).fetchone()[0]
             == 0
         )
     finally:
@@ -5489,7 +5525,7 @@ def test_reingest_recomputes_message_flags_and_hash_after_block_restoration(tmp_
         conn.close()
 
 
-def test_repo_edges_skip_bare_directory_with_no_git_evidence() -> None:
+def test_repo_edges_skip_bare_directory_with_no_git_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     """polylogue-cijx.2 AC4: a directory with no git evidence is a directory, not a repository.
 
     A session whose only location signal is a cwd that resolves to no
@@ -5500,6 +5536,7 @@ def test_repo_edges_skip_bare_directory_with_no_git_evidence() -> None:
     """
     with tempfile.TemporaryDirectory(prefix="polylogue-bare-directory-") as isolated_root:
         isolated_path = Path(isolated_root)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(isolated_path))
         conn = _connect(isolated_path / "index.db")
         try:
             bare_dir = isolated_path / "not_a_repo"

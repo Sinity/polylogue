@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from polylogue.insights.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
-from polylogue.insights.fable_packet import (
+from polylogue.analysis.cohorts import CohortCandidate, CohortManifest, CohortSpec, compile_cohort_manifest
+from polylogue.analysis.fable_packet import (
     DelegationPacketLabel,
     DelegationPacketRow,
     compile_private_fable_packet,
@@ -59,6 +59,7 @@ def test_private_packet_reports_coverage_labels_distributions_and_limits() -> No
         ("directive_mode", "direct", 2, 3, 0),
     }
     assert "no_comparative_authoritarianism_success_utility_or_routing_quality_claims" in packet.limits
+    assert packet.aggregate_evidence_refs == ("block:a", "block:b")
 
 
 def test_private_packet_fails_closed_when_accepted_labels_lack_evidence() -> None:

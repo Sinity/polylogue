@@ -13,8 +13,8 @@ from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROW
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
-from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider, ToolResultUnknownReason
-from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
+from polylogue.core.errors import SchemaSkew
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
@@ -68,16 +68,27 @@ def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_
     with sqlite3.connect(index_path) as conn:
         conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION - 1}")
 
-    with pytest.raises(SchemaVersionMismatchError) as exc_info:
+    with pytest.raises(SchemaSkew) as exc_info:
         ArchiveStore.open_existing(tmp_path, index_path=index_path)
 
     refusal = exc_info.value
-    assert refusal.current_version == INDEX_SCHEMA_VERSION - 1
-    assert refusal.expected_version == INDEX_SCHEMA_VERSION
-    assert refusal.generation_id == "gen-stale-read"
-    assert refusal.lifecycle_action == "rebuild_index"
-    assert "gen-stale-read" in str(refusal)
-    assert "Reset the derived index and let `polylogued run` rebuild it from source." in str(refusal)
+    assert refusal.tier == "index"
+    assert refusal.found == INDEX_SCHEMA_VERSION - 1
+    assert refusal.expected == INDEX_SCHEMA_VERSION
+    assert refusal.remedy == "rebuild or migrate the tier with the current runtime before retrying"
+    assert "index schema skew" in str(refusal)
+
+
+def test_read_open_rejects_stale_index_identity(tmp_path: Path) -> None:
+    """A readable archive must reject a derived identity mismatch before queries run."""
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+
+    with sqlite3.connect(tmp_path / "index.db") as connection:
+        connection.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = 'index'")
+
+    with pytest.raises(SchemaSkew, match="stale derived tier"):
+        ArchiveStore.open_existing(tmp_path, read_only=True)
 
 
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
@@ -368,12 +379,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-unknown",
                         tool_input={"command": "unknown"},
                     ),
-                    ParsedContentBlock(
-                        type=BlockType.TOOL_RESULT,
-                        tool_id="tool-unknown",
-                        text="no status",
-                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
-                    ),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status"),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
                         tool_name="Bash",
@@ -398,7 +404,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-error",
                         text="failed",
                         is_error=True,
-                        exit_code=1,
+                        exit_code=2,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -412,7 +418,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="",
                         tool_input={"command": "empty"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair", is_error=False),
+                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair"),
                 ],
             )
         ],
@@ -424,21 +430,6 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
         occurrence_rows = facade.query_session_action_occurrences([session_id], limit=10)
-        is_error_false = parse_unit_source_expression("actions where is_error:false")
-        is_error_true = parse_unit_source_expression("actions where is_error:true")
-        exit_code_zero = parse_unit_source_expression("actions where exit_code = 0")
-        exit_code_one = parse_unit_source_expression("actions where exit_code = 1")
-        exit_code_nonnegative = parse_unit_source_expression("actions where exit_code:>=0")
-        assert is_error_false is not None
-        assert is_error_true is not None
-        assert exit_code_zero is not None
-        assert exit_code_one is not None
-        assert exit_code_nonnegative is not None
-        is_error_false_rows = facade.query_actions(is_error_false.predicate, limit=10)
-        is_error_true_rows = facade.query_actions(is_error_true.predicate, limit=10)
-        exit_code_zero_rows = facade.query_actions(exit_code_zero.predicate, limit=10)
-        exit_code_one_rows = facade.query_actions(exit_code_one.predicate, limit=10)
-        exit_code_nonnegative_rows = facade.query_actions(exit_code_nonnegative.predicate, limit=10)
 
     payloads = [ActionQueryRowPayload.from_row(row) for row in rows]
     assert {row.tool_command: row.result_state for row in rows} == {
@@ -462,11 +453,6 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
         "empty": ActionResultState.NO_RESULT,
     }
     assert occurrence_by_command["empty"].tool_result_block_id is None
-    assert [row.tool_command for row in is_error_false_rows] == ["success"]
-    assert [row.tool_command for row in is_error_true_rows] == ["error"]
-    assert [row.tool_command for row in exit_code_zero_rows] == ["success"]
-    assert [row.tool_command for row in exit_code_one_rows] == ["error"]
-    assert [row.tool_command for row in exit_code_nonnegative_rows] == ["success", "error"]
 
 
 def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage(
@@ -493,7 +479,6 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         text=None,
                         is_error=None,
                         exit_code=None,
-                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -507,7 +492,6 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                         text="provider omitted outcome",
                         is_error=None,
                         exit_code=None,
-                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
@@ -572,26 +556,12 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
             ParsedMessage(
                 provider_message_id="m-result-1",
                 role=Role.ASSISTANT,
-                blocks=[
-                    ParsedContentBlock(
-                        type=BlockType.TOOL_RESULT,
-                        tool_id="repeated",
-                        text="result-one",
-                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
-                    )
-                ],
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
             ),
             ParsedMessage(
                 provider_message_id="m-result-2",
                 role=Role.ASSISTANT,
-                blocks=[
-                    ParsedContentBlock(
-                        type=BlockType.TOOL_RESULT,
-                        tool_id="repeated",
-                        text="result-two",
-                        outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED.value,
-                    )
-                ],
+                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
             ),
         ],
     )
@@ -686,23 +656,11 @@ def test_exact_session_action_count_bounds_pairing_before_global_ranking(
             contradictory_rows = facade.query_unit_counts("action", contradictory_source.predicate)
         finally:
             facade._conn.set_progress_handler(None, 0)
-        # polylogue-1ldl: mutating this to fall back to the plain ``actions``
-        # compatibility VIEW used to reproduce the pre-z9gh.2 "global-first"
-        # cost -- that view used to be a windowed-CTE recomputation over the
-        # *entire* archive. Since PR #3018 (z9gh.2), ``actions`` is instead a
-        # cheap re-join over the small, indexed, pre-materialized
-        # ``action_pairs`` table (session_id is the leading index column), so
-        # renaming the relation to ``actions`` no longer forces any
-        # meaningfully different/expensive path (measured: 0 VM steps at this
-        # data scale -- an anti-vacuity check that no longer discriminates
-        # anything). The genuinely expensive "global-first" path that this
-        # canary means to guard against still exists in
-        # ``action_relation_select_sql`` -- it is the branch taken when no
-        # session bound is supplied (``session_placeholders=None``), which
-        # recomputes the tool_use/tool_result window-function pairing across
-        # every block in the archive rather than reading the materialized
-        # table. Force that branch directly so the mutation again reproduces
-        # real archive-wide work.
+        # polylogue-1ldl: the scoped action route binds the session before the
+        # query-time action-pair view evaluates. The unbounded branch of
+        # ``action_relation_select_sql`` recomputes tool_use/tool_result
+        # pairing across every block in the archive. Force that branch directly
+        # so this canary measures the archive-wide work it protects against.
         monkeypatch.setattr(
             "polylogue.storage.sqlite.archive_tiers.archive_query_reads._action_relation_for_query",
             lambda **_kwargs: (

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.archive.message.roles import MessageRoleFilter
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,

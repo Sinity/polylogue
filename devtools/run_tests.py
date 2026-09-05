@@ -6,7 +6,7 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 
 - the repository's managed environment (``POLYLOGUE_ROOT`` and friends, a
   repo-local pycache prefix);
-- a single-process worker default (``-n 0``) for fast focused runs, overridable
+- an eight-worker default (``-n 8``), overridable
   with ``-n`` in the selection or ``POLYLOGUE_PYTEST_WORKERS``;
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -45,11 +46,12 @@ from devtools.pytest_slot import (
     remove_temp_tree,
     run_pytest,
 )
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, sync_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
     VerifyRun,
+    append_verification_evidence,
     append_verify_history,
     configured_pytest_worker_request,
     env_for_pytest_step,
@@ -101,6 +103,22 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
         "-o",
     }
 )
+
+
+def _prepare_nodatacow_parent(path: Path) -> None:
+    """Best-effortly mark the parent of a pytest basetemp as nodatacow."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        process = subprocess.Popen(
+            ["chattr", "+C", str(path.parent)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        process.wait()
+    except OSError:
+        # The optimization is filesystem-specific and must not make tests
+        # unavailable on hosts without chattr or the btrfs attribute.
+        return
 
 
 def _phase_duration(test: dict[str, Any]) -> float:
@@ -393,7 +411,7 @@ def _run(
     cwd: str,
     env: dict[str, str],
     run: VerifyRun,
-) -> tuple[int, float, dict[str, str]]:
+) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
     started = time.monotonic()
@@ -422,6 +440,7 @@ def _run(
         {
             "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
         },
     )
 
@@ -482,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         return print_outliers(outlier_count)
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    sync_testmon_graph(ROOT)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
@@ -511,6 +531,7 @@ def main(argv: list[str] | None = None) -> int:
     # and lanes, batches and the coordinator do run concurrently here.
     run_temp = basetemp_root(os.environ, root=ROOT) / f"tmp-{os.getpid()}-{time.time_ns():x}"
     remove_temp_tree(run_temp)
+    _prepare_nodatacow_parent(run_temp)
     cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(cmd)
     run = VerifyRun(
@@ -590,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     append_verify_history(payload)
+    append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

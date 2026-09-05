@@ -10,7 +10,7 @@ import pytest
 from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.core.enums import MaterialOrigin, Provider
-from polylogue.storage.insights.session.profiles import (
+from polylogue.storage.derived.session.profiles import (
     assistant_turn_texts,
     blocker_texts,
     build_session_profile_record,
@@ -21,7 +21,7 @@ from polylogue.storage.insights.session.profiles import (
     session_enrichment_payload,
     user_turn_texts,
 )
-from polylogue.storage.insights.session.storage import (
+from polylogue.storage.derived.session.storage import (
     replace_session_profile_sync,
     session_profile_insert_columns,
 )
@@ -416,7 +416,7 @@ def test_session_profile_record_exposes_primary_model_fields() -> None:
     assert record.primary_model_name == "claude-opus-4-8"
     assert record.primary_model_family == "anthropic"
 
-    from polylogue.storage.insights.session.profiles import hydrate_session_profile
+    from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
     rehydrated = hydrate_session_profile(record)
     assert rehydrated.primary_model_name == "claude-opus-4-8"
@@ -521,7 +521,7 @@ def test_stored_inference_payload_json_omits_native_mirrored_fields() -> None:
     """
     import json
 
-    from polylogue.storage.insights.session.storage import (
+    from polylogue.storage.derived.session.storage import (
         _INFERENCE_NATIVE_MIRRORED_FIELDS,
         _stored_inference_payload_json,
     )
@@ -551,7 +551,7 @@ def test_session_profile_insight_reads_native_columns_over_payload() -> None:
     """#14: when the (stored-then-rehydrated) inference payload disagrees with the
     authoritative native columns, the read insight returns the native value.
     """
-    from polylogue.insights.archive import SessionProfileInsight
+    from polylogue.analysis.archive import SessionProfileInsight
 
     profile = build_session_profile(_enrichment_session())
     profile = profile.__class__.from_dict(

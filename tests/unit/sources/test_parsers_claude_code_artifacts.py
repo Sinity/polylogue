@@ -984,6 +984,97 @@ def test_parse_code_drops_progress_hook_records() -> None:
     assert all("prog" not in pid for pid in provider_ids)
 
 
+def test_parse_code_retains_exact_delegation_child_identity() -> None:
+    """Agent progress identifies a child without inventing a child-side field."""
+    parent = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "parent-user",
+                "sessionId": "parent-native",
+                "message": {"role": "user", "content": "delegate"},
+            },
+            {
+                "type": "progress",
+                "uuid": "dispatch-progress",
+                "sessionId": "parent-native",
+                "parentToolUseID": "dispatch-1",
+                "data": {"type": "agent_progress", "childSessionId": "agent-child-native"},
+            },
+        ],
+        "parent-fallback",
+    )
+    child = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "child-user",
+                "sessionId": "parent-native",
+                "message": {"role": "user", "content": "do work"},
+            }
+        ],
+        "agent-child-native",
+    )
+
+    [event] = [event for event in parent.session_events if event.event_type == "claude_delegation_progress"]
+    assert event.source_message_provider_id == "dispatch-1"
+    assert event.payload["child_provider_id"] == "agent-child-native"
+    assert child.provider_session_id == "parent-native:agent-child-native"
+    assert child.provider_session_aliases == ["agent-child-native"]
+
+
+def test_parse_code_quarantines_conflicting_dispatch_child_identity() -> None:
+    records = [
+        {
+            "type": "progress",
+            "uuid": "progress-a",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-1",
+            "data": {"type": "agent_progress", "childSessionId": "child-a"},
+        },
+        {
+            "type": "progress",
+            "uuid": "progress-b",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-1",
+            "data": {"type": "agent_progress", "childSessionId": "child-b"},
+        },
+    ]
+
+    parsed = parse_code(records, "parent-native")
+    [event] = [event for event in parsed.session_events if event.event_type == "claude_delegation_progress"]
+    assert event.payload["child_provider_id"] is None
+    assert event.payload["child_provider_ids"] == ["child-a", "child-b"]
+    assert event.payload["resolution_reason"] == "identity-contradiction"
+
+
+def test_parse_code_ignores_emitting_identity_on_dispatch_progress() -> None:
+    """A progress record's envelope names its own session, never the child.
+
+    Every one of the 8,282 live ``agent_progress`` records carrying a
+    record-level ``agentId`` repeats the emitting transcript's own identity;
+    the dispatched child is named only in the progress payload. Red if
+    envelope identity fields are folded back into the child identity set,
+    which turns an ordinary dispatch into an identity contradiction.
+    """
+    records = [
+        {
+            "type": "progress",
+            "uuid": "progress-a",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-1",
+            "agentId": "parent-own-agent",
+            "data": {"type": "agent_progress", "agentId": "child-agent"},
+        },
+    ]
+
+    parsed = parse_code(records, "agent-parent-own-agent")
+    [event] = [event for event in parsed.session_events if event.event_type == "claude_delegation_progress"]
+    assert event.payload["child_provider_id"] == "child-agent"
+    assert event.payload["resolution_reason"] is None
+    assert "child_provider_ids" not in event.payload
+
+
 def test_parse_code_drops_non_message_sidecars() -> None:
     items: list[object] = [
         {

@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import random
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from polylogue.schemas.synthetic.models import SchemaRecord
+
+_T = TypeVar("_T")
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.relations import (
@@ -54,6 +58,32 @@ def _annotation_records(schema: SchemaRecord, key: str) -> tuple[SchemaRecord, .
     return tuple(item for item in value if isinstance(item, dict))
 
 
+#: Parsed annotations per (annotation list object, parser). A solver is built
+#: for every generated batch and re-parses thousands of annotation records
+#: each time; the parse is a pure function of the list, so it is shared while
+#: that exact list object is alive. The entry keeps the list referenced so its
+#: id cannot be reused by another object.
+_PARSED_ANNOTATIONS: dict[tuple[int, str], tuple[object, tuple[Any, ...]]] = {}
+_PARSED_ANNOTATIONS_LOCK = threading.Lock()
+
+
+def _parsed_annotations(
+    schema: SchemaRecord, key: str, parse: Callable[[tuple[SchemaRecord, ...]], tuple[_T, ...]]
+) -> tuple[_T, ...]:
+    value = schema.get(key)
+    if not isinstance(value, list | tuple):
+        return ()
+    cache_key = (id(value), key)
+    with _PARSED_ANNOTATIONS_LOCK:
+        cached = _PARSED_ANNOTATIONS.get(cache_key)
+    if cached is not None and cached[0] is value:
+        return cast(tuple[_T, ...], cached[1])
+    parsed = parse(tuple(item for item in value if isinstance(item, dict)))
+    with _PARSED_ANNOTATIONS_LOCK:
+        _PARSED_ANNOTATIONS[cache_key] = (value, parsed)
+    return parsed
+
+
 def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list | tuple):
         return ()
@@ -81,8 +111,12 @@ def _float_value(value: object, default: float) -> float:
 
 
 def _foreign_key_annotations(schema: SchemaRecord) -> tuple[_ForeignKeyAnnotation, ...]:
+    return _parsed_annotations(schema, "x-polylogue-foreign-keys", _parse_foreign_key_records)
+
+
+def _parse_foreign_key_records(records: tuple[SchemaRecord, ...]) -> tuple[_ForeignKeyAnnotation, ...]:
     annotations: list[_ForeignKeyAnnotation] = []
-    for record in _annotation_records(schema, "x-polylogue-foreign-keys"):
+    for record in records:
         source = str(record.get("source", "")).strip()
         target = str(record.get("target", "")).strip()
         if source and target:
@@ -91,8 +125,12 @@ def _foreign_key_annotations(schema: SchemaRecord) -> tuple[_ForeignKeyAnnotatio
 
 
 def _time_delta_annotations(schema: SchemaRecord) -> tuple[_TimeDeltaAnnotation, ...]:
+    return _parsed_annotations(schema, "x-polylogue-time-deltas", _parse_time_delta_records)
+
+
+def _parse_time_delta_records(records: tuple[SchemaRecord, ...]) -> tuple[_TimeDeltaAnnotation, ...]:
     annotations: list[_TimeDeltaAnnotation] = []
-    for record in _annotation_records(schema, "x-polylogue-time-deltas"):
+    for record in records:
         annotations.append(
             _TimeDeltaAnnotation(
                 field_a=str(record.get("field_a", "")).strip(),
@@ -106,8 +144,12 @@ def _time_delta_annotations(schema: SchemaRecord) -> tuple[_TimeDeltaAnnotation,
 
 
 def _mutual_exclusion_annotations(schema: SchemaRecord) -> tuple[_MutualExclusionAnnotation, ...]:
+    return _parsed_annotations(schema, "x-polylogue-mutually-exclusive", _parse_mutual_exclusion_records)
+
+
+def _parse_mutual_exclusion_records(records: tuple[SchemaRecord, ...]) -> tuple[_MutualExclusionAnnotation, ...]:
     annotations: list[_MutualExclusionAnnotation] = []
-    for record in _annotation_records(schema, "x-polylogue-mutually-exclusive"):
+    for record in records:
         parent = str(record.get("parent", "")).strip()
         fields = _string_tuple(record.get("fields"))
         if parent and len(fields) >= 2:
@@ -116,8 +158,12 @@ def _mutual_exclusion_annotations(schema: SchemaRecord) -> tuple[_MutualExclusio
 
 
 def _string_length_annotations(schema: SchemaRecord) -> tuple[_StringLengthAnnotation, ...]:
+    return _parsed_annotations(schema, "x-polylogue-string-lengths", _parse_string_length_records)
+
+
+def _parse_string_length_records(records: tuple[SchemaRecord, ...]) -> tuple[_StringLengthAnnotation, ...]:
     annotations: list[_StringLengthAnnotation] = []
-    for record in _annotation_records(schema, "x-polylogue-string-lengths"):
+    for record in records:
         path = str(record.get("path", "")).strip()
         if not path:
             continue

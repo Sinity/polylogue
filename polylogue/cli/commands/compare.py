@@ -1,7 +1,7 @@
 """Blind pairwise comparative judgment (rxdo.9.6/.9.7/.9.11/.9.12).
 
 Wires the previously-unwired judgment mechanisms
-(``polylogue/insights/judgment/``) into a real command surface: blinding
+(``polylogue/analysis/judgment/``) into a real command surface: blinding
 (rxdo.9.6, ``blinding.py``) masks provenance before verdict; the recorded
 verdict persists through the fully-built but previously-uncalled storage
 chokepoint (``upsert_comparative_judgment_assertion``, rxdo.9.11); and
@@ -17,14 +17,14 @@ from dataclasses import asdict
 
 import click
 
+from polylogue.analysis.judgment.blinding import assert_no_leak, blind_items, reveal
+from polylogue.analysis.judgment.calibration import compute_calibration
+from polylogue.analysis.judgment.comparative import build_comparative_judgment
+from polylogue.analysis.judgment.types import JudgeIdentity
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import ComparativeVerdict
 from polylogue.core.refs import ActorRef, ExecutionContextRef
-from polylogue.insights.judgment.blinding import assert_no_leak, blind_items, reveal
-from polylogue.insights.judgment.calibration import compute_calibration
-from polylogue.insights.judgment.comparative import build_comparative_judgment
-from polylogue.insights.judgment.types import JudgeIdentity
 
 _VERDICT_CHOICES = tuple(verdict.value for verdict in ComparativeVerdict)
 
@@ -193,7 +193,7 @@ def compare_command(
 
 
 def _render_blinded_text(blinded: object, receipt: object) -> str:
-    from polylogue.insights.judgment.blinding import BlindedItem, BlindingReceipt
+    from polylogue.analysis.judgment.blinding import BlindedItem, BlindingReceipt
 
     assert isinstance(blinded, tuple)
     assert isinstance(receipt, BlindingReceipt)

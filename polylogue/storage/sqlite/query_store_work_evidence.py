@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.insights.work_evidence import WorkEvidenceTraversal
+from polylogue.analysis.work_evidence import WorkEvidenceTraversal
 from polylogue.storage.query_models import WorkEvidenceTraversalQuery
 from polylogue.storage.sqlite.queries import work_evidence as work_evidence_q
 

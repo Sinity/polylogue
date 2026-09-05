@@ -18,14 +18,14 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 
-from polylogue.core.errors import PolylogueError
-from polylogue.insights.work_effects import (
+from polylogue.analysis.work_effects import (
     DEFAULT_WORK_ITEM_ID_PATTERN,
     RepositoryEffectAdapter,
     collect_repository_effects,
     derive_direct_identifier_judgments,
 )
-from polylogue.insights.work_reconciliation import reconcile_work_effects
+from polylogue.analysis.work_reconciliation import reconcile_work_effects
+from polylogue.core.errors import PolylogueError
 from polylogue.storage.repository import SessionRepository
 
 

@@ -69,6 +69,7 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
@@ -78,7 +79,7 @@ from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
 
 if TYPE_CHECKING:
     # ``revision_backfill`` imports ``ArchiveStore``, which (via
-    # ``polylogue.insights.archive``) imports this module -- a real,
+    # ``polylogue.analysis.archive``) imports this module -- a real,
     # not merely lint-flagged, circular import at module load time. This
     # type is only ever passed through here (constructed and populated by
     # ``polylogue.daemon.parse_prefetch``), never constructed, so a

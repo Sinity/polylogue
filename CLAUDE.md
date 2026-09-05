@@ -76,7 +76,11 @@ ingest and full replay/reindex.
 Never use rebuildable state as authority for durable mutation; never strand
 existing durable archives with a schema shortcut. Archive writes are
 idempotent by content hash (SHA-256 over NFC-normalized payload, excluding
-user metadata — tagging never re-imports).
+user metadata — tagging never re-imports). The parser-side hash vocabulary is
+declared and exhaustively partitioned in `pipeline/ids.py`: semantic session,
+message, and block fields are hashed; parser-only coordinates, provider
+signatures, and independently-owned usage/timing/cost measurements are
+excluded with reasons.
 
 **Schema regimes**: durable tiers evolve by additive numbered migrations under
 `storage/sqlite/migrations/{source,user,audit}/` behind a verified backup;
@@ -140,13 +144,14 @@ explicit-and-retryable or a typed permanent refusal.
   guard, environment, typed result). Never bare `pytest`.
 - `devtools verify` — static gates plus pytest, selecting from the checkout's
   one testmon datafile (`.cache/testmon/testmondata`, environment `polylogue`)
-  and writing back. No datafile: the run seeds it and runs everything. A
-  corrupt or foreign-format datafile stops with `graph_unusable` — delete it
-  and rerun. `--all` runs every test and still updates fingerprints;
-  `--quick` is the static gates alone.
-- Every managed pytest run holds the host's single `pytest` pueue slot: a
-  caller outside a queued task (`SINNIXD_JOB_ID` unset) queues, waits, and
-  reads the captured log the run prints, and refuses if pueued is unreachable.
+  and writing back. A managed run snapshots a newer primary-checkout seed into
+  a lane with SQLite backup, replacing unusable lane copies. If no seed is
+  available, the run reports a full seed run; `--all` runs every test and
+  updates fingerprints, and `--quick` is the static gates alone.
+- Every managed pytest run holds the host's single `pytest` pueue slot. Only
+  the pytest worker's `POLYLOGUE_PYTEST_SLOT=held` marker authorizes direct
+  execution. Every other caller queues, waits, reads the captured log the run
+  prints, and refuses if pueued is unreachable.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]
@@ -164,8 +169,8 @@ condition — what mutation or bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep
-ambient machine data out of tests. Per-PR CI runs only the quick gate — a
-green PR check does not mean tests ran; verify locally.
+ambient machine data out of tests. The required per-PR `verify` check runs
+affected pytest through the host slot; the quick gate remains a separate check.
 
 Change cross-checks: parser/detection → origin specs + real fixtures + replay
 parity; storage/schema → fresh DDL + declared lifecycle + readers/writers +

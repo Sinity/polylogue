@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.insights.capture_coverage import (
+from polylogue.analysis.capture_coverage import (
     apply_coverage_to_enumeration,
     compute_capture_coverage,
     coverage_citation,

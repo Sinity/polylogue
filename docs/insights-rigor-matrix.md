@@ -8,9 +8,9 @@ markers callers should consult, what readiness semantics apply, and
 which consumer-facing fields are stable surface contract.
 
 The source of truth for this matrix is
-`polylogue/insights/rigor.py:list_rigor_contracts()`. The audit runner
+`polylogue/analysis/rigor.py:list_rigor_contracts()`. The audit runner
 that uses the matrix to roll up the live archive is
-`polylogue/insights/audit.py:build_insight_rigor_audit_report`, exposed
+`polylogue/analysis/audit.py:build_insight_rigor_audit_report`, exposed
 as `polylogue ops insights audit` on the CLI, `insight_rigor_audit` on the
 MCP server, and `Polylogue.insight_rigor_audit()` on the async library
 API.
@@ -256,8 +256,8 @@ API.
 ## Coverage policy
 
 Every insight product registered in
-`polylogue/insights/registry.py:INSIGHT_REGISTRY` must appear above or in
-`polylogue/insights/rigor.py:RIGOR_EXEMPT` with an inline justification
+`polylogue/analysis/registry.py:INSIGHT_REGISTRY` must appear above or in
+`polylogue/analysis/rigor.py:RIGOR_EXEMPT` with an inline justification
 (genuinely non-number-bearing products only).
 `tests/unit/insights/test_rigor_contract_coverage.py` enforces this; the audit runner reports an
 uncovered product's `coverage_status` as `"uncovered"` rather than

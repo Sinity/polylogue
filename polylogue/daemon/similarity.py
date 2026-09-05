@@ -46,6 +46,7 @@ from typing import Final, cast
 
 from polylogue.config import load_polylogue_config
 from polylogue.core.errors import DatabaseError
+from polylogue.daemon.status import open_readonly_connection
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 
@@ -128,7 +129,7 @@ def _build_archive_similar_payload(
     disabled_reason: str | None,
     archive_root_path: Path,
 ) -> dict[str, object] | None:
-    index_conn = sqlite3.connect(index_db)
+    index_conn = open_readonly_connection(index_db, timeout_class="interactive-read")
     try:
         index_conn.row_factory = sqlite3.Row
         if not _fetch_archive_session_exists(index_conn, session_id):
@@ -146,7 +147,7 @@ def _build_archive_similar_payload(
             envelope["session_id"] = session_id
             envelope["limit"] = bounded_limit
             return envelope
-        with sqlite3.connect(str(embeddings_db)) as conn:
+        with open_readonly_connection(embeddings_db, timeout_class="interactive-read") as conn:
             if not _vec_table_exists(conn):
                 envelope = _empty_envelope("unavailable", reason="vec0_table_missing")
                 envelope["session_id"] = session_id

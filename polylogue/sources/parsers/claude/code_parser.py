@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 
 from ..base import (
     ParsedContentBlock,
+    ParsedDispatchObservation,
     ParsedFileEdit,
     ParsedMessage,
     ParsedPasteEvidence,
@@ -585,6 +586,7 @@ class _DelegationProgressStats:
     count: int = 0
     first_seen: str | None = None
     last_seen: str | None = None
+    child_provider_ids: set[str] = field(default_factory=set)
 
 
 def _accumulate_delegation_progress(
@@ -610,6 +612,13 @@ def _accumulate_delegation_progress(
     if not parent_tool_use_id:
         return False
     entry = accumulator.setdefault(parent_tool_use_id, _DelegationProgressStats())
+    # The dispatched child is named only inside the progress payload. The
+    # record envelope's identity fields name the transcript that emitted the
+    # tick -- its own session, which is the dispatching parent.
+    for key in ("childSessionId", "child_session_id", "agentId", "agent_id"):
+        value = _string_field(data, key)
+        if value:
+            entry.child_provider_ids.add(value)
     entry.count += 1
     if timestamp:
         if entry.first_seen is None or timestamp < entry.first_seen:
@@ -1838,6 +1847,32 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # dispatching tool_use, not one per streaming tick.
     for parent_tool_use_id in sorted(acc.delegation_progress):
         stats = acc.delegation_progress[parent_tool_use_id]
+        # Claude's progress record is parent-side evidence.  Newer wire
+        # shapes carry the spawned agent identity alongside the dispatch id;
+        # retain it as an exact claim so the writer can correlate it without
+        # manufacturing a child-side field.
+        child_provider_ids = tuple(sorted(stats.child_provider_ids))
+        observation = ParsedDispatchObservation(
+            provider_tool_id=parent_tool_use_id,
+            child_provider_id=child_provider_ids[0] if len(child_provider_ids) == 1 else None,
+            first_seen=stats.first_seen,
+            last_seen=stats.last_seen,
+            resolution_reason=(
+                "identity-contradiction"
+                if len(child_provider_ids) > 1
+                else "target-not-yet-observed"
+                if not child_provider_ids
+                else None
+            ),
+        )
+        observation_payload = observation.model_dump()
+        observation_payload["parent_tool_use_id"] = parent_tool_use_id
+        observation_payload["progress_tick_count"] = stats.count
+        observation_payload["summary"] = (
+            f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)"
+        )
+        if len(child_provider_ids) > 1:
+            observation_payload["child_provider_ids"] = list(child_provider_ids)
         acc.session_events.append(
             ParsedSessionEvent(
                 event_type="claude_delegation_progress",
@@ -1848,6 +1883,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
                     "progress_tick_count": stats.count,
                     "first_seen": stats.first_seen,
                     "last_seen": stats.last_seen,
+                    **observation_payload,
                     "summary": f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)",
                 },
             )
@@ -1984,6 +2020,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         git_branch=acc.git_branch_value,
         display_name=acc.session_slug_value,
         session_refs=acc.session_refs,
+        provider_session_aliases=([str(acc.fallback_id)] if str(acc.fallback_id) != str(composed_session_id) else []),
     )
 
 

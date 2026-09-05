@@ -64,17 +64,13 @@ from polylogue.daemon.web_auth import (
     read_web_credential_cookie,
     same_origin_from_headers,
 )
-from polylogue.daemon.web_shell_attachments import (
+from polylogue.daemon.webui_data import (
     LibraryEntry,
+    PasteBrowserEntry,
     attachment_to_envelope,
     build_library_payload,
-    render_attachment_library_page,
-)
-from polylogue.daemon.web_shell_paste import (
-    PasteBrowserEntry,
     build_paste_browser_payload,
     envelope_paste_spans,
-    render_paste_browser_page,
     snippet_for_paste,
 )
 from polylogue.daemon.write_coordinator import (
@@ -503,13 +499,12 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
 
     routes: list[tuple[RouteMethod, str]] = [
         ("GET", "/"),
-        ("GET", "/app"),
-        ("GET", "/app/observability"),
-        ("GET", "/app/cost"),
-        ("GET", "/app/sessions"),
-        ("GET", "/app/sessions/:session_id"),
-        ("GET", "/app/search"),
-        ("GET", "/app/assets/:asset"),
+        ("GET", "/observability"),
+        ("GET", "/cost"),
+        ("GET", "/sessions"),
+        ("GET", "/sessions/:session_id"),
+        ("GET", "/search"),
+        ("GET", "/assets/:asset"),
         ("GET", "/s/:session_id"),
         ("GET", "/w/:mode"),
         ("GET", "/p"),
@@ -943,13 +938,13 @@ def _optional_model_dump(value: Any) -> dict[str, object] | None:
 def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
     """Compare a session-profile record's provenance against its session.
 
-    Routes through :func:`polylogue.insights.provenance.is_stale` so the
+    Routes through :func:`polylogue.analysis.provenance.is_stale` so the
     daemon insights browser (#1018/#1120) consumes the typed staleness
     helper rather than re-deriving the high-water-mark comparison inline.
     Returns ``None`` when the record lacks the provenance fields the
     helper expects.
     """
-    from polylogue.insights.provenance import HasProvenance, is_stale
+    from polylogue.analysis.provenance import HasProvenance, is_stale
 
     if record is None:
         return None
@@ -1752,46 +1747,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if self._reject_credential_query():
             return
 
-        # The typed WebUI is the canonical browser surface.  Keep the route
-        # aliases here deliberately boring: they all enter the same SSR
-        # handlers, asset-manifest boundary, and auth checks.  In particular,
-        # the root route must not select the interpolated reader based on a
-        # feature flag or fallback condition.
-        if path in ([""], ["app"]):
+        # The typed WebUI is the canonical browser surface. Every browser
+        # route enters the same SSR handlers, asset-manifest boundary, and
+        # authentication checks.
+        if path == [""]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_archive_overview()
             return
-        if path in (["observability"], ["app", "observability"]):
+        if path == ["observability"]:
             if not self._check_auth():
                 return
             self._serve_webui_observability()
             return
-        if path in (["cost"], ["app", "cost"]):
+        if path == ["cost"]:
             if not self._check_auth():
                 return
             self._serve_webui_cost()
             return
-        if path in (["sessions"], ["app", "sessions"]):
+        if path == ["sessions"]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_list(params)
             return
-        if (len(path) == 2 and path[0] == "sessions" and bool(path[1])) or (
-            len(path) == 3 and path[:2] == ["app", "sessions"] and bool(path[2])
-        ):
+        if len(path) == 2 and path[0] == "sessions" and bool(path[1]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_session_read(path[-1])
             return
-        if path in (["search"], ["app", "search"]):
+        if path == ["search"]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_search(params)
             return
-        if (len(path) == 2 and path[0] == "assets" and bool(path[1])) or (
-            len(path) == 3 and path[:2] == ["app", "assets"] and bool(path[2])
-        ):
+        if len(path) == 2 and path[0] == "assets" and bool(path[1]):
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_asset(path[-1])
@@ -1806,32 +1795,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._serve_webui_session_read(path[1])
             return
 
-        # Workspace, paste, and attachment entrypoints remain legacy-only
-        # capabilities until their typed replacements land. The canonical
-        # archive reader never delegates to this branch.
         if len(path) == 2 and path[0] == "w" and path[1] in workspace_routes.WORKSPACE_SHELL_MODES:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_web_shell()
+            self._serve_webui_workspace(path[1], params)
             return
 
-        # Paste browser is a standalone reader page (#1201). Served
-        # alongside the main web shell, unauthenticated like the main
-        # shell because the daemon binds to loopback by default and the
-        # page only embeds JS that calls the authenticated archive API.
         if path == ["p"]:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_paste_browser_page()
+            self._serve_webui_pastes(params)
             return
 
-        # Attachment library is a standalone reader page (#1199). Same
-        # auth posture as ``/p`` — the page only embeds JS that calls
-        # the authenticated archive API.
         if path == ["a"]:
             if not self._check_shell_bootstrap_access():
                 return
-            self._serve_attachment_library_page()
+            self._serve_webui_attachments(params)
             return
 
         # Kubernetes-style probes. Unauthenticated by convention — k8s,
@@ -2051,7 +2030,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.NOT_FOUND, "not_found")
 
     # ------------------------------------------------------------------
-    # Web shell
+    # Typed WebUI
     # ------------------------------------------------------------------
 
     def _handle_web_auth_bootstrap(self) -> None:
@@ -2108,10 +2087,81 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             credential_state="web_credential_revoked",
         )
 
-    def _serve_web_shell(self) -> None:
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
+    def _serve_webui_secondary(
+        self, *, title: str, heading: str, description: str, payload: Mapping[str, object] | None, empty: str
+    ) -> None:
+        from polylogue.daemon.webui import (
+            WebUIAssetBundle,
+            WebUIAssetError,
+            render_typed_data_page,
+            render_webui_asset_error,
+        )
 
-        self._send_html(HTTPStatus.OK, WEB_SHELL_HTML)
+        try:
+            bundle = WebUIAssetBundle.discover(self.server.webui_dist_root)
+            body = render_typed_data_page(
+                bundle, title=title, heading=heading, description=description, payload=payload, empty=empty
+            )
+        except WebUIAssetError as exc:
+            self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, render_webui_asset_error(str(exc)))
+            return
+        self._send_webui_html(HTTPStatus.OK, body)
+
+    def _serve_webui_workspace(self, mode: str, params: dict[str, list[str]]) -> None:
+        archive_root = _web_reader_archive_root()
+        payload: Mapping[str, object] | None = None
+        if archive_root is not None and mode == "stack":
+            ids = workspace_routes.parse_id_list(params)
+            if ids:
+                payload = self._do_archive_stack(archive_root, ids, self._get_param(params, "focus"))
+        elif archive_root is not None and mode == "compare":
+            left = self._get_param(params, "left")
+            right = self._get_param(params, "right")
+            if left and right:
+                result = self._do_archive_compare(
+                    archive_root, left, right, self._get_param(params, "align", "prompt") or "prompt"
+                )
+                payload = result if isinstance(result, Mapping) else None
+        self._serve_webui_secondary(
+            title=f"Workspace · {mode}",
+            heading=f"Workspace {mode}",
+            description="A typed, bounded workspace projection with explicit missing and degraded targets.",
+            payload=payload,
+            empty="Choose valid session targets to load this workspace view.",
+        )
+
+    def _serve_webui_pastes(self, params: dict[str, list[str]]) -> None:
+        limit = max(1, min(self._get_int(params, "limit", 200), 500))
+        offset = max(0, self._get_int(params, "offset", 0))
+        payload = self._sync_run(lambda poly: self._do_paste_browser(poly, limit=limit, offset=offset))
+        self._serve_webui_secondary(
+            title="Pastes",
+            heading="Paste evidence",
+            description="Messages with structured paste evidence and bounded source links.",
+            payload=payload if isinstance(payload, Mapping) else None,
+            empty="No paste evidence is available in this archive.",
+        )
+
+    def _serve_webui_attachments(self, params: dict[str, list[str]]) -> None:
+        limit = max(1, min(self._get_int(params, "limit", 200), 500))
+        offset = max(0, self._get_int(params, "offset", 0))
+        payload = self._sync_run(
+            lambda poly: self._do_attachment_library(
+                poly,
+                limit=limit,
+                offset=offset,
+                mime_filter=self._get_param(params, "mime") or "",
+                state_filter=self._get_param(params, "state") or "",
+                session_filter=self._get_param(params, "session") or "",
+            )
+        )
+        self._serve_webui_secondary(
+            title="Attachments",
+            heading="Attachment library",
+            description="Attachment metadata with honest availability and preview states.",
+            payload=payload if isinstance(payload, Mapping) else None,
+            empty="No attachments are available in this archive.",
+        )
 
     def _serve_webui_archive_overview(self) -> None:
         from polylogue.archive.query.execution_control import (
@@ -2207,7 +2257,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         limit = clamp_query_limit(self._get_int(params, "limit", SESSION_LIST_LIMIT), default=SESSION_LIST_LIMIT)
         offset = max(0, self._get_int(params, "offset", 0))
         try:
-            page = self._do_archive_session_list(archive_root, params, limit, offset, "/app/sessions")
+            page = self._do_archive_session_list(archive_root, params, limit, offset, "/sessions")
         except QuerySpecError as exc:
             self._send_webui_html(
                 HTTPStatus.BAD_REQUEST,
@@ -2463,12 +2513,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "webui_assets_unavailable", str(exc))
             return
         self._send_webui_asset(asset)
-
-    def _serve_paste_browser_page(self) -> None:
-        self._send_html(HTTPStatus.OK, render_paste_browser_page())
-
-    def _serve_attachment_library_page(self) -> None:
-        self._send_html(HTTPStatus.OK, render_attachment_library_page())
 
     def _handle_agent_coordination(self, params: dict[str, list[str]]) -> None:
         from polylogue.coordination import build_coordination_envelope
@@ -2836,8 +2880,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     @daemon_safe_handler
     def _handle_webui_insight(self, name: str, params: dict[str, list[str]]) -> None:
         """Return one bounded descriptor panel without a browser query model."""
+        from polylogue.analysis.registry import INSIGHT_REGISTRY
         from polylogue.daemon.webui import build_observability_payload
-        from polylogue.insights.registry import INSIGHT_REGISTRY
 
         descriptor = INSIGHT_REGISTRY.get(name)
         if descriptor is None:
@@ -3855,7 +3899,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
 
     async def _do_get_session_cost(self, poly: Polylogue, conv_id: str) -> object:
-        from polylogue.insights.archive import SessionCostInsightQuery
+        from polylogue.analysis.archive import SessionCostInsightQuery
 
         insights = await poly.list_session_cost_insights(SessionCostInsightQuery(session_id=conv_id))
         if not insights:
@@ -3904,7 +3948,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         conv_id: str,
         includes: tuple[str, ...],
     ) -> object:
-        from polylogue.insights.archive import (
+        from polylogue.analysis.archive import (
             ArchiveInsightUnavailableError,
             SessionPhaseInsightQuery,
             SessionWorkEventInsightQuery,
@@ -3928,8 +3972,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         assert isinstance(kinds, dict)
 
         if "profile" in includes:
-            from polylogue.insights.archive import SessionProfileInsight
-            from polylogue.storage.insights.session.profiles import hydrate_session_profile
+            from polylogue.analysis.archive import SessionProfileInsight
+            from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
             try:
                 # Archive read returns the full record directly; hydrate it into
@@ -3954,7 +3998,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
-            # :func:`polylogue.insights.provenance.is_stale` helper so the
+            # :func:`polylogue.analysis.provenance.is_stale` helper so the
             # reader sees explicit staleness, not just q-ready/q-missing
             # presence chips.
             if profile is not None:
@@ -4047,7 +4091,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     ) -> None:
         """``GET /api/sessions/{id}/topology[?limit=N]``.
 
-        Returns a bounded :class:`polylogue.insights.topology.SessionTopology`
+        Returns a bounded :class:`polylogue.analysis.topology.SessionTopology`
         envelope rooted at *conv_id*'s lineage root. ``?limit=`` is the
         operator-visible knob; the daemon enforces the hard cap from
         :data:`polylogue.daemon.topology_http.MAX_NODE_LIMIT` regardless of
@@ -5122,6 +5166,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.config import load_polylogue_config
         from polylogue.operations.daemon_protocol import (
             MAX_OPERATION_BODY_BYTES,
+            MAX_OPERATION_RESULT_BYTES,
             DaemonOperationEnvelope,
             DaemonOperationRequest,
             archive_identity,
@@ -5353,6 +5398,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             result=result,
             request_id=request.request_id,
         )
+        encoded = _json_bytes(envelope.to_dict())
+        if len(encoded) > MAX_OPERATION_RESULT_BYTES:
+            self._send_operation_error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                request,
+                archive,
+                generation,
+                readiness,
+                "result_too_large",
+                "operation result exceeds the bounded result size",
+            )
+            return
         self._send_json(HTTPStatus.OK, envelope.to_dict())
 
     def _send_operation_error(
@@ -5664,6 +5721,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.connection_profile import open_daemon_connection
 
         ops_db = archive_root() / "ops.db"
+        if not ops_db.exists():
+            initialize_archive_database(ops_db, ArchiveTier.OPS)
         with open_daemon_connection(ops_db) as conn:
             table_count = int(
                 conn.execute(

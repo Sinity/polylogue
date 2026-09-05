@@ -10,10 +10,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from polylogue.analysis.archive import ArchiveInsightProvenance, SessionProfileInsight
+from polylogue.analysis.archive_models import SessionEvidencePayload
+from polylogue.analysis.resume import ResumeOperations
 from polylogue.api import Polylogue
-from polylogue.insights.archive import ArchiveInsightProvenance, SessionProfileInsight
-from polylogue.insights.archive_models import SessionEvidencePayload
-from polylogue.insights.resume import ResumeOperations
 from tests.infra.storage_records import SessionBuilder
 
 # Archive session ids derived from the builder's provider_session_id
@@ -148,7 +148,7 @@ async def test_resume_brief_composes_insights_and_related_sessions(cli_workspace
 async def test_resume_brief_provenance_cites_substrate_rows(cli_workspace: dict[str, Path]) -> None:
     """Provenance must point back at every substrate row composed into the brief."""
 
-    from polylogue.insights.resume import RESUME_BRIEF_MATERIALIZER_VERSION
+    from polylogue.analysis.resume import RESUME_BRIEF_MATERIALIZER_VERSION
 
     db_path = cli_workspace["db_path"]
     _seed_resume_sessions(db_path)
@@ -330,7 +330,7 @@ def _ranking_operations(profiles: list[SessionProfileInsight]) -> ResumeOperatio
 @pytest.mark.asyncio
 async def test_resume_candidates_recover_100_percent_dead_session_by_directory(tmp_path: Path) -> None:
     """Directory recovery must exercise the production scorer, not a test-only matcher."""
-    from polylogue.insights.resume import find_resume_candidates
+    from polylogue.analysis.resume import find_resume_candidates
 
     repo_root = tmp_path / "repo"
     current = repo_root / "polylogue" / "pipeline" / "service.py"
@@ -363,7 +363,7 @@ async def test_resume_candidates_recover_100_percent_dead_session_by_directory(t
 @pytest.mark.asyncio
 async def test_resume_candidates_do_not_recover_repo_root_only_directory_prefix(tmp_path: Path) -> None:
     """Directory fallback must not turn every top-level file into a match."""
-    from polylogue.insights.resume import find_resume_candidates
+    from polylogue.analysis.resume import find_resume_candidates
 
     repo_root = tmp_path / "repo"
     current = repo_root / "README.md"
@@ -392,13 +392,13 @@ async def test_resume_candidates_do_not_recover_repo_root_only_directory_prefix(
 @pytest.mark.asyncio
 async def test_resume_candidates_exclude_unmatched_dead_paths_from_jaccard_union(tmp_path: Path) -> None:
     """Removing dead-path exclusion should make the two production-route scores diverge."""
-    from polylogue.insights.resume import find_resume_candidates
+    from polylogue.analysis.resume import find_resume_candidates
 
     repo_root = tmp_path / "repo"
     current = repo_root / "polylogue" / "insights" / "resume.py"
     current.parent.mkdir(parents=True)
     current.write_text("# scorer\n", encoding="utf-8")
-    shared = ("polylogue/insights/resume.py",)
+    shared = ("polylogue/analysis/resume.py",)
     profiles = [
         _synthetic_ranking_profile(
             "candidate-a",
@@ -428,7 +428,7 @@ async def test_resume_candidates_exclude_unmatched_dead_paths_from_jaccard_union
 
 def test_resume_candidates_preserve_resolvable_exact_jaccard(tmp_path: Path) -> None:
     """Replacing the fixed scorer with legacy mode must not change an all-live exact case."""
-    from polylogue.insights.resume import _rank_resume_profiles
+    from polylogue.analysis.resume import _rank_resume_profiles
 
     repo_root = tmp_path / "repo"
     current = repo_root / "polylogue" / "insights" / "resume.py"
@@ -438,31 +438,31 @@ def test_resume_candidates_preserve_resolvable_exact_jaccard(tmp_path: Path) -> 
         "candidate",
         logical_session_id="candidate",
         repo_root=repo_root,
-        file_paths=("polylogue/insights/resume.py",),
+        file_paths=("polylogue/analysis/resume.py",),
     )
 
     legacy = _rank_resume_profiles(
         [profile],
         repo_path=str(repo_root),
-        recent_files=("polylogue/insights/resume.py",),
+        recent_files=("polylogue/analysis/resume.py",),
         overlap_mode="legacy",
     )[0]
     fixed = _rank_resume_profiles(
         [profile],
         repo_path=str(repo_root),
-        recent_files=("polylogue/insights/resume.py",),
+        recent_files=("polylogue/analysis/resume.py",),
     )[0]
 
     assert fixed.score_breakdown["file_overlap"] == legacy.score_breakdown["file_overlap"]
-    assert fixed.file_overlap == legacy.file_overlap == ("polylogue/insights/resume.py",)
+    assert fixed.file_overlap == legacy.file_overlap == ("polylogue/analysis/resume.py",)
     assert [(match.candidate_path, match.recent_file) for match in fixed.overlap_basis.exact] == [
-        ("polylogue/insights/resume.py", "polylogue/insights/resume.py")
+        ("polylogue/analysis/resume.py", "polylogue/analysis/resume.py")
     ]
 
 
 def test_resume_candidates_credit_file_to_package_correction(tmp_path: Path) -> None:
     """The scorer must resolve the repository.py -> repository/__init__.py history shape."""
-    from polylogue.insights.resume import _rank_resume_profiles
+    from polylogue.analysis.resume import _rank_resume_profiles
 
     repo_root = tmp_path / "repo"
     current = repo_root / "polylogue" / "storage" / "repository" / "__init__.py"

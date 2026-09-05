@@ -7,12 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
-from polylogue.insights.delegation_work_evidence_materializer import (
+from polylogue.analysis.delegation_work_evidence_materializer import (
     DELEGATION_WORK_EVIDENCE_GRAPH_ID,
     delegation_work_evidence_materialization_needed,
     materialize_delegation_work_evidence_archive,
 )
+from polylogue.daemon.convergence_stages import make_delegation_work_evidence_stage
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -108,10 +108,12 @@ def test_materializer_replaces_archive_projection_and_tracks_delegation_freshnes
     assert materialize_delegation_work_evidence_archive(tmp_path) == 1
     assert delegation_work_evidence_materialization_needed(tmp_path) is False
 
-    # A replacement must remove rows that disappeared from the canonical view;
+    # A replacement must remove rows that disappeared from canonical evidence;
     # otherwise stale nodes remain traversable after source evidence changes.
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("DELETE FROM delegation_facts")
+        conn.execute("DELETE FROM session_links")
+        conn.execute("DELETE FROM blocks WHERE tool_id = 'task-1'")
+        conn.commit()
 
     assert materialize_delegation_work_evidence_archive(tmp_path) == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -141,7 +143,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "polylogue.insights.delegation_work_evidence_materializer.delegation_work_evidence_materialization_needed",
+        "polylogue.analysis.delegation_work_evidence_materializer.delegation_work_evidence_materialization_needed",
         fail_probe,
     )
     with caplog.at_level("WARNING"):
@@ -152,7 +154,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(
-        "polylogue.insights.delegation_work_evidence_materializer.materialize_delegation_work_evidence_archive",
+        "polylogue.analysis.delegation_work_evidence_materializer.materialize_delegation_work_evidence_archive",
         fail_materialization,
     )
     with caplog.at_level("WARNING"):

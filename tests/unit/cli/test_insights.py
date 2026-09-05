@@ -11,19 +11,19 @@ import click
 import pytest
 from click.testing import CliRunner, Result
 
-from polylogue.cli.click_app import cli
-from polylogue.cli.commands.insights import _make_callback
-from polylogue.insights.archive import ArchiveCoverageInsight, SessionWorkEventInsight
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive import ArchiveCoverageInsight, SessionWorkEventInsight
+from polylogue.analysis.archive_models import (
     ARCHIVE_INSIGHT_CONTRACT_VERSION,
     ArchiveInferenceProvenance,
     ArchiveInsightProvenance,
     WorkEventEvidencePayload,
     WorkEventInferencePayload,
 )
-from polylogue.insights.registry import get_insight_type, insight_items_payload
-from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
-from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.analysis.registry import get_insight_type, insight_items_payload
+from polylogue.cli.click_app import cli
+from polylogue.cli.commands.insights import _make_callback
+from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
+from polylogue.storage.derived.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import upsert_session_profile_costs
 from tests.infra.archive_scenarios import native_session_id_for, open_index_db
@@ -51,8 +51,8 @@ NID_EPOCH = native_session_id_for("claude-code", "conv-epoch")
 NID_HEAVY = native_session_id_for("codex", "conv-heavy")
 
 
-def test_fable_packet_is_available_at_root_insights_command() -> None:
-    result = CliRunner().invoke(cli, ["insights", "fable-packet", "--help"])
+def test_fable_packet_is_available_under_ops_insights() -> None:
+    result = CliRunner().invoke(cli, ["ops", "insights", "fable-packet", "--help"])
 
     assert result.exit_code == 0
     assert "Cold-regenerate the private, descriptive Fable delegation packet." in result.output
@@ -533,7 +533,10 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["aggregate_verdict"] == "degraded"
+    # The seeded workspace has an ops tier with an empty debt ledger: readiness
+    # is exactly "convergence has caught up".
+    assert payload["converged"] is True
+    assert payload["debt_stages"] == []
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
@@ -543,7 +546,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_tag_rollups",
         "archive_coverage",
     }
-    assert insights["session_profiles"]["verdict"] == "degraded"
+    assert insights["session_profiles"]["table_present"] is True
     assert json_int(insights["session_profiles"]["degraded_count"]) == 2
     assert json_int(insights["session_work_events"]["row_count"]) >= 1
 
@@ -585,7 +588,7 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Insight Readiness: degraded" in result.output
+    assert "Convergence: caught up" in result.output
     assert "session_profiles: degraded" in result.output
 
 
@@ -943,9 +946,6 @@ def test_session_insight_rebuild_pages_full_rebuild(cli_workspace: CliWorkspace)
     assert counts.work_events >= 1
     assert counts.phases >= 1
     assert status.profile_row_count == 2
-    assert status.profile_rows_ready is True
-    assert status.work_event_inference_rows_ready is True
-    assert status.phase_inference_rows_ready is True
 
 
 def test_session_insight_rebuild_sync_reports_progress(cli_workspace: CliWorkspace) -> None:
@@ -1163,9 +1163,6 @@ def test_session_insight_status_accepts_epoch_backed_session_timestamps(cli_work
     assert status.stale_profile_row_count == 0
     assert status.stale_work_event_inference_count == 0
     assert status.stale_phase_inference_count == 0
-    assert status.profile_rows_ready is True
-    assert status.work_event_inference_rows_ready is True
-    assert status.phase_inference_rows_ready is True
     assert status.profile_merged_fts_duplicate_count == 0
 
 
@@ -1176,7 +1173,6 @@ def test_targeted_session_insight_rebuild_does_not_duplicate_profile_fts(cli_wor
     status = _insight_status(cli_workspace["db_path"])
 
     assert status.profile_row_count == 2
-    assert status.profile_rows_ready is True
 
 
 def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspace: CliWorkspace) -> None:
@@ -1194,7 +1190,6 @@ def test_session_insight_status_marks_missing_profile_rows_not_ready(cli_workspa
 
     assert status.profile_row_count == 1
     assert status.missing_profile_row_count == 1
-    assert status.profile_rows_ready is False
 
 
 def test_insights_timeline_json_emits_fidelity_tags(cli_workspace: CliWorkspace) -> None:

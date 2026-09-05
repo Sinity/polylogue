@@ -16,6 +16,7 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+from polylogue.archive import zip_admission
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
@@ -126,6 +127,199 @@ def test_claude_frontier_rejects_body_rewrite(tmp_path: Path) -> None:
     )
 
     assert processor._append_plan(path) is None
+
+
+def test_append_prefix_cursor_refuses_a_rewritten_accepted_prefix_after_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: trusting only the unchanged tail would advance this cursor."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="prefix-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    rewritten = path.read_bytes().replace(b"zero", b"zeta", 1)
+    path.write_bytes(rewritten)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.tail_hash_from_path",
+        lambda _path, _end: (cast(str, plan.accepted_tail_hash), 0),
+    )
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_prefix_cursor_refuses_claude_body_rewrite_after_persistence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: recomputing the frontier must not bless a changed stable body."""
+    first_append = b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n'
+    path, first_plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-publication",
+        append=first_append,
+    )
+    assert ingest_append_plans(cast(Any, owner), [first_plan]).succeeded == [first_plan]
+    assert processor._record_append_cursor(first_plan)
+    second_append = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    with path.open("ab") as handle:
+        handle.write(second_append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b"one", b"bad", 1))
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch.tail_hash_from_path",
+        lambda _path, _end: (cast(str, plan.accepted_tail_hash), 0),
+    )
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_cursor_hands_off_claude_plan_when_source_disappears_after_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: treating disappearance as a failed proof loses an admitted append."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-disappeared-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+
+    def missing(_self: Path) -> os.stat_result:
+        raise FileNotFoundError(path)
+
+    monkeypatch.setattr(Path, "stat", missing)
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_offset == plan.last_complete_newline
+
+
+def test_append_cursor_retries_claude_payload_mismatch_instead_of_raising(tmp_path: Path) -> None:
+    """Mutation: a changed admitted append must become a stale-cursor retry, not escape the batch."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-payload-mismatch",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b'"one"', b'"two"', 1))
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_cursor_publishes_current_claude_header_boundary_and_observation(tmp_path: Path) -> None:
+    """Mutation: plan-time offsets would point inside a rewritten mutable header."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-header-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    header, body = path.read_bytes().split(b"\n", 1)
+    path.write_bytes(header.replace(b'"zero"', b'"a longer mutable header"') + b"\n" + body)
+    current_stat = path.stat()
+    current_header_end = path.read_bytes().index(b"\n") + 1
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_size == current_stat.st_size
+    assert cursor.byte_offset == current_header_end + len(plan.payload)
+    assert cursor.last_complete_newline == current_header_end + len(plan.payload)
+    assert (cursor.st_dev, cursor.st_ino, cursor.mtime_ns) == (
+        current_stat.st_dev,
+        current_stat.st_ino,
+        current_stat.st_mtime_ns,
+    )
+
+
+def test_append_cursor_publishes_after_shorter_claude_header_rewrite(tmp_path: Path) -> None:
+    """Mutation: a shorter mutable header must not resemble body truncation."""
+    path, plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-shorter-header-publication",
+        append=b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n',
+    )
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    _header, body = path.read_bytes().split(b"\n", 1)
+    replacement = (
+        b'{"type":"user","message":{"role":"user","content":"x"},"sessionId":"claude-shorter-header-publication"}\n'
+    )
+    assert len(replacement) < plan.start_offset
+    path.write_bytes(replacement + body)
+
+    assert processor._record_append_cursor(plan) is True
+    cursor = processor._cursor.get_record(path)
+    assert cursor is not None
+    assert cursor.byte_size == path.stat().st_size
+    assert cursor.byte_offset == len(replacement) + len(body)
+
+
+def test_append_cursor_counts_failed_claude_frontier_proof_bytes(tmp_path: Path) -> None:
+    """Mutation: omitting a failed semantic proof understates cursor-read amplification."""
+    first_append = b'{"type":"assistant","message":{"role":"assistant","content":"one"},"uuid":"message-1"}\n'
+    path, first_plan, owner, processor = _seed_claude_live_append_plan(
+        tmp_path,
+        native_id="claude-failed-proof-metrics",
+        append=first_append,
+    )
+    assert ingest_append_plans(cast(Any, owner), [first_plan]).succeeded == [first_plan]
+    assert processor._record_append_cursor(first_plan)
+    second_append = b'{"type":"assistant","message":{"role":"assistant","content":"two"},"uuid":"message-2"}\n'
+    with path.open("ab") as handle:
+        handle.write(second_append)
+    plan = processor._append_plan(path)
+    assert isinstance(plan, _AppendPlan)
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    path.write_bytes(path.read_bytes().replace(b'"one"', b'"bad"', 1))
+
+    assert processor._record_append_cursor(plan) is False
+    header_bytes = path.read_bytes().index(b"\n") + 1
+    assert processor._last_append_cursor_proof_bytes == header_bytes + len(plan.payload) + plan.last_complete_newline
+
+
+def test_append_cursor_retries_when_source_grows_during_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mutation: accepting a changed observation allows a concurrent writer to race proof publication."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="growth-during-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    original_hash = sha256_range_from_path
+    grew = False
+
+    def grow_after_first_hash(
+        source_path: Path,
+        *,
+        start_offset: int,
+        end_offset: int,
+    ) -> tuple[str, int]:
+        nonlocal grew
+        result = original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        if not grew:
+            with path.open("ab") as handle:
+                handle.write(
+                    b'{"type":"response_item","payload":{"type":"message","id":"later","role":"assistant",'
+                    b'"content":[{"type":"output_text","text":"later"}]}}\n'
+                )
+            grew = True
+        return result
+
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_after_first_hash)
+
+    assert processor._record_append_cursor(plan) is False
+
+
+def test_append_prefix_cursor_refuses_parser_semantics_drift_after_planning(tmp_path: Path) -> None:
+    """Mutation: publishing under a new parser version would mislabel the proof."""
+    path, plan, owner, processor = _seed_live_append_plan(tmp_path, native_id="parser-publication")
+    assert ingest_append_plans(cast(Any, owner), [plan]).succeeded == [plan]
+    processor._parser_fingerprint = lambda: "new-parser-semantics"
+
+    assert processor._record_append_cursor(plan) is False
 
 
 @pytest.mark.parametrize(
@@ -2842,6 +3036,99 @@ def test_full_ingest_retains_sidecar_evidence_and_ingests_genuine_session(tmp_pa
         ]
 
 
+def test_unknown_inbox_zip_sniffs_provider_before_sidecar_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "claude-export.zip"
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"real-user","timestamp":"2025-01-01T00:00:00Z"}\n'
+    )
+    sidecar_payload = b"opaque tool result"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("projects/project/tool-results/dump.json", b'{"provider":"claude.ai"}')
+        archive.writestr("projects/project/session.jsonl", session_payload)
+        archive.writestr("projects/project/tool-results/toolu.txt", sidecar_payload)
+
+    index_db = tmp_path / "index.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="unknown", root=tmp_path),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    sniffed_paths: list[str] = []
+
+    def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
+        sniffed_paths.extend(info.filename for info in entries)
+        return Provider.CLAUDE_CODE
+
+    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+
+    records, _total_bytes = processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+
+    assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in records} == {
+        "projects/project/tool-results/dump.json",
+        "projects/project/session.jsonl",
+        "projects/project/tool-results/toolu.txt",
+    }
+    assert sniffed_paths == ["projects/project/session.jsonl"]
+
+    source_only = processor._extract_source_only_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "source-only-blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+    assert source_only is not None
+    source_only_records, _source_only_bytes = source_only
+    assert {record.source_path.rsplit(":", 1)[-1] for _raw_id, record in source_only_records} == {
+        "projects/project/tool-results/dump.json",
+        "projects/project/session.jsonl",
+        "projects/project/tool-results/toolu.txt",
+    }
+
+
+def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = tmp_path / "claude-export.zip"
+    session_payload = (
+        b'{"parentUuid":null,"type":"user","message":{"role":"user","content":"real session"},'
+        b'"uuid":"message-1","sessionId":"session-1"}\n'
+    )
+    with zipfile.ZipFile(bundle, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("projects/project/session.jsonl", session_payload)
+        archive.writestr("projects/project/oversized.json", b"x" * 2048)
+
+    monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 512)
+    processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
+    sniffed_paths: list[str] = []
+
+    def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
+        sniffed_paths.extend(info.filename for info in entries)
+        return Provider.CLAUDE_CODE
+
+    monkeypatch.setattr(LiveBatchProcessor, "_sniff_zip_provider", staticmethod(sniff_provider))
+
+    processor._extract_zip_member_records(
+        bundle,
+        blob_store=BlobStore(tmp_path / "blob"),
+        fallback_provider=Provider.UNKNOWN,
+        file_mtime="2026-09-04T00:00:00+00:00",
+    )
+
+    assert sniffed_paths == ["projects/project/session.jsonl"]
+
+
 def test_append_declared_workflow_journal_retains_evidence_without_a_session(tmp_path: Path) -> None:
     """Malformed journals remain typed evidence when decoding cannot recover them."""
     path = tmp_path / ".claude" / "projects" / "project" / "subagents" / "workflows" / "wf-append" / "journal.jsonl"
@@ -4326,7 +4613,7 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         polylogue,
         (WatchSource(name="codex", root=root),),
         cursor=cursor,
-        parser_fingerprint="live-batched-v2",
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
     )
     original_hash = sha256_range_from_path
     next_record = 0
@@ -4786,7 +5073,6 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     with path.open("ab") as handle:
         handle.write(append_a)
     pre_rewrite_stat = path.stat()
-    accepted_tail_before_rewrite = path.read_bytes()[-64 * 1024 :]
     replaced = False
 
     def replace_after_append(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
@@ -4836,23 +5122,7 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
             ("zeroa",),
         ]
 
-    if rewrite_mode == "in-place-prefix":
-        # The append range itself is still byte-proven, so keep it as a
-        # frontier. The old observation embedded in its tail authority makes
-        # the watcher force this same-size prefix rewrite through the full
-        # route before it can be skipped or appended past.
-        assert appended.stale_cursor_write_count == 0
-        assert stale_cursor.byte_offset == len(baseline_a + append_a)
-        assert stale_cursor.content_fingerprint is not None
-        assert b"zerob" in path.read_bytes()
-        assert path.read_bytes()[-64 * 1024 :] == accepted_tail_before_rewrite
-        retried = asyncio.run(processor.ingest_files([path]))
-        assert retried.full_file_count == 1
-        assert retried.append_file_count == 0
-        assert retried.succeeded_file_count == 0
-        assert retried.failed_file_count == 1
-        return
-
+    # Exact prefix proof rejects every rewrite before publication.
     assert appended.stale_cursor_write_count == 1
     assert stale_cursor.byte_offset == 0
     assert stale_cursor.content_fingerprint is None
@@ -4860,6 +5130,11 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     retried = asyncio.run(processor.ingest_files([path]))
 
     assert retried.full_file_count == 1
+    if rewrite_mode == "in-place-prefix":
+        assert retried.append_file_count == 0
+        assert retried.succeeded_file_count == 0
+        assert retried.failed_file_count == 1
+        return
     assert retried.succeeded_file_count == 1
     assert retried.stale_cursor_write_count == 0
     final_cursor = cursor.get_record(path)

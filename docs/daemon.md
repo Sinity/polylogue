@@ -24,9 +24,13 @@ polylogued status
 Raw-evidence authority is an ordinary daemon invariant. After bounded raw
 materialization, the daemon records one complete accepted-frontier census,
 applies only byte/provenance-safe plans, and leaves conflicts or missing bytes
-as durable remediation references in status. Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
+as durable remediation references in status. A Codex state snapshot
+(`~/.codex/*.sqlite`) is non-session evidence with no byte frontier; live
+ingest finalizes it with a terminal `non_session` receipt, and each
+materialization pass finalizes any retained snapshot still lacking that
+receipt from its immutable blob before consulting the cursor-authority gate.
+Operators can inspect and record the same census, without applying plans, with `polylogue ops maintenance raw-authority-frontier`.
 
-The separate `raw-authority-recovery` command is not part of this daemon-owned convergence route. It is an explicit offline operator-maintenance action: it refuses while `polylogued` is running, takes archive ownership and the rebuild lease, and leaves a restartable receipt trail under the archive root.
 
 ## Auto-Discovery
 
@@ -109,9 +113,9 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser shell bootstrap | unauthenticated loopback HTML | `GET /`, `GET /app`, `GET /app/sessions`, `GET /app/sessions/:session_id`, `GET /app/search`, `GET /s/:id`, `GET /p`, `GET /a` |
-| WebUI observability page | bearer or scoped web credential when configured | `GET /app/observability` |
-| WebUI cost/usage page | bearer or scoped web credential when configured | `GET /app/cost` |
+| Browser WebUI bootstrap | unauthenticated loopback HTML | `GET /`, `GET /sessions`, `GET /sessions/:session_id`, `GET /search`, `GET /s/:id`, `GET /p`, `GET /a` |
+| WebUI observability page | bearer or scoped web credential when configured | `GET /observability` |
+| WebUI cost/usage page | bearer or scoped web credential when configured | `GET /cost` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
 | Stable read/query API | bearer or scoped web credential when configured | `GET /api/sessions`, `GET /api/query-units`, `GET /api/sessions/:id`, `GET /api/sessions/:id/read`, `GET /api/assertions`, `GET /api/sessions/:id/provenance` |
 | User overlay reads | bearer or scoped web credential when configured | `GET /api/user/marks`, `GET /api/user/saved-views/:id` |
@@ -137,7 +141,7 @@ Health check with database statistics.
 Full daemon status including component state, source lag, ingestion throughput,
 FTS readiness, and insight freshness.
 
-### GET /app/search
+### GET /search
 
 Server-rendered WebUI v2 search page. Query params: `q` (the query DSL
 expression — fielded predicates, booleans, `near:"…"` semantic phrases),
@@ -148,10 +152,10 @@ expression — fielded predicates, booleans, `near:"…"` semantic phrases),
 than a second, client-side interpretation of relevance. A DSL parse error
 renders a distinct degraded state with the parser's diagnostic and a
 known-good corrected example; local Preact assets add cursor-based paging
-only (no offset "load everything" mode). Shares `/app`'s unauthenticated
+only (no offset "load everything" mode). Shares `/`'s unauthenticated
 loopback bootstrap posture.
 
-### GET /app/observability
+### GET /observability
 
 Server-rendered WebUI v2 observability page. It displays descriptor-driven
 insight panels and daemon component status without requiring JavaScript;
@@ -159,14 +163,14 @@ local Preact assets add refresh and exact-source lookup controls. Because the
 HTML embeds bounded insight evidence, it requires a bearer or scoped
 first-party credential when the daemon is configured with credentials.
 
-### GET /app/cost
+### GET /cost
 
 Server-rendered WebUI v2 cost/usage explorer. Projects the `cost_rollups`,
 `usage_timeline`, and `session_costs` insight descriptors (the same
-registry-driven read path `/app/observability` uses) into a lane legend
+registry-driven read path `/observability` uses) into a lane legend
 (copied from [the cost model doc](../docs/cost-model.md)'s Basis Taxonomy),
 a spend-by-origin/model rollup table, a token/cache usage timeline, and a
-bounded session drill-down list linking into `/app/sessions/:id`. Every
+bounded session drill-down list linking into `/sessions/:id`. Every
 basis lane (`provider_reported_usd`, `api_equivalent_usd`,
 `subscription_equivalent_usd`, `catalog_priced_usd`, `tool_surcharge_usd`)
 renders independently and is never summed into one collapsed number; rows
@@ -175,23 +179,23 @@ lacking usage evidence render their `unavailable_reason`, never a bare
 scoped first-party credential when the daemon is configured with
 credentials.
 
-### GET /app/sessions
+### GET /sessions
 
 Server-rendered WebUI v2 session list. Facets (`origin`, `since`, `repo`) and
 paging (`limit`, `offset`) are the same query parameters `GET /api/sessions`
 accepts; the first page is readable without JavaScript, and local Preact
-assets add a bounded "load more" control. Shares `/app`'s unauthenticated
+assets add a bounded "load more" control. Shares `/`'s unauthenticated
 loopback bootstrap posture.
 
-### GET /app/sessions/:session_id
+### GET /sessions/:session_id
 
-Server-rendered WebUI v2 session shell: header metadata, a lineage banner when
+Server-rendered typed WebUI session page: header metadata, a lineage banner when
 the session composes a parent prefix (fork/resume/subagent/sidechain), and a
 simple message-flow placeholder (role, material origin, bounded text, and
 tool-use/thinking/paste-evidence flags). The message body projection is
 deliberately simple — a richer semantic-card transcript renderer is a separate
 vertical. Local Preact assets add bounded message paging through the existing
-`GET /api/sessions/:id/read?view=messages` endpoint. Shares `/app`'s
+`GET /api/sessions/:id/read?view=messages` endpoint. Shares `/`'s
 unauthenticated loopback bootstrap posture.
 
 ### GET /api/webui/observability
@@ -363,7 +367,7 @@ persistent condition detection.
 
 ### Hermes Integration Health
 
-`polylogue ops insights hermes-health` (`polylogue.insights.hermes_integration_health`)
+`polylogue ops insights hermes-health` (`polylogue.analysis.hermes_integration_health`)
 reports one bounded, read-only rollup of Hermes-to-Polylogue integration
 liveness (polylogue-fs1.15): enabled/disabled, per-source-class
 freshness/cursor position (via the named-source freshness projection,

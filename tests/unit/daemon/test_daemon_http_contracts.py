@@ -697,61 +697,6 @@ class TestPrivacyContract:
         assert sentinel_value not in serialized
         assert sentinel_name not in serialized
 
-    def test_web_shell_html_has_no_inline_secrets(
-        self,
-        workspace_env: dict[str, Path],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """The static web shell HTML must not bake in any env-derived secrets.
-
-        The reader is served as a static SPA — runtime auth happens
-        via the bearer token in JS-issued requests, never via tokens
-        substituted into the page source.
-        """
-        sentinel = f"SENTINEL-WEBSHELL-{os.getpid()}"
-        for name in SECRET_ENV_NAMES:
-            monkeypatch.setenv(name, sentinel)
-
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
-
-        assert sentinel not in WEB_SHELL_HTML
-
-    def test_web_shell_usage_cost_preserves_unknown_and_known_subtotal(self) -> None:
-        """The current web rewrite boundary must not coerce absent price to zero."""
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
-
-        assert "statTile('Known priced subtotal', formatUsd(data.catalog_priced_subtotal_usd))" in WEB_SHELL_HTML
-        assert "if (value === null || value === undefined || value === '') return 'unknown';" in WEB_SHELL_HTML
-        assert "var n = Number(value || 0);" not in WEB_SHELL_HTML
-
-    def test_web_shell_excludes_message_marks_from_session_mark_state(self) -> None:
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
-
-        anchor = "(marks.items || []).forEach(function(m) {"
-        idx = WEB_SHELL_HTML.index(anchor)
-        following = WEB_SHELL_HTML[idx : idx + 220]
-        assert "if (m.target_type !== 'session') return;" in following
-
-    def test_load_status_success_path_clears_the_status_route_notice(self) -> None:
-        """Dogfood regression (2026-07-08): loadStatus()'s success path set
-        state.routeStates.status to 'ready' but never called renderFacets(),
-        so a "Status: loading" notice rendered from an earlier snapshot
-        stayed stuck in the sidebar forever — verified live against the
-        real archive daemon. The error path already called renderFacets();
-        the success path must too, or any future edit that reintroduces
-        this asymmetry regresses silently (there is no JS-executing test
-        for this file's inline script, so this is a structural string
-        check on the success-path source, not a DOM assertion)."""
-        from polylogue.daemon.web_shell import WEB_SHELL_HTML
-
-        anchor = "setRouteState('status', {state: 'ready', route: statusRoute, status: '200', error: ''});"
-        idx = WEB_SHELL_HTML.index(anchor)
-        following = WEB_SHELL_HTML[idx + len(anchor) : idx + len(anchor) + 200]
-        assert "renderFacets();" in following, (
-            "loadStatus() success path must call renderFacets() to clear any "
-            "stale 'Status: loading' notice rendered before this route became ready"
-        )
-
     def test_get_session_does_not_leak_adjacent_sessions(
         self,
         workspace_env: dict[str, Path],

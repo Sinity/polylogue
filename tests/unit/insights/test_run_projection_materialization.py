@@ -20,6 +20,7 @@ import pytest
 
 pytestmark = pytest.mark.storage_scale
 
+from polylogue.analysis.transforms import compile_session_digest
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
@@ -27,7 +28,6 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.domain_models import Session
 from polylogue.core.enums import Origin
 from polylogue.core.types import SessionId
-from polylogue.insights.transforms import compile_session_digest
 from polylogue.storage.query_models import RunProjectionListQuery
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
 from polylogue.storage.sqlite.queries.session_insight_run_projection_reads import (
@@ -138,7 +138,7 @@ async def test_run_projection_reads_source_rows_for_codex_session(tmp_path: Path
                     "name": "mcp__serena__find_symbol",
                     "tool_input": {"name_path": "ArchiveStore/query_runs"},
                 },
-                {"type": "tool_result", "tool_id": "tool-absent", "text": "found"},
+                {"type": "tool_result", "tool_id": "tool-absent", "text": "found", "tool_result_is_error": 0},
             ],
         )
         .save()

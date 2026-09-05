@@ -103,7 +103,7 @@ def classify_tool(name: str, input_data: Mapping[str, JSONValue]) -> ToolCategor
         # field the child's own first transcript turn reproduces verbatim).
         # It used to fall into the generic ToolCategory.AGENT bucket below
         # (alongside askuserquestion/skill/batch/todo*, which are NOT
-        # delegation), so delegation_facts_source's
+        # delegation), so delegation_facts'
         # `WHERE a.semantic_type = 'subagent'` silently found zero dispatch
         # actions for every session using this tool -- the join-key fix in
         # the same bead had nothing to join for these sessions. Measured

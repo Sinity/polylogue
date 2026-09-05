@@ -12,8 +12,6 @@ import sqlite3
 from pathlib import Path
 from typing import cast
 
-import pytest
-
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.fts_status import fts_readiness_info
@@ -53,13 +51,13 @@ def _populated_index(db: Path) -> None:
         conn.close()
 
 
-def test_status_reads_nonexact_evidence_without_triggering_a_scan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_status_remeasures_nonexact_evidence_before_refusing_search(
+    tmp_path: Path,
 ) -> None:
     db = tmp_path / "index.db"
     _populated_index(db)
 
-    # A bounded observation is deliberately not READY-capable proof.
+    # A stale observation is not authority to refuse the whole surface.
     conn = sqlite3.connect(db)
     try:
         record_fts_surface_state_sync(conn, surface="messages_fts", state="stale", source_rows=0, indexed_rows=0)
@@ -67,23 +65,15 @@ def test_status_reads_nonexact_evidence_without_triggering_a_scan(
     finally:
         conn.close()
 
-    monkeypatch.setattr(
-        "polylogue.daemon.fts_status.fts_invariant_snapshot_sync",
-        lambda _conn: (_ for _ in ()).throw(AssertionError("status ran an exact FTS scan")),
-    )
     fts = fts_readiness_info(db, exact=False)
 
-    assert fts["messages_ready"] is False
+    assert fts["messages_ready"] is True
     assert fts["coverage_exact"] is False
-
-    monkeypatch.undo()
-    exact = fts_readiness_info(db, exact=True)
-    indexable = int(cast(int, exact["message_indexable_count"]))
-    indexed = int(cast(int, exact["message_indexed_count"]))
+    indexable = int(cast(int, fts["message_indexable_count"]))
+    indexed = int(cast(int, fts["message_indexed_count"]))
     assert indexable > 0
     assert indexed == indexable
-    assert exact["coverage_pct"] == 100.0
-    assert exact["messages_ready"] is True
+    assert fts["coverage_pct"] == 100.0
 
 
 def test_exact_coverage_counts_tool_blocks_as_indexable(tmp_path: Path) -> None:

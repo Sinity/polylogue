@@ -908,8 +908,8 @@ class TestArchiveStatusSurfaces:
         assert result["search"]["ready"] is False
         assert "messages_fts_row_mismatch" in result["search"]["blockers"]
 
-    def test_materialization_blockers(self) -> None:
-        """Surfaces blocked when materialization missing."""
+    def test_derived_timeline_surfaces_do_not_use_marker_counts(self) -> None:
+        """Timeline surfaces remain ordinary derived projections."""
         counts: dict[str, int] = {
             "session_count": 2,
             "raw_link_count": 0,
@@ -920,20 +920,15 @@ class TestArchiveStatusSurfaces:
             "profile_row_count": 0,
             "missing_profile_row_count": 0,
             "work_event_row_count": 0,
-            "missing_work_events_materialization": 1,  # missing for 1 session
             "phase_row_count": 0,
-            "missing_phases_materialization": 2,  # missing for all 2 sessions
             "thread_count": 0,
-            "missing_thread_materialization": 0,
             "action_count": 0,
-            "missing_session_profile_materialization": 0,
-            "missing_latency_materialization": 0,
         }
         result = _archive_status_surfaces(counts, source_check_available=True)
-        assert result["timeline_work_events"]["ready"] is False
-        assert "missing_work_events_materialization" in result["timeline_work_events"]["blockers"]
-        assert result["timeline_phases"]["ready"] is False
-        assert "missing_phases_materialization" in result["timeline_phases"]["blockers"]
+        assert result["timeline_work_events"]["ready"] is True
+        assert result["timeline_work_events"]["blockers"] == []
+        assert result["timeline_phases"]["ready"] is True
+        assert result["timeline_phases"]["blockers"] == []
 
     def test_timeline_surfaces_block_on_stale_or_mismatched_rows(self) -> None:
         """Timeline surfaces use canonical readiness shape, not materialization presence alone."""

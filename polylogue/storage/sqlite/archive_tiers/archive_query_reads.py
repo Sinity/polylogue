@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.archive.actions.followup import ACKNOWLEDGMENT_MARKERS
 from polylogue.archive.query.metadata import COUNT_QUERY_FIELD_REGISTRY, NUMERIC_QUERY_FIELD_REGISTRY
 from polylogue.archive.query.path_prefix import escaped_sql_path_prefix_patterns
@@ -30,7 +31,6 @@ from polylogue.core.dates import parse_date
 from polylogue.core.enums import ActionResultState, ToolOutcome
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC

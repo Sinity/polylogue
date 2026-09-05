@@ -9,16 +9,16 @@ from pydantic import BaseModel
 
 from polylogue.core.json import dumps as json_dumps
 from polylogue.core.types import AttachmentId, MessageId, SessionId
-from polylogue.storage.insights.aggregate.records import (
+from polylogue.storage.derived.aggregate.records import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,
 )
-from polylogue.storage.insights.session.records import (
+from polylogue.storage.derived.session.records import (
     SessionLatencyProfileRecord,
     SessionProfileRecord,
     ThreadRecord,
 )
-from polylogue.storage.insights.timeline.records import (
+from polylogue.storage.derived.timeline.records import (
     SessionContextSnapshotRecord,
     SessionObservedEventRecord,
     SessionPhaseRecord,

@@ -27,7 +27,6 @@ from polylogue.storage.runtime import (
     SessionPhaseRecord,
     SessionProfileRecord,
     SessionWorkEventRecord,
-    ThreadRecord,
 )
 from polylogue.storage.sqlite.async_sqlite_archive import SQLiteArchiveMixin
 from polylogue.storage.sqlite.async_sqlite_raw import SQLiteRawMixin
@@ -39,9 +38,6 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes as session_insight_profiles_q,
-)
-from polylogue.storage.sqlite.queries import (
-    session_insight_thread_queries as session_insight_threads_q,
 )
 from polylogue.storage.sqlite.queries import (
     session_insight_timeline_writes as session_insight_timelines_q,
@@ -641,20 +637,6 @@ class SQLiteBackend(
                 conn,
                 session_id,
                 records,
-                self._transaction_depth,
-            )
-
-    async def replace_thread(
-        self,
-        thread_id: str,
-        record: ThreadRecord | None,
-    ) -> None:
-        """Replace one durable thread row."""
-        async with self._get_connection() as conn:
-            await session_insight_threads_q.replace_thread(
-                conn,
-                thread_id,
-                record,
                 self._transaction_depth,
             )
 

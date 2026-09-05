@@ -12,8 +12,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import tomllib
 
-from devtools import gate, required_gate, verify, verify_runs, why
+from devtools import (
+    agent_env,
+    gate,
+    required_gate,
+    verify,
+    verify_runs,
+    why,
+)
+from devtools.testmon_provision import TestmonGraphStatus
+from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     VerifyRun,
@@ -25,6 +35,26 @@ from devtools.verify_runs import (
 #: executing. These tests drive that code inline through its documented escape
 #: rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
+
+
+def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unset means the corpus width; an explicit value, ``0`` included, wins.
+
+    Anti-vacuity: reading the variable with a ``"0"`` default (the previous
+    code) makes the unset case yield ``-n 0`` and fails the first assertion;
+    ignoring the variable makes the override cases fail.
+    """
+    monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "0"
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "1")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "1"
+
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "64")
+    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
 
 
 def test_quick_steps_are_static_gates() -> None:
@@ -73,30 +103,20 @@ def test_broken_venv_script_shebang_is_typed_as_missing(monkeypatch: pytest.Monk
     assert result.diagnosis == "gate_missing_executable"
 
 
-def test_mypy_starts_a_worktree_dmypy_when_no_daemon_is_ready(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: list[list[str]] = []
-    dmypy = str(verify.ROOT / ".venv/bin/dmypy")
-
-    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-        calls.append(command)
-        return SimpleNamespace(returncode=1 if command[-1] == "status" else 0)
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    assert gate.mypy_command() == [
-        dmypy,
-        "run",
-        f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}",
-        "--",
-        "--no-error-summary",
-    ]
-    assert calls == [
-        [dmypy, "status"],
-        [dmypy, "start", f"--timeout={gate.DMYPY_IDLE_TIMEOUT_SECONDS}", "--", "--no-error-summary"],
-    ]
+def test_mypy_gate_uses_a_foreground_checkout_local_process() -> None:
+    assert gate.mypy_command() == [str(verify.ROOT / ".venv/bin/mypy")]
 
 
-def test_removed_lab_mode_is_not_accepted() -> None:
+def test_removed_lab_mode_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An ordinary caller reaches argparse for the removed option.
+
+    Anti-vacuity: if managed-agent detection remains active, ``_main`` returns
+    the agent-tier refusal before argparse and this assertion fails to protect
+    the removed-option contract.
+    """
+    monkeypatch.delenv(agent_env.AGENT_PRINCIPAL_ENV, raising=False)
+    monkeypatch.setattr(agent_env, "_inside_agent_cgroup", lambda _reader: False)
+
     with pytest.raises(SystemExit) as raised:
         verify._main(["--lab"])
 
@@ -266,6 +286,99 @@ def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyP
 
     assert verify._declared_agentctl_operation(["--quick"]) == "verify_quick"
     assert verify._declared_agentctl_operation([]) is None
+
+
+def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
+    descriptor = tomllib.loads((verify.ROOT / ".agentctl/project.toml").read_text(encoding="utf-8"))
+
+    operation = descriptor["operations"]["verify_quick"]
+    affected = descriptor["operations"]["verify_affected"]
+    complete = descriptor["operations"]["verify_all"]
+    projection = declared_verification_result(
+        {"exit_code": 0, "status": "success", "verification_scope": "non-test"},
+        operation="verify_quick",
+    )
+
+    assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
+    assert operation["exec"] == ["devtools", "verify", "--quick"]
+    assert operation["result"] == "json"
+    assert affected["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
+    assert affected["pool"] == "pytest"
+    assert affected["result"] == "pytest"
+    assert complete["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+    assert complete["checkout"] == "default"
+    assert complete["schedule"] == "*-*-* 03:17:00"
+    assert complete["pool"] == "pytest"
+    assert projection["kind"] == "polylogue.verification-result"
+    assert projection["operation"] == "verify_quick"
+
+
+def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testmon() -> None:
+    """A descriptor-only diff is bounded to descriptor contracts.
+
+    Anti-vacuity: selecting the affected mode for the descriptor or selecting
+    descriptor contracts for a Python diff makes one of the boundary checks
+    below fail.
+    """
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml"})) == "descriptor"
+    assert verify._selection_for_changes(frozenset({"polylogue/example.py"})) == "affected"
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "polylogue/example.py"})) == "affected"
+    assert verify._selection_for_changes(None) == "affected"
+
+    descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
+    assert "--testmon" not in descriptor_command
+    assert "tests" not in descriptor_command
+    assert descriptor_command[-len(verify.DESCRIPTOR_CONTRACT_TESTS) :] == list(verify.DESCRIPTOR_CONTRACT_TESTS)
+
+    affected_command = verify._pytest_steps(selection="affected", worker_args=[])[0][1]
+    assert "--testmon" in affected_command
+    assert "--testmon-forceselect" in affected_command
+    assert not any(nodeid in affected_command for nodeid in verify.DESCRIPTOR_CONTRACT_TESTS)
+
+
+def test_verify_main_routes_descriptor_diff_to_bounded_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The default verifier route applies the descriptor boundary."""
+    from devtools.agent_env import AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV
+
+    captured: dict[str, Any] = {}
+    history: dict[str, Any] = {}
+    monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({".agentctl/project.toml"}))
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    monkeypatch.setattr(
+        verify,
+        "inspect_testmon_graph",
+        lambda _root: SimpleNamespace(
+            status=TestmonGraphStatus.USABLE,
+            reason="testmon datafile present",
+            full_rerun_cause="the installed packages changed",
+        ),
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_steps(**kwargs: Any) -> list[tuple[str, list[str]]]:
+        captured.update(kwargs)
+        return [("gate lint", ["true"])]
+
+    monkeypatch.setattr(
+        verify,
+        "build_verify_steps",
+        capture_steps,
+    )
+    monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    assert verify._main([]) == 0
+    assert captured["selection"] == "descriptor"
+    assert history["pytest_aggregate"]["selection_mode"] == "descriptor"
 
 
 def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
@@ -472,7 +585,11 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
     assert result["flaky"] == ["tests/test_a.py::test_flaky"]
     assert result["still_failed"] == ["tests/test_a.py::test_red"]
     assert "-p" in reruns[0] and "no:testmon" in reruns[0]
-    assert reruns[0][-2:] == ["tests/test_a.py::test_flaky", "tests/test_a.py::test_red"]
+    # Exactly the failed tests are selected, and nothing that passed.
+    assert [arg for arg in reruns[0] if arg.startswith("tests/")] == [
+        "tests/test_a.py::test_flaky",
+        "tests/test_a.py::test_red",
+    ]
     patched = json.loads(report_path.read_text())
     by_id = {t["nodeid"]: t for t in patched["tests"]}
     assert by_id["tests/test_a.py::test_flaky"]["outcome"] == "passed"

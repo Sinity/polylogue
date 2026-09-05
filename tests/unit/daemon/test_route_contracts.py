@@ -11,7 +11,9 @@ from polylogue.daemon.http import (
     DaemonAPIHandler,
     _declared_get_routes,
     _parameterized_get_routes,
+    _ParameterizedGetRoute,
     _static_get_routes,
+    _StaticGetRoute,
     implemented_daemon_route_patterns,
     validate_declared_route_reachability,
 )
@@ -80,6 +82,33 @@ def test_declared_routes_are_generated_and_reachable_from_daemon_handler() -> No
     generated = {(route.contract.method, route.pattern) for route in _declared_get_routes()}
     declared = {(route.method, route.path) for route in DAEMON_ROUTE_DECLARATIONS}
     assert generated == declared
+
+
+def test_proof_critical_read_declarations_drive_dispatch_and_openapi() -> None:
+    """The executable read declarations remain the shared authority."""
+
+    from devtools.render_openapi import _build_openapi_document
+
+    expected = {
+        "/api/sessions": ("daemon.find.sessions", "_handle_list_sessions"),
+        "/api/status": ("daemon.status", "_handle_status"),
+        "/api/query-units": ("daemon.query.units", "_handle_query_units"),
+        "/api/sessions/:id/read": ("daemon.read.session", "_handle_get_session_read"),
+    }
+    installed: dict[str, _StaticGetRoute | _ParameterizedGetRoute] = {
+        route.pattern: route for route in _static_get_routes()
+    }
+    installed.update({route.pattern: route for route in _parameterized_get_routes()})
+    document = _build_openapi_document()
+
+    assert {declaration.path for declaration in DAEMON_ROUTE_DECLARATIONS} == set(expected)
+    for path, (declaration_id, handler_name) in expected.items():
+        declaration = daemon_route_declaration("GET", path)
+        assert declaration.kernel.declaration_id == declaration_id
+        assert installed[path].handler_name == handler_name
+        operation = document["paths"][path.replace(":id", "{session_id}")]["get"]
+        assert operation["x-polylogue-declaration"]["declaration_id"] == declaration_id
+        assert operation["x-polylogue-declaration"]["path"] == path
 
 
 def test_unreachable_generated_route_fails_the_reachability_oracle(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -226,11 +255,10 @@ def test_read_view_execution_route_is_published_as_stable_api() -> None:
     ("method", "path", "expected_pattern", "expected_kind", "expected_auth"),
     [
         ("GET", "/", "/", "browser_shell", "unauthenticated_loopback"),
-        ("GET", "/app", "/app", "browser_shell", "unauthenticated_loopback"),
         (
             "GET",
-            "/app/assets/archive-overview-deadbeef.js",
-            "/app/assets/:asset",
+            "/assets/archive-overview-deadbeef.js",
+            "/assets/:asset",
             "browser_shell",
             "unauthenticated_loopback",
         ),
@@ -335,17 +363,17 @@ def test_unknown_route_has_no_contract() -> None:
     assert route_contract_for("GET", "/api/not-a-real-route") is None
 
 
-@pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
+@pytest.mark.parametrize("path", ["/", "/s/codex-session:abc", "/p", "/a"])
 def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
     """Local browser bootstrap remains frictionless on loopback."""
 
     handler = _make_handler("GET", path)
     send_error, _ = capture_responses(handler)
-    handler._serve_web_shell = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = lambda: None  # type: ignore[method-assign]
     handler._serve_webui_session_read = lambda session_id: None  # type: ignore[method-assign]
-    handler._serve_paste_browser_page = lambda: None  # type: ignore[method-assign]
-    handler._serve_attachment_library_page = lambda: None  # type: ignore[method-assign]
+    handler._serve_webui_workspace = lambda mode, params: None  # type: ignore[method-assign]
+    handler._serve_webui_pastes = lambda params: None  # type: ignore[method-assign]
+    handler._serve_webui_attachments = lambda params: None  # type: ignore[method-assign]
 
     handler.do_GET()
 
@@ -353,7 +381,7 @@ def test_browser_bootstrap_is_unauthenticated_on_loopback(path: str) -> None:
         assert call.args[0] != HTTPStatus.UNAUTHORIZED
 
 
-@pytest.mark.parametrize("path", ["/", "/app", "/s/codex-session:abc", "/p", "/a"])
+@pytest.mark.parametrize("path", ["/", "/s/codex-session:abc", "/p", "/a"])
 def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     """Remote-bound shell bootstrap must not bypass the daemon token."""
 
@@ -375,7 +403,6 @@ def test_shell_bootstrap_requires_token_on_non_loopback(path: str) -> None:
     ("path", "expected"),
     [
         ("/", "archive"),
-        ("/app", "archive"),
         ("/sessions", "list"),
         ("/sessions/codex-session:abc", "read"),
         ("/s/codex-session:abc", "read"),
@@ -387,7 +414,6 @@ def test_canonical_browser_routes_enter_typed_webui_handlers(path: str, expected
 
     handler = _make_handler("GET", path)
     handler._check_shell_bootstrap_access = lambda: True  # type: ignore[method-assign]
-    handler._serve_web_shell = MagicMock()  # type: ignore[method-assign]
     handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
     handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
     handler._serve_webui_session_read = MagicMock()  # type: ignore[method-assign]
@@ -402,4 +428,3 @@ def test_canonical_browser_routes_enter_typed_webui_handlers(path: str, expected
         "search": handler._serve_webui_search,
     }[expected]
     typed.assert_called_once()
-    handler._serve_web_shell.assert_not_called()

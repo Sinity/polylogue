@@ -6,7 +6,7 @@ from pathlib import Path
 from polylogue.archive.models import Session
 from polylogue.archive.session.session_profile import build_session_analysis, build_session_profile
 from polylogue.core.enums import Provider
-from polylogue.storage.insights.session.timeline_rows import (
+from polylogue.storage.derived.session.timeline_rows import (
     build_session_phase_records,
     build_session_work_event_records,
     hydrate_session_phase,

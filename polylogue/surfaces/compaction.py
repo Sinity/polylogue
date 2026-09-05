@@ -14,8 +14,8 @@ from typing import Literal, cast
 
 from pydantic import Field
 
+from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.refs import EvidenceRef
-from polylogue.insights.archive_models import ArchiveInsightModel
 
 DropReason = Literal[
     "filtered_material_origin",

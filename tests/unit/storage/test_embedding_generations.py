@@ -370,3 +370,39 @@ def test_receipt_root_identity_is_authenticated(tmp_path: Path) -> None:
     receipt_path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(EmbeddingGenerationError, match="malformed embedding retention receipt"):
         store.load_receipt(receipt_path.stem)
+
+
+def _meta_row(conn: sqlite3.Connection, address: bytes, *, model: str, recipe: bytes) -> None:
+    conn.execute(
+        "INSERT INTO message_embeddings_meta (vector_derivation_hash, model, dimension, embedded_at_ms, "
+        "recipe_hash, output_contract_hash) VALUES (?, ?, 1024, 0, ?, ?)",
+        (address, model, recipe, b"\x07" * 32),
+    )
+
+
+def test_membership_accepts_mixed_recipe_labels_but_not_mixed_models(tmp_path: Path) -> None:
+    """Vectors carried across a reindex keep their old recipe label beside new ones.
+
+    Anti-vacuity: restoring the recipe-uniformity check makes the first
+    ``replace`` raise; dropping the model check makes the second one pass.
+    """
+    store = EmbeddingGenerationStore(tmp_path)
+    mixed_labels = tmp_path / "mixed-labels.db"
+    initialize_archive_database(mixed_labels, ArchiveTier.EMBEDDINGS)
+    with sqlite3.connect(mixed_labels) as conn:
+        _meta_row(conn, b"\x01" * 32, model="voyage-4", recipe=b"\x0a" * 32)
+        _meta_row(conn, b"\x02" * 32, model="voyage-4", recipe=b"\x0b" * 32)
+    store.replace(mixed_labels)
+    metadata_path = next((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["recipe_hash"] not in {(b"\x0a" * 32).hex(), (b"\x0b" * 32).hex()}
+    assert len(payload["recipe_hash"]) == 64
+    store.collect()
+
+    mixed_models = tmp_path / "mixed-models.db"
+    initialize_archive_database(mixed_models, ArchiveTier.EMBEDDINGS)
+    with sqlite3.connect(mixed_models) as conn:
+        _meta_row(conn, b"\x01" * 32, model="voyage-4", recipe=b"\x0a" * 32)
+        _meta_row(conn, b"\x02" * 32, model="voyage-4-lite", recipe=b"\x0a" * 32)
+    with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
+        store.replace(mixed_models)

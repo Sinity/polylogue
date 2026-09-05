@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.migration_runner import (
     validate_migration_backup_live_fingerprint,
     validate_migration_backup_manifest,
 )
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 TOOL_VERSION = "blob-ref-liveness-reconciliation-v1"
 BATCH_SIZE = 1_000
@@ -147,11 +148,9 @@ def _offline_apply_block_reason(archive_root: Path) -> str | None:
 
 def _checkpoint_source_db(conn: sqlite3.Connection) -> None:
     try:
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        row = checkpoint_connection(conn, "TRUNCATE")
     except sqlite3.Error as exc:
         raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation") from exc
-    if row is None or len(row) != 3:
-        raise BlobRefLivenessReconciliationError("could not checkpoint source.db before backup validation")
     busy, log_frames, checkpointed_frames = (int(value) for value in row)
     if busy != 0 or log_frames != checkpointed_frames:
         raise BlobRefLivenessReconciliationError(

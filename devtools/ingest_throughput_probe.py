@@ -1,9 +1,6 @@
 """Comprehensive ingest instrument: time, CPU, memory, I/O, SQLite, stages.
 
-The sibling ``devtools bench ingest-amplification`` probe measures *bytes
-written* per archive tier — a deterministic, host-independent quantity.  It does
-not measure *time* or runtime resource cost.  This probe is the missing runtime
-counterpart: it drives a real archive write path (the full ``parse_sources_archive``
+This probe drives a real archive write path (the full ``parse_sources_archive``
 pipeline for the corpus workload, or a single open ``ArchiveStore`` for the
 lineage workload — both using the WAL write profile) over a deterministic
 synthetic workload and captures, per run:

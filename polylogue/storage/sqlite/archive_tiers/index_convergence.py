@@ -12,7 +12,7 @@ The ops tier already proved this pattern (``bootstrap.py``'s
 same-version open, zero bumps ever). This module extends the regime to the
 index tier with a narrow, explicitly registered statement list rather than a
 blanket DDL re-exec, so each entry can be policy-checked
-(``devtools gate schema-versioning``) for the three properties that make
+(``devtools verify schema-manifest``) for the three properties that make
 it safe to apply on every open of an already-populated, same-version archive:
 
 - **Idempotent**: ``CREATE TABLE IF NOT EXISTS`` / ``CREATE INDEX IF NOT
@@ -56,9 +56,9 @@ import aiosqlite
 class BenignDDLEntry:
     """One registered idempotent, data-non-transforming DDL statement.
 
-    ``devtools gate schema-versioning`` validates every registry entry's
+    ``devtools verify schema-manifest`` validates every registry entry's
     ``sql`` against the allowed idempotent-DDL shapes; see
-    ``devtools/verify_schema_upgrade_lane.py``.
+    canonical schema manifest.
     """
 
     name: str
@@ -115,6 +115,15 @@ INDEX_BENIGN_DDL_REGISTRY: tuple[BenignDDLEntry, ...] = (
             "(INDEX_SCHEMA_VERSION v61's CONSTRAINT_ONLY delta). The "
             "session_profiles pricing mirrors are removed by the later "
             "canonical-cost semantic rebuild."
+        ),
+    ),
+    BenignDDLEntry(
+        name="drop_agent_meta_sidecar_purge_receipts",
+        sql="DROP TABLE IF EXISTS agent_meta_sidecar_purge_receipts",
+        reason=(
+            "polylogue-ioz7: retired one-off sidecar purge receipt. The "
+            "actuator and every production consumer were removed; the "
+            "receipt is not derived domain state and has no successor."
         ),
     ),
 )

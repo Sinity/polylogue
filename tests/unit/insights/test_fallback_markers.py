@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.fallback import FallbackReason
+from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
 from polylogue.api import Polylogue
-from polylogue.insights.fallback import FallbackReason
-from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
-from polylogue.storage.insights.session.profiles import (
+from polylogue.storage.derived.session.profiles import (
     enrichment_fallback_reasons,
     profile_inference_fallback_reasons,
     profile_inference_payload,
@@ -139,7 +139,6 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
     )
 
     profile = next(entry for entry in report.insights if entry.insight_name == "session_profiles")
-    assert profile.verdict == "degraded"
     assert profile.degraded_count == 1
     # The seeded session materializes weak work-events and tool-less
     # phases; the taxonomy surfaces those reasons explicitly.
@@ -148,30 +147,6 @@ async def test_readiness_report_classifies_fallback_rows_as_degraded(
     assert any("degraded=1" in line for line in profile.evidence)
     assert any("fallback_reason=" in line for line in profile.evidence)
 
-    # Aggregate verdict promotes the worst entry; here both profiles and
-    # enrichments are degraded but nothing is incompatible/stale/partial.
-    assert report.aggregate_verdict == "degraded"
-
-
-@pytest.mark.asyncio
-async def test_readiness_verdict_precedence_incompatible_outranks_degraded(
-    cli_workspace: dict[str, Path],
-) -> None:
-    import sqlite3
-
-    db_path = cli_workspace["db_path"]
-    _seed_degraded_session(db_path)
-    archive_seed = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    await archive_seed.rebuild_insights()
-    await archive_seed.close()
-    # Force an incompatible materializer version on the archive provenance row
-    # so the row is both degraded and incompatible.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute("UPDATE insight_materialization SET materializer_version = 0")
-        conn.commit()
-
-    archive = Polylogue(archive_root=cli_workspace["archive_root"], db_path=db_path)
-    report = await archive.insight_readiness_report(InsightReadinessQuery(insights=("session_profiles",)))
-    profile = next(entry for entry in report.insights if entry.insight_name == "session_profiles")
-    assert profile.verdict == "incompatible"
-    assert profile.degraded_count == 1  # marker still recorded
+    # Fallback markers describe row quality, not divergence: the rows still
+    # reflect the sources they were built from.
+    assert not profile.diverged

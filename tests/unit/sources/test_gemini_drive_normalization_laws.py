@@ -8,6 +8,7 @@ literal assertions, not values projected back out of the input fixture.
 
 from __future__ import annotations
 
+import hashlib
 from copy import deepcopy
 
 from polylogue.archive.message.roles import Role
@@ -309,7 +310,14 @@ def test_ai_studio_normalizes_identity_authorship_config_blocks_artifacts_usage_
         for block in code.blocks
         if block.type is BlockType.DOCUMENT and block.metadata and "inlineData" in block.metadata
     )
-    assert inline_part.metadata == {"inlineData": {"mimeType": "image/png"}}
+    # Bytes never reach block metadata; a digest of the stripped payload does,
+    # so media-only turns with different content stay distinguishable.
+    assert inline_part.metadata == {
+        "inlineData": {
+            "mimeType": "image/png",
+            "dataSha256": hashlib.sha256(b"cGFydA==").hexdigest(),
+        }
+    }
     linked_part = next(
         block
         for block in code.blocks

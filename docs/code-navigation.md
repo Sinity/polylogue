@@ -32,7 +32,7 @@ archive-domain semantics and rebuildable projections
         │   polylogue/archive/ + index.db
         ▼
 derived read models and convergence
-        │   polylogue/insights/ + polylogue/daemon/convergence*.py
+        │   polylogue/analysis/ + polylogue/daemon/convergence*.py
         ▼
 CLI / API / MCP / HTTP / rendering surfaces
 ```
@@ -77,11 +77,11 @@ entire package tree:
 | Add or change a provider/origin route | `sources/origin_specs.py`, `sources/dispatch.py`, and the owning parser | schema/package evidence, positive and collision-negative fixtures, production ingest test | a CLI switch or filename-only detector |
 | Change durable source evidence | `storage/sqlite/archive_tiers/source.py` and `source_write.py` | additive source migration, backup-gated migration proof, source-authority tests | direct SQL in `pipeline/`, `daemon/`, or `maintenance/` |
 | Change normalized session meaning or identity | owning parser plus `archive/` and `pipeline/ids.py` when hashes change | eager/streaming/replay equivalence, semantic fingerprint decision, candidate rebuild impact | a post-hoc repair that rewrites index rows |
-| Change rebuildable index schema | `storage/sqlite/archive_tiers/index.py` and `storage/sqlite/lifecycle.py` | declared delta class, candidate/rebuild tests, generated schema docs | a durable migration chain |
+| Change rebuildable index schema | `storage/sqlite/archive_tiers/index.py` and `storage/sqlite/schema_manifest.py` | manifest check, rebuild tests, generated schema docs | a durable migration chain |
 | Change query semantics | `archive/query/` | SQL lowering and in-memory parity, discovery/reference regeneration, public result tests | bespoke CLI- or MCP-only filtering |
 | Add a reusable operator workflow | `operations/` | operation declaration, ownership/authorization, thin CLI/API/MCP adapters | a large command handler that owns domain logic |
 | Detect or repair violated invariants | `maintenance/` over typed `storage/` primitives | dry-run-first behavior, backup/ownership boundary, immutable receipt, red twin | the primary ingest/write path |
-| Add a materialized derived read model | `insights/` plus `storage/insights/` | convergence stage, staleness model, rebuild and public-read tests | an ad hoc table queried only by one surface |
+| Add a materialized derived read model | `insights/` plus `storage/derived/` | convergence stage, staleness model, rebuild and public-read tests | an ad hoc table queried only by one surface |
 | Add a public payload or affordance | the owning surface package, such as `mcp/payloads.py`, then the relevant adapter | CLI/API/MCP/HTTP parity or an explicit structured exclusion | provider-specific dicts assembled independently per surface |
 | Add a daemon loop | `daemon/` | ownership, bounded work, backoff, health/status evidence, interruption test | an unbounded background task with no convergence state |
 | Add a cross-cutting shared type | `core/` only when it has no I/O and three or more otherwise-unrelated packages consume it | import-layer check and focused type tests | a new top-level package or loose module |
@@ -195,7 +195,7 @@ registry or declaration, not the rendered output.
 | --- | --- |
 | Documentation navigation | `devtools render docs-surface --check` |
 | Package/import boundary | `devtools gate layering` |
-| Durable or derived schema | `devtools gate schema-versioning` plus the owning migration/rebuild tests |
+| Durable or derived schema | `devtools verify schema-manifest` plus the owning migration/rebuild tests |
 | CLI/API/MCP contract | owning focused tests plus generated reference checks |
 | Archive invariant or maintenance route | red-twin test, real command dispatch, and receipt validation |
 | Parser or identity semantics | provider fixture, eager/streaming/replay equivalence, and content-hash/fingerprint tests |

@@ -6,66 +6,15 @@ import aiosqlite
 
 from polylogue.core.enums import Provider
 from polylogue.storage.runtime import SessionRecord
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import SESSIONS_SPEC
 from polylogue.storage.sqlite.queries.filter_builder import _build_session_filters, _needs_stats_join
 from polylogue.storage.sqlite.queries.mappers import _row_to_session
 
-_SESSION_RECORD_SELECT = """
-    session_id,
-    native_id,
-    origin,
-    title,
-    session_kind,
-    datetime(created_at_ms / 1000, 'unixepoch') AS created_at,
-    datetime(updated_at_ms / 1000, 'unixepoch') AS updated_at,
-    sort_key_ms / 1000.0 AS sort_key,
-    lower(hex(content_hash)) AS content_hash,
-    '{}' AS metadata,
-    1 AS version,
-    parent_session_id,
-    branch_type,
-    raw_id,
-    (SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = sessions.session_id ORDER BY position) AS working_directories_json,
-    git_branch,
-    git_repository_url,
-    provider_project_ref,
-    display_name,
-    run_settings_json,
-    pending_drafts_json,
-    reported_cost_usd
-"""
+_SESSION_RECORD_SELECT = SESSIONS_SPEC.record_select_column_names("sessions")
 
 
 def _session_record_select(alias: str | None = None) -> str:
-    prefix = f"{alias}." if alias else ""
-    session_id_expr = f"{prefix}session_id" if prefix else "sessions.session_id"
-    cwd_expr = (
-        "SELECT json_group_array(path) FROM session_working_dirs swd "
-        f"WHERE swd.session_id = {session_id_expr} ORDER BY position"
-    )
-    return f"""
-    {prefix}session_id AS session_id,
-    {prefix}native_id AS native_id,
-    {prefix}origin AS origin,
-    {prefix}title AS title,
-    {prefix}session_kind AS session_kind,
-    datetime({prefix}created_at_ms / 1000, 'unixepoch') AS created_at,
-    datetime({prefix}updated_at_ms / 1000, 'unixepoch') AS updated_at,
-    {prefix}sort_key_ms / 1000.0 AS sort_key,
-    lower(hex({prefix}content_hash)) AS content_hash,
-    '{{}}' AS metadata,
-    1 AS version,
-    {prefix}parent_session_id AS parent_session_id,
-    {prefix}branch_type AS branch_type,
-    {prefix}raw_id AS raw_id,
-    ({cwd_expr}) AS working_directories_json,
-    {prefix}git_branch AS git_branch,
-    {prefix}git_repository_url AS git_repository_url,
-    {prefix}provider_project_ref AS provider_project_ref,
-    {prefix}display_name AS display_name,
-    {prefix}run_settings_json AS run_settings_json,
-    {prefix}pending_drafts_json AS pending_drafts_json,
-    {prefix}reported_cost_usd AS reported_cost_usd
-    """
+    return SESSIONS_SPEC.record_select_column_names(alias or "sessions")
 
 
 def _native_id_candidates(session_id: str) -> tuple[str, ...]:

@@ -29,7 +29,7 @@ apart silently:
   (``polylogue/storage/sqlite/archive_tiers/index.py``,
   ``polylogue/storage/fts/fts_lifecycle.py``, ``polylogue/storage/fts/sql.py``)
   so write-side folding does not depend on every connection that fires a
-  ``blocks``/``threads``/``session_work_events`` trigger having registered a
+  ``blocks``/``session_work_events`` trigger having registered a
   custom function first -- SQLite trigger bodies execute using whichever
   connection performs the write, including test/tooling connections that
   never call :func:`register_pl_fold`.

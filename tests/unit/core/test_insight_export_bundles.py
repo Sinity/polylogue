@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from polylogue.api import Polylogue
-from polylogue.insights.export_bundles import InsightExportBundleError, InsightExportBundleRequest
 from tests.infra.storage_records import SessionBuilder
 
 
@@ -160,7 +160,9 @@ async def test_insight_export_bundle_records_stale_readiness(cli_workspace: dict
     coverage = _json_file(target / "coverage.json")
     coverage_products = coverage["insights"]
     assert isinstance(coverage_products, list)
-    assert coverage_products[0]["verdict"] == "stale"
+    # Serialized coverage carries the divergence facts, not a verdict label.
+    assert coverage_products[0]["table_present"] is True
+    assert coverage_products[0]["stale_count"] >= 1
     manifest = _json_file(target / "manifest.json")
     manifest_products = manifest["insights"]
     assert isinstance(manifest_products, list)

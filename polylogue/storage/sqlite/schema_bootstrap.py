@@ -113,6 +113,20 @@ def stamp_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
     )
 
 
+def ensure_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
+    """Adopt an unstamped derived tier, then reject a stale stamp."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, read_schema_identity
+
+    derived_tier = DerivedTier(tier)
+    identity_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'"
+    ).fetchone()
+    found = read_schema_identity(conn, derived_tier) if identity_table is not None else None
+    if found is None:
+        stamp_derived_schema_identity(conn, tier)
+    assert_derived_schema_identity(conn, tier)
+
+
 async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier: str) -> None:
     """Async counterpart to :func:`assert_derived_schema_identity`."""
     from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
@@ -129,6 +143,30 @@ async def assert_derived_schema_identity_async(conn: aiosqlite.Connection, tier:
     found = None if row is None else str(row[0])
     if found != expected:
         raise SchemaSkew(tier, expected, found)
+
+
+async def ensure_derived_schema_identity_async(conn: aiosqlite.Connection, tier: str) -> None:
+    """Async counterpart to :func:`ensure_derived_schema_identity`."""
+    from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
+
+    derived_tier = DerivedTier(tier)
+    cursor = await conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'")
+    identity_table = await cursor.fetchone()
+    found = None
+    if identity_table is not None:
+        cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (tier,))
+        row = await cursor.fetchone()
+        found = None if row is None else str(row[0])
+    if found is None:
+        from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+        await conn.executescript(DERIVED_SCHEMA_META_DDL)
+        await conn.execute(
+            "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
+            "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",
+            (tier, derived_schema_identity(derived_tier)),
+        )
+    await assert_derived_schema_identity_async(conn, tier)
 
 
 def capture_schema_snapshot(conn: sqlite3.Connection) -> SchemaSnapshot:
@@ -156,10 +194,10 @@ async def ensure_vec0_table_async(conn: aiosqlite.Connection) -> None:
 # ~470K-block index (2026-07-19) and rounded. A freshly bootstrapped database
 # has no sqlite_stat1, and without it the planner prefers low-cardinality
 # equality indexes (idx_blocks_type_tool: ~100K rows/key) over session-scoped
-# ones (idx_blocks_session_position: ~350 rows/key) for writer-hot queries like
-# action_pairs_refresh_sql — turning per-session maintenance into full
-# tool_use-population scans that grow with archive size (O(N^2) over a bulk
-# rebuild; measured >20x replay slowdown before ANALYZE). Seeding stat1 at
+# ones (idx_blocks_session_position: ~350 rows/key) for writer-hot session
+# queries, turning replacements into full tool-use population scans that grow
+# with archive size (O(N^2) over a bulk rebuild; measured >20x replay slowdown
+# before ANALYZE). Seeding stat1 at
 # bootstrap makes plans correct from the first write; later ANALYZE / PRAGMA
 # optimize passes replace these rows with measured values. Only relative
 # magnitudes matter here.
@@ -187,14 +225,7 @@ INSERT OR REPLACE INTO sqlite_stat1(tbl, idx, stat) VALUES
   ('messages', 'idx_messages_active_path', '500000 350 350 1'),
   ('messages', 'idx_messages_active_leaf', '1500 1 1'),
   ('messages', 'sqlite_autoindex_messages_1', '500000 1'),
-  ('messages', 'sqlite_autoindex_messages_2', '500000 350 1 1'),
-  ('action_pairs', 'idx_action_pairs_session_order', '190000 140 1 1'),
-  ('action_pairs', 'idx_action_pairs_message', '190000 1'),
-  ('action_pairs', 'idx_action_pairs_tool', '190000 1600 35 1'),
-  ('action_pairs', 'idx_action_pairs_semantic', '190000 19000 35 1'),
-  ('action_pairs', 'idx_action_pairs_path', '33000 6 3 1'),
-  ('action_pairs', 'idx_action_pairs_outcome', '50000 25000 6000 26 1'),
-  ('action_pairs', 'sqlite_autoindex_action_pairs_1', '190000 1');
+  ('messages', 'sqlite_autoindex_messages_2', '500000 350 1 1');
 ANALYZE sqlite_master;
 """
 
@@ -212,6 +243,8 @@ __all__ = [
     "decide_schema_bootstrap",
     "assert_derived_schema_identity",
     "assert_derived_schema_identity_async",
+    "ensure_derived_schema_identity",
+    "ensure_derived_schema_identity_async",
     "stamp_derived_schema_identity",
     "ensure_vec0_table",
     "ensure_vec0_table_async",

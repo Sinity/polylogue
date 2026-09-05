@@ -78,7 +78,14 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
 
     assert by_ref["source:column:raw_unknown_export_reclassification_receipts.raw_id"].disposition == "PURGE"
     assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
-    assert by_ref["index:column:threads.dominant_repo_id"].disposition == "PURGE"
+    assert by_ref["index:view:threads"].disposition == "DERIVE"
+    assert by_ref["index:table:action_pairs"].implementation_bead == "polylogue-avlt5"
+    assert {
+        by_ref[f"index:view:{name}"].disposition for name in ("threads", "thread_sessions", "session_tag_rollups")
+    } == {"DERIVE"}
+    assert by_ref["index:table:action_pairs"].disposition == "KEEP"
+    assert by_ref["index:table:delegation_facts"].disposition == "KEEP"
+    assert all(f"index:table:{name}" not in by_ref for name in ("threads", "thread_sessions", "session_tag_rollups"))
     assert by_ref["user:table:holdout_access_receipts"].disposition == "COMPLETE"
     assert all(row.semantic_owner and row.implementation_bead for row in rows)
 

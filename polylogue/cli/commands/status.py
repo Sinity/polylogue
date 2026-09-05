@@ -18,6 +18,7 @@ from polylogue.cli.shared.types import AppEnv
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.daemon.convergence_debt_status import ConvergenceDebtSummary
@@ -32,7 +33,7 @@ def convergence_debt_summary_info(*args: Any, **kwargs: Any) -> Any:
 
 
 def schema_drift_status(*args: Any, **kwargs: Any) -> Any:
-    from polylogue.insights.schema_drift import schema_drift_status as implementation
+    from polylogue.analysis.schema_drift import schema_drift_status as implementation
 
     return implementation(*args, **kwargs)
 
@@ -202,9 +203,10 @@ def _daemon_live(daemon_url: str, *, timeout: float) -> bool:
 
 
 def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
-    """Fetch a typed daemon operation without a health/probe round trip."""
+    """Fetch one typed daemon operation without a health/probe round trip."""
 
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import OperationKernel, OperationKernelError, OperationRequest
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.version import POLYLOGUE_VERSION
@@ -217,16 +219,74 @@ def _fetch_uds_operation(config: Any, operation: str) -> dict[str, Any] | None:
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    envelope = client.operation(
-        operation,
-        {},
-        archive_root=str(config.archive_root),
-        daemon_version=POLYLOGUE_VERSION,
-    )
-    if envelope is None or envelope.get("error") is not None:
+    try:
+        result = OperationKernel(
+            lambda request: client.operation(
+                request.operation,
+                dict(request.payload),
+                archive_root=str(config.archive_root),
+                daemon_version=POLYLOGUE_VERSION,
+            )
+        ).execute(OperationRequest(operation, {}))
+    except OperationKernelError:
         return None
-    result = envelope.get("result")
-    return result if isinstance(result, dict) else None
+    return result.value if isinstance(result.value, dict) else None
+
+
+def _status_operation_result(
+    env: AppEnv, *, daemon_url: str | None = None, include_archive_readiness: bool = False
+) -> Any:
+    """Execute status once through the operation kernel for every authority."""
+    from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import OperationKernel, OperationRequest
+    from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.daemon.api_auth import resolve_api_auth_token
+    from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.version import POLYLOGUE_VERSION
+
+    config = load_effective_config(env) if daemon_url in (None, _BUILTIN_DAEMON_URL) else None
+    client = (
+        DaemonClient(
+            daemon_socket_path(config.archive_root),
+            timeout_s=_FULL_TIMEOUT_S,
+            auth_token=resolve_api_auth_token(
+                getattr(config, "api_auth_token", None),
+                allow_no_auth=getattr(config, "api_allow_no_auth", False),
+            ),
+        )
+        if config is not None
+        else None
+    )
+    request = OperationRequest("status", {"include_archive_readiness": include_archive_readiness})
+
+    def daemon_call(lowered: Any) -> Any:
+        if daemon_url is None or daemon_url == _BUILTIN_DAEMON_URL:
+            assert config is not None and client is not None
+            return client.operation(
+                lowered.operation,
+                dict(lowered.payload),
+                archive_root=str(config.archive_root),
+                daemon_version=POLYLOGUE_VERSION,
+            )
+        for candidate in _candidate_daemon_urls(daemon_url):
+            try:
+                request = Request(f"{candidate}/api/status", headers={"Accept": "application/json"}, method="GET")
+                with urlopen(request, timeout=_FULL_TIMEOUT_S) as response:
+                    value = json.loads(response.read())
+                return {"operation": lowered.operation, "result": value, "authority": {"mode": "daemon"}}
+            except (OSError, TimeoutError, ValueError):
+                continue
+        return None
+
+    return OperationKernel(
+        daemon_call,
+        lambda _lowered: _show_direct_json(
+            env,
+            full=True,
+            include_archive_readiness=include_archive_readiness,
+            emit=False,
+        ),
+    ).execute(request)
 
 
 def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
@@ -373,7 +433,6 @@ _ARCHIVE_TIER_TABLES: dict[str, tuple[str, ...]] = {
         "session_phases",
         "threads",
         "thread_sessions",
-        "insight_materialization",
     ),
     # message_embeddings_meta/message_embeddings are content-addressed and
     # deduped (polylogue-q88p); message_embedding_refs is the per-message
@@ -433,7 +492,7 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
         return status
 
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, timeout_class="interactive-read")
         try:
             counts, precision = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=probe.size_bytes)
             status["table_counts"] = counts
@@ -539,7 +598,7 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
         total_wal_bytes += int(tier_status["wal_bytes"])
         if path.exists():
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                conn = open_readonly_connection(path, timeout_class="interactive-read")
                 try:
                     stat_rows = _sqlite_stat1_rows(conn)
                 finally:
@@ -619,7 +678,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
         if not source_db.exists():
             return -1
         try:
-            source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
             try:
                 if not _table_exists(source_conn, table):
                     return -1
@@ -639,7 +698,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
     if not source_db.exists():
         return -1
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
         try:
             if not _table_exists(source_conn, table):
                 return -1
@@ -671,7 +730,7 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     if not ops_db.exists():
         return {"available": False, "reason": "missing_ops_tier"}
     try:
-        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(ops_db, timeout_class="interactive-read")
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
     try:
@@ -932,66 +991,44 @@ def status_command(
         route="cli.status",
         verb="full" if full_payload else "compact",
     ) as obs:
-        if daemon_url == _BUILTIN_DAEMON_URL:
-            try:
-                from polylogue.cli.shared.helpers import load_effective_config
-
-                result = _fetch_uds_operation(load_effective_config(env), "status")
-            except Exception:
-                result = None
-            if result is not None:
-                obs.attributes["daemon_reachable"] = True
-                obs.daemon_path = "daemon"
-                if output_format == "json":
-                    status_ok = _show_status_json(env, result, full=full_payload)
-                else:
-                    status_ok = _show_daemon_status(env, result)
-                if not status_ok:
-                    raise click.exceptions.Exit(1)
-                return
-        candidate_urls = _candidate_daemon_urls(daemon_url)
-        for candidate_url in candidate_urls:
-            try:
-                req = Request(
-                    f"{candidate_url}/api/status",
-                    headers={"Accept": "application/json"},
-                    method="GET",
-                )
-                with urlopen(req, timeout=_FULL_TIMEOUT_S) as resp:
-                    result = json.loads(resp.read())
-            except (OSError, ValueError):
-                # ValueError covers malformed URLs (urllib raises before any I/O).
-                continue
-            obs.attributes["daemon_reachable"] = True
-            obs.daemon_path = "daemon"
+        try:
+            operation_result = _status_operation_result(
+                env,
+                daemon_url=daemon_url,
+                include_archive_readiness=exact_archive_readiness,
+            )
+        except Exception:
+            operation_result = None
+        if operation_result is None:
+            obs.attributes["daemon_reachable"] = False
+            obs.daemon_path = "direct"
             if output_format == "json":
-                status_ok = _show_status_json(env, result, full=full_payload)
-            else:
-                status_ok = _show_daemon_status(env, result)
-            if not status_ok:
-                raise click.exceptions.Exit(1)
-            return
-
-        obs.attributes["daemon_reachable"] = False
-        obs.daemon_path = "direct"
-        if output_format == "json":
-            if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
-                obs.status = "degraded"
-                _show_daemon_status_unavailable_json(env)
-                raise click.exceptions.Exit(1)
-            else:
                 status_ok = _show_direct_json(env, full=full_payload, include_archive_readiness=exact_archive_readiness)
-                if not status_ok:
-                    raise click.exceptions.Exit(1)
-        else:
-            if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
-                obs.status = "degraded"
-                _show_daemon_status_unavailable(env)
-                raise click.exceptions.Exit(1)
             else:
                 status_ok = _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
-                if not status_ok:
-                    raise click.exceptions.Exit(1)
+        else:
+            mode = operation_result.authority.get("mode")
+            obs.attributes["daemon_reachable"] = mode == "daemon"
+            obs.daemon_path = str(mode)
+            status = operation_result.value
+            if mode == "direct":
+                status_ok = (
+                    _show_direct_json(
+                        env,
+                        full=full_payload,
+                        include_archive_readiness=exact_archive_readiness,
+                    )
+                    if output_format == "json"
+                    else _show_direct_status(env, include_archive_readiness=exact_archive_readiness)
+                )
+            else:
+                status_ok = (
+                    _show_status_json(env, status, full=full_payload)
+                    if output_format == "json"
+                    else _show_daemon_status(env, status)
+                )
+        if not status_ok:
+            raise click.exceptions.Exit(1)
     return
 
 
@@ -1001,36 +1038,18 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     Called from ``polylogue`` with no args. Uses a short HTTP timeout
     and bounded SQLite queries to stay under 2 seconds.
     """
-    resolved_url = daemon_url if daemon_url is not None else _default_daemon_url()
-    if resolved_url == _BUILTIN_DAEMON_URL:
-        try:
-            from polylogue.cli.shared.helpers import load_effective_config
+    del daemon_url
+    from polylogue.cli.operation_kernel import OperationKernelError
 
-            result = _fetch_uds_operation(load_effective_config(env), "status")
-        except Exception:
-            result = None
-        if result is not None:
-            _show_daemon_status(env, result, compact=True)
-            return
-    candidate_urls = _candidate_daemon_urls(resolved_url)
-    for candidate_url in candidate_urls:
-        try:
-            req = Request(
-                f"{candidate_url}/api/status",
-                headers={"Accept": "application/json"},
-                method="GET",
-            )
-            with urlopen(req, timeout=_FAST_TIMEOUT_S) as resp:
-                result = json.loads(resp.read())
-        except (OSError, ValueError):
-            continue
-        _show_daemon_status(env, result, compact=True)
-        return
-
-    if any(_daemon_live(url, timeout=_FAST_TIMEOUT_S) for url in candidate_urls):
-        _show_daemon_status_unavailable(env, compact=True)
-    else:
+    try:
+        result = _status_operation_result(env)
+    except OperationKernelError:
         _show_direct_status(env, compact=True)
+        return
+    if result.authority.get("mode") == "direct":
+        _show_direct_status(env, compact=True)
+    else:
+        _show_daemon_status(env, result.value, compact=True)
 
 
 def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = False) -> bool:
@@ -1160,8 +1179,13 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
 
 def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> bool:
     """Machine-readable JSON status output."""
-    normalized = normalize_raw_frontier_status_payload(status, require_fresh_snapshot=True)
-    payload = normalized if full else _compact_status_payload(normalized, source="daemon")
+    source = "direct" if status.get("daemon_liveness") is False else "daemon"
+    normalized = normalize_raw_frontier_status_payload(
+        status,
+        snapshot_state="live" if source == "direct" else None,
+        require_fresh_snapshot=source == "daemon",
+    )
+    payload = normalized if full else _compact_status_payload(normalized, source=source)
     env.ui.console.print(json.dumps(payload, indent=2, default=str))
     return _status_ok(normalized, require_fresh_snapshot=True)
 
@@ -1500,7 +1524,8 @@ def _show_direct_json(
     *,
     full: bool = False,
     include_archive_readiness: bool = False,
-) -> bool:
+    emit: bool = True,
+) -> bool | dict[str, Any]:
     """Machine-readable JSON fallback when daemon is not running."""
     from polylogue.cli.commands.init import starter_config_path
     from polylogue.cli.commands.status_diagnostics import (
@@ -1611,8 +1636,10 @@ def _show_direct_json(
         if full or include_archive_readiness
         else _compact_status_payload(normalized_payload, source="direct")
     )
-    env.ui.console.print(json.dumps(output, indent=2, default=str))
-    return _status_ok(normalized_payload)
+    if emit:
+        env.ui.console.print(json.dumps(output, indent=2, default=str))
+        return _status_ok(normalized_payload)
+    return cast(dict[str, Any], normalized_payload)
 
 
 def _component_computation_failure(component: str, exc: Exception, *, scope: str = "archive") -> dict[str, Any]:
@@ -1857,7 +1884,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
         return component_from_assertion_substrate(table_exists=False).to_dict()
 
     try:
-        conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(user_db, timeout_class="interactive-read")
         try:
             table_exists = _table_exists(conn, "assertions")
             if not table_exists:
@@ -1884,7 +1911,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
 
 
 def _direct_transform_component(archive_readiness: dict[str, Any] | None) -> dict[str, Any]:
-    from polylogue.insights.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
+    from polylogue.analysis.transforms import SESSION_DIGEST_TRANSFORM_VERSION, TRANSFORM_REGISTRY
     from polylogue.readiness.capability import (
         CapabilityReadinessState,
         ComponentReadiness,

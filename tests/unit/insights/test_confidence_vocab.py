@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.insights.confidence import (
+from polylogue.analysis.confidence import (
     ConfidenceBand,
     confidence_band_from_stored,
     from_score,
@@ -120,7 +120,7 @@ def test_confidence_band_from_stored_unknown_spellings_collapse_to_weak(value: s
 
 
 def test_support_level_helper_returns_typed_band() -> None:
-    from polylogue.storage.insights.session.profiles import support_level
+    from polylogue.storage.derived.session.profiles import support_level
 
     band = support_level(0.85, support_signals=("a", "b"))
     assert band is ConfidenceBand.STRONG
@@ -137,7 +137,7 @@ def test_repo_inference_strength_returns_typed_band() -> None:
     from typing import cast
 
     from polylogue.archive.session.session_profile import SessionProfile
-    from polylogue.storage.insights.session.profiles import repo_inference_strength
+    from polylogue.storage.derived.session.profiles import repo_inference_strength
 
     class _Profile:
         repo_paths: tuple[str, ...] = ()
@@ -162,7 +162,7 @@ def test_profile_support_level_ignores_phase_compat_confidence() -> None:
     from typing import cast
 
     from polylogue.archive.session.session_profile import SessionProfile
-    from polylogue.storage.insights.session.profiles import profile_support_level
+    from polylogue.storage.derived.session.profiles import profile_support_level
 
     class _Phase:
         confidence: float = 0.99

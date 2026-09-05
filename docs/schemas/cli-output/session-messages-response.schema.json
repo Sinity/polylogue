@@ -4,6 +4,19 @@
       "additionalProperties": false,
       "description": "Attribution for one operation result.\n\nThe operation boundary creates this value once. Adapters only serialize it;\nthey must not reconstruct archive or daemon facts independently.",
       "properties": {
+        "analyzed": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Analyzed"
+        },
         "archive_epoch": {
           "title": "Archive Epoch",
           "type": "string"
@@ -24,6 +37,43 @@
         "generation_id": {
           "title": "Generation Id",
           "type": "string"
+        },
+        "matched": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Matched"
+        },
+        "request_scope_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Scope Fingerprint"
+        },
+        "result_scope_fingerprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Scope Fingerprint"
         },
         "run_id": {
           "title": "Run Id",

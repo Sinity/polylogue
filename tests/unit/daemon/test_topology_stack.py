@@ -23,16 +23,15 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
-from polylogue.core.types import SessionId
-from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
-from polylogue.daemon.topology_http import build_parent_chain_envelope
-from polylogue.daemon.web_shell import WEB_SHELL_HTML
-from polylogue.insights.topology import (
+from polylogue.analysis.topology import (
     SessionTopology,
     TopologyEdge,
     TopologyEdgeKind,
     TopologyNode,
 )
+from polylogue.core.types import SessionId
+from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
+from polylogue.daemon.topology_http import build_parent_chain_envelope
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -264,36 +263,3 @@ class TestParentChainEndpointDispatch:
         assert status == HTTPStatus.OK
         assert payload["chain_ids"] == [_native("root"), _native("child")]
         assert payload["descendants"] == []
-
-
-class TestReaderShellTopologyHooks:
-    """The shipped HTML must carry the chip helpers and the chain action."""
-
-    def test_branch_chip_helper_present(self) -> None:
-        assert "renderTopologyBranchChip" in WEB_SHELL_HTML
-
-    def test_open_chain_helper_present(self) -> None:
-        assert "openParentChainAsStack" in WEB_SHELL_HTML
-        assert "renderOpenParentChainButton" in WEB_SHELL_HTML
-
-    def test_open_chain_action_is_in_lineage_inspector(self) -> None:
-        # The lineage tab exposes the same action so it is reachable from
-        # either the session header or the inspector.
-        assert "Open chain as stack" in WEB_SHELL_HTML
-
-    def test_branch_chip_uses_q_vocabulary(self) -> None:
-        # The chip uses the MK3 q-* class vocabulary so the operator can
-        # tell at a glance whether the branch kind is canonical / derived
-        # / degraded / missing — matches the chip vocabulary in the rest
-        # of the shell.
-        for cls in ("q-canonical", "q-heuristic", "q-estimated", "q-unavailable", "q-unresolved"):
-            assert cls in WEB_SHELL_HTML
-
-    def test_branch_chip_clickable_into_lineage_tab(self) -> None:
-        assert "openLineageInspector" in WEB_SHELL_HTML
-
-    def test_parent_chain_endpoint_is_called(self) -> None:
-        # JS routes through ``/api/sessions/{id}/topology/parent-chain``
-        # so the daemon owns the lineage walk; the reader never re-derives
-        # the chain client-side.
-        assert "/topology/parent-chain" in WEB_SHELL_HTML

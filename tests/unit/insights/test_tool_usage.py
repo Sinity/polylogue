@@ -24,8 +24,8 @@ from typing import cast
 import pytest
 
 from polylogue import Polylogue
-from polylogue.insights.archive import ArchiveCoverageInsightQuery
-from polylogue.insights.tool_usage import (
+from polylogue.analysis.archive import ArchiveCoverageInsightQuery
+from polylogue.analysis.tool_usage import (
     TOOL_USAGE_INSIGHT_VERSION,
     ToolUsageInsight,
     ToolUsageInsightQuery,
@@ -267,7 +267,7 @@ class TestListToolUsageInsightsEndToEnd:
                     {"type": "tool_use", "name": "Read", "id": "toolu_1", "tool_input": {"file_path": "a.py"}},
                     {"type": "tool_use", "name": "Read", "id": "toolu_2", "tool_input": {"file_path": "b.py"}},
                     {"type": "tool_use", "name": "Bash", "id": "toolu_3"},
-                    {"type": "tool_result", "tool_id": "toolu_3", "text": "hello"},
+                    {"type": "tool_result", "tool_id": "toolu_3", "text": "hello", "tool_result_is_error": 0},
                 ],
             )
             .save()

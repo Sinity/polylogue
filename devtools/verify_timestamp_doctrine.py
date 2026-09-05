@@ -19,7 +19,7 @@ rebuilt from source on a schema bump, so a doctrine violation there is cheap
 to fix and not the expensive-migration risk this lint exists to catch.
 
 Wired into the ordinary semantic verification baseline alongside the
-schema-versioning policy check because this is a production correctness
+schema manifest check because this is a production correctness
 boundary.
 """
 

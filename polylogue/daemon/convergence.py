@@ -5,7 +5,7 @@ The daemon owns all writes. For each source file, the desired state is:
   2. Parsed into records (provider detection + record extraction)
   3. Messages materialized (normalized into messages table)
   4. FTS indexed (searchable)
-  5. Insights refreshed (session profiles, work events, etc.)
+  5. Derived tables refreshed (session profiles, work events, etc.)
 
 Convergence means checking the current state for each file and doing
 only the missing work. Cursor records track the last-known file state
@@ -23,12 +23,9 @@ from pathlib import Path
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
-_INSIGHT_DEFERRED_UNTIL_QUIET = "insights deferred until source quiet"
 
 
 def _stage_false_error(stage_name: str, *, scope: str) -> str:
-    if stage_name == "insights":
-        return _INSIGHT_DEFERRED_UNTIL_QUIET
     if scope == "stage":
         return f"stage {stage_name} returned False"
     return f"{scope} stage {stage_name} returned False"

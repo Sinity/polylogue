@@ -1141,7 +1141,6 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
 
     provider = _FakeV1VectorProvider()
     outcome = embed_archive_session_sync(index_db, provider, session_id)
-
     assert outcome.status == "embedded"
     assert outcome.embedded_message_count == 1
     assert provider.texts == [long_text]
@@ -1165,6 +1164,58 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
         assert select_pending_archive_session_window(conn, status_table="embeddings.embedding_status") == []
     finally:
         conn.close()
+
+
+def test_archive_embedding_resumes_after_bounded_message_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.embeddings import materialization
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    text = "This archive message is long enough to embed for semantic search."
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        session_id = archive.write_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="bounded-v1",
+                title="bounded embedding session",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id=f"m{index}",
+                        role=Role.USER,
+                        text=f"{text} {index}",
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"{text} {index}")],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                    for index in range(2)
+                ],
+            )
+        )
+    embeddings_db = root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    monkeypatch.setattr(materialization, "ARCHIVE_EMBED_MESSAGE_BATCH_SIZE", 1)
+
+    class SlowProvider(_FakeV1VectorProvider):
+        def _get_embeddings(self, texts: list[str], input_type: str = "document") -> list[list[float]]:
+            import time
+
+            time.sleep(0.01)
+            return super()._get_embeddings(texts, input_type=input_type)
+
+    provider = SlowProvider()
+    first = embed_archive_session_sync(root / "index.db", provider, session_id, stop_after_seconds=0.005)
+    assert first.status == "deferred"
+    assert first.embedded_message_count == 1
+    second = embed_archive_session_sync(root / "index.db", provider, session_id)
+    assert second.status == "embedded"
+    assert second.embedded_message_count == 2
+    assert len(provider.texts) == 2
 
 
 def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path) -> None:

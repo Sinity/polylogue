@@ -22,9 +22,9 @@ from urllib.request import Request, urlopen
 
 from click.testing import CliRunner
 
+from polylogue.analysis.archive import SessionProfileInsight
 from polylogue.api import Polylogue
 from polylogue.core.json import JSONDocument, require_json_document
-from polylogue.insights.archive import SessionProfileInsight
 from tests.infra.archive_scenarios import ArchiveScenario, archive_for_scenario_db, open_index_db
 from tests.infra.json_contracts import extract_json_result, json_int, json_object_list
 from tests.infra.query_cases import ArchiveQueryCase

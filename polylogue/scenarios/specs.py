@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from polylogue.insights.authored_payloads import PayloadDict, PayloadMap
+from polylogue.analysis.authored_payloads import PayloadDict, PayloadMap
 
 from .metadata import ScenarioMetadata
 from .projections import ScenarioProjectionSource

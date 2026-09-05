@@ -14,10 +14,10 @@ from unittest.mock import MagicMock
 import pytest
 from click.testing import CliRunner
 
+from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli import cli
 from polylogue.core.refs import ObjectRef
-from polylogue.insights.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository

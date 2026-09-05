@@ -51,7 +51,7 @@ class SQLiteConnectionProfile:
     """SQLite timeout and PRAGMA profile for one connection role."""
 
     role: Literal["read", "write"]
-    timeout_seconds: int
+    timeout_seconds: float
     busy_timeout_ms: int
     cache_size_kib: int
     mmap_size_bytes: int
@@ -63,6 +63,10 @@ class SQLiteConnectionProfile:
     journal_size_limit_bytes: int | None = None
     query_only: bool = False
     locking_mode: str | None = None
+    generation_identity: Literal["live", "sealed"] = "live"
+    immutable: bool = False
+    max_snapshot_age_s: float | None = None
+    cancellation_supported: bool = False
 
     @property
     def pragma_statements(self) -> tuple[str, ...]:
@@ -243,7 +247,43 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     # rejects accidental writes via the same connection at SQL parse
     # time instead of waiting for the write lock.
     query_only=True,
+    generation_identity="live",
+    max_snapshot_age_s=30.0,
+    cancellation_supported=True,
 )
+
+# Named timeout classes are the only supported policy vocabulary.  Callers
+# select a role, not an arbitrary lock-wait duration.
+TIMEOUT_CLASSES: dict[str, float] = {
+    "interactive-read": 5.0,
+    "background-read": 30.0,
+    "publication": 30.0,
+    "offline-bulk": 30.0,
+}
+READ_PROFILES: dict[str, SQLiteConnectionProfile] = {
+    "interactive-read": READ_CONNECTION_PROFILE,
+    "background-read": SQLiteConnectionProfile(
+        role="read",
+        timeout_seconds=30.0,
+        busy_timeout_ms=30_000,
+        cache_size_kib=READ_CACHE_SIZE_KIB,
+        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+        query_only=True,
+    ),
+    "offline-bulk": SQLiteConnectionProfile(
+        role="read",
+        timeout_seconds=30.0,
+        busy_timeout_ms=30_000,
+        cache_size_kib=READ_CACHE_SIZE_KIB,
+        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+        query_only=True,
+    ),
+}
+TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
+    **READ_PROFILES,
+    "publication": DAEMON_WRITE_CONNECTION_PROFILE,
+    "offline-bulk": BULK_BUILD_WRITE_CONNECTION_PROFILE,
+}
 
 DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS = DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
 WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
@@ -502,6 +542,13 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
             continue
         sibling = root / filename
         if sibling.exists():
+            tier = _archive_tier_for_path(sibling)
+            if tier is not None:
+                sibling_conn = sqlite3.connect(f"file:{sibling}?mode=ro", uri=True)
+                try:
+                    _assert_schema_supported(sibling_conn, sibling, tier)
+                finally:
+                    sibling_conn.close()
             conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
 
 
@@ -512,10 +559,27 @@ def _archive_tier_for_path(path: str | Path) -> ArchiveTier | None:
     return next((tier for tier in ArchiveTier if Path(path).name == f"{tier.value}.db"), None)
 
 
+def _schema_skew_remedy(tier: ArchiveTier) -> str:
+    """Describe the safe recovery route for a mismatched archive tier."""
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
+
+    spec = archive_tier_spec(tier)
+    if spec.durability in {"rebuildable", "expensive_rebuild", "disposable"}:
+        return (
+            f"{tier.value}.db is {spec.durability} derived state; rebuild or recreate this tier "
+            "from durable evidence with the current runtime before retrying"
+        )
+    return (
+        f"{tier.value}.db is durable state; do not rebuild it. Run `polylogue ops maintenance migrate-tier "
+        f"{tier.value}` with a verified backup manifest before retrying"
+    )
+
+
 def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: ArchiveTier | None) -> None:
     """Reject a known archive tier before any caller can issue SQL against it."""
     from polylogue.core.errors import SchemaSkew
     from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     resolved_tier = tier if tier is not None else _archive_tier_for_path(path)
     if resolved_tier is None:
@@ -525,12 +589,14 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
     except KeyError as exc:
         raise ValueError(f"unknown archive tier: {resolved_tier!r}") from exc
     found = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if resolved_tier is ArchiveTier.INDEX and found == 0:
+        return
     if found != expected:
         raise SchemaSkew(
             tier=resolved_tier.value,
             expected=expected,
             found=found,
-            remedy="rebuild or migrate the tier with the current runtime before retrying",
+            remedy=_schema_skew_remedy(resolved_tier),
         )
 
 
@@ -580,6 +646,7 @@ def open_connection(
     timeout: float = DB_TIMEOUT,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = WRITE_CONNECTION_PROFILE,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -591,11 +658,13 @@ def open_connection(
     For the thread-local cached archive connection used by the async runtime,
     use ``connection_context`` from ``connection.py`` instead.
     """
+    if profile.role != "write":
+        raise ValueError("open_connection requires a write profile")
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        for stmt in profile.pragma_statements:
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
     except BaseException:
@@ -669,6 +738,8 @@ def open_readonly_connection(
     opened_main_fd: int | None = None,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    profile: SQLiteConnectionProfile = READ_CONNECTION_PROFILE,
+    timeout_class: str = "interactive-read",
 ) -> sqlite3.Connection:
     """Open a read-only SQLite connection with canonical read pragmas applied.
 
@@ -695,6 +766,13 @@ def open_readonly_connection(
     inspect a tier before reporting its schema mismatch. It does not change the
     read-only connection profile or grant write access.
     """
+    if profile.role != "read" or not profile.query_only:
+        raise ValueError("open_readonly_connection requires a query-only read profile")
+    if timeout_class not in READ_PROFILES:
+        raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
+    if profile is READ_CONNECTION_PROFILE and timeout_class != "interactive-read":
+        profile = READ_PROFILES["offline-bulk" if immutable else timeout_class]
+    timeout = profile.timeout_seconds if timeout == READ_DB_TIMEOUT else timeout
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
@@ -710,12 +788,48 @@ def open_readonly_connection(
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in READ_CONNECTION_PRAGMA_STATEMENTS:
+        for stmt in profile.pragma_statements:
             conn.execute(stmt)
     except BaseException:
         conn.close()
         raise
     return conn
+
+
+def open_profiled_connection(
+    path: str | Path,
+    *,
+    profile: SQLiteConnectionProfile,
+    timeout: float | None = None,
+    immutable: bool = False,
+    opened_main_fd: int | None = None,
+    tier: ArchiveTier | None = None,
+) -> sqlite3.Connection:
+    """Open a connection from an explicit named profile.
+
+    Read profiles are always enforced at SQLite's boundary.  Write profiles
+    use the existing writer factory so attachment and schema checks remain
+    identical to ordinary archive writes.
+    """
+    if profile.role == "read":
+        if not profile.query_only:
+            raise ValueError("read profiles must enable query_only")
+        return open_readonly_connection(
+            path,
+            timeout=profile.timeout_seconds if timeout is None else timeout,
+            immutable=immutable,
+            opened_main_fd=opened_main_fd,
+            tier=tier,
+            profile=profile,
+        )
+    if immutable or opened_main_fd is not None:
+        raise ValueError("writer profiles cannot use immutable or descriptor-bound reads")
+    return open_connection(
+        path,
+        timeout=profile.timeout_seconds if timeout is None else timeout,
+        tier=tier,
+        profile=profile,
+    )
 
 
 @contextmanager
@@ -753,7 +867,9 @@ __all__ = [
     "READ_CONNECTION_PROFILE",
     "READ_DB_TIMEOUT",
     "READ_MMAP_SIZE_BYTES",
+    "READ_PROFILES",
     "SQLiteConnectionProfile",
+    "TIMEOUT_CLASSES",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",
     "WRITE_CONNECTION_PRAGMA_STATEMENTS",

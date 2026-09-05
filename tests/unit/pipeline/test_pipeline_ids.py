@@ -7,9 +7,16 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.hashing import hash_payload
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.pipeline.ids import (
+    _EXCLUDED_FIELDS,
+    _HASHED_FIELDS,
     _attachment_hash_payload,
+    _content_block_payload,
+    _message_comparison_payload,
     _message_hash_payload,
+    _message_semantic_payload,
+    _model_hash_payload,
     _normalize_for_hash,
     _session_hash_payload,
     attachment_identity_hash,
@@ -19,6 +26,7 @@ from polylogue.pipeline.ids import (
     session_content_hash,
     session_id,
     session_revision_projection,
+    validate_semantic_hash_partition,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
@@ -75,6 +83,20 @@ def test_session_content_hash_with_missing_message_ids() -> None:
     digest = session_content_hash(session)
     assert isinstance(digest, str)
     assert len(digest) == 64
+
+
+def test_session_content_hash_accepts_provider_session_aliases() -> None:
+    """Parser-only provider aliases are classified and do not alter identity."""
+    session = _parsed_session(
+        "conv-1",
+        "Test",
+        [_parsed_message("msg-1", "user", "Hello", "2024-01-01T00:00:00Z")],
+        created_at="2024-01-01T00:00:00Z",
+        updated_at="2024-01-01T00:00:00Z",
+    )
+    with_alias = session.model_copy(update={"provider_session_aliases": ["legacy-conv-1"]})
+
+    assert session_content_hash(session) == session_content_hash(with_alias)
 
 
 def test_message_none_vs_empty_timestamp_changes_session_hash() -> None:
@@ -184,6 +206,148 @@ def test_session_hash_empty_messages_is_valid() -> None:
     assert len(session_content_hash(session)) == 64
 
 
+def test_semantic_hash_partition_covers_parser_fields_and_separates_owner_evidence() -> None:
+    """Every parser field is classified; owner matching has a narrower boundary."""
+    validate_semantic_hash_partition()
+
+    from polylogue.sources.parsers.base_models import ParsedContentBlock as BlockModel
+    from polylogue.sources.parsers.base_models import ParsedMessage as MessageModel
+    from polylogue.sources.parsers.base_models import ParsedSession as SessionModel
+
+    for name, model in (
+        ("ParsedContentBlock", BlockModel),
+        ("ParsedMessage", MessageModel),
+        ("ParsedSession", SessionModel),
+    ):
+        fields = frozenset(model.model_fields)
+        assert fields == _HASHED_FIELDS[name] | frozenset(_EXCLUDED_FIELDS[name])
+
+    assert "position" in _EXCLUDED_FIELDS["ParsedMessage"]
+    assert "tool_outcome" in _HASHED_FIELDS["ParsedContentBlock"]
+
+    block = ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="shell", tool_input={"command": "echo hi"})
+    message = _parsed_message("m1", "assistant", "hello", "2024-01-01")
+    assert set(_content_block_payload(block)) == _HASHED_FIELDS["ParsedContentBlock"]
+    assert set(_message_semantic_payload(message)) == (_HASHED_FIELDS["ParsedMessage"] - {"provider_message_id"})
+    assert "position" not in _message_comparison_payload(message)
+    assert set(_message_comparison_payload(message)) == {"role", "text", "timestamp", "blocks"}
+    assert set(
+        _model_hash_payload(
+            _parsed_session("s1", "title", [message], created_at=None, updated_at=None),
+            _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+        )
+    ) == _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+
+
+def test_semantic_hash_partition_rejects_unclassified_and_duplicate_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = _HASHED_FIELDS["ParsedMessage"]
+    monkeypatch.setitem(_HASHED_FIELDS, "ParsedMessage", original - {"text"})
+    with pytest.raises(AssertionError, match="missing=.*text"):
+        validate_semantic_hash_partition()
+
+    monkeypatch.setitem(_HASHED_FIELDS, "ParsedMessage", original | {"position"})
+    with pytest.raises(AssertionError, match="duplicate=.*position"):
+        validate_semantic_hash_partition()
+
+
+def test_duplicate_idless_messages_with_only_position_difference_keep_owner_ambiguous() -> None:
+    """Position must not turn indistinguishable owner evidence into identity."""
+    messages = [
+        _parsed_message("", "assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
+        for position in (0, 1)
+    ]
+    attachment = ParsedAttachment(
+        provider_attachment_id="attachment-1",
+        message_provider_id="",
+        message_position=0,
+        name="note.txt",
+        mime_type="text/plain",
+    )
+
+    with pytest.raises(MessageOwnerAmbiguityError):
+        session_content_hash(
+            _parsed_session("s1", "title", messages, created_at=None, updated_at=None).model_copy(
+                update={"attachments": [attachment]}
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("material_origin", "user"),
+        ("model_name", "model-v2"),
+        ("stop_reason", "end_turn"),
+        ("user_context_text", "context"),
+        ("parent_message_provider_id", "parent"),
+        ("end_turn", True),
+        ("sender_name", "sender"),
+    ],
+)
+def test_each_hashed_message_semantic_field_changes_identity(field: str, value: object) -> None:
+    message = _parsed_message("m1", "assistant", "hello", "2024-01-01")
+    first = _parsed_session("s1", "title", [message], created_at=None, updated_at=None)
+    second = first.model_copy(update={"messages": [message.model_copy(update={field: value})]})
+
+    assert field in _HASHED_FIELDS["ParsedMessage"]
+    assert session_content_hash(first) != session_content_hash(second)
+
+
+def test_structured_tool_result_outcome_changes_identity() -> None:
+    first_block = ParsedContentBlock(type=BlockType.TOOL_RESULT, text="done", is_error=False, exit_code=0)
+    second_block = first_block.model_copy(update={"is_error": True, "exit_code": 1})
+    first = _parsed_session(
+        "s1", "title", [_parsed_message("m1", "tool", "", "2024-01-01")], created_at=None, updated_at=None
+    )
+    first = first.model_copy(update={"messages": [first.messages[0].model_copy(update={"blocks": [first_block]})]})
+    second = first.model_copy(update={"messages": [first.messages[0].model_copy(update={"blocks": [second_block]})]})
+
+    assert session_content_hash(first) != session_content_hash(second)
+
+
+@pytest.mark.parametrize(
+    ("model_name", "field", "value"),
+    [
+        ("ParsedContentBlock", "signature", "new-signature"),
+        ("ParsedMessage", "position", 99),
+        ("ParsedMessage", "variant_index", 99),
+        ("ParsedMessage", "input_tokens", 99),
+        ("ParsedSession", "reported_cost_usd", 99.0),
+    ],
+)
+def test_excluded_fields_are_stable_identity_inputs(model_name: str, field: str, value: object) -> None:
+    message = _parsed_message("m1", "assistant", "hello", "2024-01-01")
+    if model_name == "ParsedContentBlock":
+        message = message.model_copy(update={"blocks": [ParsedContentBlock(type=BlockType.TEXT, text="hello")]})
+        changed = message.model_copy(update={"blocks": [message.blocks[0].model_copy(update={field: value})]})
+        first = _parsed_session("s1", "title", [message], created_at=None, updated_at=None)
+        second = _parsed_session("s1", "title", [changed], created_at=None, updated_at=None)
+    elif model_name == "ParsedMessage":
+        changed = message.model_copy(update={field: value})
+        first = _parsed_session("s1", "title", [message], created_at=None, updated_at=None)
+        second = _parsed_session("s1", "title", [changed], created_at=None, updated_at=None)
+    else:
+        first = _parsed_session("s1", "title", [message], created_at=None, updated_at=None)
+        second = first.model_copy(update={field: value})
+
+    assert field in _EXCLUDED_FIELDS[model_name]
+    assert session_content_hash(first) == session_content_hash(second)
+
+
+def test_position_is_excluded_from_semantic_hash_and_owner_match_input() -> None:
+    first = _parsed_session(
+        "s1",
+        "title",
+        [_parsed_message("", "assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": 0})],
+        created_at=None,
+        updated_at=None,
+    )
+    second = first.model_copy(update={"messages": [first.messages[0].model_copy(update={"position": 1})]})
+
+    assert session_content_hash(first) == session_content_hash(second)
+    assert _message_comparison_payload(first.messages[0]) == _message_comparison_payload(second.messages[0])
+
+
 def test_session_hash_timestamps_affect_hash() -> None:
     message = _parsed_message("m1", "user", "hi", None)
     session_one = _parsed_session("conv-1", "Test", [message], created_at="2024-01-01", updated_at=None)
@@ -236,33 +400,14 @@ def _golden_session() -> ParsedSession:
 
 
 def test_session_revision_projection_golden_hashes() -> None:
-    """Pin exact hash bytes (polylogue-fqp0's dedup refactor must not change them).
-
-    These digests were captured from the pre-refactor double-serialization
-    implementation. ``session_revision_projection`` now builds each hash-stable
-    payload once and reuses it for both the whole-tree hash and the per-item
-    hashes -- a pure elimination of redundant computation, not an identity-hash
-    change. If this test ever needs updating, that is an evidence epoch and
-    requires the migration/fingerprint-bump story in polylogue-fqp0's design,
-    not a routine test-fixture update.
-
-    The session, message and event digests below are deliberately unchanged by
-    polylogue-bu1i's attachment split, which is what proves that change did not
-    move the content-hash boundary: it replaced the single ``attachment_hashes``
-    projection with an identity axis and an acquisition axis used only for
-    revision comparison, and left every hash that feeds ``session_content_hash``
-    byte-identical. Pinning ``session_hash`` here is what would catch a future
-    attempt to "simplify" that split by excluding acquisition state from the
-    content hash too -- which would silently make a newly-fetched attachment
-    look like an unchanged session and skip its re-ingest.
-    """
+    """Pin the canonical digest for the complete semantic field payload."""
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "4d768f0de553d68aa26dd2a3edc137cebbbcc147ec51ab75a5b55e05bd563f87"
+    assert projection.session_hash.hex() == "87702d4073fdae9932d9b61f4399daa841c77528969645d29b8ac3d6b1134419"
     assert [h.hex() for h in projection.message_hashes] == [
-        "65a99313c3ed8b81e69ecc0b36f314b3bf7848bc10fcea11415ddb9b07188941",
-        "8efbf7b5b70bef4d73ec3550fe97e6f4d456cd724550bc5621a36766fe7f1f8b",
+        "bf3267d2bbb5b9f281401ca940a5a0f339174e750f6dd7b7a5aa70014b00640b",
+        "a7d0e29040820c1b0285c284a92aa1aad06aca56697aef3b45869f6a31a9bbf3",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):
@@ -320,6 +465,11 @@ def test_session_revision_projection_matches_independent_recomputation() -> None
             attachments=independent_attachment_payloads,
             session_events=independent_event_payloads,
         )
+        | {
+            "semantic_session_fields": _model_hash_payload(
+                session, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
+            )
+        }
     )
 
     assert projection.session_hash.hex() == independent_session_hash

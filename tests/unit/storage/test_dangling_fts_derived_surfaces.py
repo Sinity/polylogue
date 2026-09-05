@@ -259,7 +259,7 @@ def test_search_readiness_rejects_poisoned_zero_count_ready_marker(tmp_path: Pat
     assert recorded == (0, 0, None)
 
 
-def test_search_readiness_trusts_stale_ledger_without_exact_recount(tmp_path: Path) -> None:
+def test_search_readiness_remeasures_stale_ledger_before_refusing(tmp_path: Path) -> None:
     db = tmp_path / "archive.db"
     conn = sqlite3.connect(db)
     try:
@@ -310,12 +310,12 @@ def test_search_readiness_trusts_stale_ledger_without_exact_recount(tmp_path: Pa
         "triggers_present": True,
     }
     traced_sql = "\n".join(traced)
-    assert "FROM blocks WHERE search_text != ''" not in traced_sql
-    assert "messages_fts_docsize" not in traced_sql
+    assert "FROM blocks" in traced_sql and "search_text != ''" in traced_sql
+    assert "messages_fts_docsize" in traced_sql
 
 
 @pytest.mark.asyncio
-async def test_async_search_readiness_trusts_stale_ledger_without_exact_recount(tmp_path: Path) -> None:
+async def test_async_search_readiness_remeasures_stale_ledger_before_refusing(tmp_path: Path) -> None:
     db = tmp_path / "archive.db"
     async with aiosqlite.connect(db) as conn:
         await conn.executescript(
@@ -365,8 +365,8 @@ async def test_async_search_readiness_trusts_stale_ledger_without_exact_recount(
         "triggers_present": True,
     }
     traced_sql = "\n".join(traced)
-    assert "FROM blocks WHERE search_text != ''" not in traced_sql
-    assert "messages_fts_docsize" not in traced_sql
+    assert "FROM blocks" in traced_sql and "search_text != ''" in traced_sql
+    assert "messages_fts_docsize" in traced_sql
 
 
 def test_search_readiness_rejects_ready_marker_when_triggers_are_missing(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from typing_extensions import TypedDict
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.sources import origin_from_provider
+from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.blob_store import BlobStore
@@ -110,7 +111,11 @@ def make_raw_record(
     )
 
 
-def pending_pre_parse_raw_admission_request(record: RawSessionRecord) -> PendingPreParseRawAdmissionRequest:
+def pending_pre_parse_raw_admission_request(
+    record: RawSessionRecord,
+    *,
+    policy_snapshot: ExcisionPolicySnapshot | None = None,
+) -> PendingPreParseRawAdmissionRequest:
     """Map an acquisition record into the canonical pending-admission input."""
     source_name = record.source_name or Provider.UNKNOWN.value
     origin = origin_from_provider(Provider.from_string(source_name))
@@ -141,6 +146,7 @@ def pending_pre_parse_raw_admission_request(record: RawSessionRecord) -> Pending
         file_mtime_ms=file_mtime_ms,
         raw_id=record.raw_id,
         blob_publication_receipt_id=record.blob_publication_receipt_id,
+        policy_snapshot=policy_snapshot,
     )
 
 

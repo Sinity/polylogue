@@ -25,6 +25,7 @@ import json
 import os
 import sqlite3
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -33,6 +34,8 @@ from testmon.common import drop_patch_version, get_system_packages
 from testmon.db import DATA_VERSION as TESTMON_DATA_VERSION
 
 TESTMON_DATA_RELPATH = Path(".cache/testmon/testmondata")
+PRIMARY_WORKTREE_ENV = "POLYLOGUE_PRIMARY_WORKTREE"
+DEFAULT_PRIMARY_WORKTREE = Path("/realm/project/polylogue")
 
 #: The single environment every managed run traces and selects under. Pinned so
 #: a Hypothesis profile or a settings module cannot rename the environment and
@@ -167,24 +170,79 @@ def snapshot_testmon_graph(source: Path, destination: Path) -> bool:
     """
     if not source.is_file() or source.stat().st_size == 0:
         return False
+    if source.absolute() == destination.absolute():
+        return False
     destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    os.close(fd)
+    temporary = Path(temporary_name)
+    temporary.unlink()
     try:
         source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30)
     except sqlite3.Error:
+        with contextlib.suppress(FileNotFoundError, OSError):
+            temporary.unlink()
         return False
     try:
         with (
             contextlib.closing(source_connection),
-            contextlib.closing(sqlite3.connect(destination)) as destination_connection,
+            contextlib.closing(sqlite3.connect(temporary)) as destination_connection,
         ):
             source_connection.backup(destination_connection)
     except (sqlite3.Error, OSError):
         # A partial destination is the failure mode this function exists to
         # prevent; leave nothing behind for the provision check to accept.
         with contextlib.suppress(FileNotFoundError, OSError):
-            destination.unlink()
+            temporary.unlink()
         return False
+    os.replace(temporary, destination)
+    for suffix in _SIDECAR_SUFFIXES:
+        with contextlib.suppress(FileNotFoundError, OSError):
+            destination.with_name(destination.name + suffix).unlink()
     return True
+
+
+def primary_worktree() -> Path:
+    return Path(os.environ.get(PRIMARY_WORKTREE_ENV, DEFAULT_PRIMARY_WORKTREE)).expanduser()
+
+
+def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:
+    """Refresh a checkout from the primary graph when its local copy is stale."""
+    source = source or testmon_datafile(primary_worktree())
+    destination = testmon_datafile(root)
+    if source.absolute() == destination.absolute() or not source.is_file():
+        return False
+    local_state = inspect_testmon_graph(root)
+    try:
+        source_mtime = source.stat().st_mtime_ns
+        local_mtime = destination.stat().st_mtime_ns if destination.exists() else -1
+    except OSError:
+        return False
+    if local_state.status is TestmonGraphStatus.USABLE and local_mtime >= source_mtime:
+        return False
+    return snapshot_testmon_graph(source, destination)
+
+
+def should_seed(root: Path, seed: Path) -> bool:
+    """Whether the seed would back a better run than the checkout's own graph.
+
+    A checkout that keeps its datafile between runs accumulates fingerprints
+    the seed does not have, so a usable local graph is never replaced with a
+    seed that would select the same or re-execute more. The seed wins only
+    when the local graph is absent or unusable, or when the local graph would
+    force a full re-execution and the seed would not.
+    """
+    local = inspect_testmon_graph(root)
+    if not local.usable:
+        return True
+    if local.full_rerun_cause is None:
+        return False
+    with tempfile.TemporaryDirectory(prefix="testmon-seed-") as scratch:
+        probe_root = Path(scratch)
+        if not snapshot_testmon_graph(seed, testmon_datafile(probe_root)):
+            return False
+        candidate = inspect_testmon_graph(probe_root)
+    return candidate.usable and candidate.full_rerun_cause is None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -193,13 +251,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--seed",
         metavar="DATAFILE",
-        help="snapshot this datafile into the checkout before inspecting it",
+        help="snapshot this datafile into the checkout when the checkout's own graph is absent, broken, or would re-execute everything while the seed would select",
     )
     args = parser.parse_args(argv)
 
     root = Path(os.getcwd()).resolve()
     seeded = False
-    if args.seed:
+    if args.seed and should_seed(root, Path(args.seed)):
         seeded = snapshot_testmon_graph(Path(args.seed), testmon_datafile(root))
     state = inspect_testmon_graph(root)
     # A broken copy is worse than none: an absent datafile reseeds on the next

@@ -2,8 +2,8 @@
 
 The standalone ``correlate`` command was absorbed into the read-view surface
 (#1842): ``find <seed> then read --view correlation``. The correlation logic
-lives in ``polylogue.insights.correlation_view.run_correlation_view`` and
-``polylogue.insights.session_commit``; the MCP ``correlate_session(s)`` tools
+lives in ``polylogue.analysis.correlation_view.run_correlation_view`` and
+``polylogue.analysis.session_commit``; the MCP ``correlate_session(s)`` tools
 expose the same capability programmatically.
 """
 
@@ -16,9 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.analysis.correlation_view import run_correlation_view
+from polylogue.analysis.session_commit import GitHubRef, SessionCommitEdge, SessionCorrelationResult
 from polylogue.core.refs import ObjectRef
-from polylogue.insights.correlation_view import run_correlation_view
-from polylogue.insights.session_commit import GitHubRef, SessionCommitEdge, SessionCorrelationResult
 
 
 def _session() -> SimpleNamespace:
@@ -59,7 +59,7 @@ def test_run_correlation_view_json_emits_payload() -> None:
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
     env.polylogue.repository.get_session_commits = AsyncMock(return_value=[])
 
-    with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
+    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
 
     # JSON output is printed through the console; capture the printed string.
@@ -101,7 +101,7 @@ def test_run_correlation_view_json_surfaces_checkout_commit() -> None:
         ]
     )
 
-    with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
+    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", output_format="json", github_api=False)
 
     printed = "".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)
@@ -143,7 +143,7 @@ def test_run_correlation_view_github_enrichment_does_not_crash() -> None:
     env.polylogue.repository.get_session_commits = AsyncMock(return_value=[])
 
     with (
-        patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()),
+        patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()),
         patch("subprocess.run", side_effect=FileNotFoundError("gh not installed")),
     ):
         run_correlation_view(env, session_id="target", output_format="json", github_api=True)
@@ -159,7 +159,7 @@ def test_run_correlation_view_plain_renders_window() -> None:
     env.polylogue.get_session = AsyncMock(return_value=_session())
     env.polylogue.repository.get_session_refs = AsyncMock(return_value=[])
 
-    with patch("polylogue.insights.session_commit.build_correlation_result", return_value=_result()):
+    with patch("polylogue.analysis.session_commit.build_correlation_result", return_value=_result()):
         run_correlation_view(env, session_id="target", github_api=False)
 
     rendered = " ".join(str(call.args[0]) for call in env.ui.console.print.call_args_list if call.args)

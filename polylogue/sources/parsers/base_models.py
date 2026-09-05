@@ -461,6 +461,28 @@ class ParsedSessionEvent(BaseModel):
     boundary_message_position: int | None = Field(default=None, exclude=True)
 
 
+class ParsedDispatchObservation(BaseModel):
+    """Provider evidence for one parent-side dispatch."""
+
+    provider_tool_id: str
+    child_provider_id: str | None = None
+    child_identity_namespace: str = "provider-session"
+    observation_kind: Literal["parent_dispatch"] = "parent_dispatch"
+    first_seen: str | None = None
+    last_seen: str | None = None
+    resolution_reason: (
+        Literal[
+            "target-not-yet-observed",
+            "source-unavailable",
+            "target-refused-non-session",
+            "identity-contradiction",
+            "cycle-quarantine",
+            "unknown",
+        ]
+        | None
+    ) = None
+
+
 class ParsedSession(BaseModel):
     source_name: Provider
     provider_session_id: str
@@ -482,14 +504,9 @@ class ParsedSession(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
-    # polylogue-2qx.4 / polylogue-cgfy: Claude Code's ``parentToolUseID``
-    # (842,819 records / 185,982 distinct dispatch ids on the wire) --  the
-    # provider-native tool_id of the PARENT session's tool_use block that
-    # dispatched this (child/subagent) session. Globally unique per provider,
-    # so storage resolves it to session_links.parent_tool_use_block_id via a
-    # plain tool_id lookup -- the real join key replacing delegation_facts'
-    # cardinality-gated ordinal dispatch<->child pairing (12.8% resolved).
-    parent_tool_use_provider_id: str | None = None
+    # Exact provider-native names that can refer to this emitted session.
+    # These are parser evidence, never prefix/suffix guesses.
+    provider_session_aliases: list[str] = Field(default_factory=list, exclude=True, repr=False)
     branch_type: BranchType | None = None
     title_source: TitleSource | None = None
     # Specific provenance beyond title_source's coarse strategy label: which

@@ -123,9 +123,18 @@ class ClaudeSemanticFrontier:
 
 def encode_claude_semantic_frontier(*, header: bytes, body: bytes) -> str:
     """Encode the evidence needed to resume after a mutable-header rewrite."""
-    return (
-        f"{_CLAUDE_FRONTIER_PREFIX}:{hashlib.sha256(header).hexdigest()}:{hashlib.sha256(body).hexdigest()}:{len(body)}"
+    return encode_claude_semantic_frontier_digests(
+        header_sha256=hashlib.sha256(header).hexdigest(),
+        body_sha256=hashlib.sha256(body).hexdigest(),
+        body_bytes=len(body),
     )
+
+
+def encode_claude_semantic_frontier_digests(*, header_sha256: str, body_sha256: str, body_bytes: int) -> str:
+    """Encode a Claude frontier from already-streamed semantic evidence."""
+    if not (_sha256_hex(header_sha256) and _sha256_hex(body_sha256) and body_bytes >= 0):
+        raise ValueError("invalid Claude semantic frontier evidence")
+    return f"{_CLAUDE_FRONTIER_PREFIX}:{header_sha256}:{body_sha256}:{body_bytes}"
 
 
 def decode_claude_semantic_frontier(value: str | None) -> ClaudeSemanticFrontier | None:
@@ -160,27 +169,75 @@ def claude_semantic_frontier_from_path(path: Path) -> tuple[str, int, int] | Non
     return frontier, len(header), end_offset
 
 
-def claude_semantic_frontier_for_prefix(path: Path, end_offset: int) -> str | None:
+def claude_semantic_frontier_for_prefix(
+    path: Path,
+    end_offset: int,
+    *,
+    expected_stable_body_sha256: str | None = None,
+    expected_stable_body_bytes: int | None = None,
+) -> str | None:
     """Encode a Claude frontier ending at one accepted complete-record boundary."""
+    frontier, _bytes_read = claude_semantic_frontier_for_prefix_with_bytes(
+        path,
+        end_offset,
+        expected_stable_body_sha256=expected_stable_body_sha256,
+        expected_stable_body_bytes=expected_stable_body_bytes,
+    )
+    return frontier
+
+
+def claude_semantic_frontier_for_prefix_with_bytes(
+    path: Path,
+    end_offset: int,
+    *,
+    expected_stable_body_sha256: str | None = None,
+    expected_stable_body_bytes: int | None = None,
+) -> tuple[str | None, int]:
+    """Return a Claude frontier and every byte consumed while proving it."""
+    if (expected_stable_body_sha256 is None) != (expected_stable_body_bytes is None):
+        raise ValueError("Claude stable-body proof requires both digest and byte boundary")
+    if expected_stable_body_bytes is not None and expected_stable_body_bytes < 0:
+        return None, 0
+    bytes_read = 0
     try:
         with path.open("rb") as handle:
             header = handle.readline()
+            bytes_read += len(header)
             if not header.endswith(b"\n") or len(header) > end_offset:
-                return None
+                return None, bytes_read
             json_loads(header)
             body_bytes = end_offset - len(header)
             body_hasher = hashlib.sha256()
+            stable_body_hasher = hashlib.sha256()
+            stable_body_remaining = expected_stable_body_bytes
             while body_bytes:
                 line = handle.readline()
+                bytes_read += len(line)
                 if not line or len(line) > body_bytes or not line.endswith(b"\n"):
-                    return None
+                    return None, bytes_read
                 body_hasher.update(line)
+                if stable_body_remaining:
+                    if len(line) > stable_body_remaining:
+                        return None, bytes_read
+                    stable_body_hasher.update(line)
+                    stable_body_remaining -= len(line)
                 body_bytes -= len(line)
                 if line.strip():
                     json_loads(line)
     except (OSError, UnicodeDecodeError, ValueError):
-        return None
-    return f"{_CLAUDE_FRONTIER_PREFIX}:{hashlib.sha256(header).hexdigest()}:{body_hasher.hexdigest()}:{end_offset - len(header)}"
+        return None, bytes_read
+    if stable_body_remaining not in (None, 0):
+        return None, bytes_read
+    if expected_stable_body_sha256 is not None and stable_body_hasher.hexdigest() != expected_stable_body_sha256:
+        return None, bytes_read
+    return (
+        encode_claude_semantic_frontier_digests(
+            header_sha256=hashlib.sha256(header).hexdigest(),
+            body_sha256=body_hasher.hexdigest(),
+            body_bytes=end_offset - len(header),
+        ),
+        bytes_read,
+    )
 
 
 def _archive_blob_exists(archive_root: Path, blob_hash_hex: str) -> bool:
@@ -243,6 +300,11 @@ class _AppendPlan:
     # bytes. Claude append rows predate it with native_id=NULL, so retaining
     # NULL keeps deterministic raw IDs stable across upgrades and retries.
     acquisition_native_id_hint: str | None = None
+    accepted_claude_body_sha256: str | None = None
+    accepted_claude_body_bytes: int | None = None
+    accepted_claude_header_sha256: str | None = None
+    accepted_claude_publication_body_sha256: str | None = None
+    parser_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

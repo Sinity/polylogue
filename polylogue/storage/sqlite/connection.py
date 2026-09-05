@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CACHE_SIZE_KIB,
     WRITE_CONNECTION_PRAGMA_STATEMENTS,
     WRITE_MMAP_SIZE_BYTES,
+    _attach_sibling_tiers,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -58,43 +59,6 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     if error is not None:
         logger.warning("sqlite-vec extension load failed: %s", error)
     return False
-
-
-_SIBLING_TIER_ATTACHMENTS: tuple[tuple[str, str], ...] = (
-    ("source_tier", "source.db"),
-    ("user_tier", "user.db"),
-    ("embeddings", "embeddings.db"),
-    ("ops_tier", "ops.db"),
-)
-
-
-def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
-    """Attach sibling archive tiers to an ``index.db`` connection (idempotent).
-
-    Mirrors the async backend so cross-tier reads (e.g. ``raw_sessions`` in
-    ``source.db``) resolve with unqualified table names. SQLite resolves
-    unqualified names to ``main`` first, so index-tier tables are unaffected.
-    """
-    main_path: str | None = None
-    attached: set[str] = set()
-    for row in conn.execute("PRAGMA database_list").fetchall():
-        schema_name = str(row[1])
-        if schema_name == "main":
-            main_path = str(row[2]) if row[2] else None
-        else:
-            attached.add(schema_name)
-    if not main_path:
-        return
-    main = Path(main_path)
-    if main.name != "index.db":
-        return
-    root = main.parent
-    for schema_name, filename in _SIBLING_TIER_ATTACHMENTS:
-        if schema_name in attached:
-            continue
-        sibling = root / filename
-        if sibling.exists():
-            conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
 
 
 def _configure_read_connection(conn: sqlite3.Connection) -> None:

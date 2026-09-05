@@ -31,11 +31,13 @@ from polylogue.archive.zip_admission import (
     open_bounded_zip_entry,
 )
 from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
+from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_liveness import BlobLivenessProjection, project_index_blob_hashes, project_live_blob_hashes
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
@@ -871,6 +873,9 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
         return []
     conn.row_factory = sqlite3.Row
     origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    detected_provider_column = (
+        "detected_provider" if _column_exists(conn, "raw_sessions", "detected_provider") else "NULL"
+    )
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
@@ -905,6 +910,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                raw_sessions.raw_id AS ref_id,
                raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
+               {detected_provider_column} AS detected_provider,
                {native_id_column} AS native_id,
                {capture_mode_column} AS capture_mode,
                {acquired_at_ms_column} AS acquired_at_ms,
@@ -1308,6 +1314,9 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
         return []
     conn.row_factory = sqlite3.Row
     origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
+    detected_provider_column = (
+        "detected_provider" if _column_exists(conn, "raw_sessions", "detected_provider") else "NULL"
+    )
     native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
     source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
     source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
@@ -1328,6 +1337,7 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
         SELECT lower(hex(blob_hash)) AS blob_hash,
                raw_sessions.raw_id AS raw_id,
                {origin_column} AS origin,
+               {detected_provider_column} AS detected_provider,
                {native_id_column} AS native_id,
                {source_path_column} AS source_path,
                {source_index_column} AS source_index,
@@ -1396,6 +1406,7 @@ def _current_raw_payload_bytes(
     zip_coordinate: tuple[int, int] | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
+    provider_hint: str | None = None,
 ) -> tuple[bytes | None, str | None]:
     if _path_is_container_member(source_path):
         split = _split_container_source_path(source_path)
@@ -1416,6 +1427,15 @@ def _current_raw_payload_bytes(
             if coordinate is not None:
                 entry_ordinal, split_index = coordinate
         cache_key = source_path if entry_ordinal is None else f"{source_path}\0{entry_ordinal}"
+        provider = None
+        declared_rule = None
+        if provider_hint is not None:
+            try:
+                provider = Provider.from_string(provider_hint)
+            except ValueError:
+                provider = None
+            if provider is not None:
+                declared_rule = artifact_rule_for_path(provider, member)
         try:
             if source_bytes_cache is not None and cache_key in source_bytes_cache:
                 member_bytes = source_bytes_cache[cache_key]
@@ -1434,8 +1454,15 @@ def _current_raw_payload_bytes(
                             "ambiguous_container_member" if entry_ordinal is None else "container_coordinate_mismatch"
                         )
                         return None, reason
+                    allowed_path = (
+                        (lambda name: artifact_rule_for_path(provider, name) is not None) if provider else None
+                    )
                     admitted = list(
-                        ZipAdmission(zip_path=zip_path).filter_entries(matching, allowed_suffixes=ZIP_JSON_SUFFIXES)
+                        ZipAdmission(zip_path=zip_path).filter_entries(
+                            matching,
+                            allowed_suffixes=ZIP_JSON_SUFFIXES,
+                            allowed_path=allowed_path,
+                        )
                     )
                     if len(admitted) != 1:
                         return None, "container_member_rejected"
@@ -1452,6 +1479,8 @@ def _current_raw_payload_bytes(
         if split_index is None:
             return None, "source_index_missing"
         if blob_hash is not None and hashlib.sha256(member_bytes).hexdigest() == blob_hash:
+            return member_bytes, None
+        if declared_rule is not None and declared_rule.parse_policy == "raw-only":
             return member_bytes, None
         try:
             if decoded_payload_cache is not None and cache_key in decoded_payload_cache:
@@ -1812,6 +1841,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
+                provider_hint=_optional_str(row.get("detected_provider")),
             )
         except OSError as exc:
             payload_bytes, reason = None, f"error:{exc}"
@@ -1907,6 +1937,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 zip_coordinate=zip_coordinate,
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,
+                provider_hint=_optional_str(row.get("detected_provider")),
             )
             if payload_bytes is not None:
                 published_hash, _published_size = publisher.write_from_bytes(payload_bytes)

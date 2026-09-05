@@ -7,6 +7,9 @@ outside one, the guard intentionally does nothing.
 
 from __future__ import annotations
 
+import contextlib
+import os
+from collections.abc import Mapping
 from pathlib import Path
 
 import tomllib
@@ -43,15 +46,37 @@ def _is_polylogue_checkout_root(candidate: Path) -> bool:
         return False
 
 
+def git_ceiling_directories(env: Mapping[str, str] | None = None) -> frozenset[Path]:
+    """Directories ``GIT_CEILING_DIRECTORIES`` forbids discovery from entering.
+
+    Same contract as git: the listed directories and everything above them are
+    never examined; entries are resolved, and an empty entry is ignored.
+    """
+    raw = (os.environ if env is None else env).get("GIT_CEILING_DIRECTORIES", "")
+    ceilings: set[Path] = set()
+    for entry in raw.split(":"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        # A leading ``::`` disables symlink resolution for the rest of the list.
+        with contextlib.suppress(OSError):
+            ceilings.add(Path(entry.removeprefix(":")).resolve())
+    return frozenset(ceilings)
+
+
 def find_git_worktree_root(start: Path) -> Path | None:
     """Find the enclosing Polylogue Git checkout, if any.
 
     The first Git boundary is authoritative. An unrelated repository and a
     directory with no Git ancestor both return ``None`` so installed CLI use
-    outside a Polylogue checkout does not invoke the guard.
+    outside a Polylogue checkout does not invoke the guard. Discovery honours
+    ``GIT_CEILING_DIRECTORIES`` exactly as git does.
     """
     current = start.resolve()
+    ceilings = git_ceiling_directories()
     for candidate in (current, *current.parents):
+        if candidate in ceilings:
+            return None
         try:
             has_git = (candidate / ".git").exists()
         except OSError:

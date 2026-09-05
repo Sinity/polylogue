@@ -22,7 +22,7 @@ from typing import Any, TypeVar
 
 import aiosqlite
 
-from polylogue.storage.insights.session.storage import build_insert_sql
+from polylogue.storage.derived.session.storage import build_insert_sql
 
 __all__ = ["replace_insight_rows"]
 

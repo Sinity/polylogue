@@ -121,6 +121,24 @@ def begin_embedding_attempt(
     derivation_key = key.digest()
     recipe_hash = recipe.recipe_hash
     output_contract_hash = recipe.output_contract_hash
+    existing = conn.execute(
+        """
+        SELECT origin, generation, derivation_key, source_hash, recipe_hash, output_contract_hash
+        FROM embedding_derivation_state
+        WHERE session_id = ? AND derivation_key = ? AND attempt_state = 'pending'
+        """,
+        (session_id, derivation_key),
+    ).fetchone()
+    if existing is not None:
+        return ArchiveEmbeddingAttempt(
+            session_id=session_id,
+            origin=str(existing[0]),
+            generation=int(existing[1]),
+            derivation_key=bytes(existing[2]),
+            source_hash=bytes(existing[3]),
+            recipe_hash=bytes(existing[4]),
+            output_contract_hash=bytes(existing[5]),
+        )
     with conn:
         row = conn.execute(
             """
@@ -160,6 +178,7 @@ def begin_embedding_attempt(
             ) VALUES (?, ?, 0, NULL, 1, NULL)
             ON CONFLICT(session_id) DO UPDATE SET
                 origin = excluded.origin,
+                message_count_embedded = 0,
                 needs_reindex = 1,
                 error_message = NULL
             """,
@@ -284,7 +303,9 @@ def upsert_message_embedding(
 
 
 def _prepared_write(write: ArchiveEmbeddingWrite) -> ArchiveEmbeddingWrite:
-    if len(write.embedding) != EMBEDDING_DIMENSION:
+    # An empty embedding is a ref-only write: it reuses the vector its address
+    # already owns, and the write path refuses it when that vector is missing.
+    if write.embedding and len(write.embedding) != EMBEDDING_DIMENSION:
         raise ValueError(f"embedding must have {EMBEDDING_DIMENSION} dimensions")
     if len(write.vector_derivation_hash) != 32:
         raise ValueError("vector_derivation_hash must be a SHA-256 value")
@@ -342,6 +363,8 @@ def _write_message_embeddings(conn: sqlite3.Connection, writes: Sequence[Archive
             (write.vector_derivation_hash,),
         ).fetchone()
         if existing is None:
+            if not write.embedding:
+                raise ValueError("ref-only embedding write has no vector at its address")
             conn.execute(
                 """
                 INSERT INTO message_embeddings (vector_derivation_hash, embedding, model)
@@ -511,6 +534,126 @@ def complete_embedding_attempt_success(
             UPDATE embedding_failures
             SET lifecycle_state = 'resolved', updated_at_ms = ?, resolved_at_ms = ?,
                 resolution_action = 'embedded'
+            WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
+            """,
+            (now_ms, now_ms, attempt.session_id),
+        )
+    return True
+
+
+def publish_embedding_attempt_window(
+    conn: sqlite3.Connection,
+    *,
+    attempt: ArchiveEmbeddingAttempt,
+    writes: Sequence[ArchiveEmbeddingWrite],
+    completed_at_ms: int | None = None,
+) -> bool:
+    """Publish one window while keeping the exact session attempt pending."""
+
+    now_ms = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
+    prepared = tuple(_prepared_write(write) for write in writes)
+    with conn:
+        current = conn.execute(
+            """
+            SELECT 1 FROM embedding_derivation_state
+            WHERE session_id = ? AND generation = ? AND derivation_key = ?
+              AND attempt_state = 'pending'
+            """,
+            (attempt.session_id, attempt.generation, attempt.derivation_key),
+        ).fetchone()
+        if current is None:
+            return False
+        for write in prepared:
+            if write.session_id != attempt.session_id or write.generation != attempt.generation:
+                raise ValueError("embedding window write does not belong to the owning attempt")
+            if write.recipe_hash != attempt.recipe_hash:
+                raise ValueError("embedding window write recipe must match the owning attempt")
+            expected_key = message_embedding_derivation_digest_from_hashes(
+                message_id=write.message_id,
+                vector_derivation_hash=write.vector_derivation_hash,
+                recipe_hash=attempt.recipe_hash,
+                output_contract_hash=attempt.output_contract_hash,
+            )
+            if write.derivation_key != expected_key:
+                raise ValueError("embedding window write key does not match its message")
+        _write_message_embeddings(conn, prepared)
+        conn.execute(
+            """
+            UPDATE embedding_derivation_state
+            SET message_count = message_count + ?, updated_at_ms = ?
+            WHERE session_id = ? AND generation = ? AND derivation_key = ?
+              AND attempt_state = 'pending'
+            """,
+            (len(prepared), now_ms, attempt.session_id, attempt.generation, attempt.derivation_key),
+        )
+        conn.execute(
+            """
+            UPDATE embedding_status
+            SET message_count_embedded = message_count_embedded + ?,
+                last_embedded_at_ms = ?, needs_reindex = 1, error_message = NULL
+            WHERE session_id = ?
+            """,
+            (len(prepared), now_ms, attempt.session_id),
+        )
+    return True
+
+
+def finalize_embedding_attempt_success(
+    conn: sqlite3.Connection,
+    *,
+    attempt: ArchiveEmbeddingAttempt,
+    message_ids: Sequence[str],
+    completed_at_ms: int | None = None,
+) -> bool:
+    """Close a pending windowed attempt after all desired messages are present."""
+
+    now_ms = int(time.time() * 1000) if completed_at_ms is None else completed_at_ms
+    desired_ids = tuple(dict.fromkeys(str(message_id) for message_id in message_ids))
+    with conn:
+        current = conn.execute(
+            """
+            SELECT message_count FROM embedding_derivation_state
+            WHERE session_id = ? AND generation = ? AND derivation_key = ?
+              AND attempt_state = 'pending'
+            """,
+            (attempt.session_id, attempt.generation, attempt.derivation_key),
+        ).fetchone()
+        if current is None or int(current[0]) != len(desired_ids):
+            return False
+        prior_ids = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT message_id FROM message_embedding_refs WHERE session_id = ?",
+                (attempt.session_id,),
+            ).fetchall()
+        )
+        stale_ids = tuple(sorted(set(prior_ids) - set(desired_ids)))
+        if stale_ids:
+            placeholders = ", ".join("?" for _ in stale_ids)
+            conn.execute(f"DELETE FROM message_embedding_refs WHERE message_id IN ({placeholders})", stale_ids)
+        updated = conn.execute(
+            """
+            UPDATE embedding_derivation_state
+            SET attempt_state = 'succeeded', updated_at_ms = ?
+            WHERE session_id = ? AND generation = ? AND derivation_key = ?
+              AND attempt_state = 'pending'
+            """,
+            (now_ms, attempt.session_id, attempt.generation, attempt.derivation_key),
+        )
+        if updated.rowcount != 1:
+            return False
+        conn.execute(
+            """
+            UPDATE embedding_status
+            SET message_count_embedded = ?, last_embedded_at_ms = ?, needs_reindex = 0, error_message = NULL
+            WHERE session_id = ?
+            """,
+            (len(desired_ids), now_ms, attempt.session_id),
+        )
+        conn.execute(
+            """
+            UPDATE embedding_failures
+            SET lifecycle_state = 'resolved', updated_at_ms = ?, resolved_at_ms = ?, resolution_action = 'embedded'
             WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
             """,
             (now_ms, now_ms, attempt.session_id),
@@ -953,12 +1096,14 @@ __all__ = [
     "EmbeddingFailureState",
     "begin_embedding_attempt",
     "complete_embedding_attempt_success",
+    "finalize_embedding_attempt_success",
     "list_active_embedding_failures",
     "mark_session_embedding_error",
     "read_embedding_failure",
     "read_embedding_meta",
     "read_embedding_status",
     "record_embedding_failure",
+    "publish_embedding_attempt_window",
     "resolve_embedding_failure",
     "resolve_open_embedding_failures_for_session",
     "supersede_embedding_attempt",

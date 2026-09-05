@@ -93,7 +93,6 @@ _SOURCE_CONTINUITY_REFRESH_V1_FORMAT = "polylogue.source-continuity-refresh.v1"
 _SOURCE_CONTINUITY_REFRESH_V2_FORMAT = "polylogue.source-continuity-refresh.v2"
 _SOURCE_CONTINUITY_REFRESH_INTENT_REF = "proof:source-continuity-refresh:pending-receipt"
 _SOURCE_CONTINUITY_RELOCATION_FORMAT = "polylogue.source-continuity-relocation.v2"
-_SourceContinuityMutationKind = Literal["blob_ref_liveness", "raw_authority_recovery"]
 _SourceContinuityAuthorityKind = Literal["refresh", "relocation"]
 _FRESH_DURABLE_BOOTSTRAP_FORMAT = "polylogue.durable-bootstrap.v1"
 _FRESH_DURABLE_BOOTSTRAP_MARKER = ".bootstrap"
@@ -765,7 +764,6 @@ def write_source_continuity_pending_intent(
     pre_mutation_evidence: DurableDatabaseEvidence,
     operation_id: str,
     evidence_ref: str,
-    mutation_kind: _SourceContinuityMutationKind = "blob_ref_liveness",
 ) -> Path:
     """Persist the recovery input before a source mutation can commit."""
     mutation_receipt = mutation_receipt.resolve()
@@ -781,7 +779,7 @@ def write_source_continuity_pending_intent(
         "backup_manifest": str(backup_manifest),
         "operation_id": operation_id,
         "evidence_ref": evidence_ref,
-        "mutation_kind": mutation_kind,
+        "mutation_kind": "blob_ref_liveness",
         "source_before": _migration_runner._manifest_json_value(pre_mutation_evidence),
     }
     pending_digest = _canonical_json_sha256(payload)
@@ -972,15 +970,9 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> frozenset[
             backup = Path(str(raw["backup_manifest"]))
             operation_id = str(raw["operation_id"])
             evidence_ref = str(raw["evidence_ref"])
-            mutation_kind = raw.get("mutation_kind", "blob_ref_liveness")
-            if mutation_kind not in {"blob_ref_liveness", "raw_authority_recovery"}:
-                raise ValueError("mutation_kind is unsupported")
         except (DurableChangeTrainError, KeyError, TypeError, ValueError) as exc:
             raise DurableChangeTrainError(f"source continuity pending intent is malformed: {path}") from exc
-        receipt_phase = _source_mutation_receipt_phase(
-            receipt,
-            allow_unfinalized_raw_authority=mutation_kind == "raw_authority_recovery",
-        )
+        receipt_phase = _source_mutation_receipt_phase(receipt)
         if receipt_phase == "not_yet_finalized":
             deferred_tiers.add(ArchiveTier.SOURCE)
             continue
@@ -1041,14 +1033,12 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> frozenset[
     return frozenset(deferred_tiers)
 
 
-def _source_mutation_receipt_phase(receipt_path: Path, *, allow_unfinalized_raw_authority: bool) -> str:
+def _source_mutation_receipt_phase(receipt_path: Path) -> str:
     """Classify a committed source-maintenance receipt without guessing its format."""
 
     try:
-        raw = json.loads(receipt_path.read_text(encoding="utf-8"))
+        json.loads(receipt_path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        if allow_unfinalized_raw_authority:
-            return "not_yet_finalized"
         raise DurableChangeTrainError(
             f"source continuity pending liveness receipt is missing: {receipt_path}"
         ) from None
@@ -1056,8 +1046,6 @@ def _source_mutation_receipt_phase(receipt_path: Path, *, allow_unfinalized_raw_
         return _liveness_receipt_phase(receipt_path)
     except (OSError, UnicodeDecodeError) as exc:
         raise DurableChangeTrainError(f"source continuity pending receipt is unreadable: {receipt_path}") from exc
-    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
-        return "committed"
     return _liveness_receipt_phase(receipt_path)
 
 
@@ -1169,42 +1157,6 @@ def _validate_liveness_receipt_bytes(
     return header
 
 
-def _validate_raw_authority_reset_receipt(
-    payload: dict[str, object],
-    *,
-    source_path: Path,
-    backup_manifest: Path,
-    operation_id: str,
-) -> dict[str, object]:
-    """Authenticate a self-hashed source reset receipt for continuity refresh."""
-
-    receipt_sha256 = payload.pop("receipt_sha256", None)
-    if receipt_sha256 != _canonical_json_sha256(payload):
-        raise DurableChangeTrainError("source mutation receipt checksum mismatch")
-    authority = payload.get("backup_authority")
-    if not isinstance(authority, dict):
-        raise DurableChangeTrainError("source mutation receipt has no backup authority")
-    backup_digest = hashlib.sha256(backup_manifest.read_bytes()).hexdigest()
-    if (
-        payload.get("format") != "polylogue.raw-authority-recovery-receipt.v1"
-        or payload.get("operation") != "reset_raw_authority_census"
-        or payload.get("operation_id") != operation_id
-        or payload.get("archive_root") != str(source_path.parent)
-        or authority.get("tier") != ArchiveTier.SOURCE.value
-        or authority.get("manifest_path") != str(backup_manifest)
-        or authority.get("manifest_sha256") != backup_digest
-    ):
-        raise DurableChangeTrainError("source mutation receipt does not bind the named raw-authority reset")
-    after_counts = payload.get("after_counts")
-    if (
-        not isinstance(after_counts, dict)
-        or not after_counts
-        or any(not isinstance(value, int) or isinstance(value, bool) or value != 0 for value in after_counts.values())
-    ):
-        raise DurableChangeTrainError("source mutation receipt does not prove the raw-authority ledger reset")
-    return {"backup_manifest_sha256": backup_digest}
-
-
 def _validate_source_mutation_receipt_bytes(
     receipt_bytes: bytes,
     *,
@@ -1215,17 +1167,10 @@ def _validate_source_mutation_receipt_bytes(
     """Authenticate the supported durable source-mutation receipt formats."""
 
     try:
-        raw = json.loads(receipt_bytes)
+        json.loads(receipt_bytes)
     except json.JSONDecodeError:
         return _validate_liveness_receipt_bytes(
             receipt_bytes,
-            source_path=source_path,
-            backup_manifest=backup_manifest,
-            operation_id=operation_id,
-        )
-    if isinstance(raw, dict) and raw.get("format") == "polylogue.raw-authority-recovery-receipt.v1":
-        return _validate_raw_authority_reset_receipt(
-            cast(dict[str, object], raw),
             source_path=source_path,
             backup_manifest=backup_manifest,
             operation_id=operation_id,
@@ -2086,12 +2031,6 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_raw_materialization_candidates(cast(Callable[..., object], value))
-                elif reference.endswith(":run_raw_authority_artifact_census"):
-                    if train.tier is not ArchiveTier.SOURCE:
-                        raise DurableChangeTrainError(
-                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
-                        )
-                    detail = _probe_raw_authority_artifact_census(train.target_version)
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -2113,6 +2052,18 @@ def _runtime_consumer_results(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
                     detail = _probe_source_generation_publish(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":record_source_attachments"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_attachment_record(cast(Callable[..., object], value), train.target_version)
+                elif reference.endswith(":source_attachment_census"):
+                    if train.tier is not ArchiveTier.SOURCE:
+                        raise DurableChangeTrainError(
+                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
+                        )
+                    detail = _probe_source_attachment_census(cast(Callable[..., object], value), train.target_version)
                 elif reference.endswith(":source_generation_census"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -2311,24 +2262,6 @@ def _probe_raw_materialization_candidates(candidates: Callable[..., object]) -> 
     return "enumerated an empty source/index archive without replay debt"
 
 
-def _probe_raw_authority_artifact_census(target_version: int) -> str:
-    """Exercise the read-only artifact census against the projected source tier."""
-    from polylogue.maintenance.raw_authority_artifact_census import run_raw_authority_artifact_census
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-census-probe-") as temporary:
-        root = Path(temporary)
-        initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
-        initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
-        with sqlite3.connect(root / "source.db") as source:
-            _migration_runner._prepare_fresh_connection_for_target(source, ArchiveTier.SOURCE, target_version)
-            source.commit()
-        report = run_raw_authority_artifact_census(root, receipt_path=root / "census-receipt.json")
-    if report.mode != "dry_run" or report.observations_written != 0:
-        raise DurableChangeTrainError("raw-authority artifact census probe changed the empty archive")
-    return "ran a read-only raw-authority artifact census against an empty projected source tier"
-
-
 def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
     """Create a source-tier probe projected to the train's schema slot."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -2362,6 +2295,71 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
     if not isinstance(ids, tuple) or len(ids) != 2 or generation_row != (2,) or item_count != (2,):
         raise DurableChangeTrainError("source generation probe did not publish every manifest coordinate")
     return f"published probe source generation with {len(ids)} pending items"
+
+
+def _probe_source_attachment_record(record: Callable[..., object], target_version: int) -> str:
+    """Exercise the source attachment denominator's idempotent writer."""
+    from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
+    from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+
+    generation_id = "durable-change-train-attachment-generation"
+    attachment = SourceAttachment(
+        reference_id="attachment:durable-change-train",
+        origin="codex-session",
+        source_class="durable-change-train-probe",
+        disposition="policy_rejected",
+        reason="probe",
+    )
+    with _runtime_probe_source_connection(target_version) as probe:
+        publish_source_generation(
+            probe,
+            source_generation_id=generation_id,
+            manifest_digest="2" * 64,
+            addressing_mode="path",
+            coordinates=(),
+            observed_at_ms=1_780_000_000_000,
+        )
+        record(
+            probe,
+            source_generation_id=generation_id,
+            attachments=(attachment,),
+            observed_at_ms=1_780_000_000_000,
+        )
+        record(
+            probe,
+            source_generation_id=generation_id,
+            attachments=(attachment,),
+            observed_at_ms=1_780_000_000_001,
+        )
+        row = probe.execute(
+            "SELECT COUNT(*), disposition FROM source_attachments WHERE source_generation_id = ?",
+            (generation_id,),
+        ).fetchone()
+    if row != (1, "policy_rejected"):
+        raise DurableChangeTrainError("source attachment probe did not preserve idempotent publication")
+    return "recorded one source attachment and replayed it idempotently"
+
+
+def _probe_source_attachment_census(census: Callable[..., object], target_version: int) -> str:
+    """Exercise the source attachment census against a real projected table."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
+
+    generation_id = "durable-change-train-attachment-census-generation"
+    with _runtime_probe_source_connection(target_version) as probe:
+        publish_source_generation(
+            probe,
+            source_generation_id=generation_id,
+            manifest_digest="3" * 64,
+            addressing_mode="path",
+            coordinates=(),
+            observed_at_ms=1_780_000_000_000,
+        )
+        report = census(probe, generation_id)
+    if not isinstance(report, dict) or report.get("source_generation_id") != generation_id:
+        raise DurableChangeTrainError("source attachment census probe did not identify its generation")
+    if report.get("pending") != 0 or report.get("sealable") is not True:
+        raise DurableChangeTrainError("source attachment census probe reported unexpected pending work")
+    return "read an empty source attachment denominator as sealable"
 
 
 def _probe_source_generation_census(census: Callable[..., object], target_version: int) -> str:

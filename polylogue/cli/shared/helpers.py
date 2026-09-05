@@ -23,9 +23,9 @@ from polylogue.cli.shared.helper_support import fail, load_effective_config
 from polylogue.cli.shared.types import AppEnv
 
 if TYPE_CHECKING:
+    from polylogue.analysis.archive import ArchiveCoverageInsight
     from polylogue.api import Polylogue
     from polylogue.config import Config
-    from polylogue.insights.archive import ArchiveCoverageInsight
     from polylogue.readiness import ReadinessReport
     from polylogue.services import RuntimeServices
 
@@ -65,7 +65,7 @@ async def list_archive_coverage_insights(
     services: RuntimeServices | None = None,
     db_path: Path | None = None,
 ) -> list[ArchiveCoverageInsight]:
-    from polylogue.insights.archive import ArchiveCoverageInsightQuery
+    from polylogue.analysis.archive import ArchiveCoverageInsightQuery
 
     return await _summary_facade(services, db_path).list_archive_coverage_insights(ArchiveCoverageInsightQuery())
 

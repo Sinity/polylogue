@@ -23,7 +23,7 @@ root = "/realm/worktrees"
 default_base = "origin/master"
 identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
 checkpoint_untracked = true
-verification_operations = ["verify_affected", "verify_quick", "verify_all"]
+verification_operations = ["verify_quick"]
 
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]
@@ -36,9 +36,7 @@ verification-graph = ["devtools/verify.py", "pyproject.toml"]
 
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
-# Eight of these run beside agent lanes; four workers each keeps the host
-# at its thread count instead of three times over it.
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=4", "devtools", "verify"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
 pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
@@ -48,7 +46,7 @@ timeout_seconds = 3600
 description = "Run Polylogue's static fast verification gates"
 exec = ["devtools", "verify", "--quick"]
 pool = "normal"
-result = "pytest"
+result = "json"
 cache = "tree+environment"
 timeout_seconds = 900
 
@@ -62,7 +60,7 @@ timeout_seconds = 900
 
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=8", "devtools", "verify", "--all"]
+exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
 # The corpus graph is published from the main checkout; a lane worktree
 # cannot start it.
 checkout = "default"

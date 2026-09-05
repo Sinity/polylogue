@@ -180,7 +180,6 @@ def test_provider_namespace_policy_discloses_open_world_fallback() -> None:
     assert {item["origin"] for item in policies} == {origin.value for origin in Origin} - {Origin.BEADS_ISSUE.value}
     assert {item["provider_family"] for item in policies} == {
         "antigravity",
-        "beads",
         "chatgpt",
         "claude-ai",
         "claude-design",
@@ -324,7 +323,7 @@ def test_fixture_checker_rejects_corrupted_frozen_card(
 
 def test_pure_renderer_modules_do_not_import_storage_api_or_daemon() -> None:
     modules = (Path("polylogue/core/tool_identity.py"), *sorted(Path("polylogue/rendering").glob("*.py")))
-    forbidden = ("polylogue.storage", "polylogue.api", "polylogue.daemon", "polylogue.insights")
+    forbidden = ("polylogue.storage", "polylogue.api", "polylogue.daemon", "polylogue.analysis")
     violations: list[str] = []
     for path in modules:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

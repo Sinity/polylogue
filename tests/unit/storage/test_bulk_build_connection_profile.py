@@ -24,6 +24,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.connection_profile import (
     BULK_BUILD_CACHE_SIZE_KIB,
     WRITE_CACHE_SIZE_KIB,
+    WRITE_CONNECTION_PRAGMA_STATEMENTS,
 )
 
 
@@ -64,5 +65,14 @@ def test_live_active_archive_writer_keeps_wal_profile(tmp_path: Path, monkeypatc
         cache_size = archive._conn.execute("PRAGMA cache_size").fetchone()[0]
 
     assert journal_mode.lower() == "wal"
-    assert synchronous == 1  # NORMAL
+    # The live writer applies the write profile as built at import: NORMAL,
+    # or OFF when the harness's scratch override dropped fsync for the run.
+    assert synchronous == _declared_synchronous(WRITE_CONNECTION_PRAGMA_STATEMENTS)
     assert abs(cache_size) == WRITE_CACHE_SIZE_KIB
+
+
+def _declared_synchronous(statements: tuple[str, ...]) -> int:
+    levels = {"OFF": 0, "NORMAL": 1, "FULL": 2}
+    declared = [stmt.rsplit("=", 1)[1].strip().upper() for stmt in statements if stmt.startswith("PRAGMA synchronous")]
+    assert len(declared) == 1, statements
+    return levels[declared[0]]

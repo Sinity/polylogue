@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 from urllib.parse import urlparse
 
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
@@ -51,6 +51,7 @@ from polylogue.core.enums import (
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
+from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp
@@ -61,6 +62,7 @@ from polylogue.sources.parsers.base import (
     ParseAccounting,
     ParsedAttachment,
     ParsedContentBlock,
+    ParsedDispatchObservation,
     ParsedMessage,
     ParsedSession,
     ParsedSessionEvent,
@@ -294,7 +296,7 @@ def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
     reached via ``Polylogue.get_session()``) and the archive-backed route
     (``daemon/http.py:_archive_message_payload``) both read the same
     ``ArchiveMessageRow.blocks`` and must produce byte-identical text for
-    the same message, since ``daemon/web_shell_reader.py``'s client-side
+    the same message, since the browser reader's client-side
     rendering heuristic (``renderMessageBlocks``) dispatches off this single
     flattened field. Joins every non-empty block's text in block order,
     blank-line separated -- this intentionally includes
@@ -304,19 +306,6 @@ def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
     ``investigations/rendering-path-divergence.md``), not this fix's scope.
     """
     return "\n\n".join(block.text for block in blocks if block.text)
-
-
-@dataclass(frozen=True, slots=True)
-class ArchiveInsightMaterialization:
-    insight_type: str
-    session_id: str
-    materializer_version: int
-    materialized_at_ms: int
-    source_updated_at_ms: int | None
-    source_sort_key_ms: int | None
-    input_high_water_mark_ms: int | None
-    input_row_count: int
-    input_high_water_mark_source: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,7 +337,6 @@ def _repair_stale_session_observations(
     revision-governance callers from silently losing the repair that batch ingest
     performs.
     """
-    conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
     candidate_created_at_ms, _candidate_updated_at_ms = session_evidence_timestamps(
         session,
         fallback_timestamp=fallback_timestamp,
@@ -489,17 +477,9 @@ def write_parsed_session_to_archive(
     turns this on.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) is the broader
-    bulk-generation-build lifecycle this session write may be part of: a
-    full source-to-index replay that always finishes with exactly one
-    archive-wide repopulate of ``messages_fts``/``blocks_command_trigram``/
-    ``action_pairs``/``delegation_facts`` before readiness. When ``True``, this write skips every
-    per-session refresh of those four derived surfaces entirely (not just the
-    guard-gated bulk delete+insert ``bulk_fts`` performs) -- the final
-    repopulate covers every session regardless, so per-session work here is
-    pure waste. Only the offline rebuild call passes ``True``; ordinary
-    daemon writes (and ``bulk_fts=True`` used alone, e.g. in
-    ``tests/unit/storage/test_bulk_fts_prefix_reextract.py``) keep those
-    surfaces exactly in sync after every write, unchanged.
+    bulk-generation-build lifecycle this session write may be part of. FTS
+    surfaces remain explicitly rebuilt by the offline path; action and
+    delegation relations are query-time views over canonical rows.
 
     ``defer_fts_rebuild`` is for an authoritative raw-revision replay that
     owns one targeted repair and exactness proof after its writes. It avoids
@@ -596,12 +576,15 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
+    hook_parent_provider_id = _authoritative_parent_claim(
+        source_conn,
+        origin=origin.value,
+        child_native_id=native_id,
+    )
+    effective_session_kind = session.session_kind
+    if hook_parent_provider_id is not None and session.parent_session_provider_id is None:
+        effective_session_kind = SessionKind.SUBAGENT
     if not merge_append:
-        hook_parent_provider_id = _authoritative_parent_claim(
-            source_conn,
-            origin=origin.value,
-            child_native_id=native_id,
-        )
         lineage_session = session
         if hook_parent_provider_id is not None:
             lineage_session = session.model_copy(update={"parent_session_provider_id": hook_parent_provider_id})
@@ -845,7 +828,7 @@ def write_parsed_session_to_archive(
                     active_leaf_message_id,
                     _sqlite_text(session.title),
                     admitted_session_kind(
-                        session.session_kind,
+                        effective_session_kind,
                         branch_type=session.branch_type,
                     ).value,
                     _enum_value(session.title_source),
@@ -887,6 +870,7 @@ def write_parsed_session_to_archive(
                 ),
             )
             add_timing("index.session_upsert", t0)
+            invalidated_identity_children = _write_session_identity_claims(conn, session_id, origin.value, session)
             position_offset = 0
             stale_attachment_ids: set[str] = set()
             projection_carry_forward: _ProjectionCarryForward | None = None
@@ -954,6 +938,9 @@ def write_parsed_session_to_archive(
                     duplicate_native_ids=duplicate_message_native_ids,
                 )
                 add_timing("index.blocks", t0)
+                t0 = time.perf_counter()
+                _reconcile_tool_use_outcomes(conn, session_id)
+                add_timing("index.tool_outcomes", t0)
                 t0 = time.perf_counter()
                 _write_file_edits(
                     conn,
@@ -1106,16 +1093,15 @@ def write_parsed_session_to_archive(
                 _refresh_session_counts(conn, session_id)
             add_timing("index.session_counts", t0)
             t0 = time.perf_counter()
-            _resolve_session_graph(
-                conn,
-                session_id,
-                native_id,
-                origin.value,
-                cache=signature_cache,
-                add_timing=add_timing,
-                bulk_fts=bulk_fts,
-                bulk_build=bulk_build,
-            )
+            graph_kwargs: dict[str, Any] = {
+                "cache": signature_cache,
+                "add_timing": add_timing,
+                "bulk_fts": bulk_fts,
+                "bulk_build": bulk_build,
+            }
+            if invalidated_identity_children:
+                graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
+            _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
             add_timing("index.graph_resolve", t0)
             t0 = time.perf_counter()
             if not bulk_build:
@@ -1215,7 +1201,6 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
     )
     _purge_session_message_fts_when_delete_trigger_missing(conn, session_id)
     for table in (
-        "action_pairs",
         "blocks",
         "attachment_refs",
         "paste_spans",
@@ -1309,120 +1294,6 @@ def upsert_session_profile_costs(
             "UPDATE sessions SET reported_cost_usd = ? WHERE session_id = ?",
             (cost_usd, session_id),
         )
-
-
-def apply_insight_materialization(
-    conn: sqlite3.Connection,
-    *,
-    insight_type: str,
-    session_id: str,
-    materializer_version: int,
-    materialized_at_ms: int,
-    source_updated_at_ms: int | None = None,
-    source_sort_key_ms: int | None = None,
-    input_high_water_mark_ms: int | None = None,
-    input_high_water_mark_source: str | None = None,
-    input_row_count: int = 0,
-) -> None:
-    """Stamp one session-insight materialization row without committing.
-
-    The bulk insight rebuild (``rebuild_session_insights_sync``) materializes
-    every insight table inside one transaction so a SIGKILL mid-rebuild rolls
-    the WAL back to the prior insights. It therefore stamps materialization
-    through this no-commit primitive; the committing ``upsert_*`` wrapper below
-    is for callers that stamp a single insight as its own unit of work.
-    """
-    conn.execute(
-        """
-        INSERT INTO insight_materialization (
-            insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
-            input_high_water_mark_source, input_row_count
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(insight_type, session_id) DO UPDATE SET
-            materializer_version = excluded.materializer_version,
-            materialized_at_ms = excluded.materialized_at_ms,
-            source_updated_at_ms = excluded.source_updated_at_ms,
-            source_sort_key_ms = excluded.source_sort_key_ms,
-            input_high_water_mark_ms = excluded.input_high_water_mark_ms,
-            input_high_water_mark_source = excluded.input_high_water_mark_source,
-            input_row_count = excluded.input_row_count
-        """,
-        (
-            insight_type,
-            session_id,
-            materializer_version,
-            materialized_at_ms,
-            source_updated_at_ms,
-            source_sort_key_ms,
-            input_high_water_mark_ms,
-            input_high_water_mark_source,
-            input_row_count,
-        ),
-    )
-
-
-def upsert_insight_materialization(
-    conn: sqlite3.Connection,
-    *,
-    insight_type: str,
-    session_id: str,
-    materializer_version: int,
-    materialized_at_ms: int,
-    source_updated_at_ms: int | None = None,
-    source_sort_key_ms: int | None = None,
-    input_high_water_mark_ms: int | None = None,
-    input_high_water_mark_source: str | None = None,
-    input_row_count: int = 0,
-) -> ArchiveInsightMaterialization:
-    """Upsert the shared materialization state for one session insight."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    with conn:
-        apply_insight_materialization(
-            conn,
-            insight_type=insight_type,
-            session_id=session_id,
-            materializer_version=materializer_version,
-            materialized_at_ms=materialized_at_ms,
-            source_updated_at_ms=source_updated_at_ms,
-            source_sort_key_ms=source_sort_key_ms,
-            input_high_water_mark_ms=input_high_water_mark_ms,
-            input_high_water_mark_source=input_high_water_mark_source,
-            input_row_count=input_row_count,
-        )
-    return read_insight_materialization(conn, insight_type, session_id)
-
-
-def read_insight_materialization(
-    conn: sqlite3.Connection,
-    insight_type: str,
-    session_id: str,
-) -> ArchiveInsightMaterialization:
-    """Read the shared materialization state for one session insight."""
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        """
-        SELECT insight_type, session_id, materializer_version, materialized_at_ms,
-            source_updated_at_ms, source_sort_key_ms, input_high_water_mark_ms,
-            input_high_water_mark_source, input_row_count
-        FROM insight_materialization
-        WHERE insight_type = ? AND session_id = ?
-        """,
-        (insight_type, session_id),
-    ).fetchone()
-    if row is None:
-        raise KeyError(f"{insight_type}:{session_id}")
-    return ArchiveInsightMaterialization(
-        insight_type=row["insight_type"],
-        session_id=row["session_id"],
-        materializer_version=row["materializer_version"],
-        materialized_at_ms=row["materialized_at_ms"],
-        source_updated_at_ms=row["source_updated_at_ms"],
-        source_sort_key_ms=row["source_sort_key_ms"],
-        input_high_water_mark_ms=row["input_high_water_mark_ms"],
-        input_high_water_mark_source=row["input_high_water_mark_source"],
-        input_row_count=row["input_row_count"],
-    )
 
 
 def read_archive_session_envelope(
@@ -1981,10 +1852,24 @@ def read_session_agent_policies(conn: sqlite3.Connection, session_id: str) -> li
 
 
 def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
-    """Return block ids matched by the archive contentless FTS table."""
+    """Return block ids matched by the archive contentless FTS table.
+
+    A read open admits an index whose message FTS surface is absent
+    (``MESSAGE_FTS_DEGRADABLE_OBJECTS``) because search reports that state
+    itself. Honour that here rather than reaching SQL and raising
+    ``no such table: messages_fts``. Presence, not freshness, is the check:
+    rebuild and differential routes read this surface mid-convergence, when
+    it is legitimately behind ``blocks``.
+    """
+    from polylogue.core.errors import DatabaseError
+    from polylogue.storage.fts.fts_lifecycle import MESSAGE_SEARCH_REPAIR_HINT
+    from polylogue.storage.introspection import table_exists
+
     match_query = normalize_fts5_query(query)
     if match_query is None:
         return []
+    if not table_exists(conn, "messages_fts"):
+        raise DatabaseError(f"Search index not built. {MESSAGE_SEARCH_REPAIR_HINT}")
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
@@ -2166,6 +2051,13 @@ def _message_content_hash(
         _sqlite_text(message.text) or "",
         _sqlite_text(message.user_context_text) or "",
         _enum_value(message.stop_reason) or "",
+        _sqlite_text(message.model_name) or "",
+        _sqlite_text(message.model_effort) or "",
+        _sqlite_text(message.sender_name) or "",
+        _sqlite_text(message.recipient) or "",
+        _sqlite_text(message.delivery_status) or "",
+        "" if message.end_turn is None else str(int(message.end_turn)),
+        "" if message.occurred_at_ms is None else str(message.occurred_at_ms),
         *block_parts,
     )
 
@@ -2220,6 +2112,7 @@ def _block_content_hash(
     exit_code: int | None,
     tool_outcome: ToolOutcome | str | None = None,
     outcome_unknown_reason: str | None = None,
+    semantic_extra_json: str | None = None,
 ) -> bytes:
     """Digest a block's canonical EVIDENCE, deliberately excluding identity (svfj).
 
@@ -2244,6 +2137,7 @@ def _block_content_hash(
         "" if exit_code is None else str(exit_code),
         _enum_value(tool_outcome) or "",
         outcome_unknown_reason or "",
+        semantic_extra_json or "",
     )
 
 
@@ -2308,6 +2202,13 @@ def _build_block_rows(
                     exit_code=exit_code,
                     tool_outcome=tool_outcome,
                     outcome_unknown_reason=outcome_unknown_reason,
+                    semantic_extra_json=_json_dumps(
+                        {
+                            "metadata": block.metadata,
+                            "file_edit": block.file_edit.model_dump(mode="json") if block.file_edit else None,
+                            "web_constructs": [item.model_dump(mode="json") for item in block.web_constructs],
+                        }
+                    ),
                 ),
             }
             rows.append(archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values))
@@ -2352,6 +2253,62 @@ def _write_blocks(
             duplicate_native_ids=duplicate_native_ids,
         )
     conn.executemany(_blocks_insert_sql(), rows)
+
+
+def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> None:
+    """Re-pair every stored tool use when an append supplies its result.
+
+    Append batches can split a FIFO pair across writes. The incoming parser
+    derivation cannot see the earlier use, so reconcile from the complete
+    session projection while the append transaction is still open.
+    """
+    rows = conn.execute(
+        """
+        SELECT b.block_id, b.block_type, b.tool_id, b.tool_outcome,
+               b.text, b.tool_name, b.tool_input, b.semantic_type,
+               b.media_type, b.language, b.tool_result_is_error,
+               b.tool_result_exit_code, b.tool_result_outcome_unknown_reason,
+               b.signature, m.position, m.variant_index, b.position
+        FROM blocks AS b
+        JOIN messages AS m ON m.message_id = b.message_id
+        WHERE b.session_id = ? AND b.tool_id IS NOT NULL
+          AND b.block_type IN ('tool_use', 'tool_result')
+        ORDER BY m.position, m.variant_index, b.position
+        """,
+        (session_id,),
+    ).fetchall()
+    uses: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    results: dict[str, list[sqlite3.Row]] = defaultdict(list)
+    for row in rows:
+        if row["block_type"] == BlockType.TOOL_USE.value:
+            uses[row["tool_id"]].append(row)
+        else:
+            results[row["tool_id"]].append(row)
+
+    for tool_uses in uses.values():
+        tool_id = tool_uses[0]["tool_id"]
+        tool_results = results.get(tool_id, ())
+        for rank, use in enumerate(tool_uses):
+            outcome = tool_results[rank]["tool_outcome"] if rank < len(tool_results) else ToolOutcome.NO_RESULT.value
+            if outcome == use["tool_outcome"]:
+                continue
+            content_hash = _block_content_hash(
+                block_type=use["block_type"],
+                text=use["text"],
+                tool_name=use["tool_name"],
+                tool_input_json=use["tool_input"],
+                semantic_type=use["semantic_type"],
+                media_type=use["media_type"],
+                language=use["language"],
+                is_error=use["tool_result_is_error"],
+                exit_code=use["tool_result_exit_code"],
+                tool_outcome=outcome,
+                outcome_unknown_reason=use["tool_result_outcome_unknown_reason"],
+            )
+            conn.execute(
+                "UPDATE blocks SET tool_outcome = ?, content_hash = ? WHERE block_id = ?",
+                (outcome, content_hash, use["block_id"]),
+            )
 
 
 def _build_file_edit_rows(
@@ -3303,12 +3260,10 @@ def _replace_full_session_messages_and_blocks(
     merge_append/full-replace tail, so this function cannot restore them
     itself without running before they even exist.
 
-    ``bulk_build`` (polylogue-v6i3, default ``False``) skips this function's
-    own scoped derived-index refresh and its ``action_pairs`` refresh entirely -- see
-    ``write_parsed_session_to_archive``'s docstring for why: a bulk-build
-    caller always repopulates both surfaces archive-wide exactly once at
-    readiness, so per-session maintenance here is pure waste. Ordinary
-    (non-bulk-build) full-session replaces are byte-for-byte unchanged.
+    ``bulk_build`` (polylogue-v6i3, default ``False``) skips the write-side
+    refresh work owned by this function. Action and delegation relations are
+    query-time views; ordinary full-session replacement keeps their results
+    current through the canonical rows.
 
     ``prepared`` (polylogue-623q), when given, is an already-validated
     ``PreparedSessionRows`` -- the caller (``write_parsed_session_to_archive``)
@@ -3462,7 +3417,7 @@ def _replace_full_session_messages_and_blocks(
     replacement_complete = False
     try:
         # polylogue-cs86: ``_clear_session_projection_rows`` (~14 point-DELETEs
-        # across messages/blocks/action_pairs/session_events/session_links/...)
+        # across messages/blocks/session_events/session_links/...)
         # plus the bare messages delete below are a no-op cascade whenever this
         # session_id has never had a ``sessions`` row before -- see
         # ``session_row_existed``'s docstring for the invariant proof. Every
@@ -3783,7 +3738,12 @@ def _write_attachments(
     resolved_message_ids: dict[int, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     for attachment in attachments:
-        owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        try:
+            owner_key = attachment_message_owner_key(attachment, owner_resolution)
+        except MessageOwnerAmbiguityError:
+            # The attachment remains represented by the session hash and raw
+            # evidence, but no message owner is safe to guess.
+            continue
         message_id = by_owner_key.get(owner_key) if owner_key is not None else None
         if message_id is not None:
             resolved_message_ids[id(attachment)] = message_id
@@ -4283,12 +4243,8 @@ def _write_session_link(
                 observed_at_ms=observed_at_ms,
             )
         return
-    # polylogue-lyr2: normalize the same way ``_stored_session_native_id``
-    # normalizes ``sessions.native_id`` -- the resolver below matches this
-    # column against ``sessions.native_id`` by exact string equality
-    # (``_resolve_outbound_session_links``), so a raw (unstripped) parent
-    # reference here would silently stop matching a parent whose own
-    # ``native_id`` was written through the stripping helper.
+    # Match exact stored provider identities and parser-emitted aliases after
+    # the same normalization used for session native ids.
     dst_native_id = _sqlite_text(session.parent_session_provider_id.strip())
     if not dst_native_id:
         return
@@ -4296,6 +4252,9 @@ def _write_session_link(
     parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
     method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    identity_reason = _session_target_resolution_reason(conn, origin, dst_native_id)
+    if identity_reason is not None:
+        evidence["resolution_reason"] = identity_reason
     status: str | None = None
 
     # A conflict is scoped to (child, link_type), NOT to the primary key.
@@ -4313,6 +4272,7 @@ def _write_session_link(
         status = TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
         evidence["codex_thread_spawn_edge_parent"] = hook_parent
         evidence["contradiction"] = "authoritative hook evidence names a different parent"
+        evidence["resolution_reason"] = "identity-contradiction"
 
     _upsert_session_link(
         conn,
@@ -4371,23 +4331,41 @@ def _write_session_link(
         )
 
 
-def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
-    """Resolve ``parentToolUseID`` (a provider tool_id) to its block_id.
-
-    polylogue-2qx.4: ``tool_id`` values are provider-generated and globally
-    unique across a session tree, so this is a plain lookup against whatever
-    session already wrote that TOOL_USE block -- no cross-session identity
-    resolution needed. ``None`` (not found / not supplied) leaves the column
-    NULL, never a guess.
-    """
-    tool_use_provider_id = getattr(session, "parent_tool_use_provider_id", None)
-    if not tool_use_provider_id:
+def _session_target_resolution_reason(conn: sqlite3.Connection, origin: str, provider_value: str) -> str | None:
+    """Return the typed reason an exact session target is not resolvable."""
+    claim_rows = conn.execute(
+        """SELECT DISTINCT claimant_session_id
+           FROM session_identity_claims
+           WHERE origin = ? AND identity_namespace = 'provider-session'
+             AND provider_value = ?""",
+        (origin, provider_value),
+    ).fetchall()
+    if len(claim_rows) > 1:
+        return "identity-contradiction"
+    if claim_rows:
         return None
-    row = conn.execute(
-        "SELECT block_id FROM blocks WHERE tool_id = ? AND block_type = 'tool_use' LIMIT 1",
-        (tool_use_provider_id,),
-    ).fetchone()
-    return str(row[0]) if row is not None else None
+    canonical_id = archive_session_id(origin, provider_value)
+    if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (canonical_id,)).fetchone() is not None:
+        return None
+    return "target-not-yet-observed"
+
+
+def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
+    """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
+
+    A supplied parent identity scopes the lookup to that exact resolved
+    session. ``None`` (not found / not supplied) leaves the column NULL,
+    never a guess.
+    """
+    parent_id = getattr(session, "parent_session_provider_id", None)
+    if not parent_id:
+        return None
+    origin = origin_from_provider(session.source_name).value
+    parent_session_id = _existing_parent_session_id(conn, session, origin)
+    if parent_session_id is None:
+        return None
+    child_session_id = archive_session_id(origin, session.provider_session_id.strip())
+    return _resolve_parent_dispatch_block_id(conn, parent_session_id, child_session_id)
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:
@@ -4479,6 +4457,7 @@ def _quarantine_session_link(
         }
     else:
         raise ValueError("acyclic session link cannot be quarantined as a cycle risk")
+    evidence_payload["resolution_reason"] = "cycle-quarantine"
     evidence = _json_dumps(evidence_payload)
     conn.execute(
         """
@@ -4506,13 +4485,14 @@ def _quarantine_session_link(
 def _resolve_session_graph(
     conn: sqlite3.Connection,
     session_id: str,
-    native_id: str,
+    _native_id: str,
     origin: str,
     *,
     cache: dict[str, list[tuple[str, str]]] | None = None,
     add_timing: Callable[[str, float], None] | None = None,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    invalidated_session_ids: set[str] | None = None,
 ) -> None:
     def record_substage(name: str, started_at: float) -> None:
         if add_timing is not None:
@@ -4532,24 +4512,43 @@ def _resolve_session_graph(
     _resolve_outbound_session_links(conn, session_id, origin)
     record_substage("outbound_links", t0)
     t0 = time.perf_counter()
+    _refill_inbound_dispatch_block_ids(conn, session_id)
+    record_substage("inbound_dispatch_blocks", t0)
+    t0 = time.perf_counter()
     has_outbound_link = (
         conn.execute("SELECT 1 FROM session_links WHERE src_session_id = ? LIMIT 1", (session_id,)).fetchone()
         is not None
     )
     inbound_rows = conn.execute(
         """
-        SELECT links.src_session_id, links.link_type
+        SELECT links.src_session_id, links.link_type, links.dst_native_id
         FROM session_links links
-        WHERE links.dst_native_id = ?
+        JOIN session_identity_claims claims
+          ON claims.origin = links.dst_origin
+         AND claims.identity_namespace = 'provider-session'
+         AND claims.provider_value = links.dst_native_id
+         AND claims.claimant_session_id = ?
+        WHERE NOT EXISTS (
+                SELECT 1 FROM session_identity_claims conflicts
+                WHERE conflicts.origin = claims.origin
+                  AND conflicts.identity_namespace = claims.identity_namespace
+                  AND conflicts.provider_value = claims.provider_value
+                  AND conflicts.claimant_session_id != claims.claimant_session_id
+              )
           AND links.resolved_dst_session_id IS NULL
           AND links.status IS NULL
           AND links.dst_origin = ?
         """,
-        (native_id, origin),
+        (session_id, origin),
     ).fetchall()
     record_substage("inbound_lookup", t0)
     t0 = time.perf_counter()
-    if not has_outbound_link and not inbound_rows and _root_projection_current(conn, session_id):
+    if (
+        not has_outbound_link
+        and not inbound_rows
+        and not invalidated_session_ids
+        and _root_projection_current(conn, session_id)
+    ):
         record_substage("root_current_check", t0)
         return
     record_substage("root_current_check", t0)
@@ -4557,7 +4556,7 @@ def _resolve_session_graph(
     t0 = time.perf_counter()
     resolved_child_ids: list[str] = []
     for row in inbound_rows:
-        child_id, link_type = str(row[0]), str(row[1])
+        child_id, link_type, dst_native_id = str(row[0]), str(row[1]), str(row[2])
         # polylogue-4ts.10: session_id is about to become child_id's parent --
         # refuse (quarantine, with evidence) rather than silently resolve if
         # that would close a cycle or cannot be decided within the walk budget.
@@ -4567,24 +4566,31 @@ def _resolve_session_graph(
                 conn,
                 src_session_id=child_id,
                 dst_origin=origin,
-                dst_native_id=native_id,
+                dst_native_id=dst_native_id,
                 link_type=link_type,
                 cycle_walk=cycle_walk,
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
+        parent_tool_use_block_id = _resolve_parent_dispatch_block_id(conn, session_id, child_id)
         conn.execute(
             """
             UPDATE session_links
             SET resolved_dst_session_id = ?,
-                resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
+                resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms),
+                parent_tool_use_block_id = COALESCE(parent_tool_use_block_id, ?),
+                evidence_json = json_remove(evidence_json, '$.resolution_reason'),
+                method = CASE
+                    WHEN parent_tool_use_block_id IS NULL AND ? IS NOT NULL THEN 'parent-tool-use-id'
+                    ELSE method
+                END
             WHERE src_session_id = ?
               AND dst_native_id = ?
               AND link_type = ?
               AND resolved_dst_session_id IS NULL
               AND status IS NULL
             """,
-            (session_id, child_id, native_id, link_type),
+            (session_id, parent_tool_use_block_id, parent_tool_use_block_id, child_id, dst_native_id, link_type),
         )
         resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
@@ -4603,21 +4609,47 @@ def _resolve_session_graph(
         )
     record_substage("reextract_prefix_tails", t0)
 
-    impacted_session_ids = {session_id, *resolved_child_ids}
+    impacted_session_ids = {session_id, *resolved_child_ids, *(invalidated_session_ids or set())}
     t0 = time.perf_counter()
     _repair_stale_prefix_branch_points_db(conn, impacted_session_ids, cache=cache, composed_cache=composed_cache)
     record_substage("repair_stale_branch_points", t0)
     t0 = time.perf_counter()
-    old_root_ids = _root_ids(conn, impacted_session_ids)
     projection_seen: set[str] = set()
     for impacted_session_id in impacted_session_ids:
         _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
-    root_ids_to_refresh = old_root_ids | _root_ids(conn, impacted_session_ids)
     record_substage("projection_refresh", t0)
-    t0 = time.perf_counter()
-    for root_session_id in root_ids_to_refresh:
-        _refresh_thread(conn, root_session_id)
-    record_substage("thread_refresh", t0)
+
+
+def _refill_inbound_dispatch_block_ids(conn: sqlite3.Connection, parent_session_id: str) -> None:
+    """Rebind resolved children to this parent's dispatch blocks.
+
+    Writing a parent replaces its messages and blocks, and
+    ``session_links.parent_tool_use_block_id`` is ``ON DELETE SET NULL``, so
+    every inbound child edge loses the join key while the replacement
+    reinserts the same deterministic block ids. Identity resolution revisits
+    only unresolved edges, so an already-resolved child is repaired here or
+    not at all.
+    """
+    rows = conn.execute(
+        """SELECT src_session_id, dst_origin, dst_native_id, link_type
+           FROM session_links
+           WHERE resolved_dst_session_id = ?
+             AND parent_tool_use_block_id IS NULL
+             AND status IS NULL""",
+        (parent_session_id,),
+    ).fetchall()
+    for src_session_id, dst_origin, dst_native_id, link_type in rows:
+        block_id = _resolve_parent_dispatch_block_id(conn, parent_session_id, str(src_session_id))
+        if block_id is None:
+            continue
+        conn.execute(
+            """UPDATE session_links
+               SET parent_tool_use_block_id = ?,
+                   method = CASE WHEN method = 'parser-parent' THEN 'parent-tool-use-id' ELSE method END
+               WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+                 AND parent_tool_use_block_id IS NULL""",
+            (block_id, src_session_id, dst_origin, dst_native_id, link_type),
+        )
 
 
 def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
@@ -4629,33 +4661,7 @@ def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
         """,
         (session_id,),
     ).fetchone()
-    if row is None or row[0] != session_id or row[1] is not None:
-        return False
-    thread_row = conn.execute(
-        """
-        SELECT created_at_ms, session_count, depth
-        FROM threads
-        WHERE thread_id = ?
-        """,
-        (session_id,),
-    ).fetchone()
-    if thread_row is None:
-        return False
-    thread_sessions = conn.execute(
-        """
-        SELECT session_id
-        FROM thread_sessions
-        WHERE thread_id = ?
-        ORDER BY position
-        """,
-        (session_id,),
-    ).fetchall()
-    return (
-        int(thread_row[0] or 0) == int(row[2] or row[3] or 0)
-        and int(thread_row[1] or 0) == 1
-        and int(thread_row[2] or 0) == 0
-        and [str(thread_session[0]) for thread_session in thread_sessions] == [session_id]
-    )
+    return row is not None and row[0] == session_id and row[1] is None
 
 
 def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, origin: str) -> None:
@@ -4688,17 +4694,48 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
     """
     candidates = conn.execute(
         """
-        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type, dst.session_id
+        SELECT session_links.dst_origin, session_links.dst_native_id, session_links.link_type,
+               claims.claimant_session_id
         FROM session_links
-        JOIN sessions dst
-          ON dst.native_id = session_links.dst_native_id
-         AND dst.origin = session_links.dst_origin
+        JOIN session_identity_claims claims
+          ON claims.origin = session_links.dst_origin
+         AND claims.identity_namespace = 'provider-session'
+         AND claims.provider_value = session_links.dst_native_id
         WHERE session_links.src_session_id = ?
           AND session_links.resolved_dst_session_id IS NULL
           AND session_links.status IS NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM session_identity_claims conflicts
+                WHERE conflicts.origin = claims.origin
+                  AND conflicts.identity_namespace = claims.identity_namespace
+                  AND conflicts.provider_value = claims.provider_value
+                  AND conflicts.claimant_session_id != claims.claimant_session_id
+              )
         """,
         (session_id,),
     ).fetchall()
+    # A session written before identity claims existed still has one exact
+    # canonical name. Admit that name as a canonical target without broadening
+    # the lookup to filename, ordering, or partial-string matches.
+    exact_candidates = conn.execute(
+        """
+        SELECT links.dst_origin, links.dst_native_id, links.link_type, sessions.session_id
+        FROM session_links AS links
+        JOIN sessions
+          ON sessions.session_id = links.dst_origin || ':' || links.dst_native_id
+        WHERE links.src_session_id = ?
+          AND links.resolved_dst_session_id IS NULL
+          AND links.status IS NULL
+          AND NOT EXISTS (
+                SELECT 1 FROM session_identity_claims claims
+                WHERE claims.origin = links.dst_origin
+                  AND claims.identity_namespace = 'provider-session'
+                  AND claims.provider_value = links.dst_native_id
+          )
+        """,
+        (session_id,),
+    ).fetchall()
+    candidates.extend(exact_candidates)
     for dst_origin, dst_native_id, link_type, proposed_parent_id in candidates:
         cycle_walk = _would_create_cycle(conn, child_id=session_id, proposed_parent_id=proposed_parent_id)
         if cycle_walk.outcome != "acyclic":
@@ -4716,7 +4753,8 @@ def _resolve_outbound_session_links(conn: sqlite3.Connection, session_id: str, o
             """
             UPDATE session_links
                SET resolved_dst_session_id = ?,
-                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms)
+                   resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms),
+                   evidence_json = json_remove(evidence_json, '$.resolution_reason')
              WHERE src_session_id = ?
                AND dst_origin = ?
                AND dst_native_id = ?
@@ -4824,166 +4862,8 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
 
 
 def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
-    root = conn.execute(
-        """
-        SELECT session_id, origin, created_at_ms, updated_at_ms, COALESCE(root_session_id, session_id) AS actual_root_id
-        FROM sessions
-        WHERE session_id = ?
-        """,
-        (root_session_id,),
-    ).fetchone()
-    if root is None:
-        return
-    if root[4] != root_session_id:
-        conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-        conn.execute("DELETE FROM threads WHERE thread_id = ?", (root_session_id,))
-        return
-    conn.execute(
-        """
-        INSERT INTO threads (thread_id, created_at_ms, session_count, depth)
-        VALUES (?, ?, 0, 0)
-        ON CONFLICT(thread_id) DO UPDATE SET
-            created_at_ms = excluded.created_at_ms
-        """,
-        (root_session_id, root[2] or root[3] or 0),
-    )
-    session_rows = conn.execute(
-        """
-        SELECT session_id
-        FROM sessions
-        WHERE root_session_id = ? OR session_id = ?
-        ORDER BY session_id != ?, sort_key_ms IS NULL, sort_key_ms, session_id
-        """,
-        (root_session_id, root_session_id, root_session_id),
-    ).fetchall()
-    desired_session_ids = [str(row[0]) for row in session_rows]
-    existing_thread = conn.execute(
-        """
-        SELECT created_at_ms, session_count, depth
-        FROM threads
-        WHERE thread_id = ?
-        """,
-        (root_session_id,),
-    ).fetchone()
-    if existing_thread is not None:
-        existing_session_ids = [
-            str(row[0])
-            for row in conn.execute(
-                """
-                SELECT session_id
-                FROM thread_sessions
-                WHERE thread_id = ?
-                ORDER BY position
-                """,
-                (root_session_id,),
-            ).fetchall()
-        ]
-        if (
-            int(existing_thread[0] or 0) == int(root[2] or root[3] or 0)
-            and int(existing_thread[1] or 0) == len(desired_session_ids)
-            and int(existing_thread[2] or 0) == max(len(desired_session_ids) - 1, 0)
-            and existing_session_ids == desired_session_ids
-        ):
-            return
-        if existing_session_ids == desired_session_ids[: len(existing_session_ids)]:
-            new_rows = [
-                (root_session_id, row[0], position)
-                for position, row in enumerate(
-                    session_rows[len(existing_session_ids) :], start=len(existing_session_ids)
-                )
-            ]
-            if new_rows:
-                conn.executemany(
-                    """
-                    INSERT INTO thread_sessions (thread_id, session_id, position)
-                    VALUES (?, ?, ?)
-                    """,
-                    new_rows,
-                )
-            conn.execute(
-                """
-                UPDATE threads
-                SET session_count = ?,
-                    depth = ?
-                WHERE thread_id = ?
-                """,
-                (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
-            )
-            return
-        if len(existing_session_ids) == len(desired_session_ids):
-            # Same membership, different order (a thread member's sort key
-            # moved past siblings without joining/leaving the thread). Since
-            # both lists have equal length, index i names the same numeric
-            # ``position`` in both orderings, so the common leading/trailing
-            # run that already agrees can be left untouched -- only the
-            # differing middle span needs a delete+reinsert. Without this, a
-            # giant long-lived thread (thousands of resumed/forked Codex
-            # sessions) pays a full O(thread_size) rebuild on every reorder,
-            # even when only a handful of rows actually moved
-            # (polylogue-6wnh).
-            n = len(existing_session_ids)
-            common_prefix_len = 0
-            while (
-                common_prefix_len < n
-                and existing_session_ids[common_prefix_len] == desired_session_ids[common_prefix_len]
-            ):
-                common_prefix_len += 1
-            common_suffix_len = 0
-            max_suffix = n - common_prefix_len
-            while (
-                common_suffix_len < max_suffix
-                and existing_session_ids[n - 1 - common_suffix_len] == desired_session_ids[n - 1 - common_suffix_len]
-            ):
-                common_suffix_len += 1
-            span_end = n - common_suffix_len
-            if span_end > common_prefix_len:
-                conn.execute(
-                    """
-                    DELETE FROM thread_sessions
-                    WHERE thread_id = ? AND position >= ? AND position < ?
-                    """,
-                    (root_session_id, common_prefix_len, span_end),
-                )
-                conn.executemany(
-                    """
-                    INSERT INTO thread_sessions (thread_id, session_id, position)
-                    VALUES (?, ?, ?)
-                    """,
-                    [
-                        (root_session_id, session_id, position)
-                        for position, session_id in enumerate(
-                            desired_session_ids[common_prefix_len:span_end], start=common_prefix_len
-                        )
-                    ],
-                )
-            conn.execute(
-                """
-                UPDATE threads
-                SET session_count = ?,
-                    depth = ?
-                WHERE thread_id = ?
-                """,
-                (n, max(n - 1, 0), root_session_id),
-            )
-            return
-    conn.execute("DELETE FROM thread_sessions WHERE thread_id = ?", (root_session_id,))
-    if session_rows:
-        conn.executemany(
-            """
-            INSERT INTO thread_sessions (thread_id, session_id, position)
-            VALUES (?, ?, ?)
-            """,
-            [(root_session_id, row[0], position) for position, row in enumerate(session_rows)],
-        )
-    conn.execute(
-        """
-        UPDATE threads
-        SET session_count = ?,
-            depth = ?
-        WHERE thread_id = ?
-        """,
-        (len(session_rows), max(len(session_rows) - 1, 0), root_session_id),
-    )
+    # Thread membership and summary are query-time views over sessions.
+    del conn, root_session_id
 
 
 def _root_ids(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
@@ -6826,14 +6706,22 @@ def _reextract_prefix_tail_db(
     t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
     # Late-parent resolution mutates an already-materialized child outside its
-    # own write path. Rebuild every projection whose input rows just changed;
-    # otherwise incremental convergence can retain the pre-extraction prefix
-    # in usage, delegation, and insight products indefinitely.
+    # own write path, so usage must be rebuilt here: it is aggregated at write
+    # time and nothing else revisits it. Derived session rows converge on their
+    # own -- the refreshed counts move the child's high-water mark, which is
+    # what the staleness comparison reads.
     conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child_session_id,))
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
-    refresh_delegation_facts_for_session(conn, child_session_id)
-    conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (child_session_id,))
+    # Derived session products cache the pre-extraction message set. Their
+    # staleness predicate compares the session's sort key, updated-at and
+    # content hash, none of which re-extraction moves, so the rows are dropped
+    # outright: a missing profile is what makes the child a convergence
+    # candidate again.
+    conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_phases WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
 
 
@@ -7327,12 +7215,201 @@ def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession
     parent_provider_id = session.parent_session_provider_id
     if not parent_provider_id:
         return None
-    parent_session_id = archive_session_id(origin_value, parent_provider_id)
+    parent_session_id = archive_session_id(origin_value, parent_provider_id.strip())
     row = conn.execute(
         "SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1",
         (parent_session_id,),
     ).fetchone()
-    return parent_session_id if row is not None else None
+    if row is not None:
+        return parent_session_id
+    row = conn.execute(
+        """SELECT claimant_session_id FROM session_identity_claims
+           WHERE origin = ? AND identity_namespace = 'provider-session'
+             AND provider_value = ? ORDER BY claimant_session_id""",
+        (origin_value, parent_provider_id.strip()),
+    ).fetchall()
+    return str(row[0][0]) if len(row) == 1 else None
+
+
+def _dispatch_child_identity_values(observation: ParsedDispatchObservation, payload: Mapping[str, object]) -> set[str]:
+    """Every exact provider name this dispatch observation offers for its child."""
+    values = {observation.child_provider_id.strip()} if observation.child_provider_id else set()
+    candidates = payload.get("child_provider_ids")
+    if isinstance(candidates, list):
+        values |= {str(value).strip() for value in candidates if str(value).strip()}
+    return values
+
+
+def _canonical_identity_session_ids(conn: sqlite3.Connection, origin: str, values: set[str]) -> set[str] | None:
+    """Resolve exact provider names to the sessions that claim them.
+
+    ``None`` means at least one name is not resolvable to exactly one session
+    -- an unclaimed or contested name could still turn out to be a different
+    session, so the caller must refuse rather than assume agreement.
+    """
+    resolved: set[str] = set()
+    for value in values:
+        claimants = {
+            str(row[0])
+            for row in conn.execute(
+                """SELECT DISTINCT claimant_session_id FROM session_identity_claims
+                   WHERE origin = ? AND identity_namespace = 'provider-session'
+                     AND provider_value = ?""",
+                (origin, value),
+            ).fetchall()
+        }
+        if len(claimants) > 1:
+            return None
+        if claimants:
+            resolved |= claimants
+            continue
+        canonical_id = archive_session_id(origin, value)
+        if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (canonical_id,)).fetchone() is None:
+            return None
+        resolved.add(canonical_id)
+    return resolved
+
+
+def _resolve_parent_dispatch_block_id(
+    conn: sqlite3.Connection, parent_session_id: str, child_session_id: str
+) -> str | None:
+    """Resolve parent-side delegation evidence after either session arrives.
+
+    Provider names are compared as the sessions they resolve to: several exact
+    names for one child are one identity, and only names resolving to
+    different sessions contradict each other.
+    """
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (parent_session_id,)).fetchone()
+    if origin_row is None:
+        return None
+    origin = str(origin_row[0])
+    rows = conn.execute(
+        """SELECT source_message_provider_id, payload_json
+           FROM session_events
+           WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
+        (parent_session_id,),
+    ).fetchall()
+    matching_blocks: set[str] = set()
+    for source_id, payload_json in rows:
+        try:
+            payload = json.loads(str(payload_json))
+        except (TypeError, ValueError):
+            continue
+        try:
+            observation_payload = dict(payload) if isinstance(payload, dict) else {}
+            if source_id and "provider_tool_id" not in observation_payload:
+                observation_payload["provider_tool_id"] = str(source_id)
+            observation = ParsedDispatchObservation.model_validate(observation_payload)
+        except (TypeError, ValueError):
+            continue
+        # A parser-side contradiction is provisional: it compares raw names
+        # without an archive to resolve them against. Every other refusal
+        # reason stands.
+        if observation.resolution_reason is not None and observation.resolution_reason != "identity-contradiction":
+            continue
+        identity_values = _dispatch_child_identity_values(observation, observation_payload)
+        if not identity_values:
+            continue
+        if _canonical_identity_session_ids(conn, origin, identity_values) != {child_session_id}:
+            continue
+        block_rows = conn.execute(
+            """SELECT b.block_id FROM blocks b
+               JOIN messages m ON m.message_id = b.message_id
+               WHERE b.tool_id = ? AND b.block_type = 'tool_use' AND m.session_id = ?
+               ORDER BY b.block_id""",
+            (observation.provider_tool_id, parent_session_id),
+        ).fetchall()
+        if len(block_rows) == 1:
+            matching_blocks.add(str(block_rows[0][0]))
+    if len(matching_blocks) == 1:
+        return next(iter(matching_blocks))
+    return None
+
+
+def _write_session_identity_claims(
+    conn: sqlite3.Connection, session_id: str, origin: str, session: ParsedSession
+) -> set[str]:
+    """Persist exact parser-emitted names that can address this session."""
+    previous_values = {
+        str(row[0])
+        for row in conn.execute(
+            """SELECT provider_value FROM session_identity_claims
+               WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'""",
+            (session_id,),
+        ).fetchall()
+    }
+    values = {
+        str(value).strip()
+        for value in [session.provider_session_id, *session.provider_session_aliases]
+        if str(value).strip()
+    }
+    retired_values = previous_values - values
+    conn.execute("DELETE FROM session_identity_claims WHERE claimant_session_id = ?", (session_id,))
+    canonical_value = str(session.provider_session_id).strip()
+    for value in sorted(values):
+        conn.execute(
+            """INSERT OR REPLACE INTO session_identity_claims
+               (origin, identity_namespace, provider_value, claimant_session_id, claim_kind, evidence_json)
+               VALUES (?, 'provider-session', ?, ?, ?, '{}')""",
+            (origin, value, session_id, "canonical" if value == canonical_value else "alias"),
+        )
+    placeholders = ", ".join("?" for _ in values)
+    ambiguous_values = {
+        str(row[0])
+        for row in conn.execute(
+            f"""SELECT provider_value FROM session_identity_claims
+                WHERE origin = ? AND identity_namespace = 'provider-session'
+                  AND provider_value IN ({placeholders})
+                GROUP BY provider_value HAVING COUNT(*) > 1""",
+            (origin, *sorted(values)),
+        ).fetchall()
+    }
+    invalidated_children: set[str] = set()
+
+    def _invalidate_links(values_to_invalidate: set[str], *, claimant_only: bool) -> None:
+        if not values_to_invalidate:
+            return
+        value_placeholders = ", ".join("?" for _ in values_to_invalidate)
+        claimant_clause = "AND resolved_dst_session_id = ?" if claimant_only else ""
+        params: tuple[object, ...] = (origin, *sorted(values_to_invalidate))
+        if claimant_only:
+            params = (*params, session_id)
+        rows = conn.execute(
+            f"""SELECT DISTINCT src_session_id FROM session_links
+                WHERE dst_origin = ? AND dst_native_id IN ({value_placeholders})
+                  AND resolved_dst_session_id IS NOT NULL {claimant_clause}""",
+            params,
+        ).fetchall()
+        invalidated_children.update(str(row[0]) for row in rows)
+        conn.execute(
+            f"""UPDATE session_links
+                SET resolved_dst_session_id = NULL,
+                    resolved_at_ms = NULL,
+                    branch_point_message_id = NULL,
+                    branch_point_content_address = NULL,
+                    inheritance = NULL,
+                    parent_tool_use_block_id = NULL
+                WHERE dst_origin = ? AND dst_native_id IN ({value_placeholders})
+                  AND resolved_dst_session_id IS NOT NULL {claimant_clause}""",
+            params,
+        )
+
+    _invalidate_links(retired_values, claimant_only=True)
+    _invalidate_links(ambiguous_values, claimant_only=False)
+    if ambiguous_values:
+        value_placeholders = ", ".join("?" for _ in ambiguous_values)
+        conn.execute(
+            f"""UPDATE session_links
+                SET evidence_json = CASE
+                    WHEN json_type(evidence_json) = 'object'
+                    THEN json_set(evidence_json, '$.resolution_reason', 'identity-contradiction')
+                    ELSE '{{\"resolution_reason\":\"identity-contradiction\"}}'
+                END
+                WHERE dst_origin = ? AND dst_native_id IN ({value_placeholders})
+                  AND resolved_dst_session_id IS NULL""",
+            (origin, *sorted(ambiguous_values)),
+        )
+    return invalidated_children
 
 
 def _message_content_address_for_id(conn: sqlite3.Connection, message_id: str) -> bytes | None:
@@ -7644,7 +7721,7 @@ def _repo_name(repository_url: str, root_path: str) -> str | None:
 
     Prefers ``normalize_repo_name`` -- the same remote-URL/git-root
     normalization the attribution pipeline
-    (``storage/insights/session/repo_observations.py``) already uses -- so a
+    (``storage/derived/session/repo_observations.py``) already uses -- so a
     session whose cwd is a deep subdirectory or an agent worktree resolves to
     the real repository name, not a raw path-basename echo (the
     "agent-<hash>" bug: a session's cwd under
@@ -7672,7 +7749,7 @@ def _discovered_repo_root_path(root_path: str) -> str | None:
     written into ``root_path`` to the resolved git root collapses
     same-checkout subdirectory variance and keeps this writer's rows
     consistent with the attribution-based writer
-    (``storage/insights/session/repo_observations.py``), which already
+    (``storage/derived/session/repo_observations.py``), which already
     normalizes this way. As of the ``repo_identity_key`` schema fix below,
     ``root_path`` is no longer part of ``repos.repo_id`` identity when a
     remote is known -- it still matters as the value recorded in
@@ -7974,13 +8051,11 @@ def _enum_value(value: object) -> str | None:
 __all__ = [
     "ArchiveAgentPolicy",
     "ArchiveBlockRow",
-    "ArchiveInsightMaterialization",
     "ArchiveMessageRow",
     "ArchiveSessionPhase",
     "ArchiveSessionTag",
     "ArchiveSessionEnvelope",
     "ArchiveSessionWorkEvent",
-    "read_insight_materialization",
     "read_session_agent_policies",
     "read_session_phases",
     "read_session_tags",
@@ -7989,8 +8064,6 @@ __all__ = [
     "replace_parser_ingest_flag_tags",
     "repo_identity_key",
     "upsert_session_profile_costs",
-    "apply_insight_materialization",
-    "upsert_insight_materialization",
     "upsert_session_phase",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",

@@ -26,6 +26,25 @@ _FTS_BULK_GUARD = re.compile(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class _SameVersionSchemaVariant:
+    introduced_version: int
+    object_names: tuple[tuple[str, str], ...]
+    transformation: str = "remove_fts_bulk_guard"
+
+
+_INDEX_SAME_VERSION_SCHEMA_VARIANTS = (
+    _SameVersionSchemaVariant(
+        introduced_version=63,
+        object_names=(
+            ("trigger", "blocks_command_trigram_ai"),
+            ("trigger", "blocks_command_trigram_ad"),
+            ("trigger", "blocks_command_trigram_au"),
+        ),
+    ),
+)
+
+
 def _sql(value: str | None) -> str:
     return _WS.sub(" ", (value or "").strip()).lower()
 
@@ -48,7 +67,9 @@ def _fts_shadow_names(conn: sqlite3.Connection) -> frozenset[str]:
 def _projection(conn: sqlite3.Connection) -> tuple[tuple[str, str, str], ...]:
     rows = conn.execute(
         """SELECT type, name, sql FROM sqlite_master
-           WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+           WHERE name NOT LIKE 'sqlite_%'
+             AND name != 'schema_identity'
+             AND sql IS NOT NULL
            ORDER BY type, name"""
     ).fetchall()
     # FTS5 shadow tables are storage FTS5 owns and reshapes across SQLite
@@ -89,7 +110,17 @@ def _canonical_schema_manifest(tier: ArchiveTier, version: int, ddl: str) -> Sch
     """
     conn = sqlite3.connect(":memory:")
     try:
+        if tier is ArchiveTier.EMBEDDINGS:
+            from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+
+            loaded, error = try_load_sqlite_vec(conn)
+            if not loaded:
+                raise RuntimeError(f"cannot render embeddings schema without sqlite-vec: {error}")
         conn.executescript(ddl)
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DERIVED_SCHEMA_META_DDL
+
+            conn.executescript(DERIVED_SCHEMA_META_DDL)
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
@@ -116,9 +147,9 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
     extra = sorted(set(actual_by_name) - set(expected_by_name))
     variant_objects: dict[tuple[str, str], set[str]] = {}
     if expected.tier == ArchiveTier.INDEX.value and expected.version == actual.version:
-        from polylogue.storage.sqlite.lifecycle import same_version_schema_variants
-
-        for variant in same_version_schema_variants(expected.version):
+        for variant in _INDEX_SAME_VERSION_SCHEMA_VARIANTS:
+            if expected.version < variant.introduced_version:
+                continue
             for object_name in variant.object_names:
                 canonical = expected_by_name.get(object_name)
                 if canonical is not None and variant.transformation == "remove_fts_bulk_guard":
@@ -135,8 +166,22 @@ def schema_manifest_diff(expected: SchemaManifest, actual: SchemaManifest) -> di
 
 #: The message FTS surface is a derived read model inside the derived index:
 #: contentless, trigger-maintained, and rebuildable from ``blocks``. Its
-#: absence degrades search; the rest of the index stays readable.
-MESSAGE_FTS_OBJECT_PREFIX = "messages_fts"
+#: absence degrades search; the rest of the index stays readable, so a read
+#: open admits a manifest diff confined to these objects.
+#:
+#: Membership is declared, not matched on the ``messages_fts`` name prefix.
+#: ``messages_fts_identity`` is a plain declared table of ours rather than
+#: FTS5 storage, and a later object sharing the prefix would otherwise be
+#: admitted before anyone decided its absence is survivable.
+MESSAGE_FTS_DEGRADABLE_OBJECTS: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("table", "messages_fts"),
+        ("table", "messages_fts_identity"),
+        ("trigger", "messages_fts_ai"),
+        ("trigger", "messages_fts_ad"),
+        ("trigger", "messages_fts_au"),
+    }
+)
 
 
 def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool:
@@ -144,7 +189,7 @@ def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool
 
     if diff.get("version"):
         return False
-    names: list[str] = []
+    objects: list[tuple[str, str]] = []
     for key in ("missing", "extra", "wrong_definition"):
         entries = diff.get(key)
         if not isinstance(entries, (list, tuple)):
@@ -152,8 +197,8 @@ def schema_manifest_diff_is_message_fts_only(diff: Mapping[str, object]) -> bool
         for entry in entries:
             if not isinstance(entry, (list, tuple)) or len(entry) < 2:
                 return False
-            names.append(str(entry[1]))
-    return bool(names) and all(name.startswith(MESSAGE_FTS_OBJECT_PREFIX) for name in names)
+            objects.append((str(entry[0]), str(entry[1])))
+    return bool(objects) and all(entry in MESSAGE_FTS_DEGRADABLE_OBJECTS for entry in objects)
 
 
 def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> SchemaManifest:
@@ -168,7 +213,7 @@ def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> Schem
 
 
 __all__ = [
-    "MESSAGE_FTS_OBJECT_PREFIX",
+    "MESSAGE_FTS_DEGRADABLE_OBJECTS",
     "SchemaManifest",
     "assert_schema_manifest",
     "canonical_schema_manifest",

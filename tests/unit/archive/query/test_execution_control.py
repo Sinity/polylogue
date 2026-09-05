@@ -1003,18 +1003,10 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     bounded_ctx = QueryExecutionContext.create(query_text="c03-bounded", workload_class="scan", timeout_s=10.0)
     bounded = execute(bounded_ctx)
 
-    # polylogue-1ldl: renaming the relation to the plain ``actions`` compat
-    # VIEW used to reproduce the pre-z9gh.2 "global-first" cost (a
-    # windowed-CTE recomputation over the entire archive). Since PR #3018
-    # (z9gh.2), ``actions`` is a cheap re-join over the small, indexed,
-    # pre-materialized ``action_pairs`` table (session_id leads its index),
-    # so this rename no longer forces any meaningfully different/expensive
-    # path -- the canary silently stopped discriminating anything. The
-    # actually-expensive "global-first" path this mutation means to exercise
-    # still exists in ``action_relation_select_sql``'s unbounded branch
-    # (``session_placeholders=None``), which recomputes the tool_use/
-    # tool_result window-function pairing across every block in the archive
-    # instead of reading the materialized table. Force that branch directly.
+    # polylogue-1ldl: the scoped action route binds the session before the
+    # query-time action-pair view evaluates. The unbounded branch of
+    # ``action_relation_select_sql`` recomputes tool_use/tool_result pairing
+    # across every block in the archive. Force that branch directly.
     monkeypatch.setattr(
         "polylogue.storage.sqlite.archive_tiers.archive_query_reads._action_relation_for_query",
         lambda **_kwargs: (

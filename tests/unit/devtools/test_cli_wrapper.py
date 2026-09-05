@@ -41,6 +41,10 @@ def _run_wrapper(
         # set HOME to a tmp value so git doesn't read the developer's config.
         "PATH": os.environ["PATH"],
         "HOME": str(cwd),
+        # git finds a repository by walking upward, and the pytest temporary
+        # tree lives inside this checkout. Without a ceiling, a directory the
+        # test built to be outside any checkout is inside one.
+        "GIT_CEILING_DIRECTORIES": str(Path(cwd).resolve().parent),
     }
     if env is not None:
         base_env.update(env)

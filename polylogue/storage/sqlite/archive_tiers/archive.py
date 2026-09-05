@@ -24,6 +24,70 @@ from pathlib import Path
 from types import TracebackType
 from typing import IO, Any, BinaryIO, Literal, NoReturn, TypedDict, cast
 
+from polylogue.analysis.affordance_usage import (
+    clean_patterns as _clean_affordance_patterns,
+)
+from polylogue.analysis.affordance_usage import (
+    evidence_kind_for_row as _affordance_evidence_kind,
+)
+from polylogue.analysis.affordance_usage import (
+    family_for_text as _affordance_family_for_text,
+)
+from polylogue.analysis.affordance_usage import (
+    like_param as _affordance_like_param,
+)
+from polylogue.analysis.affordance_usage import (
+    matched_by_row as _affordance_matched_by,
+)
+from polylogue.analysis.affordance_usage import (
+    normalized_tool_name_for_row as _affordance_normalized_tool_name,
+)
+from polylogue.analysis.archive import (
+    ArchiveCoverageInsight,
+    ArchiveDebtInsight,
+    ArchiveEnrichmentProvenance,
+    ArchiveInferenceProvenance,
+    ArchiveInsightProvenance,
+    CostRollupInsight,
+    SessionCostInsight,
+    SessionEnrichmentPayload,
+    SessionEvidencePayload,
+    SessionInferencePayload,
+    SessionLatencyProfileInsight,
+    SessionLatencyProfilePayload,
+    SessionPhaseEvidencePayload,
+    SessionPhaseInsight,
+    SessionProfileInsight,
+    SessionTagRollupInsight,
+    SessionWorkEventInsight,
+    ThreadInsight,
+    UsageTimelineInsight,
+    WorkEventEvidencePayload,
+    WorkEventInferencePayload,
+)
+from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, ThreadPayload
+from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
+from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
+from polylogue.analysis.confidence import ConfidenceBand
+from polylogue.analysis.confidence import from_score as confidence_from_score
+from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.objective_posture import structural_objective_posture
+from polylogue.analysis.readiness import (
+    InsightOriginCoverage,
+    InsightReadinessEntry,
+    InsightReadinessQuery,
+    InsightReadinessReport,
+    InsightStorageArtifact,
+    InsightVersionCoverage,
+    insight_display_name,
+    known_insight_readiness_names,
+    normalize_insight_readiness_name,
+)
+from polylogue.analysis.rigor import list_rigor_contracts
+from polylogue.analysis.session_label import session_structural_label_for_session
+from polylogue.analysis.temporal_source import time_confidence_for_source
+from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
+from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.annotations.batch import AnnotationBatch
 from polylogue.annotations.schema import AnnotationSchema
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
@@ -58,74 +122,14 @@ from polylogue.core.json import require_json_value
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
-from polylogue.insights.affordance_usage import (
-    clean_patterns as _clean_affordance_patterns,
-)
-from polylogue.insights.affordance_usage import (
-    evidence_kind_for_row as _affordance_evidence_kind,
-)
-from polylogue.insights.affordance_usage import (
-    family_for_text as _affordance_family_for_text,
-)
-from polylogue.insights.affordance_usage import (
-    like_param as _affordance_like_param,
-)
-from polylogue.insights.affordance_usage import (
-    matched_by_row as _affordance_matched_by,
-)
-from polylogue.insights.affordance_usage import (
-    normalized_tool_name_for_row as _affordance_normalized_tool_name,
-)
-from polylogue.insights.archive import (
-    ArchiveCoverageInsight,
-    ArchiveDebtInsight,
-    ArchiveEnrichmentProvenance,
-    ArchiveInferenceProvenance,
-    ArchiveInsightProvenance,
-    CostRollupInsight,
-    SessionCostInsight,
-    SessionEnrichmentPayload,
-    SessionEvidencePayload,
-    SessionInferencePayload,
-    SessionLatencyProfileInsight,
-    SessionLatencyProfilePayload,
-    SessionPhaseEvidencePayload,
-    SessionPhaseInsight,
-    SessionProfileInsight,
-    SessionTagRollupInsight,
-    SessionWorkEventInsight,
-    ThreadInsight,
-    UsageTimelineInsight,
-    WorkEventEvidencePayload,
-    WorkEventInferencePayload,
-)
-from polylogue.insights.archive_models import ThreadMemberEvidencePayload, ThreadPayload
-from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
-from polylogue.insights.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
-from polylogue.insights.confidence import ConfidenceBand
-from polylogue.insights.confidence import from_score as confidence_from_score
-from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
-from polylogue.insights.objective_posture import structural_objective_posture
-from polylogue.insights.readiness import (
-    InsightOriginCoverage,
-    InsightReadinessEntry,
-    InsightReadinessQuery,
-    InsightReadinessReport,
-    InsightReadinessVerdict,
-    InsightStorageArtifact,
-    InsightVersionCoverage,
-    known_insight_readiness_names,
-    normalize_insight_readiness_name,
-)
-from polylogue.insights.rigor import list_rigor_contracts
-from polylogue.insights.session_label import session_structural_label_for_session
-from polylogue.insights.temporal_source import time_confidence_for_source
-from polylogue.insights.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
-from polylogue.insights.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
 from polylogue.pipeline.ids import SessionRevisionProjection
+from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import Heartbeat, PreparedBlob
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.fts.sql import (
     FTS_BULK_SESSION_WRITE_GUARD,
     delete_session_identity_rows_sql,
@@ -133,12 +137,6 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
-from polylogue.storage.insights.session.records import SessionProfileRecord
-from polylogue.storage.insights.session.runtime import (
-    SESSION_INSIGHT_MATERIALIZATION_TYPES,
-    SessionInsightStatusSnapshot,
-)
-from polylogue.storage.insights.session.status import session_insight_status_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -197,7 +195,9 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     blob_path_for_hash,
     classify_raw_revision_cohort_for_frozen_candidate,
     classify_raw_revision_cohort_for_live_watch,
+    classify_raw_revision_cohort_for_live_watch_in_transaction,
     classify_raw_revision_cohort_for_rebuild_repair,
+    classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
     classify_untyped_full_revision_groups,
     convertible_full_revision_raw_ids,
     defer_raw_revision_adoption,
@@ -298,7 +298,6 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
-    ArchiveInsightMaterialization,
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
@@ -306,7 +305,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionRows,
     read_archive_session_envelope,
     read_archive_session_page,
-    read_insight_materialization,
     read_session_phases,
     read_session_work_events,
     rebuild_archive_messages_fts,
@@ -452,16 +450,9 @@ class ArchiveSessionSearchHit:
 # rows are excluded from traversal by construction. The latter is not a
 # topological cycle, but it is an authoritative verdict that the inferred
 # parent edge is false; composing it would reintroduce rejected topology. A
-# defensive visited-path guard
-# (the `path`/`instr()` machinery below) is still carried on every step
-# despite that exclusion: quarantine is asserted by the topology resolver
-# over `session_links` alone, while `delegations` unions edges resolved by
-# an independent mechanism (`content_pairs`' provider-asserted content-
-# identity match, `delegation_facts_source` in index.py) that the topology
-# resolver's cycle detector never inspects. Two content-identity-matched
-# edges could in principle compose into a cycle the quarantine pass never
-# saw; the guard makes that structurally unreachable rather than assumed
-# absent.
+# defensive visited-path guard (the `path`/`instr()` machinery below) is
+# still carried on every step so traversal terminates even if a malformed
+# derived row bypasses the topology resolver.
 
 
 # polylogue-a7xr.16: table-driving the SELECT side. ``query_messages`` and
@@ -1402,6 +1393,7 @@ class ArchiveStore:
         self._require_writable("write source.db hook evidence")
         if self._blob_publisher is None:
             raise RuntimeError("raw archive writes require a writable archive publisher")
+        policy_snapshot = build_excision_policy_snapshot(self.archive_root)
         raw_hash, _raw_size = self._blob_publisher.write_from_bytes(payload)
         receipt_id = self._blob_publisher.receipt_id(raw_hash)
         self._blob_publisher.flush()
@@ -1426,6 +1418,7 @@ class ArchiveStore:
             carrier_relative_path=carrier_relative_path or source_path,
             carrier_role=carrier_role,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
 
     def delete_hook_event(self, hook_event_id: str) -> bool:
@@ -1658,15 +1651,15 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_rebuild_repair(
         self,
         logical_source_key: str,
-        *,
-        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_rebuild_repair(
-            self,
-            logical_source_key,
-            manage_transaction=manage_transaction,
-        )
+        return classify_raw_revision_cohort_for_rebuild_repair(self, logical_source_key)
+
+    def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
+        self, logical_source_key: str
+    ) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
+        return classify_raw_revision_cohort_for_rebuild_repair_in_transaction(self, logical_source_key)
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
@@ -1686,15 +1679,13 @@ class ArchiveStore:
     def classify_raw_revision_cohort_for_live_watch(
         self,
         logical_source_key: str,
-        *,
-        manage_transaction: bool = True,
     ) -> RevisionReplayPlan:
         self._require_writable("classify source.db revision authority")
-        return classify_raw_revision_cohort_for_live_watch(
-            self,
-            logical_source_key,
-            manage_transaction=manage_transaction,
-        )
+        return classify_raw_revision_cohort_for_live_watch(self, logical_source_key)
+
+    def classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key: str) -> RevisionReplayPlan:
+        self._require_writable("classify source.db revision authority")
+        return classify_raw_revision_cohort_for_live_watch_in_transaction(self, logical_source_key)
 
     def classify_untyped_full_revision_groups(self, raw_ids: Sequence[str]) -> dict[str, tuple[str, ...]]:
         return classify_untyped_full_revision_groups(self, raw_ids)
@@ -2354,14 +2345,14 @@ class ArchiveStore:
         events_by_session = {str(row["session_id"]) for row in rows}
         indexed: dict[tuple[str, int], SessionWorkEventInsight] = {}
         for event_session_id in events_by_session:
-            materialization = _read_archive_materialization(self._conn, "work_events", event_session_id)
+            provenance = _read_session_insight_provenance(self._conn, event_session_id)
             session_origin = _session_origin(self._conn, event_session_id)
             for event in read_session_work_events(self._conn, session_id=event_session_id).values():
                 if heuristic_label is None or event.work_event_type == heuristic_label:
                     indexed[(event.session_id, event.position)] = _work_event_insight_from_archive_row(
                         event,
                         origin=session_origin,
-                        materialization=materialization,
+                        provenance=provenance,
                     )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
@@ -2426,13 +2417,13 @@ class ArchiveStore:
         phases_by_session = {str(row["session_id"]) for row in rows}
         indexed: dict[tuple[str, int], SessionPhaseInsight] = {}
         for phase_session_id in phases_by_session:
-            materialization = _read_archive_materialization(self._conn, "phases", phase_session_id)
+            provenance = _read_session_insight_provenance(self._conn, phase_session_id)
             session_origin = _session_origin(self._conn, phase_session_id)
             for phase in read_session_phases(self._conn, session_id=phase_session_id).values():
                 indexed[(phase.session_id, phase.position)] = _phase_insight_from_archive_row(
                     phase,
                     origin=session_origin,
-                    materialization=materialization,
+                    provenance=provenance,
                 )
         return [indexed[(str(row["session_id"]), int(row["position"]))] for row in rows]
 
@@ -2598,12 +2589,11 @@ class ArchiveStore:
             support_signals=lineage_signals,
             member_evidence=member_evidence,
         )
-        materialization = _read_archive_materialization(self._conn, "thread", thread_id)
         return ThreadInsight(
             thread_id=str(row["thread_id"]),
             root_id=str(row["thread_id"]),
             dominant_repo=dominant_repo,
-            provenance=_archive_provenance(materialization),
+            provenance=_archive_provenance(_read_session_insight_provenance(self._conn, thread_id)),
             thread=payload,
         )
 
@@ -3247,7 +3237,6 @@ class ArchiveStore:
             _archive_messages_fts_debt(self._conn),
             _archive_profile_rows_debt(self._conn),
             _archive_profile_counts_debt(self._conn),
-            _archive_materialization_debt(self._conn),
             _archive_source_raw_link_debt(self.index_db_path, self.source_db_path),
             _archive_user_overlay_debt(self.index_db_path, self.user_db_path),
         ]
@@ -3408,10 +3397,8 @@ class ArchiveStore:
 
         Mirrors :meth:`get_session_profile_insight` but rehydrates the full
         record needed by ``hydrate_session_profile`` (domain ``SessionProfile``)
-        and the provenance-based staleness check. The materialization HWM
-        provenance is pulled from ``read_insight_materialization`` so the
-        downstream ``is_stale`` comparison is grounded in the same source the
-        daemon's ``/insights`` profile panel consumes.
+        and the provenance-based staleness check. The source binding is read
+        from the profile row so all readers use the same content comparison.
 
         Returns ``None`` when the session id does not resolve or has no
         materialized profile.
@@ -5301,9 +5288,11 @@ class ArchiveStore:
             )
             is not None
         )
+        converged, debt_stages = self._derived_convergence_signal()
         return InsightReadinessReport(
             checked_at=datetime.now(UTC).isoformat(),
-            aggregate_verdict=_insight_readiness_aggregate_verdict(entries),
+            converged=converged,
+            debt_stages=debt_stages,
             total_sessions=total_sessions,
             origin=request.origin,
             since=request.since,
@@ -5384,63 +5373,6 @@ class ArchiveStore:
             params.append(until_ms)
         return (" AND " + " AND ".join(clauses)) if clauses else "", params
 
-    def _archive_materialization_signals(
-        self,
-        insight_type: str,
-        *,
-        origin: str | None,
-        since_ms: int | None,
-        until_ms: int | None,
-    ) -> tuple[tuple[InsightVersionCoverage, ...], int, int]:
-        """Derive version coverage, incompatible count, and native staleness.
-
-        Reads the ``insight_materialization`` high-water marks for ``insight_type``
-        joined to ``sessions``. A row is *incompatible* (legacy) when its
-        ``materializer_version`` is below ``SESSION_INSIGHT_MATERIALIZER_VERSION``;
-        it is *stale* when its captured ``source_sort_key_ms`` no longer matches the
-        live session ``sort_key_ms`` (the native source high-water mark). The
-        ``session_profiles.materializer_version``/``source_sort_key`` columns are not
-        used here: they are not reliably populated by the canonical rebuild path,
-        so the materialization ledger is the authoritative provenance source.
-        """
-        if not _table_exists(self._conn, "insight_materialization"):
-            return ((), 0, 0)
-        clause, params = self._readiness_session_filter(origin=origin, since_ms=since_ms, until_ms=until_ms)
-        version_rows = self._conn.execute(
-            "SELECT im.materializer_version AS version, COUNT(*) AS n "
-            "FROM insight_materialization AS im "
-            "JOIN sessions AS s ON s.session_id = im.session_id "
-            f"WHERE im.insight_type = ?{clause} "
-            "GROUP BY im.materializer_version ORDER BY im.materializer_version",
-            (insight_type, *params),
-        ).fetchall()
-        versions = {str(int(row["version"])): int(row["n"]) for row in version_rows}
-        incompatible_count = sum(
-            count for version, count in versions.items() if int(version) < SESSION_INSIGHT_MATERIALIZER_VERSION
-        )
-        version_coverage = (
-            (
-                InsightVersionCoverage(
-                    field="materializer_version",
-                    current_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-                    versions=versions,
-                    incompatible_count=incompatible_count,
-                ),
-            )
-            if versions
-            else ()
-        )
-        stale_row = self._conn.execute(
-            "SELECT COUNT(*) AS n "
-            "FROM insight_materialization AS im "
-            "JOIN sessions AS s ON s.session_id = im.session_id "
-            f"WHERE im.insight_type = ?{clause} "
-            "AND COALESCE(im.source_sort_key_ms, -1) != COALESCE(s.sort_key_ms, -1)",
-            (insight_type, *params),
-        ).fetchone()
-        stale_count = int(stale_row["n"]) if stale_row is not None else 0
-        return (version_coverage, incompatible_count, stale_count)
-
     def _archive_fallback_coverage(
         self,
         table_name: str,
@@ -5489,6 +5421,30 @@ class ArchiveStore:
                 reason_totals[reason] = reason_totals.get(reason, 0) + int(row["occurrences"])
         return (degraded_count, dict(sorted(reason_totals.items())))
 
+    def _derived_convergence_signal(self) -> tuple[bool | None, tuple[str, ...]]:
+        """Report whether convergence has caught up, and which stages have not.
+
+        Derived rows have no lifecycle of their own: their readiness is exactly
+        the ordinary convergence signal. A missing ledger reports ``None``;
+        read failures remain visible to the status error boundary.
+        """
+        if not self.ops_db_path.exists():
+            return (None, ())
+        conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
+        try:
+            present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
+            ).fetchone()
+            if present is None:
+                return (None, ())
+            rows = conn.execute(
+                "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
+            ).fetchall()
+        finally:
+            conn.close()
+        stages = tuple(str(row[0]) for row in rows)
+        return (not stages, stages)
+
     def _insight_readiness_entry(
         self,
         name: str,
@@ -5502,69 +5458,90 @@ class ArchiveStore:
     ) -> InsightReadinessEntry | None:
         specs = {
             "session_profiles": (
-                "Session Profiles",
                 "session_profiles",
                 status.profile_row_count,
                 total_sessions,
                 status.missing_profile_row_count,
-                0,
+                status.stale_profile_row_count,
                 status.orphan_profile_row_count,
-                {"profile_rows_ready": status.profile_rows_ready},
                 ("session_profiles",),
             ),
             "session_work_events": (
-                "Work Events",
                 "session_work_events",
                 status.work_event_inference_count,
                 status.expected_work_event_inference_count,
                 0,
                 status.stale_work_event_inference_count,
                 status.orphan_work_event_inference_count,
-                {"work_event_inference_rows_ready": status.work_event_inference_rows_ready},
                 ("session_work_events",),
             ),
             "session_phases": (
-                "Session Phases",
                 "session_phases",
                 status.phase_count,
                 status.expected_phase_count,
                 0,
                 status.stale_phase_count,
                 status.orphan_phase_count,
-                {"phase_rows_ready": status.phase_rows_ready},
                 ("session_phases",),
             ),
+            # polylogue-dab/itvd: runs, observed events and context snapshots are
+            # source-derived CTE relations, never tables, so they can never appear
+            # in sqlite_master. The presence probe reads `sessions` (always
+            # present) and the real count comes from the status snapshot;
+            # `artifacts` keeps the legacy table name because reporting it
+            # permanently absent distinguishes "no cache table" from "no rows".
+            "session_runs": (
+                "sessions",
+                status.run_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_runs",),
+            ),
+            "session_observed_events": (
+                "sessions",
+                status.observed_event_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_observed_events",),
+            ),
+            "session_context_snapshots": (
+                "sessions",
+                status.context_snapshot_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_context_snapshots",),
+            ),
             "threads": (
-                "Threads",
                 "threads",
                 status.thread_count,
                 status.root_threads,
                 0,
                 status.stale_thread_count,
                 status.orphan_thread_count,
-                {"threads_ready": status.threads_ready},
                 ("threads", "thread_sessions"),
             ),
             "session_tag_rollups": (
-                "Session Tag Rollups",
                 "session_tags",
                 status.tag_rollup_count,
                 status.expected_tag_rollup_count,
                 0,
                 status.stale_tag_rollup_count,
                 0,
-                {"tag_rollups_ready": status.tag_rollups_ready},
                 ("session_tags",),
             ),
             "archive_coverage": (
-                "Archive Coverage",
                 "sessions",
                 total_sessions,
                 total_sessions,
                 0,
                 0,
                 0,
-                {},
                 ("sessions",),
             ),
         }
@@ -5572,14 +5549,12 @@ class ArchiveStore:
         if spec is None:
             return None
         (
-            display_name,
             table_name,
             row_count,
             expected_row_count,
             missing_count,
             stale_count,
             orphan_count,
-            ready_flags,
             artifact_names,
         ) = spec
         table_present = _table_exists(self._conn, table_name)
@@ -5587,23 +5562,11 @@ class ArchiveStore:
             InsightStorageArtifact(
                 name=artifact,
                 present=_table_exists(self._conn, artifact),
-                ready=ready_flags[next(iter(ready_flags))] if len(ready_flags) == 1 else None,
             )
             for artifact in artifact_names
         )
-        # Provenance-backed insights (profiles, work events, phases) carry their
-        # materializer version and source high-water mark in the
-        # ``insight_materialization`` ledger; the #1278 fallback taxonomy lives in
-        # each session profile's ``provenance_json``. Threads/tags/coverage have no
-        # such ledger entry and keep the status-derived staleness only.
         version_coverage: tuple[InsightVersionCoverage, ...] = ()
         incompatible_count = 0
-        materialization_type = _INSIGHT_MATERIALIZATION_TYPE.get(name)
-        if materialization_type is not None and table_present:
-            version_coverage, incompatible_count, native_stale = self._archive_materialization_signals(
-                materialization_type, origin=origin, since_ms=since_ms, until_ms=until_ms
-            )
-            stale_count = native_stale
         degraded_count = 0
         fallback_reason_counts: dict[str, int] = {}
         fallback = _INSIGHT_FALLBACK_PAYLOAD.get(name)
@@ -5616,22 +5579,10 @@ class ArchiveStore:
                 since_ms=since_ms,
                 until_ms=until_ms,
             )
-        verdict = _archive_insight_readiness_verdict(
-            table_present=table_present,
-            row_count=row_count,
-            expected_row_count=expected_row_count,
-            missing_count=missing_count,
-            stale_count=stale_count,
-            orphan_count=orphan_count,
-            incompatible_count=incompatible_count,
-            degraded_count=degraded_count,
-            ready_flags=ready_flags,
-            total_sessions=total_sessions,
-        )
         return InsightReadinessEntry(
             insight_name=name,
-            display_name=display_name,
-            verdict=verdict,
+            display_name=insight_display_name(name),
+            table_present=table_present,
             row_count=row_count,
             expected_row_count=expected_row_count,
             missing_count=missing_count,
@@ -5641,7 +5592,6 @@ class ArchiveStore:
             degraded_count=degraded_count,
             fallback_reason_counts=fallback_reason_counts,
             storage_artifacts=artifacts,
-            ready_flags=ready_flags,
             origin_coverage=origin_coverage,
             version_coverage=version_coverage,
             evidence=_archive_insight_readiness_evidence(
@@ -5653,7 +5603,6 @@ class ArchiveStore:
                 incompatible_count=incompatible_count,
                 degraded_count=degraded_count,
                 fallback_reason_counts=fallback_reason_counts,
-                ready_flags=ready_flags,
             ),
         )
 
@@ -7318,48 +7267,56 @@ def _session_origin(conn: sqlite3.Connection, session_id: str) -> str:
     return str(row["origin"]) if row is not None else "unknown-export"
 
 
-def _read_archive_materialization(
+def _read_session_insight_provenance(
     conn: sqlite3.Connection,
-    insight_type: str,
     session_id: str,
-) -> ArchiveInsightMaterialization | None:
-    try:
-        return read_insight_materialization(conn, insight_type, session_id)
-    except KeyError:
+) -> ArchiveInsightProvenance | None:
+    row = conn.execute(
+        """
+        SELECT materializer_version, materialized_at, source_updated_at,
+               source_sort_key, input_high_water_mark, input_high_water_mark_source
+        FROM session_profiles
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    if row is None:
         return None
+    return ArchiveInsightProvenance(
+        materializer_version=int(row["materializer_version"] or 0),
+        materialized_at=row["materialized_at"],
+        source_updated_at=row["source_updated_at"],
+        source_sort_key=float(row["source_sort_key"]) if row["source_sort_key"] is not None else None,
+        input_high_water_mark=row["input_high_water_mark"],
+        input_high_water_mark_source=row["input_high_water_mark_source"],
+    )
 
 
 def _archive_provenance(
-    materialization: ArchiveInsightMaterialization | None,
+    provenance: ArchiveInsightProvenance | None,
     *,
     input_high_water_mark: str | None = None,
     input_high_water_mark_source: str | None = None,
 ) -> ArchiveInsightProvenance:
-    if materialization is None:
+    if provenance is None:
         return ArchiveInsightProvenance(
-            materializer_version=1,
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
             materialized_at=None,
             input_high_water_mark=input_high_water_mark,
             input_high_water_mark_source=input_high_water_mark_source,
             time_confidence=time_confidence_for_source(input_high_water_mark_source),
         )
-    resolved_hwm = (
-        input_high_water_mark
-        if input_high_water_mark is not None
-        else _iso_from_ms(materialization.input_high_water_mark_ms)
-    )
+    resolved_hwm = input_high_water_mark if input_high_water_mark is not None else provenance.input_high_water_mark
     resolved_source = (
         input_high_water_mark_source
         if input_high_water_mark_source is not None
-        else materialization.input_high_water_mark_source
+        else provenance.input_high_water_mark_source
     )
     return ArchiveInsightProvenance(
-        materializer_version=materialization.materializer_version,
-        materialized_at=_iso_from_ms(materialization.materialized_at_ms),
-        source_updated_at=_iso_from_ms(materialization.source_updated_at_ms),
-        source_sort_key=(
-            materialization.source_sort_key_ms / 1000.0 if materialization.source_sort_key_ms is not None else None
-        ),
+        materializer_version=provenance.materializer_version,
+        materialized_at=provenance.materialized_at,
+        source_updated_at=provenance.source_updated_at,
+        source_sort_key=provenance.source_sort_key,
         input_high_water_mark=resolved_hwm,
         input_high_water_mark_source=resolved_source,
         time_confidence=time_confidence_for_source(resolved_source),
@@ -7367,13 +7324,13 @@ def _archive_provenance(
 
 
 def _archive_inference_provenance(
-    materialization: ArchiveInsightMaterialization | None,
+    provenance: ArchiveInsightProvenance | None,
     *,
     input_high_water_mark: str | None = None,
     input_high_water_mark_source: str | None = None,
 ) -> ArchiveInferenceProvenance:
     base = _archive_provenance(
-        materialization,
+        provenance,
         input_high_water_mark=input_high_water_mark,
         input_high_water_mark_source=input_high_water_mark_source,
     )
@@ -7391,9 +7348,9 @@ def _archive_inference_provenance(
 
 
 def _archive_enrichment_provenance(
-    materialization: ArchiveInsightMaterialization | None,
+    provenance: ArchiveInsightProvenance | None,
 ) -> ArchiveEnrichmentProvenance:
-    base = _archive_provenance(materialization)
+    base = _archive_provenance(provenance)
     return ArchiveEnrichmentProvenance(
         materializer_version=base.materializer_version,
         materialized_at=base.materialized_at,
@@ -7411,7 +7368,7 @@ def _work_event_insight_from_archive_row(
     event: ArchiveSessionWorkEvent,
     *,
     origin: str,
-    materialization: ArchiveInsightMaterialization | None,
+    provenance: ArchiveInsightProvenance | None,
 ) -> SessionWorkEventInsight:
     evidence_payload = {
         **event.evidence,
@@ -7436,12 +7393,12 @@ def _work_event_insight_from_archive_row(
         origin=origin,
         event_index=event.position,
         provenance=_archive_provenance(
-            materialization,
+            provenance,
             input_high_water_mark=event.input_high_water_mark,
             input_high_water_mark_source=event.input_high_water_mark_source,
         ),
         inference_provenance=_archive_inference_provenance(
-            materialization,
+            provenance,
             input_high_water_mark=event.input_high_water_mark,
             input_high_water_mark_source=event.input_high_water_mark_source,
         ),
@@ -7454,7 +7411,7 @@ def _phase_insight_from_archive_row(
     phase: ArchiveSessionPhase,
     *,
     origin: str,
-    materialization: ArchiveInsightMaterialization | None,
+    provenance: ArchiveInsightProvenance | None,
 ) -> SessionPhaseInsight:
     evidence_payload = {
         **phase.evidence,
@@ -7471,7 +7428,7 @@ def _phase_insight_from_archive_row(
         origin=origin,
         phase_index=phase.position,
         provenance=_archive_provenance(
-            materialization,
+            provenance,
             input_high_water_mark=phase.input_high_water_mark,
             input_high_water_mark_source=phase.input_high_water_mark_source,
         ),
@@ -7483,7 +7440,7 @@ def _phase_insight_from_archive_row(
 class _SessionProfileComponents:
     """Extracted session-profile payloads shared by the insight and record builders."""
 
-    materialization: ArchiveInsightMaterialization | None
+    provenance: ArchiveInsightProvenance | None
     evidence: SessionEvidencePayload
     inference: SessionInferencePayload
     enrichment: SessionEnrichmentPayload | None
@@ -7508,7 +7465,7 @@ def _session_profile_components_from_archive_row(
     from polylogue.storage.sqlite.queries.mappers_insight_fallback import parse_payload_model
 
     session_id = str(row["session_id"])
-    materialization = _read_archive_materialization(conn, "session_profile", session_id)
+    provenance = _read_session_insight_provenance(conn, session_id)
     workflow_shape = str(row["workflow_shape"] or "unknown")
     workflow_confidence = float(row["workflow_shape_confidence"] or 0.0)
     terminal_state = str(row["terminal_state"] or "unknown")
@@ -7589,12 +7546,12 @@ def _session_profile_components_from_archive_row(
                     terminal_state=inference.terminal_state,
                     terminal_state_confidence=inference.terminal_state_confidence,
                     terminal_state_evidence=dict(evidence.terminal_state_evidence),
-                    as_of=_iso_from_ms(materialization.source_updated_at_ms) if materialization is not None else None,
+                    as_of=None,
                 )
             }
         )
     return _SessionProfileComponents(
-        materialization=materialization,
+        provenance=provenance,
         evidence=evidence,
         inference=inference,
         enrichment=enrichment,
@@ -7609,7 +7566,7 @@ def _session_profile_insight_from_archive_row(
 ) -> SessionProfileInsight:
     session_id = str(row["session_id"])
     components = _session_profile_components_from_archive_row(conn, row)
-    materialization = components.materialization
+    provenance = components.provenance
     include_evidence = tier in {"merged", "evidence"}
     include_inference = tier in {"merged", "inference"}
     include_enrichment = tier == "merged"
@@ -7619,16 +7576,16 @@ def _session_profile_insight_from_archive_row(
     enrichment_provenance = None
     if include_enrichment and components.enrichment is not None:
         enrichment = components.enrichment
-        enrichment_provenance = _archive_enrichment_provenance(materialization)
+        enrichment_provenance = _archive_enrichment_provenance(provenance)
     return SessionProfileInsight(
         semantic_tier=tier,
         session_id=session_id,
         logical_session_id=str(row["root_session_id"] or session_id),
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
-        provenance=_archive_provenance(materialization),
+        provenance=_archive_provenance(provenance),
         evidence=evidence,
-        inference_provenance=_archive_inference_provenance(materialization) if include_inference else None,
+        inference_provenance=_archive_inference_provenance(provenance) if include_inference else None,
         inference=inference,
         enrichment_provenance=enrichment_provenance,
         enrichment=enrichment,
@@ -7642,16 +7599,16 @@ def _session_profile_record_from_archive_row(
     """Build the full domain :class:`SessionProfileRecord` from a session profile row.
 
     Reuses the same payload extraction as the insight projection and pulls the
-    materialization HWM provenance from ``read_insight_materialization`` so the
-    record carries the fields ``hydrate_session_profile`` and the
-    ``is_stale`` staleness check expect. The FTS-only ``*_search_text`` fields
+    source-binding provenance from the profile row so the record carries the
+    fields ``hydrate_session_profile`` and the ``is_stale`` staleness check
+    expect. The FTS-only ``*_search_text`` fields
     are not stored in the archive ``session_profiles`` row and are not read by
     ``hydrate_session_profile``; they are synthesized as non-empty strings here
     purely to satisfy the model's required-non-empty validators.
     """
     session_id = str(row["session_id"])
     components = _session_profile_components_from_archive_row(conn, row)
-    materialization = components.materialization
+    provenance = components.provenance
     evidence = components.evidence
     inference = components.inference
     enrichment = components.enrichment if components.enrichment is not None else SessionEnrichmentPayload()
@@ -7659,28 +7616,22 @@ def _session_profile_record_from_archive_row(
     source_name = str(row["origin"])
     title = str(row["title"]) if row["title"] is not None else None
     workflow_shape = str(row["workflow_shape"] or "unknown")
-    materialized_at = _iso_from_ms(materialization.materialized_at_ms) if materialization is not None else None
+    materialized_at = provenance.materialized_at if provenance is not None else None
     # search_text* are FTS-only and not consumed by hydrate_session_profile;
     # synthesize a stable non-empty string so the record validates.
     search_text = title or workflow_shape or session_id
     return SessionProfileRecord(
         session_id=SessionId(session_id),
         logical_session_id=SessionId(logical_session_id),
-        materializer_version=materialization.materializer_version if materialization is not None else 1,
+        materializer_version=(
+            provenance.materializer_version if provenance is not None else SESSION_INSIGHT_MATERIALIZER_VERSION
+        ),
         materialized_at=materialized_at,
-        source_updated_at=_iso_from_ms(materialization.source_updated_at_ms) if materialization is not None else None,
-        source_sort_key=(
-            materialization.source_sort_key_ms / 1000.0
-            if materialization is not None and materialization.source_sort_key_ms is not None
-            else None
-        ),
-        input_high_water_mark=(
-            _iso_from_ms(materialization.input_high_water_mark_ms) if materialization is not None else None
-        ),
-        input_high_water_mark_source=(
-            materialization.input_high_water_mark_source if materialization is not None else None
-        ),
-        input_row_count=materialization.input_row_count if materialization is not None else 0,
+        source_updated_at=provenance.source_updated_at if provenance is not None else None,
+        source_sort_key=provenance.source_sort_key if provenance is not None else None,
+        input_high_water_mark=(provenance.input_high_water_mark if provenance is not None else None),
+        input_high_water_mark_source=(provenance.input_high_water_mark_source if provenance is not None else None),
+        input_row_count=int(row["input_row_count"] or 0),
         source_name=source_name,
         title=title,
         first_message_at=evidence.first_message_at,
@@ -7749,7 +7700,7 @@ def _session_cost_insight_from_archive_row(
     normalized_model = _normalize_model(model_name) if model_name else None
     status: CostEstimateStatus
     unavailable_reason: CostUnavailableReason | None
-    provenance: tuple[str, ...]
+    cost_provenance_labels: tuple[str, ...]
     missing_reasons: tuple[str, ...]
     # A materialized profile cost (or a canonical priced/provider/known-zero
     # verdict) outranks a usage-evidence absence: sessions whose cost was
@@ -7766,29 +7717,29 @@ def _session_cost_insight_from_archive_row(
         )
         missing_reasons = ()
         unavailable_reason = None
-        provenance = ("session_usage_cost", cost_provenance or status)
+        cost_provenance_labels = ("session_usage_cost", cost_provenance or status)
     elif canonical is not None and canonical.availability == "unpriced":
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
         missing_reasons = ("price_not_materialized",)
         unavailable_reason = "price_not_materialized"
-        provenance = ("session_usage_cost", canonical.availability)
+        cost_provenance_labels = ("session_usage_cost", canonical.availability)
     elif canonical is not None and canonical.availability == "no_tokens":
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
         missing_reasons = ("no_tokens",)
         unavailable_reason = "no_tokens"
-        provenance = ("session_usage_cost", canonical.availability)
+        cost_provenance_labels = ("session_usage_cost", canonical.availability)
     else:
         status = "unavailable"
         confidence = 0.0
         basis = CostBasisPayload()
         missing_reasons = ("price_not_materialized",)
         unavailable_reason = "price_not_materialized"
-        provenance = ("session_usage_cost",)
-    materialization = _read_archive_materialization(conn, "session_profile", session_id)
+        cost_provenance_labels = ("session_usage_cost",)
+    insight_provenance = _read_session_insight_provenance(conn, session_id)
     return SessionCostInsight(
         session_id=session_id,
         origin=source_name,
@@ -7806,9 +7757,9 @@ def _session_cost_insight_from_archive_row(
             basis=basis,
             missing_reasons=missing_reasons,
             unavailable_reason=unavailable_reason,
-            provenance=provenance,
+            provenance=cost_provenance_labels,
         ),
-        provenance=_archive_provenance(materialization),
+        provenance=_archive_provenance(insight_provenance),
     )
 
 
@@ -7957,15 +7908,6 @@ def _epoch_ms_from_iso(value: object) -> int | None:
     return int(parsed.timestamp() * 1000)
 
 
-# Insights whose provenance is tracked in the ``insight_materialization`` ledger
-# (materializer version + source high-water mark). Threads use a separate version
-# namespace and are intentionally excluded from the version-compatibility check.
-_INSIGHT_MATERIALIZATION_TYPE: dict[str, str] = {
-    "session_profiles": "session_profile",
-    "session_work_events": "work_events",
-    "session_phases": "phases",
-}
-
 # Insights whose #1278 fallback markers are stored as JSON arrays inside payload
 # columns: (table_name, ((column, json_path), ...)). Session profiles carry the
 # inference and enrichment fallback reasons under ``$.fallback_reasons`` in their
@@ -7981,52 +7923,6 @@ _INSIGHT_FALLBACK_PAYLOAD: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = 
 }
 
 
-def _archive_insight_readiness_verdict(
-    *,
-    table_present: bool,
-    row_count: int,
-    expected_row_count: int | None,
-    missing_count: int,
-    stale_count: int,
-    orphan_count: int,
-    incompatible_count: int,
-    degraded_count: int,
-    ready_flags: dict[str, bool],
-    total_sessions: int,
-) -> InsightReadinessVerdict:
-    if not table_present:
-        return "missing"
-    if incompatible_count:
-        return "incompatible"
-    if stale_count or orphan_count:
-        return "stale"
-    if missing_count or (expected_row_count is not None and row_count < expected_row_count):
-        return "partial"
-    if row_count == 0:
-        # An empty archive (no sessions at all) reports every surface as empty.
-        # In a populated archive a surface with 0 expected rows is vacuously
-        # ready (e.g. no tags to roll up); a surface that should hold rows was
-        # already caught by the partial branch above.
-        if total_sessions > 0 and expected_row_count == 0:
-            return "ready"
-        return "empty"
-    if degraded_count:
-        return "degraded"
-    if ready_flags and all(ready_flags.values()):
-        return "ready"
-    if not ready_flags:
-        return "ready"
-    return "unknown"
-
-
-def _insight_readiness_aggregate_verdict(entries: tuple[InsightReadinessEntry, ...]) -> InsightReadinessVerdict:
-    verdicts = {entry.verdict for entry in entries}
-    for verdict in ("incompatible", "stale", "partial", "missing", "degraded", "unknown", "empty"):
-        if verdict in verdicts:
-            return verdict
-    return "ready"
-
-
 def _archive_insight_readiness_evidence(
     *,
     row_count: int,
@@ -8037,7 +7933,6 @@ def _archive_insight_readiness_evidence(
     incompatible_count: int,
     degraded_count: int,
     fallback_reason_counts: dict[str, int],
-    ready_flags: dict[str, bool],
 ) -> tuple[str, ...]:
     values = [f"rows={row_count}"]
     if expected_row_count is not None:
@@ -8053,7 +7948,6 @@ def _archive_insight_readiness_evidence(
     if degraded_count:
         values.append(f"degraded={degraded_count}")
     values.extend(f"fallback_reason={reason}={count}" for reason, count in fallback_reason_counts.items())
-    values.extend(f"{key}={value}" for key, value in sorted(ready_flags.items()))
     return tuple(values)
 
 
@@ -8153,23 +8047,6 @@ def _archive_profile_counts_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight
     )
     return _archive_debt(
         name="archive_profile_counts",
-        category="derived_repair",
-        issue_count=issue_count,
-        detail=detail,
-    )
-
-
-def _archive_materialization_debt(conn: sqlite3.Connection) -> ArchiveDebtInsight:
-    missing = _archive_missing_materialization_counts(conn)
-    issue_count = sum(missing.values())
-    detail = (
-        "archive insight materialization rows complete"
-        if issue_count == 0
-        else "missing archive materialization rows: "
-        + ", ".join(f"{key}={value}" for key, value in sorted(missing.items()) if value)
-    )
-    return _archive_debt(
-        name="archive_insight_materialization",
         category="derived_repair",
         issue_count=issue_count,
         detail=detail,
@@ -8297,9 +8174,9 @@ def _session_latency_profile_from_archive_row(
         previous_role = role
         previous_at = occurred_at
     tool_counts = _latency_tool_category_counts(conn, session_id)
-    materialization = _read_archive_materialization(conn, "latency", session_id)
+    provenance = _read_session_insight_provenance(conn, session_id)
     # Tool latency facts are materialized into session_latency_profiles by
-    # storage/insights/session/latency_profiles.py, which derives stuck_tool_count
+    # storage/derived/session/latency_profiles.py, which derives stuck_tool_count
     # from unpaired tool-start events. Read them rather than reporting zeros: the
     # stuck_sessions projection filters on `stuck_tool_count > 0`, so zeroing here
     # makes that projection unable to return any row at all.
@@ -8315,7 +8192,7 @@ def _session_latency_profile_from_archive_row(
         session_id=session_id,
         origin=str(row["origin"]),
         title=str(row["title"]) if row["title"] is not None else None,
-        provenance=_archive_provenance(materialization),
+        provenance=_archive_provenance(provenance),
         latency=SessionLatencyProfilePayload(
             median_tool_call_ms=int(tool_facts["median_tool_call_ms"]) if tool_facts is not None else 0,
             p90_tool_call_ms=int(tool_facts["p90_tool_call_ms"]) if tool_facts is not None else 0,
@@ -8350,25 +8227,6 @@ def _median_ms(values: list[int]) -> int:
     if len(ordered) % 2:
         return ordered[middle]
     return int((ordered[middle - 1] + ordered[middle]) / 2)
-
-
-def _archive_missing_materialization_counts(conn: sqlite3.Connection) -> dict[str, int]:
-    return {
-        insight_type: _count_scalar(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM sessions AS s
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM insight_materialization AS m
-                WHERE m.insight_type = ? AND m.session_id = s.session_id
-            )
-            """,
-            (insight_type,),
-        )
-        for insight_type in SESSION_INSIGHT_MATERIALIZATION_TYPES
-    }
 
 
 def _dominant_repo(rows: list[sqlite3.Row]) -> str | None:

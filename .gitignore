@@ -102,6 +102,11 @@ dist/
 !.agent/CONVENTIONS.md
 !.agent/demos/
 !.agent/demos/**
+# Demo shelf permits only the synthetic attachment census. Other demo
+# directories are generated or private evidence and must stay local.
+.agent/demos/*
+!.agent/demos/attachment-acquisition-census/
+!.agent/demos/attachment-acquisition-census/**
 !.agent/scratch/
 .agent/scratch/*
 !.agent/scratch/README.md

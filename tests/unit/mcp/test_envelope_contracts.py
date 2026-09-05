@@ -197,7 +197,7 @@ class TestInsightEnvelopeRuntimeSerialisation:
     """
 
     def test_insight_items_payload_uses_total_with_default_key(self) -> None:
-        from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
+        from polylogue.analysis.registry import INSIGHT_REGISTRY, insight_items_payload
 
         pt = next(iter(INSIGHT_REGISTRY.values()))
         payload = insight_items_payload([], pt)
@@ -206,7 +206,7 @@ class TestInsightEnvelopeRuntimeSerialisation:
         assert pt.json_key in payload
 
     def test_insight_items_payload_uses_total_with_named_item_key(self) -> None:
-        from polylogue.insights.registry import INSIGHT_REGISTRY, insight_items_payload
+        from polylogue.analysis.registry import INSIGHT_REGISTRY, insight_items_payload
 
         pt = next(iter(INSIGHT_REGISTRY.values()))
         payload = insight_items_payload([], pt, item_key="items")

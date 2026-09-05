@@ -24,6 +24,7 @@ from polylogue.sources.origin_specs import (
     TopologyCapability,
     artifact_suffixes_for_provider,
     check_dropped_value_vocabularies,
+    database_capability_for_provider,
     detector_registry,
     lowering_fingerprint,
     parser_fingerprint_for_origin,
@@ -143,6 +144,9 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
         "todo_snapshot",
     }
     assert artifact_suffixes_for_provider(Provider.CLAUDE_CODE) == (".json", ".jsonl", ".ndjson")
+    tool_result_rule = next(rule for rule in claude.artifact_rules if rule.kind == "tool_result_sidecar")
+    assert tool_result_rule.path_suffixes == (".json", ".txt", ".html", "")
+    assert tool_result_rule.watch_suffixes == (".json",)
     assert claude.detector_tightness == 60
     assert chatgpt.detector_tightness == 70
     assert chatgpt.acquisition_modes == ("takeout-json", "bundle", "browser-capture")
@@ -167,6 +171,35 @@ def test_origin_specs_cover_the_public_enum_and_admission_lifecycles() -> None:
     assert by_origin[Origin.UNKNOWN_EXPORT].lifecycle == "compatibility-only"
     assert by_origin[Origin.AISTUDIO_DRIVE].provider_wires == (Provider.GEMINI, Provider.DRIVE)
     assert ORIGIN_SPEC_REGISTRY.diagnostics() == ()
+
+
+def test_database_origins_declare_snapshot_and_member_disposition() -> None:
+    """Database acquisition policy is projected from OriginSpec, not filename sets."""
+
+    codex = database_capability_for_provider(Provider.CODEX)
+    hermes = database_capability_for_provider(Provider.HERMES)
+    assert codex is not None
+    assert hermes is not None
+    for capability in (codex, hermes):
+        assert capability.snapshot_method == "sqlite_backup"
+        assert "Connection.backup" in capability.consistency_fence
+        assert "mtime_ns" in capability.revision_identity
+        assert capability.full_snapshot_per_revision
+        assert capability.snapshot_lineage_policy
+        assert capability.filenames
+
+    assert codex.member("state_5.sqlite").disposition == "acquire"  # type: ignore[union-attr]
+    assert codex.member("logs_2.sqlite").disposition == "out-of-scope"  # type: ignore[union-attr]
+    assert hermes.member("state.db").disposition == "acquire"  # type: ignore[union-attr]
+
+
+def test_database_member_lookup_is_origin_owned() -> None:
+    """A declared member can be discovered without a second source filename registry."""
+
+    capability = database_capability_for_provider(Provider.CODEX)
+    assert capability is not None
+    assert capability.member("new-database.sqlite") is None
+    assert {member.filename for member in capability.members} == capability.filenames
 
 
 def test_topology_capability_census_is_complete_and_typed() -> None:
@@ -199,6 +232,9 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude["message_parent"]["state"] == "carried"
     assert claude["session_parent_target"]["state"] == "positive-derived"
     assert claude["message_branch_state"]["state"] == "positive-derived"
+    assert claude["parent_dispatch"]["state"] == "positive-derived"
+    assert "parentToolUseID" in str(claude["parent_dispatch"]["evidence"])
+    assert codex["parent_dispatch"]["state"] == "structurally-absent"
     assert chatgpt["message_parent"]["state"] == "carried"
     assert chatgpt["message_branch_state"]["state"] == "carried"
     assert hermes["session_parent_target"]["state"] == "carried"
@@ -392,6 +428,77 @@ def test_parser_fingerprint_changes_when_a_normalizing_parser_helper_changes(tmp
     after = synthetic.parser_fingerprint()
 
     assert before != after
+
+
+def test_parser_fingerprints_ignore_diagnostic_module_but_lowering_and_materializer_do_not(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Diagnostic implementation changes do not stale parser cursors.
+
+    Mutation proof: changing the diagnostic helper leaves both origin parser
+    fingerprints unchanged, while the same change remains visible to the
+    explicitly unfiltered lowering and materializer routes. Changing parser
+    output logic still changes each origin's parser fingerprint.
+    """
+    source_root = tmp_path / "source-root"
+    source_dir = source_root / "polylogue" / "sources"
+    source_dir.mkdir(parents=True)
+    logging_source = source_root / "polylogue" / "logging.py"
+    logging_source.write_text("def get_logger():\n    return 'before'\n", encoding="utf-8")
+    parser_a = source_dir / "parser_a.py"
+    parser_b = source_dir / "parser_b.py"
+    parser_a.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return payload\n", encoding="utf-8"
+    )
+    parser_b.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return {'b': payload}\n", encoding="utf-8"
+    )
+
+    import polylogue.sources.origin_specs as origin_specs
+
+    monkeypatch.setattr(origin_specs, "_SOURCE_ROOT", source_root)
+    monkeypatch.setattr(
+        origin_specs,
+        "_LOWERING_FINGERPRINT_PATHS",
+        ("polylogue/sources/parser_a.py",),
+    )
+    monkeypatch.setattr(
+        origin_specs,
+        "_MATERIALIZER_FINGERPRINT_PATHS",
+        ("polylogue/sources/parser_a.py",),
+    )
+    first = replace(
+        next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CODEX_SESSION),
+        parser_paths=(str(parser_a),),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
+    second = replace(
+        next(spec for spec in ORIGIN_SPECS if spec.origin is Origin.CHATGPT_EXPORT),
+        parser_paths=(str(parser_b),),
+        stream_parser_path=None,
+        assembly_paths=(),
+        assembly_spec_path=None,
+        artifact_rules=(),
+    )
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    parser_before = (first.parser_fingerprint(), second.parser_fingerprint())
+    lowering_before = origin_specs.lowering_fingerprint()
+    materializer_before = origin_specs.materializer_fingerprint()
+
+    logging_source.write_text("def get_logger():\n    return 'after'\n", encoding="utf-8")
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    assert (first.parser_fingerprint(), second.parser_fingerprint()) == parser_before
+    assert origin_specs.lowering_fingerprint() != lowering_before
+    assert origin_specs.materializer_fingerprint() != materializer_before
+
+    parser_a.write_text(
+        "from polylogue.logging import get_logger\n\ndef parse(payload):\n    return {'a': payload}\n", encoding="utf-8"
+    )
+    origin_specs._fingerprint_sources_cached.cache_clear()
+    assert first.parser_fingerprint() != parser_before[0]
 
 
 def test_parser_fingerprint_changes_when_a_declared_assembly_helper_changes(tmp_path: Path) -> None:

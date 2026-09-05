@@ -1100,6 +1100,32 @@ components:
             type: string
           title: Degraded
           type: array
+        matched:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: Matched
+        analyzed:
+          anyOf:
+          - minimum: 0
+            type: integer
+          - type: 'null'
+          default: null
+          title: Analyzed
+        request_scope_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Request Scope Fingerprint
+        result_scope_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Result Scope Fingerprint
       required:
       - run_id
       - archive_epoch
@@ -4589,6 +4615,537 @@ components:
     description: The ``ranking_policy`` and ``ranking_policy_version`` fields on ``SearchEnvelope`` declare the ordering semantics
       in use. Consumers should pin a known version and treat any change as a contract event.
 x-polylogue-route-contracts:
+- method: GET
+  pattern: /
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic archive overview HTML
+  notes: Canonical typed WebUI overview; browser data access remains behind the authenticated /api boundary.
+- method: GET
+  pattern: /observability
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: semantic observability HTML
+  notes: SSR-first registry and status projection; credentials protect embedded insight evidence when configured.
+- method: GET
+  pattern: /cost
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: semantic cost/usage HTML
+  notes: SSR-first registry-driven cost rollup, usage timeline, and session drill-down; credentials protect embedded spend
+    evidence when configured.
+- method: GET
+  pattern: /sessions
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic session list HTML
+  notes: SSR-first origin/date/repo faceted session list; Preact enhances only bounded pagination.
+- method: GET
+  pattern: /sessions/:session_id
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic session read HTML
+  notes: 'SSR-first session shell: header, lineage banner, and a simple message-flow placeholder Preact enhances with paging.'
+- method: GET
+  pattern: /search
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic search results HTML
+  notes: SSR-first ranked search over the shared SearchEnvelope; Preact enhances only cursor-based pagination.
+- method: GET
+  pattern: /assets/:asset
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: manifest-governed immutable Vite asset
+  notes: Only content-hashed files named by the packaged Vite manifest are served.
+- method: GET
+  pattern: /s/:session_id
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: semantic session read HTML
+  notes: Typed WebUI session deep-link; equivalent to /sessions/:session_id.
+- method: GET
+  pattern: /w/:mode
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html web shell
+  notes: Workspace shell bootstrap for registered workspace modes.
+- method: GET
+  pattern: /p
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html paste browser
+  notes: Standalone reader page; archive API calls remain authenticated.
+- method: GET
+  pattern: /a
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: text/html attachment library
+  notes: Standalone reader page; archive API calls remain authenticated.
+- method: GET
+  pattern: /healthz/live
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: health liveness JSON
+  notes: Unauthenticated for systemd/docker/kubernetes probes.
+- method: GET
+  pattern: /healthz/ready
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: health readiness JSON
+  notes: Unauthenticated for systemd/docker/kubernetes probes.
+- method: GET
+  pattern: /metrics
+  kind: operational
+  stability: operational
+  auth_policy: unauthenticated_loopback
+  response_contract: Prometheus text exposition
+  notes: Unauthenticated for Prometheus scrapers; no raw archive content.
+- method: POST
+  pattern: /api/web-auth/session
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: first_party_same_origin
+  response_contract: WebCredentialBootstrapPayload
+  notes: Rotates a scoped HttpOnly credential; no credential bytes appear in the response body.
+- method: DELETE
+  pattern: /api/web-auth/session
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: first_party_same_origin
+  response_contract: WebCredentialRevocationPayload
+  notes: Revokes the current first-party credential and expires its cookie.
+- method: GET
+  pattern: /api/health/check
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: JSON
+- method: GET
+  pattern: /api/health
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: JSON
+- method: GET
+  pattern: /api/status
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: DaemonStatusPayload
+  notes: declaration=daemon.status; request=StatusQuery
+  domain_operation: daemon.status
+- method: GET
+  pattern: /api/webui/observability
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: WebUI observability projection
+  notes: Registry descriptor fields, bounded rows, and the status-component snapshot adapter.
+- method: GET
+  pattern: /api/webui/freshness
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: NamedSourceFreshness projection
+  notes: Requires one explicit source path and rejects archive-wide scans.
+- method: GET
+  pattern: /api/overview
+  kind: read_query
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: bounded cockpit overview
+  notes: Privacy-safe landing aggregates, readiness, and a fixed recent-session page.
+- method: GET
+  pattern: /api/events
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: SSE or JSON event poll
+- method: GET
+  pattern: /api/agents/coordination
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: AgentCoordinationPayload
+  notes: Shared coordination envelope used by CLI, MCP, and the web mission-control projection.
+- method: GET
+  pattern: /api/sessions
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: SearchEnvelope | SessionListResponse
+  notes: declaration=daemon.find.sessions; request=SessionSearchQuery
+  domain_operation: sessions.find
+- method: POST
+  pattern: /api/cli/query
+  kind: read_query
+  stability: private
+  auth_policy: credential_if_configured
+  response_contract: SearchEnvelope / SessionListResponse with route_state
+  notes: Local UDS-only root-request parameter envelope; daemon owns query compilation.
+- method: POST
+  pattern: /api/operation
+  kind: operational
+  stability: private
+  auth_policy: credential_if_configured
+  response_contract: DaemonOperationEnvelope
+  notes: Local CLI/MCP control-plane transport for archive-scoped read operations.
+- method: POST
+  pattern: /api/cli/delete/prepare
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: delete preview envelope
+  notes: Local CLI transport; validates a bounded exact selection before entering writer authority.
+- method: POST
+  pattern: /api/cli/delete/authorize
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: delete authorization envelope
+  notes: Local CLI transport; issues one daemon-held authorization for an authenticated preview owner.
+- method: POST
+  pattern: /api/cli/delete/cancel
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: delete cancellation envelope
+  notes: Local CLI transport; cancels an unconfirmed daemon-held preview under the writer gate.
+- method: POST
+  pattern: /api/cli/delete
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: MutationResultPayload
+  notes: Local CLI transport; consumes one daemon-held authorization under the writer gate.
+- method: POST
+  pattern: /api/maintenance/rebuild-index
+  kind: maintenance
+  stability: operational
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: RebuildIndexReceipt
+  notes: Runs exactly one source snapshot replay through the daemon write coordinator.
+- method: POST
+  pattern: /api/maintenance/discard-index-candidate
+  kind: maintenance
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: inactive candidate discard receipt
+  notes: Reclaims one generation only when its immutable owner id still identifies an inactive candidate.
+- method: GET
+  pattern: /api/facets
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: FacetsResponse with route-state metadata
+  notes: Repo and action facet families are deferred from first paint unless explicitly requested.
+- method: GET
+  pattern: /api/query-units
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: QueryUnitResultEnvelope
+  notes: declaration=daemon.query.units; request=QueryUnitQuery
+  domain_operation: query.units
+- method: GET
+  pattern: /api/provider-usage
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: ProviderUsageReport
+  notes: Usage-accounting diagnostics; separates provider events, cumulative counters, transcript words, and model rollups.
+- method: GET
+  pattern: /api/archive-debt
+  kind: operational
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: ArchiveDebtListPayload
+  notes: Unified archive debt rows shared by CLI, Python API, MCP, and daemon clients.
+- method: GET
+  pattern: /api/import/explain
+  kind: operational
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: ImportExplainPayload
+  notes: Local import/source evidence explanation; paths are redacted unless explicitly requested.
+- method: GET
+  pattern: /api/refs/resolve
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: PublicRefResolutionPayload
+- method: GET
+  pattern: /api/query-completions
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: query completion metadata
+- method: GET
+  pattern: /api/action-affordances
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: ActionAffordanceListPayload
+  notes: Shared query-action affordance inventory for CLI, daemon, and automation clients.
+- method: GET
+  pattern: /api/read-view-profiles
+  kind: read_query
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: read-view profile metadata
+- method: GET
+  pattern: /api/assertions
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: AssertionClaimListPayload
+  notes: Read-only assertion-backed overlay claims shared by the web workbench and API clients.
+- method: GET
+  pattern: /api/sources
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: source list JSON
+- method: GET
+  pattern: /api/sessions/:id
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: Session detail JSON
+- method: GET
+  pattern: /api/sessions/:id/messages
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: session messages JSON
+- method: GET
+  pattern: /api/sessions/:id/read
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: SessionReadViewEnvelope
+  notes: declaration=daemon.read.session; request=SessionReadQuery
+  domain_operation: sessions.read
+- method: GET
+  pattern: /api/sessions/:id/raw
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: raw session payload JSON
+  notes: Raw preview is opt-in and authenticated.
+- method: GET
+  pattern: /api/sessions/:id/cost
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: cost JSON
+- method: GET
+  pattern: /api/sessions/:id/evidence-summary
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: bounded session evidence summary
+  notes: Structural tool outcome counts, cost projection, and capped lineage refs for the transcript header.
+- method: GET
+  pattern: /api/sessions/:id/provenance
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: provenance envelope
+  notes: Raw bytes require the include_raw query parameter.
+- method: GET
+  pattern: /api/sessions/:id/topology
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: topology envelope
+- method: GET
+  pattern: /api/sessions/:id/topology/parent-chain
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: parent-chain topology envelope
+- method: GET
+  pattern: /api/sessions/:id/similar
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: similar-session envelope
+- method: GET
+  pattern: /api/sessions/:id/attachments
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: session attachment envelope
+- method: GET
+  pattern: /api/insights/sessions/:id
+  kind: read_detail
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: session insights envelope
+- method: GET
+  pattern: /api/webui/insights/:name
+  kind: observability
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: Single WebUI insight descriptor projection
+  notes: The daemon owns query construction and descriptor accessors; clients receive a bounded panel only.
+- method: GET
+  pattern: /api/raw_artifacts/:id
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: raw artifact preview
+  notes: Authenticated raw preview helper for the local shell.
+- method: GET
+  pattern: /api/thread-continue-templates
+  kind: read_detail
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: thread continuation templates
+- method: GET
+  pattern: /api/paste-browser
+  kind: read_query
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: paste browser JSON
+- method: GET
+  pattern: /api/attachments
+  kind: read_query
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: attachment library JSON
+- method: GET
+  pattern: /api/stack
+  kind: workspace
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: stack workspace JSON
+- method: GET
+  pattern: /api/compare
+  kind: workspace
+  stability: shell_supported
+  auth_policy: credential_if_configured
+  response_contract: compare workspace JSON
+- method: GET
+  pattern: /api/user/marks
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: marks JSON
+- method: GET
+  pattern: /api/user/annotations
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: annotations JSON
+- method: GET
+  pattern: /api/user/annotations/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: annotation JSON
+- method: GET
+  pattern: /api/user/saved-views
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: saved views JSON
+- method: GET
+  pattern: /api/user/saved-views/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: saved view JSON
+- method: GET
+  pattern: /api/user/recall-packs
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: recall packs JSON
+- method: GET
+  pattern: /api/user/recall-packs/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: recall pack JSON
+- method: GET
+  pattern: /api/user/workspaces
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: workspaces JSON
+- method: GET
+  pattern: /api/user/workspaces/:id
+  kind: user_overlay
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: workspace JSON
+- method: GET
+  pattern: /api/maintenance/operations
+  kind: maintenance
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: maintenance operations JSON
+- method: GET
+  pattern: /api/maintenance/status/:id
+  kind: maintenance
+  stability: stable
+  auth_policy: credential_if_configured
+  response_contract: maintenance operation status JSON
+- method: POST
+  pattern: /api/telemetry/mcp-calls
+  kind: operational
+  stability: private
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: MCP call-log receipt
+  notes: Machine-client telemetry; persisted by the daemon writer with bounded retention.
+- method: POST
+  pattern: /api/reset
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: reset result JSON
+- method: POST
+  pattern: /api/ingest
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: ingest result JSON
+- method: POST
+  pattern: /api/demo/augment
+  kind: maintenance
+  stability: operational
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: demo augmentation result JSON
+  notes: Applies deterministic demo writes through the write bridge; exists for the demo archive, not for general archive
+    mutation.
+- method: POST
+  pattern: /api/maintenance/plan
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: maintenance operation preview
+- method: POST
+  pattern: /api/maintenance/run
+  kind: maintenance
+  stability: stable
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: maintenance operation result
 - method: POST
   pattern: /api/user/marks
   kind: user_overlay

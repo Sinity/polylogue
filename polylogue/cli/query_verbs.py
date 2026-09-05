@@ -2106,8 +2106,8 @@ def analyze_verb(
     if show_postmortem:
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --postmortem` only supports terminal text, --format json, or markdown")
+        from polylogue.analysis.postmortem import render_postmortem_markdown, render_postmortem_plain
         from polylogue.cli.shared.machine_errors import success
-        from polylogue.insights.postmortem import render_postmortem_markdown, render_postmortem_plain
         from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
@@ -2123,8 +2123,8 @@ def analyze_verb(
     if show_portfolio:
         if output_format not in (None, "json", "markdown", "plaintext"):
             raise click.UsageError("`analyze --portfolio` only supports terminal text, --format json, or markdown")
+        from polylogue.analysis.portfolio import render_portfolio_markdown, render_portfolio_plain
         from polylogue.cli.shared.machine_errors import success
-        from polylogue.insights.portfolio import render_portfolio_markdown, render_portfolio_plain
         from polylogue.surfaces.payloads import model_json_document
 
         spec = request.query_spec()
@@ -2161,7 +2161,7 @@ def analyze_verb(
             raise click.UsageError("`analyze --cost-outlook` requires --plan.")
         import time as _time
 
-        from polylogue.insights.projection_contracts import cost_outlook_availability
+        from polylogue.analysis.projection_contracts import cost_outlook_availability
         from polylogue.surfaces.payloads import model_json_document
 
         projection_method = ProjectionMethod(method)
@@ -2421,11 +2421,11 @@ def _analyze_projection_contract_explain(
     explain omits the key entirely rather than fabricating one.
     """
     if cost_outlook:
-        from polylogue.insights.projection_contracts import PROJECTION_CONTRACTS
+        from polylogue.analysis.projection_contracts import PROJECTION_CONTRACTS
 
         return PROJECTION_CONTRACTS["cost-outlook"].to_payload()
     if show_facets:
-        from polylogue.insights.projection_contracts import PROJECTION_CONTRACTS
+        from polylogue.analysis.projection_contracts import PROJECTION_CONTRACTS
 
         key = "facets-deferred" if include_deferred else "facets"
         return PROJECTION_CONTRACTS[key].to_payload()

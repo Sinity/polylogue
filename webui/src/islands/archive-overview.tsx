@@ -43,7 +43,7 @@ function ActivityRow({ row }: { readonly row: MessageQueryRow }) {
         )}
       </div>
       <h3>
-        <a href={`/app/sessions/${encodeURIComponent(row.session_id)}#msg-${encodeURIComponent(row.message_id)}`}>
+        <a href={`/sessions/${encodeURIComponent(row.session_id)}#msg-${encodeURIComponent(row.message_id)}`}>
           {row.title ?? row.session_id}
         </a>
       </h3>

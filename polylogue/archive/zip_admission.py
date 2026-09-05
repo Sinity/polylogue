@@ -83,6 +83,7 @@ class ZipAdmission:
         entries: list[zipfile.ZipInfo],
         *,
         allowed_suffixes: Collection[str] = ZIP_JSON_SUFFIXES,
+        allowed_path: Callable[[str], bool] | None = None,
         on_rejected: Callable[[zipfile.ZipInfo, str], None] | None = None,
     ) -> Iterable[zipfile.ZipInfo]:
         """Yield admitted ``ZipInfo`` objects and report rejected entries."""
@@ -117,7 +118,7 @@ class ZipAdmission:
                 )
                 reject(info, f"zip entry file size {info.file_size} exceeds limit")
                 continue
-            if not lower_name.endswith(suffixes):
+            if not lower_name.endswith(suffixes) and not (allowed_path is not None and allowed_path(name)):
                 continue
             projected_total = self._aggregate_total + info.file_size
             if projected_total > MAX_AGGREGATE_UNCOMPRESSED_SIZE:

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from polylogue.analysis.judgment.calibration import CalibrationKey, compute_calibration
+from polylogue.analysis.judgment.types import ComparativeJudgment, JudgeIdentity
 from polylogue.core.enums import ComparativeVerdict
-from polylogue.insights.judgment.calibration import CalibrationKey, compute_calibration
-from polylogue.insights.judgment.types import ComparativeJudgment, JudgeIdentity
 
 _GOLD_JUDGE = JudgeIdentity(actor_ref="user:local", execution_context_id="operator")
 _AGENT_CTX_A = JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a")
@@ -172,7 +172,7 @@ def test_nwise_ordering_gold_disagrees_with_pairwise_candidate_different_winner(
 def test_no_cross_context_pooling_function_is_exposed() -> None:
     """AC: reports refuse unsupported cross-context pooling -- there is no pooling API."""
 
-    import polylogue.insights.judgment.calibration as calibration_module
+    import polylogue.analysis.judgment.calibration as calibration_module
 
     assert not hasattr(calibration_module, "pool_calibration")
     assert not hasattr(calibration_module, "pooled_calibration")

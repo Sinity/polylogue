@@ -52,6 +52,8 @@ async def build_search_envelope_for_spec(
     query: str | None = None,
     serving_identity: str = "direct",
     authority: AuthorityEnvelope | None = None,
+    request_scope_fingerprint: str | None = None,
+    result_scope_fingerprint: str | None = None,
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an already-normalized query spec.
 
@@ -140,6 +142,13 @@ async def build_search_envelope_for_spec(
             facade.config,
             server_identity="daemon" if serving_identity == "daemon" else "direct",
             started_at=started_at,
+        ).model_copy(
+            update={
+                "matched": len(hits),
+                "analyzed": total,
+                "request_scope_fingerprint": request_scope_fingerprint,
+                "result_scope_fingerprint": result_scope_fingerprint,
+            }
         ),
     )
 
@@ -158,6 +167,8 @@ async def build_archive_search_envelope(
     cursor: str | None = None,
     serving_identity: str = "direct",
     authority: AuthorityEnvelope | None = None,
+    request_scope_fingerprint: str | None = None,
+    result_scope_fingerprint: str | None = None,
 ) -> SearchEnvelope:
     """Build a :class:`SearchEnvelope` from an archive operations + repo pair.
 
@@ -196,6 +207,8 @@ async def build_archive_search_envelope(
         query=query,
         serving_identity=serving_identity,
         authority=authority,
+        request_scope_fingerprint=request_scope_fingerprint,
+        result_scope_fingerprint=result_scope_fingerprint,
     )
 
 

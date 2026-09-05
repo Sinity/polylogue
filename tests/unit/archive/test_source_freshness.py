@@ -708,7 +708,7 @@ def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> N
     with sqlite3.connect(root / "ops.db") as conn:
         conn.execute(
             "INSERT INTO convergence_debt VALUES (?, ?, ?, ?, ?)",
-            ("source_path", "session-1", "insights", "pending", "wrong namespace"),
+            ("source_path", "session-1", "derived", "pending", "wrong namespace"),
         )
 
     collision_only = project_named_source_freshness(root, source, now=_NOW)
@@ -719,7 +719,7 @@ def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> N
     with sqlite3.connect(root / "ops.db") as conn:
         conn.execute(
             "INSERT INTO convergence_debt VALUES (?, ?, ?, ?, ?)",
-            ("session_id", "session-1", "insights", "pending", "real debt"),
+            ("session_id", "session-1", "derived", "pending", "real debt"),
         )
 
     with_real_debt = project_named_source_freshness(root, source, now=_NOW)
@@ -727,6 +727,27 @@ def test_insight_debt_keeps_target_type_namespaces_distinct(tmp_path: Path) -> N
     assert with_real_debt.stage is NamedSourceStage.INDEXED_UNCONVERGED
     assert with_real_debt.insights.converged is False
     assert with_real_debt.insights.debt_errors == ("real debt",)
+
+
+def test_legacy_insight_debt_blocks_freshness_before_daemon_startup_migrates_it(tmp_path: Path) -> None:
+    """A read-only status check must retain retired debt until startup migrates it."""
+    root = tmp_path / "archive"
+    _create_schema(root)
+    source = _source(root, size=64)
+    _seed_cursor(root, source, observed_size=64, offset=64)
+    _seed_searchable(root, source)
+    with sqlite3.connect(root / "ops.db") as conn:
+        conn.execute(
+            "INSERT INTO convergence_debt VALUES (?, ?, ?, ?, ?)",
+            ("session_id", "session-1", "insights", "failed", "retired stage debt"),
+        )
+
+    projection = project_named_source_freshness(root, source, now=_NOW)
+
+    assert projection.stage is NamedSourceStage.INDEXED_UNCONVERGED
+    assert projection.insights.converged is False
+    assert projection.insights.debt_stages == ("insights",)
+    assert projection.insights.debt_errors == ("retired stage debt",)
 
 
 def test_projection_limits_reject_non_positive_bounds() -> None:

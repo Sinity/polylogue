@@ -1155,10 +1155,6 @@ def _write_session(
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
-    conn.execute(
-        "DELETE FROM insight_materialization WHERE session_id = ?",
-        (payload.session_id,),
-    )
     if pending_attachment_receipts is not None:
         pending_attachment_receipts.extend(publication_receipts)
     counts["sessions"] = 1
@@ -1390,6 +1386,14 @@ def _drain_ready_session_entries(
     source_conn: sqlite3.Connection | None = None,
 ) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
+    from polylogue.storage.fts.freshness import message_fts_recorded_exact_stale_sync
+
+    if message_fts_recorded_exact_stale_sync(conn):
+        # An exact stale verdict is archive-wide negative evidence. Keep the
+        # materialized sessions in the repair queue even when cleanup leaves
+        # equal row counts and the session-local probe has no missing row.
+        for _raw_id, cdata in ready_entries:
+            summary.fts_repair_session_ids.append(cdata.session_id)
     written_count = 0
     # One signature cache per drained batch memoizes each session's own composed
     # signatures so a parent with K fork-children is computed once, not K times
@@ -2363,13 +2367,9 @@ async def refresh_session_insights_bulk(
 
     t_start = time.perf_counter()
     update_elapsed = 0.0
-    thread_elapsed = 0.0
-    aggregate_elapsed = 0.0
     try:
-        from polylogue.storage.insights.session.refresh import (
+        from polylogue.storage.derived.session.refresh import (
             _apply_session_insight_session_updates_async,
-            _refresh_thread_roots_async,
-            refresh_async_provider_day_aggregates,
         )
 
         async with backend.connection() as conn:
@@ -2380,23 +2380,8 @@ async def refresh_session_insights_bulk(
                 transaction_depth=1,
             )
             update_elapsed = time.perf_counter() - t_updates
-            t_threads = time.perf_counter()
             thread_root_ids = update.thread_root_ids
-            await _refresh_thread_roots_async(
-                conn,
-                sorted(thread_root_ids),
-                transaction_depth=1,
-            )
-            thread_elapsed = time.perf_counter() - t_threads
-            t_aggregates = time.perf_counter()
             affected_groups = update.affected_groups
-            if affected_groups:
-                await refresh_async_provider_day_aggregates(
-                    conn,
-                    affected_groups,
-                    transaction_depth=1,
-                )
-            aggregate_elapsed = time.perf_counter() - t_aggregates
             await conn.commit()
 
         elapsed = time.perf_counter() - t_start
@@ -2407,8 +2392,6 @@ async def refresh_session_insights_bulk(
             "unique_provider_days": len(affected_groups),
             "elapsed_ms": round(elapsed * 1000.0, 1),
             "update_ms": round(update_elapsed * 1000.0, 1),
-            "thread_refresh_ms": round(thread_elapsed * 1000.0, 1),
-            "aggregate_refresh_ms": round(aggregate_elapsed * 1000.0, 1),
             "update_chunk_count": len(chunk_observations),
             "update_slow_chunk_count": sum(1 for chunk in chunk_observations if chunk.slow),
         }
@@ -2431,8 +2414,6 @@ async def refresh_session_insights_bulk(
                 unique_provider_days=len(affected_groups),
                 elapsed_s=round(elapsed, 2),
                 update_s=round(update_elapsed, 2),
-                thread_refresh_s=round(thread_elapsed, 2),
-                aggregate_refresh_s=round(aggregate_elapsed, 2),
                 rate=round(len(changed_session_ids) / elapsed, 1) if elapsed > 0 else 0,
             )
         return observation
@@ -2445,4 +2426,25 @@ async def refresh_session_insights_bulk(
         }
 
 
-__all__ = ["_INGEST_RESULT_CHUNK_SIZE", "process_ingest_batch", "refresh_session_insights_bulk"]
+async def repair_message_fts_bulk(
+    backend: _ConnectionBackendLike,
+    changed_session_ids: Sequence[str],
+) -> None:
+    """Repair message FTS once after a multi-batch ingest pass."""
+    session_ids = tuple(dict.fromkeys(changed_session_ids))
+    if not session_ids:
+        return
+
+    from polylogue.storage.fts.fts_lifecycle import repair_fts_index_async
+
+    async with backend.connection() as conn:
+        await repair_fts_index_async(conn, session_ids)
+        await conn.commit()
+
+
+__all__ = [
+    "_INGEST_RESULT_CHUNK_SIZE",
+    "process_ingest_batch",
+    "refresh_session_insights_bulk",
+    "repair_message_fts_bulk",
+]

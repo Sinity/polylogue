@@ -223,18 +223,6 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     ),
     _entry("Daemon", "daemon.md", "Daemon ownership, convergence, HTTP serving, and service operation.", "internals"),
     _entry(
-        "Daemon Concurrency Profile",
-        "daemon-concurrency-profile.md",
-        "Checked daemon execution, typed UDS operation, latency budgets, and deletion ledger.",
-        "internals",
-    ),
-    _entry(
-        "Runtime and Concurrency Contract",
-        "runtime-concurrency.md",
-        "Free-threaded runtime identity, extension safety, concurrency census, scaling profile, and deletion ledger.",
-        "internals",
-    ),
-    _entry(
         "Daemon Threat Model",
         "daemon-threat-model.md",
         "Local API assets, threats, mitigations, and roles.",
@@ -439,6 +427,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "design",
     ),
     _entry(
+        "CLI Operation Kernel Deletion Ledger",
+        "plans/cli-operation-kernel-deletion-ledger.md",
+        "Transport ownership and LOC accounting for the CLI operation-kernel migration.",
+        "design",
+    ),
+    _entry(
         "Typed WebUI Capability Matrix",
         "plans/webui-capability-matrix.md",
         "Cutover inventory for typed and legacy browser capabilities.",
@@ -465,7 +459,7 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     _entry(
         "Schema Disposition Audit",
         "schema-disposition-2026-08-19.md",
-        "Column-level KEEP/PURGE/UNCLEAR disposition for all five SQLite tiers (polylogue-gvzkr).",
+        "Generated six-tier target schema disposition and canonical DDL inventory (polylogue-gvzkr).",
         "archive",
     ),
 )

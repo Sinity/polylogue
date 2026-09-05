@@ -20,7 +20,7 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.config import Source
 from polylogue.core.enums import Origin
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.daemon.convergence_stages import make_fts_stage, make_insights_stage
+from polylogue.daemon.convergence_stages import make_derived_stage, make_fts_stage
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
@@ -104,7 +104,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
     converger = DaemonConverger(
         (
             make_fts_stage(archive_root / "index.db"),
-            make_insights_stage(archive_root / "index.db"),
+            make_derived_stage(archive_root / "index.db"),
         )
     )
     states, _timings = converger.converge_sessions(session_ids)
@@ -156,7 +156,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         production_route=(
             "parse_sources_archive",
             "backfill_historical_revision_evidence",
-            "DaemonConverger(make_fts_stage, make_insights_stage)",
+            "DaemonConverger(make_fts_stage, make_derived_stage)",
         ),
         parser_branch=(
             ("old_wire_shape", "top_level_text"),

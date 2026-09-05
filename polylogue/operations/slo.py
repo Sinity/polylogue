@@ -30,6 +30,20 @@ class ArchiveSloSample:
     metadata: dict[str, object]
 
 
+def _ensure_ops_tier(ops_db: Path) -> None:
+    """Materialise the disposable ops tier before a write opens it.
+
+    An empty file created by the open itself carries no schema version and is
+    refused by the tier gate, so the production bootstrap route owns creation.
+    """
+    if ops_db.exists():
+        return
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+
+
 def _ensure_slo_samples_table(conn: sqlite3.Connection) -> None:
     """Self-heal the optional SLO table without changing OPS_SCHEMA_VERSION."""
     conn.executescript(SLO_SAMPLES_DDL)
@@ -65,6 +79,7 @@ def record_slo_sample(
     """Append one SLO sample, pruning by age and a hard row cap."""
     resolved_label = label if isinstance(label, SloSampleLabel) else SloSampleLabel(label)
     sample_id = sample_id or str(uuid.uuid4())
+    _ensure_ops_tier(ops_db)
     with open_daemon_connection(ops_db) as conn:
         _ensure_slo_samples_table(conn)
         with conn:
@@ -144,6 +159,7 @@ def list_slo_samples(
 
 def gc_slo_samples(ops_db: Path, *, now_ms: int) -> int:
     """Apply retention and return the number of removed samples."""
+    _ensure_ops_tier(ops_db)
     with open_daemon_connection(ops_db) as conn:
         _ensure_slo_samples_table(conn)
         with conn:

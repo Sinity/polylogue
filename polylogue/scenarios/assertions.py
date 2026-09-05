@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.insights.authored_payloads import PayloadDict, payload_float, payload_int, payload_items
+from polylogue.analysis.authored_payloads import PayloadDict, payload_float, payload_int, payload_items
 
 
 class AssertionClass(Enum):

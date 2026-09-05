@@ -285,13 +285,22 @@ class VerifyRun:
             _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
     def record_selection(
-        self, *, selection_mode: str, graph_status: str, graph_reason: str, full_rerun_cause: str | None = None
+        self,
+        *,
+        selection_mode: str,
+        graph_status: str,
+        graph_reason: str,
+        full_rerun_cause: str | None = None,
+        seed_source: str | None = None,
+        seed_source_mtime_ns: int | None = None,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
             "graph_status": graph_status,
             "graph_reason": graph_reason,
             "full_rerun_cause": full_rerun_cause,
+            "seed_source": seed_source,
+            "seed_source_mtime_ns": seed_source_mtime_ns,
         }
         self.write()
 
@@ -745,6 +754,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
+                "pytest_slot_receipt": raw.get("pytest_slot_receipt"),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
                 else None,
@@ -827,6 +837,11 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     }
     row["semantic_receipt"] = receipt
     row["receipt_schema_version"] = 1
+    # Keep the join identity addressable on the history row as well as in the
+    # versioned receipt.  This is provenance only; lifecycle state remains
+    # owned by AgentCTL and semantic status remains verifier-owned.
+    if "agentctl" in receipt:
+        row["agentctl"] = receipt["agentctl"]
     return row
 
 

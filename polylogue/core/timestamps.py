@@ -67,7 +67,7 @@ def parse_archive_datetime(value: str | None) -> datetime | None:
     Consolidates six identical/near-identical ``_parse_archive_datetime``
     private copies (context/selection.py, mcp/archive_support.py,
     cli/read_views/standard.py, api/archive.py,
-    archive/query/archive_execution.py, storage/insights/session/rebuild.py)
+    archive/query/archive_execution.py, storage/derived/session/rebuild.py)
     that had silently diverged: five returned a naive ``datetime`` for a
     naive-looking input string (no ``Z``/offset suffix), while the rebuild.py
     copy forced UTC on naive results. The same stored string could therefore

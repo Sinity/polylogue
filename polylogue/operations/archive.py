@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.insights.archive import ArchiveDebtInsight
-from polylogue.insights.tool_usage import build_tool_usage_insight
+from polylogue.analysis.archive import ArchiveDebtInsight
+from polylogue.analysis.tool_usage import build_tool_usage_insight
 from polylogue.operations.completion_aggregates import CompletionAggregate
 
 if TYPE_CHECKING:

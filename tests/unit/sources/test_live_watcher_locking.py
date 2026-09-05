@@ -18,6 +18,7 @@ import pytest
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
 
 
 def _make_watcher(tmp_path: Path, root: Path, *, debounce_s: float = 0.01) -> LiveWatcher:
@@ -354,7 +355,7 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
         len(complete),
         byte_offset=len(complete),
         last_complete_newline=len(complete),
-        parser_fingerprint="live-batched-v2",
+        parser_fingerprint=_PARSER_FINGERPRINT,
         content_fingerprint="base",
         st_dev=stat.st_dev,
         st_ino=stat.st_ino,
@@ -370,9 +371,9 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
 
     original_set = cursor.set
 
-    def observed_set(*args: Any, **kwargs: Any) -> None:
+    def observed_set(*args: Any, **kwargs: Any) -> Any:
         deferral_attempted.set()
-        original_set(*args, **kwargs)
+        return original_set(*args, **kwargs)
 
     monkeypatch.setattr(cursor, "set", observed_set)
     coordinator = DaemonWriteCoordinator(observer=observe)

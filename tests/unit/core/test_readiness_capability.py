@@ -5,14 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
-from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
+from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.operations.operation_status import OperationStatus
 from polylogue.readiness import (
     LEGACY_READINESS_SOURCE_TYPES,
     CapabilityReadinessState,
     ComponentReadiness,
     ReadinessReport,
-    component_from_archive_debt,
     component_from_archive_surface,
     component_from_assertion_substrate,
     component_from_catchup_status,
@@ -26,7 +25,6 @@ from polylogue.readiness import (
     component_from_transform_registry,
 )
 from polylogue.readiness.capability import normalize_raw_frontier_status_payload
-from polylogue.storage.repair import ArchiveDebtStatus
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -102,7 +100,6 @@ def test_known_legacy_readiness_sources_are_tracked() -> None:
         "InsightReadinessReport",
         "InsightReadinessEntry",
         "SessionInsightStatusSnapshot",
-        "ArchiveDebtStatus",
         "EmbeddingStatusPayload",
         "DerivedModelStatus",
         "CatchupStatus",
@@ -176,23 +173,6 @@ def test_derived_model_status_maps_stale_and_missing() -> None:
     assert stale.state is CapabilityReadinessState.STALE
     assert stale.counts["stale_rows"] == 2
     assert missing.state is CapabilityReadinessState.MISSING
-
-
-def test_archive_debt_status_maps_debt_to_degraded() -> None:
-    status = ArchiveDebtStatus(
-        name="orphaned_messages",
-        category=MaintenanceCategory.ARCHIVE_CLEANUP,
-        destructive=False,
-        issue_count=4,
-        detail="orphans found",
-        maintenance_target="orphaned_messages",
-    )
-
-    component = component_from_archive_debt(status)
-
-    assert component.state is CapabilityReadinessState.DEGRADED
-    assert component.counts == {"issue_count": 4, "destructive": False}
-    assert component.repair_hint == "orphaned_messages"
 
 
 def test_raw_materialization_readiness_maps_actionable_debt_to_stale() -> None:
@@ -689,7 +669,8 @@ def test_insight_entry_operation_and_catchup_adapters() -> None:
         SimpleNamespace(
             insight_name="session_profiles",
             display_name="Session Profiles",
-            verdict="incompatible",
+            table_present=True,
+            incompatible_count=3,
             row_count=3,
             repair_command="polylogue ops maintenance repair session-insights",
             evidence=("session_insight_status",),

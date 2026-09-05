@@ -77,9 +77,14 @@ from polylogue.storage.archive_readiness import (
 from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection as _open_readonly_connection
 
 logger = get_logger(__name__)
+
+
+def open_readonly_connection(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+    """Typed daemon boundary for the canonical read connection profile."""
+    return _open_readonly_connection(*args, **kwargs)
 
 
 def _authoritative_lifecycle_artifact_kind(sample: Mapping[str, object]) -> str | None:

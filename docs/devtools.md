@@ -70,6 +70,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools gate` | Run one named invariant check. |
 | `devtools scenario` | Run a named archive verification scenario. |
+| `devtools schema-manifest` | Compare canonical SQLite schema manifests with archive tier files. |
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run the local verification baseline: every quick gate, then the selected or complete test corpus. |
 
@@ -95,11 +96,6 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
-| `devtools bench cli-interaction` | Run the complete installed CLI and direct typed-UDS interaction profile. |
-| `devtools bench concurrency` | Run the managed bounded-compute scaling profile across representative workloads. |
-| `devtools bench daemon-operation` | Run the installed CLI and direct typed-UDS daemon operation profile. |
-| `devtools bench ingest-amplification` | Measure deterministic per-tier ingest write amplification on a synthetic fixture. |
-| `devtools bench ingest-throughput` | Measure ingest wall-clock throughput on a synthetic fixture. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench pipeline` | Run typed pipeline probes against synthetic, staged, or archive-subset inputs. |
 | `devtools bench slo` | Check read-surface latency budgets in docs/plans/slo-catalog.yaml against benchmark measurements. |
@@ -109,7 +105,6 @@ These are the commands worth remembering during normal repo work:
 | Command | Description |
 | --- | --- |
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
-| `devtools archive index-fast-forward` | Plan and prove a declared index fast-forward against retained raw replay. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 
 <!-- END GENERATED: devtools-command-catalog -->
@@ -117,38 +112,6 @@ These are the commands worth remembering during normal repo work:
 ## Pattern Ratchet
 
 Pattern baselines use `path:sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
-
-## Cursor-authority reconciliation
-
-`polylogue ops maintenance cursor-authority-reconcile` is a dry-run-by-default
-repair route for exactly one proven cursor-ahead source. It reads the
-configured `POLYLOGUE_ARCHIVE_ROOT` (using its resolved archive root), requires the daemon to be stopped, and
-writes a plan containing path and raw identifiers only as digests. Apply
-requires that immutable plan, a freshly verified `full_evidence` backup
-manifest with blob rollback evidence, and a new receipt path. The apply route
-uses the normal live full-ingest/replay path under one single-use exact path
-and frontier authorization. Receipts distinguish a performed ingest from an
-observed recovery, leave cursor row counts null when the before/after state did
-not prove them, and record typed deferred or failed post-ingest evidence. It
-never accepts a global cursor bypass or writes `ingest_cursor` or accepted-head
-rows directly.
-
-The dry-run form is:
-
-```text
-polylogue ops maintenance cursor-authority-reconcile \
-  --source-path-file /private/path-file \
-  --output-plan /private/reconciliation-plan.json
-```
-
-The apply form is:
-
-```text
-polylogue ops maintenance cursor-authority-reconcile --apply \
-  --plan /private/reconciliation-plan.json \
-  --backup-manifest /private/full-evidence-backup \
-  --receipt /private/reconciliation-receipt.json
-```
 
 ## Validation and Evidence
 
@@ -159,7 +122,6 @@ devtools verify
 devtools test tests/unit/path/to/test_file.py
 devtools scenario run archive-smoke --tier 0
 devtools scenario run reader-visual-smoke
-devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze
 ```
 
 Campaign outputs live under `.local/`, not in tracked docs trees.

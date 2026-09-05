@@ -6,11 +6,11 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Protocol
 
+from polylogue.analysis.archive import ArchiveCoverageInsight
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli.shared.helper_support import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config, Source
-from polylogue.insights.archive import ArchiveCoverageInsight
 from polylogue.logging import get_logger
 from polylogue.readiness import ReadinessReport
 from polylogue.services import RuntimeServices

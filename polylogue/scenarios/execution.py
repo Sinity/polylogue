@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 
-from polylogue.insights.authored_payloads import (
+from polylogue.analysis.authored_payloads import (
     PayloadDict,
     PayloadMap,
     payload_float,

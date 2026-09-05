@@ -26,10 +26,11 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
     assert_derived_schema_identity,
-    assert_derived_schema_identity_async,
     capture_schema_snapshot,
     capture_schema_snapshot_async,
     decide_schema_bootstrap,
+    ensure_derived_schema_identity,
+    ensure_derived_schema_identity_async,
     ensure_vec0_table,
     ensure_vec0_table_async,
     schema_version_mismatch_message,
@@ -110,6 +111,8 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
                 lifecycle_action="rebuild_index",
             ) from exc
 
+        assert_derived_schema_identity(conn, "index")
+
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure the database is at the current schema version.
@@ -141,7 +144,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             expected_version=SCHEMA_VERSION,
         )
 
-    # open_as_is — vec0 still needs to be ensured per-connection because the
+    # open_as_is — adopt legacy current-version indexes that predate identity
+    # metadata. A present, wrong identity remains a schema skew.
+    ensure_derived_schema_identity(conn, ArchiveTier.INDEX.value)
+
+    # vec0 still needs to be ensured per-connection because the
     # extension may have been newly loaded since fresh init.
     assert_derived_schema_identity(conn, "index")
     ensure_vec0_table(conn)
@@ -181,7 +188,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
             expected_version=SCHEMA_VERSION,
         )
 
-    await assert_derived_schema_identity_async(conn, "index")
+    await ensure_derived_schema_identity_async(conn, ArchiveTier.INDEX.value)
     await ensure_vec0_table_async(conn)
     await ensure_runtime_indexes_async(conn)
     await apply_index_benign_ddl_convergence_async(conn)

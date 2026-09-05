@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing_extensions import TypedDict
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.insights.session.runtime import SessionInsightRefreshChunkPayload
+from polylogue.storage.derived.session.runtime import SessionInsightRefreshChunkPayload
 
 
 class AcquireSplitPayloadSummary(TypedDict):
@@ -118,8 +118,6 @@ class MaterializeStageObservation(TypedDict, total=False):
     unique_provider_days: int
     elapsed_ms: float
     update_ms: float
-    thread_refresh_ms: float
-    aggregate_refresh_ms: float
     update_chunk_count: int
     update_slow_chunk_count: int
     update_max_chunk_ms: float

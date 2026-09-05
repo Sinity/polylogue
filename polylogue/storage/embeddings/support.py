@@ -7,7 +7,7 @@ from collections.abc import Iterable
 
 import aiosqlite
 
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.introspection import table_exists_async as _table_exists_async
 
@@ -70,7 +70,10 @@ def build_retrieval_bands_from_status(
 
     inference_source_rows = session_status.profile_row_count + session_status.work_event_inference_count
     inference_materialized_rows = session_status.profile_row_count + session_status.work_event_inference_fts_count
-    inference_ready = session_status.work_event_inference_fts_ready
+    inference_ready = (
+        session_status.work_event_inference_fts_count == session_status.work_event_inference_count
+        and session_status.work_event_inference_fts_duplicate_count == 0
+    )
     enrichment_source_rows = session_status.profile_row_count
     enrichment_materialized_rows = session_status.profile_row_count
     enrichment_ready = True

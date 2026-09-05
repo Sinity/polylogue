@@ -72,7 +72,7 @@ won't hurt."
   more independently addressable than #1's — it's mostly a long list of
   verb methods, not a single interdependent state machine.
 - **#4 (daemon HTTP) and #7 (daemon service loop)** are siblings under
-  `daemon/`; #4 already delegates to a family of `web_shell_*.py` satellite
+  `daemon/`; the typed WebUI now owns browser presentation.
   modules (11 of them today) for the web-reader concern, which is exactly
   the extraction pattern the rest of this map recommends — #4's remaining
   bulk is route registration and request/response shaping that hasn't yet
@@ -215,7 +215,7 @@ everything" mega-bead:
 | `polylogue-u5dw` | #3, storage repair | Build the helper-dependency graph across the quarantined-raw / browser-origin / raw-materialization-replay blocks (which of `_open_archive_index_connection`, `_resolve_convergence_debt`, `_session_insight_*`, etc. each block actually needs) and resolve the `_SemanticCanonicalWitness` declaration-vs-usage mismatch before any line-range move; land one block's extraction once the graph is built. Also carries the c9y placement-doctrine question (storage/ vs maintenance/ for repair orchestration) as a decision this bead's design should make explicitly. | Changing any repair receipt/proof format or the WAL journal-mode handling. |
 | `polylogue-1vzf` | #6, CLI query dispatch | Registry-ize `_execute_archive_query_stdout`'s per-output-format branches (plaintext/JSON/table/transcript), following the write-effects-registry (`polylogue-0aj`) / insights-registry (`insights/registry.py`) pattern already proven in this codebase. | Changing any output format's actual rendering content. |
 | `polylogue-gikp` | #2, API facade | Investigate whether `api/archive.py`'s verb methods group into cohesive sub-facades (e.g. tag/mark mutation verbs vs. read/query verbs vs. context-pack verbs) that could become mixins on the async `Polylogue` facade, mirroring `SessionRepository`'s existing 10-mixin composition. | Changing the public `Polylogue` class's method signatures or return types. |
-| `polylogue-kchb` | #4, daemon HTTP | Extend the existing `web_shell_*.py` satellite-module pattern (11 modules already split out) to the remaining route-registration bulk in `daemon/http.py`. | Changing any route's request/response contract. |
+| `polylogue-kchb` | #4, daemon HTTP | Keep route registration and browser transport contracts aligned in `daemon/http.py`. | Changing any route's request/response contract. |
 | `polylogue-avmq` | #7, daemon service loop | Coordinate with `polylogue-yp0` (daemon internal event bus) — `run_daemon_services`'s 475 lines are mostly loop-startup wiring for the ~10 concurrent maintenance loops; the event-bus work is likely to reshape this function's body directly, so a standalone extraction before that lands risks being redone. Filed blocked-by `polylogue-yp0`. | Executing ahead of `polylogue-yp0` landing at least a first bus consumer. |
 | `polylogue-w9di` | #8a/#8b, MCP tool registration | Lower priority than the other six — investigated in this pass and found to already have the register_personal_state_tools/register_assertion_review_tools delegation pattern; re-investigate only if `register_read_tools`'s 490 lines grow materially further, and prefer grouping by MCP tool *domain* (search, insights, corrections) over an arbitrary line-count split. | Splitting tools that are already independently testable `@mcp.tool()` closures purely to hit a line-count target. |
 

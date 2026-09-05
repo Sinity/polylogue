@@ -134,10 +134,14 @@ export type AssertionStatus = "active" | "candidate" | "accepted" | "rejected" |
 export type AssertionVisibility = "private" | "team" | "public";
 
 export type AuthorityEnvelope = {
+  readonly analyzed?: number | null;
   readonly archive_epoch: string;
   readonly degraded?: ReadonlyArray<string>;
   readonly elapsed_ms: number;
   readonly generation_id: string;
+  readonly matched?: number | null;
+  readonly request_scope_fingerprint?: string | null;
+  readonly result_scope_fingerprint?: string | null;
   readonly run_id: string;
   readonly server_identity: "daemon" | "direct";
   readonly tier_schema_versions: {

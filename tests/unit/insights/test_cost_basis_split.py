@@ -229,7 +229,7 @@ def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
     are merged with incremented ``session_count``.
     """
 
-    from polylogue.insights.archive import CostRollupInsight
+    from polylogue.analysis.archive import CostRollupInsight
 
     # Synthesize a rollup row directly to assert the typed contract.
     rollup = CostRollupInsight(
@@ -265,7 +265,7 @@ def test_cost_rollup_aggregates_basis_and_per_model_breakdown() -> None:
         usage=estimate_session_cost(make_conv(id="c", messages=MessageCollection(messages=[]))).usage,
         confidence=0.85,
         provenance=__import__(
-            "polylogue.insights.archive", fromlist=["ArchiveInsightProvenance"]
+            "polylogue.analysis.archive", fromlist=["ArchiveInsightProvenance"]
         ).ArchiveInsightProvenance(
             materializer_version=1,
             materialized_at="2026-05-17T00:00:00+00:00",

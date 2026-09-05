@@ -5,11 +5,33 @@ from __future__ import annotations
 import pytest
 
 from polylogue.cli.operation_kernel import (
+    OperationEnvelopeError,
     OperationFailedError,
     OperationKernel,
     OperationRequest,
     OperationUnavailableError,
 )
+
+
+def test_daemon_envelope_is_validated_before_renderer_handoff() -> None:
+    request = OperationRequest("cli.query", {})
+    with pytest.raises(OperationEnvelopeError, match="omitted"):
+        OperationKernel(lambda _request: {"operation": "cli.query"}).execute(request)
+
+
+def test_failed_outcome_is_typed_and_never_directly_retried() -> None:
+    called = False
+
+    def direct(_request: OperationRequest) -> object:
+        nonlocal called
+        called = True
+        return {"items": []}
+
+    with pytest.raises(OperationFailedError, match="cancelled"):
+        OperationKernel(lambda _request: {"outcome": "cancelled", "result": None}, direct).execute(
+            OperationRequest("cli.query", {})
+        )
+    assert called is False
 
 
 def test_daemon_and_direct_reads_share_the_result_contract() -> None:
@@ -59,3 +81,36 @@ def test_non_read_operation_cannot_use_direct_fallback() -> None:
             )
     finally:
         daemon_protocol.DAEMON_OPERATION_SPECS = original
+
+
+@pytest.mark.parametrize(
+    ("envelope", "code"),
+    [
+        ({"outcome": "cancelled", "result": None}, "cancelled"),
+        ({"outcome": "timeout", "result": None}, "timeout"),
+        ({"generation": {"state": "stale"}, "result": {}}, "stale_generation"),
+    ],
+)
+def test_terminal_and_stale_daemon_states_are_typed(envelope: dict[str, object], code: str) -> None:
+    with pytest.raises(OperationFailedError) as exc_info:
+        OperationKernel(lambda _request: envelope).execute(OperationRequest("cli.query", {}))
+    assert exc_info.value.code == code
+
+
+def test_oversized_result_is_rejected_before_rendering() -> None:
+    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+
+    with pytest.raises(OperationFailedError) as exc_info:
+        OperationKernel(lambda _request: {"result": "x" * (MAX_OPERATION_RESULT_BYTES + 1)}).execute(
+            OperationRequest("cli.query", {})
+        )
+    assert exc_info.value.code == "result_too_large"
+
+
+def test_timeout_falls_back_to_direct_read() -> None:
+    result = OperationKernel(
+        lambda _request: (_ for _ in ()).throw(TimeoutError("deadline")),
+        lambda _request: {"items": []},
+    ).execute(OperationRequest("cli.query", {}))
+    assert result.value == {"items": []}
+    assert result.authority["mode"] == "direct"

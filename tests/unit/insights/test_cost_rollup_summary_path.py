@@ -30,8 +30,8 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.analysis.archive import CostRollupInsightQuery
 from polylogue.api import Polylogue
-from polylogue.insights.archive import CostRollupInsightQuery
 from tests.infra.storage_records import SessionBuilder
 
 

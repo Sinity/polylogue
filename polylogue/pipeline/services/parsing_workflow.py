@@ -288,7 +288,7 @@ async def ingest_sources(
     if any(Provider.from_string(source.name) is Provider.CLAUDE_CODE for source in sources):
         t0 = time.perf_counter()
         try:
-            from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+            from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
             summary = await asyncio.to_thread(materialize_claude_workflow_archive, service.archive_root)
             workflow_diagnostics = summary.as_dict()
@@ -351,7 +351,7 @@ async def parse_from_raw(
     instead of stalling. Raw ids left unattempted this call remain ordinary
     backlog candidates for the caller's next call.
     """
-    from polylogue.pipeline.services.ingest_batch import process_ingest_batch
+    from polylogue.pipeline.services.ingest_batch import process_ingest_batch, repair_message_fts_bulk
 
     result = ParseResult()
     backend = service._require_backend()
@@ -402,7 +402,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=repair_message_fts,
+                repair_message_fts=False,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -465,7 +465,7 @@ async def parse_from_raw(
                 result,
                 progress_callback,
                 force_write=force_write,
-                repair_message_fts=repair_message_fts,
+                repair_message_fts=False,
                 suspend_fts_triggers=batch_blob_bytes >= _BULK_FTS_RAW_BATCH_BYTES,
             )
             batches_processed += 1
@@ -488,6 +488,9 @@ async def parse_from_raw(
                     elapsed_s=round(batch_elapsed, 2),
                     rate=round(len(batch_ids) / batch_elapsed, 1) if batch_elapsed > 0 else 0,
                 )
+
+    if repair_message_fts and batches_processed > 0:
+        await repair_message_fts_bulk(backend, result.changed_session_ids)
 
     elapsed = time.perf_counter() - t_start
     logger.info(

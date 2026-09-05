@@ -29,7 +29,7 @@ function SessionCard({ row }: { readonly row: SessionListRow }) {
         <span>{sessionDate(row.date)}</span>
       </div>
       <h3>
-        <a href={`/app/sessions/${encodeURIComponent(row.id)}`}>{row.title || row.id}</a>
+        <a href={`/sessions/${encodeURIComponent(row.id)}`}>{row.title || row.id}</a>
       </h3>
       <p class="activity-row__detail">
         {row.message_count.toLocaleString()} messages · {row.word_count.toLocaleString()} words ·{' '}

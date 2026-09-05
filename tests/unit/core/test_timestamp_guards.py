@@ -359,7 +359,7 @@ def test_parse_timestamp_never_crashes(text: str) -> None:
 # parse_archive_datetime: consolidation of six duplicated
 # _parse_archive_datetime copies (polylogue-a7xr.6). Five of the six
 # returned a NAIVE datetime for a naive-looking input string; one
-# (storage/insights/session/rebuild.py) forced UTC. The same stored
+# (storage/derived/session/rebuild.py) forced UTC. The same stored
 # string could therefore parse to offset-naive or offset-aware depending
 # on which surface read it -- a latent TypeError wherever a value from
 # one surface met a value from another. These tests pin the consolidated

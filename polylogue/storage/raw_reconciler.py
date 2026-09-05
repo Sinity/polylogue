@@ -1015,6 +1015,11 @@ def _apply_judgment_dispositions(
     """Promote explicitly resolved conflict plans into executable successors."""
     root = _archive_root(config)
     with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
+        has_blockers = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_authority_blockers'"
+        ).fetchone()
+        if has_blockers is None:
+            return items
         resolutions = {
             str(plan_id): json_document(json.loads(str(resolution)))
             for plan_id, resolution in conn.execute(
@@ -1300,6 +1305,25 @@ def inspect_raw_authority_frontier(config: Config) -> RawAuthorityFrontierCensus
     gap_items = tuple(item for item in all_items if item.state is not RawAuthorityFrontierState.PROVEN_CURRENT)
     plans = tuple(_plan(item) for item in gap_items)
     executable_ids = {item.plan_id for item in gap_items if item.executable}
+    with closing(sqlite3.connect(f"file:{root / 'source.db'}?mode=ro", uri=True)) as conn:
+        frontier_ledger_exists = conn.execute(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'raw_authority_censuses'"
+        ).fetchone()
+    if frontier_ledger_exists is None:
+        inventory_digest = _digest([item.to_dict() for item in all_items])
+        plan_inventory_digest = _digest([plan.to_dict() for plan in plans])
+        return RawAuthorityFrontierCensus(
+            census_id=f"ephemeral:{inventory_digest[:32]}",
+            query_handle="raw-authority-frontier:ephemeral",
+            inventory_digest=inventory_digest,
+            plan_inventory_digest=plan_inventory_digest,
+            state_counts=state_counts,
+            accepted_head_count=accepted_head_count,
+            terminal_superseded_count=terminal_superseded_count,
+            plan_count=len(plans),
+            executable_plan_count=len(executable_ids),
+            items=all_items,
+        )
     receipt: RawAuthorityCensusReceipt = record_raw_authority_census(
         root,
         plans,

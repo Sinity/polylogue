@@ -83,17 +83,18 @@ durable Sinex-backed-mode publication-obligation ledger — see
 ### `index.db` — parsed tree, search, and insights (rebuildable)
 
 The parsed session/message/block tree, full-text search indexes, cross-session
-topology, and the materialized read models. Rebuildable from `source.db`.
+topology, and rebuildable read models. Rebuildable from `source.db`.
 
 Core tables: `sessions`, `messages`, `blocks`, plus the `actions` **view**
-(not a table — see below), `session_links` (typed cross-session edges),
-`threads` / `thread_sessions`, attachment tables (`attachments`,
+(not a table — see below), `session_links` (typed cross-session edges), the
+compact indexed `action_pairs` and `delegation_facts` relations, query-time
+`threads`, `thread_sessions`, and `session_tag_rollups` views, attachment tables (`attachments`,
 `attachment_refs`, `attachment_native_ids`), `paste_spans`, the cost table
 `session_model_usage`, the auto-tag side of
 `session_tags`, and the insight
 read models (`session_profiles`, `session_work_events`, `session_phases`,
-`session_latency_profiles`, `session_tag_rollups`, `threads`) plus
-`insight_materialization` for cache invalidation.
+`session_latency_profiles`), whose freshness the converger derives from the
+owning session's sort key and content hash.
 
 ### `embeddings.db` — vectors (rebuildable, expensive)
 
@@ -283,9 +284,8 @@ tier constant:
   newer runtime as appropriate.
 
 Derived tiers (`index.db`, `embeddings.db`) have no ad hoc migration chain.
-Every index-tier bump declares its delta class in `storage/sqlite/lifecycle.py`.
-A non-semantic delta may fast-forward a clone-validated generation; a semantic
-reparse delta rebuilds from durable evidence:
+Every index-tier bump updates the canonical DDL and schema manifest. Schema
+drift requires a rebuild from durable evidence:
 
 ```bash
 polylogue ops reset --index && polylogued run

@@ -237,18 +237,10 @@ def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, r
     initialize_archive_tier(conn, tier)
 
 
-_DERIVED_IDENTITY_TIERS = (ArchiveTier.INDEX, ArchiveTier.OPS)
-"""Tiers whose readers assert a derived schema identity before using them."""
-
-
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
-    """Materialise a tier on an open connection and stamp its schema identity.
-
-    Every route that creates a derived tier passes through here, so the
-    identity readers assert is stamped here rather than by each caller.
-    """
+    """Materialise a tier on an open connection and stamp derived identities."""
     _materialize_archive_tier(conn, tier)
-    if tier in _DERIVED_IDENTITY_TIERS:
+    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
         from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
         stamp_derived_schema_identity(conn, tier.value)
@@ -556,19 +548,15 @@ def initialize_archive_database(
     try:
         current_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version if expected_version is None else expected_version
-        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS) and current_version != 0:
-            from polylogue.storage.sqlite.archive_tiers.schema_identity import (
-                DerivedTier,
-                derived_schema_identity,
-                read_schema_identity,
-            )
-            from polylogue.storage.sqlite.schema_bootstrap import SchemaSkew
+        # ops.db is disposable and converges by re-applying its idempotent
+        # additive DDL, so an absent or superseded identity stamp is a
+        # convergence input rather than a refusal; index.db is rebuilt through
+        # the daemon route and must refuse a foreign identity here.
+        derived_tier = None
+        if tier is ArchiveTier.INDEX and current_version != 0:
+            from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier
 
             derived_tier = DerivedTier(tier.value)
-            expected_identity = derived_schema_identity(derived_tier)
-            found_identity = read_schema_identity(conn, derived_tier)
-            if found_identity != expected_identity:
-                raise SchemaSkew(tier.value, expected_identity, found_identity)
         if current_version == required_version:
             # ops.db is disposable and evolves through idempotent additive DDL
             # without version bumps. Re-apply it so existing same-version
@@ -589,10 +577,17 @@ def initialize_archive_database(
 
                 ensure_runtime_indexes_sync(conn)
                 apply_index_benign_ddl_convergence(conn)
+            if derived_tier is not None:
+                from polylogue.storage.sqlite.schema_bootstrap import (
+                    ensure_derived_schema_identity,
+                )
+
+                ensure_derived_schema_identity(conn, tier.value)
+            if tier is ArchiveTier.INDEX:
                 from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
                 assert_schema_manifest(conn, tier)
-                conn.commit()
+            conn.commit()
             return
         if current_version != 0:
             if current_version < required_version and tier in DURABLE_MIGRATION_TIERS:
@@ -601,24 +596,6 @@ def initialize_archive_database(
                     f"version {required_version}; run an explicit durable-tier migration with a verified backup "
                     "manifest"
                 )
-            if tier is ArchiveTier.INDEX and current_version < required_version:
-                # index.db is rebuildable, but a bounded set of version gaps
-                # are DECLARED clone-safe (polylogue.storage.sqlite.lifecycle)
-                # -- no raw reparse, no consumer-visible semantic change. Apply
-                # the declared plan instead of forcing the full rebuild the
-                # declaration exists to avoid (polylogue-t3gk). Falls through
-                # to the rebuild-required error below when no eligible plan
-                # covers this exact gap (e.g. a SEMANTIC_REPARSE declaration
-                # is in the span).
-                from polylogue.storage.sqlite.archive_tiers.index_fast_forward_executor import (
-                    apply_index_fast_forward,
-                )
-                from polylogue.storage.sqlite.lifecycle import index_fast_forward_plan
-
-                plan = index_fast_forward_plan(current_version, required_version)
-                if plan is not None:
-                    apply_index_fast_forward(conn, plan)
-                    return
             rebuild_command = (
                 "polylogue ops reset --index && polylogued run"
                 if tier is ArchiveTier.INDEX
@@ -629,7 +606,10 @@ def initialize_archive_database(
                 f"{required_version}; move it aside and rebuild the archive root, e.g.: {rebuild_command}"
             )
         initialize_fresh_archive_tier(conn, tier, required_version)
-        if tier in _DERIVED_IDENTITY_TIERS:
+        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+            stamp_derived_schema_identity(conn, tier.value)
             conn.commit()
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest

@@ -7,12 +7,12 @@ import sqlite3
 import aiosqlite
 import pytest
 
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.embeddings import embedding_stats as embedding_stats_mod
 from polylogue.storage.embeddings.embedding_stats import (
     read_embedding_stats_async,
     read_embedding_stats_sync,
 )
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 
 
 def _create_embedding_stats_tables(conn: sqlite3.Connection) -> None:
@@ -222,22 +222,17 @@ def test_read_embedding_stats_sync_exposes_retrieval_bands_when_archive_tables_e
             lambda _conn: SessionInsightStatusSnapshot(
                 profile_row_count=2,
                 profile_evidence_fts_count=2,
-                profile_evidence_fts_ready=True,
                 profile_evidence_fts_duplicate_count=0,
                 work_event_inference_count=2,
                 work_event_inference_fts_count=2,
-                work_event_inference_fts_ready=True,
                 work_event_inference_fts_duplicate_count=0,
                 phase_inference_count=2,
-                phase_inference_rows_ready=True,
                 expected_phase_inference_count=2,
                 stale_work_event_inference_count=0,
                 stale_phase_inference_count=0,
                 profile_inference_fts_count=2,
-                profile_inference_fts_ready=True,
                 profile_inference_fts_duplicate_count=0,
                 profile_enrichment_fts_count=2,
-                profile_enrichment_fts_ready=True,
                 profile_enrichment_fts_duplicate_count=0,
             ),
         )
@@ -348,22 +343,17 @@ async def test_read_embedding_stats_async_does_not_derive_pending_from_session_r
         return SessionInsightStatusSnapshot(
             profile_row_count=0,
             profile_evidence_fts_count=0,
-            profile_evidence_fts_ready=True,
             profile_evidence_fts_duplicate_count=0,
             work_event_inference_count=0,
             work_event_inference_fts_count=0,
-            work_event_inference_fts_ready=True,
             work_event_inference_fts_duplicate_count=0,
             phase_inference_count=0,
-            phase_inference_rows_ready=True,
             expected_phase_inference_count=0,
             stale_work_event_inference_count=0,
             stale_phase_inference_count=0,
             profile_inference_fts_count=0,
-            profile_inference_fts_ready=True,
             profile_inference_fts_duplicate_count=0,
             profile_enrichment_fts_count=0,
-            profile_enrichment_fts_ready=True,
             profile_enrichment_fts_duplicate_count=0,
         )
 

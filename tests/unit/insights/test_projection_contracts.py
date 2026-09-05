@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.insights.projection_contracts import (
+from polylogue.analysis.projection_contracts import (
     PROJECTION_CONTRACTS,
     ProjectionCostClass,
     budget_exceeded,

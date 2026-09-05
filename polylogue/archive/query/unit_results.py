@@ -21,6 +21,7 @@ from polylogue.archive.query.metadata import (
     QueryUnitDescriptor,
     query_unit_descriptor,
 )
+from polylogue.archive.query.scope import SurfaceSpec, validate_surface_specs
 from polylogue.archive.query.spec import (
     normalize_action_sequence,
     normalize_action_terms,
@@ -585,6 +586,13 @@ def _execute_agg_terminal(ctx: TerminalExecutionContext) -> QueryUnitResultEnvel
 #: The pipeline's ``terminal.action`` selects the executor; one executor runs
 #: the full ``select -> shape -> terminal`` chain for every read surface
 #: (CLI find, MCP query_units, daemon /api/query-units, Python API) (#2006).
+TERMINAL_ACTION_SPECS: tuple[SurfaceSpec, ...] = (
+    SurfaceSpec("rows", "query-unit", True, lambda predicate: dict(predicate)),
+    SurfaceSpec("count", "query-unit", True, lambda predicate: dict(predicate)),
+    SurfaceSpec("agg", "query-unit", True, lambda predicate: dict(predicate)),
+)
+validate_surface_specs(TERMINAL_ACTION_SPECS)
+
 TERMINAL_ACTION_EXECUTORS: dict[str, TerminalExecutor] = {
     "rows": _execute_rows_terminal,
     "count": _execute_count_terminal,

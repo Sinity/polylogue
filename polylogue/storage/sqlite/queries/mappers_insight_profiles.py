@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.core.types import SessionId
-from polylogue.insights.archive_models import (
+from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
     SessionEvidencePayload,
     SessionInferencePayload,
 )
+from polylogue.core.types import SessionId
 from polylogue.storage.runtime import SessionProfileRecord
 from polylogue.storage.sqlite.queries.mappers_insight_fallback import (
     parse_fallback_payload_dict,

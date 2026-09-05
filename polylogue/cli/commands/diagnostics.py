@@ -602,7 +602,7 @@ async def _tools(
 ) -> None:
     from typing import cast
 
-    from polylogue.insights.tool_usage import ToolUsageInsightQuery
+    from polylogue.analysis.tool_usage import ToolUsageInsightQuery
     from polylogue.surfaces.payloads import (
         ToolCountBasis,
         ToolCountDetailLevel,

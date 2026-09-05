@@ -1,0 +1,872 @@
+"""Canonical session-insight status and repair-candidate queries."""
+
+from __future__ import annotations
+
+import dataclasses
+import re
+import sqlite3
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import TypeAlias
+
+import aiosqlite
+
+from polylogue.storage.derived.session.aggregates import _PROFILE_BUCKET_DAY_SQL
+from polylogue.storage.derived.session.runtime import (
+    SessionInsightStatusSnapshot,
+    session_profile_stale_predicate,
+)
+from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.introspection import column_exists_async as _column_exists_async
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.run_projection_relations import (
+    context_snapshot_relation_sql,
+    observed_event_relation_sql,
+    run_relation_sql,
+)
+
+TablePresence: TypeAlias = dict[str, bool]
+StatusCounts: TypeAlias = dict[str, int]
+
+# Query-time relations select through these tables. A view is listed in
+# sqlite_master whether or not the tables in its body exist, so presence alone
+# does not make it readable: selecting from it raises "no such table" until its
+# sources are built. The dependency lives in the view body and cannot be read
+# off a descriptor's query text, so it is declared once here and every gate
+# expands through it.
+_VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
+    "threads": ("session_profiles", "session_work_events"),
+    "session_tag_rollups": ("session_profiles",),
+}
+
+
+def _relations_readable(tables: TablePresence, keys: Sequence[str]) -> bool:
+    """Whether every named relation, and everything it selects through, exists."""
+    return all(
+        tables[key] and all(tables[dependency] for dependency in _VIEW_DEPENDENCIES.get(key, ())) for key in keys
+    )
+
+
+@dataclass(frozen=True)
+class SessionInsightTableDescriptor:
+    """Table presence and optional row-count query for insight status."""
+
+    key: str
+    table_name: str
+    count_key: str | None = None
+    count_sql: str | None = None
+
+    @property
+    def exists_sql(self) -> str:
+        return f"SELECT name FROM sqlite_master WHERE type IN ('table', 'view') AND name='{self.table_name}'"
+
+    def _readable(self, tables: TablePresence) -> bool:
+        return _relations_readable(tables, (self.key,))
+
+    def count_sync(self, conn: sqlite3.Connection, tables: TablePresence) -> tuple[str, int] | None:
+        if self.count_key is None:
+            return None
+        if not self._readable(tables):
+            return (self.count_key, 0)
+        return (self.count_key, _count_sync(conn, self.count_sql or f"SELECT COUNT(*) FROM {self.table_name}"))
+
+    async def count_async(self, conn: aiosqlite.Connection, tables: TablePresence) -> tuple[str, int] | None:
+        if self.count_key is None:
+            return None
+        if not self._readable(tables):
+            return (self.count_key, 0)
+        return (self.count_key, await _count_async(conn, self.count_sql or f"SELECT COUNT(*) FROM {self.table_name}"))
+
+
+@dataclass(frozen=True)
+class SessionInsightFtsDescriptor:
+    """FTS projection counts and duplicate checks."""
+
+    table_key: str
+    table_name: str
+    count_key: str
+    duplicate_count_key: str
+    source_count_key: str
+    distinct_sql: str
+    duplicate_sql: str
+
+    def counts_sync(
+        self,
+        conn: sqlite3.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> StatusCounts:
+        if verify_freshness and tables[self.table_key]:
+            indexed_count = _count_sync(conn, self.distinct_sql)
+            duplicate_count = _count_sync(conn, self.duplicate_sql)
+        else:
+            indexed_count = _table_count_sync(conn, tables[self.table_key], self.table_name)
+            duplicate_count = max(0, indexed_count - counts[self.source_count_key])
+        return {
+            self.count_key: indexed_count,
+            self.duplicate_count_key: duplicate_count,
+        }
+
+    async def counts_async(
+        self,
+        conn: aiosqlite.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> StatusCounts:
+        if verify_freshness and tables[self.table_key]:
+            indexed_count = await _count_async(conn, self.distinct_sql)
+            duplicate_count = await _count_async(conn, self.duplicate_sql)
+        else:
+            indexed_count = await _table_count_async(conn, tables[self.table_key], self.table_name)
+            duplicate_count = max(0, indexed_count - counts[self.source_count_key])
+        return {
+            self.count_key: indexed_count,
+            self.duplicate_count_key: duplicate_count,
+        }
+
+
+@dataclass(frozen=True)
+class SessionInsightCountDescriptor:
+    """Status metric query with table/freshness gating and fallback semantics."""
+
+    count_key: str
+    sql: str
+    table_keys: tuple[str, ...] = ()
+    params: tuple[object, ...] = ()
+    requires_freshness: bool = False
+    fallback_count_key: str | None = None
+    fallback_value: int = 0
+
+    def _should_query(self, tables: TablePresence, *, verify_freshness: bool) -> bool:
+        if self.requires_freshness and not verify_freshness:
+            return False
+        return _relations_readable(tables, self.table_keys)
+
+    def _fallback(self, counts: StatusCounts) -> int:
+        if self.fallback_count_key is not None:
+            return counts[self.fallback_count_key]
+        return self.fallback_value
+
+    def count_sync(
+        self,
+        conn: sqlite3.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> tuple[str, int]:
+        if self._should_query(tables, verify_freshness=verify_freshness):
+            return (self.count_key, _count_sync(conn, self.sql, *self.params))
+        return (self.count_key, self._fallback(counts))
+
+    async def count_async(
+        self,
+        conn: aiosqlite.Connection,
+        tables: TablePresence,
+        counts: StatusCounts,
+        *,
+        verify_freshness: bool,
+    ) -> tuple[str, int]:
+        if self._should_query(tables, verify_freshness=verify_freshness):
+            return (self.count_key, await _count_async(conn, self.sql, *self.params))
+        return (self.count_key, self._fallback(counts))
+
+
+# ---------------------------------------------------------------------------
+# SQL constants for session-insight status and drift checks
+# ---------------------------------------------------------------------------
+
+SESSION_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_profiles"
+SESSION_LATENCY_PROFILE_COUNT_SQL = "SELECT COUNT(*) FROM session_latency_profiles"
+SESSION_WORK_EVENT_COUNT_SQL = "SELECT COUNT(*) FROM session_work_events"
+SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL = "SELECT COUNT(DISTINCT event_id) FROM session_work_events_fts"
+SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL = "SELECT COUNT(*) - COUNT(DISTINCT event_id) FROM session_work_events_fts"
+SESSION_PHASE_COUNT_SQL = "SELECT COUNT(*) FROM session_phases"
+# polylogue-dab: session_runs/session_observed_events/session_context_snapshots
+# are no longer materialized tables; these are source-derived counts via
+# run_projection_relations.py's CTEs, not raw table scans.
+SESSION_RUN_COUNT_SQL = f"{run_relation_sql()} SELECT COUNT(*) FROM runs"
+SESSION_OBSERVED_EVENT_COUNT_SQL = (
+    f"{observed_event_relation_sql(source_where='1')} SELECT COUNT(*) FROM observed_events"
+)
+SESSION_CONTEXT_SNAPSHOT_COUNT_SQL = f"{context_snapshot_relation_sql()} SELECT COUNT(*) FROM context_snapshots"
+THREAD_COUNT_SQL = "SELECT COUNT(*) FROM threads"
+SESSION_TAG_ROLLUP_COUNT_SQL = "SELECT COUNT(*) FROM session_tag_rollups"
+TOTAL_SESSIONS_SQL = "SELECT COUNT(*) FROM sessions"
+HOT_SOURCE_GRACE_SECONDS = 600
+HOT_SOURCE_READY_CUTOFF_SQL = f"(strftime('%s', 'now') - {HOT_SOURCE_GRACE_SECONDS})"
+ROOT_THREAD_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM sessions c
+    LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
+    WHERE parent.session_id IS NULL
+"""
+MISSING_SESSION_PROFILE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM sessions c
+    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
+    WHERE sp.session_id IS NULL
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {cutoff}
+"""
+MISSING_SESSION_PROFILE_COUNT_SQL = MISSING_SESSION_PROFILE_COUNT_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
+ORPHAN_SESSION_PROFILE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_profiles sp
+    LEFT JOIN sessions c ON c.session_id = sp.session_id
+    WHERE c.session_id IS NULL
+"""
+MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
+    SELECT COUNT(*)
+    FROM session_profiles sp
+    JOIN sessions c ON c.session_id = sp.session_id
+    LEFT JOIN session_latency_profiles slp ON slp.session_id = sp.session_id
+    WHERE slp.session_id IS NULL
+      AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+"""
+STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
+    SELECT COUNT(*)
+    FROM session_latency_profiles slp
+    JOIN sessions c ON c.session_id = slp.session_id
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND (
+           slp.materializer_version != ?
+        OR {session_profile_stale_predicate("c", "slp")}
+      )
+"""
+ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_latency_profiles slp
+    LEFT JOIN sessions c ON c.session_id = slp.session_id
+    WHERE c.session_id IS NULL
+"""
+EXPECTED_WORK_EVENT_COUNT_SQL = "SELECT COALESCE(SUM(work_event_count), 0) FROM session_profiles"
+EXPECTED_PHASE_COUNT_SQL = "SELECT COALESCE(SUM(phase_count), 0) FROM session_profiles"
+ORPHAN_SESSION_WORK_EVENT_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_work_events swe
+    LEFT JOIN sessions c ON c.session_id = swe.session_id
+    WHERE c.session_id IS NULL
+"""
+ORPHAN_SESSION_PHASE_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM session_phases sph
+    LEFT JOIN sessions c ON c.session_id = sph.session_id
+    WHERE c.session_id IS NULL
+"""
+STALE_THREAD_COUNT_SQL = f"""
+    WITH RECURSIVE roots(root_id) AS (
+        SELECT c.session_id
+        FROM sessions c
+        LEFT JOIN sessions parent ON c.parent_session_id = parent.session_id
+        WHERE parent.session_id IS NULL
+    ),
+    descendants(root_id, session_id) AS (
+        SELECT root_id, root_id FROM roots
+        UNION ALL
+        SELECT d.root_id, c.session_id
+        FROM sessions c
+        JOIN descendants d ON c.parent_session_id = d.session_id
+    )
+    SELECT COUNT(*)
+    FROM roots r
+    WHERE EXISTS (
+        SELECT 1
+        FROM descendants d
+        LEFT JOIN session_profiles sp ON sp.session_id = d.session_id
+        JOIN sessions c ON c.session_id = d.session_id
+        WHERE d.root_id = r.root_id
+          AND (
+              sp.session_id IS NULL
+              OR sp.materializer_version != ?
+              OR {session_profile_stale_predicate("c", "sp")}
+          )
+    )
+"""
+ORPHAN_THREAD_COUNT_SQL = """
+    SELECT COUNT(*)
+    FROM threads wt
+    LEFT JOIN sessions c ON c.session_id = wt.thread_id
+    WHERE c.session_id IS NULL
+"""
+EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
+    WITH tag_rows AS (
+        SELECT sp.source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
+        FROM session_profiles sp, json_each(COALESCE(sp.tags_json, '[]')) tag
+        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
+        UNION
+        SELECT sp.source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag
+        FROM session_profiles sp, json_each(COALESCE(sp.auto_tags_json, '[]')) tag
+        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
+    )
+    SELECT COUNT(*) FROM (
+        SELECT source_name, bucket_day, tag
+        FROM tag_rows
+        GROUP BY source_name, bucket_day, tag
+    )
+"""
+STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
+    WITH tag_rows AS (
+        SELECT
+            sp.source_name AS source_name,
+            {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
+            tag.value AS tag,
+            sp.materialized_at AS profile_materialized_at
+        FROM session_profiles sp, json_each(COALESCE(sp.tags_json, '[]')) tag
+        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
+        UNION ALL
+        SELECT
+            sp.source_name AS source_name,
+            {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
+            tag.value AS tag,
+            sp.materialized_at AS profile_materialized_at
+        FROM session_profiles sp, json_each(COALESCE(sp.auto_tags_json, '[]')) tag
+        WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
+    ),
+    expected AS (
+        SELECT source_name, bucket_day, tag, MAX(profile_materialized_at) AS max_profile_materialized_at
+        FROM tag_rows
+        GROUP BY source_name, bucket_day, tag
+    )
+    SELECT COUNT(*)
+    FROM session_tag_rollups str
+    LEFT JOIN expected e
+      ON e.source_name = str.source_name
+     AND e.bucket_day = str.bucket_day
+     AND e.tag = str.tag
+    WHERE str.materializer_version != ?
+       OR e.tag IS NULL
+       OR COALESCE(e.max_profile_materialized_at, '') > COALESCE(str.materialized_at, '')
+"""
+SESSION_PROFILE_REPAIR_CANDIDATES_SQL = f"""
+    SELECT c.session_id
+    FROM sessions c
+    LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {{cutoff}}
+      AND (
+           sp.session_id IS NULL
+        OR sp.materializer_version != ?
+        OR {session_profile_stale_predicate("c", "sp")}
+      )
+    ORDER BY c.session_id
+"""
+SESSION_PROFILE_REPAIR_CANDIDATES_SQL = SESSION_PROFILE_REPAIR_CANDIDATES_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
+
+
+def _stale_session_profile_count_sql(conn: sqlite3.Connection) -> str:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
+    )
+    return f"""
+        SELECT COUNT(*)
+        FROM sessions AS c
+        JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.materializer_version != ? OR {predicate})
+    """
+
+
+async def _stale_session_profile_count_sql_async(conn: aiosqlite.Connection) -> str:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
+    )
+    return f"""
+        SELECT COUNT(*)
+        FROM sessions AS c
+        JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.materializer_version != ? OR {predicate})
+    """
+
+
+_TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
+    SessionInsightTableDescriptor(
+        key="session_profiles",
+        table_name="session_profiles",
+        count_key="profile_row_count",
+        count_sql=SESSION_PROFILE_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_latency_profiles",
+        table_name="session_latency_profiles",
+        count_key="latency_profile_row_count",
+        count_sql=SESSION_LATENCY_PROFILE_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_work_events",
+        table_name="session_work_events",
+        count_key="work_event_inference_count",
+        count_sql=SESSION_WORK_EVENT_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_work_events_fts",
+        table_name="session_work_events_fts",
+    ),
+    SessionInsightTableDescriptor(
+        key="session_phases",
+        table_name="session_phases",
+        count_key="phase_inference_count",
+        count_sql=SESSION_PHASE_COUNT_SQL,
+    ),
+    # polylogue-dab/itvd: session_runs/session_observed_events/session_context_snapshots
+    # are source-derived CTE relations, not tables, so they can never appear in
+    # sqlite_master. `table_name` here points at the always-present `sessions`
+    # table purely so the presence gate (`exists_sql`, `tables[self.key]`)
+    # reports true and the real count_sql/readiness checks actually run,
+    # instead of the descriptor's key-driven presence check permanently
+    # short-circuiting to "table missing".
+    SessionInsightTableDescriptor(
+        key="session_runs",
+        table_name="sessions",
+        count_key="run_count",
+        count_sql=SESSION_RUN_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_observed_events",
+        table_name="sessions",
+        count_key="observed_event_count",
+        count_sql=SESSION_OBSERVED_EVENT_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_context_snapshots",
+        table_name="sessions",
+        count_key="context_snapshot_count",
+        count_sql=SESSION_CONTEXT_SNAPSHOT_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="threads",
+        table_name="threads",
+        count_key="thread_count",
+        count_sql=THREAD_COUNT_SQL,
+    ),
+    SessionInsightTableDescriptor(
+        key="session_tag_rollups",
+        table_name="session_tag_rollups",
+        count_key="tag_rollup_count",
+        count_sql=SESSION_TAG_ROLLUP_COUNT_SQL,
+    ),
+)
+
+_FTS_DESCRIPTORS: tuple[SessionInsightFtsDescriptor, ...] = (
+    SessionInsightFtsDescriptor(
+        table_key="session_work_events_fts",
+        table_name="session_work_events_fts",
+        count_key="work_event_inference_fts_count",
+        duplicate_count_key="work_event_inference_fts_duplicate_count",
+        source_count_key="work_event_inference_count",
+        distinct_sql=SESSION_WORK_EVENT_FTS_DOC_COUNT_SQL,
+        duplicate_sql=SESSION_WORK_EVENT_FTS_DUPLICATE_COUNT_SQL,
+    ),
+)
+
+_COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
+    SessionInsightCountDescriptor(
+        count_key="missing_profile_row_count",
+        table_keys=("session_profiles",),
+        sql=MISSING_SESSION_PROFILE_COUNT_SQL,
+        fallback_count_key="total_sessions",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_profile_row_count",
+        table_keys=("session_profiles",),
+        sql=ORPHAN_SESSION_PROFILE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="missing_latency_profile_row_count",
+        table_keys=("session_latency_profiles", "session_profiles"),
+        sql=MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL,
+        fallback_count_key="profile_row_count",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_latency_profile_row_count",
+        table_keys=("session_latency_profiles",),
+        sql=STALE_SESSION_LATENCY_PROFILE_COUNT_SQL,
+        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_latency_profile_row_count",
+        table_keys=("session_latency_profiles",),
+        sql=ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="expected_work_event_inference_count",
+        table_keys=("session_profiles",),
+        sql=EXPECTED_WORK_EVENT_COUNT_SQL,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="expected_phase_inference_count",
+        table_keys=("session_profiles",),
+        sql=EXPECTED_PHASE_COUNT_SQL,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_work_event_inference_count",
+        table_keys=("session_work_events",),
+        sql=ORPHAN_SESSION_WORK_EVENT_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_phase_inference_count",
+        table_keys=("session_phases",),
+        sql=ORPHAN_SESSION_PHASE_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_thread_count",
+        table_keys=("session_profiles",),
+        sql=STALE_THREAD_COUNT_SQL,
+        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="orphan_thread_count",
+        table_keys=("threads",),
+        sql=ORPHAN_THREAD_COUNT_SQL,
+        requires_freshness=True,
+    ),
+    SessionInsightCountDescriptor(
+        count_key="expected_tag_rollup_count",
+        table_keys=("session_profiles",),
+        sql=EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL,
+        requires_freshness=True,
+        fallback_count_key="tag_rollup_count",
+    ),
+    SessionInsightCountDescriptor(
+        count_key="stale_tag_rollup_count",
+        table_keys=("session_tag_rollups",),
+        sql="SELECT COUNT(*) FROM session_tag_rollups WHERE materialized_at != 'query-time'",
+        requires_freshness=True,
+    ),
+)
+
+# The status counts are splatted into ``SessionInsightStatusSnapshot``, and
+# descriptors index ``tables``/``counts`` by name. Every emitted key must be a
+# snapshot field, every referenced fallback/source key one some descriptor
+# emits, and every product table a query reads must be one the descriptor gates
+# on -- an ungated read raises "no such table" on an archive whose derived
+# tables have not been built yet. Each of these raises only when a status call
+# reaches it, so all of them are checked at import.
+_SNAPSHOT_COUNT_FIELDS = frozenset(field.name for field in dataclasses.fields(SessionInsightStatusSnapshot))
+_TABLE_PRESENCE_KEYS = frozenset(descriptor.key for descriptor in _TABLE_DESCRIPTORS)
+# ``sessions`` is the archive's own spine and is never absent where status runs.
+_PRODUCT_TABLES = frozenset(descriptor.table_name for descriptor in _TABLE_DESCRIPTORS) - {"sessions"}
+_EMITTED_COUNT_KEYS = (
+    {"total_sessions", "root_threads"}
+    | {descriptor.count_key for descriptor in _TABLE_DESCRIPTORS if descriptor.count_key is not None}
+    | {descriptor.count_key for descriptor in _FTS_DESCRIPTORS}
+    | {descriptor.duplicate_count_key for descriptor in _FTS_DESCRIPTORS}
+    | {descriptor.count_key for descriptor in _COUNT_DESCRIPTORS}
+)
+
+if _unknown_counts := sorted(_EMITTED_COUNT_KEYS - _SNAPSHOT_COUNT_FIELDS):
+    raise RuntimeError(f"status descriptors emit counts absent from SessionInsightStatusSnapshot: {_unknown_counts}")
+
+if _unknown_tables := sorted(
+    (
+        {table_key for descriptor in _COUNT_DESCRIPTORS for table_key in descriptor.table_keys}
+        | {descriptor.table_key for descriptor in _FTS_DESCRIPTORS}
+        | set(_VIEW_DEPENDENCIES)
+        | {table for tables in _VIEW_DEPENDENCIES.values() for table in tables}
+    )
+    - _TABLE_PRESENCE_KEYS
+):
+    raise RuntimeError(f"status descriptors gate on tables the presence probe does not report: {_unknown_tables}")
+
+if _unknown_references := sorted(
+    (
+        {descriptor.fallback_count_key for descriptor in _COUNT_DESCRIPTORS if descriptor.fallback_count_key}
+        | {descriptor.source_count_key for descriptor in _FTS_DESCRIPTORS}
+    )
+    - _EMITTED_COUNT_KEYS
+):
+    raise RuntimeError(f"status descriptors reference counts nothing emits: {_unknown_references}")
+
+if _ungated_reads := sorted(
+    (descriptor.count_key, table)
+    for descriptor in _COUNT_DESCRIPTORS
+    for table in _PRODUCT_TABLES
+    if re.search(rf"\b{re.escape(table)}\b", descriptor.sql) and table not in descriptor.table_keys
+):
+    raise RuntimeError(f"status descriptors read product tables they do not gate on: {_ungated_reads}")
+
+
+def _to_int(row: tuple[object, ...] | sqlite3.Row | None) -> int:
+    if not row:
+        return 0
+    value = row[0]
+    if isinstance(value, int | float | str):
+        return int(value)
+    return 0
+
+
+def _tables_sync(conn: sqlite3.Connection) -> TablePresence:
+    return {descriptor.key: bool(conn.execute(descriptor.exists_sql).fetchone()) for descriptor in _TABLE_DESCRIPTORS}
+
+
+async def _tables_async(conn: aiosqlite.Connection) -> TablePresence:
+    tables: TablePresence = {}
+    for descriptor in _TABLE_DESCRIPTORS:
+        tables[descriptor.key] = bool(await (await conn.execute(descriptor.exists_sql)).fetchone())
+    return tables
+
+
+def _count_sync(conn: sqlite3.Connection, sql: str, *params: object) -> int:
+    return _to_int(conn.execute(sql, params).fetchone())
+
+
+async def _count_async(conn: aiosqlite.Connection, sql: str, *params: object) -> int:
+    return _to_int(await (await conn.execute(sql, params)).fetchone())
+
+
+def _table_count_sync(conn: sqlite3.Connection, table_exists: bool, table_name: str) -> int:
+    return _to_int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()) if table_exists else 0
+
+
+async def _table_count_async(conn: aiosqlite.Connection, table_exists: bool, table_name: str) -> int:
+    return _to_int(await (await conn.execute(f"SELECT COUNT(*) FROM {table_name}")).fetchone()) if table_exists else 0
+
+
+def _table_row_counts_sync(conn: sqlite3.Connection, tables: TablePresence) -> StatusCounts:
+    counts: StatusCounts = {}
+    for descriptor in _TABLE_DESCRIPTORS:
+        count = descriptor.count_sync(conn, tables)
+        if count is not None:
+            counts[count[0]] = count[1]
+    return counts
+
+
+async def _table_row_counts_async(conn: aiosqlite.Connection, tables: TablePresence) -> StatusCounts:
+    counts: StatusCounts = {}
+    for descriptor in _TABLE_DESCRIPTORS:
+        count = await descriptor.count_async(conn, tables)
+        if count is not None:
+            counts[count[0]] = count[1]
+    return counts
+
+
+def _fts_projection_counts_sync(
+    conn: sqlite3.Connection,
+    tables: TablePresence,
+    *,
+    counts: StatusCounts,
+    verify_freshness: bool,
+) -> StatusCounts:
+    projection_counts: StatusCounts = {}
+    for descriptor in _FTS_DESCRIPTORS:
+        projection_counts.update(descriptor.counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
+    return projection_counts
+
+
+async def _fts_projection_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    counts: StatusCounts,
+    verify_freshness: bool,
+) -> StatusCounts:
+    projection_counts: StatusCounts = {}
+    for descriptor in _FTS_DESCRIPTORS:
+        projection_counts.update(await descriptor.counts_async(conn, tables, counts, verify_freshness=verify_freshness))
+    return projection_counts
+
+
+def _materialized_counts_sync(
+    conn: sqlite3.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    counts: StatusCounts = {
+        "total_sessions": _count_sync(conn, TOTAL_SESSIONS_SQL),
+    }
+    counts.update(_table_row_counts_sync(conn, tables))
+    counts["root_threads"] = _count_sync(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else counts["thread_count"]
+    counts.update(_fts_projection_counts_sync(conn, tables, counts=counts, verify_freshness=verify_freshness))
+    return counts
+
+
+def _descriptor_counts_sync(
+    conn: sqlite3.Connection,
+    tables: TablePresence,
+    counts: StatusCounts,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    descriptor_counts: StatusCounts = {}
+    for descriptor in _COUNT_DESCRIPTORS:
+        key, value = descriptor.count_sync(
+            conn, tables, {**counts, **descriptor_counts}, verify_freshness=verify_freshness
+        )
+        descriptor_counts[key] = value
+    return descriptor_counts
+
+
+def _status_counts_sync(
+    conn: sqlite3.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    counts = _materialized_counts_sync(conn, tables, verify_freshness=verify_freshness)
+    counts.update(_descriptor_counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
+    counts["stale_profile_row_count"] = (
+        _count_sync(conn, _stale_session_profile_count_sql(conn), SESSION_INSIGHT_MATERIALIZER_VERSION)
+        if verify_freshness and tables["session_profiles"]
+        else 0
+    )
+    return counts
+
+
+def _status_payload(
+    tables: TablePresence,
+    counts: StatusCounts,
+) -> SessionInsightStatusSnapshot:
+    return SessionInsightStatusSnapshot(
+        **counts,
+    )
+
+
+def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[str]:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
+    )
+    sql = f"""
+        SELECT c.session_id
+        FROM sessions AS c
+        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
+        ORDER BY c.session_id
+    """
+    rows = conn.execute(
+        sql,
+        (SESSION_INSIGHT_MATERIALIZER_VERSION,),
+    ).fetchall()
+    return [str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
+
+
+async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection) -> list[str]:
+    predicate = session_profile_stale_predicate(
+        "c",
+        "sp",
+        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
+    )
+    sql = f"""
+        SELECT c.session_id
+        FROM sessions AS c
+        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
+        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
+        ORDER BY c.session_id
+    """
+    rows = await (
+        await conn.execute(
+            sql,
+            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
+        )
+    ).fetchall()
+    return [str(row["session_id"]) for row in rows]
+
+
+def session_insight_status_sync(
+    conn: sqlite3.Connection,
+    *,
+    verify_freshness: bool = True,
+) -> SessionInsightStatusSnapshot:
+    tables = _tables_sync(conn)
+    counts = _status_counts_sync(conn, tables, verify_freshness=verify_freshness)
+    return _status_payload(tables, counts)
+
+
+async def _materialized_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    counts: StatusCounts = {
+        "total_sessions": await _count_async(conn, TOTAL_SESSIONS_SQL),
+    }
+    counts.update(await _table_row_counts_async(conn, tables))
+    counts["root_threads"] = (
+        await _count_async(conn, ROOT_THREAD_COUNT_SQL) if verify_freshness else counts["thread_count"]
+    )
+    counts.update(await _fts_projection_counts_async(conn, tables, counts=counts, verify_freshness=verify_freshness))
+    return counts
+
+
+async def _descriptor_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    counts: StatusCounts,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    descriptor_counts: StatusCounts = {}
+    for descriptor in _COUNT_DESCRIPTORS:
+        key, value = await descriptor.count_async(
+            conn,
+            tables,
+            {**counts, **descriptor_counts},
+            verify_freshness=verify_freshness,
+        )
+        descriptor_counts[key] = value
+    return descriptor_counts
+
+
+async def _status_counts_async(
+    conn: aiosqlite.Connection,
+    tables: TablePresence,
+    *,
+    verify_freshness: bool,
+) -> StatusCounts:
+    counts = await _materialized_counts_async(conn, tables, verify_freshness=verify_freshness)
+    counts.update(await _descriptor_counts_async(conn, tables, counts, verify_freshness=verify_freshness))
+    counts["stale_profile_row_count"] = (
+        await _count_async(
+            conn, await _stale_session_profile_count_sql_async(conn), SESSION_INSIGHT_MATERIALIZER_VERSION
+        )
+        if verify_freshness and tables["session_profiles"]
+        else 0
+    )
+    return counts
+
+
+async def session_insight_status_async(
+    conn: aiosqlite.Connection,
+    *,
+    verify_freshness: bool = True,
+) -> SessionInsightStatusSnapshot:
+    """Return session-insight table and row-count status.
+
+    With `verify_freshness=False`, the result is a lightweight approximation:
+    `root_threads` falls back to `thread_count`, and freshness-gated
+    stale/orphan/expected counts can be omitted. Convergence debt is the
+    readiness signal for derived tables.
+    """
+
+    tables = await _tables_async(conn)
+    counts = await _status_counts_async(conn, tables, verify_freshness=verify_freshness)
+    return _status_payload(tables, counts)
+
+
+__all__ = [
+    "SessionInsightCountDescriptor",
+    "SessionInsightFtsDescriptor",
+    "SessionInsightTableDescriptor",
+    "session_insight_status_async",
+    "session_insight_status_sync",
+    "session_profile_repair_candidate_ids_async",
+    "session_profile_repair_candidate_ids_sync",
+]

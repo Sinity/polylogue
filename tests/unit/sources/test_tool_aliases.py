@@ -27,7 +27,7 @@ def test_agent_tool_classifies_as_subagent_dispatch() -> None:
     successor to Claude Code's "Task" tool -- same dispatch shape (a
     ``prompt`` field the child's own first turn reproduces verbatim). It
     must land in ToolCategory.SUBAGENT, the category
-    delegation_facts_source's `WHERE a.semantic_type = 'subagent'` filters
+    delegation_facts' `WHERE a.semantic_type = 'subagent'` filters
     on, not the generic ToolCategory.AGENT bucket (which also holds
     non-delegation control tools like askuserquestion/skill/batch/todo*).
     Without this, delegation resolution finds zero dispatch actions for any

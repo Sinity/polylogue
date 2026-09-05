@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.insights.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY, SESSION_COST_USD_METRIC
+from polylogue.analysis.measurement.registered_metrics import DEFAULT_METRIC_REGISTRY, SESSION_COST_USD_METRIC
 
 
 def test_default_registry_resolves_the_session_cost_metric_by_name() -> None:

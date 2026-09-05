@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.analysis.topology import LogicalSession, SessionRef, SessionTopology
 from polylogue.api import Polylogue
-from polylogue.insights.topology import LogicalSession, SessionRef, SessionTopology
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 

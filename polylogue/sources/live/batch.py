@@ -36,6 +36,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -73,9 +74,14 @@ from polylogue.pipeline.ingest_outcomes import (
     success_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
-from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
+from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
-from polylogue.sources.decoder_zip import ZipBombError, open_bounded_zip_entry
+from polylogue.sources.decoder_zip import (
+    ZipBombError,
+    is_declared_artifact_path,
+    open_bounded_zip_entry,
+    provider_detection_path,
+)
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     _detect_provider_from_raw_bytes,
@@ -113,10 +119,12 @@ from polylogue.sources.live.batch_support import (
     _path_size,
     _throttled_phase_heartbeat,
     claude_semantic_frontier_for_prefix,
+    claude_semantic_frontier_for_prefix_with_bytes,
     codex_append_payload,
     cursor_prefix_hash,
     cursor_state_after_full_ingest,
     decode_claude_semantic_frontier,
+    encode_claude_semantic_frontier_digests,
     encode_cursor_hash_authority,
     file_prefix_sha256,
     fingerprint_file,
@@ -148,7 +156,12 @@ from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggre
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.origin_specs import artifact_rule_for_path, frontier_kind_for_origin, recognize_source_class
+from polylogue.sources.origin_specs import (
+    artifact_rule_for_path,
+    database_capability_for_provider,
+    frontier_kind_for_origin,
+    recognize_source_class,
+)
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
@@ -581,6 +594,7 @@ class LiveBatchProcessor:
         self._event_emitter = event_emitter
         self._sync_runner = sync_runner
         self._last_cursor_write_stale = False
+        self._last_append_cursor_proof_bytes = 0
         self._raw_compaction_min_acquired_at = datetime.now(UTC).isoformat()
         # One-shot channels out of ``_resynthesize_cursor_from_source``, which
         # cannot widen its own return type without rewriting every one of its
@@ -847,6 +861,7 @@ class LiveBatchProcessor:
                 succeeded_paths.add(plan.path)
                 if not self._record_append_cursor(plan):
                     stale_cursor_write_count += 1
+                cursor_fingerprint_read_bytes += self._last_append_cursor_proof_bytes
                 self._record_convergence_outcome(plan.path, debt_by_source_path.get(plan.path, ()))
                 session_id = append_result.session_ids_by_path.get(plan.path)
                 if session_id:
@@ -1997,9 +2012,21 @@ class LiveBatchProcessor:
                 if path.suffix.lower() == ".zip"
                 else recognize_source_class(fallback_provider, path, source_only=source_only)
             )
-            if source_class is not None and source_class.source_class == "unsupported":
-                # Suffixes only make a candidate observable. The declaration
-                # owned recognizer admits provider sessions before parsing.
+            hermes_database_capability = database_capability_for_provider(Provider.HERMES)
+            hermes_member = (
+                hermes_database_capability.member(path.name) if hermes_database_capability is not None else None
+            )
+            hermes_owned_sqlite_name = (
+                source_only
+                and fallback_provider is Provider.HERMES
+                and hermes_member is not None
+                and hermes_member.disposition != "out-of-scope"
+            )
+            if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+                # A broad Hermes root is suffix-enumerated so every candidate
+                # remains observable.  Only the OriginSpec recognizer may
+                # admit a candidate to the Hermes parser; unknown/config/cache
+                # material is a typed non-session observation instead.
                 logger.info(
                     "live.source_candidate_not_admitted path=%s provider=%s source_class=%s reason=%s",
                     path,
@@ -2054,11 +2081,17 @@ class LiveBatchProcessor:
                 ingested.append(path)
                 raw_byte_sizes[path] = stat.st_size
                 continue
-            if (
+            codex_database_capability = database_capability_for_provider(Provider.CODEX)
+            codex_member = (
+                codex_database_capability.member(path.name) if codex_database_capability is not None else None
+            )
+            codex_owned_sqlite_name = (
                 source_only
-                and fallback_provider is Provider.HERMES
-                and path.name in {"state.db", "verification_evidence.db"}
-            ) or (
+                and fallback_provider is Provider.CODEX
+                and codex_member is not None
+                and codex_member.disposition != "out-of-scope"
+            )
+            if (hermes_owned_sqlite_name) or (
                 not source_only
                 and (
                     hermes_state.looks_like_state_db_path(path)
@@ -2099,16 +2132,18 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
-            elif (
-                source_only
-                and fallback_provider is Provider.CODEX
-                and source_class is not None
-                and source_class.source_class == "session"
-            ) or (not source_only and codex_state.is_in_scope_codex_sqlite_path(path)):
-                # Snapshot live Codex SQLite state before hashing or storing it.
-                # Normal ingest requires the declared SQLite schema; source-only
-                # ingest accepts a declared filename so a future or mid-write
-                # snapshot remains durable authority for later replay.
+            elif codex_owned_sqlite_name or (
+                codex_member is not None
+                and codex_member.disposition != "out-of-scope"
+                and codex_state.is_in_scope_codex_sqlite_path(path)
+            ):
+                # polylogue-0jf4: acquire live Codex SQLite state the same
+                # way Hermes acquires its state.db -- a consistent
+                # backup/snapshot (never a raw read of a possibly-live-locked
+                # file) into the content-addressed blob store. The filename
+                # gate keeps this cheap for the vast majority of ~/.codex
+                # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
+                # then re-confirms the table shape before trusting the name.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -2143,6 +2178,16 @@ class LiveBatchProcessor:
                         current_path=path,
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
+            elif codex_member is not None:
+                # Matched a known Codex state-db filename but either failed
+                # structural verification (mid-write, corrupt, or a future
+                # Codex schema change) or is a database CODEX_STATE_FIDELITY
+                # (sources/parsers/codex_state.py) declares out-of-scope
+                # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
+                # automation config) -- exclude cleanly without ever reading
+                # the bytes as a generic session artifact.
+                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                continue
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
                 # an ad hoc parse pass. Provider detection and session/artifact
@@ -2928,27 +2973,25 @@ class LiveBatchProcessor:
                     elif provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(
                         blob_store.blob_path(blob_hash), immutable=True
                     ):
-                        # polylogue-0jf4: Codex state dbs never become
-                        # sessions of their own -- thread_state's evidence
-                        # (titles, spawn edges) attaches to the EXISTING
-                        # codex-session rows it describes via
-                        # _write_codex_thread_state_evidence, never a full
-                        # session replace. goals_1.sqlite/memories_1.sqlite
-                        # are acquire-partial (CODEX_STATE_FIDELITY): the raw
-                        # snapshot admitted above is already durable
-                        # evidence; no derived parse is wired in this change.
+                        # Codex state dbs never become sessions of their
+                        # own: thread_state evidence (titles, spawn edges)
+                        # attaches to the EXISTING codex-session rows it
+                        # describes; goals/memories snapshots are durable raw
+                        # evidence only. Either way the raw ends terminal
+                        # here -- a snapshot has no byte frontier, so the
+                        # cursor-authority gate can only account for it
+                        # through the non-session receipt this writes.
                         state_path = blob_store.blob_path(blob_hash)
-                        state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
-                        if state_kind == "thread_state":
-                            state_snapshot = codex_state.parse_codex_state_db(state_path, immutable=True)
-                            write_codex_thread_state_evidence(
-                                archive,
-                                state_snapshot,
-                                source_path=record.source_path,
-                                acquired_at_ms=acquired_at_ms,
-                                observation_order=archive.raw_revision_observation_order(source_raw_id)[1],
-                            )
-                        result.raw_ids[record.raw_id] = source_raw_id
+                        record_codex_state_snapshot_terminal(
+                            archive,
+                            source_raw_id,
+                            state_path=state_path,
+                            state_kind=codex_state.classify_codex_sqlite_path(state_path, immutable=True),
+                            source_path=record.source_path,
+                            acquired_at_ms=acquired_at_ms,
+                            censused_at_ms=acquired_at_ms,
+                        )
+                        result.terminal_raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     elif is_stream_record_provider(record.source_path, str(provider)):
@@ -3507,14 +3550,24 @@ class LiveBatchProcessor:
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
         total_bytes = 0
-        validator = _ZipEntryValidator(
-            fallback_provider,
-            cursor_state=None,
-            zip_path=path,
-        )
         try:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
+                zip_provider_hint = fallback_provider
+                if fallback_provider is Provider.UNKNOWN:
+                    safe_json_entries = list(
+                        ZipAdmission(zip_path=path).filter_entries(
+                            central_directory,
+                            allowed_suffixes=ZIP_JSON_SUFFIXES,
+                        )
+                    )
+                    detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
+                    zip_provider_hint = self._sniff_zip_provider(zf, detection_entries) or fallback_provider
+                validator = _ZipEntryValidator(
+                    zip_provider_hint,
+                    cursor_state=None,
+                    zip_path=path,
+                )
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
                 entries = [(entry_ordinals[id(info)], info) for info in validator.filter_entries(central_directory)]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
@@ -3529,11 +3582,6 @@ class LiveBatchProcessor:
                 # falling back to ``Provider.UNKNOWN`` -> ``unknown-export``
                 # (polylogue-hs3y). A source that already resolved a
                 # provider (a per-provider watched directory) is left alone.
-                zip_provider_hint = fallback_provider
-                if fallback_provider is Provider.UNKNOWN:
-                    zip_provider_hint = (
-                        self._sniff_zip_provider(zf, [info for _ordinal, info in entries]) or fallback_provider
-                    )
                 for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
@@ -3614,7 +3662,8 @@ class LiveBatchProcessor:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                for info in validator.filter_entries(central_directory):
+                allowed_path = is_declared_artifact_path if fallback_provider is Provider.UNKNOWN else None
+                for info in validator.filter_entries(central_directory, allowed_path=allowed_path):
                     if info.file_size == 0:
                         continue
                     entry_ordinal = entry_ordinals[id(info)]
@@ -4294,6 +4343,7 @@ class LiveBatchProcessor:
             # routed through the full/bundle ingest path below instead,
             # which already handles multi-session grouping correctly.
             return None
+        parser_fingerprint = self._current_parser_fingerprint()
         cursor = cursor or self._cursor.get_record(path)
         pending_promotion: Callable[[], bool] | None = None
         if cursor is None:
@@ -4313,11 +4363,7 @@ class LiveBatchProcessor:
             pending_promotion = self._pending_legacy_promotions.pop(path, None)
             if cursor is not None:
                 self._resynthesized_cursors[path] = cursor
-        if (
-            cursor is None
-            or cursor.parser_fingerprint != self._current_parser_fingerprint()
-            or cursor.content_fingerprint is None
-        ):
+        if cursor is None or cursor.parser_fingerprint != parser_fingerprint or cursor.content_fingerprint is None:
             return None
         if self._cursor_references_raw_failure_requiring_full_replay(path, cursor):
             return None
@@ -4352,6 +4398,9 @@ class LiveBatchProcessor:
             return None
         if claude_frontier is None and expected_prefix_hash is None:
             return None
+        claude_header_sha256: str | None = None
+        claude_publication_body_sha256: str | None = None
+        stable_hasher: Any | None = None
         try:
             with path.open("rb") as handle:
                 stat = os.fstat(handle.fileno())
@@ -4389,6 +4438,7 @@ class LiveBatchProcessor:
                         json_loads(header_end)
                     except (UnicodeDecodeError, ValueError):
                         return None
+                    claude_header_sha256 = sha256(header_end).hexdigest()
                     start_offset = len(header_end) + claude_frontier.body_bytes
                     handle.seek(len(header_end))
                     stable_hasher = sha256()
@@ -4440,6 +4490,11 @@ class LiveBatchProcessor:
                         accepted_hasher.update(chunk)
                         remaining -= len(chunk)
                     accepted_prefix_hash = accepted_hasher.hexdigest()
+                else:
+                    assert stable_hasher is not None
+                    publication_hasher = stable_hasher.copy()
+                    publication_hasher.update(complete_payload)
+                    claude_publication_body_sha256 = publication_hasher.hexdigest()
                 final_stat = os.fstat(handle.fileno())
         except OSError:
             return None
@@ -4474,6 +4529,11 @@ class LiveBatchProcessor:
             authority_bytes_read=last_complete_newline,
             native_id_hint=native_id_hint,
             acquisition_native_id_hint=acquisition_native_id_hint,
+            accepted_claude_body_sha256=(claude_frontier.body_sha256 if claude_frontier is not None else None),
+            accepted_claude_body_bytes=(claude_frontier.body_bytes if claude_frontier is not None else None),
+            accepted_claude_header_sha256=claude_header_sha256,
+            accepted_claude_publication_body_sha256=claude_publication_body_sha256,
+            parser_fingerprint=parser_fingerprint,
         )
 
     def _append_payload_for_provider(
@@ -4754,56 +4814,98 @@ class LiveBatchProcessor:
             logger.warning("live.watcher: raw snapshot compaction errors: %s", "; ".join(result.errors[:3]))
 
     def _record_append_cursor(self, plan: _AppendPlan) -> bool:
-        """Persist a proven append frontier without mistaking later growth for rewrite.
-
-        ``plan`` carries a prefix witness produced before append persistence.
-        A live JSONL writer may append another record before this method runs;
-        that does not invalidate the accepted range. Keep the plan's original
-        observation in the cursor so a same-size replacement is still forced
-        through the full route on the next batch.
-        """
+        """Persist a proven append frontier against one stable observation."""
         latest_stat: os.stat_result | None = None
-        final_stat: os.stat_result | None = None
+        proof_start: os.stat_result | None = None
+        proof_end: os.stat_result | None = None
         tail_hash: str | None = None
-        expected_observation = (
-            plan.st_dev,
-            plan.st_ino,
-            plan.stat_size,
-            plan.mtime_ns,
-            plan.ctime_ns,
+        stored_tail_hash: str | None = None
+        publication_end = plan.last_complete_newline
+        self._last_append_cursor_proof_bytes = 0
+        is_claude_frontier = (
+            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
+            == "claude-header-body"
         )
+        disappeared_after_admission = False
         try:
-            stat = plan.path.stat()
-            latest_stat = stat
-            if stat.st_dev != plan.st_dev or stat.st_ino != plan.st_ino or stat.st_size < plan.last_complete_newline:
-                raise ValueError("source replaced or truncated")
-            payload_hash, _payload_bytes = sha256_range_from_path(
-                plan.path,
-                start_offset=plan.start_offset,
-                end_offset=plan.last_complete_newline,
-            )
-            tail_hash, _tail_bytes = tail_hash_from_path(plan.path, plan.last_complete_newline)
-            final_stat = plan.path.stat()
-            latest_stat = final_stat
+            if plan.parser_fingerprint is not None and plan.parser_fingerprint != self._current_parser_fingerprint():
+                raise ValueError("parser semantics changed during append admission")
+            proof_start = plan.path.stat()
+            latest_stat = proof_start
             if (
-                final_stat.st_dev != plan.st_dev
-                or final_stat.st_ino != plan.st_ino
-                or final_stat.st_size < plan.last_complete_newline
+                proof_start.st_dev != plan.st_dev
+                or proof_start.st_ino != plan.st_ino
+                or (not is_claude_frontier and proof_start.st_size < plan.last_complete_newline)
             ):
-                raise ValueError("source replaced or truncated during cursor verification")
-            if payload_hash != plan.payload_hash:
-                raise ValueError("accepted append bytes changed")
-            if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
-                raise ValueError("accepted append tail changed")
+                raise ValueError("source replaced or truncated")
+            if is_claude_frontier:
+                with plan.path.open("rb") as handle:
+                    current_header = handle.readline()
+                self._last_append_cursor_proof_bytes += len(current_header)
+                if not current_header.endswith(b"\n"):
+                    raise ValueError("Claude header is incomplete")
+                current_append_start = len(current_header) + (plan.accepted_claude_body_bytes or 0)
+                publication_end = current_append_start + (plan.last_complete_newline - plan.start_offset)
+                if proof_start.st_size < publication_end:
+                    raise ValueError("Claude source truncated")
+                current_payload_hash, payload_bytes = sha256_range_from_path(
+                    plan.path,
+                    start_offset=current_append_start,
+                    end_offset=publication_end,
+                )
+                self._last_append_cursor_proof_bytes += payload_bytes
+                if current_payload_hash != plan.payload_hash:
+                    raise ValueError("accepted Claude append bytes changed")
+                stored_tail_hash, frontier_bytes = claude_semantic_frontier_for_prefix_with_bytes(
+                    plan.path,
+                    publication_end,
+                    expected_stable_body_sha256=plan.accepted_claude_body_sha256,
+                    expected_stable_body_bytes=plan.accepted_claude_body_bytes,
+                )
+                self._last_append_cursor_proof_bytes += frontier_bytes
+                if stored_tail_hash is None:
+                    raise ValueError("accepted Claude semantic body changed")
+            else:
+                publication_end = plan.last_complete_newline
+                payload_hash, payload_bytes = sha256_range_from_path(
+                    plan.path,
+                    start_offset=plan.start_offset,
+                    end_offset=publication_end,
+                )
+                self._last_append_cursor_proof_bytes += payload_bytes
+                tail_hash, tail_bytes = tail_hash_from_path(plan.path, publication_end)
+                self._last_append_cursor_proof_bytes += tail_bytes
+                if payload_hash != plan.payload_hash:
+                    raise ValueError("accepted append bytes changed")
+                if plan.accepted_tail_hash is not None and tail_hash != plan.accepted_tail_hash:
+                    raise ValueError("accepted append tail changed")
+                if plan.accepted_prefix_hash is not None:
+                    prefix_hash, prefix_bytes = sha256_range_from_path(
+                        plan.path,
+                        start_offset=0,
+                        end_offset=publication_end,
+                    )
+                    self._last_append_cursor_proof_bytes += prefix_bytes
+                    if prefix_hash != plan.accepted_prefix_hash:
+                        raise ValueError("accepted prefix changed")
+                stored_tail_hash = (
+                    encode_cursor_hash_authority(
+                        plan.accepted_prefix_hash,
+                        tail_hash,
+                        ctime_ns=plan.ctime_ns or 0,
+                    )
+                    if plan.accepted_prefix_hash is not None
+                    else tail_hash
+                )
+            proof_end = plan.path.stat()
+            latest_stat = proof_end
+            if _file_observation(proof_end) != _file_observation(proof_start):
+                raise ValueError("source changed during cursor verification")
         except FileNotFoundError:
-            # The append payload was already admitted before the source can be
-            # removed by a live writer. Preserve that per-plan success and use
-            # the plan-time authority; there is no safe post-admission stat or
-            # tail read left to perform. The next watcher observation will
-            # re-establish the source identity through normal full planning.
-            logger.info("live.watcher: source disappeared after append persistence: %s", plan.path)
-            payload_hash = plan.payload_hash
-            tail_hash = plan.accepted_tail_hash or plan.payload_hash
+            if proof_start is not None:
+                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
+                return False
+            disappeared_after_admission = True
         except (EOFError, OSError, ValueError) as exc:
             logger.warning(
                 "live.watcher: source changed after append persistence; cursor invalidated for full retry: %s: %s",
@@ -4823,43 +4925,57 @@ class LiveBatchProcessor:
                 ),
             )
             return False
-        if final_stat is not None and _file_observation(final_stat) != expected_observation:
-            logger.info(
-                "live.watcher: source changed after append persistence; retained proven append frontier: %s",
-                plan.path,
-            )
-        assert tail_hash is not None
-        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
-        if (
-            frontier_kind_for_origin(origin_from_provider(Provider.from_string(plan.source_name)))
-            == "claude-header-body"
-        ):
-            stored_tail_hash = claude_semantic_frontier_for_prefix(plan.path, plan.last_complete_newline)
-            if stored_tail_hash is None:
-                self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=latest_stat)
-                return False
-        else:
-            stored_tail_hash = (
-                encode_cursor_hash_authority(
-                    plan.accepted_prefix_hash,
-                    tail_hash,
-                    ctime_ns=plan.ctime_ns or 0,
+        if disappeared_after_admission:
+            logger.info("live.watcher: source disappeared after append persistence: %s", plan.path)
+            publication_end = plan.last_complete_newline
+            if is_claude_frontier:
+                if (
+                    plan.accepted_claude_header_sha256 is None
+                    or plan.accepted_claude_publication_body_sha256 is None
+                    or plan.accepted_claude_body_bytes is None
+                ):
+                    self._invalidate_cursor_for_full_retry(plan.path, source_name=plan.source_name, stat=None)
+                    return False
+                stored_tail_hash = encode_claude_semantic_frontier_digests(
+                    header_sha256=plan.accepted_claude_header_sha256,
+                    body_sha256=plan.accepted_claude_publication_body_sha256,
+                    body_bytes=plan.accepted_claude_body_bytes + (plan.last_complete_newline - plan.start_offset),
                 )
-                if plan.accepted_prefix_hash is not None
-                else tail_hash
-            )
+            else:
+                tail_hash = plan.accepted_tail_hash or plan.payload_hash
+                stored_tail_hash = (
+                    encode_cursor_hash_authority(
+                        plan.accepted_prefix_hash,
+                        tail_hash,
+                        ctime_ns=plan.ctime_ns or 0,
+                    )
+                    if plan.accepted_prefix_hash is not None
+                    else tail_hash
+                )
+            cursor_stat_size = plan.stat_size
+            cursor_st_dev = plan.st_dev
+            cursor_st_ino = plan.st_ino
+            cursor_mtime_ns = plan.mtime_ns
+        else:
+            assert proof_end is not None
+            cursor_stat_size = proof_end.st_size
+            cursor_st_dev = proof_end.st_dev
+            cursor_st_ino = proof_end.st_ino
+            cursor_mtime_ns = proof_end.st_mtime_ns
+        assert stored_tail_hash is not None
+        content_fingerprint = append_source_revision(plan.cursor_fingerprint or "", plan.payload_hash)
         updated = self._cursor.set(
             plan.path,
-            plan.stat_size,
-            byte_offset=plan.last_complete_newline,
-            last_complete_newline=plan.last_complete_newline,
-            parser_fingerprint=self._current_parser_fingerprint(),
+            cursor_stat_size,
+            byte_offset=publication_end,
+            last_complete_newline=publication_end,
+            parser_fingerprint=plan.parser_fingerprint or self._current_parser_fingerprint(),
             content_fingerprint=content_fingerprint,
             tail_hash=stored_tail_hash,
             source_name=plan.source_name,
-            st_dev=plan.st_dev,
-            st_ino=plan.st_ino,
-            mtime_ns=plan.mtime_ns,
+            st_dev=cursor_st_dev,
+            st_ino=cursor_st_ino,
+            mtime_ns=cursor_mtime_ns,
         )
         if updated:
             self._cursor.reset_failures(plan.path)

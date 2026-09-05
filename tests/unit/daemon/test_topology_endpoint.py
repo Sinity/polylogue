@@ -27,8 +27,12 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
 
-import pytest
-
+from polylogue.analysis.topology import (
+    SessionTopology,
+    TopologyEdge,
+    TopologyEdgeKind,
+    TopologyNode,
+)
 from polylogue.core.types import SessionId
 from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.daemon.topology_http import (
@@ -39,13 +43,6 @@ from polylogue.daemon.topology_http import (
     READINESS_PARTIAL,
     build_topology_envelope,
     coerce_node_limit,
-)
-from polylogue.daemon.web_shell import WEB_SHELL_HTML
-from polylogue.insights.topology import (
-    SessionTopology,
-    TopologyEdge,
-    TopologyEdgeKind,
-    TopologyNode,
 )
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -352,36 +349,3 @@ class TestTopologyEndpointDispatch:
 # ---------------------------------------------------------------------------
 # Reader-shell structural smoke (HTML contract for the Lineage tab)
 # ---------------------------------------------------------------------------
-
-
-class TestLineageReaderShell:
-    """The shipped HTML must carry the Lineage tab, JS hooks, and chip vocab."""
-
-    def test_lineage_tab_button_present(self) -> None:
-        assert 'data-tab="lineage"' in WEB_SHELL_HTML
-
-    def test_lineage_js_entry_points_present(self) -> None:
-        for hook in (
-            "loadLineage",
-            "renderInspectorLineage",
-            "openCompareWithParent",
-            "lineageReadinessChip",
-        ):
-            assert hook in WEB_SHELL_HTML, f"missing JS hook: {hook}"
-
-    def test_readiness_chip_vocabulary_present(self) -> None:
-        # Reader uses MK3 q-* chip vocabulary shared with cost/provenance.
-        for chip in ("q-canonical", "q-partial", "q-unavailable", "q-unresolved"):
-            assert chip in WEB_SHELL_HTML, f"missing chip class: {chip}"
-
-    def test_compare_with_parent_action_delegates_to_compare_workspace(self) -> None:
-        # The "Compare with parent" affordance delegates to the existing
-        # compare workspace route from #1124 — does not implement its own.
-        assert "openCompareWithParent" in WEB_SHELL_HTML
-        assert "loadWorkspaceRoute" in WEB_SHELL_HTML
-
-    @pytest.mark.parametrize("placeholder", ["__LINEAGE_JS__", "__PROVENANCE_JS__"])
-    def test_no_unresolved_template_placeholders(self, placeholder: str) -> None:
-        # If interpolation wires up correctly the placeholders must not
-        # appear in the final shipped HTML.
-        assert placeholder not in WEB_SHELL_HTML

@@ -15,8 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.attachment_relink import (
     UnrecoverableAttachmentReason,
     plan_orphaned_attachment_relink,
@@ -26,7 +28,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime.raw.records import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 
 _CLAUDE_AI_PAYLOAD = {
     "uuid": "relink-session-1",
@@ -304,3 +306,66 @@ def test_plan_is_dry_run_by_default_makes_no_writes(tmp_path: Path) -> None:
         "SELECT 1 FROM attachment_refs WHERE attachment_id = ?", (attachment_id,)
     ).fetchone()
     assert still_orphaned is None
+
+
+def test_append_merge_attaches_idless_message_at_max_position_plus_one(tmp_path: Path) -> None:
+    """An append-merged id-less message lands after the stored tail, and its
+    attachment ref follows it there.
+
+    Anti-vacuity: making the append path reuse the incoming parser position
+    (0) instead of ``max(position) + 1`` collides the appended message with
+    the stored one and points the attachment ref at position 0.
+    """
+    root = tmp_path
+    blob_store = BlobStore(root / "blob")
+    index = _index_conn(root / "index.db")
+    attachment = ParsedAttachment(
+        provider_attachment_id="append-position",
+        message_position=0,
+        name="append.txt",
+        mime_type="text/plain",
+        size_bytes=6,
+        inline_bytes=b"append",
+    )
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="append-position",
+        title="Append position",
+        messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="appended", position=0)],
+        attachments=[attachment],
+    )
+    attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
+
+    write_parsed_session_to_archive(
+        index,
+        session.model_copy(
+            update={
+                "messages": [ParsedMessage(provider_message_id="", role=Role.USER, text="older", position=0)],
+                "attachments": [],
+            }
+        ),
+        raw_id="raw-append-base",
+    )
+    session_id = write_parsed_session_to_archive(
+        index,
+        session,
+        raw_id="raw-append",
+        merge_append=True,
+        preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
+    )
+    index.commit()
+
+    messages = index.execute(
+        "SELECT message_id, native_id, position FROM messages WHERE session_id = ? ORDER BY position",
+        (session_id,),
+    ).fetchall()
+    assert [tuple(row) for row in messages] == [
+        (f"{session_id}:p:0.0", None, 0),
+        (f"{session_id}:p:1.0", None, 1),
+    ]
+    ref = index.execute(
+        "SELECT message_id FROM attachment_refs WHERE attachment_id = ?",
+        (_attachment_id(session_id, attachment),),
+    ).fetchone()
+    assert tuple(ref) == (f"{session_id}:p:1.0",)
+    index.close()

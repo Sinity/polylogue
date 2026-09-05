@@ -5,15 +5,8 @@ from typing import Literal
 import pytest
 from pydantic import ValidationError
 
-from polylogue.archive.message.messages import MessageCollection
-from polylogue.archive.message.models import Message
-from polylogue.archive.message.roles import Role
-from polylogue.archive.session.domain_models import Session
-from polylogue.core.enums import Origin
-from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.core.types import SessionId
-from polylogue.insights.run_projection import build_run_projection
-from polylogue.insights.transforms import (
+from polylogue.analysis.run_projection import build_run_projection
+from polylogue.analysis.transforms import (
     SESSION_DIGEST_TRANSFORM,
     TRANSFORM_REGISTRY,
     ForensicIndexEntry,
@@ -27,6 +20,13 @@ from polylogue.insights.transforms import (
     compile_session_run_projection,
     render_session_report,
 )
+from polylogue.archive.message.messages import MessageCollection
+from polylogue.archive.message.models import Message
+from polylogue.archive.message.roles import Role
+from polylogue.archive.session.domain_models import Session
+from polylogue.core.enums import Origin
+from polylogue.core.refs import EvidenceRef, ObjectRef
+from polylogue.core.types import SessionId
 
 
 class _ProjectedDigestEvent:
@@ -116,7 +116,7 @@ def _session() -> Session:
                             "type": "tool_use",
                             "id": "tool-read",
                             "name": "Read",
-                            "tool_input": {"file_path": "polylogue/insights/transforms.py"},
+                            "tool_input": {"file_path": "polylogue/analysis/transforms.py"},
                         },
                         {
                             "type": "tool_result",
@@ -369,9 +369,9 @@ def test_compile_session_digest_extracts_small_evidence_linked_bundle() -> None:
     read_tool = next(item for item in digest.tool_summaries if item.tool_name == "Read")
     assert read_tool.handler_kind == "file_read"
     assert read_tool.status == "unknown"
-    assert read_tool.command == "polylogue/insights/transforms.py"
+    assert read_tool.command == "polylogue/analysis/transforms.py"
     assert read_tool.line_count == 2
-    assert read_tool.file_refs == ("polylogue/insights/transforms.py",)
+    assert read_tool.file_refs == ("polylogue/analysis/transforms.py",)
 
     commit_tool = next(item for item in digest.tool_summaries if item.command == "git rev-parse HEAD")
     assert commit_tool.handler_kind == "git"
@@ -622,11 +622,11 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
     assert read_entry.metadata == {
         "handler_kind": "file_read",
         "status": "unknown",
-        "file_refs": "polylogue/insights/transforms.py",
+        "file_refs": "polylogue/analysis/transforms.py",
     }
     assert read_entry.object_refs == (
         ObjectRef(kind="tool-call", object_id="codex-session:demo:tool-read"),
-        ObjectRef(kind="file", object_id="polylogue/insights/transforms.py"),
+        ObjectRef(kind="file", object_id="polylogue/analysis/transforms.py"),
     )
     commit_entry = next(
         entry for entry in bundle.entries if entry.section == "tools" and entry.text == "git rev-parse HEAD"
@@ -668,10 +668,10 @@ def test_successor_context_exposes_storage_free_continuation_bundle() -> None:
     assert "refs: subagent-report:codex-session:demo:0:tool-2, agent:codex/Explore" in rendered
     assert "refs: tool_id=tool-2, task_id=task-42, child_session_id=codex-session:child-42" in rendered
     assert "- [raw-evidence] Bash [test] (ok) — devtools verify --quick" in rendered
-    assert "refs: tool-call:codex-session:demo:tool-read, file:polylogue/insights/transforms.py" in rendered
+    assert "refs: tool-call:codex-session:demo:tool-read, file:polylogue/analysis/transforms.py" in rendered
     assert "refs: tool-call:codex-session:demo:tool-commit, commit:a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
     assert "details: pr_refs=#1911; test_evidence=ruff check ... ok | 20 passed in 50.28s" in rendered
-    assert "details: file_refs=polylogue/insights/transforms.py" in rendered
+    assert "details: file_refs=polylogue/analysis/transforms.py" in rendered
     assert "details: commit_refs=a8cd1c1516b29068ec9ce1493f262d663407ffa5" in rendered
     # No fabricated GitHub/review event refs leak into the rendered bundle.
     assert "github-review" not in rendered

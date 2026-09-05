@@ -27,7 +27,9 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -259,6 +261,9 @@ def _prepare_fresh_connection_for_target(
     runtime_target = ARCHIVE_VERSION_BY_TIER[tier]
     if target_version >= runtime_target:
         return
+    foreign_keys_were_on = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    if foreign_keys_were_on:
+        connection.execute("PRAGMA foreign_keys = OFF")
     steps = _load_migrations(tier)
     from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
 
@@ -279,18 +284,52 @@ def _prepare_fresh_connection_for_target(
     # migration SQL itself.  Objects that have no earlier CREATE are genuinely
     # future-only and can be removed below.
     historical_create_sql: dict[str, str] = {}
+    historical_create_versions: dict[str, int] = {}
+    rename_re = re.compile(
+        r"ALTER\s+TABLE\s+(?:[\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s+"
+        r"RENAME\s+TO\s+(?:[\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s*;",
+        re.IGNORECASE,
+    )
     for step in steps:
         if step.version > target_version:
             continue
+        events: list[tuple[int, str, tuple[str, str]]] = []
         for match in _CREATE_SCHEMA_OBJECT_RE.finditer(step.sql):
             name = next(value for value in match.group("double", "backtick", "bracket", "bare") if value is not None)
-            object_ref = f"{match.group('kind').lower()}:{name}"
             statement_end = step.sql.find(";", match.start())
+            if match.group("kind").lower() == "trigger":
+                trigger_end = step.sql.find("END;", match.start())
+                if trigger_end >= 0:
+                    statement_end = trigger_end + len("END")
             if statement_end >= 0:
-                historical_create_sql[object_ref] = step.sql[match.start() : statement_end + 1]
+                events.append(
+                    (
+                        match.start(),
+                        "create",
+                        (f"{match.group('kind').lower()}:{name}", step.sql[match.start() : statement_end + 1]),
+                    )
+                )
+        for match in rename_re.finditer(step.sql):
+            events.append((match.start(), "rename", (f"table:{match.group(1)}", f"table:{match.group(2)}")))
+        for _, event_kind, payload in sorted(events):
+            if event_kind == "create":
+                object_ref, statement = payload
+                historical_create_sql[object_ref] = statement
+                historical_create_versions[object_ref] = step.version
+                continue
+            source_ref, destination_ref = payload
+            renamed_statement = historical_create_sql.get(source_ref)
+            renamed_version = historical_create_versions.get(source_ref)
+            if renamed_statement is None or renamed_version is None:
+                continue
+            del historical_create_sql[source_ref]
+            del historical_create_versions[source_ref]
+            historical_create_sql[destination_ref] = renamed_statement
+            historical_create_versions[destination_ref] = renamed_version
     historically_created = set(historical_create_sql)
     replaced_refs = future_refs & historically_created
     future_refs.difference_update(historically_created)
+    future_refs.difference_update(replaced_refs)
 
     # ALTER TABLE ... ADD COLUMN is represented in a train as a column
     # object, while SQLite's canonical DDL necessarily contains the newest
@@ -317,13 +356,66 @@ def _prepare_fresh_connection_for_target(
     # replaces this index with a partial uniqueness domain; v28 must retain
     # the earlier unconditional uniqueness definition.
     reapply_order = {"table": 0, "view": 1, "index": 2, "trigger": 3}
+    # Keep parent tables available while their historical indexes are rebuilt.
     for schema_object in sorted(
         replaced_refs,
-        key=lambda item: (reapply_order.get(item.partition(":")[0], 4), item),
+        key=lambda item: (
+            reapply_order.get(item.partition(":")[0], 4),
+            0 if item == "table:raw_sessions" else 1,
+            item,
+        ),
     ):
-        statement = historical_create_sql.get(schema_object)
-        if statement is not None:
-            connection.execute(statement)
+        historical_statement = historical_create_sql.get(schema_object)
+        if historical_statement is not None:
+            if schema_object.startswith("table:"):
+                table_name = schema_object.partition(":")[2]
+                historical_statement = re.sub(
+                    r"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)[A-Za-z_][A-Za-z0-9_]*",
+                    rf"\g<1>{table_name}",
+                    historical_statement,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+            try:
+                connection.execute(historical_statement)
+            except sqlite3.OperationalError as exc:
+                if schema_object == "index:idx_raw_hook_events_source_hash" and "no such column" in str(exc):
+                    connection.execute(
+                        "ALTER TABLE raw_hook_events ADD COLUMN blob_hash BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)"
+                    )
+                    connection.execute(historical_statement)
+                    continue
+                if schema_object.startswith("index:") and "no such table" in str(exc):
+                    table_match = re.search(r"\bON\s+([A-Za-z_][A-Za-z0-9_]*)", historical_statement, re.IGNORECASE)
+                    if table_match is not None:
+                        table_name = table_match.group(1)
+                        table_pattern = re.compile(
+                            rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{re.escape(table_name)}\b.*?;",
+                            re.IGNORECASE | re.DOTALL,
+                        )
+                        for step in steps:
+                            if step.version <= target_version:
+                                fallback = table_pattern.search(step.sql)
+                                if fallback is not None:
+                                    connection.execute(fallback.group(0))
+                                    connection.execute(historical_statement)
+                                    break
+                        else:
+                            raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
+                        continue
+                raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
+        create_version = historical_create_versions[schema_object]
+        table_name = schema_object.partition(":")[2]
+        if schema_object.startswith("table:"):
+            for step in steps:
+                if not create_version < step.version <= target_version:
+                    continue
+                for alter_match in re.finditer(
+                    rf"ALTER\s+TABLE\s+(?:[\"`\[]?){re.escape(table_name)}(?:[\"`\]]?)\s+ADD\s+COLUMN\s+[^;]+;",
+                    step.sql,
+                    re.IGNORECASE,
+                ):
+                    connection.execute(alter_match.group(0))
     for qualified_column in sorted(future_columns):
         table_name, _, column_name = qualified_column.partition(".")
         if not table_name or not column_name:
@@ -335,11 +427,15 @@ def _prepare_fresh_connection_for_target(
         if table_exists is None:
             continue
         quoted_table = '"' + table_name.replace('"', '""') + '"'
-        quoted_column = '"' + column_name.replace('"', '""') + '"'
-        connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
+        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted_table})")}
+        if column_name in columns:
+            quoted_column = '"' + column_name.replace('"', '""') + '"'
+            connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
     if future_refs or replaced_refs or future_columns:
         connection.execute(f"PRAGMA user_version = {target_version}")
         connection.commit()
+    if foreign_keys_were_on:
+        connection.execute("PRAGMA foreign_keys = ON")
 
 
 def durable_migration_claims(tier: ArchiveTier) -> tuple[DurableMigrationClaim, ...]:
@@ -538,7 +634,7 @@ def _connection_main_path(conn: sqlite3.Connection) -> Path:
 
 def _checkpoint_live_tier(conn: sqlite3.Connection) -> None:
     try:
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        row = checkpoint_connection(conn, "TRUNCATE")
     except sqlite3.Error as exc:
         raise MigrationError("migration backup receipt validation could not checkpoint the live tier") from exc
     if row is None:
@@ -1605,9 +1701,17 @@ def migrate_archive_tier(
             else None
         )
         start_version = current_version
-        pre_transaction_evidence = capture_durable_database_evidence(conn, tier) if sidecars else None
+        # Row parity is proved against the drop constraints and allowances the
+        # sidecars declare, so its baseline must be the state entering the
+        # earliest sidecar-bearing step. Capturing it at the head of a longer
+        # chain would charge those trains for tables untrained earlier steps
+        # legitimately drop.
+        parity_baseline_version = min((sidecar.slot for sidecar in sidecars), default=None)
+        pre_transaction_evidence: DurableDatabaseEvidence | None = None
         applied: list[int] = []
         for step in steps:
+            if parity_baseline_version is not None and step.version == parity_baseline_version:
+                pre_transaction_evidence = capture_durable_database_evidence(conn, tier)
             before = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
             if before != step.version - 1:
                 raise MigrationError(
@@ -2147,7 +2251,10 @@ def prove_durable_fresh_ddl_parity(
     migrated_by_ref = {item.object_ref: item for item in migrated.objects}
     fresh_by_ref = {item.object_ref: item for item in fresh.objects}
     missing = tuple(sorted(set(fresh_by_ref) - set(migrated_by_ref)))
-    unexpected = tuple(sorted(set(migrated_by_ref) - set(fresh_by_ref)))
+    retired_extras = (set(migrated_by_ref) - set(fresh_by_ref)) & _retired_schema_objects_for_parity(tier)
+    unexpected = tuple(sorted((set(migrated_by_ref) - set(fresh_by_ref)) - retired_extras))
+    parity_migrated_objects = tuple(item for item in migrated.objects if item.object_ref not in retired_extras)
+    parity_migrated = _schema_inventory_from_objects(parity_migrated_objects)
     changed = tuple(
         sorted(
             object_ref
@@ -2161,14 +2268,14 @@ def prove_durable_fresh_ddl_parity(
         and not missing
         and not unexpected
         and not changed
-        and migrated.sha256 == fresh.sha256
+        and parity_migrated.sha256 == fresh.sha256
     )
     return DurableFreshDDLParityProof(
         tier=tier,
         target_version=target_version,
         migrated_version=migrated_version,
         fresh_version=fresh_version,
-        migrated_inventory_sha256=migrated.sha256,
+        migrated_inventory_sha256=parity_migrated.sha256,
         fresh_inventory_sha256=fresh.sha256,
         missing_objects=missing,
         unexpected_objects=unexpected,
@@ -2176,6 +2283,24 @@ def prove_durable_fresh_ddl_parity(
         evidence_ref=evidence,
         matches=matches,
     )
+
+
+def _retired_schema_objects_for_parity(tier: ArchiveTier) -> frozenset[str]:
+    """Return migrated-only objects explicitly retired from fresh DDL."""
+    return RETIRED_SOURCE_SCHEMA_OBJECTS if tier is ArchiveTier.SOURCE else frozenset()
+
+
+def _schema_inventory_from_objects(objects: tuple[DurableSchemaObjectEvidence, ...]) -> DurableSchemaInventory:
+    payload = [
+        {
+            "object_type": item.object_type,
+            "name": item.name,
+            "table_name": item.table_name,
+            "definition_sha256": item.definition_sha256,
+        }
+        for item in objects
+    ]
+    return DurableSchemaInventory(objects=objects, sha256=_canonical_json_sha256(payload))
 
 
 def _durable_table_counts(conn: sqlite3.Connection) -> tuple[tuple[str, int], ...]:

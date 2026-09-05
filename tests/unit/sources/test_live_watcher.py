@@ -27,6 +27,7 @@ from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisi
 from polylogue.core.enums import Provider
 from polylogue.daemon.events import emit_catch_up_cycle, query_daemon_events
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteEvent
+from polylogue.readiness.capability import raw_frontier_integrity_projection
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.batch import (
     _SMALL_FULL_PARSE_PROGRESS_MAX_BYTES,
@@ -47,6 +48,7 @@ from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
+from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -344,9 +346,7 @@ async def test_live_watcher_allows_append_at_authoritative_frontier(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path) -> None:
-    from polylogue.maintenance import cursor_authority_reconcile as reconcile
-    from polylogue.maintenance.cursor_authority_reconcile import cursor_authority_path_digest
-    from polylogue.sources.live.batch import scoped_cursor_authority_authorization
+    from polylogue.sources.live.batch import cursor_authority_path_digest, scoped_cursor_authority_authorization
 
     processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path)
     shadow_index = tmp_path / "index.db"
@@ -354,7 +354,10 @@ async def test_active_index_pointer_keeps_shadow_index_unmodified(tmp_path: Path
     active_index.parent.mkdir(parents=True)
     shutil.copy2(shadow_index, active_index)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-    projection = reconcile._projection_for(tmp_path)
+    projection = raw_frontier_integrity_projection(
+        tmp_path,
+        raw_materialization_readiness_snapshot(tmp_path),
+    )
     sample = projection.cursor_ahead_samples[0]
     shadow_before = shadow_index.read_bytes()
     active_before = active_index.read_bytes()
@@ -417,7 +420,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         wal_bytes_before_checkpoint_max=8_000_000,
         wal_bytes_after_checkpoint_max=1_000_000,
         wal_busy_pages_total=3,
-        stage_timings_s={"full_parse": 0.45, "fts": 0.05, "insights": 0.2},
+        stage_timings_s={"full_parse": 0.45, "fts": 0.05, "derived": 0.2},
     )
 
     live_watcher._log_ingest_metrics("live.watcher: changed-file batch", metrics)
@@ -434,7 +437,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         2,
         0,
     ]
-    assert args[10:] == ["full_parse:0.450,insights:0.200,fts:0.050", 8.0, 1.0, 3, False]
+    assert args[10:] == ["full_parse:0.450,derived:0.200,fts:0.050", 8.0, 1.0, 3, False]
 
 
 def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
@@ -444,13 +447,13 @@ def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
             {
                 "parse": 1.25,
                 "fts": 0.01,
-                "insights": 0.4,
+                "derived": 0.4,
                 "usage": 0.2,
                 "checkpoint": 0.8,
             },
             limit=3,
         )
-        == "parse:1.250,checkpoint:0.800,insights:0.400,+2 more"
+        == "parse:1.250,checkpoint:0.800,derived:0.400,+2 more"
     )
 
 
@@ -745,10 +748,10 @@ def test_cursor_records_genuine_deferral_as_deferred_not_failed(tmp_path: Path) 
     store = CursorStore(tmp_path / "live.sqlite")
 
     store.record_convergence_debt(
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id="conv-1",
-        error="insights deferred until source quiet",
+        error="derived deferred until source quiet",
         deferred=True,
     )
     store.record_convergence_debt(
@@ -765,6 +768,44 @@ def test_cursor_records_genuine_deferral_as_deferred_not_failed(tmp_path: Path) 
     assert rows == {"conv-1": "deferred", "conv-2": "failed"}
 
 
+def test_cursor_startup_merges_retired_insights_debt_into_derived_stage(tmp_path: Path) -> None:
+    """Retired stage debt remains retryable after the stage rename."""
+    db_path = tmp_path / "live.sqlite"
+    store = CursorStore(db_path)
+    store.record_convergence_debt(
+        stage="derived",
+        subject_type="session_id",
+        subject_id="conv-1",
+        error="current deferral",
+        deferred=True,
+    )
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO convergence_debt (
+                debt_id, stage, target_type, target_id, status, priority, attempts,
+                last_error, next_retry_at, materializer_version, created_at_ms, updated_at_ms
+            ) VALUES (?, 'insights', 'session_id', 'conv-1', 'failed', 7, 4, ?, ?, 'legacy', 10, 20)
+            """,
+            ("legacy-insights-debt", "legacy failure", "2026-05-24T00:00:00+00:00"),
+        )
+        conn.commit()
+
+    restarted = CursorStore(db_path)
+
+    debt = restarted.list_convergence_debt(limit=2)
+    assert len(debt) == 1
+    assert debt[0].stage == "derived"
+    assert debt[0].subject_type == "session_id"
+    assert debt[0].subject_id == "conv-1"
+    assert debt[0].status == "failed"
+    with sqlite3.connect(tmp_path / "ops.db") as conn:
+        attempts, priority, retry_at = conn.execute(
+            "SELECT attempts, priority, next_retry_at FROM convergence_debt WHERE stage = 'derived'"
+        ).fetchone()
+    assert (attempts, priority, retry_at) == (4, 7, "2026-05-24T00:00:00+00:00")
+
+
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
     tmp_path: Path,
@@ -773,7 +814,7 @@ def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
     store = CursorStore(tmp_path / "live.sqlite")
 
     store.record_convergence_debt(
-        stage="insights",
+        stage="derived",
         subject_type="session_id",
         subject_id="conv-1",
         error="profile stale",
@@ -2204,7 +2245,7 @@ async def test_live_full_ingest_admits_claude_originspec_fact_artifact(
                 == 1
             )
 
-        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+        from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
         summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
         assert summary.current_artifact_count == 1
@@ -2278,7 +2319,7 @@ async def test_live_full_ingest_preserves_complete_workflow_journal_revisions(
                 == 2
             )
 
-        from polylogue.insights.claude_workflow_materializer import materialize_claude_workflow_archive
+        from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
         summary = materialize_claude_workflow_archive(workspace_env["archive_root"])
         assert summary.current_artifact_count == 2

@@ -14,9 +14,7 @@ if [[ ! -x "$VENV_PYTHON" ]]; then
     exit 2
 fi
 
-UPDATES_FILE=$(mktemp)
-trap 'rm -f "$UPDATES_FILE"' EXIT
-cat >"$UPDATES_FILE"
+cat >/dev/null
 
 # A lane gates against its own environment: a missing venv is a failure,
 # not a reason to fall back to another interpreter on PATH.
@@ -25,4 +23,4 @@ if ! "$VENV_PYTHON" -m devtools --help >/dev/null 2>&1; then
     exit 2
 fi
 
-"$VENV_PYTHON" -m devtools.pre_push_gate "$UPDATES_FILE"
+"$VENV_PYTHON" -m devtools verify --quick

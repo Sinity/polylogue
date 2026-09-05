@@ -15,6 +15,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
+from polylogue.analysis.archive import (
+    SessionProfileInsight,
+    SessionProfileInsightQuery,
+)
+from polylogue.analysis.archive_models import ArchiveInsightModel
+from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
 from polylogue.api.archive_reads import ArchiveReadCapability
 from polylogue.archive.actions.actions import Action
 from polylogue.archive.attachment.models import Attachment
@@ -47,7 +53,7 @@ from polylogue.context.scheduler import (
     schedule_context,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin, Provider, TitleSource
-from polylogue.core.errors import ArchiveTierUnavailableError, PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.refs import (
     EvidenceRef,
@@ -62,14 +68,8 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
 from polylogue.core.user_state_targets import TARGET_MESSAGE, TARGET_SESSION
-from polylogue.insights.archive import (
-    SessionProfileInsight,
-    SessionProfileInsightQuery,
-)
-from polylogue.insights.archive_models import ArchiveInsightModel
-from polylogue.insights.feedback import LearningCorrection, parse_correction_kind
-from polylogue.storage.insights.session.records import SessionProfileRecord
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.records import SessionProfileRecord
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.query_models import SessionRecordQuery
 from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.search.models import SearchHit, SearchResult
@@ -102,6 +102,17 @@ from polylogue.surfaces.temporal_evidence import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport
+    from polylogue.analysis.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
+    from polylogue.analysis.fable_packet import FableDelegationPacket
+    from polylogue.analysis.hermes_integration_health import HermesIntegrationHealth
+    from polylogue.analysis.judgment.types import ComparativeJudgment
+    from polylogue.analysis.pathology import PathologyReport
+    from polylogue.analysis.portfolio import PortfolioBundle
+    from polylogue.analysis.postmortem import PostmortemBundle
+    from polylogue.analysis.readiness import InsightReadinessQuery, InsightReadinessReport
+    from polylogue.analysis.resume import ResumeBrief, ResumeCandidate
+    from polylogue.analysis.transforms import SessionDigest
     from polylogue.annotations.importer import AnnotationBatchImportRequest, AnnotationBatchImportResult
     from polylogue.annotations.join import AnnotationStructuralJoinResult
     from polylogue.annotations.schema import AnnotationSchemaRegistry
@@ -119,22 +130,11 @@ if TYPE_CHECKING:
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
     from polylogue.core.protocols import ProgressCallback
-    from polylogue.insights.audit import InsightRigorAuditQuery, InsightRigorAuditReport
-    from polylogue.insights.export_bundles import InsightExportBundleRequest, InsightExportBundleResult
-    from polylogue.insights.fable_packet import FableDelegationPacket
-    from polylogue.insights.hermes_integration_health import HermesIntegrationHealth
-    from polylogue.insights.judgment.types import ComparativeJudgment
-    from polylogue.insights.pathology import PathologyReport
-    from polylogue.insights.portfolio import PortfolioBundle
-    from polylogue.insights.postmortem import PostmortemBundle
-    from polylogue.insights.readiness import InsightReadinessQuery, InsightReadinessReport
-    from polylogue.insights.resume import ResumeBrief, ResumeCandidate
-    from polylogue.insights.transforms import SessionDigest
     from polylogue.operations import ArchiveStats
     from polylogue.operations.mutation_transaction import MutationActuator, MutationPlan, MutationReceipt
     from polylogue.readiness import ReadinessReport
     from polylogue.sources.parsers.hermes_lifecycle import HermesLifecycleReconciliation
-    from polylogue.storage.insights.session.runtime import SessionInsightCounts
+    from polylogue.storage.derived.session.runtime import SessionInsightCounts
     from polylogue.storage.repository import SessionRepository
     from polylogue.storage.search.models import SearchResult
     from polylogue.storage.sqlite.archive_tiers.archive import (
@@ -1135,11 +1135,24 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                 )
             )
             insight_status = archive.session_insight_status()
-            insights_ready = (
-                insight_status.profile_rows_ready
-                and insight_status.work_event_inference_rows_ready
-                and insight_status.phase_rows_ready
-                and insight_status.threads_ready
+            insights_ready = all(
+                value == 0
+                for value in (
+                    insight_status.missing_profile_row_count,
+                    insight_status.stale_profile_row_count,
+                    insight_status.orphan_profile_row_count,
+                    insight_status.stale_work_event_inference_count,
+                    insight_status.orphan_work_event_inference_count,
+                    insight_status.stale_phase_inference_count,
+                    insight_status.orphan_phase_inference_count,
+                    insight_status.stale_thread_count,
+                    insight_status.orphan_thread_count,
+                )
+            ) and (
+                insight_status.profile_row_count == insight_status.total_sessions
+                and insight_status.work_event_inference_count == insight_status.expected_work_event_inference_count
+                and insight_status.phase_count == insight_status.expected_phase_count
+                and insight_status.thread_count == insight_status.root_threads
             )
             checks.append(
                 ReadinessCheck(
@@ -1149,7 +1162,7 @@ def _archive_health_report(config: Config) -> ReadinessReport:
                     summary=(
                         "session insight rows ready"
                         if insights_ready
-                        else "session insight rows missing or stale; run rebuild_insights"
+                        else "session insight rows missing, stale, or inconsistent; run rebuild_insights"
                     ),
                 )
             )
@@ -1166,7 +1179,7 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     if not path.exists():
         return ReadinessCheck(name, VerifyStatus.WARNING, summary=f"missing: {path}")
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = open_readonly_connection(path, timeout_class="interactive-read")
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             version = int(row[0] or 0) if row is not None else 0
@@ -1396,10 +1409,10 @@ def _archive_correlate_hermes_context_deliveries(
     if not source_db.exists() or not user_db.exists():
         return ()
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            user_conn = sqlite3.connect(f"file:{user_db}?mode=ro", uri=True)
+            user_conn = open_readonly_connection(user_db, timeout_class="background-read")
             user_conn.row_factory = sqlite3.Row
             try:
                 return correlate_hermes_context_deliveries(
@@ -1521,10 +1534,10 @@ def _archive_reconcile_hermes_session_lifecycle(
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
             index_conn.row_factory = sqlite3.Row
             try:
                 return reconcile_hermes_session_lifecycle(
@@ -1570,10 +1583,10 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
         source_conn.row_factory = sqlite3.Row
         try:
-            index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
             index_conn.row_factory = sqlite3.Row
             try:
                 return reconcile_codex_spawn_edges(source_conn, index_conn)
@@ -1600,12 +1613,12 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     the conventional ``~/.hermes`` path so a not-yet-discovered root still
     renders an explicit "disabled" verdict rather than raising. All
     composition is read-only; see
-    :mod:`polylogue.insights.hermes_integration_health` for the primitives
+    :mod:`polylogue.analysis.hermes_integration_health` for the primitives
     this reuses.
     """
+    from polylogue.analysis.hermes_integration_health import build_hermes_integration_health
     from polylogue.daemon.convergence_debt_alert import source_family_for_subject, watchsource_name_to_family
     from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
-    from polylogue.insights.hermes_integration_health import build_hermes_integration_health
     from polylogue.paths import hermes_sessions_path
 
     hermes_root = next(
@@ -1616,7 +1629,7 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
         hermes_root = hermes_sessions_path()
 
     archive_root = _active_archive_root(config)
-    # ``polylogue.insights`` may not import ``polylogue.daemon`` directly
+    # ``polylogue.analysis`` may not import ``polylogue.daemon`` directly
     # (docs/plans/layering.yaml); this surface-adapter layer owns the
     # daemon-touching convergence-debt bucketing and passes plain counts in.
     hermes_family = watchsource_name_to_family("hermes")
@@ -2554,7 +2567,7 @@ class _ArchiveInsightExportOperations:
         self._archive = archive
 
     async def get_insight_readiness_report(self, query: object | None = None) -> InsightReadinessReport:
-        from polylogue.insights.readiness import InsightReadinessQuery
+        from polylogue.analysis.readiness import InsightReadinessQuery
 
         request = query if isinstance(query, InsightReadinessQuery) else None
         return cast("InsightReadinessReport", self._archive.insight_readiness_report(request))
@@ -2752,7 +2765,7 @@ def _actions_for_session(session: Session) -> tuple[Action, ...]:
     """
     from polylogue.archive.actions.actions import build_actions, build_tool_calls_from_content_blocks
 
-    # Keep pairing aligned with storage/sqlite/action_pairs.py: rank uses and
+    # Keep pairing aligned with the canonical action_pairs view: rank uses and
     # results independently by (message position, variant index, block
     # position), then join equal ranks for each (session, tool_id). This is
     # intentionally session-wide because providers commonly emit a tool use in
@@ -2946,7 +2959,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
     async def _session_digest(self, session_id: str) -> SessionDigest | None:
         """Compile one resolved session and its child links into a session digest."""
-        from polylogue.insights.transforms import compile_session_digest
+        from polylogue.analysis.transforms import compile_session_digest
         from polylogue.storage.query_models import SessionRecordQuery
 
         session = await self.get_session(session_id)
@@ -2984,10 +2997,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         sessions; when more match, the bundle is marked ``truncated`` and the
         drop is logged rather than silently capped.
         """
-        from polylogue.insights.postmortem import (
+        from polylogue.analysis.postmortem import (
             PostmortemBundle as _PostmortemBundle,
         )
-        from polylogue.insights.postmortem import (
+        from polylogue.analysis.postmortem import (
             PostmortemScope,
             compile_postmortem_bundle,
         )
@@ -3063,13 +3076,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
         Resolves the matched session set (the same summary path
         ``postmortem_bundle`` uses), fetches each session's session digest, and
-        runs the deterministic detectors in :mod:`polylogue.insights.pathology`
+        runs the deterministic detectors in :mod:`polylogue.analysis.pathology`
         over the typed run projections. Returns the aggregate
         :class:`PathologyReport` (findings + per-kind distribution), the
         queryable distribution/summary view for #2383. The analysis cap defaults
         to 200 sessions.
         """
-        from polylogue.insights.pathology import compile_pathology_report
+        from polylogue.analysis.pathology import compile_pathology_report
 
         cap = limit if limit is not None and limit > 0 else 200
         summaries = await run_archive_read(
@@ -3134,10 +3147,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         (session/repo/origin counts, cost + wall-clock distributions, pathology
         and context-loss distribution). The analysis cap defaults to 200 sessions.
         """
-        from polylogue.insights.portfolio import (
+        from polylogue.analysis.portfolio import (
             compile_portfolio_bundle,
         )
-        from polylogue.insights.postmortem import PostmortemScope
+        from polylogue.analysis.postmortem import PostmortemScope
 
         cap = limit if limit is not None and limit > 0 else 200
         summaries = await run_archive_read(
@@ -4120,13 +4133,20 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             now_ms=0,
         )
         try:
-            ops_conn = open_connection(_active_archive_root(self.config) / "ops.db")
+            ops_db = _active_archive_root(self.config) / "ops.db"
+            if not ops_db.exists():
+                from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+                from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+                initialize_archive_database(ops_db, ArchiveTier.OPS)
+            ops_conn = open_connection(ops_db)
             try:
                 record_context_ledger(ops_conn, admission, observed_at_ms=0)
             finally:
                 ops_conn.close()
-        except (OSError, sqlite3.Error):
-            # Frozen/read-only archive views still return the compiled image.
+        except (OSError, sqlite3.Error, DatabaseError):
+            # Frozen/read-only archive views, and a tier this runtime cannot
+            # use, still return the compiled image.
             pass
 
         admitted_ids = {item.ref for item in (*admission.quoted_evidence, *admission.executable_policy)}
@@ -4872,11 +4892,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     def _finding_controls_document(conn: Any, assertion_id: str) -> dict[str, Any] | None:
         """Render claim-vs-control together when the finding declared controls (rxdo.9.7).
 
-        Reuses :class:`~polylogue.insights.judgment.controls.ClaimWithControls`
+        Reuses :class:`~polylogue.analysis.judgment.controls.ClaimWithControls`
         (mutation-tested, previously constructed only by its own unit tests)
         rather than re-deriving the downgrade/rank-tier logic here.
         """
-        from polylogue.insights.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
+        from polylogue.analysis.judgment.controls import ClaimWithControls, ControlOutcome, NegativeControl
         from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
 
         envelope = read_assertion_envelope(conn, assertion_id)
@@ -5162,7 +5182,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         object_ref: ObjectRef,
         summary: Any,
     ) -> PublicRefResolutionPayload | None:
-        from polylogue.insights.transforms import compile_session_digest
+        from polylogue.analysis.transforms import compile_session_digest
         from polylogue.surfaces.payloads import (
             ContextSnapshotQueryRowPayload,
             ObservedEventQueryRowPayload,
@@ -5967,13 +5987,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
         import time
 
+        from polylogue.analysis.projection_contracts import facets_availability
         from polylogue.archive.query.facets import (
             FacetBuckets as _FacetBuckets,
         )
         from polylogue.archive.query.facets import (
             compute_idf,
         )
-        from polylogue.insights.projection_contracts import facets_availability
         from polylogue.surfaces.payloads import (
             FacetBucketsPayload,
             FacetsResponse,
@@ -6078,7 +6098,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         forward motion instead of hanging silently.
         """
         from polylogue.operations.mutation_actuators import InsightsRebuildActuator, InsightsRebuildArgs
-        from polylogue.storage.insights.session.runtime import SessionInsightCounts
+        from polylogue.storage.derived.session.runtime import SessionInsightCounts
 
         receipt, _plan = self._execute_facade_mutation(
             InsightsRebuildActuator(),
@@ -6107,7 +6127,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         recent_files: Sequence[str] = (),
     ) -> ResumeBrief | None:
         """Build a compact handoff brief for an archived session."""
-        from polylogue.insights.resume import ResumeOperations, build_resume_brief
+        from polylogue.analysis.resume import ResumeOperations, build_resume_brief
 
         return await build_resume_brief(
             cast(ResumeOperations, self),
@@ -6120,7 +6140,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     async def find_resume_candidates(
         self, *, repo_path: str, cwd: str | None = None, recent_files: Sequence[str] = (), limit: int = 10
     ) -> tuple[ResumeCandidate, ...]:
-        from polylogue.insights.resume import ResumeOperations, find_resume_candidates
+        from polylogue.analysis.resume import ResumeOperations, find_resume_candidates
 
         return await find_resume_candidates(
             cast(ResumeOperations, self),
@@ -6186,7 +6206,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         exact_template_cap: int = 1,
     ) -> FableDelegationPacket:
         """Cold-regenerate the private descriptive Fable packet from the archive."""
-        from polylogue.insights.fable_packet import regenerate_private_fable_packet
+        from polylogue.analysis.fable_packet import regenerate_private_fable_packet
 
         return await run_archive_read(
             _active_archive_root(self.config),
@@ -6709,7 +6729,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """Write a versioned archive-insight export bundle."""
         import asyncio
 
-        from polylogue.insights.export_bundles import export_insight_bundle
+        from polylogue.analysis.export_bundles import export_insight_bundle
 
         return await run_archive_read(
             _active_archive_root(self.config),
@@ -6882,7 +6902,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> JSONDocument | None:
         """Return git/GitHub correlation evidence as a JSON surface payload."""
 
-        from polylogue.insights.session_commit import (
+        from polylogue.analysis.session_commit import (
             bridge_session_ids_from_events,
             build_correlation_result,
             correlation_result_to_payload,
@@ -8100,8 +8120,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     # User-recorded overrides that the insight materialization paths
     # consult after computing their base suggestion. Lives outside the
     # content-hash boundary by construction; see
-    # :mod:`polylogue.insights.feedback` and
-    # :mod:`polylogue.storage.insights.feedback`.
+    # :mod:`polylogue.analysis.feedback` and
+    # :mod:`polylogue.storage.derived.feedback`.
     # ------------------------------------------------------------------
 
     async def record_correction(
@@ -8120,9 +8140,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         the durable row is keyed by the canonical ID. Raises
         :class:`SessionNotFoundError` when the target session does
         not exist and
-        :class:`~polylogue.insights.feedback.UnknownCorrectionKindError`
+        :class:`~polylogue.analysis.feedback.UnknownCorrectionKindError`
         when ``kind`` is not a recognized
-        :class:`~polylogue.insights.feedback.CorrectionKind`.
+        :class:`~polylogue.analysis.feedback.CorrectionKind`.
 
         Routed through ``OperationExecutor``/``CorrectionRecordActuator``
         (t46.9 phase 5); see :meth:`save_annotation` for the shared-contract

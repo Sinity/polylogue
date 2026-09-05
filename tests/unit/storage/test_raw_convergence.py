@@ -20,10 +20,9 @@ from polylogue.sources.revision_backfill import census_historical_revision_evide
 from polylogue.storage import raw_convergence as raw_convergence_mod
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -3740,26 +3739,6 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
 
 
-def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
-    status = SessionInsightStatusSnapshot(
-        total_sessions=1,
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        run_rows_ready=True,
-        observed_event_rows_ready=True,
-        context_snapshot_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-        missing_run_materialization_count=1,
-        missing_context_snapshot_materialization_count=1,
-    )
-
-    assessment = assess_session_insight_repairs(status)
-
-    assert assessment.row_debt == 0
 
 
 def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_component(tmp_path: Path) -> None:

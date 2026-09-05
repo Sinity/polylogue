@@ -6,7 +6,7 @@ from collections.abc import Sequence
 
 import aiosqlite
 
-from polylogue.storage.insights.session.storage import (
+from polylogue.storage.derived.session.storage import (
     _SESSION_LATENCY_PROFILE_COLUMNS,
     session_latency_profile_insert_values,
     session_profile_insert_columns,

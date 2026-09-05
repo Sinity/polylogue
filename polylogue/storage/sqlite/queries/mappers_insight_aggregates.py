@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from polylogue.insights.archive_models import DaySessionSummaryPayload
+from polylogue.analysis.archive_models import DaySessionSummaryPayload
 from polylogue.storage.runtime import (
     DaySessionSummaryRecord,
     SessionTagRollupRecord,

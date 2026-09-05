@@ -28,7 +28,7 @@ from polylogue.storage.runtime import (
     SessionRefRecord,
     WebContentConstructRecord,
 )
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
     _json_object_list,
@@ -42,36 +42,22 @@ from polylogue.storage.sqlite.queries.mappers_support import (
 
 
 def _row_to_session(row: sqlite3.Row) -> SessionRecord:
+    values = SESSIONS_SPEC.row_to_record_kwargs(row)
     parent_session_id = _row_text(row, "parent_session_id")
     branch_type = _row_text(row, "branch_type")
-    return SessionRecord(
-        session_id=row["session_id"],
-        native_id=row["native_id"],
-        origin=row["origin"],
-        title=row["title"],
-        session_kind=SessionKind.normalize(_row_text(row, "session_kind")),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        sort_key=_row_float(row, "sort_key"),
-        content_hash=row["content_hash"],
-        metadata=_json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"])),
-        version=row["version"],
-        parent_session_id=SessionId(parent_session_id) if parent_session_id is not None else None,
-        branch_type=BranchType(branch_type) if branch_type is not None else None,
-        raw_id=_row_text(row, "raw_id"),
-        working_directories_json=_row_text(row, "working_directories_json"),
-        git_branch=_row_text(row, "git_branch"),
-        git_repository_url=_row_text(row, "git_repository_url"),
-        provider_project_ref=_row_text(row, "provider_project_ref"),
-        display_name=_row_text(row, "display_name"),
-        run_settings=_json_object(
-            _parse_json(_row_get(row, "run_settings_json"), field="run_settings_json", record_id=row["session_id"])
-        ),
-        pending_drafts=_json_object_list(
-            _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
-        ),
-        reported_cost_usd=_row_float(row, "reported_cost_usd"),
+    values["session_kind"] = SessionKind.normalize(_row_text(row, "session_kind"))
+    values["parent_session_id"] = SessionId(parent_session_id) if parent_session_id is not None else None
+    values["branch_type"] = BranchType(branch_type) if branch_type is not None else None
+    values["metadata"] = _json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"]))
+    values["run_settings"] = _json_object(
+        _parse_json(_row_get(row, "run_settings_json"), field="run_settings_json", record_id=row["session_id"])
     )
+    values["pending_drafts"] = _json_object_list(
+        _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
+    )
+    values["sort_key"] = _row_float(row, "sort_key")
+    values["reported_cost_usd"] = _row_float(row, "reported_cost_usd")
+    return SessionRecord(**values)
 
 
 def _row_to_message(row: sqlite3.Row) -> MessageRecord:

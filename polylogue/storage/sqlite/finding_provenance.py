@@ -21,13 +21,13 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from polylogue.core.enums import AssertionKind
-from polylogue.core.refs import ObjectRef
-from polylogue.insights.measurement.public_claims import (
+from polylogue.analysis.measurement.public_claims import (
     PublicClaimDisclosure,
     PublicClaimPresetName,
     PublicFindingInput,
 )
+from polylogue.core.enums import AssertionKind
+from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.user_write import (
     ArchiveAssertionEnvelope,
     list_assertion_claims,

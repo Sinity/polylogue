@@ -8,9 +8,9 @@ from unittest.mock import patch
 
 import pytest
 
-from polylogue.insights import registry as insight_registry
-from polylogue.insights.archive import ArchiveCoverageInsight
-from polylogue.insights.registry import (
+from polylogue.analysis import registry as insight_registry
+from polylogue.analysis.archive import ArchiveCoverageInsight
+from polylogue.analysis.registry import (
     CliOption,
     InsightField,
     InsightQueryError,

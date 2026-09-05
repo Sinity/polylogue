@@ -2,26 +2,30 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 from dataclasses import asdict
 from pathlib import Path
 
 import aiosqlite
 
-from polylogue.insights.readiness import InsightReadinessQuery, build_insight_readiness_report
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.insights.session.status import (
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.status import (
+    _COUNT_DESCRIPTORS,
+    _FTS_DESCRIPTORS,
+    _TABLE_DESCRIPTORS,
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
-    SessionInsightReadyDescriptor,
     session_insight_status_async,
     session_insight_status_sync,
     session_profile_repair_candidate_ids_sync,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
-def test_fts_descriptor_marks_duplicates_unready() -> None:
+def test_fts_descriptor_reports_duplicate_counts() -> None:
     descriptor = SessionInsightFtsDescriptor(
         table_key="demo_fts",
         table_name="demo_fts",
@@ -30,14 +34,18 @@ def test_fts_descriptor_marks_duplicates_unready() -> None:
         source_count_key="source_rows",
         distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
         duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
-        ready_key="profile_merged_fts_ready",
     )
 
     tables = {"demo_fts": True}
 
-    assert descriptor.ready(tables, {"source_rows": 2, "indexed_rows": 3, "duplicate_rows": 1}) is False
-    assert descriptor.ready(tables, {"source_rows": 2, "indexed_rows": 2, "duplicate_rows": 0}) is True
-    assert descriptor.ready({"demo_fts": False}, {"source_rows": 0, "indexed_rows": 0, "duplicate_rows": 0}) is False
+    with sqlite3.connect(":memory:") as conn:
+        conn.execute("CREATE TABLE demo_fts (id TEXT)")
+        assert descriptor.counts_sync(
+            conn,
+            tables,
+            {"source_rows": 2},
+            verify_freshness=False,
+        ) == {"indexed_rows": 0, "duplicate_rows": 0}
 
 
 async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path: Path) -> None:
@@ -59,7 +67,6 @@ async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path:
             source_count_key="source_rows",
             distinct_sql="SELECT COUNT(DISTINCT id) FROM demo_fts",
             duplicate_sql="SELECT COUNT(*) - COUNT(DISTINCT id) FROM demo_fts",
-            ready_key="profile_merged_fts_ready",
         )
 
         fresh = await descriptor.counts_async(
@@ -82,7 +89,7 @@ async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path:
 def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
     descriptor = SessionInsightCountDescriptor(
         count_key="expected_rows",
-        table_key="source_table",
+        table_keys=("source_table",),
         sql="SELECT 99",
         requires_freshness=True,
         fallback_count_key="materialized_rows",
@@ -95,24 +102,6 @@ def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
             {"materialized_rows": 7},
             verify_freshness=False,
         ) == ("expected_rows", 7)
-
-
-def test_ready_descriptor_combines_table_equalities_and_zero_counts() -> None:
-    descriptor = SessionInsightReadyDescriptor(
-        ready_key="threads_ready",
-        table_key="threads",
-        equal_counts=(("thread_count", "root_threads"),),
-        zero_counts=("stale_thread_count", "orphan_thread_count"),
-    )
-
-    assert descriptor.ready(
-        {"threads": True},
-        {"thread_count": 3, "root_threads": 3, "stale_thread_count": 0, "orphan_thread_count": 0},
-    )
-    assert not descriptor.ready(
-        {"threads": True},
-        {"thread_count": 3, "root_threads": 3, "stale_thread_count": 1, "orphan_thread_count": 0},
-    )
 
 
 def test_profile_repair_candidates_match_sort_key_freshness() -> None:
@@ -268,330 +257,6 @@ def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
     assert candidates == ["cold-missing-profile"]
 
 
-def test_session_insight_status_requires_latency_rows_for_ready_profiles() -> None:
-    with sqlite3.connect(":memory:") as conn:
-        conn.executescript(
-            f"""
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                parent_session_id TEXT,
-                origin TEXT,
-                branch_type TEXT,
-                title TEXT,
-                git_branch TEXT,
-                native_id TEXT,
-                message_count INTEGER,
-                tool_use_count INTEGER,
-                sort_key_ms INTEGER,
-                created_at_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE blocks (
-                block_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                block_type TEXT,
-                message_id TEXT,
-                position INTEGER,
-                semantic_type TEXT,
-                tool_command TEXT,
-                tool_id TEXT,
-                tool_name TEXT,
-                tool_result_exit_code INTEGER,
-                tool_result_is_error INTEGER,
-                tool_outcome TEXT,
-                search_text TEXT
-            );
-            CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                source_name TEXT NOT NULL,
-                canonical_session_date TEXT,
-                first_message_at TEXT,
-                last_message_at TEXT,
-                source_updated_at TEXT,
-                evidence_payload_json TEXT,
-                tags_json TEXT,
-                auto_tags_json TEXT,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                work_event_count INTEGER NOT NULL,
-                phase_count INTEGER NOT NULL
-            );
-            CREATE TABLE session_latency_profiles (
-                session_id TEXT PRIMARY KEY,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                source_updated_at TEXT
-            );
-            CREATE TABLE insight_materialization (
-                insight_type TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key_ms INTEGER
-            );
-
-            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
-            VALUES ('ready', NULL, 1000, 1777636800000);
-            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
-            VALUES ('missing-latency', NULL, 2000, 1777636800000);
-            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
-            VALUES ('stale-latency', NULL, 3000, 1777636800000);
-
-            INSERT INTO session_profiles (
-                session_id, source_name, canonical_session_date, tags_json, auto_tags_json,
-                first_message_at, last_message_at, source_updated_at, evidence_payload_json,
-                materializer_version, source_sort_key, work_event_count, phase_count
-            ) VALUES
-                (
-                    'ready', 'codex', '2026-05-01', '[]', '[]',
-                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
-                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0, 0, 0
-                ),
-                (
-                    'missing-latency', 'codex', '2026-05-01', '[]', '[]',
-                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
-                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.0, 0, 0
-                ),
-                (
-                    'stale-latency', 'codex', '2026-05-01', '[]', '[]',
-                    NULL, NULL, '2026-05-01T12:00:00Z', '{{}}',
-                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3.0, 0, 0
-                );
-
-            INSERT INTO session_latency_profiles (session_id, materializer_version, source_sort_key)
-            VALUES
-                ('ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0),
-                ('stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.5);
-
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, source_sort_key_ms
-            )
-            VALUES
-                ('session_profile', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
-                ('session_profile', 'missing-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2000),
-                ('session_profile', 'stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3000),
-                ('latency', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
-                ('latency', 'missing-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2000),
-                ('latency', 'stale-latency', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 3000);
-            """
-        )
-
-        status = session_insight_status_sync(conn)
-
-    assert status.profile_rows_ready is True
-    assert status.latency_profile_rows_ready is False
-    assert status.latency_profile_row_count == 2
-    assert status.missing_latency_profile_row_count == 1
-    assert status.stale_latency_profile_row_count == 1
-
-
-def test_status_treats_run_projection_materialization_as_optional_cache() -> None:
-    with sqlite3.connect(":memory:") as conn:
-        conn.executescript(
-            f"""
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                parent_session_id TEXT,
-                origin TEXT,
-                branch_type TEXT,
-                title TEXT,
-                git_branch TEXT,
-                native_id TEXT,
-                message_count INTEGER,
-                tool_use_count INTEGER,
-                sort_key_ms INTEGER,
-                created_at_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE blocks (
-                block_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                block_type TEXT,
-                message_id TEXT,
-                position INTEGER,
-                semantic_type TEXT,
-                tool_command TEXT,
-                tool_id TEXT,
-                tool_name TEXT,
-                tool_result_exit_code INTEGER,
-                tool_result_is_error INTEGER,
-                tool_outcome TEXT,
-                search_text TEXT
-            );
-            CREATE TABLE session_runs (session_id TEXT NOT NULL);
-            CREATE TABLE session_observed_events (session_id TEXT NOT NULL);
-            CREATE TABLE session_context_snapshots (session_id TEXT NOT NULL);
-            CREATE TABLE insight_materialization (
-                insight_type TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key_ms INTEGER
-            );
-
-            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
-            VALUES ('ready', NULL, 1000, 1777636800000);
-            INSERT INTO session_runs (session_id) VALUES ('ready');
-            INSERT INTO session_observed_events (session_id) VALUES ('ready');
-            INSERT INTO session_context_snapshots (session_id) VALUES ('ready');
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, source_sort_key_ms
-            )
-            VALUES
-                ('runs', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
-                ('observed_events', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000),
-                ('context_snapshots', 'ready', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1000);
-            """
-        )
-
-        ready = session_insight_status_sync(conn)
-        conn.execute("DELETE FROM insight_materialization WHERE insight_type = 'runs'")
-        missing = session_insight_status_sync(conn)
-        conn.execute(
-            "INSERT INTO insight_materialization (insight_type, session_id, materializer_version, source_sort_key_ms) "
-            "VALUES ('runs', 'ready', ?, 1000)",
-            (SESSION_INSIGHT_MATERIALIZER_VERSION - 1,),
-        )
-        stale = session_insight_status_sync(conn)
-
-    assert ready.run_count == 1
-    assert ready.observed_event_count == 1
-    assert ready.context_snapshot_count == 1
-    assert ready.run_rows_ready is True
-    assert ready.observed_event_rows_ready is True
-    assert ready.context_snapshot_rows_ready is True
-    assert missing.missing_run_materialization_count == 1
-    assert missing.run_rows_ready is True
-    assert stale.missing_run_materialization_count == 1
-    assert stale.run_rows_ready is True
-
-
-async def test_readiness_report_treats_empty_run_projection_cache_as_ready(tmp_path: Path) -> None:
-    db_path = tmp_path / "insights.db"
-    async with aiosqlite.connect(db_path) as conn:
-        conn.row_factory = sqlite3.Row
-        await conn.executescript(
-            """
-            CREATE TABLE session_runs (session_id TEXT NOT NULL);
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL,
-                sort_key_ms INTEGER
-            );
-            """
-        )
-        await conn.commit()
-        report = await build_insight_readiness_report(
-            conn,
-            SessionInsightStatusSnapshot(
-                total_sessions=1,
-                run_count=0,
-                missing_run_materialization_count=1,
-                run_rows_ready=True,
-            ),
-            InsightReadinessQuery(insights=("session_runs",)),
-        )
-
-    entry = report.insights[0]
-    assert entry.insight_name == "session_runs"
-    assert entry.row_count == 0
-    assert entry.missing_count == 0
-    assert entry.ready_flags == {"run_rows_ready": True}
-    assert entry.verdict == "ready"
-
-
-def test_status_tracks_work_and_phase_staleness_from_materialization_ledger() -> None:
-    with sqlite3.connect(":memory:") as conn:
-        conn.executescript(
-            f"""
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                parent_session_id TEXT,
-                origin TEXT,
-                branch_type TEXT,
-                title TEXT,
-                git_branch TEXT,
-                native_id TEXT,
-                message_count INTEGER,
-                tool_use_count INTEGER,
-                sort_key_ms INTEGER,
-                created_at_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE blocks (
-                block_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                block_type TEXT,
-                message_id TEXT,
-                position INTEGER,
-                semantic_type TEXT,
-                tool_command TEXT,
-                tool_id TEXT,
-                tool_name TEXT,
-                tool_result_exit_code INTEGER,
-                tool_result_is_error INTEGER,
-                tool_outcome TEXT,
-                search_text TEXT
-            );
-            CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                source_name TEXT,
-                canonical_session_date TEXT,
-                first_message_at TEXT,
-                last_message_at TEXT,
-                source_updated_at TEXT,
-                evidence_payload_json TEXT,
-                tags_json TEXT,
-                auto_tags_json TEXT,
-                materialized_at TEXT,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                work_event_count INTEGER NOT NULL,
-                phase_count INTEGER NOT NULL
-            );
-            CREATE TABLE session_work_events (session_id TEXT NOT NULL);
-            CREATE TABLE session_phases (session_id TEXT NOT NULL);
-            CREATE TABLE insight_materialization (
-                insight_type TEXT NOT NULL,
-                session_id TEXT NOT NULL,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key_ms INTEGER
-            );
-
-            INSERT INTO sessions (session_id, parent_session_id, sort_key_ms, updated_at_ms)
-            VALUES ('stale-work', NULL, 1000, 1777636800000),
-                   ('stale-phase', NULL, 2000, 1777636800000);
-            INSERT INTO session_profiles (
-                session_id, source_name, canonical_session_date, first_message_at, last_message_at,
-                source_updated_at, evidence_payload_json, tags_json, auto_tags_json, materialized_at,
-                materializer_version, source_sort_key, work_event_count, phase_count
-            ) VALUES
-                (
-                    'stale-work', 'codex', '2026-05-01', NULL, NULL,
-                    '2026-05-01T12:00:00Z', '{{}}', '[]', '[]', '2026-05-01T12:00:00Z',
-                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1.0, 1, 0
-                ),
-                (
-                    'stale-phase', 'codex', '2026-05-01', NULL, NULL,
-                    '2026-05-01T12:00:00Z', '{{}}', '[]', '[]', '2026-05-01T12:00:00Z',
-                    {SESSION_INSIGHT_MATERIALIZER_VERSION}, 2.0, 0, 1
-                );
-            INSERT INTO session_work_events (session_id) VALUES ('stale-work');
-            INSERT INTO session_phases (session_id) VALUES ('stale-phase');
-            INSERT INTO insight_materialization (
-                insight_type, session_id, materializer_version, source_sort_key_ms
-            ) VALUES
-                ('work_events', 'stale-work', {SESSION_INSIGHT_MATERIALIZER_VERSION - 1}, 1000),
-                ('phases', 'stale-phase', {SESSION_INSIGHT_MATERIALIZER_VERSION}, 1001);
-            """
-        )
-
-        status = session_insight_status_sync(conn)
-
-    assert status.stale_work_event_inference_count == 1
-    assert status.work_event_inference_rows_ready is False
-    assert status.stale_phase_inference_count == 1
-    assert status.phase_inference_rows_ready is False
-
-
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:
     db_path = tmp_path / "status.db"
     with sqlite3.connect(db_path) as conn:
@@ -642,8 +307,8 @@ async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_pa
     assert sync_status.root_threads == 1
     assert sync_status.missing_profile_row_count == 2
     assert sync_status.stale_profile_row_count == 0
-    assert sync_status.profile_rows_ready is False
-    assert sync_status.threads_ready is False
+    assert sync_status.profile_row_count == 0
+    assert sync_status.thread_count == 0
 
 
 async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp_path: Path) -> None:
@@ -708,3 +373,37 @@ async def test_lightweight_status_sync_and_async_match_with_freshness_tables(tmp
     # populated by any readiness descriptor (the merged-fts index is now
     # tracked via session_work_event_fts). #944 follow-up wires the descriptor.
     assert sync_status.profile_merged_fts_duplicate_count == 0  # not yet populated
+
+
+def test_status_descriptors_resolve_against_declared_tables_and_snapshot_fields() -> None:
+    """Descriptor keys are resolved by subscript, so a descriptor naming a
+    relation or a count that no longer exists fails every status call rather
+    than import. Anti-vacuity: reinstating a descriptor keyed on a retired
+    table, or emitting a count the snapshot does not declare, turns this red.
+    """
+    declared_tables = {descriptor.key for descriptor in _TABLE_DESCRIPTORS}
+    snapshot_fields = {field.name for field in dataclasses.fields(SessionInsightStatusSnapshot)}
+
+    emitted = {descriptor.count_key for descriptor in _TABLE_DESCRIPTORS if descriptor.count_key is not None}
+    emitted |= {descriptor.count_key for descriptor in _COUNT_DESCRIPTORS}
+    emitted |= {descriptor.count_key for descriptor in _FTS_DESCRIPTORS}
+    emitted |= {descriptor.duplicate_count_key for descriptor in _FTS_DESCRIPTORS}
+
+    referenced = {descriptor.table_key for descriptor in _FTS_DESCRIPTORS}
+    referenced |= {table_key for descriptor in _COUNT_DESCRIPTORS for table_key in descriptor.table_keys}
+
+    assert referenced <= declared_tables
+    assert emitted <= snapshot_fields
+
+
+def test_status_snapshot_reads_a_fresh_index_tier(tmp_path: Path) -> None:
+    """The status route runs against real index DDL. Anti-vacuity: a descriptor
+    that queries a relation the index tier does not create raises
+    ``sqlite3.OperationalError`` here.
+    """
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        status = session_insight_status_sync(conn)
+
+    assert status.total_sessions == 0
+    assert status.missing_profile_row_count == 0

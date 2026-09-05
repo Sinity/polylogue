@@ -19,7 +19,7 @@ Cost flows through four substrate-owned stages:
    (`polylogue/archive/semantic/pricing.py`).
 2. **Materialize** — the estimate is folded into the typed
    `SessionCostInsight` and `CostRollupInsight` payloads
-   (`polylogue/insights/archive.py`).
+   (`polylogue/analysis/archive.py`).
 3. **Aggregate** — session-cost insights are folded to per-day USD usage
    for the current billing cycle
    (`polylogue/cost/aggregation.py`).
@@ -82,15 +82,14 @@ raw rows, or rollups disagree, move the stale index tier aside and rebuild
 `index.db` from `source.db`/raw archives. Do not patch a live archive manually to
 make usage totals line up.
 
-`session_model_usage` self-heals like every other session insight
-(`session_profiles`, `session_latency_profiles`, ...): it carries an
-`insight_materialization('provider_usage')` stamp keyed on
-`SESSION_INSIGHT_MATERIALIZER_VERSION`, and the same session-insight rebuild
-path that repairs a stale/missing `session_profile` also re-derives
+`session_model_usage` self-heals like every other derived session row
+(`session_profiles`, `session_latency_profiles`, ...): it carries a
+source-bound row stamp keyed on `SESSION_INSIGHT_MATERIALIZER_VERSION`, and
+the same derived-stage rebuild path that repairs a stale/missing
+`session_profile` also re-derives
 `session_model_usage` from `session_provider_usage_events`/`messages`
-whenever that stamp is stale or missing. This runs automatically on the
-daemon's periodic session-insight drain, hot-source convergence, and
-convergence-debt retry — a manual `polylogue ops reset --index` is no longer
+whenever that stamp is stale or missing. This runs automatically through
+derived convergence and convergence-debt retry. A manual `polylogue ops reset --index` is no longer
 required to pick up a provider-usage materializer fix or a zero-token bug fix
 for existing sessions; it remains available as a fallback for a full rebuild.
 

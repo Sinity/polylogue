@@ -25,8 +25,8 @@ from typing import TypeAlias
 
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.storage.derived.insights import build_archive_insight_statuses, pending_docs, pending_rows
-from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.insights.session.status import session_insight_status_sync
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
+from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.introspection import table_exists as _table_exists
 
 MetricValue: TypeAlias = int | bool
@@ -111,6 +111,31 @@ def _message_fts_metrics(conn: sqlite3.Connection, *, verify_full: bool) -> Metr
 
 
 def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Metrics:
+    profile_ready = (
+        session_status.profile_row_count == session_status.total_sessions
+        and session_status.missing_profile_row_count == 0
+        and session_status.stale_profile_row_count == 0
+        and session_status.orphan_profile_row_count == 0
+    )
+    work_event_ready = (
+        session_status.work_event_inference_count == session_status.expected_work_event_inference_count
+        and session_status.stale_work_event_inference_count == 0
+        and session_status.orphan_work_event_inference_count == 0
+    )
+    phase_ready = (
+        session_status.phase_count == session_status.expected_phase_count
+        and session_status.stale_phase_inference_count == 0
+        and session_status.orphan_phase_inference_count == 0
+    )
+    threads_ready = (
+        session_status.thread_count == session_status.root_threads
+        and session_status.stale_thread_count == 0
+        and session_status.orphan_thread_count == 0
+    )
+    tag_rollups_ready = (
+        session_status.tag_rollup_count == session_status.expected_tag_rollup_count
+        and session_status.stale_tag_rollup_count == 0
+    )
     return {
         "profile_rows": session_status.profile_row_count,
         "work_event_rows": session_status.work_event_inference_count,
@@ -133,12 +158,15 @@ def _session_insight_metrics(session_status: SessionInsightStatusSnapshot) -> Me
         "stale_thread_rows": session_status.stale_thread_count,
         "orphan_thread_rows": session_status.orphan_thread_count,
         "stale_tag_rollup_rows": session_status.stale_tag_rollup_count,
-        "profile_rows_ready": session_status.profile_rows_ready,
-        "work_event_rows_ready": session_status.work_event_inference_rows_ready,
-        "work_event_fts_ready": session_status.work_event_inference_fts_ready,
-        "phase_rows_ready": session_status.phase_rows_ready,
-        "threads_ready": session_status.threads_ready,
-        "tag_rollups_ready": session_status.tag_rollups_ready,
+        "profile_rows_ready": profile_ready,
+        "work_event_rows_ready": work_event_ready,
+        "work_event_fts_ready": (
+            session_status.work_event_inference_fts_count == session_status.work_event_inference_count
+            and session_status.work_event_inference_fts_duplicate_count == 0
+        ),
+        "phase_rows_ready": phase_ready,
+        "threads_ready": threads_ready,
+        "tag_rollups_ready": tag_rollups_ready,
     }
 
 
@@ -181,7 +209,7 @@ def _retrieval_metrics(
         "evidence_retrieval_ready": True,
         "inference_retrieval_rows": inference_rows,
         "expected_inference_retrieval_rows": expected_inference_rows,
-        "inference_retrieval_ready": session_status.work_event_inference_fts_ready,
+        "inference_retrieval_ready": bool(metrics["work_event_fts_ready"]),
         "enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "expected_enrichment_retrieval_rows": int(metrics["profile_rows"]),
         "enrichment_retrieval_ready": True,

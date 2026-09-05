@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.archive.session.session_profile import SessionProfile
-from polylogue.storage.insights.insight_read_support import (
+from polylogue.storage.derived.insight_read_support import (
     hydrate_mapping,
     hydrate_optional,
     hydrate_sequence,
 )
-from polylogue.storage.insights.session.profiles import hydrate_session_profile
+from polylogue.storage.derived.session.profiles import hydrate_session_profile
 from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionLatencyProfileRecord, SessionProfileRecord
 

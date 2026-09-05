@@ -60,6 +60,7 @@ TopologyCapabilityDimension = Literal[
     "parent_dispatch",
 ]
 SourceFrontierKind = Literal["exact-prefix", "claude-header-body"]
+DatabaseMemberDisposition = Literal["acquire", "acquire-partial", "out-of-scope"]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
 _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
@@ -71,6 +72,9 @@ _LOWERING_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/archive/session_revision_membership.py",
 )
 _REPLAY_ROUTING_FINGERPRINT_PATHS: tuple[str, ...] = ("polylogue/sources/revision_backfill.py",)
+# Logging is deliberately available to parser code for diagnostics, but its
+# implementation and configuration do not affect normalized parser output.
+_PARSER_DIAGNOSTIC_FINGERPRINT_PATHS: frozenset[str] = frozenset({"polylogue/logging.py"})
 
 
 class _ProjectionFingerprintStripper(ast.NodeTransformer):
@@ -109,12 +113,12 @@ class _ProjectionFingerprintStripper(ast.NodeTransformer):
 
 _MATERIALIZER_FINGERPRINT_PATHS: tuple[str, ...] = (
     "polylogue/storage/raw_convergence.py",
-    "polylogue/storage/insights/session/rebuild.py",
-    "polylogue/storage/insights/session/threads.py",
-    "polylogue/storage/insights/session/profiles.py",
-    "polylogue/storage/insights/session/latency_profiles.py",
-    "polylogue/storage/insights/session/timeline_rows.py",
-    "polylogue/storage/insights/session/aggregates.py",
+    "polylogue/storage/derived/session/rebuild.py",
+    "polylogue/storage/derived/session/threads.py",
+    "polylogue/storage/derived/session/profiles.py",
+    "polylogue/storage/derived/session/latency_profiles.py",
+    "polylogue/storage/derived/session/timeline_rows.py",
+    "polylogue/storage/derived/session/aggregates.py",
     "polylogue/storage/runtime/store_constants.py",
 )
 
@@ -237,12 +241,16 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in found))
 
 
-def _semantic_source_paths(paths: tuple[str, ...]) -> tuple[Path, ...]:
+def _semantic_source_paths(
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+) -> tuple[Path, ...]:
     pending = [_source_path(path) for path in paths]
     found: set[Path] = set()
     while pending:
         path = pending.pop()
         if path in found:
+            continue
+        if _fingerprint_path_label(path) in excluded_labels:
             continue
         found.add(path)
         for dependency in _local_import_paths(_source_signature(path)):
@@ -318,8 +326,10 @@ def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], n
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _fingerprint_sources(paths: tuple[str, ...], *, namespace: str) -> str:
-    source_paths = _semantic_source_paths(paths)
+def _fingerprint_sources(
+    paths: tuple[str, ...], *, namespace: str, excluded_labels: frozenset[str] = frozenset()
+) -> str:
+    source_paths = _semantic_source_paths(paths, excluded_labels=excluded_labels)
     signatures = tuple(_source_signature(path) for path in source_paths)
     return _fingerprint_sources_cached(signatures, namespace)
 
@@ -340,6 +350,9 @@ class OriginArtifactRule:
     coverage_role: str
     fidelity_note: str
     path_suffixes: tuple[str, ...]
+    # Suffixes safe to project onto a whole watched root. Path-scoped forms
+    # such as opaque sidecars stay governed by ``path_pattern``.
+    watch_suffixes: tuple[str, ...] | None = None
 
     def matches(self, source_path: str) -> bool:
         return re.search(self.path_pattern, source_path.replace("\\", "/")) is not None
@@ -679,6 +692,36 @@ class OriginCompletenessMode:
 
 
 @dataclass(frozen=True, slots=True)
+class DatabaseMemberRule:
+    """Admission disposition for one database member of a DB-shaped origin."""
+
+    filename: str
+    disposition: DatabaseMemberDisposition
+    kind: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatabaseSourceCapability:
+    """Declared acquisition contract for an origin backed by SQLite files."""
+
+    snapshot_method: Literal["sqlite_backup"]
+    consistency_fence: str
+    revision_identity: str
+    raw_id_strategy: str
+    members: tuple[DatabaseMemberRule, ...]
+    full_snapshot_per_revision: bool
+    snapshot_lineage_policy: str
+
+    def member(self, filename: str) -> DatabaseMemberRule | None:
+        return next((item for item in self.members if item.filename == filename), None)
+
+    @property
+    def filenames(self) -> frozenset[str]:
+        return frozenset(item.filename for item in self.members)
+
+
+@dataclass(frozen=True, slots=True)
 class OriginSpec:
     """One public-origin admission contract, independent of parser internals."""
 
@@ -724,6 +767,7 @@ class OriginSpec:
     #: Provider records for this origin may omit a terminal tool verdict. The
     #: normalized result is then an explicit unknown, never an inferred one.
     tool_outcome_unknown_reason: ToolResultUnknownReason | None = None
+    database_capability: DatabaseSourceCapability | None = None
 
     def parser_fingerprint(self) -> str:
         """Return the origin-scoped fingerprint of parser output semantics."""
@@ -735,7 +779,11 @@ class OriginSpec:
             declared_paths.append(self.assembly_spec_path)
         declared_paths.extend(rule.parser_path for rule in self.artifact_rules if rule.parser_path is not None)
         source_paths = tuple(dict.fromkeys(_source_file_from_reference(path) for path in declared_paths))
-        return _fingerprint_sources(source_paths, namespace=f"parser:{self.origin.value}")
+        return _fingerprint_sources(
+            source_paths,
+            namespace=f"parser:{self.origin.value}",
+            excluded_labels=_PARSER_DIAGNOSTIC_FINGERPRINT_PATHS,
+        )
 
 
 def _detector_declaration_fingerprint_payload() -> tuple[dict[str, object], ...]:
@@ -861,10 +909,26 @@ class OriginSpecRegistry:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires a parser binding")
                 if not rule.path_suffixes:
                     raise ValueError(f"{spec.origin.value}: {rule.kind} requires acquisition suffixes")
-                if any(not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.path_suffixes):
+                if any(
+                    suffix and (not suffix.startswith(".") or suffix != suffix.lower()) for suffix in rule.path_suffixes
+                ):
                     raise ValueError(
-                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes"
+                        f"{spec.origin.value}: {rule.kind} acquisition suffixes must be lowercase dot suffixes or empty"
                     )
+                if rule.watch_suffixes is not None and any(
+                    not suffix.startswith(".") or suffix != suffix.lower() for suffix in rule.watch_suffixes
+                ):
+                    raise ValueError(f"{spec.origin.value}: {rule.kind} watch suffixes must be lowercase dot suffixes")
+            if any("db" in mode or "sqlite" in mode for mode in spec.acquisition_modes):
+                if spec.database_capability is None:
+                    raise ValueError(f"{spec.origin.value}: database acquisition requires a database capability")
+                if not spec.database_capability.members:
+                    raise ValueError(f"{spec.origin.value}: database capability requires member declarations")
+                filenames = [member.filename for member in spec.database_capability.members]
+                if len(filenames) != len(set(filenames)):
+                    raise ValueError(f"{spec.origin.value}: database member filenames must be unique")
+                if any(not member.filename or "/" in member.filename for member in spec.database_capability.members):
+                    raise ValueError(f"{spec.origin.value}: database member filenames must be basenames")
         elif spec.parser_paths or spec.stream_parser_path is not None:
             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
         self._kernel.register(spec.declaration)
@@ -1062,7 +1126,8 @@ def _claude_code_spec() -> OriginSpec:
                 # admits all four forms; only JSON participates in the
                 # ordinary suffix projection because text and HTML are
                 # path-scoped and must not widen the Claude root globally.
-                path_suffixes=(".json",),
+                path_suffixes=(".json", ".txt", ".html", ""),
+                watch_suffixes=(".json",),
             ),
             OriginArtifactRule(
                 kind="workflow_run_snapshot",
@@ -1162,7 +1227,14 @@ def _claude_code_spec() -> OriginSpec:
             "parent session is derived from the Claude sessionId relationship",
         ),
         inheritance_branch_point=_absent_topology("Claude Code wire carries no inheritance boundary"),
-        parent_dispatch=_absent_topology("Claude Code child records do not carry an admitted parent dispatch field"),
+        parent_dispatch=TopologyCapability(
+            "positive-derived",
+            (
+                "claude_code progress.data.type=agent_progress.parentToolUseID",
+                "claude_code progress.data.childSessionId/agentId when present",
+            ),
+            "parent-side dispatch evidence is retained only when the wire carries an exact child identity",
+        ),
     )
     return replace(spec, topology_capabilities=topology_capabilities)
 
@@ -1195,8 +1267,17 @@ def artifact_suffixes_for_provider(
         if provider not in spec.provider_wires:
             continue
         for rule in spec.artifact_rules:
-            suffixes.extend(rule.path_suffixes)
+            suffixes.extend(rule.watch_suffixes if rule.watch_suffixes is not None else rule.path_suffixes)
     return tuple(dict.fromkeys(suffix.lower() for suffix in suffixes))
+
+
+def database_capability_for_provider(provider: Provider) -> DatabaseSourceCapability | None:
+    """Return the declared SQLite acquisition contract for a provider wire."""
+
+    for spec in ORIGIN_SPECS:
+        if provider in spec.provider_wires:
+            return spec.database_capability
+    return None
 
 
 def _chatgpt_spec() -> OriginSpec:
@@ -1276,6 +1357,7 @@ def _executable_spec(
     assembly_spec_path: str | None = None,
     tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
+    database_capability: DatabaseSourceCapability | None = None,
     topology_capabilities: TopologyCapabilities,
 ) -> OriginSpec:
     return OriginSpec(
@@ -1299,6 +1381,7 @@ def _executable_spec(
         display_description=display_description,
         public_filter=public_filter,
         topology_capabilities=topology_capabilities,
+        database_capability=database_capability,
     )
 
 
@@ -1373,6 +1456,32 @@ def _codex_spec() -> OriginSpec:
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
         tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        database_capability=DatabaseSourceCapability(
+            snapshot_method="sqlite_backup",
+            consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
+            revision_identity="dev/inode/size/mtime_ns over the main database and its -wal sidecar",
+            raw_id_strategy="codex state raw-id domain + absolute source path + blob hash",
+            members=(
+                DatabaseMemberRule(
+                    "state_5.sqlite", "acquire", "thread_state", "threads and spawn edges are unique state evidence"
+                ),
+                DatabaseMemberRule(
+                    "goals_1.sqlite", "acquire-partial", "goals", "goal intent is retained as durable raw evidence"
+                ),
+                DatabaseMemberRule(
+                    "memories_1.sqlite",
+                    "acquire-partial",
+                    "memories",
+                    "memory state is retained as durable raw evidence",
+                ),
+                DatabaseMemberRule("logs_2.sqlite", "out-of-scope", "logs", "runtime tracing is not session evidence"),
+                DatabaseMemberRule(
+                    "codex-dev.db", "out-of-scope", "automation", "automation scheduling is not session evidence"
+                ),
+            ),
+            full_snapshot_per_revision=True,
+            snapshot_lineage_policy="retain complete snapshot blobs; supersession and dedup receipts govern lineage retention",
+        ),
     )
     carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
     return replace(
@@ -1446,6 +1555,25 @@ def _hermes_spec() -> OriginSpec:
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
         tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        database_capability=DatabaseSourceCapability(
+            snapshot_method="sqlite_backup",
+            consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
+            revision_identity="dev/inode/size/mtime_ns over the main database and its -wal sidecar",
+            raw_id_strategy="Hermes profile raw-id domain + profile path + source index + blob hash",
+            members=(
+                DatabaseMemberRule(
+                    "state.db", "acquire", "state", "conversation state is the authoritative Hermes session source"
+                ),
+                DatabaseMemberRule(
+                    "verification_evidence.db",
+                    "acquire",
+                    "verification",
+                    "verification evidence is a declared observer source",
+                ),
+            ),
+            full_snapshot_per_revision=True,
+            snapshot_lineage_policy="retain complete snapshot blobs; supersession and dedup receipts govern lineage retention",
+        ),
     )
     carried = TopologyCapability(
         "carried", ("hermes_state.sessions.parent_session_id", "hermes ATIF parent_session_id")
@@ -2426,6 +2554,9 @@ __all__ = [
     "ArtifactParsePolicy",
     "DroppedValueVocabulary",
     "OriginArtifactRule",
+    "DatabaseMemberRule",
+    "DatabaseSourceCapability",
+    "DatabaseMemberDisposition",
     "SourceClassRecognition",
     "SourceClass",
     "OriginLifecycle",
@@ -2438,6 +2569,7 @@ __all__ = [
     "check_dropped_value_vocabularies",
     "origin_specs",
     "tool_outcome_unknown_reason_for_origin",
+    "database_capability_for_provider",
     "topology_capability_census",
     "public_origin_descriptions",
     "public_origin_meanings",

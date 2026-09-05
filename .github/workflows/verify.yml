@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # One run per ref: a newer push supersedes the run for the same PR. Host-wide
 # serialisation of pytest is the pueue `pytest` slot, not GitHub; a global
@@ -35,15 +36,28 @@ jobs:
         run: |
           mkdir -p .cache/testmon
           seed=/realm/project/polylogue/.cache/testmon/testmondata
-          if [ -f .cache/testmon/testmondata ]; then
-            echo "runner already has a datafile; keeping it"
-          elif [ -f "$seed" ]; then
-            cp "$seed" .cache/testmon/testmondata
-          else
-            echo "no seed at $seed; this run seeds the graph and runs everything"
+          nix develop --command python -m devtools.testmon_provision --seed "$seed"
+
+      - name: Check that the pull request is still open
+        id: pr-state
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          state=$(curl --fail --silent --show-error \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" \
+            | jq --raw-output .state)
+          if [ "$state" != open ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Verify
-        run: nix develop --command devtools verify
+        if: steps.pr-state.outputs.skip != 'true'
+        run: |
+          export PATH="/run/current-system/sw/bin:$PATH"
+          nix develop --command devtools verify
         env:
           POLYLOGUE_FORCE_PLAIN: "1"

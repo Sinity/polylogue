@@ -19,7 +19,10 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
     blob_reference_replace_from_source_command,
     blob_reference_replace_from_source_preview_command,
 )
+from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
+from polylogue.cli.commands.maintenance._plan import plan_command
+from polylogue.cli.commands.maintenance._status import status_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.services import RuntimeServices
@@ -33,6 +36,25 @@ def _registered_maintenance_command() -> click.Command:
         if command.name == "maintenance":
             return command
     raise AssertionError("maintenance command is not registered under ops")
+
+
+def test_maintenance_group_in_ops_commands() -> None:
+    """maintenance_group is registered under polylogue ops."""
+    assert _registered_maintenance_command() is not None
+
+
+def test_maintenance_group_is_click_group() -> None:
+    """maintenance_group is a Click Group."""
+    assert isinstance(_registered_maintenance_command(), click.Group)
+
+
+def test_maintenance_plan_is_click_command() -> None:
+    """plan is a Click Command on the maintenance group."""
+    assert isinstance(plan_command, click.Command)
+
+
+def test_operation_recovery_is_click_command() -> None:
+    assert isinstance(operation_recovery_command, click.Command)
 
 
 def _recovery_env(tmp_path: Path) -> AppEnv:
@@ -120,7 +142,6 @@ def test_maintenance_group_has_plan_and_run() -> None:
     assert "plan" in cmds
     assert "run" in cmds
     assert "run-preview" in cmds
-    assert "raw-authority-recovery" in cmds
     assert "operation-recovery" in cmds
     assert "blob-conservation" in cmds
 
@@ -216,6 +237,15 @@ def test_maintenance_run_preview_help_output() -> None:
     assert "--operation-id" in result.output
 
 
+def test_maintenance_status_is_click_command() -> None:
+    """status is a Click Command on the maintenance group (#1197)."""
+    assert isinstance(status_command, click.Command)
+
+
+def test_blob_reference_closure_is_click_command() -> None:
+    assert isinstance(blob_reference_closure_command, click.Command)
+
+
 def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -> None:
     """The real Click registry exposes diagnostic and write commands separately."""
 
@@ -247,7 +277,6 @@ def test_maintenance_group_has_status() -> None:
     ctx = click.Context(maintenance_group)
     cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
     assert "status" in cmds
-    assert "hook-payload-ref-reconcile" in cmds
     assert "blob-reference-closure" in cmds
 
 

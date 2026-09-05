@@ -72,7 +72,7 @@ goes in `cli/commands/`. The CLI shows fast daemon status on bare invocation
 and falls back to archive summary when the daemon is not running.
 
 **Adding a session insight**: Define the insight model in `insights/`. Add
-storage in `storage/insights/session/`. Wire rebuild logic and register in
+storage in `storage/derived/session/`. Wire rebuild logic and register in
 `insights/registry.py`.
 
 **Adding a devtools command**: Add a `CommandSpec` to
@@ -178,12 +178,18 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (e.g. dropping a zero-consumer table, adding an index/table nothing reads
   yet) — not a general escape hatch. `INDEX_SCHEMA_VERSION` stays reserved for
   semantic changes: consumer-visible column/behavior changes or
-  reparse-required content. `devtools gate schema-versioning` validates
+  reparse-required content. `devtools verify schema-manifest` validates
   every registry entry against the allowed idempotent-DDL shapes and rejects
   anything else (ALTER/INSERT/UPDATE/DELETE, or a `CREATE`/`DROP` missing its
   `IF NOT EXISTS`/`IF EXISTS` guard). First application: dropped the
   zero-consumer `model_prices` and `session_reported_costs` tables
   (polylogue-v2mg).
+- **Index schema version 81** (polylogue-avlt5) replaces the redundant thread
+  and tag-rollup tables with query-time views over canonical index evidence.
+  `action_pairs` and `delegation_facts` remain compact indexed relations because
+  their session-scoped reads and delegation counts must not scan the archive.
+  Existing index generations require semantic reparse so the rebuilt tier has
+  the new relation layout.
 - On startup the on-disk `PRAGMA user_version` is compared against the tier
   constant:
   - **Empty file** (`user_version == 0`): bootstrap fresh.
@@ -196,7 +202,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   metadata-only, index-only, additive-derived, additive-durable, or
   semantic-reparse-required. Same-tier schema changes should be batched before
   a live rebuild so the active archive is not reset repeatedly.
-- `devtools gate schema-versioning` enforces the boundary: durable SQL
+- `devtools verify schema-manifest` enforces the boundary: durable SQL
   migrations are allowed only under the numbered migration resource roots, while
   derived changes must use declared lifecycle deltas and clone-validated
   fast-forward plans or rebuild. The gate validates those structured carriers
@@ -474,18 +480,10 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   per-turn dispatch authorship. Existing index tiers must be rebuilt from
   source evidence (`polylogue ops reset --index && polylogued run`); no
   public reader should keep consuming the old column names.
-- Index schema version 33 adds `'provider_usage'` to the
-  `insight_materialization.insight_type` CHECK constraint (polylogue-f2qv.5),
-  so `session_model_usage` can carry a materializer-version stamp and
-  self-heal through the same session-insight rebuild path as
-  `session_profile`/`latency`/etc instead of requiring a manual
-  `ops reset --index` after a provider-usage materializer fix. Existing index
-  tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`) — a `CREATE TABLE IF NOT
-  EXISTS` on an already-existing table does not retroactively widen its CHECK
-  constraint, so the version bump (not just the DDL edit) is what forces
-  existing archives through the fresh-first rebuild path rather than hitting a
-  CHECK-constraint violation the first time a session's insights are rebuilt.
+- Index schema version 85 retires the per-session insight lifecycle ledger.
+  Existing derived rows are regenerated from source evidence through ordinary
+  convergence, so provider-usage and session insight changes share one
+  freshness route.
 - Index schema version 30 makes `session_events` the lossless generic relation
   for every parsed non-message event. It retains open event types and structured
   payloads in original positions while policy and usage tables remain typed
@@ -690,7 +688,7 @@ copy-forward design and explicit operator consent, never a routine migration.
 `ALTER TABLE ... ADD COLUMN` bootstrap helpers in
 `storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
-`devtools gate schema-versioning` lint enforces the whole boundary:
+`devtools verify schema-manifest` check enforces the whole boundary:
 numbered durable-tier migrations are allowed; derived-tier lifecycle deltas and
 same-version DDL are validated structurally. Ad hoc open-path upgrades are not a
 supported runtime route, but the lint does not pretend to detect them from
@@ -762,19 +760,19 @@ carries the original provider-native parent id. The same table also carries the
 
 ## Work-Evidence Graph and Repository-Effect Reconciliation (polylogue-1vpm.6)
 
-`polylogue/insights/work_evidence.py` defines a provider-neutral graph
+`polylogue/analysis/work_evidence.py` defines a provider-neutral graph
 (`WorkEvidenceGraph`/`WorkEvidenceNode`/`WorkEvidenceEdge`, stored in
 `index.db`'s `work_evidence_graphs`/`_nodes`/`_edges` tables) for
 orchestration runs, invocations, task/calls, attempts, session segments, and
-agent-reported claims. `polylogue/insights/claude_workflow_materializer.py`
+agent-reported claims. `polylogue/analysis/claude_workflow_materializer.py`
 is the production builder for `claude-workflow:<run-id>` graphs from admitted
 Claude Code Workflow artifacts (a live daemon convergence stage).
 
-A claim node is never treated as ground truth. `polylogue/insights/
+A claim node is never treated as ground truth. `polylogue/analysis/
 work_reconciliation.py`'s `reconcile_work_effects` attaches independently
 observed `ObservedRepositoryEffect` facts (git commits, Beads issue-state
 changes, GitHub PR activity) and explicit `ReconciliationJudgment`s to a
-graph without ever mutating a claim into an effect. `polylogue/insights/
+graph without ever mutating a claim into an effect. `polylogue/analysis/
 work_effects.py` supplies the effect-observation adapters:
 `GitCommitEffectAdapter` (real `git log`, read-only), `BeadsIssueEffectAdapter`
 (reads a `.beads/interactions.jsonl`-shaped ledger), and a typed
@@ -793,7 +791,7 @@ The production read-modify-write entry point is
 the reconciled graph back through `SessionRepository.replace_work_evidence_graph`).
 
 `reconcile-work-effects` reconciles an *existing* work-evidence graph against
-independent repository effects; it never builds one. `polylogue/insights/
+independent repository effects; it never builds one. `polylogue/analysis/
 incident_evidence_materialization.py` materializes the source graph: it adapts
 real per-session `ProjectedRun`/`ObservedEvent` evidence (one run node per
 session run, `invoked`-linked parent→subagent; one session-segment node per
@@ -829,7 +827,7 @@ agents and MCP callers; `get_session_topology` remains the full graph view.
 
 User corrections live outside the content-hash boundary by construction
 (#1131). They are `AssertionKind.CORRECTION` rows in the unified `user.db`
-`assertions` table (`storage/insights/feedback/`):
+`assertions` table (`storage/derived/feedback/`):
 
 - Keyed by session and correction kind — at most one correction of
   each kind per session, so deterministic rebuilds always produce the
@@ -842,7 +840,7 @@ User corrections live outside the content-hash boundary by construction
   `tests/unit/insights/test_feedback.py`.
 - Insight materialization paths consult corrections after computing
   heuristic suggestions. Auto-tag and summary merge helpers live in
-  `polylogue/insights/feedback.py`.
+  `polylogue/analysis/feedback.py`.
 - Surfaces:
   - MCP: `record_correction`, `list_corrections`, `clear_corrections`.
   - Library: `Polylogue.record_correction(...)`,
@@ -851,7 +849,7 @@ User corrections live outside the content-hash boundary by construction
 - Storage backed by `polylogue/storage/sqlite/archive_tiers/archive.py`
   (`ArchiveStore.record_correction` / `list_corrections` /
   `delete_correction` / `clear_corrections`) and
-  `polylogue/storage/insights/feedback/` (async SQL helpers).
+  `polylogue/storage/derived/feedback/` (async SQL helpers).
 
 ## Text Handling Contracts
 

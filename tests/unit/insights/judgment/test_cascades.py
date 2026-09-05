@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+from polylogue.analysis.judgment.calibration import CalibrationKey, CalibrationReport
+from polylogue.analysis.judgment.cascades import route_judgment
+from polylogue.analysis.judgment.types import ComparativeJudgment, JudgeIdentity
 from polylogue.core.enums import ComparativeVerdict
-from polylogue.insights.judgment.calibration import CalibrationKey, CalibrationReport
-from polylogue.insights.judgment.cascades import route_judgment
-from polylogue.insights.judgment.types import ComparativeJudgment, JudgeIdentity
 
 _JUDGE = JudgeIdentity(actor_ref="agent:sonnet", execution_context_id="ctx-a")
 

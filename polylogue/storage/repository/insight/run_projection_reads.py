@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from polylogue.insights.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
-from polylogue.storage.insights.insight_read_support import hydrate_sequence
-from polylogue.storage.insights.session.run_projection_rows import (
+from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.storage.derived.insight_read_support import hydrate_sequence
+from polylogue.storage.derived.session.run_projection_rows import (
     hydrate_context_snapshot,
     hydrate_observed_event,
     hydrate_projected_run,

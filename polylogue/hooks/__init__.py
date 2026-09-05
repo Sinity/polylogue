@@ -25,6 +25,7 @@ from typing import Literal, cast
 import tomllib
 
 from polylogue.core.durable_fs import atomic_replace
+from polylogue.core.errors import SchemaSkewError
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -604,7 +605,7 @@ def _recent_session_opportunities(
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, SchemaSkewError):
         return None
     return tuple(
         _SessionOpportunity(
@@ -641,7 +642,7 @@ def _recent_hook_events(
             ).fetchall()
         finally:
             conn.close()
-    except sqlite3.Error:
+    except (sqlite3.Error, SchemaSkewError):
         return None
     by_event: dict[str, set[str]] = {}
     for session_native_id, event_type in rows:

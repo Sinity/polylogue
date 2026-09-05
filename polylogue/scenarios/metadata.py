@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from polylogue.insights.authored_payloads import (
+from polylogue.analysis.authored_payloads import (
     PayloadDict,
     merge_unique_string_tuples,
     payload_string,

@@ -39,7 +39,8 @@ writer_modules:
         [admit_raw_and_parsed_result, admit_raw_artifact_blob_ref, admit_raw_artifact_payload,
         apply_raw_membership_classification, apply_raw_revision_replay,
         classify_raw_revision_cohort_for_frozen_candidate,
-        classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_rebuild_repair,
+        classify_raw_revision_cohort_for_live_watch, classify_raw_revision_cohort_for_live_watch_in_transaction,
+        classify_raw_revision_cohort_for_rebuild_repair, classify_raw_revision_cohort_for_rebuild_repair_in_transaction,
         finalize_raw_parse_state,
         mark_raw_parse_failed, promote_reconstructed_legacy_append_revisions,
         record_current_parser_source_census,
@@ -81,8 +82,8 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints:
-        [apply_insight_materialization, rebuild_archive_messages_fts, refresh_and_sweep_attachment_rows,
-        repair_stale_prefix_branch_points, replace_parser_ingest_flag_tags, upsert_insight_materialization,
+        [rebuild_archive_messages_fts, refresh_and_sweep_attachment_rows,
+        repair_stale_prefix_branch_points, replace_parser_ingest_flag_tags,
         upsert_parser_ingest_flag_tags, upsert_session_profile_costs, write_parsed_session_to_archive]
     - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces:
@@ -101,8 +102,9 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints:
-        [begin_embedding_attempt, complete_embedding_attempt_success, mark_session_embedding_error,
-        record_embedding_failure, resolve_embedding_failure, resolve_open_embedding_failures_for_session,
+        [begin_embedding_attempt, complete_embedding_attempt_success, finalize_embedding_attempt_success,
+        mark_session_embedding_error, publish_embedding_attempt_window, record_embedding_failure,
+        resolve_embedding_failure, resolve_open_embedding_failures_for_session,
         supersede_embedding_attempt, upsert_message_embedding, upsert_message_embeddings]
     - path: polylogue/storage/sqlite/archive_tiers/user_write.py
       surfaces:
@@ -152,12 +154,6 @@ writer_modules:
           durability: rebuildable
           interruption: replayable
       entrypoints: [record_capture_gap_event, record_source_outage_events]
-    - path: polylogue/storage/sqlite/archive_tiers/index_fast_forward_executor.py
-      surfaces:
-        - tier: index
-          durability: rebuildable
-          interruption: replayable
-      entrypoints: [apply_index_fast_forward]
   twin_write_contracts:
     - name: raw-membership-classification
       module: polylogue/storage/sqlite/archive_tiers/revision_governance.py
@@ -249,7 +245,7 @@ rules:
     disallow:
       from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
-  - target: polylogue/insights
+  - target: polylogue/analysis
     description: "Derived insights must not import daemon/MCP/UI adapters."
     disallow:
       from: [polylogue/daemon, polylogue/mcp, polylogue/ui]
@@ -281,7 +277,7 @@ rules:
           polylogue/cli,
           polylogue/config,
           polylogue/daemon,
-          polylogue/insights,
+          polylogue/analysis,
           polylogue/maintenance,
           polylogue/mcp,
           polylogue/operations,

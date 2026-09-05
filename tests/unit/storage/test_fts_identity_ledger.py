@@ -15,9 +15,12 @@ catch that class of drift, not merely that happy-path counts agree.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import aiosqlite
 import pytest
 
 from polylogue.storage.fts.freshness import (
@@ -30,11 +33,16 @@ from polylogue.storage.fts.freshness import (
 )
 from polylogue.storage.fts.fts_lifecycle import (
     fts_invariant_snapshot_sync,
+    message_fts_readiness_sync,
+    message_fts_search_readiness_async,
+    message_fts_search_readiness_sync,
     restore_fts_triggers_sync,
 )
+from polylogue.storage.fts.session_repair import session_fts_needs_repair_sync
 from polylogue.storage.fts.sql import FTS_MESSAGES_IDENTITY_RECIPE_ID, message_identity_mismatch_sql
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.ops_write import list_fts_drift_samples, record_fts_drift_sample
+from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.identity import archive_message_id
 
 if TYPE_CHECKING:
@@ -404,6 +412,147 @@ class TestIdentityMismatchDetection:
         assert docsize_row is not None, "messages_fts row must survive -- only its ledger entry was removed"
 
         assert _identity_mismatch_count(test_conn) == 0
+
+
+class TestExactStaleSurvivesCountOnlyFallback:
+    """An exact negative verdict is authority; equal counts must not erase it.
+
+    A recorded ``stale``/``exact`` row is deliberately NOT returned as a
+    trusted readiness verdict (a stale row is a cache miss for the *positive*
+    case, polylogue-g0s6k.2), so the search path falls through to a live
+    measurement. That measurement is count-only -- ``ready = exists and
+    triggers_present and indexed_rows == total_rows`` -- and an identity
+    substitution keeps both counts equal by construction. Without an explicit
+    exact-stale branch the fallback therefore *upgrades* a proven-invalid
+    surface back to ready and search serves stale postings.
+    """
+
+    @staticmethod
+    def _identity_substituted_exact_stale(conn: sqlite3.Connection) -> None:
+        """Leave the archive with equal counts and a recorded exact-stale row."""
+        restore_fts_triggers_sync(conn)
+        block_id = _seed_block(
+            conn,
+            native_session_id="conv-exact-stale-search",
+            native_message_id="msg-exact-stale-search",
+            text="genuine current block",
+            content_hash=b"e" * 32,
+        )
+        rowid = _block_rowid(conn, block_id)
+        conn.execute(
+            "UPDATE messages_fts_identity SET block_id = 'stale:ghost:0' WHERE rowid = ?",
+            (rowid,),
+        )
+        snapshot = fts_invariant_snapshot_sync(conn)
+        assert snapshot.messages.identity_mismatch_rows == 1
+        assert snapshot.messages.source_rows == snapshot.messages.indexed_rows
+        record_fts_invariant_snapshot_sync(conn, snapshot)
+        conn.commit()
+
+    def test_count_only_fallback_would_call_this_surface_ready(self, test_conn: sqlite3.Connection) -> None:
+        """Pin the hazard itself, so the next two tests cannot pass vacuously.
+
+        If this assertion ever flips to ``False`` the count-only measurement
+        grew its own identity check and the exact-stale branch in
+        ``message_fts_search_readiness_*`` is no longer load-bearing -- delete
+        it rather than leaving two checks disagreeing.
+        """
+        self._identity_substituted_exact_stale(test_conn)
+
+        assert message_fts_readiness_sync(test_conn, verify_total_rows=True)["ready"] is True
+
+    def test_search_readiness_sync_keeps_exact_stale_verdict(self, test_conn: sqlite3.Connection) -> None:
+        """Mutation that fails this: drop the ``message_fts_recorded_exact_stale_sync``
+        branch from ``message_fts_search_readiness_sync`` -- the count-only
+        fallback then reports ``ready=True`` (pinned by the test above).
+        """
+        self._identity_substituted_exact_stale(test_conn)
+
+        readiness = message_fts_search_readiness_sync(test_conn)
+
+        assert readiness["ready"] is False
+        assert readiness["indexed_rows"] == readiness["total_rows"], (
+            "the regression only bites while counts agree -- if they diverge "
+            "here the fixture stopped reproducing the identity-substitution shape"
+        )
+
+    def test_search_readiness_async_keeps_exact_stale_verdict(self, test_db: Path) -> None:
+        """The async retrieval path must refuse on the same evidence as sync."""
+        with open_connection(test_db) as conn:
+            self._identity_substituted_exact_stale(conn)
+
+        async def _measure() -> dict[str, int | bool]:
+            async with aiosqlite.connect(test_db) as conn:
+                conn.row_factory = aiosqlite.Row
+                return await message_fts_search_readiness_async(conn)
+
+        readiness = asyncio.run(_measure())
+
+        assert readiness["ready"] is False
+        assert readiness["indexed_rows"] == readiness["total_rows"]
+
+
+class TestSessionRepairSeesIdentityDrift:
+    """Scoped repair must key on identity, not only on missing rows.
+
+    ``session_fts_needs_repair_sync`` gates the targeted repair the ingest
+    path schedules. A rowid that silently rebound to a different block leaves
+    every ``messages_fts_docsize`` row present, so the missing-blocks probe
+    alone reports the session healthy and the drift is never repaired.
+    """
+
+    def test_identity_mismatch_alone_requires_repair(self, test_conn: sqlite3.Connection) -> None:
+        """Mutation that fails this: restore the bare ``return missing_blocks > 0``
+        in ``session_fts_needs_repair_sync``.
+        """
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-session-repair-identity",
+            native_message_id="msg-session-repair-identity",
+            text="block whose ledger row will drift",
+            content_hash=b"d" * 32,
+        )
+        session_id = str(
+            test_conn.execute("SELECT session_id FROM blocks WHERE block_id = ?", (block_id,)).fetchone()[0]
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert session_fts_needs_repair_sync(test_conn, session_id) is False, (
+            "a consistent session must not be queued for repair -- otherwise "
+            "this test would pass without the identity arm"
+        )
+
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET block_id = 'stale:ghost:0' WHERE rowid = ?",
+            (rowid,),
+        )
+
+        docsize_present = test_conn.execute("SELECT 1 FROM messages_fts_docsize WHERE id = ?", (rowid,)).fetchone()
+        assert docsize_present is not None, "no row is missing -- only its identity drifted"
+        assert session_fts_needs_repair_sync(test_conn, session_id) is True
+
+    def test_stale_source_hash_requires_repair(self, test_conn: sqlite3.Connection) -> None:
+        """The ledger's ``source_hash`` arm gates repair too, not just block_id."""
+        restore_fts_triggers_sync(test_conn)
+        block_id = _seed_block(
+            test_conn,
+            native_session_id="conv-session-repair-hash",
+            native_message_id="msg-session-repair-hash",
+            text="block whose ledgered hash will drift",
+            content_hash=b"c" * 32,
+        )
+        session_id = str(
+            test_conn.execute("SELECT session_id FROM blocks WHERE block_id = ?", (block_id,)).fetchone()[0]
+        )
+        rowid = _block_rowid(test_conn, block_id)
+        assert session_fts_needs_repair_sync(test_conn, session_id) is False
+
+        test_conn.execute(
+            "UPDATE messages_fts_identity SET source_hash = ? WHERE rowid = ?",
+            (b"0" * 32, rowid),
+        )
+
+        assert session_fts_needs_repair_sync(test_conn, session_id) is True
 
 
 class TestIdentityMismatchGatesReadiness:

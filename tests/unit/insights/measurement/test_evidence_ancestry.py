@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from polylogue.insights.measurement.evidence_ancestry import (
+from polylogue.analysis.measurement.evidence_ancestry import (
     EvidenceEdge,
     EvidenceNode,
     walk_evidence_ancestry,

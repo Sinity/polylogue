@@ -2,7 +2,7 @@
 
 Defines the single source of truth for:
   - messages table structure (29 writable columns + 1 GENERATED message_id)
-  - blocks table structure (17 writable columns + 1 GENERATED block_id)
+  - blocks table structure (16 writable columns + 1 GENERATED block_id)
   - Other key tables (sessions, session_events, etc.)
 
 Each spec drives INSERT/SELECT generation and typed row extraction.
@@ -278,7 +278,7 @@ def _make_blocks_spec() -> TableColumnSpec:
     The blocks table structure (from schema):
       session_id, message_id, position, block_type, text, tool_name, tool_id,
       tool_input, semantic_type, media_type, language, tool_result_is_error,
-      tool_result_exit_code, tool_outcome, tool_result_outcome_unknown_reason, signature,
+      tool_result_exit_code, tool_result_outcome_unknown_reason, signature,
       content_hash
 
     GENERATED (not writable):
@@ -367,20 +367,39 @@ def _make_blocks_spec() -> TableColumnSpec:
 # Index-tier table specs. Each rendered table body is sourced from these
 # column definitions plus its table-level constraints; indexes, triggers,
 # and virtual tables remain in index.py because they are not row schemas.
-def _raw_column(name: str, ddl_sql: str) -> ColumnSpec:
-    return ColumnSpec(name=name, is_generated="GENERATED ALWAYS" in ddl_sql, ddl_sql=ddl_sql)
+def _raw_column(
+    name: str,
+    ddl_sql: str,
+    *,
+    record_name: str | None = None,
+    select_expression: str | None = None,
+) -> ColumnSpec:
+    """Declare a stored column and, where it has one, its record projection.
+
+    ``record_name`` is the label the record mapper consumes; a column without
+    one is storage-only and never reaches a runtime record.
+    """
+    return ColumnSpec(
+        name=name,
+        is_generated="GENERATED ALWAYS" in ddl_sql,
+        ddl_sql=ddl_sql,
+        record_name=record_name,
+        select_expression=select_expression,
+    )
 
 
 def _make_table_spec(
     table_name: str,
     columns: tuple[ColumnSpec, ...],
     *,
+    record_only_columns: tuple[ColumnSpec, ...] = (),
     table_constraints: tuple[str, ...] = (),
 ) -> TableColumnSpec:
     return TableColumnSpec(
         table_name=table_name,
         all_columns=columns,
         writable_columns=tuple(column for column in columns if not column.is_generated),
+        record_only_columns=record_only_columns,
         table_constraints=table_constraints,
     )
 
@@ -534,16 +553,23 @@ SESSIONS_SPEC = _make_table_spec(
         _raw_column(
             "session_id",
             """session_id              TEXT GENERATED ALWAYS AS (origin || ':' || native_id) STORED UNIQUE""",
+            record_name="session_id",
         ),
-        _raw_column("native_id", """native_id               TEXT NOT NULL"""),
-        _raw_column("origin", f"""origin                  TEXT NOT NULL CHECK ({check("origin", Origin)})"""),
+        _raw_column("native_id", """native_id               TEXT NOT NULL""", record_name="native_id"),
         _raw_column(
-            "parent_session_id", """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL"""
+            "origin",
+            f"""origin                  TEXT NOT NULL CHECK ({check("origin", Origin)})""",
+            record_name="origin",
+        ),
+        _raw_column(
+            "parent_session_id",
+            """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
+            record_name="parent_session_id",
         ),
         _raw_column(
             "root_session_id", """root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL"""
         ),
-        _raw_column("raw_id", """raw_id                  TEXT"""),
+        _raw_column("raw_id", """raw_id                  TEXT""", record_name="raw_id"),
         _raw_column(
             "parser_fingerprint",
             """-- Written by the parsed-session chokepoint in the same transaction as
@@ -552,13 +578,16 @@ SESSIONS_SPEC = _make_table_spec(
         ),
         _raw_column("lowering_fingerprint", """lowering_fingerprint    TEXT"""),
         _raw_column(
-            "branch_type", f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})"""
+            "branch_type",
+            f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})""",
+            record_name="branch_type",
         ),
         _raw_column("active_leaf_message_id", """active_leaf_message_id  TEXT"""),
-        _raw_column("title", """title                   TEXT"""),
+        _raw_column("title", """title                   TEXT""", record_name="title"),
         _raw_column(
             "session_kind",
             f"""session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)})""",
+            record_name="session_kind",
         ),
         _raw_column(
             "title_source",
@@ -593,6 +622,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- resolved title): this is a display label for the session's identity,
     -- not its content.
     display_name            TEXT""",
+            record_name="display_name",
         ),
         _raw_column(
             "run_settings_json",
@@ -603,6 +633,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- into typed columns would couple this schema to one provider for no
     -- query benefit; nothing here is queried across origins today.
     run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)})""",
+            record_name="run_settings_json",
         ),
         _raw_column(
             "pending_drafts_json",
@@ -617,10 +648,11 @@ SESSIONS_SPEC = _make_table_spec(
     -- and polylogue-nuec were fixed for, on a third axis (mutable session
     -- state rather than acquisition state or provider-remeasurement).
     pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)})""",
+            record_name="pending_drafts_json",
         ),
-        _raw_column("git_branch", """git_branch              TEXT"""),
-        _raw_column("git_repository_url", """git_repository_url      TEXT"""),
-        _raw_column("provider_project_ref", """provider_project_ref    TEXT"""),
+        _raw_column("git_branch", """git_branch              TEXT""", record_name="git_branch"),
+        _raw_column("git_repository_url", """git_repository_url      TEXT""", record_name="git_repository_url"),
+        _raw_column("provider_project_ref", """provider_project_ref    TEXT""", record_name="provider_project_ref"),
         _raw_column("commit_hash", """commit_hash             TEXT"""),
         _raw_column("instructions_text", """instructions_text       TEXT"""),
         _raw_column(
@@ -640,6 +672,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- table's header) -- this column is a parallel exact-dollar figure, not
     -- a token source.
     reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0)""",
+            record_name="reported_cost_usd",
         ),
         _raw_column(
             "message_count", """message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0)"""
@@ -683,12 +716,38 @@ SESSIONS_SPEC = _make_table_spec(
             "assistant_word_count",
             """assistant_word_count    INTEGER NOT NULL DEFAULT 0 CHECK(assistant_word_count >= 0)""",
         ),
-        _raw_column("content_hash", f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}"""),
-        _raw_column("created_at_ms", """created_at_ms           INTEGER"""),
-        _raw_column("updated_at_ms", """updated_at_ms           INTEGER"""),
+        _raw_column(
+            "content_hash",
+            f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}""",
+            record_name="content_hash",
+            select_expression="lower(hex({alias}.content_hash))",
+        ),
+        _raw_column(
+            "created_at_ms",
+            """created_at_ms           INTEGER""",
+            record_name="created_at",
+            select_expression="datetime({alias}.created_at_ms / 1000, 'unixepoch')",
+        ),
+        _raw_column(
+            "updated_at_ms",
+            """updated_at_ms           INTEGER""",
+            record_name="updated_at",
+            select_expression="datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
+        ),
         _raw_column(
             "sort_key_ms",
             """sort_key_ms             INTEGER GENERATED ALWAYS AS (COALESCE(updated_at_ms, created_at_ms)) STORED""",
+            record_name="sort_key",
+            select_expression="{alias}.sort_key_ms / 1000.0",
+        ),
+    ),
+    record_only_columns=(
+        ColumnSpec("metadata", record_name="metadata", select_expression="'{{}}'"),
+        ColumnSpec("version", record_name="version", select_expression="1"),
+        ColumnSpec(
+            "working_directories_json",
+            record_name="working_directories_json",
+            select_expression="(SELECT json_group_array(path) FROM session_working_dirs swd WHERE swd.session_id = {alias}.session_id ORDER BY position)",
         ),
     ),
     table_constraints=("""PRIMARY KEY(origin, native_id)""",),
@@ -935,61 +994,6 @@ SESSION_LINKS_SPEC = _make_table_spec(
         _raw_column("resolved_at_ms", """resolved_at_ms          INTEGER"""),
     ),
     table_constraints=("""PRIMARY KEY(src_session_id, dst_origin, dst_native_id, link_type)""",),
-)
-
-THREADS_SPEC = _make_table_spec(
-    "threads",
-    (
-        _raw_column(
-            "thread_id",
-            """thread_id                    TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
-        ),
-        _raw_column(
-            "dominant_repo_id", """dominant_repo_id             TEXT REFERENCES repos(repo_id) ON DELETE SET NULL"""
-        ),
-        _raw_column("materializer_version", """materializer_version         INTEGER NOT NULL DEFAULT 5"""),
-        _raw_column("materialized_at", """materialized_at              TEXT NOT NULL DEFAULT ''"""),
-        _raw_column("source_updated_at", """source_updated_at            TEXT"""),
-        _raw_column("input_high_water_mark", """input_high_water_mark        TEXT"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column(
-            "input_row_count",
-            """input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0)""",
-        ),
-        _raw_column("start_time", """start_time                   TEXT"""),
-        _raw_column("end_time", """end_time                     TEXT"""),
-        _raw_column("dominant_repo", """dominant_repo                TEXT"""),
-        _raw_column("session_ids_json", """session_ids_json             TEXT NOT NULL DEFAULT '[]'"""),
-        _raw_column(
-            "session_count", """session_count                INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0)"""
-        ),
-        _raw_column("depth", """depth                        INTEGER NOT NULL DEFAULT 0 CHECK(depth >= 0)"""),
-        _raw_column(
-            "branch_count", """branch_count                 INTEGER NOT NULL DEFAULT 0 CHECK(branch_count >= 0)"""
-        ),
-        _raw_column(
-            "total_messages", """total_messages               INTEGER NOT NULL DEFAULT 0 CHECK(total_messages >= 0)"""
-        ),
-        _raw_column("total_cost_usd", """total_cost_usd               REAL NOT NULL DEFAULT 0.0"""),
-        _raw_column(
-            "wall_duration_ms",
-            """wall_duration_ms             INTEGER NOT NULL DEFAULT 0 CHECK(wall_duration_ms >= 0)""",
-        ),
-        _raw_column("work_event_breakdown_json", """work_event_breakdown_json    TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("payload_json", """payload_json                 TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("search_text", """search_text                  TEXT NOT NULL DEFAULT ''"""),
-        _raw_column("created_at_ms", """created_at_ms                INTEGER NOT NULL DEFAULT 0"""),
-    ),
-)
-
-THREAD_SESSIONS_SPEC = _make_table_spec(
-    "thread_sessions",
-    (
-        _raw_column("thread_id", """thread_id    TEXT NOT NULL REFERENCES threads(thread_id) ON DELETE CASCADE"""),
-        _raw_column("session_id", """session_id   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"""),
-        _raw_column("position", """position     INTEGER NOT NULL CHECK(position >= 0)"""),
-    ),
-    table_constraints=("""PRIMARY KEY(thread_id, session_id)""",),
 )
 
 SESSION_WORKING_DIRS_SPEC = _make_table_spec(
@@ -1288,33 +1292,6 @@ SESSION_TAGS_SPEC = _make_table_spec(
         _raw_column("evidence_json", """evidence_json TEXT"""),
     ),
     table_constraints=("""PRIMARY KEY(session_id, tag, tag_source)""",),
-)
-
-INSIGHT_MATERIALIZATION_SPEC = _make_table_spec(
-    "insight_materialization",
-    (
-        _raw_column(
-            "insight_type",
-            """insight_type                 TEXT NOT NULL CHECK(insight_type IN (
-                                    'session_profile', 'work_events', 'phases', 'latency', 'thread',
-                                    'runs', 'observed_events', 'context_snapshots', 'provider_usage'))""",
-        ),
-        _raw_column(
-            "session_id",
-            """session_id                   TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE""",
-        ),
-        _raw_column("materializer_version", """materializer_version         INTEGER NOT NULL"""),
-        _raw_column("materialized_at_ms", """materialized_at_ms           INTEGER NOT NULL"""),
-        _raw_column("source_updated_at_ms", """source_updated_at_ms         INTEGER"""),
-        _raw_column("source_sort_key_ms", """source_sort_key_ms           INTEGER"""),
-        _raw_column("input_high_water_mark_ms", """input_high_water_mark_ms     INTEGER"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column(
-            "input_row_count",
-            """input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0)""",
-        ),
-    ),
-    table_constraints=("""PRIMARY KEY(insight_type, session_id)""",),
 )
 
 SESSION_WORK_EVENTS_SPEC = _make_table_spec(
@@ -1617,6 +1594,7 @@ DELEGATION_REFRESH_SCOPE_SPEC = _make_table_spec(
     (_raw_column("parent_session_id", """parent_session_id TEXT PRIMARY KEY"""),),
 )
 
+
 DERIVED_REFRESH_GUARD_SPEC = _make_table_spec(
     "derived_refresh_guard",
     (_raw_column("guard_name", """guard_name TEXT PRIMARY KEY"""),),
@@ -1690,55 +1668,6 @@ WORK_EVIDENCE_EDGES_SPEC = _make_table_spec(
     ),
 )
 
-SESSION_TAG_ROLLUPS_SPEC = _make_table_spec(
-    "session_tag_rollups",
-    (
-        _raw_column("tag", """tag                          TEXT NOT NULL"""),
-        _raw_column("bucket_day", """bucket_day                   TEXT NOT NULL"""),
-        _raw_column("source_name", """source_name                  TEXT NOT NULL"""),
-        _raw_column("materializer_version", """materializer_version         INTEGER NOT NULL DEFAULT 5"""),
-        _raw_column("materialized_at", """materialized_at              TEXT NOT NULL"""),
-        _raw_column("source_updated_at", """source_updated_at            TEXT"""),
-        _raw_column("source_sort_key", """source_sort_key              REAL"""),
-        _raw_column("input_high_water_mark", """input_high_water_mark        TEXT"""),
-        _raw_column("input_high_water_mark_source", """input_high_water_mark_source TEXT"""),
-        _raw_column(
-            "input_row_count",
-            """input_row_count              INTEGER NOT NULL DEFAULT 0 CHECK(input_row_count >= 0)""",
-        ),
-        _raw_column(
-            "session_count", """session_count                INTEGER NOT NULL DEFAULT 0 CHECK(session_count >= 0)"""
-        ),
-        _raw_column(
-            "logical_session_count",
-            """logical_session_count        INTEGER NOT NULL DEFAULT 0 CHECK(logical_session_count >= 0)""",
-        ),
-        _raw_column("logical_session_ids_json", """logical_session_ids_json     TEXT NOT NULL DEFAULT '[]'"""),
-        _raw_column(
-            "explicit_count", """explicit_count               INTEGER NOT NULL DEFAULT 0 CHECK(explicit_count >= 0)"""
-        ),
-        _raw_column("auto_count", """auto_count                   INTEGER NOT NULL DEFAULT 0 CHECK(auto_count >= 0)"""),
-        _raw_column("repo_breakdown_json", """repo_breakdown_json          TEXT NOT NULL DEFAULT '{}'"""),
-        _raw_column("search_text", """search_text                  TEXT NOT NULL DEFAULT ''"""),
-    ),
-    table_constraints=("""PRIMARY KEY(tag, bucket_day, source_name)""",),
-)
-
-AGENT_META_SIDECAR_PURGE_RECEIPTS_SPEC = _make_table_spec(
-    "agent_meta_sidecar_purge_receipts",
-    (
-        _raw_column("session_id", """session_id           TEXT PRIMARY KEY"""),
-        _raw_column("origin", """origin               TEXT NOT NULL"""),
-        _raw_column("native_id", """native_id            TEXT NOT NULL"""),
-        _raw_column("raw_id", """raw_id               TEXT NOT NULL"""),
-        _raw_column("source_path", """source_path          TEXT NOT NULL"""),
-        _raw_column("purged_at_ms", """purged_at_ms         INTEGER NOT NULL CHECK(purged_at_ms >= 0)"""),
-        _raw_column("tool_version", """tool_version         TEXT NOT NULL"""),
-        _raw_column("backup_manifest_path", """backup_manifest_path TEXT NOT NULL"""),
-        _raw_column("detail", """detail               TEXT NOT NULL DEFAULT ''"""),
-    ),
-)
-
 INDEX_TABLE_SPECS = {
     "fts_freshness_state": FTS_FRESHNESS_STATE_SPEC,
     "query_unit_frame_state": QUERY_UNIT_FRAME_STATE_SPEC,
@@ -1752,8 +1681,6 @@ INDEX_TABLE_SPECS = {
     "session_events": SESSION_EVENTS_SPEC,
     "session_agent_policies": SESSION_AGENT_POLICIES_SPEC,
     "session_links": SESSION_LINKS_SPEC,
-    "threads": THREADS_SPEC,
-    "thread_sessions": THREAD_SESSIONS_SPEC,
     "session_working_dirs": SESSION_WORKING_DIRS_SPEC,
     "repos": REPOS_SPEC,
     "repo_checkouts": REPO_CHECKOUTS_SPEC,
@@ -1766,7 +1693,6 @@ INDEX_TABLE_SPECS = {
     "session_model_usage": SESSION_MODEL_USAGE_SPEC,
     "session_provider_usage_events": SESSION_PROVIDER_USAGE_EVENTS_SPEC,
     "session_tags": SESSION_TAGS_SPEC,
-    "insight_materialization": INSIGHT_MATERIALIZATION_SPEC,
     "session_work_events": SESSION_WORK_EVENTS_SPEC,
     "session_phases": SESSION_PHASES_SPEC,
     "session_latency_profiles": SESSION_LATENCY_PROFILES_SPEC,
@@ -1777,8 +1703,6 @@ INDEX_TABLE_SPECS = {
     "work_evidence_graphs": WORK_EVIDENCE_GRAPHS_SPEC,
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,
-    "session_tag_rollups": SESSION_TAG_ROLLUPS_SPEC,
-    "agent_meta_sidecar_purge_receipts": AGENT_META_SIDECAR_PURGE_RECEIPTS_SPEC,
 }
 
 

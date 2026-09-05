@@ -149,6 +149,7 @@ from polylogue.core.timestamp_authority import (
 )
 from polylogue.pipeline.ids import SessionRevisionProjection, session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
+from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
 from polylogue.storage.fts.session_repair import repair_session_fts_if_needed_sync
@@ -189,7 +190,11 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     PreparedSessionRows,
+    _event_summary,
+    _json_dumps,
+    _next_session_event_position,
     _repair_stale_session_observations,
+    _timestamp_ms,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
@@ -224,6 +229,13 @@ class FrozenSourceRemediationRequiredError(RuntimeError):
 def _is_frozen_candidate(store: RawRevisionGovernanceHost) -> bool:
     """Return whether this host is the owned inactive-generation adapter."""
     return bool(getattr(store, "_inactive_candidate_durable_read_only", False))
+
+
+def _policy_snapshot_for_store(store: RawRevisionGovernanceHost) -> ExcisionPolicySnapshot | None:
+    archive_root = getattr(store, "archive_root", None)
+    if archive_root is None:
+        return None
+    return build_excision_policy_snapshot(Path(archive_root))
 
 
 class RawRevisionGovernanceHost(Protocol):
@@ -654,6 +666,7 @@ def write_raw_payload(
     would normalize away. Treat a NEW production caller of this branch as a
     chokepoint bypass, not as precedent.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -677,6 +690,7 @@ def write_raw_payload(
             post_parse=True,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse raw admission arm: {admission.arm!r}")
@@ -700,6 +714,7 @@ def write_raw_payload(
             baseline_revision=revision,
             blob_publication_receipt_id=blob_publication_receipt_id,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         return admission.raw_id
     return write_source_raw_session(
@@ -716,6 +731,7 @@ def write_raw_payload(
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
 
 
@@ -741,6 +757,7 @@ def write_raw_blob_ref(
     surveyed fixture-seeding path rather than a migrated admission route
     (polylogue-1fijp); the only caller reaching it here is test infrastructure.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     if post_parse:
@@ -758,6 +775,7 @@ def write_raw_blob_ref(
             file_mtime_ms=file_mtime_ms,
             raw_id=raw_id,
             blob_publication_receipt_id=blob_publication_receipt_id,
+            policy_snapshot=policy_snapshot,
         )
         if admission.arm is not RawAdmissionArm.POST_PARSE_PENDING:
             raise RuntimeError(f"unexpected post-parse blob admission arm: {admission.arm!r}")
@@ -776,6 +794,7 @@ def write_raw_blob_ref(
         blob_publication_receipt_id=blob_publication_receipt_id,
         revision=revision,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
 
 
@@ -804,6 +823,7 @@ def admit_raw_artifact_payload(
     ledger; ``raw_artifacts.raw_id`` has a NOT NULL FK to it), but this arm
     guarantees the payload never reaches any index-tier writer.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is None:
         raise RuntimeError("raw archive writes require a writable archive publisher")
     if blob_publication_receipt_id is None:
@@ -826,6 +846,7 @@ def admit_raw_artifact_payload(
         artifact=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
     with store._ensure_source_conn():
         record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
@@ -847,6 +868,7 @@ def admit_raw_artifact_blob_ref(
     blob_publication_receipt_id: str | None = None,
 ) -> RawAdmissionResult:
     """Admit a prepublished non-session artifact without a pending envelope."""
+    policy_snapshot = _policy_snapshot_for_store(store)
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
     result = admit_raw_artifact_blob_observation(
@@ -862,6 +884,7 @@ def admit_raw_artifact_blob_ref(
         raw_id=raw_id,
         classification=classification,
         blob_publication_receipt_id=blob_publication_receipt_id,
+        policy_snapshot=policy_snapshot,
     )
     with store._ensure_source_conn():
         record_current_parser_source_census(store._ensure_source_conn(), result.raw_id)
@@ -1232,8 +1255,6 @@ def _raw_revision_source_path_has_divergent_evidence(store: RawRevisionGovernanc
 def classify_raw_revision_cohort_for_rebuild_repair(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
-    *,
-    manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the offline rebuild/backfill repair path.
 
@@ -1249,21 +1270,28 @@ def classify_raw_revision_cohort_for_rebuild_repair(
     watcher -- see ``classify_raw_revision_cohort_for_live_watch`` for why
     the same guard is unsound there.
 
-    ``manage_transaction=False`` (polylogue batched-rebuild path) leaves the
-    classification's ``raw_sessions`` authority updates uncommitted in the
-    caller's open batch window instead of committing per cohort. This is
-    safe under the same contract as the census batching: classification is
-    derived purely from durable raw bytes and re-derives identically on a
-    resumed pass, so a crash that discards an uncommitted batch loses no
-    authority evidence -- the resume re-classifies the same cohorts from
-    scratch. The follow-up ``raw_revision_replay_plan`` read runs on the
-    SAME source connection and sees the uncommitted updates.
+    This entry point owns the source transaction. Batch rebuilds use the
+    explicitly caller-owned ``*_in_transaction`` variant below.
     """
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
         check_source_path_identity_split=True,
-        manage_transaction=manage_transaction,
+        manage_transaction=True,
+        source_effects=True,
+    )
+
+
+def classify_raw_revision_cohort_for_rebuild_repair_in_transaction(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+) -> RevisionReplayPlan:
+    """Classify one rebuild cohort inside the caller's open source transaction."""
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=True,
+        manage_transaction=False,
         source_effects=True,
     )
 
@@ -1285,8 +1313,6 @@ def classify_raw_revision_cohort_for_frozen_candidate(
 def classify_raw_revision_cohort_for_live_watch(
     store: RawRevisionGovernanceHost,
     logical_source_key: str,
-    *,
-    manage_transaction: bool = True,
 ) -> RevisionReplayPlan:
     """Classify a cohort for the live incremental-watch path.
 
@@ -1300,14 +1326,28 @@ def classify_raw_revision_cohort_for_live_watch(
     et al.). Applying the rebuild-repair guard here would wrongly quarantine
     that legitimate replacement as "divergent evidence".
 
-    See ``classify_raw_revision_cohort_for_rebuild_repair`` for the
-    ``manage_transaction`` contract.
+    This entry point owns the source transaction. A caller that already owns
+    the transaction uses the explicitly named ``*_in_transaction`` variant.
     """
     return _classify_raw_revision_cohort(
         store,
         logical_source_key,
         check_source_path_identity_split=False,
-        manage_transaction=manage_transaction,
+        manage_transaction=True,
+        source_effects=True,
+    )
+
+
+def classify_raw_revision_cohort_for_live_watch_in_transaction(
+    store: RawRevisionGovernanceHost,
+    logical_source_key: str,
+) -> RevisionReplayPlan:
+    """Classify one live-watch cohort inside the caller's open transaction."""
+    return _classify_raw_revision_cohort(
+        store,
+        logical_source_key,
+        check_source_path_identity_split=False,
+        manage_transaction=False,
         source_effects=True,
     )
 
@@ -2786,10 +2826,20 @@ def _reconcile_chain_summary_events(
     session_id: str,
     aggregate: ParsedSession,
 ) -> None:
-    """Leave one whole-input summary row per type, carrying the chain's totals."""
-    for event_type in _CHAIN_SUMMARY_EVENT_TYPES:
-        composed = [event for event in aggregate.session_events if event.event_type == event_type]
-        if not composed:
+    """Store each whole-input summary event as the chain's content hash describes it.
+
+    ``merge_parsed_session_chunks`` reduces a declared summary type to one
+    event carrying the chain's totals, the chain's newest timestamp, and a
+    slot after every point-in-conversation event; that reduction is what
+    ``aggregate_content_hash`` covers. A tail-only write appends the newly
+    accepted chunk's own events and leaves the prefix's chunk-local row
+    where it is, so reduce the stored row on all three axes. Iterating the
+    aggregate's own event order keeps two summary types in the order the
+    reduction gave them.
+    """
+    for composed in aggregate.session_events:
+        event_type = composed.event_type
+        if event_type not in _CHAIN_SUMMARY_EVENT_TYPES:
             continue
         positions = [
             int(row[0])
@@ -2805,9 +2855,16 @@ def _reconcile_chain_summary_events(
             (session_id, event_type, positions[-1]),
         )
         store._conn.execute(
-            "UPDATE session_events SET payload_json = ? WHERE session_id = ? AND event_type = ? AND position = ?",
+            """
+            UPDATE session_events
+               SET payload_json = ?, summary = ?, occurred_at_ms = ?, position = ?
+             WHERE session_id = ? AND event_type = ? AND position = ?
+            """,
             (
-                json.dumps(composed[-1].payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                _json_dumps(composed.payload),
+                _event_summary(composed) or "",
+                _timestamp_ms(composed.timestamp),
+                _next_session_event_position(store._conn, session_id),
                 session_id,
                 event_type,
                 positions[-1],
@@ -4030,6 +4087,7 @@ def write_raw_and_parsed_result(
     only the rebuildable index write; holding a source transaction across
     worker results would block the next pre-publication reservation.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is not None:
@@ -4067,6 +4125,7 @@ def write_raw_and_parsed_result(
         blob_publication_receipt_id=blob_publication_receipt_id,
         additional_blob_refs=attachment_blob_refs,
         manage_transaction=True,
+        policy_snapshot=policy_snapshot,
     )
     if admission.arm is not RawAdmissionArm.BASELINE:
         raise RuntimeError(f"unexpected baseline raw admission arm: {admission.arm!r}")
@@ -4137,6 +4196,7 @@ def admit_raw_and_parsed_result(
     own raw write, so this function creates no ``raw_sessions`` row outside
     the chokepoint on either branch.
     """
+    policy_snapshot = _policy_snapshot_for_store(store)
 
     def add_timing(name: str, started_at: float) -> None:
         if stage_timings_s is not None:
@@ -4174,6 +4234,7 @@ def admit_raw_and_parsed_result(
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         resolved_raw_id = admission.raw_id
         if admission.arm is not RawAdmissionArm.SHARED_GROUPED:
@@ -4198,6 +4259,7 @@ def admit_raw_and_parsed_result(
             blob_publication_receipt_id=blob_publication_receipt_id,
             additional_blob_refs=attachment_blob_refs,
             manage_transaction=True,
+            policy_snapshot=policy_snapshot,
         )
         resolved_raw_id = admission.raw_id
         if admission.arm is not RawAdmissionArm.BASELINE:

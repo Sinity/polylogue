@@ -67,6 +67,16 @@ def table_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -
     return cursor.fetchone() is not None
 
 
+def relation_exists(conn: sqlite3.Connection, name: str, *, schema: str = "main") -> bool:
+    """Check if a table or view exists in the given schema."""
+    cursor = conn.execute(
+        f"SELECT 1 FROM {_schema_prefix(schema=schema)}sqlite_master "
+        "WHERE type IN ('table', 'view') AND name=? LIMIT 1",
+        (name,),
+    )
+    return cursor.fetchone() is not None
+
+
 async def table_exists_async(conn: aiosqlite.Connection, name: str, *, schema: str = "main") -> bool:
     """Check if a table exists in the given schema (async SQLite).
 

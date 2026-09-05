@@ -6,3 +6,5 @@ rules:
   - {id: nullable-measurement-coercion, rule: nullable-measurement-coercion.yml, baseline: baselines/nullable-measurement-coercion.txt, owner: trmhh, status: pending}
   - {id: raw-subprocess-write, rule: raw-subprocess-write.yml, baseline: baselines/raw-subprocess-write.txt, owner: 0oyqi/ok65v/fhikb, status: pending}
   - {id: connection-lifecycle, rule: connection-lifecycle.yml, baseline: baselines/connection-lifecycle.txt, owner: a7xr.1/zqe52, status: pending}
+  - {id: no-session-insight-ready-flag, rule: no-session-insight-ready-flag.yml, baseline: baselines/no-session-insight-ready-flag.txt, owner: polylogue-ajxy4, status: enforcing}
+  - {id: no-insight-readiness-verdict, rule: no-insight-readiness-verdict.yml, baseline: baselines/no-insight-readiness-verdict.txt, owner: polylogue-ajxy4, status: enforcing}

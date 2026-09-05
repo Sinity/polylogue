@@ -9,7 +9,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.daemon import web_shell, web_shell_realtime
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_COOKIE,
     WebCredentialBootstrapPayload,
@@ -303,17 +302,3 @@ def test_cookie_and_origin_helpers_reject_authority_confusion() -> None:
     header = credential_cookie("opaque-value", ttl_s=30)
     assert read_web_credential_cookie(header) == "opaque-value"
     assert read_web_credential_cookie("not a valid cookie; =") is None
-
-
-def test_current_shell_consumes_shared_cookie_contract_without_url_secret() -> None:
-    html = web_shell.WEB_SHELL_HTML
-    realtime = web_shell_realtime.REALTIME_JS
-
-    assert "fetch('/api/web-auth/session'" in html
-    assert "credentials: 'same-origin'" in html
-    assert "X-Polylogue-Web-Client" in html
-    assert "WEB_AUTH_FAILURES" in html
-    assert "new EventSource(url, {withCredentials: true})" in realtime
-    assert "bootstrapWebCredential()" in realtime
-    assert "access_token" not in realtime
-    assert "access_token" not in html
