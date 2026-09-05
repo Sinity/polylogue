@@ -223,19 +223,41 @@ def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:
     return snapshot_testmon_graph(source, destination)
 
 
+def should_seed(root: Path, seed: Path) -> bool:
+    """Whether the seed would back a better run than the checkout's own graph.
+
+    A checkout that keeps its datafile between runs accumulates fingerprints
+    the seed does not have, so a usable local graph is never replaced with a
+    seed that would select the same or re-execute more. The seed wins only
+    when the local graph is absent or unusable, or when the local graph would
+    force a full re-execution and the seed would not.
+    """
+    local = inspect_testmon_graph(root)
+    if not local.usable:
+        return True
+    if local.full_rerun_cause is None:
+        return False
+    with tempfile.TemporaryDirectory(prefix="testmon-seed-") as scratch:
+        probe_root = Path(scratch)
+        if not snapshot_testmon_graph(seed, testmon_datafile(probe_root)):
+            return False
+        candidate = inspect_testmon_graph(probe_root)
+    return candidate.usable and candidate.full_rerun_cause is None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Report the provisioned testmon datafile, discarding a broken one.")
     parser.add_argument("--json", action="store_true", help="emit a machine-readable result")
     parser.add_argument(
         "--seed",
         metavar="DATAFILE",
-        help="snapshot this datafile into the checkout before inspecting it",
+        help="snapshot this datafile into the checkout when the checkout's own graph is absent, broken, or would re-execute everything while the seed would select",
     )
     args = parser.parse_args(argv)
 
     root = Path(os.getcwd()).resolve()
     seeded = False
-    if args.seed:
+    if args.seed and should_seed(root, Path(args.seed)):
         seeded = snapshot_testmon_graph(Path(args.seed), testmon_datafile(root))
     state = inspect_testmon_graph(root)
     # A broken copy is worse than none: an absent datafile reseeds on the next
