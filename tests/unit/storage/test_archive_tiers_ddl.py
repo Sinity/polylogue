@@ -276,6 +276,8 @@ def test_action_pairs_does_not_materialize_text_copies(tmp_path: Path) -> None:
         "tool_result_block_id",
         "is_error",
         "exit_code",
+        "tool_outcome",
+        "outcome_unknown_reason",
     }
 
 
@@ -489,28 +491,28 @@ def test_actions_view_never_cross_pairs_empty_string_tool_id(tmp_path: Path) -> 
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 0, "tool_use", "shell", "", '{"command": "unlinked-1"}'),
+        (message_id, session_id, 0, "tool_use", "shell", "", '{"command": "unlinked-1"}', "no_result"),
     )
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, tool_name, tool_id, tool_input
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 1, "tool_use", "shell", "", '{"command": "unlinked-2"}'),
+        (message_id, session_id, 1, "tool_use", "shell", "", '{"command": "unlinked-2"}', "no_result"),
     )
     # An empty-string tool_result too -- if the guard were missing, this could
     # cross-pair with EITHER use above since both share tool_id=''.
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id
-        ) VALUES (?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, text, tool_id, tool_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 2, "tool_result", "unrelated output", ""),
+        (message_id, session_id, 2, "tool_result", "unrelated output", "", "ok"),
     )
 
     actions = conn.execute(
@@ -549,41 +551,59 @@ def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) 
     message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
         "message_id"
     ]
-    for position, tool_id, command in (
-        (0, "unknown", "unknown-outcome"),
-        (1, "success", "successful"),
-        (2, "error", "failed"),
-        (3, "absent", "no-result"),
+    for position, tool_id, command, outcome in (
+        (0, "unknown", "unknown-outcome", "unknown"),
+        (1, "success", "successful", "ok"),
+        (2, "error", "failed", "error"),
+        (3, "absent", "no-result", "no_result"),
+        (4, "distrusted", "distrusted-exit-code", "unknown"),
     ):
         conn.execute(
             """
-            INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id, tool_input)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_name, tool_id, tool_input, tool_outcome
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (message_id, session_id, position, "tool_use", "shell", tool_id, f'{{"command": "{command}"}}'),
+            (message_id, session_id, position, "tool_use", "shell", tool_id, f'{{"command": "{command}"}}', outcome),
         )
     conn.execute(
         """
-        INSERT INTO blocks (message_id, session_id, position, block_type, text, tool_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id, tool_outcome,
+            tool_result_outcome_unknown_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 4, "tool_result", "provider omitted outcome", "unknown"),
+        (message_id, session_id, 5, "tool_result", "provider omitted outcome", "unknown", "unknown", "not_reported"),
     )
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
+            tool_result_exit_code, tool_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 5, "tool_result", "success", "success", 0, 0),
+        (message_id, session_id, 6, "tool_result", "success", "success", 0, 0, "ok"),
     )
     conn.execute(
         """
         INSERT INTO blocks (
-            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error, tool_result_exit_code
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
+            tool_result_exit_code, tool_outcome
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (message_id, session_id, 6, "tool_result", "error", "error", 1, 2),
+        (message_id, session_id, 7, "tool_result", "error", "error", 1, 2, "error"),
+    )
+    # A provider exit code the parser deliberately refused to trust. The legacy
+    # compatibility columns still carry the wire values; the canonical outcome
+    # says unknown, and the view must report the canonical answer.
+    conn.execute(
+        """
+        INSERT INTO blocks (
+            message_id, session_id, position, block_type, text, tool_id, tool_result_is_error,
+            tool_result_exit_code, tool_outcome, tool_result_outcome_unknown_reason
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (message_id, session_id, 8, "tool_result", "sentinel", "distrusted", None, 0, "unknown", "distrusted"),
     )
 
     rows = conn.execute(
@@ -592,15 +612,83 @@ def test_actions_view_distinguishes_result_presence_and_outcome(tmp_path: Path) 
     ).fetchall()
 
     assert [dict(row) for row in rows] == [
-        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_error"},
+        {
+            "tool_command": "distrusted-exit-code",
+            "tool_result_block_id": f"{message_id}:8",
+            "result_state": "outcome_unknown",
+        },
+        {"tool_command": "failed", "tool_result_block_id": f"{message_id}:7", "result_state": "outcome_error"},
         {"tool_command": "no-result", "tool_result_block_id": None, "result_state": "no_result"},
-        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:5", "result_state": "outcome_success"},
+        {"tool_command": "successful", "tool_result_block_id": f"{message_id}:6", "result_state": "outcome_success"},
         {
             "tool_command": "unknown-outcome",
-            "tool_result_block_id": f"{message_id}:4",
+            "tool_result_block_id": f"{message_id}:5",
             "result_state": "outcome_unknown",
         },
     ]
+
+
+def test_blocks_reject_an_unknown_outcome_without_a_structural_reason(tmp_path: Path) -> None:
+    """An unknown tool_result outcome is only admissible with a typed reason for
+    it, and no other block shape may carry one.
+
+    Anti-vacuity: dropping the ``blocks`` tuple-law CHECK lets every parametrized
+    row below insert, which is exactly the shape that left 426,318 rows in the
+    old index recording an unknown outcome with no reason at all.
+    """
+    conn = _connect(tmp_path / "index.db")
+    _apply_tier(conn, ArchiveTier.INDEX)
+    conn.execute(
+        """
+        INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        ("tuple-law-session", "codex-session", "Tuple law", _HASH, 1_767_225_600_000, 1_767_225_601_000),
+    )
+    session_id = conn.execute("SELECT session_id FROM sessions WHERE native_id = ?", ("tuple-law-session",)).fetchone()[
+        "session_id"
+    ]
+    conn.execute(
+        """
+        INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash, occurred_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (session_id, "message", 0, "assistant", "message", _HASH, 1_767_225_600_000),
+    )
+    message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,)).fetchone()[
+        "message_id"
+    ]
+
+    def insert(position: int, block_type: str, outcome: str | None, reason: str | None) -> None:
+        conn.execute(
+            """
+            INSERT INTO blocks (
+                message_id, session_id, position, block_type, tool_id, tool_outcome,
+                tool_result_outcome_unknown_reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (message_id, session_id, position, block_type, "tool-1", outcome, reason),
+        )
+
+    refused = [
+        # An unknown result outcome with no reason at all.
+        (0, "tool_result", "unknown", None),
+        # A known result outcome carrying a reason it has no use for.
+        (1, "tool_result", "ok", "not_reported"),
+        # The reason on a shape that does not own it: the use block mirrors its
+        # result's outcome, but the missing signal belongs to the result.
+        (2, "tool_use", "unknown", "not_reported"),
+        # A reason on a block that records no tool outcome at all.
+        (3, "text", None, "not_reported"),
+    ]
+    for position, block_type, outcome, reason in refused:
+        with pytest.raises(sqlite3.IntegrityError):
+            insert(position, block_type, outcome, reason)
+
+    # The two admissible shapes the law is written to keep.
+    insert(4, "tool_result", "unknown", "distrusted")
+    insert(5, "tool_use", "unknown", None)
+    assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (session_id,)).fetchone()[0] == 2
 
 
 def test_archive_tiers_user_ops_and_embeddings_do_not_reference_index_tables() -> None:

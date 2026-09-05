@@ -456,7 +456,14 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # refuses. SEMANTIC_REPARSE: parents materialized under v93 carry no
 # observation for result-only dispatches (the live wire shape), so the join
 # key cannot be derived from stored rows.
-INDEX_SCHEMA_VERSION = 94
+# polylogue-rh0sr: v95 makes the canonical tool outcome structural. ``blocks``
+# enforces the tuple law (an unknown tool_result outcome carries exactly one
+# typed reason; every other block shape carries none), ``action_pairs`` stores
+# the outcome and that reason, and the ``actions`` view derives ``result_state``
+# from the canonical column instead of the legacy is_error/exit_code pair.
+# No raw session is reparsed: the two new pair columns are copied from block
+# rows the archive already stores, so repopulating action pairs is enough.
+INDEX_SCHEMA_VERSION = 95
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -852,12 +859,16 @@ SELECT
     ap.session_id, ap.message_id, ap.tool_use_block_id, ap.tool_name, ap.semantic_type,
     ap.tool_command, ap.tool_path, tu.tool_input AS tool_input, tr.text AS output_text,
     ap.is_error, ap.exit_code, ap.tool_result_block_id,
-    CASE
-        WHEN ap.tool_result_block_id IS NULL THEN 'no_result'
-        WHEN ap.is_error IS NULL AND ap.exit_code IS NULL THEN 'outcome_unknown'
-        WHEN ap.exit_code IS NOT NULL AND ap.exit_code != 0 THEN 'outcome_error'
-        WHEN ap.exit_code IS NULL AND ap.is_error = 1 THEN 'outcome_error'
-        ELSE 'outcome_success'
+    ap.outcome_unknown_reason,
+    -- ``blocks.tool_outcome`` is the canonical structural outcome; the legacy
+    -- ``is_error``/``exit_code`` pair stays exposed for compatibility but no
+    -- longer decides the state, so a deliberately distrusted result cannot be
+    -- read back as a success through a provider exit code the parser refused.
+    CASE ap.tool_outcome
+        WHEN 'no_result' THEN 'no_result'
+        WHEN 'unknown' THEN 'outcome_unknown'
+        WHEN 'error' THEN 'outcome_error'
+        WHEN 'ok' THEN 'outcome_success'
     END AS result_state
 FROM action_pairs ap
 JOIN blocks tu ON tu.block_id = ap.tool_use_block_id

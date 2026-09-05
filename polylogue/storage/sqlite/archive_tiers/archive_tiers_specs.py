@@ -360,7 +360,20 @@ def _make_blocks_spec() -> TableColumnSpec:
         all_columns=all_columns,
         writable_columns=writable_columns,
         record_only_columns=record_columns,
-        table_constraints=("PRIMARY KEY(message_id, position)",),
+        table_constraints=(
+            "PRIMARY KEY(message_id, position)",
+            # An unknown structural outcome is only honest with a reason for it.
+            # The reason describes a tool_result's missing outcome, so it may
+            # appear on no other block shape: a tool_use mirrors its result's
+            # outcome but the reason stays on the result that lacks the signal.
+            """CHECK (
+        CASE
+            WHEN block_type = 'tool_result' AND tool_outcome = 'unknown'
+                THEN tool_result_outcome_unknown_reason IS NOT NULL
+            ELSE tool_result_outcome_unknown_reason IS NULL
+        END
+    )""",
+        ),
     )
 
 
@@ -865,6 +878,11 @@ ACTION_PAIRS_SPEC = _make_table_spec(
         ),
         _raw_column("is_error", """is_error               INTEGER CHECK(is_error IN (0, 1) OR is_error IS NULL)"""),
         _raw_column("exit_code", """exit_code              INTEGER"""),
+        # Canonical outcome, copied from the tool_use block that owns this pair.
+        # ``is_error``/``exit_code`` above stay as the legacy compatibility
+        # projection; readers take the outcome from here.
+        _raw_column("tool_outcome", """tool_outcome           TEXT"""),
+        _raw_column("outcome_unknown_reason", """outcome_unknown_reason TEXT"""),
     ),
     table_constraints=("""FOREIGN KEY(message_id) REFERENCES messages(message_id) ON DELETE CASCADE""",),
 )
