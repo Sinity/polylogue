@@ -32,6 +32,28 @@ class TestLegacyCompactionDetection:
         assert result["timestamp"] == "2024-01-01T10:00:00Z"
         assert result["is_modern"] is False
 
+    def test_wire_shape_carries_the_summary_at_the_top_level(self) -> None:
+        """The record Claude Code actually writes has no ``message`` envelope.
+
+        Every ``type: "summary"`` record in the operator's transcripts is
+        ``{"type", "summary", "leafUuid"}`` — the summary text sits beside
+        ``leafUuid``, not under ``message.content``. Reading only the envelope
+        returned "" for all of them, so no summary message was materialized and
+        the compaction event recorded no boundary message.
+
+        Anti-vacuity: drop the top-level lookup from ``_summary_text`` and this
+        summary reads back empty.
+        """
+        item = {
+            "type": "summary",
+            "summary": "Git Status Check: No Changes Detected",
+            "leafUuid": "096d0e4b-60c1-4835-9d7f-9de5bae08817",
+        }
+        result = detect_context_compaction(item)
+        assert result is not None
+        assert result["summary"] == "Git Status Check: No Changes Detected"
+        assert result["is_modern"] is False
+
     def test_summary_with_content_blocks(self) -> None:
         item = {
             "type": "summary",
@@ -254,6 +276,52 @@ class TestClaudeCodeAcompactClassification:
 
 
 class TestClaudeCodeParserSessionEvents:
+    def test_wire_shape_summary_becomes_a_boundary_message(self) -> None:
+        """A compaction event is only usable if it names its summary message.
+
+        ``get_effective_context`` returns ``[summary] + post-boundary``, so an
+        event with a boundary range but no ``boundary_message_position`` cannot
+        distinguish what the model saw from the full composed prefix. With the
+        real wire shape the parser must both materialize the summary message
+        and point the event at it.
+
+        Anti-vacuity: without the top-level summary lookup the text is empty,
+        the parser records ``boundary_message_position=None``, and the summary
+        message carries no blocks — which is what the whole live Claude Code
+        cohort looks like today.
+        """
+        payload: list[object] = [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2024-01-01T10:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "summary",
+                "summary": "Replaced the earlier context with this recap.",
+                "leafUuid": "096d0e4b-60c1-4835-9d7f-9de5bae08817",
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "timestamp": "2024-01-01T10:10:00Z",
+                "message": {"role": "assistant", "content": "response"},
+            },
+        ]
+
+        result = parse_code(payload, "wire-shape-session")
+
+        assert len(result.session_events) == 1
+        event = result.session_events[0]
+        assert event.payload["summary"] == "Replaced the earlier context with this recap."
+        assert event.boundary_message_position is not None
+        summary_message = next(
+            message for message in result.messages if message.position == event.boundary_message_position
+        )
+        assert summary_message.text == "Replaced the earlier context with this recap."
+        assert [block.text for block in summary_message.blocks] == ["Replaced the earlier context with this recap."]
+
     def test_legacy_compaction_emits_session_event(self) -> None:
         payload: list[object] = [
             {

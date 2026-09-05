@@ -94,7 +94,14 @@ def _text_from_message_content(content: object) -> str:
 
 
 def _summary_text(item: object) -> str:
-    message = mapping_or_empty(mapping_or_empty(item).get("message"))
+    # Claude Code's ``type: "summary"`` record carries the compaction summary at
+    # the top level alongside ``leafUuid``; it has no ``message`` envelope at
+    # all. ``compact_boundary`` records instead carry theirs inside ``message``.
+    record = mapping_or_empty(item)
+    top_level = optional_string(record.get("summary"))
+    if top_level:
+        return top_level
+    message = mapping_or_empty(record.get("message"))
     return _text_from_message_content(message.get("content"))
 
 
