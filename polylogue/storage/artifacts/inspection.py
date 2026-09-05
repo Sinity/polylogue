@@ -245,7 +245,18 @@ def _support_status(
 
 
 _INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
-_FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
+
+#: Ceiling on the full-document re-read used when the 64 KB prefix is not
+#: itself valid JSON. A prefix that stops mid-value is evidence about the
+#: bound, not about the document: refusing the re-read records a valid
+#: single-JSON export as ``decode_failed`` / ``ArtifactKind.UNKNOWN``, which
+#: then has no declared parser route at all. Single-document exports run to
+#: hundreds of megabytes (AI Studio Drive conversations carrying inline
+#: media), and the parse stage reads those in full regardless, so a
+#: classification bound below that only makes the recorded kind depend on
+#: which acquisition route reached the record first. The 64 KB prefix bound
+#: above still keeps the *first* pass off multi-GB payloads.
+_FULL_JSON_INSPECTION_MAX_BYTES = 256 * 1024 * 1024
 
 
 def _inspection_prefix(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> bytes:
