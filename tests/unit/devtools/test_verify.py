@@ -302,10 +302,10 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
-    assert affected["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
+    assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
-    assert complete["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+    assert complete["exec"] == ["devtools", "verify", "--all"]
     assert complete["checkout"] == "default"
     assert complete["schedule"] == "*-*-* 03:17:00"
     assert complete["pool"] == "pytest"

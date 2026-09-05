@@ -60,7 +60,7 @@ timeout_seconds = 900
 
 [operations.verify_all]
 description = "Run Polylogue's explicit complete-corpus verification plan"
-exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+exec = ["devtools", "verify", "--all"]
 # The corpus graph is published from the main checkout; a lane worktree
 # cannot start it.
 checkout = "default"
