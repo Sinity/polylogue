@@ -89,7 +89,7 @@ async def test_fts_descriptor_async_can_skip_distinct_freshness_counts(tmp_path:
 def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
     descriptor = SessionInsightCountDescriptor(
         count_key="expected_rows",
-        table_key="source_table",
+        table_keys=("source_table",),
         sql="SELECT 99",
         requires_freshness=True,
         fallback_count_key="materialized_rows",
@@ -390,7 +390,7 @@ def test_status_descriptors_resolve_against_declared_tables_and_snapshot_fields(
     emitted |= {descriptor.duplicate_count_key for descriptor in _FTS_DESCRIPTORS}
 
     referenced = {descriptor.table_key for descriptor in _FTS_DESCRIPTORS}
-    referenced |= {descriptor.table_key for descriptor in _COUNT_DESCRIPTORS if descriptor.table_key is not None}
+    referenced |= {table_key for descriptor in _COUNT_DESCRIPTORS for table_key in descriptor.table_keys}
 
     assert referenced <= declared_tables
     assert emitted <= snapshot_fields
