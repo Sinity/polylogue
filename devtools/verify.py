@@ -296,6 +296,24 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 MAX_RERUN_NODEIDS = 300
 
 
+def _report_nodeid_to_selector(nodeid: str) -> str:
+    """Strip xdist's ``@<group>`` suffix so a report node id selects again.
+
+    ``--dist=loadgroup`` reports ``path::test[param]@group``; pytest cannot
+    collect that literal, so a rerun built from it errors before running.
+    A parametrization id may itself contain ``@``, so only a suffix after the
+    closing bracket (or after the bare test name) is removed.
+    """
+    head, sep, tail = nodeid.rpartition("@")
+    if not sep or "::" not in head:
+        return nodeid
+    if "[" in tail or "]" in tail or "/" in tail or "::" in tail:
+        return nodeid
+    if head.endswith("]") or "[" not in head.rsplit("::", 1)[-1]:
+        return head
+    return nodeid
+
+
 def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifacts: Any) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
 
@@ -309,7 +327,7 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
     if not isinstance(report, Mapping):
         return None
     failed = [
-        str(test["nodeid"])
+        _report_nodeid_to_selector(str(test["nodeid"]))
         for test in report.get("tests", [])
         if isinstance(test, Mapping) and test.get("outcome") in {"failed", "error"} and test.get("nodeid")
     ]

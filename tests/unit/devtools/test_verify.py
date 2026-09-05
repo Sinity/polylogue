@@ -914,3 +914,15 @@ def test_schema_promotion_json_stays_one_document(monkeypatch: pytest.MonkeyPatc
 
     assert exit_code == 0
     assert recorded["capture_output"] is True
+
+
+def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
+    """Anti-vacuity: passing the report node id through unchanged makes the
+    rerun error with "not found" for every grouped test, which is what wiped
+    the 2026-09-05 corpus rerun."""
+    from devtools.verify import _report_nodeid_to_selector
+
+    assert _report_nodeid_to_selector("tests/a.py::test_x@web-reader") == "tests/a.py::test_x"
+    assert _report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
+    assert _report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
+    assert _report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
