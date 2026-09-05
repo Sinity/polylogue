@@ -1701,9 +1701,17 @@ def migrate_archive_tier(
             else None
         )
         start_version = current_version
-        pre_transaction_evidence = capture_durable_database_evidence(conn, tier) if sidecars else None
+        # Row parity is proved against the drop constraints and allowances the
+        # sidecars declare, so its baseline must be the state entering the
+        # earliest sidecar-bearing step. Capturing it at the head of a longer
+        # chain would charge those trains for tables untrained earlier steps
+        # legitimately drop.
+        parity_baseline_version = min((sidecar.slot for sidecar in sidecars), default=None)
+        pre_transaction_evidence: DurableDatabaseEvidence | None = None
         applied: list[int] = []
         for step in steps:
+            if parity_baseline_version is not None and step.version == parity_baseline_version:
+                pre_transaction_evidence = capture_durable_database_evidence(conn, tier)
             before = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
             if before != step.version - 1:
                 raise MigrationError(
