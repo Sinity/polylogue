@@ -3782,7 +3782,7 @@ async def test_claude_sidecar_owner_bypasses_unchanged_cursor_filter(tmp_path: P
 
     try:
         test_watcher = cast(Any, watcher)
-        test_watcher._batch_processor.require_cursor_authority = lambda: None
+        test_watcher._batch_processor.require_cursor_authority = lambda *args, **kwargs: None
         test_watcher._needs_work_from_state = lambda *args, **kwargs: False
         test_watcher._ingest_files = fake_ingest
         watcher._enqueue(sidecar)

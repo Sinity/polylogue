@@ -732,6 +732,18 @@ class LiveBatchProcessor:
                 return None
         raise CursorAuthorityBlockedError(f"live watcher source-selection gate blocked: {reason}")
 
+    def admit_paths(self, paths: Iterable[Path]) -> list[Path]:
+        """The subset of ``paths`` the frontier proof admits, in order.
+
+        Raises when nothing may proceed: every path is refused, or the refusal
+        is one no path explains.
+        """
+        selected = list(paths)
+        self.require_cursor_authority(selected)
+        refused = self._refused_paths
+        self._refused_paths = frozenset()
+        return [path for path in selected if path not in refused]
+
     def _blocked_source_paths(self) -> RawFrontierBlockedPaths:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
