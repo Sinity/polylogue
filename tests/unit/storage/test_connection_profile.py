@@ -228,15 +228,19 @@ def test_index_write_profiles_refuse_stale_sibling_before_attach(
     with sqlite3.connect(index_path) as connection:
         connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
     sibling_path = root / f"{sibling_tier.value}.db"
+    # A version this runtime cannot serve in either direction. Stepping one
+    # below the expected version collapses onto 0 for a version-1 tier, which
+    # is the never-provisioned sentinel rather than a skewed schema.
+    skewed_version = ARCHIVE_VERSION_BY_TIER[sibling_tier] + 1
     with sqlite3.connect(sibling_path) as connection:
-        connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[sibling_tier] - 1}")
+        connection.execute(f"PRAGMA user_version = {skewed_version}")
 
     with pytest.raises(SchemaSkew) as excinfo:
         factory(index_path)
 
     assert excinfo.value.tier == sibling_tier.value
     assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[sibling_tier]
-    assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[sibling_tier] - 1
+    assert excinfo.value.found == skewed_version
 
 
 def test_unprovisioned_durable_tier_opens_instead_of_reporting_skew(tmp_path: Path) -> None:
