@@ -7,13 +7,13 @@ import json
 import os
 import sqlite3
 import tempfile
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from polylogue.core.durable_fs import sync_directory, write_once
+from polylogue.core.durable_fs import atomic_replace, sync_directory, write_once
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
@@ -31,6 +31,10 @@ _META_FIELDS = ("model", "dimension", "embedded_at_ms", "recipe_hash", "output_c
 # Hashes per IN list. Bounded by the connection's own variable limit, which is
 # 999 on a default SQLite build and must never be assumed larger.
 _MAX_HASH_BATCH = 500
+#: Receipt schema for the AC2 reuse proof that authorizes deleting a copy.
+AC2_RECEIPT_SCHEMA = "polylogue.embedding-reuse-verification.v1"
+#: Share of recomputed hashes that must resolve against preserved vectors.
+DEFAULT_MINIMUM_HIT_RATE = 0.95
 
 
 class RestoreMissReason(StrEnum):
@@ -59,8 +63,9 @@ class EmbeddingPreservationReceipt:
     misses: tuple[RestoreMiss, ...] = ()
 
 
-def _connect(path: Path, *, readonly: bool) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True) if readonly else sqlite3.connect(path)
+def _connect(path: Path, *, readonly: bool, immutable: bool = False) -> sqlite3.Connection:
+    uri = f"file:{path}?mode=ro" + ("&immutable=1" if immutable else "")
+    conn = sqlite3.connect(uri, uri=True) if readonly else sqlite3.connect(path)
     loaded, error = try_load_sqlite_vec(conn)
     if not loaded:
         conn.close()
@@ -118,13 +123,20 @@ def _fsync_directory(path: Path) -> None:
     sync_directory(path)
 
 
-def preserve_embedding_vectors(source: str | Path, destination: str | Path) -> EmbeddingPreservationReceipt:
+def preserve_embedding_vectors(
+    source: str | Path, destination: str | Path, *, immutable: bool = False
+) -> EmbeddingPreservationReceipt:
     """Checkpoint-copy an embeddings database and record its vector population.
 
     The copy is built in a private temporary file and renamed into place only
     once the backup has finished and the receipt has been derived from the
     finished copy, so a file at the destination path is always a whole copy
     that its receipt describes.
+
+    ``immutable`` opens the source without creating or touching its sidecar
+    files, which a source about to be discarded requires and a live one
+    forbids: an immutable read of a database another writer is changing
+    returns torn pages.
     """
     source_path = Path(source).absolute()
     destination_path = Path(destination).absolute()
@@ -140,7 +152,7 @@ def preserve_embedding_vectors(source: str | Path, destination: str | Path) -> E
     partial = Path(partial_name)
     try:
         with (
-            closing(_connect(source_path, readonly=True)) as source_conn,
+            closing(_connect(source_path, readonly=True, immutable=immutable)) as source_conn,
             closing(sqlite3.connect(partial)) as copy_conn,
         ):
             source_conn.backup(copy_conn)
@@ -308,6 +320,180 @@ def restore_embedding_vectors(
     )
 
 
+class ReuseMissReason(StrEnum):
+    """Why a recomputed hash did not resolve against a preserved vector."""
+
+    #: The fresh corpus produced text this archive never embedded. Parser
+    #: changes legitimately move content, so this is the expected miss class.
+    NOT_PRESERVED = "not_preserved"
+    #: Preserved metadata names an address whose vector row is absent.
+    PRESERVED_VECTOR_ABSENT = "preserved_vector_absent"
+    #: Restore did not carry the metadata row into the fresh database.
+    RESTORE_METADATA_ABSENT = "restore_metadata_absent"
+    #: Restore did not carry the vector row into the fresh database.
+    RESTORE_VECTOR_ABSENT = "restore_vector_absent"
+
+
+@dataclass(frozen=True, slots=True)
+class ReuseMiss:
+    input_hash: str
+    reason: ReuseMissReason
+    message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EmbeddingReuseVerification:
+    """AC2: how much of the rebuilt corpus resolved against preserved vectors."""
+
+    copy: str
+    destination: str
+    model: str
+    recomputed_hashes: int
+    hit_hashes: int
+    minimum_hit_rate: float
+    table_set_digest: str
+    misses: tuple[ReuseMiss, ...]
+
+    @property
+    def hit_rate(self) -> float:
+        return self.hit_hashes / self.recomputed_hashes if self.recomputed_hashes else 0.0
+
+    @property
+    def ac2_passed(self) -> bool:
+        """A corpus with nothing to embed proves no reuse and cannot pass."""
+        return self.recomputed_hashes > 0 and self.hit_rate >= self.minimum_hit_rate
+
+    def as_receipt(self) -> dict[str, object]:
+        """The proof shape :func:`delete_preserved_copy` requires.
+
+        ``copy`` and ``table_set_digest`` name the exact preserved file this
+        measurement read, so the proof cannot authorize deleting another copy
+        or one that has changed since.
+        """
+        counts: dict[str, int] = {}
+        for miss in self.misses:
+            counts[miss.reason.value] = counts.get(miss.reason.value, 0) + 1
+        return {
+            "schema": AC2_RECEIPT_SCHEMA,
+            "copy": self.copy,
+            "destination": self.destination,
+            "model": self.model,
+            "recomputed_hashes": self.recomputed_hashes,
+            "hit_hashes": self.hit_hashes,
+            "hit_rate": self.hit_rate,
+            "minimum_hit_rate": self.minimum_hit_rate,
+            "table_set_digest": self.table_set_digest,
+            "misses_by_reason": counts,
+            "misses": [asdict(miss) for miss in self.misses],
+            "ac2_passed": self.ac2_passed,
+        }
+
+
+def recomputed_vector_hashes(index_db: str | Path, *, model: str) -> dict[str, bytes]:
+    """Vector addresses the rebuilt archive will ask the embedder for.
+
+    The relation is the production embedder's own message selection and hash
+    expression, so a measurement taken here answers for the route that will
+    actually spend money, not a reimplementation of it.
+    """
+    from polylogue.storage.embeddings.materialization import archive_embeddable_messages_relation
+
+    with closing(_connect(Path(index_db).absolute(), readonly=True, immutable=True)) as conn:
+        relation = archive_embeddable_messages_relation(conn, alias="embeddable", model=model)
+        rows = conn.execute(
+            f"SELECT embeddable.message_id, embeddable.vector_derivation_hash FROM {relation} "
+            "WHERE embeddable.vector_derivation_hash IS NOT NULL"
+        ).fetchall()
+    return {str(row[0]): bytes(row[1]) for row in rows}
+
+
+def _present_hashes(conn: sqlite3.Connection, wanted: Sequence[bytes]) -> tuple[set[bytes], set[bytes]]:
+    """Hashes with a metadata row and hashes with a vector row, in that order."""
+    metadata: set[bytes] = set()
+    vectors: set[bytes] = set()
+    meta_column = _hash_column(conn, "message_embeddings_meta")
+    vector_column = _hash_column(conn, "message_embeddings")
+    for batch in _hash_batches(conn, wanted):
+        placeholders = ",".join("?" for _ in batch)
+        metadata.update(
+            bytes(row[0])
+            for row in conn.execute(
+                f"SELECT {meta_column} FROM message_embeddings_meta WHERE {meta_column} IN ({placeholders})",
+                tuple(batch),
+            )
+        )
+        vectors.update(
+            bytes.fromhex(str(row[0]))
+            for row in conn.execute(
+                f"SELECT {vector_column} FROM message_embeddings WHERE {vector_column} IN ({placeholders})",
+                tuple(value.hex() for value in batch),
+            )
+        )
+    return metadata, vectors
+
+
+def verify_embedding_reuse(
+    destination: str | Path,
+    preserved_copy: str | Path,
+    recomputed: Mapping[str, bytes],
+    *,
+    model: str,
+    minimum_hit_rate: float = DEFAULT_MINIMUM_HIT_RATE,
+    receipt_path: str | Path | None = None,
+) -> EmbeddingReuseVerification:
+    """Measure AC2: reuse of preserved vectors by the rebuilt archive.
+
+    A hash counts as a hit only when the fresh database holds both its
+    metadata and its vector, so a restore that wrote half a pair is a miss
+    rather than a reuse the embedder cannot actually take. Every other
+    outcome is enumerated with the cause that distinguishes a legitimate
+    content change from a preservation or restore defect.
+    """
+    if not 0.0 <= minimum_hit_rate <= 1.0:
+        raise ValueError("minimum_hit_rate must be between zero and one")
+    destination_path = Path(destination).absolute()
+    copy_path = Path(preserved_copy).absolute()
+    representative: dict[bytes, str] = {}
+    for message_id, value in recomputed.items():
+        representative.setdefault(bytes(value), str(message_id))
+    wanted = sorted(representative)
+    with (
+        closing(_connect(destination_path, readonly=True)) as target,
+        closing(_connect(copy_path, readonly=True)) as source,
+    ):
+        preserved_meta, preserved_vectors = _present_hashes(source, wanted)
+        target_meta, target_vectors = _present_hashes(target, wanted)
+        digest, _counts = _table_digest(source)
+    misses: list[ReuseMiss] = []
+    hits = 0
+    for value in wanted:
+        message_id = representative[value]
+        if value not in preserved_meta:
+            misses.append(ReuseMiss(value.hex(), ReuseMissReason.NOT_PRESERVED, message_id))
+        elif value not in preserved_vectors:
+            misses.append(ReuseMiss(value.hex(), ReuseMissReason.PRESERVED_VECTOR_ABSENT, message_id))
+        elif value not in target_meta:
+            misses.append(ReuseMiss(value.hex(), ReuseMissReason.RESTORE_METADATA_ABSENT, message_id))
+        elif value not in target_vectors:
+            misses.append(ReuseMiss(value.hex(), ReuseMissReason.RESTORE_VECTOR_ABSENT, message_id))
+        else:
+            hits += 1
+    verification = EmbeddingReuseVerification(
+        copy=str(copy_path),
+        destination=str(destination_path),
+        model=model,
+        recomputed_hashes=len(wanted),
+        hit_hashes=hits,
+        minimum_hit_rate=minimum_hit_rate,
+        table_set_digest=digest,
+        misses=tuple(misses),
+    )
+    if receipt_path is not None:
+        payload = (json.dumps(verification.as_receipt(), indent=2, sort_keys=True) + "\n").encode("utf-8")
+        atomic_replace(Path(receipt_path).absolute(), payload)
+    return verification
+
+
 def delete_preserved_copy(path: str | Path, *, receipt_path: str | Path | None = None) -> None:
     """Delete a preservation copy only when an AC2 receipt proves it is this copy.
 
@@ -325,7 +511,7 @@ def delete_preserved_copy(path: str | Path, *, receipt_path: str | Path | None =
         proof = json.loads(receipt.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError("preservation deletion receipt is not valid JSON") from exc
-    if proof.get("ac2_passed") is not True:
+    if proof.get("schema") != AC2_RECEIPT_SCHEMA or proof.get("ac2_passed") is not True:
         raise ValueError("preservation copy requires an AC2-passed receipt before deletion")
     named = proof.get("copy")
     if not isinstance(named, str) or Path(named).absolute() != copy_path:
@@ -339,10 +525,17 @@ def delete_preserved_copy(path: str | Path, *, receipt_path: str | Path | None =
 
 
 __all__ = [
+    "AC2_RECEIPT_SCHEMA",
+    "DEFAULT_MINIMUM_HIT_RATE",
     "EmbeddingPreservationReceipt",
+    "EmbeddingReuseVerification",
     "RestoreMiss",
     "RestoreMissReason",
+    "ReuseMiss",
+    "ReuseMissReason",
     "delete_preserved_copy",
     "preserve_embedding_vectors",
+    "recomputed_vector_hashes",
     "restore_embedding_vectors",
+    "verify_embedding_reuse",
 ]
