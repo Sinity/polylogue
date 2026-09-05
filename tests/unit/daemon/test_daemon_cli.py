@@ -28,6 +28,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import ArchiveLocation, ArchiveOwnershipError, OwnedArchiveLocation
 from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanStatus
+from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -554,6 +555,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         raw_artifact_id: str | None = None,
         source_root: Path | None = None,
         max_pass_seconds: float | None = None,
+        excluded_source_paths: tuple[str, ...] = (),
     ) -> FakeResult:
         order.append("materialize")
         calls["archive_root"] = config.archive_root
@@ -565,6 +567,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["raw_artifact_id"] = raw_artifact_id
         calls["source_root"] = source_root
         calls["max_pass_seconds"] = max_pass_seconds
+        calls["excluded_source_paths"] = excluded_source_paths
         return FakeResult()
 
     def fake_recover(config: Config) -> tuple[str, ...]:
@@ -578,9 +581,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["frontier_limit"] = limit
         return 3
 
-    def fake_gate(_root: Path) -> None:
+    def fake_gate(_root: Path) -> RawFrontierBlockedPaths:
         order.append("gate")
-        return None
+        return RawFrontierBlockedPaths(frozenset(), None)
 
     def fake_finalize_codex_state(config: Config) -> int:
         # polylogue-6q16u: retained Codex state snapshots without a terminal
@@ -591,7 +594,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path / "archive")
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_block_reason", fake_gate)
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_refusal", fake_gate)
     monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", fake_finalize_codex_state)
     monkeypatch.setattr(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
@@ -634,26 +637,89 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "frontier_archive_root": tmp_path / "archive",
         "frontier_limit": 8,
         "max_pass_seconds": daemon_cli._RAW_MATERIALIZATION_MAX_PASS_SECONDS,
+        "excluded_source_paths": (),
     }
 
 
-def test_drain_raw_materialization_once_blocks_unsafe_cursor_authority(
+def test_drain_raw_materialization_once_blocks_unattributed_refusal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """A refusal no path explains still blocks the whole pass."""
     from polylogue.daemon import cli as daemon_cli
 
     archive = tmp_path / "archive"
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
-        lambda _root: "1 ingest cursor row committed past accepted raw material",
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        lambda _root: RawFrontierBlockedPaths(frozenset(), "source tier is unreadable"),
     )
 
     with pytest.raises(RuntimeError, match="source-selection gate blocked"):
         daemon_cli._drain_raw_materialization_once()
 
     assert not archive.exists()
+
+
+def test_drain_raw_materialization_once_refuses_only_the_broken_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A broken path is left out and recorded as debt; the rest of the backlog converges.
+
+    Anti-vacuity: raising on any attributed refusal (the pre-split gate)
+    never reaches ``repair_materialization``; dropping the
+    ``excluded_source_paths`` passthrough materializes the refused path; and
+    not recording the refusal leaves ``convergence_debt`` empty. Each turns
+    one assertion red.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    initialize_archive_database(archive / "ops.db", ArchiveTier.OPS)
+    refused = archive / "broken-chain.jsonl"
+    admitted_gap = archive / "no-head-yet.jsonl"
+    calls: dict[str, object] = {}
+
+    def fake_repair(config: Config, **kwargs: object) -> object:
+        calls["excluded_source_paths"] = kwargs.get("excluded_source_paths")
+        return SimpleNamespace(success=True, repaired_count=1, detail="ok", metrics={})
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: archive / "index.db")
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        lambda _root: RawFrontierBlockedPaths(
+            frozenset({str(refused)}),
+            None,
+            gap_source_paths=frozenset({str(admitted_gap)}),
+        ),
+    )
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.finalize_codex_state_snapshots", lambda _config: 0)
+    monkeypatch.setattr(
+        "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
+        lambda *_args, **_kwargs: SimpleNamespace(restored_count=0),
+    )
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr(
+        "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
+        lambda _config: (),
+    )
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
+    monkeypatch.setattr(daemon_cli, "_converge_raw_authority_frontier", lambda _config, *, limit: 0)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
+
+    counts = daemon_cli._drain_raw_materialization_once()
+
+    assert counts.repaired_sessions == 1
+    assert calls["excluded_source_paths"] == (str(refused),)
+    with sqlite3.connect(archive / "ops.db") as conn:
+        debt = conn.execute(
+            "SELECT stage, target_type, target_id, status FROM convergence_debt ORDER BY target_id"
+        ).fetchall()
+    assert debt == [("raw_parse_recovery", "source_path", str(refused), "failed")]
 
 
 @pytest.mark.parametrize("authority_state", ["violated", "unknown"])
@@ -670,8 +736,8 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
-        lambda _root: f"{authority_state} cursor authority",
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        lambda _root: RawFrontierBlockedPaths(frozenset(), f"{authority_state} cursor authority"),
     )
 
     def fake_repair(*_args: object, **_kwargs: object) -> object:
@@ -690,6 +756,58 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
         )
     assert mutations == []
     assert not (archive / "writer-mutated").exists()
+
+
+def test_whale_writer_route_refuses_a_seed_on_a_refused_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A whale seed whose own path is refused is a typed refusal, not an empty clean pass.
+
+    Anti-vacuity: dropping the seed-path check lets the fake repair run and
+    ``mutations`` becomes non-empty.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    initialize_archive_database(archive / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(archive / "ops.db", ArchiveTier.OPS)
+    seed_path = archive / "whale.jsonl"
+    with sqlite3.connect(archive / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES ('whale-seed-raw-id', 'codex-session', 'whale', ?, 0, ?, 1, 1)
+            """,
+            (str(seed_path), bytes(32)),
+        )
+        conn.commit()
+    mutations: list[str] = []
+
+    monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
+    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
+    monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: archive / "index.db")
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        lambda _root: RawFrontierBlockedPaths(frozenset({str(seed_path)}), None),
+    )
+
+    def fake_repair(*_args: object, **_kwargs: object) -> object:
+        mutations.append("repair_materialization")
+        return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
+
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
+    monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
+
+    with pytest.raises(RuntimeError, match="refused source path"):
+        daemon_cli._run_raw_materialization_whale_pass_once(
+            raw_artifact_id="whale-seed-raw-id",
+            max_payload_bytes=daemon_cli._RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES,
+        )
+    assert mutations == []
 
 
 def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
