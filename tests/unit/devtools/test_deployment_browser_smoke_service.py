@@ -37,12 +37,12 @@ def test_declared_live_provider_proof_declares_no_port_lease() -> None:
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_sinnixd_parser_accepts_the_unleased_shared_chrome_operation() -> None:
-    """Cross-contract proof against the production Sinnixd descriptor parser."""
+def test_agentctl_parser_accepts_the_unleased_shared_chrome_operation() -> None:
+    """Cross-contract proof against the production descriptor parser."""
     repository_root = Path(__file__).resolve().parents[3]
     sinnix_root = Path("/realm/project/sinnix")
     package_roots = (
-        sinnix_root / "pkgs" / "sinnixd",
+        sinnix_root / "pkgs" / "agentctl",
         sinnix_root / "pkgs" / "sinnix-mcp",
         sinnix_root / "pkgs" / "sinnix-lib",
     )
@@ -51,7 +51,7 @@ import json
 import sys
 from pathlib import Path
 
-from sinnixd.projects import load_project_adapter
+from agentctl.projects import load_project_adapter
 
 adapter = load_project_adapter(Path(sys.argv[1]))
 proof = adapter.operation("deployment_browser_smoke")
@@ -59,8 +59,8 @@ print(json.dumps({
     "project_id": adapter.project_id,
     "operation_count": len(adapter.operations),
     "proof": {
-        "command": proof.command,
-        "parameters": proof.parameters,
+        "command": list(proof.command),
+        "parameters": list(getattr(proof, "parameters", ())),
     },
     "service_operations": sorted(
         operation.name for operation in adapter.operations if getattr(operation, "service", None) is not None
@@ -83,8 +83,8 @@ print(json.dumps({
     assert parsed["proof"] == {
         "command": ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"],
         "parameters": [],
-    }
-    # Sinnixd allocates no ports; every proof binds its own.
+    }, "the shared-Chrome proof takes no parameters"
+    # The runtime allocates no ports; every proof binds its own.
     assert parsed["service_operations"] == []
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
