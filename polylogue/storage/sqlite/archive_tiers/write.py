@@ -3773,6 +3773,11 @@ def _write_attachments(
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
+            # The owner is ambiguous, so no ref may be guessed, but the
+            # attachment's identity and bytes are still evidence. The row is
+            # written unreferenced and kept out of the ref-count sweep, which
+            # exists to collect rows whose refs went away.
+            _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
             continue
         direction, producer_ref = _attachment_provenance(
             attachment, owning_messages.get(message_id), resolved_message_id=message_id
@@ -3785,33 +3790,7 @@ def _write_attachments(
                 f"attachment_id={attachment.provider_attachment_id!r}"
             )
         touched_attachment_ids.add(attachment_id)
-        acquired_blob = (preacquired_blobs or {}).get(id(attachment))
-        blob_hash, byte_count, acquisition_status = (
-            acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
-        )
-        conn.execute(
-            """
-            INSERT INTO attachments (
-                attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
-            ) VALUES (?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(attachment_id) DO UPDATE SET
-                display_name = COALESCE(excluded.display_name, attachments.display_name),
-                media_type = COALESCE(excluded.media_type, attachments.media_type),
-                byte_count = excluded.byte_count,
-                blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
-                acquisition_status =
-                    CASE WHEN excluded.acquisition_status = 'acquired'
-                         THEN 'acquired' ELSE attachments.acquisition_status END
-            """,
-            (
-                attachment_id,
-                _sqlite_text(attachment.name),
-                _sqlite_text(attachment.mime_type),
-                byte_count,
-                blob_hash,
-                acquisition_status,
-            ),
-        )
+        _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
         ref_position = attachment_positions[id(attachment)]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
@@ -3868,6 +3847,42 @@ def _write_attachments(
     # attachment_refs), while still reporting acquisition_status='acquired'
     # and real fetched bytes.
     refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
+
+
+def _write_attachment_row(
+    conn: sqlite3.Connection,
+    attachment_id: str,
+    attachment: ParsedAttachment,
+    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None,
+) -> None:
+    """Upsert the attachment's identity and bytes, leaving refs to the caller."""
+    acquired_blob = (preacquired_blobs or {}).get(id(attachment))
+    blob_hash, byte_count, acquisition_status = (
+        acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
+    )
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT(attachment_id) DO UPDATE SET
+            display_name = COALESCE(excluded.display_name, attachments.display_name),
+            media_type = COALESCE(excluded.media_type, attachments.media_type),
+            byte_count = excluded.byte_count,
+            blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
+            acquisition_status =
+                CASE WHEN excluded.acquisition_status = 'acquired'
+                     THEN 'acquired' ELSE attachments.acquisition_status END
+        """,
+        (
+            attachment_id,
+            _sqlite_text(attachment.name),
+            _sqlite_text(attachment.mime_type),
+            byte_count,
+            blob_hash,
+            acquisition_status,
+        ),
+    )
 
 
 def refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:

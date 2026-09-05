@@ -196,6 +196,13 @@ def test_drain_ready_session_entries_drops_written_payload(
         return True
 
     monkeypatch.setattr(ingest_batch_core, "_write_session_entry", fake_write)
+    # The drain prelude reads the connection for stale-session cleanup and an
+    # archive-wide FTS staleness verdict; neither is what this test measures.
+    monkeypatch.setattr(ingest_batch_core, "_delete_stale_sessions_for_raw_entries", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        "polylogue.storage.fts.freshness.message_fts_recorded_exact_stale_sync",
+        lambda *_a, **_k: False,
+    )
 
     ingest_batch_core._drain_ready_session_entries(
         object(),  # type: ignore[arg-type]

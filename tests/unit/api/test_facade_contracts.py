@@ -61,8 +61,14 @@ from polylogue.core.refs import (
     delegation_subtree_object_id,
 )
 from polylogue.operations.bindings import OperationBinding
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import (
+    ParsedContentBlock,
+    ParsedMessage,
+    ParsedSession,
+    ParsedSessionEvent,
+)
 from polylogue.storage.block_anchor import format_block_anchor
+from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
@@ -2074,7 +2080,11 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="fable-facade-parent-v1", with_dispatch=True)
+                _delegation_parent_session(
+                    provider_session_id="fable-facade-parent-v1",
+                    with_dispatch=True,
+                    child_provider_session_id="fable-facade-child-v1",
+                )
             )
             archive_db.write_parsed(
                 ParsedSession(
@@ -3561,7 +3571,12 @@ async def test_resolve_ref_renders_finding_claim_with_controls(tmp_path: Path) -
         await archive.close()
 
 
-def _delegation_parent_session(*, provider_session_id: str, with_dispatch: bool) -> ParsedSession:
+def _delegation_parent_session(
+    *,
+    provider_session_id: str,
+    with_dispatch: bool,
+    child_provider_session_id: str | None = None,
+) -> ParsedSession:
     """Ingest-shaped parent fixture: writes real session/message/block rows
     through the live archive writer (``ArchiveStore.write_parsed`` ->
     ``write_parsed_session_to_archive``), the same seam the daemon uses --
@@ -3609,11 +3624,27 @@ def _delegation_parent_session(*, provider_session_id: str, with_dispatch: bool)
                 ],
             )
         )
+    session_events: list[ParsedSessionEvent] = []
+    if with_dispatch and child_provider_session_id is not None:
+        # The writer's parent-dispatch resolver reads this event to join
+        # the Task tool_use block to the child session (write.py
+        # _resolve_parent_dispatch_block_id); without it the link stays
+        # edge_only regardless of the tool_use/tool_result pair above.
+        session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_delegation_progress",
+                payload={
+                    "provider_tool_id": "task-1",
+                    "child_provider_id": child_provider_session_id,
+                },
+            )
+        )
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=provider_session_id,
         title="Delegation parent fixture",
         messages=messages,
+        session_events=session_events,
     )
 
 
@@ -3627,7 +3658,11 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="delegation-parent-v1", with_dispatch=True)
+                _delegation_parent_session(
+                    provider_session_id="delegation-parent-v1",
+                    with_dispatch=True,
+                    child_provider_session_id="delegation-child-v1",
+                )
             )
             child_session_id = archive_db.write_parsed(
                 ParsedSession(
@@ -3873,7 +3908,11 @@ async def test_resolve_ref_returns_delegation_ancestry_and_subtree_payloads(tmp_
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             root_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="delegation-tree-root-v1", with_dispatch=True)
+                _delegation_parent_session(
+                    provider_session_id="delegation-tree-root-v1",
+                    with_dispatch=True,
+                    child_provider_session_id="delegation-tree-mid-v1",
+                )
             )
             mid_id = archive_db.write_parsed(
                 ParsedSession(
@@ -5376,7 +5415,7 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         assert costs[0].estimate.status == "exact"
         assert costs[0].estimate.total_usd == 1.25
         assert costs[0].estimate.basis.provider_reported_usd == 1.25
-        assert costs[0].provenance.materializer_version == 14
+        assert costs[0].provenance.materializer_version == SESSION_INSIGHT_MATERIALIZER_VERSION
         assert len(unavailable) == 1
         assert unavailable[0].estimate.status == "unavailable"
         assert unavailable[0].estimate.missing_reasons == ("no_tokens",)
@@ -5478,7 +5517,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
         assert profile.session_id == session_id
         assert profile.origin == Origin.CODEX_SESSION.value
         assert profile.title == "Latency v1"
-        assert profile.provenance.materializer_version == 14
+        assert profile.provenance.materializer_version == SESSION_INSIGHT_MATERIALIZER_VERSION
         assert profile.latency.median_agent_response_ms == 90000
         assert profile.latency.median_user_response_ms == 120000
         assert profile.latency.median_tool_call_ms == 0

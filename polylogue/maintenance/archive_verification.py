@@ -2393,12 +2393,20 @@ def _check_planner_stats(
                 _PLANNER_STATS_COVERED_TABLES,
             )
         }
+        # ANALYZE writes no sqlite_stat1 row for an empty table, so absent
+        # stats there are nothing to fix. Only a populated table can be
+        # genuinely uncovered.
+        populated = {
+            table
+            for table in _PLANNER_STATS_COVERED_TABLES
+            if table_exists(conn, table) and conn.execute(f"SELECT EXISTS(SELECT 1 FROM {table})").fetchone()[0]
+        }
     except sqlite3.Error as exc:
         return _error_check("planner-stats", f"could not read index.db: {exc}", exc=exc)
     finally:
         conn.close()
 
-    missing = [table for table in _PLANNER_STATS_COVERED_TABLES if table not in analyzed]
+    missing = [table for table in _PLANNER_STATS_COVERED_TABLES if table in populated and table not in analyzed]
     if missing:
         return ArchiveVerificationCheck(
             name="planner-stats",
