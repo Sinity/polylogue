@@ -1,6 +1,10 @@
-"""Bounds on test execution inside agent jobs.
+"""Runtime environment names and bounds on test execution inside agent jobs.
 
-An agent lane runs under sinnixd with ``SINNIXD_PRINCIPAL=agent-control``.
+The Sinnix runtime exports ``AGENTCTL_*`` variables into every job it starts;
+older hosts still export the same values as ``SINNIXD_*``. Every consumer reads
+them through :func:`runtime_env` so the fallback lives in one place.
+
+An agent lane runs with ``AGENTCTL_PRINCIPAL=agent-control``.
 Tests for a lane run exactly once, as the declared ``verify_affected`` job
 in the host's single-worker pytest pool; a lane running the affected or
 complete tier itself doubles that load outside admission. Focused runs stay
@@ -9,16 +13,39 @@ available, bounded to a few workers.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping
 
-AGENT_PRINCIPAL_ENV = "SINNIXD_PRINCIPAL"
+RUNTIME_ENV_PREFIX = "AGENTCTL_"
+LEGACY_RUNTIME_ENV_PREFIX = "SINNIXD_"
+#: The runtime's transient job unit, ``<prefix>-job-<uuid>.service``.
+RUNTIME_UNIT_PREFIXES = ("agentctl", "sinnixd")
+
+AGENT_PRINCIPAL_ENV = "AGENTCTL_PRINCIPAL"
 AGENT_PRINCIPAL = "agent-control"
 AGENT_MAX_PYTEST_WORKERS = 2
 HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
 
 
+def runtime_env_names(variable: str) -> tuple[str, str]:
+    """``(AGENTCTL_<name>, SINNIXD_<name>)`` for an ``AGENTCTL_<name>`` variable."""
+    if not variable.startswith(RUNTIME_ENV_PREFIX):
+        raise ValueError(f"{variable} is not an {RUNTIME_ENV_PREFIX}* runtime variable")
+    return (variable, LEGACY_RUNTIME_ENV_PREFIX + variable.removeprefix(RUNTIME_ENV_PREFIX))
+
+
+def runtime_env(variable: str, env: Mapping[str, str] | None = None) -> str | None:
+    """The runtime variable ``AGENTCTL_<name>``, or ``SINNIXD_<name>`` when only that is set."""
+    source = os.environ if env is None else env
+    for candidate in runtime_env_names(variable):
+        value = source.get(candidate)
+        if value:
+            return value
+    return None
+
+
 def inside_agent_job(env: Mapping[str, str]) -> bool:
-    return env.get(AGENT_PRINCIPAL_ENV) == AGENT_PRINCIPAL
+    return runtime_env(AGENT_PRINCIPAL_ENV, env) == AGENT_PRINCIPAL
 
 
 def agent_worker_cap(requested: int | None, env: Mapping[str, str]) -> int | None:

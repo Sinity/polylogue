@@ -115,6 +115,7 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
     secret_environment = _environment(
         PATH=os.environ["PATH"],
         ANTHROPIC_API_KEY="secret",
+        AGENTCTL_PRINCIPAL="agent-control",
         SINNIXD_PRINCIPAL="agent-control",
         POLYLOGUE_ARCHIVE_ROOT="/realm/state/polylogue",
     )
@@ -133,7 +134,9 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
         assert recorded <= allowed, f"pueue add inherited {sorted(recorded - allowed)}"
 
 
-@pytest.mark.parametrize("holder", [{"SINNIXD_JOB_ID": "job-1"}, {"POLYLOGUE_PYTEST_SLOT": "held"}])
+@pytest.mark.parametrize(
+    "holder", [{"AGENTCTL_JOB_ID": "job-1"}, {"SINNIXD_JOB_ID": "job-1"}, {"POLYLOGUE_PYTEST_SLOT": "held"}]
+)
 def test_inside_the_slot_the_run_is_direct(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, holder: dict[str, str]
 ) -> None:

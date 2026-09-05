@@ -21,7 +21,7 @@ from threading import Thread
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
+from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -56,7 +56,7 @@ def _require_agentctl_operation_context() -> None:
     """Reject accidental shell execution outside the declared operation context.
 
     These checkout-local environment checks are deliberately not authorization
-    or admission. Sinnixd validates the registered workspace, exact head,
+    or admission. The runtime validates the registered workspace, exact head,
     declared operation, and job cgroup before it invokes this module. This
     guard only fails closed for ordinary accidental invocation.
     """
@@ -196,7 +196,7 @@ def _start_daemon(
     """Start the fixed product daemon as a child of AgentCTL's service cgroup.
 
     The dedicated child process group is terminated locally on every proof
-    exit. Sinnixd retains lifecycle authority and is the outer cleanup net.
+    exit. The runtime retains lifecycle authority and is the outer cleanup net.
     """
     spool = artifact_root / "browser-capture"
     spool.mkdir(parents=True, exist_ok=True)

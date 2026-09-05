@@ -26,8 +26,8 @@ def _payload(tmp_path: Path) -> dict[str, object]:
 def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("SINNIXD_JOB_ID", raising=False)
-    monkeypatch.delenv("SINNIXD_CORRELATION_ID", raising=False)
+    for variable in ("AGENTCTL_JOB_ID", "AGENTCTL_CORRELATION_ID", "SINNIXD_JOB_ID", "SINNIXD_CORRELATION_ID"):
+        monkeypatch.delenv(variable, raising=False)
     payload = _payload(tmp_path)
     history = tmp_path / "history.jsonl"
     evidence = tmp_path / "evidence.jsonl"
@@ -45,9 +45,14 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     assert receipt["artifact_ref"].startswith("polylogue://verification/")
 
 
-def test_declared_identity_and_interruption_are_explicit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("SINNIXD_JOB_ID", "job-17")
-    monkeypatch.setenv("SINNIXD_CORRELATION_ID", "corr-17")
+@pytest.mark.parametrize("prefix", ["AGENTCTL_", "SINNIXD_"])
+def test_declared_identity_and_interruption_are_explicit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, prefix: str
+) -> None:
+    for variable in ("AGENTCTL_JOB_ID", "AGENTCTL_CORRELATION_ID", "SINNIXD_JOB_ID", "SINNIXD_CORRELATION_ID"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv(f"{prefix}JOB_ID", "job-17")
+    monkeypatch.setenv(f"{prefix}CORRELATION_ID", "corr-17")
     run = VerifyRun(tier="quick", argv=[], git_head="sha:abc", root=tmp_path, agentctl_operation="verify_quick")
     payload = run.finish(
         exit_code=143,

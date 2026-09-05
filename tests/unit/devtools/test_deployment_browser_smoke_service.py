@@ -140,9 +140,9 @@ def test_live_provider_accepts_a_parked_control_plane_window() -> None:
 
 def test_live_provider_module_rejects_forged_environment_before_node_can_launch(tmp_path: Path) -> None:
     environment = os.environ | {
-        "SINNIXD_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
-        "SINNIXD_PROJECT_ID": "polylogue",
-        "SINNIXD_OPERATION": "live_provider_proof",
+        "AGENTCTL_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
+        "AGENTCTL_PROJECT_ID": "polylogue",
+        "AGENTCTL_OPERATION": "live_provider_proof",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT": "49120",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN": "forged",
         "TMPDIR": str(tmp_path),
@@ -157,7 +157,7 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
     )
 
     assert completed.returncode == 1
-    assert "matching Sinnixd transient unit" in completed.stderr
+    assert "matching runtime transient unit" in completed.stderr
 
 
 def test_shared_browser_service_launches_only_the_fixed_control_proof(

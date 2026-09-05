@@ -7,7 +7,7 @@ the same cores and disk until a long job passes its timeout.
 
 Every managed pytest run therefore holds the host's `pytest` pueue group (one
 task at a time). A run already inside a queued task holds the slot already:
-`sinnixd-queue-run` exports ``SINNIXD_JOB_ID``, and
+the runtime exports ``AGENTCTL_JOB_ID`` (``SINNIXD_JOB_ID`` on older hosts), and
 ``POLYLOGUE_PYTEST_SLOT=held`` is the explicit escape for a hermetic test of
 this mechanism. Anything else queues and waits.
 
@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
+from devtools.agent_env import runtime_env
 from devtools.cloud_sentinels import cloud_sentinel_declined
 
 __all__ = [
@@ -51,8 +52,8 @@ __all__ = [
     "run_pytest",
 ]
 
-#: Exported into every task started by ``sinnixd-queue-run``.
-QUEUE_TASK_ENV: Final = "SINNIXD_JOB_ID"
+#: Exported into every task the runtime starts (``SINNIXD_JOB_ID`` on older hosts).
+QUEUE_TASK_ENV: Final = "AGENTCTL_JOB_ID"
 
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
@@ -167,7 +168,7 @@ def contained_pytest_run(
 
 def holds_pytest_slot(env: Mapping[str, str]) -> bool:
     """Whether this process is already inside the host's pytest slot."""
-    return bool(env.get(QUEUE_TASK_ENV)) or env.get(SLOT_ESCAPE_ENV) == SLOT_HELD
+    return bool(runtime_env(QUEUE_TASK_ENV, env)) or env.get(SLOT_ESCAPE_ENV) == SLOT_HELD
 
 
 def adder_environment(env: Mapping[str, str]) -> dict[str, str]:

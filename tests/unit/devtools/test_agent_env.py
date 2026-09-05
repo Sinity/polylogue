@@ -1,8 +1,35 @@
 from __future__ import annotations
 
+import pytest
+
 from devtools import agent_env
 
 AGENT = {agent_env.AGENT_PRINCIPAL_ENV: agent_env.AGENT_PRINCIPAL}
+LEGACY_AGENT = {"SINNIXD_PRINCIPAL": agent_env.AGENT_PRINCIPAL}
+
+
+def test_runtime_env_reads_the_new_name_first_and_falls_back_to_the_old() -> None:
+    assert agent_env.runtime_env_names("AGENTCTL_JOB_ID") == ("AGENTCTL_JOB_ID", "SINNIXD_JOB_ID")
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID", {}) is None
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID", {"SINNIXD_JOB_ID": "old"}) == "old"
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID", {"AGENTCTL_JOB_ID": "new"}) == "new"
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID", {"AGENTCTL_JOB_ID": "new", "SINNIXD_JOB_ID": "old"}) == "new"
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID", {"AGENTCTL_JOB_ID": "", "SINNIXD_JOB_ID": "old"}) == "old"
+    with pytest.raises(ValueError):
+        agent_env.runtime_env("SINNIXD_JOB_ID", {})
+
+
+def test_runtime_env_defaults_to_the_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AGENTCTL_JOB_ID", raising=False)
+    monkeypatch.setenv("SINNIXD_JOB_ID", "old")
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID") == "old"
+    monkeypatch.setenv("AGENTCTL_JOB_ID", "new")
+    assert agent_env.runtime_env("AGENTCTL_JOB_ID") == "new"
+
+
+@pytest.mark.parametrize("agent", [AGENT, LEGACY_AGENT])
+def test_either_principal_name_marks_an_agent_job(agent: dict[str, str]) -> None:
+    assert agent_env.inside_agent_job(agent)
 
 
 def test_outside_agent_jobs_nothing_changes() -> None:

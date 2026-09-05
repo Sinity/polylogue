@@ -39,8 +39,8 @@ share one workstation, so `devtools test` and the pytest step of
 `devtools verify` run only while holding the host's single `pytest` pueue slot
 (group parallelism 1).
 
-- Inside a queued task, the slot is already held: `sinnixd-queue-run` exports
-  `SINNIXD_JOB_ID` and pytest runs in place, streaming its output as before.
+- Inside a queued task, the slot is already held: the runtime exports
+  `AGENTCTL_JOB_ID` (`SINNIXD_JOB_ID` on older hosts) and pytest runs in place, streaming its output as before.
 - Outside one, the run is queued as `pueue add --group pytest --label
   polylogue:{test,verify}:<pid>`, and the command waits for the task, reports
   the exit code pueue recorded, and prints the captured log path under

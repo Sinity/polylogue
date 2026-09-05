@@ -27,6 +27,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from devtools.agent_env import runtime_env
 from devtools.pytest_evidence import evaluate_pytest_evidence
 from devtools.testmon_provision import TESTMON_DATA_RELPATH
 
@@ -263,10 +264,10 @@ class VerifyRun:
         # semantic status is still decided by this verifier.
         if agentctl_operation is not None:
             for field, variable in (
-                ("agentctl_job_id", "SINNIXD_JOB_ID"),
-                ("agentctl_correlation_id", "SINNIXD_CORRELATION_ID"),
+                ("agentctl_job_id", "AGENTCTL_JOB_ID"),
+                ("agentctl_correlation_id", "AGENTCTL_CORRELATION_ID"),
             ):
-                value = os.environ.get(variable)
+                value = runtime_env(variable)
                 if value:
                     self._payload[field] = value
         # Kept on every receipt so later classification does not depend on a

@@ -10,25 +10,28 @@ from typing import Any, cast
 
 import pytest
 
-from devtools.sinnixd_service_context import (
+from devtools.agentctl_service_context import (
     require_declared_operation_context,
     terminate_process_group,
 )
 
 _JOB_ID = "123e4567-e89b-42d3-a456-426614174000"
+#: (environment prefix, transient unit prefix) for the current runtime and the older one.
+_FAMILIES = [("AGENTCTL_", "agentctl"), ("SINNIXD_", "sinnixd")]
 
 
-def _environment(operation: str = "dev_loop_proof") -> dict[str, str]:
+def _environment(prefix: str = "AGENTCTL_", operation: str = "dev_loop_proof") -> dict[str, str]:
     return {
-        "SINNIXD_JOB_ID": _JOB_ID,
-        "SINNIXD_PROJECT_ID": "polylogue",
-        "SINNIXD_OPERATION": operation,
+        f"{prefix}JOB_ID": _JOB_ID,
+        f"{prefix}PROJECT_ID": "polylogue",
+        f"{prefix}OPERATION": operation,
     }
 
 
-def test_operation_context_requires_matching_unit_and_declared_operation() -> None:
-    environment = _environment()
-    unit = "sinnixd-job-123e4567-e89b-42d3-a456-426614174000.service"
+@pytest.mark.parametrize(("prefix", "unit_prefix"), _FAMILIES)
+def test_operation_context_requires_matching_unit_and_declared_operation(prefix: str, unit_prefix: str) -> None:
+    environment = _environment(prefix)
+    unit = f"{unit_prefix}-job-{_JOB_ID}.service"
 
     assert (
         require_declared_operation_context(
@@ -39,8 +42,8 @@ def test_operation_context_requires_matching_unit_and_declared_operation() -> No
                 "{ path=/nix/store/capture/bin/sinnix-capture ; "
                 "argv[]=/nix/store/capture/bin/sinnix-capture --log-path /private/job.log -- "
                 "/run/current-system/sw/bin/env -i HOME=/home/sinity "
-                f"SINNIXD_JOB_ID={_JOB_ID} SINNIXD_OPERATION=dev_loop_proof "
-                "SINNIXD_PROJECT_ID=polylogue nix develop --accept-flake-config --command "
+                f"{prefix}JOB_ID={_JOB_ID} {prefix}OPERATION=dev_loop_proof "
+                f"{prefix}PROJECT_ID=polylogue nix develop --accept-flake-config --command "
                 "python -m devtools.dev_loop_service --json ; status=0/0 ; }"
                 if observed == unit
                 else ""
@@ -62,9 +65,10 @@ def test_forged_environment_without_matching_cgroup_fails_before_launch() -> Non
         )
 
 
-def test_matching_cgroup_with_wrong_unit_operation_fails() -> None:
-    environment = _environment()
-    unit = "sinnixd-job-123e4567-e89b-42d3-a456-426614174000.service"
+@pytest.mark.parametrize(("prefix", "unit_prefix"), _FAMILIES)
+def test_matching_cgroup_with_wrong_unit_operation_fails(prefix: str, unit_prefix: str) -> None:
+    environment = _environment(prefix)
+    unit = f"{unit_prefix}-job-{_JOB_ID}.service"
 
     with pytest.raises(ValueError, match="transient unit does not match"):
         require_declared_operation_context(
@@ -73,7 +77,24 @@ def test_matching_cgroup_with_wrong_unit_operation_fails() -> None:
             cgroup_reader=lambda: f"0::/agent.slice/{unit}\n",
             unit_exec_start_reader=lambda _unit: (
                 "/run/current-system/sw/bin/env -i "
-                f"SINNIXD_JOB_ID={_JOB_ID} SINNIXD_PROJECT_ID=polylogue SINNIXD_OPERATION=other"
+                f"{prefix}JOB_ID={_JOB_ID} {prefix}PROJECT_ID=polylogue {prefix}OPERATION=other"
+            ),
+        )
+
+
+def test_unit_must_declare_the_family_the_environment_supplied() -> None:
+    """A legacy-named unit cannot vouch for an AGENTCTL_* environment, or vice versa."""
+    environment = _environment("AGENTCTL_")
+    unit = f"sinnixd-job-{_JOB_ID}.service"
+
+    with pytest.raises(ValueError, match="transient unit does not match"):
+        require_declared_operation_context(
+            "dev_loop_proof",
+            environment=environment,
+            cgroup_reader=lambda: f"0::/agent.slice/{unit}\n",
+            unit_exec_start_reader=lambda _unit: (
+                f"/run/current-system/sw/bin/env -i SINNIXD_JOB_ID={_JOB_ID} "
+                "SINNIXD_PROJECT_ID=polylogue SINNIXD_OPERATION=dev_loop_proof"
             ),
         )
 
