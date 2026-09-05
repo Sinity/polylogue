@@ -19,7 +19,7 @@ from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
 )
-from polylogue.core.enums import ArtifactSupportStatus, Origin
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, Role
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
@@ -31,10 +31,12 @@ from polylogue.maintenance.archive_verification import (
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -1362,6 +1364,57 @@ def test_blob_reference_closure_rejects_acquired_attachment_without_ref(tmp_path
     check = _check(report, "blob-reference-closure")
     assert check.status is OutcomeStatus.ERROR
     assert check.evidence["acquired_attachment_missing_ref_count"] == 1
+
+
+def test_unowned_attachment_evidence_keeps_closure_and_coverage_clean(tmp_path: Path) -> None:
+    """The writer's typed-unowned attachment row is evidence, not archive debt.
+
+    ``_write_attachments`` retains an attachment whose owner coordinate is
+    claimed by more than one message: the row is written with no
+    ``attachment_refs`` edge and no acquired bytes. Both required checks key
+    on acquired-and-unreferenced, so this shape must stay clean.
+
+    Anti-vacuity: give the row ``acquisition_status = 'acquired'`` and both
+    checks turn ERROR (``test_blob_reference_closure_rejects_acquired_attachment_without_ref``
+    and ``test_acquired_unreachable_attachment_debt_is_blocking`` pin that).
+    """
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="ambiguous-attachment-owner",
+            messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="ambiguous-drive-doc",
+                    message_provider_id="",
+                    message_position=0,
+                    name="note.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.commit()
+        unowned = conn.execute(
+            "SELECT acquisition_status, ref_count FROM attachments WHERE display_name = 'note.txt'"
+        ).fetchone()
+        assert unowned is not None
+        assert tuple(unowned) == ("unfetched", 0)
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-reference-closure", "attachment-coverage"))
+
+    assert not report.blocking
+    closure = _check(report, "blob-reference-closure")
+    coverage = _check(report, "attachment-coverage")
+    assert closure.status is OutcomeStatus.OK, closure.summary
+    assert closure.evidence["acquired_attachment_missing_ref_count"] == 0
+    assert coverage.status in {OutcomeStatus.OK, OutcomeStatus.SKIP}, coverage.summary
+    assert coverage.evidence.get("unreachable_count", 0) == 0
 
 
 def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> None:
