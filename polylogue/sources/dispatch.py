@@ -1616,7 +1616,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         if record is None:
             return []
         if spec.provider is Provider.GEMINI_CLI:
-            return [local_agent.parse_gemini_cli(record, spec.fallback_id)]
+            return [local_agent.parse_gemini_cli(record, spec.fallback_id, source_path=spec.source_path)]
         if spec.provider is Provider.HERMES:
             return [local_agent.parse_hermes(record, spec.fallback_id)]
         return []
