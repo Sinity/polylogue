@@ -303,7 +303,12 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
         operation="verify_quick",
     )
 
-    assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
+    assert descriptor["workspace"]["verify"] == {
+        "focused": "pytest_focused",
+        "candidate": "hosted:verify",
+        "corpus": "verify_all",
+    }
+    assert descriptor["workspace"]["publish"] == "pr"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
     assert affected["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]

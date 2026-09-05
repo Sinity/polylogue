@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any
 
@@ -79,7 +78,7 @@ def test_main_reads_the_receipt_of_the_named_run(tmp_path: Path, capsys: pytest.
     pytest_step = [{"name": "pytest (affected)", "status": "success", "exit": 0}]
     _write_run(tmp_path, _receipt(run_id="run-mine", steps=pytest_step))
     newer = _write_run(tmp_path, _receipt(run_id="run-other"))
-    stamp = time.time() + 60
+    stamp = newer.stat().st_mtime + 60
     os.utime(newer, (stamp, stamp))
 
     assert verify_receipt_check.main([str(tmp_path), "--run-id", "run-mine"]) == 0

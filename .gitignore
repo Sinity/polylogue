@@ -121,8 +121,9 @@ _site/
 *.db
 .beads-credential-key
 
-# Lane-authored publication text, read by the integrator.
-.lane/
+# What agentctl writes into a worktree for its agent; project.toml is tracked.
+.agentctl/*
+!.agentctl/project.toml
 
 # testmon caches are machine-local and environment-fingerprinted; a committed
 # one never matches a real checkout, so affected verification refuses forever.

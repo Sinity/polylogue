@@ -109,7 +109,14 @@ def _calls(record: Path) -> list[dict[str, Any]]:
 
 
 def _verbs(record: Path) -> list[str]:
-    return [" ".join(word for word in call["argv"][:3] if word != "--json") for call in _calls(record)]
+    """``job <verb>`` plus the job id when the call names one."""
+    verbs = []
+    for call in _calls(record):
+        words = [word for word in call["argv"] if word != "--json"][:3]
+        if len(words) == 3 and not words[2].isdigit():
+            words.pop()
+        verbs.append(" ".join(words))
+    return verbs
 
 
 def _marker_command(marker: Path) -> list[str]:
