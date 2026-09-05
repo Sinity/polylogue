@@ -10,7 +10,7 @@ from pathlib import Path
 
 from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
 from devtools.toolchain import venv_python
-from devtools.verify import _pytest_worker_args
+from devtools.verify import CORPUS_MAX_WORKERS, _pytest_worker_args
 
 
 def main(_argv: list[str] | None = None) -> int:
@@ -27,8 +27,8 @@ def main(_argv: list[str] | None = None) -> int:
     finally:
         if configured_workers is not None:
             os.environ["POLYLOGUE_PYTEST_WORKERS"] = configured_workers
-    if default_worker_args != ["--dist=loadgroup", "-n", "2"]:
-        print("testmon-selection: managed verification does not default to two workers")
+    if default_worker_args != ["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]:
+        print(f"testmon-selection: managed verification does not default to {CORPUS_MAX_WORKERS} workers")
         return 1
     with tempfile.TemporaryDirectory(prefix="polylogue-testmon-gate-") as temporary:
         root = Path(temporary)
@@ -93,7 +93,7 @@ def main(_argv: list[str] | None = None) -> int:
         if not selected or not total or selected * 100 >= total * 5:
             print(f"testmon-selection: selected {selected} of {total}, expected under 5%\n{output}")
             return 1
-    print(f"testmon-selection: selected {selected} of {total}; workers=2")
+    print(f"testmon-selection: selected {selected} of {total}; workers={CORPUS_MAX_WORKERS}")
     return 0
 
 
