@@ -461,8 +461,8 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # typed reason; every other block shape carries none), ``action_pairs`` stores
 # the outcome and that reason, and the ``actions`` view derives ``result_state``
 # from the canonical column instead of the legacy is_error/exit_code pair.
-# No raw session is reparsed: the two new pair columns are copied from block
-# rows the archive already stores, so repopulating action pairs is enough.
+# The DDL edit moves the derived schema identity, so an existing archive meets
+# it as a typed SchemaSkew and reconverges through the daemon route.
 INDEX_SCHEMA_VERSION = 95
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
