@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 import click
 
 from polylogue.cli.shared.types import AppEnv
+from polylogue.core.errors import SchemaSkewError
 from polylogue.logging import get_logger
 from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -499,7 +500,11 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
             status["table_count_precision"] = precision
         finally:
             conn.close()
-    except sqlite3.Error as exc:
+    except (sqlite3.Error, SchemaSkewError) as exc:
+        # Row detail is an extra on top of the shared probe. A tier this
+        # runtime cannot read still has reportable existence/size/version
+        # facts, so the skew is recorded as data rather than raised through
+        # the status surface.
         status["error"] = str(exc)
     return status
 
