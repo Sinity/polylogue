@@ -5425,26 +5425,23 @@ class ArchiveStore:
         """Report whether convergence has caught up, and which stages have not.
 
         Derived rows have no lifecycle of their own: their readiness is exactly
-        the ordinary convergence signal. ops.db is disposable, so a ledger that
-        cannot be read reports ``None`` -- unknown, never converged.
+        the ordinary convergence signal. A missing ledger reports ``None``;
+        read failures remain visible to the status error boundary.
         """
         if not self.ops_db_path.exists():
             return (None, ())
+        conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
         try:
-            conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
-            try:
-                present = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
-                ).fetchone()
-                if present is None:
-                    return (None, ())
-                rows = conn.execute(
-                    "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
-                ).fetchall()
-            finally:
-                conn.close()
-        except sqlite3.Error:
-            return (None, ())
+            present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
+            ).fetchone()
+            if present is None:
+                return (None, ())
+            rows = conn.execute(
+                "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
+            ).fetchall()
+        finally:
+            conn.close()
         stages = tuple(str(row[0]) for row in rows)
         return (not stages, stages)
 
