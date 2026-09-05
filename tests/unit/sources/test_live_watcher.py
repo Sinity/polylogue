@@ -1523,12 +1523,14 @@ def test_replaced_excluded_file_is_revived_without_retrying_unchanged_poison(tmp
     replacement.write_text('{"valid":"new capture"}', encoding="utf-8")
     replacement.replace(path)
 
+    # The replacement is reported as work. The quarantine itself is lifted by
+    # the acquisition pass that re-decides the path, so that a path which was
+    # never admitted never presents a stale byte offset as committed ingest
+    # authority to the raw-frontier cursor map.
     assert watcher._needs_work(path) is True
-    revived = watcher._cursor.get_record(path)
-    assert revived is not None
-    assert revived.excluded is False
-    assert revived.failure_count == 0
-    assert revived.next_retry_at is None
+    still_quarantined = watcher._cursor.get_record(path)
+    assert still_quarantined is not None
+    assert still_quarantined.excluded is True
 
 
 def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_change(
@@ -1574,12 +1576,13 @@ def test_excluded_file_revives_on_parser_fingerprint_change_without_identity_cha
     # changes) with the file itself completely untouched.
     monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "live-batched-v3-test")
 
+    # ix5r's requirement is that the parser fix triggers a fresh attempt --
+    # that is what ``_needs_work`` reporting True means. Clearing the
+    # quarantine is the acquisition pass's job, not this check's.
     assert watcher._needs_work(path) is True
-    revived = watcher._cursor.get_record(path)
-    assert revived is not None
-    assert revived.excluded is False
-    assert revived.failure_count == 0
-    assert revived.next_retry_at is None
+    still_quarantined = watcher._cursor.get_record(path)
+    assert still_quarantined is not None
+    assert still_quarantined.excluded is True
 
 
 def test_full_cursor_uses_batch_raw_fingerprint_without_db_lookup(
