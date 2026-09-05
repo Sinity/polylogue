@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -38,6 +39,25 @@ def branch_type_to_edge_type(
 
 def _now_isoformat() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# Why ``session_links.parent_tool_use_block_id`` is NULL on a resolved edge.
+# Persisted under ``evidence_json.dispatch_reason``; removed once a block
+# binds. Every member is a refusal to guess, never an ordinal fallback.
+DispatchResolutionReason = Literal[
+    # The origin declares no parent-side dispatch identity.
+    "origin-no-dispatch-identity",
+    # The parent carries no dispatch observation naming this child.
+    "dispatch-evidence-absent",
+    # Evidence names a tool id the parent has no tool_use block for.
+    "dispatch-block-missing",
+    # More than one parent tool_use block carries the named tool id.
+    "dispatch-tool-id-duplicate",
+    # Witnesses name different tool ids for this child, or one tool id
+    # names children that resolve to different sessions.
+    "dispatch-identity-contradiction",
+]
+DISPATCH_RESOLUTION_REASONS: frozenset[str] = frozenset(get_args(DispatchResolutionReason))
 
 
 class TopologyEdgeRecord(BaseModel):

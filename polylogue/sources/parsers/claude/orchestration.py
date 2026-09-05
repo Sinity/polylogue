@@ -75,6 +75,16 @@ _DOCUMENT_FIELDS = frozenset(
         "adopted_session_id",
         "unresolved",
         "error",
+        # agent-*.meta.json dispatch sidecar: the dispatching tool_use id is
+        # the exact join key to the parent block; agentType/description are
+        # display metadata.
+        "toolUseId",
+        "tool_use_id",
+        "agentType",
+        "agent_type",
+        "description",
+        "spawnDepth",
+        "spawn_depth",
     }
 )
 _JOURNAL_FIELDS = _DOCUMENT_FIELDS | frozenset({"type", "event", "key", "ordinal", "retryOf", "retry_of"})
@@ -121,6 +131,19 @@ class ClaudeOrchestrationFact:
     @property
     def meta_path(self) -> str | None:
         return _first_string(self.payload, "metaPath", "meta_path")
+
+    @property
+    def tool_use_id(self) -> str | None:
+        """The parent tool_use that dispatched this agent (sidecar ``toolUseId``)."""
+        return _first_string(self.payload, "toolUseId", "tool_use_id")
+
+    @property
+    def agent_type(self) -> str | None:
+        return _first_string(self.payload, "agentType", "agent_type")
+
+    @property
+    def description(self) -> str | None:
+        return _first_string(self.payload, "description")
 
     @property
     def is_result(self) -> bool:
