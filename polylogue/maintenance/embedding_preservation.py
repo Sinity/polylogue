@@ -389,6 +389,14 @@ class EmbeddingReuseVerification:
         }
 
 
+def archive_tier_paths(root: str | Path) -> tuple[Path, Path]:
+    """The archive's embeddings tier and its active index generation, in that order."""
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    location = ArchiveLocation.resolve(Path(root).absolute())
+    return location.configured_root / "embeddings.db", location.active_index_path
+
+
 def recomputed_vector_hashes(index_db: str | Path, *, model: str) -> dict[str, bytes]:
     """Vector addresses the rebuilt archive will ask the embedder for.
 
@@ -533,6 +541,7 @@ __all__ = [
     "RestoreMissReason",
     "ReuseMiss",
     "ReuseMissReason",
+    "archive_tier_paths",
     "delete_preserved_copy",
     "preserve_embedding_vectors",
     "recomputed_vector_hashes",

@@ -14,13 +14,13 @@ from pathlib import Path
 import click
 
 from polylogue.paths import archive_root
-from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _tier_paths(root: Path | None) -> tuple[Path, Path]:
     """The archive's embeddings tier and its active index generation."""
-    location = ArchiveLocation.resolve(Path(root) if root is not None else archive_root())
-    return location.configured_root / "embeddings.db", location.active_index_path
+    from polylogue.maintenance.embedding_preservation import archive_tier_paths
+
+    return archive_tier_paths(root if root is not None else archive_root())
 
 
 def _resolved_model(model: str | None) -> str:

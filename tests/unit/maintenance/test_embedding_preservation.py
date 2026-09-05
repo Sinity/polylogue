@@ -101,10 +101,12 @@ def _count(path: Path, table: str) -> int:
 
 
 def _ac2_proof(receipt: Any, path: Path, **override: Any) -> Path:
-    """Write the preservation receipt back as an AC2-passed deletion proof."""
+    """Write the preservation receipt back in the shape of a passing AC2 proof."""
     from dataclasses import asdict
 
-    proof = asdict(receipt) | {"ac2_passed": True} | override
+    from polylogue.maintenance.embedding_preservation import AC2_RECEIPT_SCHEMA
+
+    proof = asdict(receipt) | {"schema": AC2_RECEIPT_SCHEMA, "ac2_passed": True} | override
     path.write_text(json.dumps(proof), encoding="utf-8")
     return path
 
