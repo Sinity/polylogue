@@ -50,9 +50,9 @@ MANAGED_PLUGIN_ARGS: Final[tuple[str, ...]] = tuple(
 def managed_plugin_args(*, testmon: bool) -> tuple[str, ...]:
     """Return the explicit plugin profile for a managed pytest mode.
 
-    Complete-corpus runs already execute every collected test. Loading
-    testmon there retains a dependency tracer and graph in every xdist worker
-    without changing coverage, so only selecting and bootstrap runs load it.
+    A run that omits testmon writes no fingerprints, so it leaves the datafile
+    exactly as it found it. Only a mode whose collection is not a corpus opts
+    out of tracing.
     """
     if testmon:
         return MANAGED_PLUGIN_ARGS
