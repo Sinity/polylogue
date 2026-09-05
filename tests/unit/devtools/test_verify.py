@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import signal
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -22,7 +24,7 @@ from devtools import (
     verify_runs,
     why,
 )
-from devtools.testmon_provision import TestmonGraphStatus
+from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -302,10 +304,10 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
-    assert affected["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
+    assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
-    assert complete["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+    assert complete["exec"] == ["devtools", "verify", "--all"]
     assert complete["checkout"] == "default"
     assert complete["schedule"] == "*-*-* 03:17:00"
     assert complete["pool"] == "pytest"
@@ -926,3 +928,68 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert _report_nodeid_to_selector("tests/a.py::T::test_x[p]@grp") == "tests/a.py::T::test_x[p]"
     assert _report_nodeid_to_selector("tests/a.py::test_x[a@b]") == "tests/a.py::test_x[a@b]"
     assert _report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
+
+
+def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
+    """The ``all`` tier must load testmon and select every collected test."""
+    command = verify.build_verify_steps(quick=False, selection="all")[-1][1]
+
+    assert "pytest-testmon" in command
+    assert "--testmon" in command
+    assert f"--testmon-env={TESTMON_ENVIRONMENT}" in command
+    assert "--testmon-noselect" in command
+    assert "--testmon-forceselect" not in command
+
+
+def _verify_shaped_argv(*, selection: str, target: Path, tmp_path: Path) -> list[str]:
+    """The real verifier argv, redirected at one temporary test file."""
+    command = list(verify.build_verify_steps(quick=False, selection=selection)[-1][1])
+    command[command.index("tests")] = str(target)
+    command[command.index("-n") + 1] = "2"
+    return [
+        argument for argument in command if not argument.startswith(("--junitxml=", "--json-report-file=", "--ignore="))
+    ] + [f"--json-report-file={tmp_path / 'report.json'}"]
+
+
+@pytest.mark.slow
+def test_complete_corpus_run_records_a_usable_testmon_graph(tmp_path: Path) -> None:
+    """A verify-shaped ``all`` session leaves fingerprints behind.
+
+    Anti-vacuity: dropping ``pytest-testmon`` from the tier's plugin profile, or
+    replacing ``--testmon-noselect`` with no testmon flags at all -- the state
+    this checkout shipped, under which a 58-minute corpus run wrote nothing --
+    leaves ``test_execution`` empty and makes this red.
+    """
+    target = tmp_path / "test_traced.py"
+    target.write_text("def test_one():\n    assert True\n\n\ndef test_two():\n    assert True\n")
+    datafile = tmp_path / "testmondata"
+    checkout_root = Path(__file__).resolve().parents[3]
+
+    env = dict(os.environ)
+    env.update(
+        {
+            "TESTMON_DATAFILE": str(datafile),
+            "POLYLOGUE_PYTEST_RUN_ID": "testmon-graph-regression",
+            "POLYLOGUE_PYTEST_EVENTS_DIR": str(tmp_path / "events"),
+            "POLYLOGUE_PYTEST_SELECTION_PATH": str(tmp_path / "selection.json"),
+            "POLYLOGUE_PYTEST_SUMMARY_PATH": str(tmp_path / "summary.json"),
+        }
+    )
+    env.pop("PYTEST_DISABLE_PLUGIN_AUTOLOAD", None)
+
+    result = subprocess.run(
+        _verify_shaped_argv(selection="all", target=target, tmp_path=tmp_path),
+        cwd=checkout_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert datafile.exists(), result.stdout + result.stderr
+    with sqlite3.connect(datafile) as connection:
+        recorded = connection.execute("SELECT count(*) FROM test_execution").fetchone()[0]
+        environments = [row[0] for row in connection.execute("SELECT environment_name FROM environment")]
+    assert recorded == 2
+    assert environments == [TESTMON_ENVIRONMENT]

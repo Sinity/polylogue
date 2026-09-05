@@ -167,8 +167,16 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """Build one complete collection, or an affected collection with tracing."""
-    testmon = selection not in {"all", "descriptor"}
+    """Build one complete collection, or an affected collection, both tracing.
+
+    Both tiers load testmon so every managed corpus or affected run advances the
+    one datafile. ``all`` deselects nothing -- it executes the whole collection
+    and records what it traced, which is what makes the next affected run
+    selectable. Only ``descriptor`` opts out: it collects a contract slice, not
+    a corpus, so its fingerprints would describe a collection no later run has.
+    """
+    testmon = selection != "descriptor"
+    select_flag = "--testmon-noselect" if selection == "all" else "--testmon-forceselect"
     collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
     command = [
         venv_python(root=ROOT),
@@ -186,7 +194,7 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         PROGRESS_PLUGIN_NAME,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
-        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-forceselect"] if testmon else []),
+        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
         "-p",
         "no:randomly",
         *worker_args,

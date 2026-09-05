@@ -1866,7 +1866,7 @@ def test_spool_pending_check_ignores_terminal_cursor_states(
     monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: tmp_path / "index.db")
     monkeypatch.setattr(
         "polylogue.sources.live.cursor.CursorStore",
-        lambda _db: SimpleNamespace(get_record=lambda path: records.get(path)),
+        lambda _db, **_kwargs: SimpleNamespace(get_record=lambda path: records.get(path)),
     )
 
     # A capture that JUST arrived is in the live route's debounce flow —

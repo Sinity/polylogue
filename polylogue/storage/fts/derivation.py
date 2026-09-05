@@ -142,6 +142,16 @@ def _schema_compatible(conn: sqlite3.Connection) -> bool:
     return row is not None and int(row[0]) == len(expected)
 
 
+def _session_block_id_range(key: str) -> tuple[str, str]:
+    """Half-open ``block_id`` range covering exactly one session's blocks.
+
+    ``block_id`` is ``session_id || ':' || ...``; ``';'`` is the code point
+    after ``':'``, so ``[key || ':', key || ';')`` selects the session's rows
+    through the ``block_id`` UNIQUE index instead of a ``substr`` table scan.
+    """
+    return f"{key}:", f"{key};"
+
+
 def _digest(rows: Sequence[FtsInputRow]) -> str:
     payload = [
         [
@@ -299,10 +309,10 @@ class FtsDerivationAdapter:
                     SELECT COUNT(*) FROM messages_fts_identity AS i
                     JOIN messages_fts_docsize AS d ON d.id = i.rowid
                     LEFT JOIN blocks AS b ON b.block_id = i.block_id
-                    WHERE substr(i.block_id, 1, length(?) + 1) = ? || ':'
+                    WHERE i.block_id >= ? AND i.block_id < ?
                       AND (b.block_id IS NULL OR b.session_id != ? OR b.search_text = '')
                     """,
-                    (key, key, key),
+                    (*_session_block_id_range(key), key),
                 ).fetchone()[0]
             )
             wrong_rows = int(
@@ -329,10 +339,10 @@ class FtsDerivationAdapter:
             duplicate_sql = (
                 "SELECT COALESCE(SUM(n - 1), 0) FROM ("
                 "SELECT block_id, COUNT(*) AS n FROM messages_fts_identity "
-                "WHERE substr(block_id, 1, length(?) + 1) = ? || ':' "
+                "WHERE block_id >= ? AND block_id < ? "
                 "GROUP BY block_id HAVING n > 1)"
             )
-            duplicate_params = (key, key)
+            duplicate_params = _session_block_id_range(key)
         duplicate_rows = int(conn.execute(duplicate_sql, duplicate_params).fetchone()[0])
         status = FtsKeyStatus.VALID
         detail: str | None = None
@@ -397,9 +407,9 @@ class FtsDerivationAdapter:
                     for row in conn.execute(
                         """
                         SELECT i.rowid FROM messages_fts_identity AS i
-                        WHERE substr(i.block_id, 1, length(?) + 1) = ? || ':'
+                        WHERE i.block_id >= ? AND i.block_id < ?
                         """,
-                        (computed.key, computed.key),
+                        _session_block_id_range(computed.key),
                     )
                 )
                 if rowids:
