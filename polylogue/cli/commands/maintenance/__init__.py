@@ -225,9 +225,17 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "blob_disposition_group",
         "Compile or consume the physical blob namespace disposition plan.",
     ),
+    (
+        "embedding-preservation",
+        "_embedding_preservation",
+        "embedding_preservation_group",
+        "Preserve, restore, prove, and discard embedding vectors across a rebuild.",
+    ),
 )
 
-_NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "blob-disposition", "source-continuity-recovery"})
+_NESTED_GROUP_COMMANDS = frozenset(
+    {"archive-root-relocation", "blob-disposition", "embedding-preservation", "source-continuity-recovery"}
+)
 
 
 @click.group("maintenance")
