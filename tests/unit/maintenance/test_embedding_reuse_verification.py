@@ -189,11 +189,11 @@ def test_a_failing_measurement_cannot_authorize_deletion(tmp_path: Path) -> None
 
 
 def test_an_empty_corpus_proves_no_reuse(tmp_path: Path) -> None:
-    """Red if a hit rate of one is imputed to nothing: a corpus with no addresses
-    measured no reuse and must never authorize discarding the copy."""
+    """Red without the `recomputed_hashes > 0` guard: a threshold of zero would let a
+    corpus that measured nothing authorize discarding the copy."""
     fresh, preserved, _recomputed = _reuse_fixture(tmp_path)
 
-    verification = verify_embedding_reuse(fresh, preserved, {}, model=_MODEL)
+    verification = verify_embedding_reuse(fresh, preserved, {}, model=_MODEL, minimum_hit_rate=0.0)
 
     assert verification.recomputed_hashes == 0
     assert not verification.ac2_passed
