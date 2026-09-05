@@ -86,35 +86,50 @@ def _fd_soft_limit() -> int:
     return int(resource.getrlimit(resource.RLIMIT_NOFILE)[0])
 
 
+_FD_BEFORE: pytest.StashKey[int] = pytest.StashKey()
+
+
 @pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+def pytest_runtest_setup(item: pytest.Item) -> Iterator[None]:
+    before = _open_fd_count()
+    if before is not None:
+        item.stash[_FD_BEFORE] = before
+    yield
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
     """Fail the test that leaks descriptors, not the later test that runs out.
 
     A descriptor opened and never closed survives its test, so exhaustion
     surfaces as an unrelated ``OSError: [Errno 24]`` in whichever test happens
-    to run next -- eleven such victims in one xdist worker on 2026-09-05. The
-    count is taken around the whole protocol, so fixture teardown has already
-    released what it owns and what remains is genuinely retained.
+    to run next -- eleven such victims in one xdist worker on 2026-09-05.
+    Counting after the wrapped teardown means fixture finalizers have already
+    released what they own, so what remains is genuinely retained; raising here
+    marks this item's teardown, which is what attributes the leak to it.
     """
     del nextitem
-    before = _open_fd_count()
     yield
+    check_descriptor_balance(item)
+
+
+def check_descriptor_balance(item: pytest.Item) -> None:
+    """Raise if ``item`` retained descriptors, or left the table near exhaustion."""
+    before = item.stash.get(_FD_BEFORE, None)
     after = _open_fd_count()
     if before is None or after is None:
         return
     limit = _fd_soft_limit()
     if after >= limit * FD_EXHAUSTION_FRACTION:
-        pytest.fail(
+        raise AssertionError(
             f"file-descriptor table is {after}/{limit} full after {item.nodeid}; "
-            "the next test would fail with EMFILE for reasons that are not its own",
-            pytrace=False,
+            "the next test would fail with EMFILE for reasons that are not its own"
         )
     leaked = after - before
     if leaked > FD_LEAK_ALLOWANCE:
-        pytest.fail(
+        raise AssertionError(
             f"{item.nodeid} leaked {leaked} file descriptors ({before} -> {after}); "
-            "close what the test opens, or close it in the production object that opened it",
-            pytrace=False,
+            "close what the test opens, or close it in the production object that opened it"
         )
 
 
