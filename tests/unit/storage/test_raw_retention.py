@@ -2577,6 +2577,23 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     assert raw_frontier_source_selection_block_reason(tmp_path) is None
 
 
+def test_absent_source_tier_refuses_nothing(tmp_path: Path) -> None:
+    """An archive root with no source tier has nothing to select or refuse.
+
+    Anti-vacuity: dropping the absence branch makes the projection report
+    the tier unavailable under both the broken-head and cursor checks, and
+    those reasons surface as an unattributed refusal that blocks the whole
+    materialization pass on a freshly created archive.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+
+    blocked = raw_retention_mod.raw_frontier_blocked_source_paths(archive_root, {})
+
+    assert blocked.unattributed_reason is None
+    assert blocked.source_paths == frozenset()
+
+
 def test_blocked_source_paths_refuse_violations_and_admit_authority_gaps(tmp_path: Path) -> None:
     """A violation names the path it refuses; a gap names a path only processing can resolve.
 
