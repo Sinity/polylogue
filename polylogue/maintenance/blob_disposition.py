@@ -1530,13 +1530,19 @@ class TestCorpusFixtureExcluder:
 
     These objects carry no durable row at all — no acquisition ever recorded
     a source for them — so no route predicate can reach them. What is
-    observable is that every line they contain is a literal the checkout's
-    own tests write. Product material does not have that property: a real
-    session's records are not string constants in the test suite. The rule is
-    therefore content against a declared corpus, which stays true for the
-    next fixture the same tests leak, rather than a list of hashes, which
-    only records the answer to this run.
+    observable is that every identity they name — session, message, and
+    record identifiers — is spelled out as a literal in the checkout's own
+    tests. Product material does not have that property: a real session's
+    identifiers are provider-assigned, not constants in the test suite. The
+    rule is content against a declared corpus, so it stays true for the next
+    fixture the same tests leak; a list of hashes would only record the
+    answer to one run.
+
+    Comparing whole lines would not work: the fixtures are serialized from
+    dictionaries the tests build at runtime, so no literal holds the line.
     """
+
+    IDENTITY_KEYS = frozenset({"id", "uuid", "sessionId", "session_id", "parentUuid", "parent_uuid"})
 
     disposition = BlobDisposition.POSITIVELY_EXCLUDED
 
@@ -1554,12 +1560,36 @@ class TestCorpusFixtureExcluder:
         self._owner = owner
         self._rule = rule
         self._max_object_bytes = max_object_bytes
-        self._lines: frozenset[str] | None = None
+        self._literals: tuple[str, ...] | None = None
 
-    def _corpus_lines(self) -> frozenset[str]:
-        if self._lines is not None:
-            return self._lines
-        digests: set[str] = set()
+    @staticmethod
+    def _module_literals(source: str) -> str:
+        """Join a module's string and bytes literals in source order.
+
+        Adjacent literals concatenate at parse time, which is exactly how the
+        fixtures spell a multi-line payload, so joining in source order
+        reproduces the payload contiguously.
+        """
+        import ast
+
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return ""
+        parts: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Constant):
+                continue
+            if isinstance(node.value, str):
+                parts.append(node.value)
+            elif isinstance(node.value, bytes):
+                parts.append(node.value.decode("utf-8", errors="replace"))
+        return "".join(parts)
+
+    def _corpus(self) -> tuple[str, ...]:
+        if self._literals is not None:
+            return self._literals
+        modules: list[str] = []
         for root in self._roots:
             if not root.is_dir():
                 continue
@@ -1569,37 +1599,58 @@ class TestCorpusFixtureExcluder:
                     if not filename.endswith(".py"):
                         continue
                     try:
-                        text = (Path(directory) / filename).read_text(encoding="utf-8", errors="strict")
+                        source = (Path(directory) / filename).read_text(encoding="utf-8")
                     except (OSError, UnicodeDecodeError):
                         continue
-                    for line in text.splitlines():
-                        stripped = line.strip()
-                        if stripped:
-                            digests.add(_sha256(stripped.encode("utf-8")))
-        self._lines = frozenset(digests)
-        return self._lines
+                    joined = self._module_literals(source)
+                    if joined:
+                        modules.append(joined)
+        self._literals = tuple(modules)
+        return self._literals
+
+    @classmethod
+    def _identities(cls, node: object, found: set[str]) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in cls.IDENTITY_KEYS and isinstance(value, str) and value:
+                    found.add(value)
+                cls._identities(value, found)
+        elif isinstance(node, list):
+            for value in node:
+                cls._identities(value, found)
 
     def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
         if blob_hash in self._referenced or not 0 < size_bytes <= self._max_object_bytes:
             return None
         try:
-            with path.open("rb") as handle:
-                lines = [line.strip() for line in handle.read().splitlines()]
-        except (OSError, ValueError):
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError, ValueError):
             return None
-        content = [line for line in lines if line]
-        if not content:
+        identities: set[str] = set()
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                record = json.loads(stripped)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if not isinstance(record, dict):
+                return None
+            self._identities(record, identities)
+        if not identities:
             return None
-        corpus = self._corpus_lines()
-        if any(_sha256(line) not in corpus for line in content):
-            return None
-        return TerminalRule(
-            rule=self._rule,
-            owner=self._owner,
-            reason=(
-                f"unreferenced object whose {len(content)} content lines are all literals in the tracked test corpus"
-            ),
-        )
+        for module in self._corpus():
+            if all(identity in module for identity in identities):
+                return TerminalRule(
+                    rule=self._rule,
+                    owner=self._owner,
+                    reason=(
+                        f"unreferenced object whose {len(identities)} identifiers are all declared "
+                        "as literals in one tracked test module"
+                    ),
+                )
+        return None
 
 
 class ForeignStateSnapshotResidue:
