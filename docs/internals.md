@@ -153,6 +153,22 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   classification, no fast-forward plan, and no per-version actuator: the cost of
   a derived-schema edit is one full reconvergence, which is why derived-schema
   changes are batched rather than trickled.
+- **The identity moves on ordinary code edits.** The three fingerprints are AST
+  closures over imported source (`_ProjectionFingerprintStripper` normalizes
+  only projection keywords and helpers; parser, detector, replay and
+  materializer code stays in the AST). So a change that touches no schema at all
+  moves the identity: memoizing one function in `sources/origin_specs.py` moves
+  all three. Comments are absent from an AST, so a comment-only edit does not.
+  The closure is 442 of 1,241 modules — storage 150, archive 94, sources 63,
+  core 40 — and follows the import graph, so no directory rule describes it:
+  `daemon/write_coordinator.py` is inside it while `daemon/convergence.py` and
+  `sources/live/watcher.py`, the most ingest-central file in the tree, are
+  outside. `devtools schema closure <file>` answers membership for the working
+  checkout; classifying by path gets it wrong.
+- **Sequencing.** A closure change landing while a rebuild runs invalidates that
+  rebuild's derived tier underneath it, and the failure is quiet — the halted
+  unit stops producing while the run still looks healthy. Land closure changes
+  before a rebuild starts, never during one.
 - Embedding vectors are content-addressed, so reconvergence rehydrates them from
   cache rather than recomputing; the identity hash deliberately does not cover
   the `embeddings` tier's vectors.
@@ -363,9 +379,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   tool calls: 105,123 structured diffs, 92,313 pre-edit captures, previously
   100% discarded); and the new `session_refs` table (tracker-agnostic PR/
   issue references, 20,702 occurrences). Every value depends on parser
-  semantics to populate honestly, so this is `SEMANTIC_REPARSE` like v42/
-  v44/v45 — existing index tiers must be rebuilt from source evidence
-  (`polylogue ops reset --index && polylogued run`).
+  semantics to populate honestly, so existing index tiers must be rebuilt from
+  source evidence (`polylogue ops reset --index && polylogued run`).
 - Index schema version 45 resolves two independent changes folded into one
   bump: `session_provider_usage_events.payload_json` is dropped and its
   eight billing-provenance keys (`estimated_cost_usd`, `actual_cost_usd`,
