@@ -25,12 +25,8 @@ from polylogue.cli.commands.status import (
     _view_exists,
 )
 
-# polylogue-ogn1: these three moved from polylogue.cli.commands.status to the
-# substrate module polylogue.storage.archive_readiness (the layering fix for
-# CodeRabbit finding #8 -- polylogue/maintenance/rebuild_index.py, a
-# substrate module, was importing the CLI's private _archive_readiness_status
-# to gate promotion, inverting this repo's surfaces-may-not-import-substrate
-# rule). status.py now delegates to the same shared implementation instead of
+# polylogue-ogn1: archive-readiness lives in the substrate so substrate callers
+# reach it without importing a surface. status.py delegates here rather than
 # owning a second copy.
 from polylogue.storage.archive_readiness import (
     _action_readiness_counts,
