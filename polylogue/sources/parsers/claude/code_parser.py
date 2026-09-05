@@ -111,10 +111,10 @@ def _clean_title_text(text: str) -> str:
 logger = get_logger(__name__)
 # ``_NON_MESSAGE_SIDECAR_RECORD_TYPES`` marks record types that never become a
 # ``ParsedMessage`` row (they are not chat content). That is still correct for
-# all twelve types below -- the name used to be
-# ``_SKIPPED_SIDECAR_RECORD_TYPES``, which stopped being accurate the day most
-# of these started persisting as ``session_events`` (polylogue-pbuh); 13 of
-# the 15 members below ARE persisted today, so "skipped" described the
+# every type below -- the name used to be ``_SKIPPED_SIDECAR_RECORD_TYPES``,
+# which stopped being accurate the day most of these started persisting as
+# ``session_events`` (polylogue-pbuh); all but ``init`` and ``mode`` ARE
+# persisted today, so "skipped" described the
 # pre-polylogue-pbuh behavior, not the current one. Renamed (polylogue lane,
 # audited against the live corpus 2026-07-31) with no compat alias -- this
 # repo does not carry old spellings forward. What changed originally
@@ -1657,7 +1657,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     message = item.get("message")
     notification = _task_notification_from_record(item, message)
 
-    # These twelve record types are never chat content -- see the
+    # These record types are never chat content -- see the
     # classification comment above ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``
     # for why each one either persists as typed ``session_events``
     # evidence (polylogue-pbuh) or stays genuinely transient. ``progress``
