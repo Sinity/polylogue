@@ -2393,8 +2393,8 @@ def _check_planner_stats(
                 _PLANNER_STATS_COVERED_TABLES,
             )
         }
-        # ANALYZE writes no sqlite_stat1 row for an empty table, so absent
-        # stats there are nothing to fix. Only a populated table can be
+        # A bare ANALYZE writes no sqlite_stat1 row for an empty table, so
+        # absent stats there are nothing to fix. Only a populated table can be
         # genuinely uncovered.
         populated = {
             table
