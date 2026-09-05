@@ -261,6 +261,64 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     }
 
 
+def test_gemini_cli_display_content_is_preserved_alongside_expanded_content() -> None:
+    """polylogue-2ow9p: the prompt as typed survives @-reference expansion.
+
+    ``content`` is the model-facing payload with every ``@path`` reference
+    replaced by the referenced file's text; ``displayContent`` is what the
+    user actually wrote. Both are lists of ``{"text": ...}`` parts, and in
+    every observed case they differ. Anti-vacuity: delete the
+    ``displayContent`` branch and the message keeps only the expansion --
+    the user's own sentence is gone from the archive.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-3",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-04-08T20:45:01.000Z",
+                "type": "user",
+                "content": [
+                    {"text": "@notes/ summarize this"},
+                    {"text": "\n--- Content from referenced files ---"},
+                    {"text": "\nContent from @notes/a.md:\nexpanded body"},
+                ],
+                "displayContent": [{"text": "@notes/ summarize this"}],
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    message = session.messages[0]
+    assert "expanded body" in (message.text or "")
+    display_blocks = [block for block in message.blocks if (block.metadata or {}).get("gemini_display_content")]
+    assert [block.text for block in display_blocks] == ["@notes/ summarize this"]
+
+
+def test_gemini_cli_display_content_identical_to_content_adds_no_block() -> None:
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-4",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-04-08T20:45:01.000Z",
+                "type": "user",
+                "content": [{"text": "no references here"}],
+                "displayContent": [{"text": "no references here"}],
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    assert all(not (block.metadata or {}).get("gemini_display_content") for block in session.messages[0].blocks)
+
+
 def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() -> None:
     """polylogue-5o05: userMessageCount/hasUserOrAssistantMessage/memoryScratchpad
     were parsed by nothing; they must now surface as session_events."""
