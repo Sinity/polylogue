@@ -7339,7 +7339,7 @@ def _origin_carries_dispatch_identity(origin: str) -> bool:
     spec = _ORIGIN_SPECS_BY_VALUE.get(origin)
     if spec is None:
         return False
-    return spec.topology_capabilities.parent_dispatch.state != "structurally-absent"
+    return bool(spec.topology_capabilities.parent_dispatch.state != "structurally-absent")
 
 
 def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[str]:

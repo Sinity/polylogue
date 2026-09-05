@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -155,7 +156,7 @@ def _link(conn: sqlite3.Connection, child_id: str) -> sqlite3.Row:
         (child_id,),
     ).fetchall()
     assert len(rows) == 1, rows
-    return rows[0]
+    return cast(sqlite3.Row, rows[0])
 
 
 def _tool_use_block_id(conn: sqlite3.Connection, tool_id: str) -> str:
