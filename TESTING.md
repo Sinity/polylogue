@@ -55,7 +55,7 @@ share one workstation, so `devtools test` and the pytest step of
 
 `POLYLOGUE_PYTEST_SLOT=held` is the explicit assertion that the caller already
 holds the slot. Only the pytest-group runner may set it during normal
-execution. Generic `SINNIXD_JOB_ID` does not grant slot ownership.
+execution. Generic `AGENTCTL_JOB_ID` does not grant slot ownership.
 
 ### Typed WebUI package checks
 
@@ -70,7 +70,7 @@ For the managed deployed-reader browser smoke, use the declared AgentCTL
 operation:
 
 ```bash
-agentctl job start polylogue deployment_browser_smoke --workspace <workspace-id>
+agentctl job start polylogue deployment_browser_smoke --workspace <path>
 ```
 
 ### First-party browser credential journey
