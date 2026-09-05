@@ -448,7 +448,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # SEMANTIC_REPARSE: links materialized under v92 recorded the emitting
 # session's own name as a competing child identity, and no clone-safe SQL
 # delta can recover the dispatch join key those rows refused.
-INDEX_SCHEMA_VERSION = 93
+# v94 lowers the Agent/Task tool result (``toolUseResult.agentId`` +
+# ``tool_result.tool_use_id``) into the parent-side dispatch observation and
+# names the child by its transcript stem; the resolver joins that
+# observation, the child's ``agent-*.meta.json`` sidecar ``toolUseId``, and the
+# exact parent tool_use block, recording a typed ``dispatch_reason`` when it
+# refuses. SEMANTIC_REPARSE: parents materialized under v93 carry no
+# observation for result-only dispatches (the live wire shape), so the join
+# key cannot be derived from stored rows.
+INDEX_SCHEMA_VERSION = 94
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

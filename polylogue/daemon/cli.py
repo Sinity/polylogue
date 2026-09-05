@@ -1802,7 +1802,9 @@ def _browser_capture_spool_has_pending_files() -> bool:
     if not spool.exists():
         return False
     now = time.time()
-    cursor_store = CursorStore(_active_index_db_path())
+    # Read-only probe: the writer initialized the ops tier at startup, and
+    # re-initializing here would write against the writer lease.
+    cursor_store = CursorStore(_active_index_db_path(), initialize=False)
     for path in spool.rglob("*.json"):
         try:
             stat = path.stat()

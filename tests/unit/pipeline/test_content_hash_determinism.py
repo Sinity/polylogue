@@ -307,15 +307,19 @@ def test_hash_payload_json_encoding_stability() -> None:
     assert encoded == '{"a":2,"z":1}'
 
 
-# ── Provider identity NOT part of content hash ────────────────────────
+# ── Provider identity is part of content hash ─────────────────────────
 
 
-def test_provider_source_does_not_affect_content_hash() -> None:
-    """Content hash depends on content, not on which provider parsed it.
+def test_provider_source_is_part_of_content_hash() -> None:
+    """``source_name`` is a declared member of the ParsedSession partition.
 
-    Two ParsedSessions with identical content but different source_names
-    should produce identical content hashes. Source identity is part of the
-    session ID, not the content hash.
+    Content identity is an explicit classification of parser fields
+    (``polylogue/pipeline/ids.py``), and ``source_name`` sits in the hashed
+    set alongside ``provider_session_id``. Two sessions that agree on every
+    message but were produced by different providers are different sessions.
+
+    Anti-vacuity: moving ``source_name`` to the excluded set collapses these
+    two hashes and makes this equal.
     """
     msg = _msg("m1", "user", "hello")
     conv_chatgpt = ParsedSession(
@@ -336,7 +340,7 @@ def test_provider_source_does_not_affect_content_hash() -> None:
         messages=[msg],
         attachments=[],
     )
-    assert session_content_hash(conv_chatgpt) == session_content_hash(conv_claude)
+    assert session_content_hash(conv_chatgpt) != session_content_hash(conv_claude)
 
 
 # ── Session events affect hash ───────────────────────────────────────

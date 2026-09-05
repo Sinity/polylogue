@@ -390,7 +390,7 @@ def test_maybe_checkpoint_wal_reports_blocking_processes_when_busy(
 
     monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint._wal_size", lambda db: 1024)
     monkeypatch.setattr(
-        "polylogue.storage.sqlite.wal_checkpoint.open_connection", lambda *_args, **_kwargs: FakeConnection()
+        "polylogue.storage.sqlite.wal_checkpoint.open_daemon_connection", lambda *_args, **_kwargs: FakeConnection()
     )
     monkeypatch.setattr(
         "polylogue.storage.sqlite.wal_checkpoint._sqlite_file_holders",

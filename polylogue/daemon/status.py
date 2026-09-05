@@ -309,6 +309,7 @@ class RawFrontierIntegrity(BaseModel):
     cursor_ahead_samples: list[dict[str, object]] = Field(default_factory=list)
     cursor_authority_gap_count: int = 0
     cursor_authority_gap_samples: list[dict[str, object]] = Field(default_factory=list)
+    cursor_authority_deferred_count: int = 0
     cursor_ahead_reason: str = ""
 
 

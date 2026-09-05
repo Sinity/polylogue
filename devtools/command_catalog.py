@@ -138,15 +138,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
-        "schema-manifest",
-        "verification",
-        "Compare canonical SQLite schema manifests with archive tier files.",
-        "devtools.verify_schema_manifest",
-        json_flag=True,
-        use_when="Verify every tier's canonical create route and optionally compare it with an archive root.",
-        examples=("devtools schema-manifest", "devtools schema-manifest --archive-root /path/to/archive --json"),
-    ),
-    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",

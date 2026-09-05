@@ -625,3 +625,14 @@ def test_absent_paths_are_resolved_against_the_checkout_not_the_caller_cwd(
     ]
 
     assert run_tests.absent_selection_paths(selection, root=checkout) == ["tests/unit/test_deleted.py"]
+
+
+def test_nested_managed_run_never_traces_into_the_checkout_datafile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: tracing unconditionally lets a test that spawns
+    `devtools test` reset the outer corpus run's graph (2026-09-05: a full
+    corpus left a one-test datafile)."""
+    from devtools.agent_env import HARNESS_RUN_ENV
+    from devtools.run_tests import _testmon_args
+
+    assert "--testmon" in _testmon_args({})
+    assert tuple(_testmon_args({HARNESS_RUN_ENV: "run-1"})) == ("-p", "no:testmon")

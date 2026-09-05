@@ -1622,7 +1622,7 @@ def test_archive_local_fault_is_not_ledgered_as_provider_failure(
     def _raise_write_fault(*args: object, **kwargs: object) -> None:
         raise sqlite3.OperationalError("database is locked")
 
-    monkeypatch.setattr(embedding_write_module, "complete_embedding_attempt_success", _raise_write_fault)
+    monkeypatch.setattr(embedding_write_module, "finalize_embedding_attempt_success", _raise_write_fault)
     outcome = embed_archive_session_sync(index_db, _FakeV1VectorProvider(), session_id)
     assert outcome.status == "error"
 

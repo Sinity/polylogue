@@ -27,10 +27,11 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 
-from devtools.agent_env import agent_worker_cap, inside_agent_job
+from devtools.agent_env import HARNESS_RUN_ENV, agent_worker_cap, inside_agent_job
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -370,14 +371,21 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         *collection_args,
         # A focused run traces into the one checkout datafile and writes back,
         # so the graph is advanced by every managed run. It never selects: the
-        # caller already named what to run.
-        "--testmon",
-        f"--testmon-env={TESTMON_ENVIRONMENT}",
-        "--testmon-noselect",
+        # caller already named what to run. A run spawned from inside another
+        # managed run (a test exercising the harness) must not touch that
+        # datafile: its session would reset the outer run's pending graph.
+        *_testmon_args(os.environ),
         *selection,
         *worker_args,
         *_xdist_distribution_args(selection, worker_args),
     ]
+
+
+def _testmon_args(env: Mapping[str, str]) -> tuple[str, ...]:
+    """testmon flags for a focused run; none when nested in a managed run."""
+    if env.get(HARNESS_RUN_ENV):
+        return ("-p", "no:testmon")
+    return ("--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-noselect")
 
 
 def _selection_targets_benchmarks(selection: list[str]) -> bool:

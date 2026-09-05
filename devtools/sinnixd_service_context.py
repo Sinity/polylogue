@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from devtools.agent_env import runtime_env
+
 _CGROUP_PATH = Path("/proc/self/cgroup")
 _PROJECT_ID = "polylogue"
 
@@ -81,14 +83,14 @@ def require_declared_operation_context(
     environment. This does not replace Sinnixd's exact-head or lease validation.
     """
     env = os.environ if environment is None else environment
-    job_id = env.get("SINNIXD_JOB_ID", "")
+    job_id = runtime_env(env, "JOB_ID") or ""
     unit = _unit_name(job_id)
     expected = {
-        "SINNIXD_JOB_ID": job_id,
-        "SINNIXD_PROJECT_ID": _PROJECT_ID,
-        "SINNIXD_OPERATION": operation,
+        "JOB_ID": job_id,
+        "PROJECT_ID": _PROJECT_ID,
+        "OPERATION": operation,
     }
-    if any(env.get(key) != value for key, value in expected.items()):
+    if any(runtime_env(env, key) != value for key, value in expected.items()):
         raise ValueError("Sinnixd service context does not match the declared operation")
     read_cgroup = cgroup_reader or (lambda: _CGROUP_PATH.read_text(encoding="utf-8"))
     cgroup = _current_cgroup(read_cgroup)

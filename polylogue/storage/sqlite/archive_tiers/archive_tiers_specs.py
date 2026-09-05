@@ -943,6 +943,12 @@ SESSION_LINKS_SPEC = _make_table_spec(
     -- child inherited, and `inheritance` records whether the child shares the
     -- parent's leading prefix ('prefix-sharing') or is a fresh spawn that merely
     -- references the parent ('spawned-fresh'). NULL until the parent is resolved.
+    -- Positional content ancestry only: the prefix is aligned by message
+    -- position and content signature, and composition orders inherited
+    -- prefix then child tail by position. The child's tail may carry
+    -- occurred_at_ms earlier than this message (auto-compaction replays
+    -- original timestamps; observer clocks skew); no reader may treat the
+    -- branch point as a timestamp lower bound for the tail.
     -- Deliberately NOT a FK: message_id is deterministic, so a parent full-replace
     -- re-ingest re-creates the same id. An `ON DELETE SET NULL` FK would instead
     -- null this during the parent's DELETE step and permanently break the child's

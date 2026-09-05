@@ -259,8 +259,11 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
         if source_exists and recorded_state == "ready" and source_rows == 0 and indexed_rows == 0
         else False
     )
+    # No ledger table at all is a legacy tier: readiness is structural. A
+    # present ledger that holds no row for this surface is an unmeasured
+    # surface, and stays not-ready.
     freshness_ready = (
-        False
+        True
         if freshness_records is None
         else freshness_ready_record_trusted(
             state=recorded_state,
@@ -277,11 +280,13 @@ def _archive_blocks_surface(conn: sqlite3.Connection) -> dict[str, int | bool | 
             source_has_rows=source_has_rows,
         )
     )
-    # Ledger state is a cache of a measurement, not authority to refuse a
-    # read. Re-measure a non-trusted recorded scope against the rows the
-    # executor will actually search; a deferred single-session observation
-    # must not masquerade as archive-wide incompleteness.
-    if freshness is not None and not freshness_ready:
+    # A recorded state below `ready` is the ledger admitting it holds no
+    # current measurement: re-measure once against the rows the executor will
+    # actually search, so a deferred single-session observation cannot
+    # masquerade as archive-wide incompleteness. A recorded `ready` that fails
+    # the trust check already carries counts and a verdict — report it stale or
+    # unknown, because the request-safe path must not scan the source.
+    if freshness is not None and not freshness_ready and recorded_state != "ready":
         measured = _archive_exact_blocks_surface(conn)
         measured.update(
             {
