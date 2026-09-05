@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from devtools.agent_env import refuse_verify_tier
+from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.gate import quick_gates
@@ -133,7 +133,7 @@ def _raise_verification_interruption(signum: int, _frame: Any) -> None:
 
 
 def _declared_agentctl_operation(raw_argv: Sequence[str]) -> str | None:
-    operation = os.environ.get("SINNIXD_OPERATION")
+    operation = runtime_env(os.environ, "OPERATION")
     return operation if _AGENTCTL_OPERATION_ARGV.get(operation or "") == tuple(raw_argv) else None
 
 
