@@ -4325,3 +4325,37 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
         assert cursor.get_record(path) is not None
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+
+
+def test_lock_contention_is_retryable_and_corruption_is_not() -> None:
+    """Anti-vacuity: treating every OperationalError as retryable would hide a
+    malformed database behind a warning; treating none as retryable killed
+    the daemon on 2026-09-05."""
+    from polylogue.sources.live.watcher import _is_retryable_lock_error
+
+    assert _is_retryable_lock_error(sqlite3.OperationalError("database is locked"))
+    assert not _is_retryable_lock_error(sqlite3.OperationalError("database disk image is malformed"))
+
+
+@pytest.mark.asyncio
+async def test_catch_up_chunk_losing_a_lock_race_defers_instead_of_dying(tmp_path: Path) -> None:
+    """A locked archive write fails the chunk and the watcher continues."""
+    _processor, watcher, _cursor, source_path = _seed_live_cursor_authority_case(tmp_path, exact_frontier=True)
+    calls: list[list[Path]] = []
+
+    async def locked_ingest(paths: list[Path], **_: object) -> None:
+        calls.append(list(paths))
+        raise sqlite3.OperationalError("database is locked")
+
+    watcher._ingest_files = locked_ingest  # type: ignore[assignment, method-assign]
+    deferred: list[list[Path]] = []
+    watcher._defer_unaccounted_failed_retries = lambda paths: deferred.append(list(paths))  # type: ignore[method-assign]
+    watcher._batch_processor.require_cursor_authority = lambda *args, **kwargs: None  # type: ignore[method-assign]
+    watcher._needs_work_from_state = lambda *args, **kwargs: True  # type: ignore[method-assign]
+    watcher._pending_paths.add(source_path)
+
+    assert await watcher._flush_pending() is not None
+
+    assert calls == [[source_path]]
+    assert deferred == [[source_path]]
+    watcher.stop()
