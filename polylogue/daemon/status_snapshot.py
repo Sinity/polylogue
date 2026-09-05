@@ -258,7 +258,6 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
         "raw_parse_failures": 0,
         "raw_validation_failures": 0,
         "raw_quarantined": 0,
-        "raw_maintenance_failures": 0,
         "raw_deferred_failures": 0,
         "raw_terminal_rejections": 0,
         "raw_unexplained_failures": 0,

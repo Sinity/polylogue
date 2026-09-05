@@ -5,9 +5,7 @@ from __future__ import annotations
 import sys
 import time
 
-from polylogue.cli.shared.check_models import VacuumResult
 from polylogue.cli.shared.helpers import fail
-from polylogue.cli.shared.types import AppEnv
 from polylogue.core.protocols import ProgressCallback
 
 
@@ -52,27 +50,3 @@ def make_count_progress_callback(*, label: str, unit: str) -> ProgressCallback:
 def make_schema_progress_callback() -> ProgressCallback:
     """Return a stderr progress reporter for schema verification."""
     return make_count_progress_callback(label="Verifying schemas", unit="raw records")
-
-
-def make_session_insight_progress_callback() -> ProgressCallback:
-    """Return a stderr progress reporter for session-insight repairs."""
-    return make_count_progress_callback(label="Repairing session insights", unit="sessions")
-
-
-def vacuum_database(env: AppEnv) -> VacuumResult:
-    """Run VACUUM and return a machine-readable result."""
-    from polylogue.storage.sqlite.connection import open_connection
-
-    try:
-        with open_connection(env.config.db_path) as conn:
-            conn.execute("VACUUM")
-        return VacuumResult(ok=True, detail="Running VACUUM to reclaim space...\n  VACUUM complete.")
-    except Exception as exc:
-        return VacuumResult(ok=False, detail=f"Running VACUUM to reclaim space...\n  VACUUM failed: {exc}")
-
-
-def run_vacuum(env: AppEnv) -> None:
-    """Run VACUUM to reclaim unused space."""
-    result = vacuum_database(env)
-    env.ui.console.print("")
-    env.ui.console.print(result.detail)

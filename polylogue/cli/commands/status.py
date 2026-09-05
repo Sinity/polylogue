@@ -797,7 +797,7 @@ def _raw_replay_backlog_status(active_root: Path, *, limit: int = 5) -> dict[str
     try:
         from polylogue.config import Config
         from polylogue.paths import render_root
-        from polylogue.storage.repair import raw_materialization_replay_backlog
+        from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 
         return raw_materialization_replay_backlog(
             Config(archive_root=active_root, render_root=render_root(), sources=[]),
@@ -1396,7 +1396,6 @@ def _compact_raw_failure_status(status: dict[str, Any]) -> dict[str, Any]:
         "parse": "raw_parse_failures",
         "validation": "raw_validation_failures",
         "quarantined": "raw_quarantined",
-        "maintenance": "raw_maintenance_failures",
         "deferred_retryable": "raw_deferred_failures",
         "terminal_rejections": "raw_terminal_rejections",
         "unexplained": "raw_unexplained_failures",
@@ -1432,7 +1431,6 @@ def _direct_raw_failure_status(root: Path) -> dict[str, Any]:
         "raw_parse_failures": _safe_int(info.get("parse_failures")),
         "raw_validation_failures": _safe_int(info.get("validation_failures")),
         "raw_quarantined": _safe_int(info.get("quarantined")),
-        "raw_maintenance_failures": _safe_int(info.get("maintenance_failures")),
         "raw_deferred_failures": _safe_int(info.get("deferred_failures")),
         "raw_terminal_rejections": _safe_int(info.get("terminal_rejections")),
         "raw_unexplained_failures": _safe_int(info.get("unexplained_failures")),
@@ -2259,11 +2257,7 @@ def _show_direct_status(
             env.ui.console.print(f"  Raw records: {raw:,}")
         raw_failure_status = _direct_raw_failure_status(root)
         raw_lifecycle_healthy = _raw_failure_lifecycle_is_healthy(raw_failure_status)
-        raw_total = (
-            raw_failure_status["raw_parse_failures"]
-            + raw_failure_status["raw_validation_failures"]
-            + raw_failure_status["raw_maintenance_failures"]
-        )
+        raw_total = raw_failure_status["raw_parse_failures"] + raw_failure_status["raw_validation_failures"]
         if raw_total:
             env.ui.console.print(
                 "  Raw failures: "

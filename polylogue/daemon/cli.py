@@ -119,7 +119,7 @@ _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINA
 # maintenance-priority admission (PR #3289) bounds worst-case queued-actor
 # wait to roughly "this pass's remaining budget + at most one more
 # already-queued, equally-bounded ingest hold" instead of an unbounded
-# multi-minute wait. ``repair_raw_materialization`` checks this budget only
+# multi-minute wait. ``converge_raw_materialization`` checks this budget only
 # between components, at a point it already commits and requeries candidates
 # -- a real transaction-boundary checkpoint, not a mid-write yield -- and
 # always completes at least one component regardless of the budget, so a
@@ -1220,7 +1220,7 @@ def _drain_raw_materialization_once(
                     auto_resolved,
                 )
             try:
-                result = raw_authority.repair_materialization(
+                result = raw_authority.converge_materialization(
                     config,
                     dry_run=False,
                     raw_artifact_limit=limit,
@@ -1319,7 +1319,7 @@ def _run_raw_materialization_whale_pass_once(
             result = refused_result
         else:
             try:
-                result = raw_authority.repair_materialization(
+                result = raw_authority.converge_materialization(
                     config,
                     dry_run=False,
                     raw_artifact_limit=1,

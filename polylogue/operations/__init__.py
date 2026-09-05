@@ -1,7 +1,7 @@
 """Canonical archive operations shared across facade, CLI, and MCP surfaces.
 
 Re-exports are lazy (PEP 562 module ``__getattr__``): ``.archive`` alone pulls
-in the whole insights registry (``insights.archive`` -> ``storage.repair`` and
+in the whole insights registry (``insights.archive`` -> ``storage.raw_convergence`` and
 friends), so a caller that only needs e.g. ``OperationStatus`` from
 ``.operation_contract`` -- reached simply by importing a *submodule* of this
 package, which Python resolves by running this ``__init__`` first -- used to

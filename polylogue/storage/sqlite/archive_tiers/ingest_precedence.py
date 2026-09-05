@@ -208,7 +208,7 @@ def revision_authority_refuses_write(
     ).fetchone()
     if has_revision_heads is not None:
         # Historical drift or an interrupted repair can leave more than one
-        # raw_revision_heads row for a session (storage/repair.py's
+        # raw_revision_heads row for a session (storage/raw_convergence.py's
         # ``parallel_session_heads`` shape). A bare ``LIMIT 1`` examined an
         # arbitrary one of those rows, so an incoming raw matching whichever
         # row happened to be selected was allowed through even when a

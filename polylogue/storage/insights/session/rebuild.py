@@ -2253,7 +2253,7 @@ def rebuild_archive_session_insights(
     to the canonical path, which commits internally.
 
     Both :mod:`polylogue.api` (the async facade) and
-    :mod:`polylogue.storage.repair` (maintenance/doctor repair orchestration)
+    :mod:`polylogue.storage.raw_convergence` (maintenance/doctor repair orchestration)
     call this primitive downward instead of duplicating it or reaching across
     ring boundaries for a private symbol (polylogue-exb).
     """

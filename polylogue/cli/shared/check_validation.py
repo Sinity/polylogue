@@ -5,20 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from polylogue.cli.shared.helpers import fail
-from polylogue.maintenance.targets import MaintenanceTargetMode, build_maintenance_target_catalog
 
 if TYPE_CHECKING:
     from polylogue.cli.shared.check_workflow import CheckCommandOptions
 
 
 def validate_check_options(options: CheckCommandOptions) -> None:
-    catalog = build_maintenance_target_catalog()
-    if options.vacuum and not (options.repair or options.cleanup):
-        fail("doctor", "--vacuum requires --repair or --cleanup")
-    if options.preview and not (options.repair or options.cleanup):
-        fail("doctor", "--preview requires --repair or --cleanup")
-    if options.maintenance_targets and not (options.repair or options.cleanup):
-        fail("doctor", "--target requires --repair or --cleanup")
     if options.blob_integrity_full and not options.check_blob:
         fail("doctor", "--full requires --blob")
     if options.schema_providers and not options.check_schemas:
@@ -55,20 +47,6 @@ def validate_check_options(options: CheckCommandOptions) -> None:
         fail("doctor", "--artifact-limit must be a positive integer")
     if options.artifact_offset < 0:
         fail("doctor", "--artifact-offset must be >= 0")
-    if options.maintenance_targets:
-        selected = catalog.resolve(tuple(options.maintenance_targets))
-        if (
-            options.repair
-            and not options.cleanup
-            and not any(spec.mode is MaintenanceTargetMode.REPAIR for spec in selected)
-        ):
-            fail("doctor", "--target only selected cleanup targets while running --repair")
-        if (
-            options.cleanup
-            and not options.repair
-            and not any(spec.mode is MaintenanceTargetMode.CLEANUP for spec in selected)
-        ):
-            fail("doctor", "--target only selected repair targets while running --cleanup")
 
 
 __all__ = ["validate_check_options"]

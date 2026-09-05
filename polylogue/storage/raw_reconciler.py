@@ -1,7 +1,7 @@
 """Proof-driven census for every accepted raw-authority frontier.
 
 This module owns the provider-neutral state machine. Historical incident
-actuators remain implementation strategies in :mod:`polylogue.storage.repair`;
+actuators remain implementation strategies in :mod:`polylogue.storage.raw_convergence`;
 they do not get to define separate public notions of plan identity, evidence,
 or readiness.
 """
@@ -41,7 +41,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import deterministic_ra
 logger = get_logger(__name__)
 
 if TYPE_CHECKING:
-    from polylogue.storage.repair import (
+    from polylogue.storage.raw_convergence import (
         BrowserCaptureOriginRepairItem,
         DuplicateRawIdentityRepairItem,
         QuarantinedAcceptedRawRepairItem,
@@ -318,7 +318,7 @@ def _archive_root(config: Config) -> Path:
     """Return the archive file-set root housing the currently active database.
 
     Deliberately follows ``config.db_path`` (not ``config.archive_root``),
-    matching :func:`polylogue.storage.repair._raw_materialization_archive_root`:
+    matching :func:`polylogue.storage.raw_convergence._raw_materialization_archive_root`:
     this reconciler inspects the database and blob store that are actually
     live right now, which ``config.db_path`` already resolves correctly
     (``.index-active-pointer``-aware, or an explicit override) inside
@@ -405,7 +405,7 @@ def _verified_blob_bytes(conn: sqlite3.Connection, blob_store: BlobStore, hash_h
 
 
 def _browser_strategy_witness(item: BrowserCaptureOriginRepairItem) -> JSONDocument:
-    from polylogue.storage.repair import _browser_origin_item_payload
+    from polylogue.storage.raw_convergence import _browser_origin_item_payload
 
     return json_document(
         {
@@ -432,7 +432,7 @@ def _quarantine_strategy_witness(item: QuarantinedAcceptedRawRepairItem) -> JSON
 
 
 def _duplicate_strategy_witness(item: DuplicateRawIdentityRepairItem) -> JSONDocument:
-    from polylogue.storage.repair import _duplicate_raw_identity_proof_digest
+    from polylogue.storage.raw_convergence import _duplicate_raw_identity_proof_digest
 
     return json_document(
         {
@@ -668,7 +668,7 @@ def _classify_frontier(
         )
     duplicate_siblings = _duplicate_alias_siblings(conn, row)
     if duplicate_siblings and row.get("native_id") is not None:
-        from polylogue.storage.repair import _inspect_duplicate_raw_identity
+        from polylogue.storage.raw_convergence import _inspect_duplicate_raw_identity
 
         if len(duplicate_siblings) != 1:
             raise RuntimeError(f"duplicate alias classification is not injective for {raw_id}")
@@ -787,7 +787,7 @@ def _strategy_overrides(
     index_db_path: Path,
 ) -> dict[str, _StrategyOverride]:
     """Ask legacy incident inspectors for proofs, never for plan identity."""
-    from polylogue.storage.repair import (
+    from polylogue.storage.raw_convergence import (
         inspect_browser_canonical_authority_conflicts,
         inspect_browser_capture_origin_mismatches,
         inspect_quarantined_accepted_raws,
@@ -1436,7 +1436,7 @@ def _apply_strategy(
     item: RawAuthorityFrontierItem,
 ) -> JSONDocument:
     from polylogue.storage.index_generation import RebuildLease
-    from polylogue.storage.repair import (
+    from polylogue.storage.raw_convergence import (
         _apply_browser_conflict_canonical_resolution,
         _apply_browser_origin_repair_item,
         _apply_duplicate_raw_identity_repair,

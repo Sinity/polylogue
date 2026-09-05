@@ -20,7 +20,7 @@ from polylogue.core.types import ContentHash, MessageId, SessionId
 # isinstance-checked here). Importing them eagerly forces the whole
 # `polylogue.sources` package init -- including the Drive download subsystem
 # -- onto every caller of this pure hashing/id module (polylogue-8s70: this
-# was ~395ms of `polylogue.storage.repair`'s ~670ms import cost, the single
+# was ~395ms of `polylogue.storage.raw_convergence`'s ~670ms import cost, the single
 # largest contributor). TYPE_CHECKING-only keeps static typing intact while
 # deferring the real import to whichever caller actually needs `sources`.
 if TYPE_CHECKING:
@@ -89,7 +89,7 @@ class SessionRevisionProjection:
     question from revision *comparison*, and only the latter is
     content-only). ``attachment_identities`` is kept as a plain
     ``frozenset[bytes]`` of the same content-derived keys, read by
-    ``storage/repair.py``/``archive.py`` only via ``len()`` for a frontier
+    ``storage/raw_convergence.py``/``archive.py`` only via ``len()`` for a frontier
     count.
     """
 

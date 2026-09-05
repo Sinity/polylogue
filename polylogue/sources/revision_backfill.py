@@ -1023,7 +1023,7 @@ def uncensused_historical_revision_raw_ids(
     observed by a real parser?", which a fingerprint bump alone does not
     change -- only ``classify_membership_revisions`` semantics changing (a
     superseded fingerprint) can make a *verdict* stale, which is a separate
-    question the terminal-decision check in ``storage/repair.py`` answers.
+    question the terminal-decision check in ``storage/raw_convergence.py`` answers.
     Treating a bump as forcing full re-census here would mean every
     fingerprint bump re-parses the entire archive just to re-confirm facts
     that did not change.
@@ -2384,7 +2384,7 @@ def backfill_historical_revision_evidence(
         # requires enough cohorts to amortize the worker's setup (thread
         # spawn, two read connections, a plan scan over raw_sessions/
         # raw_session_memberships): the live raw-materialization path
-        # (storage/repair.py) replays ONE authority component per call,
+        # (storage/raw_convergence.py) replays ONE authority component per call,
         # where a prefetcher could never get ahead of the writer anyway.
         effective_pipeline_decode = (
             pipeline_decode
@@ -3313,7 +3313,7 @@ _PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
 #: engage. Below this, the worker's fixed setup cost (thread spawn, two read
 #: connections, a raw_sessions/raw_session_memberships plan scan) cannot be
 #: repaid -- most notably the live raw-materialization path
-#: (``storage/repair.py``), which replays exactly one authority component
+#: (``storage/raw_convergence.py``), which replays exactly one authority component
 #: per ``backfill_historical_revision_evidence`` call. Explicit
 #: ``pipeline_decode=True``/``False`` bypasses this floor entirely.
 _PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8

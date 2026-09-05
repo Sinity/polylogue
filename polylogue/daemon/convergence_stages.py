@@ -838,10 +838,10 @@ def make_sinex_publication_stage(
 
 
 _RAW_PARSE_RECOVERY_BATCH_LIMIT = 200
-# Mirrors ``storage.repair.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES`` as a
+# Mirrors ``storage.raw_convergence.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES`` as a
 # local literal rather than importing it: new surface code (this stage lives
 # in ``daemon/``) should not import substrate (``storage``) internals
-# directly per this repo's layering ratchet, and ``repair_materialization``'s
+# directly per this repo's layering ratchet, and ``converge_materialization``'s
 # ``max_payload_bytes`` is a plain bound this stage can restate on its own.
 _RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
 
@@ -854,7 +854,7 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
     ``sessions`` row for the raw (by raw_id or native-id alias) and no
     terminal parse error recorded. It intentionally does not replicate the
     full authority/quarantine/byte-authority classification -- that
-    refinement happens inside ``repair_raw_materialization`` itself during
+    refinement happens inside ``converge_raw_materialization`` itself during
     ``execute``; this is only a cheap "is there plausibly pending work here"
     probe so ``check`` stays fast and false positives just cost one wasted
     ``execute`` call rather than silently missing real backlog.
@@ -964,7 +964,7 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
     ``raw_parse_recovery`` convergence-debt row per source path that attempt
     covered. This stage is what actually drains that debt: ``check`` reports
     whether raw rows under the path are still acquired but never
-    materialized, and ``execute`` re-drives ``repair_raw_materialization``
+    materialized, and ``execute`` re-drives ``converge_raw_materialization``
     scoped to exactly that path via ``source_root`` -- the same replay engine
     the archive-wide trickle conveyor already uses, just requeued
     deterministically instead of waiting for an accidental future touch of
@@ -976,7 +976,7 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
 
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
-        from polylogue.maintenance.raw_authority import repair_materialization
+        from polylogue.maintenance.raw_authority import converge_materialization
         from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
 
         configured_root = archive_root or db_path.parent
@@ -989,7 +989,7 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
             return False
         config = Config(archive_root=configured_root, render_root=configured_root, sources=[])
         try:
-            repair_materialization(
+            converge_materialization(
                 config,
                 dry_run=False,
                 raw_artifact_limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,

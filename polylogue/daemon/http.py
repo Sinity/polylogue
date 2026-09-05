@@ -723,38 +723,6 @@ def _archive_filter_kwargs_from_spec(
     }
 
 
-_SCOPE_FILTER_KEYS = frozenset(
-    {
-        "session_ids",
-        "origin",
-        "source_family",
-        "source_root",
-        "time_range",
-        "failure_kind",
-        "parser_version",
-    }
-)
-
-
-def _parse_scope_filter_body(body: dict[str, Any]) -> dict[str, Any]:
-    """Extract scope-filter fields from a maintenance POST body.
-
-    Accepts both a nested ``{"scope": {"filter": {...}}}`` envelope and
-    a flat top-level shape (``session_ids`` etc. directly on the
-    body). The flat form is the one the CLI's ``--output-format json``
-    plan reuses when an operator pipes it back to the daemon, so
-    parity with the CLI is what pins the daemon-side parser.
-    """
-
-    scope = body.get("scope")
-    if isinstance(scope, dict):
-        scope_filter = scope.get("filter")
-        if isinstance(scope_filter, dict):
-            return dict(scope_filter)
-    # Fall back to flat keys on the body itself.
-    return {key: body[key] for key in _SCOPE_FILTER_KEYS if key in body}
-
-
 def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
     return target_ref.model_dump(mode="json", exclude_none=True)
 

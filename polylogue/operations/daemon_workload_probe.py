@@ -28,7 +28,7 @@ from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import probe_archive_tier
 from polylogue.storage.blob_integrity import scan_blob_reference_debt
-from polylogue.storage.repair import raw_materialization_replay_backlog
+from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection

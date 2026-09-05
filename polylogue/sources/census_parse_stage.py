@@ -60,7 +60,7 @@ from polylogue.pipeline.parsed_tree_size import (
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
-from polylogue.storage.repair import (
+from polylogue.storage.raw_convergence import (
     raw_materialization_pending_census_raw_ids,
     raw_materialization_readonly_descriptors,
 )
@@ -145,7 +145,7 @@ def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     polylogue-6lyh1: mirrors ``ArchiveStore.raw_native_id`` (same column, same
     "blank means unknown" contract) but over a plain ``mode=ro`` connection,
     the same relationship ``raw_materialization_readonly_descriptors`` (in
-    ``storage/repair.py``) has to ``ArchiveStore.raw_revision_descriptor`` --
+    ``storage/raw_convergence.py``) has to ``ArchiveStore.raw_revision_descriptor`` --
     kept as a small dedicated query here rather than widening that shared
     helper's return shape, since its other callers do not need this column.
     """
@@ -581,7 +581,7 @@ class CensusParseStage:
 
         Returns the number of raws newly admitted to the cache. Read-only
         end to end: candidate discovery and descriptor lookup both open
-        ``mode=ro`` SQLite connections (``polylogue.storage.repair``);
+        ``mode=ro`` SQLite connections (``polylogue.storage.raw_convergence``);
         parsing reads only already-published blob bytes via a stateless
         ``ArchiveBlobPublisher``, mirroring the production census parse
         worker exactly (``census_parse_worker``, the same function the

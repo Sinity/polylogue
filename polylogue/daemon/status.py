@@ -74,8 +74,8 @@ from polylogue.storage.archive_readiness import (
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
 )
+from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
-from polylogue.storage.repair import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -404,23 +404,15 @@ class RawFailureSample(BaseModel):
     table and consumed by the typed ``DaemonStatus`` model. Every surface
     (CLI, MCP, daemon HTTP) receives the same structured taxonomy.
 
-    Two failure surfaces share this envelope:
-
-    * ``source == "ingest"`` (default) — failures observed on
-      :mod:`polylogue.pipeline` parse/validate paths; the ``raw_id``
-      and provider-specific signals come from ``raw_sessions``.
-    * ``source == "maintenance"`` — failures observed on
-      :mod:`polylogue.maintenance.replay` per-record paths, routed via
-      :func:`polylogue.maintenance.failure_routing.route_failure_sample`
-      and reattached to status here. They carry the originating
-      :attr:`operation_id` and the typed planner :attr:`locator`.
+    Failures are observed on :mod:`polylogue.pipeline` parse/validate
+    paths; the ``raw_id`` and provider-specific signals come from
+    ``raw_sessions``.
     """
 
     failure_kind: Literal[
         "decode_error",
         "parse_error",
         "schema_violation",
-        "maintenance",
         "unknown",
         "deferred_hot_jsonl_capture",
         "deferred_claude_code_partial_jsonl",
@@ -433,9 +425,6 @@ class RawFailureSample(BaseModel):
     ]
     provider_hint: str | None = None
     redacted_error: str = ""
-    source: Literal["ingest", "maintenance"] = "ingest"
-    operation_id: str | None = None
-    locator: str | None = None
     lifecycle: Literal["deferred", "terminal", "unexplained"] | None = None
 
     @field_validator("redacted_error", mode="before")
@@ -519,7 +508,6 @@ class DaemonStatus(BaseModel):
     raw_parse_failures: int = 0
     raw_validation_failures: int = 0
     raw_quarantined: int = 0
-    raw_maintenance_failures: int = 0
     raw_deferred_failures: int = 0
     raw_terminal_rejections: int = 0
     raw_unexplained_failures: int = 0
@@ -856,80 +844,37 @@ def _archive_insight_freshness_info(archive_db: Path) -> dict[str, object] | Non
 
 
 def _raw_failure_info() -> dict[str, object]:
-    """Query raw_sessions + maintenance routing for failure counts and samples.
-
-    The payload merges two failure surfaces (#1198):
-
-    * ``parse_failures`` / ``validation_failures`` / ``quarantined`` /
-      ``detection_warnings`` come from the ``raw_sessions`` table
-      (ingest path);
-    * ``maintenance_failures`` comes from the JSONL file written by
-      :func:`polylogue.maintenance.failure_routing.route_failure_sample`
-      (replay path).
-
-    ``samples`` interleaves both surfaces — newest first — capped at
-    50 entries total. Each sample carries ``source`` so consumers can
-    distinguish ``"ingest"`` rows from ``"maintenance"`` rows without
-    re-querying.
-    """
+    """Query raw_sessions for failure counts and bounded samples (newest first, capped at 50)."""
     root = archive_root()
-    source_db = root / "source.db"
-    maintenance_samples, maintenance_count, maintenance_error = _maintenance_failure_info()
-    if maintenance_error is not None:
-        return _unavailable_raw_failure_info(
-            reason=f"maintenance failure ledger unavailable: {maintenance_error}",
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
-        )
-    archive_info = _archive_raw_failure_info(
-        source_db,
-        maintenance_samples=maintenance_samples,
-        maintenance_count=maintenance_count,
-    )
-    return archive_info
+    return _archive_raw_failure_info(root / "source.db")
 
 
-def _unavailable_raw_failure_info(
-    *,
-    reason: str,
-    maintenance_samples: list[RawFailureSample],
-    maintenance_count: int,
-) -> dict[str, object]:
+def _unavailable_raw_failure_info(*, reason: str) -> dict[str, object]:
     """Represent missing source evidence without manufacturing zero counts."""
     return {
         "parse_failures": 0,
         "validation_failures": 0,
         "quarantined": 0,
         "detection_warnings": 0,
-        "maintenance_failures": maintenance_count,
         "deferred_failures": 0,
         "terminal_rejections": 0,
         "unexplained_failures": 0,
         "raw_failure_lifecycle_available": False,
         "raw_failure_lifecycle_state": "unavailable",
         "raw_failure_lifecycle_reason": reason,
-        "samples": maintenance_samples,
+        "samples": [],
     }
 
 
-def _archive_raw_failure_info(
-    archive_db: Path,
-    *,
-    maintenance_samples: list[RawFailureSample],
-    maintenance_count: int,
-) -> dict[str, object]:
+def _archive_raw_failure_info(archive_db: Path) -> dict[str, object]:
     if not archive_db.exists():
         return _unavailable_raw_failure_info(
             reason=f"source.db not found: {archive_db}",
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
         )
     lifecycle_snapshot = read_raw_failure_lifecycle(archive_db, sample_limit=50)
     if not lifecycle_snapshot.available:
         return _unavailable_raw_failure_info(
             reason=lifecycle_snapshot.reason or "raw failure lifecycle is unavailable",
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
         )
     try:
         conn = open_readonly_connection(archive_db, validate_schema=False)
@@ -937,8 +882,6 @@ def _archive_raw_failure_info(
             if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='raw_sessions'").fetchone():
                 return _unavailable_raw_failure_info(
                     reason="source.db is missing raw_sessions",
-                    maintenance_samples=maintenance_samples,
-                    maintenance_count=maintenance_count,
                 )
             parse_fail = lifecycle_snapshot.parse_failures
             validation_fail = lifecycle_snapshot.validation_failures
@@ -1024,16 +967,12 @@ def _archive_raw_failure_info(
                 )
         finally:
             conn.close()
-        combined: list[RawFailureSample] = list(samples)
-        combined.extend(maintenance_samples)
-        if len(combined) > 50:
-            combined = combined[:50]
+        combined: list[RawFailureSample] = list(samples)[:50]
         return {
             "parse_failures": parse_fail,
             "validation_failures": validation_fail,
             "quarantined": quarantined,
             "detection_warnings": detection_warnings_count,
-            "maintenance_failures": maintenance_count,
             "deferred_failures": lifecycle_snapshot.deferred,
             "terminal_rejections": lifecycle_snapshot.terminal,
             "unexplained_failures": lifecycle_snapshot.unexplained,
@@ -1045,70 +984,17 @@ def _archive_raw_failure_info(
         logger.warning("status: raw-failure query failed for %s: %s", archive_db, exc, exc_info=True)
         return _unavailable_raw_failure_info(
             reason=f"could not read source.db raw failure relations: {exc}",
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
         )
 
 
 def raw_failure_info_for_root(root: Path) -> dict[str, object]:
     """Return raw lifecycle evidence from one archive root without a daemon."""
-    maintenance_samples, maintenance_count, maintenance_error = _maintenance_failure_info(root)
-    if maintenance_error is not None:
-        return _unavailable_raw_failure_info(
-            reason=f"maintenance failure ledger unavailable: {maintenance_error}",
-            maintenance_samples=maintenance_samples,
-            maintenance_count=maintenance_count,
-        )
-    archive_info = _archive_raw_failure_info(
-        root / "source.db",
-        maintenance_samples=maintenance_samples,
-        maintenance_count=maintenance_count,
-    )
-    return archive_info
+    return _archive_raw_failure_info(root / "source.db")
 
 
 def raw_failure_lifecycle_for_root(root: Path) -> Any:
     """Return the bounded source-tier lifecycle snapshot for a status route."""
     return read_raw_failure_lifecycle(root / "source.db", sample_limit=0)
-
-
-def _maintenance_failure_info(root: Path | None = None) -> tuple[list[RawFailureSample], int, str | None]:
-    """Read routed maintenance failures into typed daemon samples (#1198).
-
-    Returns ``(samples, total_count, read_error)`` so the caller can surface
-    bounded samples, report the absolute count to the raw-failures health
-    check, and distinguish an empty ledger from an unreadable one.
-    """
-    from polylogue.maintenance.failure_routing import (
-        count_maintenance_failures,
-        read_maintenance_failures_with_error,
-    )
-
-    try:
-        archive = root or archive_root()
-        records, read_error = read_maintenance_failures_with_error(archive)
-        total = count_maintenance_failures(archive)
-    except Exception as exc:
-        logger.warning("status: maintenance-failure read failed: %s", exc, exc_info=True)
-        return [], 0, str(exc)
-
-    if read_error is not None:
-        logger.warning("status: maintenance-failure read failed: %s", read_error)
-        return [], total, read_error
-
-    samples: list[RawFailureSample] = []
-    for record in records:
-        samples.append(
-            RawFailureSample(
-                failure_kind="maintenance",
-                provider_hint=record.target or None,
-                redacted_error=f"{record.kind}: {record.message}" if record.kind else record.message,
-                source="maintenance",
-                operation_id=record.operation_id or None,
-                locator=record.locator or None,
-            )
-        )
-    return samples, total, None
 
 
 def _typed_failure_samples(value: object) -> list[RawFailureSample]:
@@ -2751,7 +2637,6 @@ def build_daemon_status(
         raw_parse_failures=_safe_int(raw_failures.get("parse_failures", 0)),
         raw_validation_failures=_safe_int(raw_failures.get("validation_failures", 0)),
         raw_quarantined=_safe_int(raw_failures.get("quarantined", 0)),
-        raw_maintenance_failures=_safe_int(raw_failures.get("maintenance_failures", 0)),
         raw_deferred_failures=_safe_int(raw_failures.get("deferred_failures", 0)),
         raw_terminal_rejections=_safe_int(raw_failures.get("terminal_rejections", 0)),
         raw_unexplained_failures=_safe_int(raw_failures.get("unexplained_failures", 0)),
@@ -2975,7 +2860,6 @@ def daemon_status_payload(
             "raw_parse_failures": status.raw_parse_failures,
             "raw_validation_failures": status.raw_validation_failures,
             "raw_quarantined": status.raw_quarantined,
-            "raw_maintenance_failures": status.raw_maintenance_failures,
             "raw_deferred_failures": status.raw_deferred_failures,
             "raw_terminal_rejections": status.raw_terminal_rejections,
             "raw_unexplained_failures": status.raw_unexplained_failures,
@@ -3434,7 +3318,6 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     raw_parse = _safe_int(payload.get("raw_parse_failures"))
     raw_val = _safe_int(payload.get("raw_validation_failures"))
     raw_quarantined = _safe_int(payload.get("raw_quarantined"))
-    raw_maintenance = _safe_int(payload.get("raw_maintenance_failures"))
     raw_deferred = _safe_int(payload.get("raw_deferred_failures"))
     raw_terminal = _safe_int(payload.get("raw_terminal_rejections"))
     raw_unexplained = _safe_int(payload.get("raw_unexplained_failures"))
@@ -3444,11 +3327,9 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     if raw_lifecycle_unavailable or lifecycle_state == "blocked":
         lifecycle_reason = str(payload.get("raw_failure_lifecycle_reason") or "source.db evidence is unavailable")
         lines.append(f"Raw failures: {lifecycle_state} ({lifecycle_reason})")
-    total_raw = raw_parse + raw_val + raw_maintenance
+    total_raw = raw_parse + raw_val
     if not raw_lifecycle_unavailable and total_raw > 0:
         breakdown = f"{raw_parse} parse + {raw_val} validation"
-        if raw_maintenance > 0:
-            breakdown += f" + {raw_maintenance} maintenance"
         lines.append(f"Raw failures: {total_raw} total ({raw_quarantined} quarantined), {breakdown}")
         lines.append(
             f"  Lifecycle: {raw_deferred} deferred retryable, {raw_terminal} terminal, {raw_unexplained} unexplained"
@@ -3460,12 +3341,7 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
                     kind = s.get("failure_kind", "unknown")
                     hint = s.get("provider_hint") or "?"
                     error_text = str(s.get("redacted_error", ""))
-                    source = s.get("source", "ingest")
-                    op_id = s.get("operation_id")
-                    suffix = ""
-                    if source == "maintenance" and op_id:
-                        suffix = f" (op={str(op_id)[:8]})"
-                    lines.append(f"  [{kind}] {hint}: {error_text[:120]}{suffix}")
+                    lines.append(f"  [{kind}] {hint}: {error_text[:120]}")
     # Embedding readiness
     embedding = payload.get("embedding_readiness")
     if isinstance(embedding, dict):

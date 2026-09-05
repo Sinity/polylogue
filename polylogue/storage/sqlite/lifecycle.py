@@ -73,14 +73,9 @@ def same_version_schema_variants(version: int) -> tuple[SameVersionSchemaVariant
 class TargetedReprocessScope:
     """A bounded reprocess scope over already-persisted sessions, as data.
 
-    Mirrors the ``origin``/``session_ids`` dimensions of
-    ``polylogue.maintenance.scope.MaintenanceScopeFilter`` -- the vocabulary
-    every other maintenance backfill already scopes by -- without importing
-    that module here: ``lifecycle.py`` is deliberately free of any
-    non-stdlib import so the schema-versioning policy lint, the fast-forward
-    executor, and unit tests can all evaluate it from the thinnest possible
-    surface. A caller that already imports ``polylogue.maintenance`` can
-    losslessly round-trip an instance into a ``MaintenanceScopeFilter``.
+    ``lifecycle.py`` is deliberately free of any non-stdlib import so the
+    schema-versioning policy lint, the fast-forward executor, and unit tests
+    can all evaluate it from the thinnest possible surface.
 
     At least one dimension must be set -- an empty scope would silently mean
     "every session", which is exactly the full-corpus cost this delta class
