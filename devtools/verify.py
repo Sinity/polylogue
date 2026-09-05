@@ -76,12 +76,23 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: One fixed width for the corpus and the runner's affected tier, sized to the
-#: pytest pool's 12 GiB cgroup ceiling (eight workers peak near 10 GB) rather
-#: than host cores or free RAM. Measured 2026-09-03 uncontended: 47 minutes for
-#: 20,860 tests at eight workers; at two the same run takes about seven hours
-#: and the required check cannot finish inside its slot timeout.
+#: The widest the corpus and the runner's affected tier ever run, sized to the
+#: pytest pool's 12 GiB cgroup ceiling rather than host cores. Measured
+#: 2026-09-03 uncontended: 47 minutes for 20,860 tests at eight workers; at two
+#: the same run takes about seven hours and the required check cannot finish
+#: inside its slot timeout. :func:`memory_bounded_worker_cap` narrows it to what
+#: the host can hold when the run starts.
 CORPUS_MAX_WORKERS = 8
+#: What one worker and the controller cost at peak, in MiB. Measured on the
+#: 8-worker seed: workers 0.53-0.67 GiB PSS, controller about 1.05 GiB. The
+#: worker figure takes the upper end so the estimate errs toward fewer workers.
+#: These are properties of the workload, not of host pressure; the pressure
+#: enters as the live reading below.
+WORKER_PEAK_MIB = 686
+CONTROLLER_PEAK_MIB = 1075
+#: Memory left unclaimed so the run stays clear of the out-of-memory daemon's
+#: pressure threshold rather than approaching it.
+MEMORY_HEADROOM_FRACTION = 0.2
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 # These tests read the AgentCTL descriptor directly. They are the bounded
@@ -166,6 +177,45 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     return ["--dist=loadgroup", "-n", str(workers)]
 
 
+def available_memory_mib(*, meminfo: Path = Path("/proc/meminfo")) -> int | None:
+    """``MemAvailable``, the kernel's own estimate of what a new workload may take."""
+    try:
+        for line in meminfo.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition(":")
+            if key == "MemAvailable":
+                return int(value.split()[0]) // 1024
+    except (OSError, IndexError, ValueError):
+        return None
+    return None
+
+
+def memory_bounded_worker_cap(*, meminfo: Path = Path("/proc/meminfo")) -> tuple[int, dict[str, Any]]:
+    """The widest corpus this host can hold right now, and why.
+
+    A fixed width assumes memory that may not be there. Two full corpus runs
+    were killed by the out-of-memory daemon at about 6.2 GB peak while the
+    operator's desktop and other lanes were resident; a run that is killed
+    measures nothing, and a narrower run that finishes measures everything.
+    Width is therefore derived from the live reading rather than assumed.
+    """
+    available = available_memory_mib(meminfo=meminfo)
+    if available is None:
+        return CORPUS_MAX_WORKERS, {"basis": "unmeasured", "workers": CORPUS_MAX_WORKERS}
+    budget = available * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
+    fits = int(budget // WORKER_PEAK_MIB)
+    workers = max(1, min(CORPUS_MAX_WORKERS, fits))
+    return workers, {
+        "basis": "mem_available",
+        "available_mib": available,
+        "headroom_fraction": MEMORY_HEADROOM_FRACTION,
+        "controller_peak_mib": CONTROLLER_PEAK_MIB,
+        "worker_peak_mib": WORKER_PEAK_MIB,
+        "workers": workers,
+        "corpus_max_workers": CORPUS_MAX_WORKERS,
+        "narrowed": workers < CORPUS_MAX_WORKERS,
+    }
+
+
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection, both tracing.
 
@@ -213,7 +263,13 @@ def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick:
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
+        maximum, basis = memory_bounded_worker_cap()
+        if basis.get("narrowed"):
+            sys.stderr.write(
+                f"verify: {basis['available_mib']} MiB available holds {maximum} workers, "
+                f"not {CORPUS_MAX_WORKERS}; running narrower rather than being killed.\n"
+            )
+        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=maximum))
     return steps
 
 
