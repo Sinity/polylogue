@@ -820,7 +820,7 @@ class RawParsePrefetchCache:
     LRU-retained until evicted, so a raw whose bytes were already parsed on
     an EARLIER page of the SAME long-lived cache instance (the daemon's
     ``DaemonParseStage.cache`` is a process-lifetime singleton -- see
-    ``daemon/cli.py``'s ``_daemon_bulk_rebuild_parse_stage()``) is served
+    ``daemon/cli.py``'s ``_daemon_parse_stage()``) is served
     from cache on a LATER page instead of reparsed, closing the one real gap
     left by polylogue-869u's existing dedup (which only reuses a parse
     WITHIN one bounded ``_parse_retained_raws`` batch/page, never across the
@@ -896,10 +896,9 @@ class RawParsePrefetchCache:
     def peek_logical_keys(self) -> dict[str, str]:
         """Non-destructive ``raw_id -> "{origin}:{provider_session_id}"`` map.
 
-        polylogue-pzxm: the sharded from-empty rebuild
-        (``maintenance/sharded_rebuild.py``) partitions raw ids by revision-
-        cohort BEFORE any shard consumes this cache with ``pop``, using the
-        exact same logical-key derivation ``_parse_retained_raws`` uses when
+        Lets a caller partition raw ids by revision cohort BEFORE consuming
+        this cache with ``pop``, using the exact same logical-key derivation
+        ``_parse_retained_raws`` uses when
         it writes ``membership_candidates``/``provisional_full_raw_ids``
         (``f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"``),
         so a byte-growth chain member or an ambiguous-identity pair never
@@ -988,10 +987,9 @@ class RebuildDeadlineExceededError(RuntimeError):
     iteration -- i.e. *between* cohorts, never mid-cohort-apply. A cohort
     already durably committed (or accepted into the currently open,
     not-yet-committed replay batch) when this fires stands; the cohort about
-    to start does not begin. The caller (``maintenance/rebuild_index.py``)
-    catches this and checkpoints its resumable transaction WITHOUT advancing
-    the cursor, so the next pass re-derives from the exact same source-order
-    position -- safe by the existing content-hash idempotency invariant
+    to start does not begin. A caller that catches this and retries from the
+    same source-order position is safe by the existing content-hash
+    idempotency invariant
     (re-applying an already-committed cohort is a no-op upsert, never a
     duplicate), matching the crash-recovery contract an open replay batch
     already has (``test_backfill_resumes_after_replay_batch_crash_discards_
@@ -1025,7 +1023,7 @@ def uncensused_historical_revision_raw_ids(
     observed by a real parser?", which a fingerprint bump alone does not
     change -- only ``classify_membership_revisions`` semantics changing (a
     superseded fingerprint) can make a *verdict* stale, which is a separate
-    question the terminal-decision check in ``storage/repair.py`` answers.
+    question the terminal-decision check in ``storage/raw_convergence.py`` answers.
     Treating a bump as forcing full re-census here would mean every
     fingerprint bump re-parses the entire archive just to re-confirm facts
     that did not change.
@@ -2236,8 +2234,7 @@ def backfill_historical_revision_evidence(
     ``bulk_fts`` (polylogue-crd8, default ``False``) is threaded to both
     ``apply_raw_revision_replay`` and ``apply_raw_membership_classification``
     to enable the guard-gated bulk FTS mode for whale prefix-sharing lineage
-    cascades. Offline rebuild callers (``maintenance/rebuild_index.py`` via
-    ``maintenance/replay.py``) pass ``True``; other callers leave it off.
+    cascades. Ordinary convergence callers leave it off.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
     threading to the same two apply calls, enabling the broader
@@ -2386,7 +2383,7 @@ def backfill_historical_revision_evidence(
         # requires enough cohorts to amortize the worker's setup (thread
         # spawn, two read connections, a plan scan over raw_sessions/
         # raw_session_memberships): the live raw-materialization path
-        # (storage/repair.py) replays ONE authority component per call,
+        # (storage/raw_convergence.py) replays ONE authority component per call,
         # where a prefetcher could never get ahead of the writer anyway.
         effective_pipeline_decode = (
             pipeline_decode
@@ -3304,7 +3301,7 @@ _PREFETCH_BUFFER_MAX_TREE_BYTES: Final[int] = 2 * 1024 * 1024 * 1024
 #: engage. Below this, the worker's fixed setup cost (thread spawn, two read
 #: connections, a raw_sessions/raw_session_memberships plan scan) cannot be
 #: repaid -- most notably the live raw-materialization path
-#: (``storage/repair.py``), which replays exactly one authority component
+#: (``storage/raw_convergence.py``), which replays exactly one authority component
 #: per ``backfill_historical_revision_evidence`` call. Explicit
 #: ``pipeline_decode=True``/``False`` bypasses this floor entirely.
 _PIPELINE_DECODE_MIN_COHORTS: Final[int] = 8
@@ -3974,8 +3971,7 @@ def _declared_non_session_artifact_classification(
     intentional, so the retained bytes stay durable raw evidence. The live
     daemon's ingest path (``ingest_worker.py``/``batch.py``) already consults
     this same OriginSpec rule before parsing and refuses to session-parse
-    these; this replay engine (used by ``polylogue ops reset --index`` /
-    ``devtools`` rebuild-index) is a SEPARATE parse chokepoint that did not,
+    these; this replay engine is a SEPARATE parse chokepoint that did not,
     and would silently recreate exactly the ``<agent>.meta`` phantom sessions
     that fix is meant to eliminate on every future rebuild. A positive JSONL
     session proof is the one deliberate exception, matching the live route:
@@ -3991,8 +3987,7 @@ def _declared_non_session_artifact_classification(
     path rule at all (e.g. a third-party analysis index such as
     ``conversation_relationships.jsonl`` that happens to satisfy the loose
     per-record shape check). Without the same content check here, replay
-    (this module) and rebuild (``maintenance/rebuild_index.py`` -> this
-    module) silently resurrect exactly the phantom sessions the live gate
+    (this module) would silently resurrect exactly the phantom sessions the live gate
     now refuses, on every future rebuild -- the two "single chokepoints"
     disagreeing is the location-as-identity defect recurring at a second
     layer. ``sample`` -- the first up to 64 decoded records, mirroring the

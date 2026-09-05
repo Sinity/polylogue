@@ -19,7 +19,7 @@ from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
 )
-from polylogue.core.enums import ArtifactSupportStatus, Origin
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
@@ -30,11 +30,18 @@ from polylogue.maintenance.archive_verification import (
     passes_strict_acceptance,
     verify_archive,
 )
+from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.runtime.raw.records import RawSessionRecord
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_active_archive_root,
+    initialize_archive_tier,
+)
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
@@ -2473,3 +2480,109 @@ def test_reindex_acceptance_subset_is_satisfiable_from_index_only_root(tmp_path:
 # ---------------------------------------------------------------------------
 
 #: Domain declarations, not this test module, own red-twin identity. This view keeps
+
+
+# ---------------------------------------------------------------------------
+# blob-reference-closure check
+# ---------------------------------------------------------------------------
+
+_CLOSURE_PAYLOAD = {
+    "uuid": "closure-session-1",
+    "name": "Closure test",
+    "chat_messages": [
+        {
+            "uuid": "m0",
+            "sender": "human",
+            "text": "here is a file",
+            "attachments": [
+                {
+                    "file_name": "notes.md",
+                    "file_type": "text/markdown",
+                    "file_size": 11,
+                    "extracted_content": "hello notes",
+                }
+            ],
+        }
+    ],
+}
+
+
+def _closure_tier_conn(path: Path, tier: ArchiveTier) -> sqlite3.Connection:
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_archive_tier(conn, tier)
+    return conn
+
+
+def _closure_fixture(tmp_path: Path) -> tuple[Path, sqlite3.Connection, sqlite3.Connection]:
+    """An archive whose acquired attachment blob has lost its ``attachment_refs`` row."""
+    root = tmp_path
+    blob_store = BlobStore(root / "blob")
+    source = _closure_tier_conn(root / "source.db", ArchiveTier.SOURCE)
+    index = _closure_tier_conn(root / "index.db", ArchiveTier.INDEX)
+    payload = json.dumps(_CLOSURE_PAYLOAD).encode()
+    blob_hash, blob_size = blob_store.write_from_bytes(payload)
+    source.execute(
+        "INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+        "VALUES (?, 'claude-ai-export', ?, 0, ?, ?, 100)",
+        ("raw-closure", "conversations.json", bytes.fromhex(blob_hash), blob_size),
+    )
+    source.commit()
+    record = RawSessionRecord(
+        raw_id="raw-closure",
+        source_name=Provider.CLAUDE_AI.value,
+        payload_provider=Provider.CLAUDE_AI,
+        source_path="conversations.json",
+        source_index=0,
+        blob_size=blob_size,
+        blob_hash=blob_hash,
+        acquired_at="2026-01-01T00:00:00+00:00",
+    )
+    parsed = ingest_record(record, str(root), "advisory", blob_root_str=str(blob_store.root))
+    assert parsed.error is None
+    session = parsed.sessions[0]
+    attachment = session.parsed_session.attachments[0]
+    attachment_hash, attachment_size = blob_store.write_from_bytes(attachment.inline_bytes or b"")
+    write_parsed_session_to_archive(
+        index,
+        session.parsed_session,
+        raw_id=record.raw_id,
+        preacquired_attachment_blobs={id(attachment): (bytes.fromhex(attachment_hash), attachment_size, "acquired")},
+    )
+    attachment_id = str(index.execute("SELECT attachment_id FROM attachments").fetchone()[0])
+    index.execute("DELETE FROM attachment_refs WHERE attachment_id = ?", (attachment_id,))
+    index.execute("UPDATE attachments SET ref_count = 0 WHERE attachment_id = ?", (attachment_id,))
+    index.commit()
+    return root, source, index
+
+
+def test_integrity_check_fails_when_exact_raw_reference_is_tampered(tmp_path: Path) -> None:
+    """The closure predicate matches on the exact blob hash, not merely on raw_id.
+
+    Anti-vacuity: widening ``raw_reference_closure_predicate`` to ignore
+    ``blob_hash`` makes the tampered duplicate satisfy closure and turns this
+    check green.
+    """
+    root, source, index = _closure_fixture(tmp_path)
+    source.execute(
+        "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+        "SELECT blob_hash, raw_id, 'raw_payload', source_path, blob_size, acquired_at_ms FROM raw_sessions"
+    )
+    source.execute(
+        "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+        "SELECT ?, raw_id, 'raw_payload', source_path, blob_size, acquired_at_ms FROM raw_sessions",
+        (b"x" * 32,),
+    )
+    source.commit()
+
+    check = next(
+        check
+        for check in verify_archive(root, checks=("blob-reference-closure",)).checks
+        if check.name == "blob-reference-closure"
+    )
+    assert isinstance(check, ArchiveVerificationCheck)
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["raw_missing_exact_count"] == 1
+    source.close()
+    index.close()

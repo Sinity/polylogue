@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pydantic import Field
 
 from polylogue.analysis.archive_models import ARCHIVE_INSIGHT_CONTRACT_VERSION, ArchiveInsightModel
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 
-_REPAIR_HINT = build_maintenance_target_catalog().repair_hint(("session_insights",), include_run_all=True)
+_REPAIR_HINT = "Run `polylogued run`."
 
 
 class InsightReadinessQuery(ArchiveInsightModel):

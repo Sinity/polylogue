@@ -1,23 +1,13 @@
 """Shared off-writer-hold parse-stage engine: parse census candidates before any writer hold.
 
-polylogue-m6tp phase (a), relocated to substrate (polylogue-czq2). Originally
-lived in ``polylogue.daemon.parse_prefetch`` and was consulted by exactly one
-caller (``daemon/bulk_rebuild.py``'s automagic bulk-rebuild routing) even
-though the mechanism it provides -- pre-parsing a bounded set of raw ids in a
-``ThreadPoolExecutor`` and handing the result to ``RawParsePrefetchCache`` --
-has nothing daemon-specific about it. Every OTHER caller of the shared
-rebuild engine (the offline ``polylogue ops maintenance rebuild-index`` CLI,
-and the daemon's own ``/api/maintenance/rebuild-index`` HTTP route) threaded
-``prefetch_cache=None`` and paid the full serial re-parse/spill-reload cost
-this module exists to avoid -- see ``maintenance/rebuild_index.py``'s
-``_warm_offline_prefetch_cache`` for the fix that consumes this module
-directly instead of only through the daemon's bulk-rebuild loop.
+Pre-parses a bounded set of raw ids in a ``ThreadPoolExecutor`` and hands
+the result to ``RawParsePrefetchCache`` so the writer-held materialization
+pass never re-parses. Nothing here is daemon-specific; the daemon's
+raw-materialization conveyor is the consumer.
 
 ``polylogue.daemon.parse_prefetch`` re-exports ``DaemonParseStage`` (an alias
 of :class:`CensusParseStage` below) and every config-resolution helper from
-here unchanged, so every existing daemon caller/test keeps its import path
-and behavior byte-identical; this module is the substrate the daemon
-consumes, not a daemon-owned implementation detail any more.
+here unchanged.
 
 The writer-hold contention this was originally built to avoid does not apply
 to the offline CLI or HTTP maintenance route the same way (there is no
@@ -70,7 +60,7 @@ from polylogue.pipeline.parsed_tree_size import (
 from polylogue.sources import revision_backfill
 from polylogue.sources.dispatch import is_stream_record_provider
 from polylogue.sources.revision_backfill import RawParsePrefetchCache
-from polylogue.storage.repair import (
+from polylogue.storage.raw_convergence import (
     raw_materialization_pending_census_raw_ids,
     raw_materialization_readonly_descriptors,
 )
@@ -155,7 +145,7 @@ def _resolve_readonly_native_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
     polylogue-6lyh1: mirrors ``ArchiveStore.raw_native_id`` (same column, same
     "blank means unknown" contract) but over a plain ``mode=ro`` connection,
     the same relationship ``raw_materialization_readonly_descriptors`` (in
-    ``storage/repair.py``) has to ``ArchiveStore.raw_revision_descriptor`` --
+    ``storage/raw_convergence.py``) has to ``ArchiveStore.raw_revision_descriptor`` --
     kept as a small dedicated query here rather than widening that shared
     helper's return shape, since its other callers do not need this column.
     """
@@ -277,16 +267,11 @@ class CensusParseStage:
     """Owns a bounded pre-parse ``ThreadPoolExecutor`` and its prefetch cache.
 
     In the daemon, one instance lives for the process's lifetime (created
-    lazily on first use by the raw-materialization conveyor loop, or by
-    ``daemon/bulk_rebuild.py``'s bulk-rebuild routing). ``warm``/
+    lazily on first use by the raw-materialization conveyor loop). ``warm``/
     ``warm_raw_ids`` are synchronous/blocking -- a daemon caller runs them off
     the event loop (``asyncio.to_thread``), exactly like every other conveyor
-    pass, and NEVER under ``daemon_write_coordinator().run_sync``: doing so
-    would defeat the entire point, since the pre-parse must run without the
-    writer hold held. An offline caller (``maintenance/rebuild_index.py``)
-    instead constructs a short-lived instance scoped to one bounded pass's
-    raw ids and discards it once ``warm_raw_ids`` returns -- see
-    ``_warm_offline_prefetch_cache``.
+    pass, and NEVER under ``daemon_write_coordinator().run_sync``: the
+    pre-parse must run without the writer hold held.
     """
 
     def __init__(
@@ -333,10 +318,9 @@ class CensusParseStage:
         # keyed on the same raw_ids but accounting ESTIMATED PARSED-TREE
         # bytes instead of the raw cache's payload bytes. ``self.cache``
         # itself is not touched/subclassed (it is a shared type consumed
-        # directly by other callers -- ``bulk_rebuild.py`` hands
-        # ``stage.cache`` straight to ``RebuildIndexRequest.prefetch_cache``
-        # -- so this stays a side ledger that reconciles against the raw
-        # cache's own admission/eviction rather than replacing it.
+        # directly by other callers), so this stays a side ledger that
+        # reconciles against the raw cache's own admission/eviction rather
+        # than replacing it.
         self._max_cached_tree_bytes = (
             max_cached_tree_bytes if max_cached_tree_bytes is not None else daemon_parse_stage_max_cached_tree_bytes()
         )
@@ -597,7 +581,7 @@ class CensusParseStage:
 
         Returns the number of raws newly admitted to the cache. Read-only
         end to end: candidate discovery and descriptor lookup both open
-        ``mode=ro`` SQLite connections (``polylogue.storage.repair``);
+        ``mode=ro`` SQLite connections (``polylogue.storage.raw_convergence``);
         parsing reads only already-published blob bytes via a stateless
         ``ArchiveBlobPublisher``, mirroring the production census parse
         worker exactly (``census_parse_worker``, the same function the

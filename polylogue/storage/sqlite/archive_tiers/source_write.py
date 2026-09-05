@@ -563,7 +563,7 @@ def insert_reconstructed_raw_row(
     ``admit_raw_observation`` decides *what an observation means*: it takes
     freshly read bytes plus the accepted head and resolves which revision
     envelope those bytes earn. Every input to that decision is missing here.
-    A copy-forward repair (``storage/repair.py``'s browser-origin
+    A copy-forward repair (``storage/raw_convergence.py``'s browser-origin
     reconstruction) is not observing a source at all -- the source it would
     observe is gone. It is rewriting evidence the archive already holds and
     has already adjudicated, under a corrected identity, from a repair plan

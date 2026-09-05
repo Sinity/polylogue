@@ -17,7 +17,7 @@ from typing import cast
 import pytest
 
 from polylogue.mcp.server import build_server
-from tests.infra.mcp import EXPECTED_MINIMAL_ARGUMENTS, MCPServerUnderTest, invoke_surface
+from tests.infra.mcp import ALL_CAPABILITIES, EXPECTED_MINIMAL_ARGUMENTS, MCPServerUnderTest, invoke_surface
 
 #: Synthetic session id for tools that require one — we accept not_found.
 _SYNTHETIC_CONV_ID = "test:conv-discovery-nonexistent"
@@ -120,3 +120,56 @@ def test_read_tools_have_known_minimal_kwargs() -> None:
             f"  - {t}" for t in uncovered
         )
         pytest.fail(msg)
+
+
+#: Operations the generic repair product owned. They were deleted with it, so the
+#: ``maintenance`` tool must neither declare nor dispatch them.
+_RETIRED_MAINTENANCE_OPERATIONS = frozenset({"preview", "execute", "status", "list"})
+
+
+def test_retired_maintenance_operations_are_not_declared() -> None:
+    """The maintenance tool's declared operations exclude the retired repair verbs.
+
+    Anti-vacuity: re-adding any of ``preview``/``execute``/``status``/``list``
+    to the ``operation`` Literal in
+    ``server_cutover.register_cutover_privileged_tools`` turns this red.
+    """
+    import typing
+
+    server = cast(MCPServerUnderTest, build_server(capabilities=ALL_CAPABILITIES))
+    tool = server._tool_manager._tools["maintenance"]
+    # The handler is defined under ``from __future__ import annotations``, so the
+    # Literal only resolves through get_type_hints.
+    hints = typing.get_type_hints(tool.fn)
+    declared = set(typing.get_args(hints["operation"]))
+
+    assert declared
+    assert not (declared & _RETIRED_MAINTENANCE_OPERATIONS), (
+        f"retired maintenance operations re-declared: {sorted(declared & _RETIRED_MAINTENANCE_OPERATIONS)}"
+    )
+
+
+@pytest.mark.parametrize("operation", sorted(_RETIRED_MAINTENANCE_OPERATIONS))
+def test_retired_maintenance_operations_fail_dispatch(operation: str) -> None:
+    """Dispatching a retired operation is a typed refusal, never a partial run.
+
+    Anti-vacuity: restoring a ``preview``/``execute``/``status``/``list`` branch
+    in ``_dispatch_maintenance`` returns a result payload instead of
+    ``invalid_argument``.
+    """
+    import asyncio
+
+    from polylogue.mcp.server_cutover import _dispatch_maintenance
+
+    class _Hooks:
+        def get_config(self) -> object:
+            return object()
+
+        def error_json(self, message: str, *, code: str) -> str:
+            return json.dumps({"error": message, "code": code})
+
+    payload = json.loads(
+        asyncio.run(_dispatch_maintenance(cast("object", _Hooks()), operation=operation, kwargs={}))  # type: ignore[arg-type]
+    )
+    assert payload["code"] == "invalid_argument"
+    assert "unknown maintenance operation" in payload["error"]

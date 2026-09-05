@@ -19,10 +19,7 @@ from polylogue.cli.commands.maintenance._blob_integrity import (
     blob_reference_replace_from_source_command,
     blob_reference_replace_from_source_preview_command,
 )
-from polylogue.cli.commands.maintenance._blob_reference_closure import blob_reference_closure_command
 from polylogue.cli.commands.maintenance._operation_recovery import operation_recovery_command
-from polylogue.cli.commands.maintenance._plan import plan_command
-from polylogue.cli.commands.maintenance._status import status_command
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.services import RuntimeServices
@@ -46,11 +43,6 @@ def test_maintenance_group_in_ops_commands() -> None:
 def test_maintenance_group_is_click_group() -> None:
     """maintenance_group is a Click Group."""
     assert isinstance(_registered_maintenance_command(), click.Group)
-
-
-def test_maintenance_plan_is_click_command() -> None:
-    """plan is a Click Command on the maintenance group."""
-    assert isinstance(plan_command, click.Command)
 
 
 def test_operation_recovery_is_click_command() -> None:
@@ -134,18 +126,6 @@ def test_maintenance_appears_in_ops_help() -> None:
     assert "maintenance" in result.output
 
 
-def test_maintenance_group_has_plan_and_run() -> None:
-    """maintenance group lists plan, run, and run-preview as subcommands."""
-    maintenance_group = _registered_maintenance_command()
-    ctx = click.Context(maintenance_group)
-    cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
-    assert "plan" in cmds
-    assert "run" in cmds
-    assert "run-preview" in cmds
-    assert "operation-recovery" in cmds
-    assert "blob-conservation" in cmds
-
-
 def test_ops_import_keeps_blob_conservation_unloaded() -> None:
     """Unrelated ops commands do not pay for the census implementation.
 
@@ -206,46 +186,6 @@ def test_blob_conservation_json_returns_failure_for_a_failed_census(monkeypatch:
     assert json.loads(result.output)["ok"] is False
 
 
-def test_maintenance_plan_help_output() -> None:
-    """polylogue ops maintenance plan --help shows plan help."""
-    runner = CliRunner()
-    result = runner.invoke(root_cli, ["ops", "maintenance", "plan", "--help"])
-    assert result.exit_code == 0
-    assert "Dry-run" in result.output or "summary" in result.output.lower()
-
-
-def test_maintenance_run_help_output() -> None:
-    """polylogue ops maintenance run --help shows run help.
-
-    ``run`` is the lean apply-only command post-split (polylogue-oou3c): it
-    no longer carries a ``--dry-run`` flag -- ``run-preview`` is the
-    dedicated read-only twin instead.
-    """
-    runner = CliRunner()
-    result = runner.invoke(root_cli, ["ops", "maintenance", "run", "--help"])
-    assert result.exit_code == 0
-    assert "--dry-run" not in result.output
-    assert "--operation-id" in result.output
-
-
-def test_maintenance_run_preview_help_output() -> None:
-    """polylogue ops maintenance run-preview --help shows the preview help."""
-    runner = CliRunner()
-    result = runner.invoke(root_cli, ["ops", "maintenance", "run-preview", "--help"])
-    assert result.exit_code == 0
-    assert "Read-only" in result.output or "read-only" in result.output.lower()
-    assert "--operation-id" in result.output
-
-
-def test_maintenance_status_is_click_command() -> None:
-    """status is a Click Command on the maintenance group (#1197)."""
-    assert isinstance(status_command, click.Command)
-
-
-def test_blob_reference_closure_is_click_command() -> None:
-    assert isinstance(blob_reference_closure_command, click.Command)
-
-
 def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -> None:
     """The real Click registry exposes diagnostic and write commands separately."""
 
@@ -269,66 +209,3 @@ def test_blob_integrity_preview_and_apply_commands_are_distinct_click_routes() -
     assert "blob-reference-replace-from-source" in commands
     assert "blob-reference-prune-orphans-preview" in commands
     assert "blob-reference-prune-orphans" in commands
-
-
-def test_maintenance_group_has_status() -> None:
-    """maintenance group lists status as a subcommand (#1197)."""
-    maintenance_group = _registered_maintenance_command()
-    ctx = click.Context(maintenance_group)
-    cmds = maintenance_group.list_commands(ctx)  # type: ignore[attr-defined]
-    assert "status" in cmds
-    assert "blob-reference-closure" in cmds
-
-
-def test_maintenance_status_help_output() -> None:
-    """polylogue ops maintenance status --help shows the status help."""
-    runner = CliRunner()
-    result = runner.invoke(root_cli, ["ops", "maintenance", "status", "--help"])
-    assert result.exit_code == 0
-    assert "--operation-id" in result.output
-    assert "--all" in result.output
-
-
-def test_plan_reports_a_refused_scope_and_exits_nonzero(tmp_path: Path) -> None:
-    """A permanently refused plan is not a clean archive.
-
-    Anti-vacuity: removing the ``SystemExit(1)`` and the failure-sample loop
-    from ``plan_command`` makes this red -- the command would print
-    "Affected: 0 rows" and exit 0 for a request no target can apply.
-    """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    with (
-        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive_root),
-        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=tmp_path),
-    ):
-        result = CliRunner().invoke(
-            root_cli,
-            ["ops", "maintenance", "plan", "--target", "empty_sessions", "--origin", "claude-code-session"],
-        )
-
-    assert result.exit_code == 1
-    assert "UnsupportedScopeDimension" in result.output
-
-
-def test_plan_without_a_session_filter_is_not_a_scoped_request(tmp_path: Path) -> None:
-    """An omitted ``--session-id`` is no narrowing, so the default plan runs.
-
-    Anti-vacuity: dropping ``_coerce_session_ids``'s empty-tuple
-    normalization makes this red -- Click's ``()`` would read as a session
-    scope and ``superseded_raw_snapshots``, which honors no dimension, would
-    refuse with exit 1.
-    """
-    archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
-    with (
-        patch("polylogue.cli.commands.maintenance._plan.archive_root", return_value=archive_root),
-        patch("polylogue.cli.commands.maintenance._plan.render_root", return_value=tmp_path),
-    ):
-        result = CliRunner().invoke(
-            root_cli,
-            ["ops", "maintenance", "plan", "--target", "superseded_raw_snapshots"],
-        )
-
-    assert result.exit_code == 0
-    assert "UnsupportedScopeDimension" not in result.output

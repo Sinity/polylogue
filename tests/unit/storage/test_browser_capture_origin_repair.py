@@ -18,6 +18,10 @@ from polylogue.pipeline.ids import session_content_hash, session_revision_projec
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RawReplayPlanStatus, resolve_raw_authority_blocker
+from polylogue.storage.raw_convergence import (
+    inspect_browser_canonical_authority_conflicts,
+    inspect_browser_capture_origin_mismatches,
+)
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierItem,
@@ -25,11 +29,6 @@ from polylogue.storage.raw_reconciler import (
     _record_judgment_candidate,
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
-)
-from polylogue.storage.repair import (
-    inspect_browser_canonical_authority_conflicts,
-    inspect_browser_capture_origin_mismatches,
-    record_browser_canonical_authority_conflict_blockers,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -1169,135 +1168,3 @@ def test_inspect_conflicts_rejects_duplicate_and_malformed_ids(tmp_path: Path) -
         inspect_browser_canonical_authority_conflicts(_config(tmp_path), ["not-a-raw-id"])
     with pytest.raises(ValueError, match="1..100 entries"):
         inspect_browser_canonical_authority_conflicts(_config(tmp_path), [])
-
-
-def test_record_conflict_blockers_persists_durable_candidate_assertions(tmp_path: Path) -> None:
-    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
-
-    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
-    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        index.execute(
-            "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
-            "WHERE accepted_raw_id = ?",
-            (semantic_raw_id,),
-        )
-
-    report, assertion_ids = record_browser_canonical_authority_conflict_blockers(_config(tmp_path), [raw_id])
-
-    assert report.conflict_count == 1
-    assert len(assertion_ids) == 1
-    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
-        user_conn.row_factory = sqlite3.Row
-        envelope = read_assertion_envelope(user_conn, assertion_ids[0])
-        assert envelope is not None
-        assert envelope.kind.value == "blocker"
-        # Automated writers can never self-promote (upsert_assertion's chokepoint,
-        # 37t.15): the row is a candidate awaiting explicit operator judgment even
-        # though this function requested status=candidate/visibility=private itself.
-        assert envelope.status.value == "candidate"
-        assert envelope.context_policy["inject"] is False
-        assert envelope.target_ref == "session:chatgpt-export:browser-origin-one"
-        assert isinstance(envelope.value, dict)
-        assert envelope.value["raw_id"] == raw_id
-        assert envelope.value["competing_raw_id"] == semantic_raw_id
-
-    # Re-running over identical evidence is idempotent: same assertion id, not a
-    # duplicate row.
-    _report_again, assertion_ids_again = record_browser_canonical_authority_conflict_blockers(
-        _config(tmp_path), [raw_id]
-    )
-    assert assertion_ids_again == assertion_ids
-    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
-        count = user_conn.execute(
-            "SELECT COUNT(*) FROM assertions WHERE kind = 'blocker' AND target_ref = ?",
-            ("session:chatgpt-export:browser-origin-one",),
-        ).fetchone()[0]
-        assert count == 1
-
-
-def test_record_conflict_blockers_never_clobbers_an_operator_judged_row(tmp_path: Path) -> None:
-    """A judged blocker (accepted/rejected/deferred/superseded) must survive a re-run.
-
-    Mirrors ``upsert_pathology_findings_as_assertions``'s terminal-judgment
-    chokepoint (37t.15): once an operator has judged a candidate this
-    detector produced, a later automated re-run over the SAME evidence must
-    not resurrect or mutate the judged row's status/value -- only
-    ``upsert_assertion``'s own ON CONFLICT DO UPDATE would otherwise
-    overwrite the display fields (value/body_text/evidence_refs) on every
-    call, since only ``status`` itself is protected by that function's
-    chokepoint. Deleting the ``read_assertion_envelope``/``existing.status``
-    guard in ``record_browser_canonical_authority_conflict_blockers`` makes
-    this test fail: the accepted row's value would silently be overwritten
-    back to the detector's regenerated evidence payload.
-    """
-    from polylogue.storage.sqlite.archive_tiers.user_write import (
-        judge_assertion_candidate,
-        read_assertion_envelope,
-    )
-
-    raw_id = _seed_byte_proven_browser_head_without_native_id(tmp_path)
-    semantic_raw_id = _seed_semantic_canonical_head(tmp_path, raw_id)
-    with sqlite3.connect(tmp_path / "index.db") as index:
-        index.execute(
-            "UPDATE raw_revision_heads SET accepted_content_hash = x'FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF' "
-            "WHERE accepted_raw_id = ?",
-            (semantic_raw_id,),
-        )
-
-    _report, assertion_ids = record_browser_canonical_authority_conflict_blockers(_config(tmp_path), [raw_id])
-    assert len(assertion_ids) == 1
-    assertion_ref = assertion_ids[0]
-
-    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
-        judge_assertion_candidate(
-            user_conn,
-            candidate_ref=assertion_ref,
-            decision="accept",
-            reason="operator confirmed this conflict is real",
-        )
-        user_conn.commit()
-        judged = read_assertion_envelope(user_conn, assertion_ref)
-        assert judged is not None
-        assert judged.status.value == "accepted"
-        judged_value = judged.value
-        judged_updated_at_ms = judged.updated_at_ms
-
-    # Re-running the detector over the identical evidence must leave the
-    # judged row's status and value exactly as the operator left it. Passing
-    # a distinct now_ms is the genuine negative control: value/status are
-    # deterministically identical across both runs regardless of whether the
-    # guard fires (same evidence -> same computed value, and
-    # upsert_assertion's own terminal-judgment chokepoint separately protects
-    # status), so those two fields alone cannot distinguish "guard
-    # short-circuited before writing" from "guard removed, wrote anyway".
-    # updated_at_ms can: upsert_assertion's ON CONFLICT always sets
-    # updated_at_ms = excluded.updated_at_ms unconditionally, so if the guard
-    # in record_browser_canonical_authority_conflict_blockers were removed
-    # (or its read_assertion_envelope check bypassed), this second call would
-    # still invoke upsert_assertion for the judged row and updated_at_ms
-    # would move to the new now_ms -- an observable difference the guard
-    # must prevent entirely by never calling upsert_assertion at all.
-    _report_again, assertion_ids_again = record_browser_canonical_authority_conflict_blockers(
-        _config(tmp_path), [raw_id], now_ms=judged_updated_at_ms + 999_000
-    )
-    assert assertion_ids_again == assertion_ids
-    with closing(sqlite3.connect(tmp_path / "user.db")) as user_conn:
-        still_judged = read_assertion_envelope(user_conn, assertion_ref)
-        assert still_judged is not None
-        assert still_judged.status.value == "accepted"
-        assert still_judged.value == judged_value
-        assert still_judged.updated_at_ms == judged_updated_at_ms
-        # ``judge_assertion_candidate(decision="accept")`` legitimately leaves
-        # TWO ``blocker`` rows for this target: the original candidate
-        # (mutated in place to ``status=accepted`` by ``mark_assertion_status``,
-        # same assertion id as ``assertion_ref``) plus a separate promoted
-        # "resulting assertion" row that ``_promote_candidate_assertion``
-        # inserts under a distinct id. The guard under test only has to leave
-        # the ORIGINAL judged row alone -- it must not grow a THIRD row (which
-        # would mean the re-run resurrected or duplicated the candidate).
-        count = user_conn.execute(
-            "SELECT COUNT(*) FROM assertions WHERE kind = 'blocker' AND target_ref = ?",
-            ("session:chatgpt-export:browser-origin-one",),
-        ).fetchone()[0]
-        assert count == 2

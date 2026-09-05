@@ -31,7 +31,6 @@ from polylogue.storage.raw_authority import RawReplayPlanOutcome, RawReplayPlanS
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
-from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
@@ -198,55 +197,6 @@ def test_polylogued_status_json_reports_archive_storage(tmp_path: Path) -> None:
     }
 
 
-def test_polylogued_status_json_reports_rebuild_index_not_ready(tmp_path: Path) -> None:
-    for filename, tier in (
-        ("source.db", ArchiveTier.SOURCE),
-        ("index.db", ArchiveTier.INDEX),
-        ("embeddings.db", ArchiveTier.EMBEDDINGS),
-        ("user.db", ArchiveTier.USER),
-        ("ops.db", ArchiveTier.OPS),
-    ):
-        initialize_archive_database(tmp_path / filename, tier)
-    now_ms = 1_700_000_001_000
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        record_ingest_attempt(
-            conn,
-            attempt_id="rebuild-active",
-            source_path=str(tmp_path / "source.db"),
-            status="running",
-            phase="rebuild-index",
-            started_at_ms=now_ms - 1_000,
-            heartbeat_at_ms=now_ms,
-            storage_route="maintenance",
-        )
-
-    with (
-        patch("polylogue.daemon.status.archive_root", return_value=tmp_path),
-        patch("polylogue.daemon.status._active_status_db_path", return_value=tmp_path / "index.db"),
-        patch("polylogue.daemon.status.default_sources", return_value=()),
-        patch("polylogue.storage.archive_readiness.time.time", return_value=now_ms / 1000),
-    ):
-        result = CliRunner().invoke(main, ["status", "--format", "json"])
-
-    assert result.exit_code == 0
-    payload = loads(result.output)
-    assert isinstance(payload, dict)
-    storage = cast(dict[str, object], payload["archive_storage"])
-    assert storage["archive_schema_ready"] is True
-    assert storage["archive_ready"] is False
-    assert storage["archive_materialization_ready"] is False
-    assert storage["active_rebuild_index_attempts"] == [
-        {
-            "attempt_id": "rebuild-active",
-            "phase": "rebuild-index",
-            "started_at_ms": now_ms - 1_000,
-            "heartbeat_at_ms": now_ms,
-            "parsed_raw_count": 0,
-            "materialized_count": 0,
-        }
-    ]
-
-
 def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path) -> None:
     for filename, tier in (
         ("source.db", ArchiveTier.SOURCE),
@@ -292,7 +242,7 @@ def test_polylogued_status_json_reports_schema_mismatch_not_ready(tmp_path: Path
     components = cast(dict[str, dict[str, object]], components_raw)
     archive_component = components["archive_storage"]
     assert archive_component["state"] == "blocked"
-    assert archive_component["repair_hint"] == "polylogue ops maintenance rebuild-index"
+    assert archive_component["repair_hint"] == "polylogued run"
 
 
 def test_polylogued_status_plain_reports_archive_storage(tmp_path: Path) -> None:
@@ -544,7 +494,7 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         calls["restore_sample_size"] = sample_size
         return FakeRestoreResult()
 
-    def fake_repair_raw_materialization(
+    def fake_converge_raw_materialization(
         config: Config,
         *,
         dry_run: bool,
@@ -597,7 +547,9 @@ def test_drain_raw_materialization_once_uses_bounded_daemon_batch(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         fake_restore_direct_blob_reference_debt,
     )
-    monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", fake_repair_raw_materialization)
+    monkeypatch.setattr(
+        "polylogue.storage.raw_convergence.converge_raw_materialization", fake_converge_raw_materialization
+    )
     monkeypatch.setattr(
         "polylogue.storage.raw_reconciler.recover_interrupted_raw_authority_frontier",
         fake_recover,
@@ -674,12 +626,12 @@ def test_whale_writer_route_blocks_unproven_cursor_authority(
         lambda _root: f"{authority_state} cursor authority",
     )
 
-    def fake_repair(*_args: object, **_kwargs: object) -> object:
-        mutations.append("repair_materialization")
+    def fake_converge(*_args: object, **_kwargs: object) -> object:
+        mutations.append("converge_materialization")
         (archive / "writer-mutated").write_text("unsafe", encoding="utf-8")
         return SimpleNamespace(success=True, repaired_count=1, detail="unexpected writer call")
 
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", fake_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", fake_converge)
     monkeypatch.setattr(daemon_cli, "_close_raw_materialization_fts", lambda _path, *, ops_db_path: None)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
 
@@ -757,141 +709,6 @@ def test_converge_raw_authority_frontier_applies_only_bounded_executable_plans(
 
     assert executed == 1
     assert apply_calls == [{"preview_census_id": "census-1", "selected_plan_ids": ("safe-1",)}]
-
-
-def test_maybe_recommend_bulk_rebuild_silent_below_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A backlog under both thresholds must not trigger the bulk-rebuild
-    recommendation: this exercises the real threshold predicate
-    (`_bulk_scale_raw_materialization_backlog`), not a stub -- removing the
-    predicate's comparisons (e.g. hardcoding it to always return True) makes
-    this test fail because the journal would then log unconditionally."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
-    counts = RawMaterializationCounts(
-        repaired_sessions=1,
-        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD,
-        pending_blob_bytes=daemon_cli._BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD,
-    )
-    with patch.object(daemon_cli.logger, "warning") as warning:
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-
-    warning.assert_not_called()
-
-
-def test_maybe_recommend_bulk_rebuild_fires_on_candidate_count_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Exceeding the candidate-count threshold alone (bytes below threshold)
-    must trigger the loud journal recommendation naming the bulk rebuild
-    command. This exercises `_maybe_recommend_bulk_rebuild` ->
-    `_bulk_scale_raw_materialization_backlog` against production constants;
-    deleting either comparison in the predicate makes this test fail."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
-    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
-    counts = RawMaterializationCounts(
-        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
-        pending_blob_bytes=0,
-    )
-    with patch.object(daemon_cli.logger, "warning") as warning:
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-
-    warning.assert_called_once()
-    message, *args = warning.call_args.args
-    assert "rebuild-index" in message
-    assert "polylogue ops maintenance rebuild-index" in message
-    assert args[0] == counts.candidate_count
-
-
-def test_maybe_recommend_bulk_rebuild_fires_on_byte_threshold(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exceeding the pending-bytes threshold alone (candidate count below
-    threshold) must also trigger the recommendation -- the two thresholds
-    are independent tripwires, not a combined one."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
-    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: 1_000.0)
-    counts = RawMaterializationCounts(
-        candidate_count=0,
-        pending_blob_bytes=daemon_cli._BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD + 1,
-    )
-    with patch.object(daemon_cli.logger, "warning") as warning:
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-
-    warning.assert_called_once()
-
-
-def test_maybe_recommend_bulk_rebuild_is_rate_limited_to_once_per_hour(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Repeated passes over a still bulk-scale backlog must not re-log the
-    recommendation more than once per hour; the third call, past the
-    interval, must log again."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    monkeypatch.setattr(daemon_cli, "_last_bulk_rebuild_recommendation_monotonic", None)
-    clock = iter(
-        [
-            1_000.0,  # first call: logs, records last=1000.0
-            1_000.0 + daemon_cli._BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS - 1,  # within interval: silent
-            1_000.0 + daemon_cli._BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS + 1,  # past interval: logs again
-        ]
-    )
-    monkeypatch.setattr("polylogue.daemon.cli.time.monotonic", lambda: next(clock))
-    counts = RawMaterializationCounts(
-        candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
-        pending_blob_bytes=0,
-    )
-    with patch.object(daemon_cli.logger, "warning") as warning:
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-        daemon_cli._maybe_recommend_bulk_rebuild(counts)
-
-    assert warning.call_count == 2
-
-
-def test_periodic_raw_materialization_convergence_recommends_bulk_rebuild_for_bulk_backlog(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The periodic conveyor loop must actually invoke the bulk-rebuild
-    recommendation check per pass, not merely define it unreachably."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    async def fake_run_sync(_actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        return RawMaterializationCounts(
-            repaired_sessions=0,
-            executed_plans=0,
-            remaining_candidates=0,
-            candidate_count=daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1,
-            pending_blob_bytes=0,
-        )
-
-    async def fake_sleep(_seconds: float) -> None:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(
-        daemon_cli,
-        "daemon_write_coordinator",
-        lambda: SimpleNamespace(run_sync=fake_run_sync),
-    )
-    recommended: list[int] = []
-    monkeypatch.setattr(
-        daemon_cli,
-        "_maybe_recommend_bulk_rebuild",
-        lambda counts: recommended.append(counts.candidate_count),
-    )
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert recommended == [daemon_cli._BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD + 1]
 
 
 def test_raw_materialization_pass_emits_conserved_plan_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1083,7 +900,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
     class FakeRestoreResult:
         restored_count = 0
 
-    def cancel_repair(*_args: object, **_kwargs: object) -> object:
+    def cancel_converge(*_args: object, **_kwargs: object) -> object:
         raise asyncio.CancelledError
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
@@ -1093,7 +910,7 @@ def test_raw_materialization_closes_fts_on_cancellation(
         "polylogue.storage.blob_integrity.restore_direct_blob_reference_debt",
         lambda *_args, **_kwargs: FakeRestoreResult(),
     )
-    monkeypatch.setattr("polylogue.storage.repair.repair_raw_materialization", cancel_repair)
+    monkeypatch.setattr("polylogue.storage.raw_convergence.converge_raw_materialization", cancel_converge)
     monkeypatch.setattr(
         daemon_cli,
         "_close_raw_materialization_fts",
@@ -1174,7 +991,9 @@ def test_raw_materialization_holds_pinned_generation_lease_through_fts_closure(
 
     monkeypatch.setattr("polylogue.maintenance.raw_authority.recover_interrupted_frontier", recover_frontier)
     monkeypatch.setattr("polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers", resolve_stale)
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", lambda *_args, **_kwargs: result)
+    monkeypatch.setattr(
+        "polylogue.maintenance.raw_authority.converge_materialization", lambda *_args, **_kwargs: result
+    )
     monkeypatch.setattr("polylogue.maintenance.raw_authority.materialization_generation_lease", fake_generation_lease)
 
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", lambda _result: None)
@@ -1215,14 +1034,14 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     tmp_path: Path,
     whale: bool,
 ) -> None:
-    """Both daemon routes must emit the repair contract when pinning is refused."""
+    """Both daemon routes must emit the convergence contract when pinning is refused."""
     from polylogue.daemon import cli as daemon_cli
     from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
-    from polylogue.storage.repair import RepairResult
+    from polylogue.storage.raw_convergence import RawConvergenceResult
 
     archive = tmp_path / "archive"
     archive.mkdir()
-    emitted: list[RepairResult] = []
+    emitted: list[RawConvergenceResult] = []
 
     def refuse_outer_lease(_lease: ActiveWriterLease) -> None:
         raise RebuildLeaseUnavailableError("offline rebuild is active")
@@ -1230,8 +1049,8 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
     def reject_restore(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("blob-reference restoration requires an acquired generation pin")
 
-    def reject_repair(*_args: object, **_kwargs: object) -> None:
-        raise AssertionError("repair must not run when the outer generation pin is refused")
+    def reject_converge(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("convergence must not run when the outer generation pin is refused")
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: archive)
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
@@ -1248,7 +1067,7 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
         "polylogue.maintenance.raw_authority.auto_resolve_stale_plan_blockers",
         lambda _config: pytest.fail("stale-plan recovery requires an acquired generation pin"),
     )
-    monkeypatch.setattr("polylogue.maintenance.raw_authority.repair_materialization", reject_repair)
+    monkeypatch.setattr("polylogue.maintenance.raw_authority.converge_materialization", reject_converge)
     monkeypatch.setattr(ActiveWriterLease, "acquire", refuse_outer_lease)
     monkeypatch.setattr(daemon_cli, "_emit_raw_materialization_pass", emitted.append)
     monkeypatch.setattr(
@@ -1274,7 +1093,7 @@ def test_raw_materialization_outer_lease_refusal_preserves_typed_result(
 
     assert len(emitted) == 1
     result = emitted[0]
-    assert isinstance(result, RepairResult)
+    assert isinstance(result, RawConvergenceResult)
     assert result.name == "raw_materialization"
     assert result.success is False
     assert result.repaired_count == 0
@@ -4107,247 +3926,6 @@ def test_periodic_schema_preflight_recheck_exits_on_recovery(
     assert sleeps == 2
 
 
-def test_bulk_rebuild_routing_below_threshold_and_not_resumable_is_noop(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A small, steady-state backlog with no bulk-rebuild already in flight
-    must never start one -- bulk routing is for bulk-scale backlogs only."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    def fail_run_pass(**_kwargs: object) -> object:
-        pytest.fail("must not drive a pass when below threshold and nothing is resumable")
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", lambda _root: False
-    )
-    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
-
-    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
-    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
-
-
-def test_bulk_rebuild_routing_resumable_transaction_drives_pass_even_below_threshold(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """An in-flight bulk-rebuild operation keeps being driven every tick even
-    once the instantaneous trickle backlog reading has dipped below the
-    bulk-scale threshold -- abandoning a partially-built generation would
-    waste every page already replayed into it."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    class FakeResolved:
-        daemon_parse_stage_workers = None
-        daemon_parse_stage_max_inflight_bytes = None
-        daemon_parse_stage_max_cached_tree_bytes = None
-        daemon_parse_stage_warm_timeout_seconds = None
-
-    calls: list[dict[str, object]] = []
-
-    async def fake_run_pass(**kwargs: object) -> None:
-        calls.append(kwargs)
-        return None
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-
-    async def resumable_transaction_in_flight() -> bool:
-        return True
-
-    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
-    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fake_run_pass)
-
-    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
-    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))
-
-    assert len(calls) == 1
-    called_config = cast(Config, calls[0]["config"])
-    assert called_config.archive_root == tmp_path
-
-
-def test_bulk_rebuild_routing_pass_failure_never_propagates(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A failed bulk-rebuild pass must not crash the periodic convergence
-    loop it is called from -- the next tick simply tries again."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    async def fail_run_pass(**_kwargs: object) -> object:
-        raise RuntimeError("simulated bulk-rebuild pass failure")
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
-
-    async def resumable_transaction_in_flight() -> bool:
-        return True
-
-    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", resumable_transaction_in_flight)
-    monkeypatch.setattr("polylogue.daemon.bulk_rebuild.run_daemon_bulk_rebuild_pass", fail_run_pass)
-
-    counts = RawMaterializationCounts(candidate_count=3, pending_blob_bytes=0)
-    asyncio.run(daemon_cli._maybe_route_daemon_bulk_rebuild(counts))  # must not raise
-
-
-def test_daemon_bulk_rebuild_transaction_in_flight_delegates(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """Flag on: delegates straight to ``has_resumable_daemon_bulk_rebuild_transaction``
-    against the configured archive root."""
-    from polylogue.daemon import cli as daemon_cli
-
-    seen_roots: list[Path] = []
-    validated_receipts: list[tuple[Path, Path]] = []
-    receipt_path = tmp_path / "schema-inference-receipt.json"
-
-    def fake_has_resumable(root: Path) -> bool:
-        seen_roots.append(root)
-        return True
-
-    def validate_receipt(root: Path, receipt: Path) -> dict[str, object]:
-        validated_receipts.append((root, receipt))
-        return {}
-
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: tmp_path)
-    monkeypatch.setattr(
-        "polylogue.maintenance.schema_inference_gate.resolve_schema_inference_receipt_reference",
-        lambda _root: receipt_path,
-    )
-    monkeypatch.setattr(
-        "polylogue.maintenance.schema_inference_gate.validate_schema_inference_receipt", validate_receipt
-    )
-    monkeypatch.setattr(
-        "polylogue.daemon.bulk_rebuild.has_resumable_daemon_bulk_rebuild_transaction", fake_has_resumable
-    )
-
-    assert asyncio.run(daemon_cli._daemon_bulk_rebuild_transaction_in_flight()) is True
-    assert seen_roots == [tmp_path]
-    assert validated_receipts == [(tmp_path, receipt_path)]
-
-
-def test_periodic_raw_materialization_convergence_suppresses_trickle_while_bulk_rebuild_in_flight(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """polylogue-gd6v residual: the trickle census/drain pass must stand
-    down for the tick while the daemon's own bulk-rebuild transaction is in
-    flight, instead of both mechanisms converging on the same raw backlog
-    every tick (double parse/replay work + needless writer-hold contention).
-    """
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    async def fake_in_flight() -> bool:
-        return True
-
-    routed: list[RawMaterializationCounts] = []
-
-    async def fake_route(counts: RawMaterializationCounts) -> bool:
-        routed.append(counts)
-        return True
-
-    async def fail_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        pytest.fail(f"trickle drain must not run while a bulk-rebuild transaction is in flight (actor={actor})")
-
-    async def fake_sleep(_seconds: float) -> None:
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
-    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
-
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert len(routed) == 1
-    assert routed[0].candidate_count == 0  # a placeholder counts object -- has_resumable alone gates routing
-
-
-def test_periodic_raw_materialization_convergence_falls_back_to_outer_interval_on_bulk_rebuild_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A swallowed bulk-rebuild pass failure during suppression must not
-    turn into a tight 1s retry storm -- it falls back to the same slower
-    outer interval a trickle pass failure already falls back to."""
-    from polylogue.daemon import cli as daemon_cli
-
-    async def fake_in_flight() -> bool:
-        return True
-
-    async def fake_route_fails(_counts: object) -> bool:
-        return False  # mirrors _maybe_route_daemon_bulk_rebuild's own swallowed-failure return
-
-    sleeps: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        sleeps.append(seconds)
-        raise asyncio.CancelledError
-
-    async def fail_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        pytest.fail(f"trickle drain must not run while a bulk-rebuild transaction is in flight (actor={actor})")
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
-    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route_fails)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
-
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert sleeps == [daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS]
-
-
-def test_periodic_raw_materialization_convergence_resumes_trickle_once_bulk_rebuild_no_longer_in_flight(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Once ``has_resumable_daemon_bulk_rebuild_transaction`` flips false
-    (promoted or abandoned), the very next tick resumes the ordinary
-    trickle census/drain pass automatically -- no operator action, no wait
-    for the outer interval."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-    in_flight_sequence = iter([True, False])
-
-    async def fake_in_flight() -> bool:
-        return next(in_flight_sequence)
-
-    routed: list[object] = []
-
-    async def fake_route(counts: object) -> bool:
-        routed.append(counts)
-        return True
-
-    trickle_calls: list[str] = []
-
-    async def fake_run_sync(actor: str, _func: object, *_args: object, **_kwargs: object) -> object:
-        trickle_calls.append(actor)
-        return RawMaterializationCounts(remaining_candidates=0)
-
-    async def fake_sleep(seconds: float) -> None:
-        if seconds == daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS:
-            raise asyncio.CancelledError
-        # burst-pause sleeps between suppressed passes: no-op, let the tick continue.
-
-    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: False)
-    monkeypatch.setattr(daemon_cli, "_daemon_bulk_rebuild_transaction_in_flight", fake_in_flight)
-    monkeypatch.setattr(daemon_cli, "_maybe_route_daemon_bulk_rebuild", fake_route)
-    monkeypatch.setattr(daemon_cli, "_maybe_recommend_bulk_rebuild", lambda _counts: None)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fake_run_sync))
-
-    with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
-        asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
-
-    assert trickle_calls == ["maintenance.raw_materialization"]
-    assert len(routed) >= 1  # the suppression branch drove at least one bulk pass first
-
-
 # polylogue-t93b: the daemon's whale-pass escalation tier. A component
 # permanently resource-blocked at the ordinary fast-path envelope must not
 # stay blocked forever -- the periodic conveyor schedules a dedicated,
@@ -4841,7 +4419,7 @@ def test_whale_cancellation_after_admission_records_continuation_then_real_compl
     started = threading.Event()
     release = threading.Event()
 
-    def blocked_repair(**_kwargs: object) -> object:
+    def blocked_converge(**_kwargs: object) -> object:
         started.set()
         release.wait(timeout=5)
         return SimpleNamespace(
@@ -4856,7 +4434,7 @@ def test_whale_cancellation_after_admission_records_continuation_then_real_compl
             },
         )
 
-    monkeypatch.setattr(daemon_cli, "_run_raw_materialization_whale_pass_once", blocked_repair)
+    monkeypatch.setattr(daemon_cli, "_run_raw_materialization_whale_pass_once", blocked_converge)
     coordinator = DaemonWriteCoordinator()
     monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: coordinator)
     real_emit = daemon_events.emit_daemon_event
@@ -4915,7 +4493,7 @@ def test_whale_cancellation_after_admission_records_continuation_then_real_compl
         assert any(record["idempotency_key"].endswith(":terminal") for record in pending)
 
 
-def test_whale_callback_runs_real_coordinator_product_repair_and_census(
+def test_whale_callback_runs_real_coordinator_product_convergence_and_census(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -4935,9 +4513,9 @@ def test_whale_callback_runs_real_coordinator_product_repair_and_census(
         )
         conn.commit()
     from polylogue.config import Config
-    from polylogue.storage import repair as repair_mod
+    from polylogue.storage import raw_convergence as raw_convergence_mod
 
-    blocked = repair_mod.repair_raw_materialization(
+    blocked = raw_convergence_mod.converge_raw_materialization(
         Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[]),
         raw_artifact_id=raw_ids[0],
         max_payload_bytes=ordinary_limit,

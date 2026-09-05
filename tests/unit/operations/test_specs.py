@@ -12,7 +12,6 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
     specs = build_runtime_operation_catalog().by_name()
 
     assert set(specs) == {
-        "candidate-build",
         "acquire-raw-sessions",
         "plan-validation-backlog",
         "plan-parse-backlog",

@@ -19,7 +19,6 @@ from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
 from polylogue.operations.operation_status import OperationStatus
-from polylogue.storage.repair import ArchiveDebtStatus
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierIntegrityProjection
@@ -79,7 +78,6 @@ LEGACY_READINESS_SOURCE_TYPES: tuple[str, ...] = (
     "InsightReadinessReport",
     "InsightReadinessEntry",
     "SessionInsightStatusSnapshot",
-    "ArchiveDebtStatus",
     "EmbeddingStatusPayload",
     "DerivedModelStatus",
     "CatchupStatus",
@@ -138,23 +136,6 @@ def component_from_derived_model(status: DerivedModelStatus, *, scope: str = "de
             "missing_provenance_rows": status.missing_provenance_rows,
         },
         caveats=tuple(caveats),
-    )
-
-
-def component_from_archive_debt(status: ArchiveDebtStatus, *, scope: str = "archive_debt") -> ComponentReadiness:
-    if status.healthy:
-        state = CapabilityReadinessState.READY
-    elif status.skipped:
-        state = CapabilityReadinessState.BLOCKED
-    else:
-        state = CapabilityReadinessState.DEGRADED
-    return ComponentReadiness(
-        component=status.name,
-        scope=scope,
-        state=state,
-        summary=status.detail,
-        counts={"issue_count": status.issue_count, "destructive": status.destructive},
-        repair_hint=status.maintenance_target,
     )
 
 
@@ -922,7 +903,6 @@ __all__ = [
     "ComponentReadiness",
     "LEGACY_READINESS_SOURCE_TYPES",
     "STATUS_SNAPSHOT_FRESHNESS_MAX_AGE_S",
-    "component_from_archive_debt",
     "component_from_archive_surface",
     "component_from_assertion_substrate",
     "component_from_catchup_status",

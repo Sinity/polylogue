@@ -191,11 +191,9 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
-# polylogue-623q: an owned INACTIVE index generation (bulk offline
-# rebuild/backfill) is never read by anything until
+# An owned INACTIVE index generation is never read by anything until
 # ``IndexGenerationStore.promote()`` swaps the ``index.db`` symlink, and is
-# unconditionally discarded (``discard_if_inactive``) if the pass raises --
-# see ``maintenance/rebuild_index.py``'s ``_rebuild_index_from_source_owned``.
+# unconditionally discarded (``discard_if_inactive``) if the pass raises.
 # That licenses a much more aggressive durability/speed tradeoff than the
 # live writer profile above, which must survive a crash mid-write against the
 # ONE active index a concurrent reader may be using right now:
@@ -328,9 +326,7 @@ def mapped_bytes_budget(*, concurrent_read_connections: int = 4) -> int:
     """Plausible peak concurrent SQLite mmap+cache footprint for one polylogued process.
 
     Models the worst case that actually bit us: one bulk-build connection
-    (an offline `polylogue ops maintenance rebuild-index`, or a
-    daemon-triggered bulk rebuild via `daemon/bulk_rebuild.py`) running
-    concurrently with the daemon's own long-lived write connection
+    running concurrently with the daemon's own long-lived write connection
     (`DAEMON_WRITE_CONNECTION_PROFILE`) and a handful of concurrent
     short-lived read connections (CLI/MCP/API reads against the live
     archive while a rebuild is in flight), plus one ordinary writer, one

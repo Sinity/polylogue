@@ -26,7 +26,35 @@ from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher, WatchSource
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.reindex_campaign import _codex_records, _write_jsonl
+
+
+def _codex_records(
+    session_id: str, texts: tuple[str, ...], *, parent: str | None = None
+) -> tuple[dict[str, object], ...]:
+    meta: dict[str, object] = {"id": session_id, "timestamp": "2026-08-05T00:00:00Z"}
+    if parent is not None:
+        meta["forked_from_id"] = parent
+    records: list[dict[str, object]] = [{"type": "session_meta", "payload": meta}]
+    for position, text in enumerate(texts):
+        records.append(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": f"{session_id}-m{position}",
+                    "role": "user" if position % 2 == 0 else "assistant",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+    return tuple(records)
+
+
+def _write_jsonl(path: Path, records: tuple[dict[str, object], ...]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(record, sort_keys=True) + "\n" for record in records), encoding="utf-8")
+    return path
+
 
 RECEIPT_SCHEMA = "polylogue.excluded-cursor-live-proof.v2"
 FIXTURE_VERSION = "candidate-codex-live-compatible-2026-08-06"

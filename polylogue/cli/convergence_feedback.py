@@ -22,16 +22,11 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
     try:
         from polylogue.paths import archive_root
         from polylogue.storage.archive_readiness import (
-            active_rebuild_index_attempts,
             raw_materialization_readiness_snapshot,
             raw_materialization_ready,
         )
 
         root = active_archive or archive_root()
-        attempts = active_rebuild_index_attempts(root / "ops.db")
-        if attempts:
-            return _active_rebuild_warning(attempts)
-
         raw_readiness = raw_materialization_readiness_snapshot(root)
         if raw_materialization_ready(raw_readiness):
             return None
@@ -39,16 +34,6 @@ def convergence_warning_line(active_archive: Path | None = None) -> str | None:
     except Exception:
         logger.warning("convergence warning probe failed; reporting readiness as undetermined", exc_info=True)
         return "Archive convergence state could not be determined; results may be partial."
-
-
-def _active_rebuild_warning(attempts: list[dict[str, object]]) -> str:
-    count = len(attempts)
-    materialized = sum(_safe_int(attempt.get("materialized_count")) for attempt in attempts)
-    parsed = sum(_safe_int(attempt.get("parsed_raw_count")) for attempt in attempts)
-    progress = ""
-    if materialized or parsed:
-        progress = f" ({materialized:,} sessions materialized from {parsed:,} parsed raw rows)"
-    return f"Archive is converging: {count:,} index rebuild attempt(s) active{progress}; results may be partial."
 
 
 def _raw_materialization_warning(readiness: dict[str, object]) -> str | None:

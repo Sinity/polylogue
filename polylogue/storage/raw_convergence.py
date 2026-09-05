@@ -1,4 +1,10 @@
-"""Consolidated archive repair: orphan detection, FTS repair, session insights, WAL."""
+"""Raw observation convergence: the daemon-owned source->index materialization drain.
+
+Holds the bounded raw materialization conveyor (``converge_raw_materialization``),
+its whale-pass escalation and backlog census, and the raw-authority frontier
+strategies ``storage.raw_reconciler`` executes. Ordinary daemon convergence
+(``daemon/cli.py``) is the only caller that writes.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +14,7 @@ import json
 import re
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,23 +41,10 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.core.sources import origin_from_provider, origin_provider_fiber, provider_from_origin
 from polylogue.logging import get_logger
-from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
-from polylogue.maintenance.offline_guard import offline_maintenance_block_reason
-from polylogue.maintenance.scope import MaintenanceScopeFilter, unsupported_scope_dimensions
-from polylogue.maintenance.targets import (
-    CLEANUP_TARGETS,
-    SAFE_REPAIR_TARGETS,
-    MaintenanceTargetSpec,
-    build_maintenance_target_catalog,
-)
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.pipeline.ids import session_id as make_session_id
-from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
+from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.derived.session.runtime import (
-    session_profile_stale_predicate,
-)
-from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.raw_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     RAW_REPLAY_NO_PROGRESS_REASON,
@@ -76,7 +69,6 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
@@ -96,8 +88,6 @@ if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
 
 logger = get_logger(__name__)
-_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
-_PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT = 100_000
 RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES = 1024 * 1024 * 1024
 RAW_MATERIALIZATION_RESOURCE_BLOCK_REASON = "non-stream-safe raw payload exceeds the bounded replay limit"
 RAW_MATERIALIZATION_CENSUS_COMPONENT_LIMIT = 25
@@ -3362,113 +3352,6 @@ def inspect_browser_canonical_authority_conflicts(
     )
 
 
-def record_browser_canonical_authority_conflict_blockers(
-    config: Config, raw_ids: list[str], *, now_ms: int | None = None
-) -> tuple[BrowserCanonicalAuthorityConflictReport, tuple[str, ...]]:
-    """Persist each unresolved conflict as a durable, non-injected ``BLOCKER`` candidate.
-
-    This is the explicit, separate step the lkrc.3 design requires: it never
-    picks an authority itself.  Each conflict becomes one
-    ``AssertionKind.BLOCKER`` candidate assertion in ``user.db``, keyed by a
-    deterministic id over the raw id and its evidence digest so re-running the
-    census after new evidence appears creates a new row instead of silently
-    overwriting the old one, while re-running it unchanged is idempotent. Like
-    every other automated writer through ``upsert_assertion``, the row is
-    written ``author_kind="detector"`` and is therefore always forced to
-    ``status=candidate`` with ``inject: false`` -- it can never self-promote to
-    an authoritative, context-injectable claim; an operator must explicitly
-    judge it (mirrors ``upsert_pathology_findings_as_assertions``, #2383).
-
-    This function never touches authoritative identity state -- it
-    writes exactly one ``candidate``/non-injected/private assertion, through
-    ``upsert_assertion``'s single write chokepoint, which already refuses to
-    resurrect a judged-terminal row (accepted/rejected/deferred/superseded)
-    back to candidate on a later automated write (see that function's
-    docstring). Concretely: (1) the row can never be read as an authoritative
-    claim (``inject: false``, ``promotion_required: true``); (2) an operator's
-    judgment on a previously-recorded blocker is never silently clobbered by a
-    re-run, even one racing this same function; (3) re-running with unchanged
-    evidence is a no-op (deterministic id), and re-running after new evidence
-    creates a new row rather than mutating the old one. This is the same
-    write-safety posture as every other detector-authored candidate writer in
-    this codebase (``upsert_pathology_findings_as_assertions``,
-    ``digest``-derived ``TRANSFORM_CANDIDATE`` rows) -- none of which carry an
-    apply flag either. Adding one here would be ceremony without a
-    corresponding risk to gate.
-    """
-    from polylogue.storage.sqlite.archive_tiers.user_write import (
-        AssertionKind,
-        AssertionStatus,
-        AssertionVisibility,
-        read_assertion_envelope,
-        upsert_assertion,
-    )
-
-    report = inspect_browser_canonical_authority_conflicts(config, raw_ids)
-    archive_root = _raw_materialization_archive_root(config)
-    user_db = archive_root / "user.db"
-    if not user_db.exists():
-        raise RuntimeError("user tier is not initialized")
-    timestamp = now_ms if now_ms is not None else int(time.time() * 1000)
-    scope_ref = "insight:browser-canonical-authority-conflict@v1"
-    assertion_ids: list[str] = []
-    conn = sqlite3.connect(user_db)
-    conn.row_factory = sqlite3.Row
-    try:
-        for item in report.items:
-            if item.session_id is None or item.evidence_digest is None:
-                continue
-            assertion_id = hashlib.sha256(
-                f"assertion-blocker-browser-canonical-authority-conflict\0{item.raw_id}\0{item.evidence_digest}".encode()
-            ).hexdigest()
-            full_assertion_id = f"blocker:{assertion_id}"
-            existing = read_assertion_envelope(conn, full_assertion_id)
-            if existing is not None and existing.status != AssertionStatus.CANDIDATE:
-                # Mirror ``upsert_pathology_findings_as_assertions``: once an
-                # operator has judged a blocker (accepted/rejected/deferred/
-                # superseded), a re-run over unchanged evidence must not
-                # overwrite its display fields (value/body_text/evidence_refs
-                # are plain ``ON CONFLICT DO UPDATE`` columns in
-                # ``upsert_assertion`` -- only ``status`` itself is protected
-                # by that function's terminal-judgment chokepoint). Leave the
-                # judged row exactly as the operator left it.
-                assertion_ids.append(existing.assertion_id)
-                continue
-            envelope = upsert_assertion(
-                conn,
-                assertion_id=full_assertion_id,
-                scope_ref=scope_ref,
-                target_ref=f"session:{item.session_id}",
-                key=f"raw/{item.raw_id}",
-                kind=AssertionKind.BLOCKER,
-                value={
-                    "raw_id": item.raw_id,
-                    "canonical_logical_source_key": item.canonical_logical_source_key,
-                    "unknown_raw_content_hash": item.unknown_raw_content_hash,
-                    "unknown_raw_message_count": item.unknown_raw_message_count,
-                    "competing_raw_id": item.competing_raw_id,
-                    "competing_content_hash": item.competing_content_hash,
-                    "competing_frontier_kind": item.competing_frontier_kind,
-                    "competing_decision": item.competing_decision,
-                    "competing_message_count": item.competing_message_count,
-                    "divergent_message_index": item.divergent_message_index,
-                    "reason": item.reason,
-                },
-                body_text=item.divergence_note or item.reason,
-                author_ref=scope_ref,
-                author_kind="detector",
-                status=AssertionStatus.CANDIDATE,
-                visibility=AssertionVisibility.PRIVATE,
-                context_policy={"inject": False, "promotion_required": True},
-                now_ms=timestamp,
-            )
-            assertion_ids.append(envelope.assertion_id)
-        conn.commit()
-    finally:
-        conn.close()
-    return report, tuple(assertion_ids)
-
-
 # --- polylogue-t0dy: reconcile pre-#2729 duplicate-raw scheme ---
 
 
@@ -4319,7 +4202,7 @@ def raw_materialization_pending_census_raw_ids(
     polylogue-m6tp phase (a): the daemon's parse-stage warmer calls this
     BEFORE taking the writer hold, to know which raws to pre-parse. Reuses
     the exact same candidate + uncensused-receipt filters as
-    ``repair_raw_materialization``'s own census phase, and (like
+    ``converge_raw_materialization``'s own census phase, and (like
     ``_raw_materialization_parser_census_candidates``) opens only ``mode=ro``
     connections -- no write connection, and thus no writer hold, is ever
     required or taken here.
@@ -4532,7 +4415,7 @@ def raw_materialization_whale_pass_candidate(
 
     Returns the component's seed raw id (the same "one seed expands to the
     whole logical component via membership" convention
-    ``repair_raw_materialization``'s ``raw_artifact_id`` scoping already
+    ``converge_raw_materialization``'s ``raw_artifact_id`` scoping already
     uses), or ``None`` if no component currently qualifies. Opens only
     ``mode=ro`` connections -- safe to call without the writer hold, exactly
     like ``raw_materialization_pending_census_raw_ids``.
@@ -4974,7 +4857,7 @@ def raw_materialization_replay_backlog(
 ) -> dict[str, object]:
     """Return a read-only weighted backlog for raw source-to-index replay.
 
-    The report uses the same candidate selector as ``repair_raw_materialization``
+    The report uses the same candidate selector as ``converge_raw_materialization``
     so diagnostics and actual replay agree about which raw rows are actionable.
     It does not parse raw blobs or mutate the archive.
     """
@@ -5083,105 +4966,6 @@ def raw_materialization_replay_backlog(
     }
 
 
-def _histogram_upper_bound(value: int) -> int:
-    """Return the inclusive power-of-two bucket for a non-negative value."""
-    upper_bound = 1
-    while upper_bound < max(value, 1):
-        upper_bound *= 2
-    return upper_bound
-
-
-def _histogram(values: Sequence[int], *, field: str) -> list[dict[str, int]]:
-    """Summarize numeric frontier shape without retaining identifying rows."""
-    buckets: dict[int, int] = {}
-    for value in values:
-        upper_bound = _histogram_upper_bound(value)
-        buckets[upper_bound] = buckets.get(upper_bound, 0) + 1
-    return [{field: upper_bound, "count": count} for upper_bound, count in sorted(buckets.items())]
-
-
-def _backlog_count(backlog: Mapping[str, object], field: str) -> int:
-    """Read a bounded numeric backlog field without trusting an untyped dict."""
-    value = backlog.get(field)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return value
-    raise RuntimeError(f"raw materialization backlog returned a non-integral {field!r}: {value!r}")
-
-
-def raw_materialization_scale_profile(config: Config) -> dict[str, object]:
-    """Return a private-free authority-frontier shape for synthetic proof input.
-
-    The profile deliberately exposes counts and distributions only.  It is safe
-    to retain with a synthetic workload receipt because it never includes raw
-    ids, source paths, blob hashes, or payload-derived fields.
-    """
-    candidates = _raw_materialization_candidate_ids(config)
-    backlog = raw_materialization_replay_backlog(config, limit=0, _candidates=candidates)
-    if not bool(backlog["available"]):
-        return {"available": False, "reason": backlog["reason"]}
-    component_raw_counts = [len(component) for component in candidates.authority_components]
-    candidate_ids = set(candidates.raw_ids)
-    component_cohorts: dict[tuple[int, int], int] = {}
-    component_byte_cohorts: dict[tuple[int, int, int], int] = {}
-    for component in candidates.authority_components:
-        raw_count = len(component)
-        direct_candidate_count = len(candidate_ids.intersection(component))
-        key = (raw_count, direct_candidate_count)
-        component_cohorts[key] = component_cohorts.get(key, 0) + 1
-    component_blob_bytes = [
-        sum(_raw_materialization_component_blob_bytes(candidates, raw_id) for raw_id in component)
-        for component in candidates.authority_components
-    ]
-    for component, blob_bytes in zip(candidates.authority_components, component_blob_bytes, strict=True):
-        byte_key = (
-            len(component),
-            len(candidate_ids.intersection(component)),
-            _histogram_upper_bound(blob_bytes),
-        )
-        component_byte_cohorts[byte_key] = component_byte_cohorts.get(byte_key, 0) + 1
-    return {
-        "available": True,
-        "format": "raw-authority-scale-profile-v1",
-        "candidate_count": _backlog_count(backlog, "candidate_count"),
-        "expanded_candidate_count": _backlog_count(backlog, "expanded_candidate_count"),
-        "authority_component_count": _backlog_count(backlog, "authority_component_count"),
-        "executable_authority_component_count": _backlog_count(backlog, "executable_authority_component_count"),
-        "blocked_authority_component_count": _backlog_count(backlog, "blocked_authority_component_count"),
-        "total_blob_bytes": _backlog_count(backlog, "total_blob_bytes"),
-        "expanded_total_blob_bytes": _backlog_count(backlog, "expanded_total_blob_bytes"),
-        "component_raw_count_histogram": _histogram(component_raw_counts, field="upper_bound_raw_count"),
-        "component_cohort_distribution": [
-            {
-                "component_raw_count": raw_count,
-                "direct_candidate_count": direct_candidate_count,
-                "component_count": count,
-            }
-            for (raw_count, direct_candidate_count), count in sorted(component_cohorts.items())
-        ],
-        "component_byte_cohort_distribution": [
-            {
-                "component_raw_count": raw_count,
-                "direct_candidate_count": direct_candidate_count,
-                "upper_bound_blob_bytes": upper_bound_blob_bytes,
-                "component_count": count,
-            }
-            for (raw_count, direct_candidate_count, upper_bound_blob_bytes), count in sorted(
-                component_byte_cohorts.items()
-            )
-        ],
-        "component_blob_bytes_histogram": _histogram(component_blob_bytes, field="upper_bound_blob_bytes"),
-        "residual_state_counts": {
-            "missing_blob_count": _backlog_count(backlog, "missing_blob_count"),
-            "authority_quarantined_count": _backlog_count(backlog, "authority_quarantined_count"),
-            "byte_authority_fragment_count": _backlog_count(backlog, "byte_authority_fragment_count"),
-            "byte_authority_quarantined_count": _backlog_count(backlog, "byte_authority_quarantined_count"),
-            "byte_authority_pending_count": _backlog_count(backlog, "byte_authority_pending_count"),
-            "adoption_deferred_count": _backlog_count(backlog, "adoption_deferred_count"),
-            "blocked_candidate_count": _backlog_count(backlog, "blocked_candidate_count"),
-        },
-    }
-
-
 def _raw_materialized_by_source_path_native(materialized_aliases: set[tuple[str, str]], row: sqlite3.Row) -> bool:
     origin = str(row["provider_origin"] or "")
     if not origin:
@@ -5229,248 +5013,11 @@ def _source_path_native_id_candidates(source_path: str) -> tuple[str, ...]:
     return tuple(candidates)
 
 
-def _open_archive_index_connection() -> sqlite3.Connection:
-    from polylogue.paths import archive_root
-
-    conn = sqlite3.connect(resolve_active_index_path(archive_root()))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    return conn
-
-
-def _resolve_convergence_debt(
-    *,
-    ops_db: Path,
-    stage: str,
-    target_type: str,
-    target_id: str,
-) -> None:
-    """Best-effort resolution for ops-tier convergence debt.
-
-    Maintenance targets are explicit convergence actuators. When one proves a
-    target ready, stale daemon debt for the same target must stop appearing as
-    actionable work.
-    """
-    if not ops_db.exists():
-        return
-    try:
-        with closing(sqlite3.connect(ops_db)) as conn:
-            table_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
-            ).fetchone()
-            if not table_exists:
-                return
-            conn.execute(
-                """
-                DELETE FROM convergence_debt
-                WHERE stage = ? AND target_type = ? AND target_id = ?
-                """,
-                (stage, target_type, target_id),
-            )
-            conn.commit()
-    except sqlite3.Error as exc:
-        logger.warning(
-            "convergence_debt_resolve_failed",
-            stage=stage,
-            target_type=target_type,
-            target_id=target_id,
-            error=str(exc),
-        )
-
-
-def _resolve_session_insight_convergence_debt(
-    *,
-    ops_db: Path,
-    session_ids: tuple[str, ...] | None,
-) -> None:
-    """Clear proven session-insight convergence debt after maintenance repair."""
-    if not ops_db.exists():
-        return
-    try:
-        with closing(sqlite3.connect(ops_db)) as conn:
-            table_exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='convergence_debt'"
-            ).fetchone()
-            if not table_exists:
-                return
-            if session_ids is None:
-                conn.execute(
-                    """
-                    DELETE FROM convergence_debt
-                    WHERE stage = 'derived'
-                      AND target_type = 'session_id'
-                    """
-                )
-            else:
-                for session_id in session_ids:
-                    conn.execute(
-                        """
-                        DELETE FROM convergence_debt
-                        WHERE stage = 'derived'
-                          AND target_type = 'session_id'
-                          AND target_id = ?
-                        """,
-                        (session_id,),
-                    )
-            conn.commit()
-    except sqlite3.Error as exc:
-        logger.warning(
-            "session_insight_convergence_debt_resolve_failed",
-            session_ids=session_ids,
-            error=str(exc),
-        )
-
-
-def _session_insight_requires_archive_wide_rebuild(status: object) -> bool:
-    return any(
-        int(getattr(status, attr, 0) or 0) > 0
-        for attr in (
-            "orphan_profile_row_count",
-            "orphan_latency_profile_row_count",
-            "orphan_work_event_inference_count",
-            "orphan_phase_inference_count",
-            "stale_day_summary_count",
-        )
-    )
-
-
-def _session_insight_aggregate_debt_count(status: object) -> int:
-    return sum(
-        int(getattr(status, attr, 0) or 0)
-        for attr in (
-            "stale_thread_count",
-            "orphan_thread_count",
-            "stale_tag_rollup_count",
-            "stale_day_summary_count",
-        )
-    )
-
-
-def _session_insight_row_debt_count(status: object) -> int:
-    return sum(
-        int(getattr(status, attr, 0) or 0)
-        for attr in (
-            "missing_profile_row_count",
-            "stale_profile_row_count",
-            "orphan_profile_row_count",
-            "missing_latency_profile_row_count",
-            "stale_latency_profile_row_count",
-            "orphan_latency_profile_row_count",
-            "stale_work_event_inference_count",
-            "orphan_work_event_inference_count",
-            "stale_phase_inference_count",
-            "orphan_phase_inference_count",
-            "stale_thread_count",
-            "orphan_thread_count",
-            "stale_tag_rollup_count",
-            "stale_day_summary_count",
-        )
-    )
-
-
-def _targeted_session_insight_rebuild_ids(
-    conn: sqlite3.Connection | None,
-    status: object,
-) -> tuple[str, ...] | None:
-    if conn is None or _session_insight_requires_archive_wide_rebuild(status):
-        return None
-    profile_stale_predicate = session_profile_stale_predicate(
-        "s",
-        "p",
-        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
-    )
-    latency_stale_predicate = session_profile_stale_predicate(
-        "s",
-        "lp",
-        include_content_hash=_column_exists(conn, "session_latency_profiles", "input_content_hash"),
-    )
-    rows = conn.execute(
-        f"""
-        SELECT DISTINCT session_id
-        FROM (
-            SELECT s.session_id
-            FROM sessions AS s
-            WHERE NOT EXISTS (
-                SELECT 1 FROM session_profiles AS p WHERE p.session_id = s.session_id
-            )
-            UNION
-            SELECT s.session_id
-            FROM sessions AS s
-            JOIN session_profiles AS p ON p.session_id = s.session_id
-            WHERE p.materializer_version != ?
-               OR {profile_stale_predicate}
-            UNION
-            SELECT p.session_id
-            FROM session_profiles AS p
-            JOIN sessions AS s ON s.session_id = p.session_id
-            WHERE NOT EXISTS (
-                SELECT 1 FROM session_latency_profiles AS lp WHERE lp.session_id = p.session_id
-            )
-            UNION
-            SELECT lp.session_id
-            FROM session_latency_profiles AS lp
-            JOIN sessions AS s ON s.session_id = lp.session_id
-            WHERE lp.materializer_version != ?
-               OR {latency_stale_predicate}
-            UNION
-            SELECT p.session_id
-            FROM session_profiles AS p
-            WHERE p.work_event_count != (
-                SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
-            )
-            UNION
-            SELECT p.session_id
-            FROM session_profiles AS p
-            WHERE p.phase_count != (
-                SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
-            )
-        )
-        ORDER BY session_id
-        """,
-        (
-            SESSION_INSIGHT_MATERIALIZER_VERSION,
-            SESSION_INSIGHT_MATERIALIZER_VERSION,
-        ),
-    ).fetchall()
-    return tuple(str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows)
-
-
-def _archive_index_present(config: Config) -> bool:
-    index_db = config.archive_root / "index.db"
-    if not index_db.exists():
-        return False
-    try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
-            version = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
-    except sqlite3.Error:
-        return False
-    return version > 0
-
-
-def offline_maintenance_blockers(
-    config: Config,
-    *,
-    repair: bool,
-    cleanup: bool,
-    dry_run: bool,
-    targets: tuple[str, ...] = (),
-) -> list[RepairResult]:
-    detail = offline_maintenance_block_reason(config, active=repair or cleanup, dry_run=dry_run)
-    if detail is None:
-        return []
-    selected_targets = targets or tuple(SAFE_REPAIR_TARGETS if repair else ()) + tuple(
-        CLEANUP_TARGETS if cleanup else ()
-    )
-    return [
-        _repair_result(target_name, repaired_count=0, success=False, detail=detail) for target_name in selected_targets
-    ]
-
-
 @dataclass
-class RepairResult:
+class RawConvergenceResult:
+    """Typed outcome of one bounded raw materialization pass."""
+
     name: str
-    category: MaintenanceCategory
-    destructive: bool
     repaired_count: int
     success: bool
     detail: str = ""
@@ -5481,8 +5028,6 @@ class RepairResult:
     def to_dict(self) -> JSONDocument:
         payload: dict[str, object] = {
             "name": self.name,
-            "category": self.category.value,
-            "destructive": self.destructive,
             "repaired_count": self.repaired_count,
             "success": self.success,
             "detail": self.detail,
@@ -5516,150 +5061,7 @@ class RepairResult:
         return json_document(payload)
 
 
-# ---------------------------------------------------------------------------
-# Archive debt count queries (formerly archive_debt_counts)
-# ---------------------------------------------------------------------------
-
-
-def count_empty_sessions_sync(conn: sqlite3.Connection, *, session_ids: tuple[str, ...] | None = None) -> int:
-    """Count session rows that are debris: no *content* (zero messages, or
-    every message carries zero words -- see ``_empty_session_candidate_ids``)
-    AND a raw artifact the current classifier positively refuses to admit as
-    a session.
-
-    This deliberately does NOT count every message-less session, and it does
-    NOT use ``raw_id IS NULL`` as the discriminator either (both were tried
-    and refuted -- see polylogue-ne6k). A session can be legitimately empty
-    (the 2026-07-22 hook-inflation postmortem explicitly chose to retain ~832
-    such sessions after de-inflation), and measured on the live archive
-    2026-07-29/31, every one of the 5,257 message-less sessions carries a
-    non-empty ``raw_id`` -- so "no acquired bytes" cannot separate the 4,945+
-    genuine phantoms (``<agent>.meta`` sidecars, misclassified non-transcript
-    artifacts) from the rest. The only discriminator that has evidence behind
-    it is WHAT THE ACQUIRED ARTIFACT IS: re-running each candidate's raw bytes
-    through the same ``classify_artifact``/``inspect_raw_artifact`` pipeline
-    live ingest uses, and counting only the ones it still refuses.
-
-    polylogue-21qj widened the candidate set beyond literally zero messages:
-    the live archive's ``claude-code-session:conversation_relationships``
-    phantom (a sinex graph-edge index misclassified as a session before
-    #3428) has 96,748 *message rows*, every one carrying zero blocks/words
-    (``session.word_count = 0``) -- a "no real content" session that the
-    original "no messages at all" predicate could never see. Broadening the
-    predicate to ``word_count = 0`` does not risk sweeping in a legitimate
-    all-tool-use session with no text turns: any such session's raw artifact
-    still carries genuine Claude Code envelope markers and is still admitted
-    by ``inspect_raw_artifact``, so the classifier gate below continues to
-    retain it. Only artifacts that positively fail current classification are
-    ever deleted, regardless of which candidate query found them.
-
-    Kept in lockstep with ``repair_empty_sessions``: the counter and the
-    deleter must agree, or the report says one thing and the repair does
-    another (both call ``_empty_session_debris_session_ids``).
-
-    ``session_ids`` narrows the count to exactly the requested sessions, the
-    same narrowing ``repair_empty_sessions`` applies, so a scoped preview and
-    a scoped execution report the same rows.
-    """
-    return len(_empty_session_debris_session_ids(conn, session_ids=session_ids))
-
-
-def _table_has_more_than(conn: sqlite3.Connection, table_name: str, row_limit: int) -> bool:
-    row = conn.execute(f"SELECT 1 FROM {table_name} LIMIT 1 OFFSET ?", (max(0, row_limit),)).fetchone()
-    return row is not None
-
-
-# ---------------------------------------------------------------------------
-# Derived repair count helpers (formerly archive_debt_repairs)
-# ---------------------------------------------------------------------------
-
-
-def session_insight_repair_count(derived_statuses: dict[str, DerivedModelStatus]) -> int:
-    keys = [
-        "session_profile_rows",
-        "session_work_events",
-        "session_work_events_fts",
-        "session_phases",
-        "threads",
-        "session_tag_rollups",
-    ]
-    maybe_statuses = [derived_statuses.get(k) for k in keys]
-    if not all(status is not None for status in maybe_statuses):
-        return 0
-    statuses = [status for status in maybe_statuses if status is not None]
-    total = 0
-    for s in statuses:
-        total += max(0, int(s.pending_documents or 0))
-        total += max(0, int(s.pending_rows or 0))
-        total += max(0, int(s.stale_rows or 0))
-        total += max(0, int(s.orphan_rows or 0))
-    return total
-
-
-# ---------------------------------------------------------------------------
-# Archive debt collection (formerly archive_debt.py)
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ArchiveDebtStatus:
-    """Simple debt/orphan status for a single maintenance target."""
-
-    name: str
-    category: MaintenanceCategory
-    destructive: bool
-    issue_count: int
-    detail: str
-    maintenance_target: str
-    skipped: bool = False
-
-    @property
-    def healthy(self) -> bool:
-        return self.issue_count == 0 and not self.skipped
-
-    def to_dict(self) -> JSONDocument:
-        return json_document(
-            {
-                "name": self.name,
-                "category": self.category.value,
-                "destructive": self.destructive,
-                "issue_count": self.issue_count,
-                "detail": self.detail,
-                "maintenance_target": self.maintenance_target,
-                "healthy": self.healthy,
-                "skipped": self.skipped,
-            }
-        )
-
-
-def _maintenance_target_spec(name: str) -> MaintenanceTargetSpec:
-    spec = _MAINTENANCE_TARGET_CATALOG.resolve_name(name)
-    if spec is None:
-        raise KeyError(f"Unknown maintenance target: {name}")
-    return spec
-
-
-def _repair_result(
-    target_name: str,
-    *,
-    repaired_count: int,
-    success: bool,
-    detail: str,
-    metrics: dict[str, float] | None = None,
-) -> RepairResult:
-    spec = _maintenance_target_spec(target_name)
-    return RepairResult(
-        name=spec.name,
-        category=spec.category,
-        destructive=spec.destructive,
-        repaired_count=repaired_count,
-        success=success,
-        detail=detail,
-        metrics=dict(metrics or {}),
-    )
-
-
-def _internal_derived_repair_result(
+def _raw_convergence_result(
     name: str,
     *,
     repaired_count: int,
@@ -5668,11 +5070,9 @@ def _internal_derived_repair_result(
     metrics: dict[str, float] | None = None,
     plan_outcomes: tuple[RawReplayPlanOutcome, ...] = (),
     census_receipt: RawAuthorityCensusReceipt | None = None,
-) -> RepairResult:
-    return RepairResult(
+) -> RawConvergenceResult:
+    return RawConvergenceResult(
         name=name,
-        category=MaintenanceCategory.DERIVED_REPAIR,
-        destructive=False,
         repaired_count=repaired_count,
         success=success,
         detail=detail,
@@ -5682,9 +5082,9 @@ def _internal_derived_repair_result(
     )
 
 
-def raw_materialization_lease_refusal_result(error: BaseException) -> RepairResult:
-    """Translate active-generation lease refusal into the repair contract."""
-    return _internal_derived_repair_result(
+def raw_materialization_lease_refusal_result(error: BaseException) -> RawConvergenceResult:
+    """Translate active-generation lease refusal into the typed pass result."""
+    return _raw_convergence_result(
         "raw_materialization",
         repaired_count=0,
         success=False,
@@ -5692,624 +5092,9 @@ def raw_materialization_lease_refusal_result(error: BaseException) -> RepairResu
     )
 
 
-def _archive_debt_status(
-    target_name: str,
-    *,
-    issue_count: int,
-    detail: str,
-    skipped: bool = False,
-) -> ArchiveDebtStatus:
-    spec = _maintenance_target_spec(target_name)
-    return ArchiveDebtStatus(
-        name=spec.name,
-        category=spec.category,
-        destructive=spec.destructive,
-        issue_count=issue_count,
-        detail=detail,
-        maintenance_target=spec.name,
-        skipped=skipped,
-    )
-
-
-def collect_archive_debt_statuses_sync(
-    conn: sqlite3.Connection,
-    *,
-    db_path: Path | str | None = None,
-    derived_statuses: dict[str, DerivedModelStatus] | None = None,
-    include_expensive: bool = True,
-    probe_only: bool = False,
-    target_names: tuple[str, ...] = (),
-    configured_root: Path | None = None,
-) -> dict[str, ArchiveDebtStatus]:
-    from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
-
-    selected = set(target_names) if target_names else set(_MAINTENANCE_TARGET_CATALOG.names())
-    needs_session_insights = "session_insights" in selected
-    statuses = (
-        derived_statuses or collect_derived_model_statuses_sync(conn, verify_full=include_expensive)
-        if needs_session_insights
-        else {}
-    )
-
-    skip_large_message_scans = (
-        probe_only
-        and not include_expensive
-        and _table_has_more_than(conn, "messages", _PROBE_ONLY_EXACT_MESSAGE_ROW_LIMIT)
-    )
-    debt_statuses: dict[str, ArchiveDebtStatus] = {}
-
-    if "empty_sessions" in selected:
-        empty_sessions = 0 if skip_large_message_scans else count_empty_sessions_sync(conn)
-        debt_statuses["empty_sessions"] = _archive_debt_status(
-            "empty_sessions",
-            issue_count=empty_sessions,
-            detail=(
-                "Skipped exact empty-session scan in probe mode; use --deep for exact count"
-                if skip_large_message_scans
-                else "No empty sessions"
-                if empty_sessions == 0
-                else f"{empty_sessions:,} empty sessions"
-            ),
-            skipped=skip_large_message_scans,
-        )
-    if "session_insights" in selected:
-        session_insights = session_insight_repair_count(statuses)
-        debt_statuses["session_insights"] = _archive_debt_status(
-            "session_insights",
-            issue_count=session_insights,
-            detail="Session insight read models ready"
-            if session_insights == 0
-            else f"{session_insights:,} pending/stale/orphaned session-insight rows",
-        )
-    if include_expensive and "superseded_raw_snapshots" in selected:
-        superseded_raw_snapshots = count_superseded_raw_snapshots_sync(conn)
-        debt_statuses["superseded_raw_snapshots"] = _archive_debt_status(
-            "superseded_raw_snapshots",
-            issue_count=superseded_raw_snapshots,
-            detail=(
-                "No superseded live raw snapshots"
-                if superseded_raw_snapshots == 0
-                else f"{superseded_raw_snapshots:,} superseded live raw snapshots"
-            ),
-        )
-    return debt_statuses
-
-
-def preview_counts_from_archive_debt(
-    statuses: dict[str, ArchiveDebtStatus],
-) -> dict[str, int]:
-    preview_targets = set(_MAINTENANCE_TARGET_CATALOG.preview_target_names())
-    return {
-        status.maintenance_target: status.issue_count
-        for status in statuses.values()
-        if status.issue_count > 0 or status.maintenance_target in preview_targets
-    }
-
-
-# ---------------------------------------------------------------------------
-# Cleanup repairs (empty sessions, blobs, and raw snapshots)
-# ---------------------------------------------------------------------------
-
-
-def _sibling_source_db_path(conn: sqlite3.Connection) -> Path | None:
-    """Return the ``source.db`` sibling of the index-tier file backing *conn*.
-
-    Both tiers always live side by side under the same archive root
-    (``storage/archive_identity.py``). Reading ``PRAGMA database_list``
-    instead of threading a path parameter keeps this usable both from
-    ``repair_empty_sessions`` (which opens its own index connection) and from
-    ``count_empty_sessions_sync`` (called with a caller-supplied, possibly
-    read-only, connection in ``maintenance/preview.py``).
-    """
-    for _seq, name, file in conn.execute("PRAGMA database_list"):
-        if name == "main" and file:
-            return Path(file).parent / "source.db"
-    return None
-
-
-def _empty_session_candidate_ids(conn: sqlite3.Connection) -> list[tuple[str, str | None]]:
-    """Return ``(session_id, raw_id)`` for every session with no real content:
-    zero messages, or every message present carries zero words.
-
-    The second branch (``s.word_count = 0`` with ``message_count`` possibly
-    nonzero) is what catches ``claude-code-session:conversation_relationships``
-    (polylogue-21qj): 96,748 message rows, none of them carrying any block/word
-    content, from a sinex graph-edge index misclassified as a session's turn
-    stream before #3428. ``sessions.word_count`` is a materialized aggregate
-    over every message the session owns, so this stays a single indexed
-    comparison rather than a per-message join.
-    """
-    return [
-        (row["session_id"], row["raw_id"])
-        for row in conn.execute(
-            """
-            SELECT s.session_id AS session_id, s.raw_id AS raw_id
-            FROM sessions s
-            WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.session_id)
-               OR s.word_count = 0
-            """
-        ).fetchall()
-    ]
-
-
-def _blob_store_for_connection(conn: sqlite3.Connection) -> BlobStore | None:
-    """The blob store belonging to the archive this connection is repairing.
-
-    Inspection otherwise resolves blobs through the AMBIENT configured archive,
-    so repairing any other archive reads every blob from the wrong place. That
-    is not a hypothetical: it silently turns "these bytes are unreadable" into
-    the classifier's only observation, and the caller-supplied-archive contract
-    that maintenance is built on is exactly the case it breaks.
-
-    Derived from the attached `source` database's own path, so it follows the
-    connection rather than process configuration. Returns None when that cannot
-    be determined, leaving the previous default in place.
-    """
-    try:
-        rows = conn.execute("PRAGMA database_list").fetchall()
-    except sqlite3.Error:
-        return None
-    for row in rows:
-        name = row[1] if not isinstance(row, sqlite3.Row) else row["name"]
-        path = row[2] if not isinstance(row, sqlite3.Row) else row["file"]
-        if name == "source" and path:
-            return BlobStore(Path(path).parent / "blob")
-    return None
-
-
-def _raw_artifact_positively_fails_classification(conn: sqlite3.Connection, raw_id: str | None) -> bool:
-    """Return ``True`` only when *raw_id* resolves to source bytes that the
-    CURRENT ``classify_artifact``/``inspect_raw_artifact`` pipeline positively
-    refuses to admit as a session (``parse_as_session is False``).
-
-    Absence of positive evidence always means "retain": a missing/empty
-    ``raw_id``, a ``raw_sessions`` row that no longer exists (e.g. GC'd), or
-    an inspection failure all return ``False`` here rather than being treated
-    as debris by default. This is deliberately conservative in the opposite
-    direction from both predicates tried and refuted on polylogue-ne6k
-    (blanket "no messages", and "``raw_id IS NULL``"): a row can only be
-    deleted by *positive* evidence that the artifact behind it is not a
-    session, mirroring the ``looks_like_code`` fix in
-    ``sources/parsers/claude/code_detection.py`` (polylogue-9ykn/gvgi) that
-    requires a genuine record-envelope marker rather than a weak location- or
-    absence-based guess.
-    """
-    if not raw_id:
-        return False
-    row = conn.execute("SELECT * FROM source.raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-    if row is None:
-        return False
-
-    from polylogue.storage.artifacts.inspection import inspect_raw_artifact
-    from polylogue.storage.sqlite.queries.mappers import _row_to_raw_session
-
-    try:
-        record = _row_to_raw_session(row)
-        observation = inspect_raw_artifact(record, blob_store=_blob_store_for_connection(conn))
-    except Exception:
-        # Cannot classify -> no positive evidence -> retain.
-        return False
-    if observation.decode_error:
-        # A decode failure is *not* raised, it is reported on the observation
-        # with ``parse_as_session=False`` -- which the return below would read
-        # as positive evidence that this is not a session and delete the row.
-        # Unreadable bytes are the absence of evidence, and this function's
-        # contract (and the `except` above) is to retain in that case. The
-        # difference is destructive: inspection resolves the blob through the
-        # configured archive, so repairing any archive that is not the
-        # configured one fails to read every blob and would otherwise delete
-        # every message-less session it examined.
-        return False
-    return not observation.parse_as_session
-
-
-def _empty_session_debris_session_ids(
-    conn: sqlite3.Connection,
-    session_ids: tuple[str, ...] | None = None,
-) -> list[str]:
-    """Return ``session_id``s for message-less sessions whose raw artifact
-    positively fails the current record-shape classifier.
-
-    Shared by ``count_empty_sessions_sync`` and ``repair_empty_sessions`` so
-    the reported debt and the deleted rows can never diverge (polylogue-ne6k).
-
-    Both ``_empty_session_candidate_ids`` and
-    ``_raw_artifact_positively_fails_classification`` access rows by column
-    name, so this sets ``row_factory = sqlite3.Row`` defensively on entry
-    (restoring the caller's original factory on exit) rather than assuming
-    every caller-supplied connection already has it -- ``count_empty_sessions_sync``'s
-    own docstring documents that it is "called with a caller-supplied,
-    possibly read-only, connection" (polylogue-9rdky: the maintenance
-    planner's preview/execute path opens a plain tuple-row connection via
-    ``open_readonly_connection``, which crashed both helpers with
-    ``TypeError: tuple indices must be integers or slices, not str``).
-    """
-    original_row_factory = conn.row_factory
-    conn.row_factory = sqlite3.Row
-    try:
-        candidates = _empty_session_candidate_ids(conn)
-        if session_ids is not None:
-            requested = set(session_ids)
-            candidates = [item for item in candidates if item[0] in requested]
-        if not candidates:
-            return []
-        source_db = _sibling_source_db_path(conn)
-        if source_db is None or not source_db.exists():
-            # No source tier reachable -> no way to obtain positive evidence for
-            # any candidate -> retain all of them.
-            return []
-        conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
-        try:
-            return [
-                session_id
-                for session_id, raw_id in candidates
-                if _raw_artifact_positively_fails_classification(conn, raw_id)
-            ]
-        finally:
-            conn.execute("DETACH DATABASE source")
-    finally:
-        conn.row_factory = original_row_factory
-
-
-def repair_empty_sessions(
-    config: Config, dry_run: bool = False, *, session_ids: tuple[str, ...] | None = None
-) -> RepairResult:
-    """Delete message-less sessions whose raw artifact positively fails the
-    current record-shape classifier.
-
-    See ``_raw_artifact_positively_fails_classification`` and
-    ``count_empty_sessions_sync`` for why "no messages" alone, and
-    "``raw_id IS NULL``", are both insufficient predicates -- both were tried
-    and refuted on polylogue-ne6k. A session with no messages is retained
-    unless its raw artifact, re-run through the live classification pipeline,
-    is itself refused as a session.
-    """
-    del config
-    try:
-        with _open_archive_index_connection() as conn:
-            candidate_ids = _empty_session_debris_session_ids(conn, session_ids=session_ids)
-            if dry_run:
-                return _repair_result(
-                    "empty_sessions",
-                    repaired_count=len(candidate_ids),
-                    success=True,
-                    detail=(
-                        f"Would: {len(candidate_ids)} rows affected" if candidate_ids else "Would: No issues found"
-                    ),
-                )
-            if not candidate_ids:
-                return _repair_result(
-                    "empty_sessions",
-                    repaired_count=0,
-                    success=True,
-                    detail="No repairs needed",
-                )
-            conn.executemany(
-                "DELETE FROM sessions WHERE session_id = ?",
-                [(session_id,) for session_id in candidate_ids],
-            )
-            conn.commit()
-            return _repair_result(
-                "empty_sessions",
-                repaired_count=len(candidate_ids),
-                success=True,
-                detail=f"Repaired {len(candidate_ids)} rows",
-            )
-    except Exception as exc:
-        return _repair_result(
-            "empty_sessions",
-            repaired_count=0,
-            success=False,
-            detail=f"Repair failed: {exc}",
-        )
-
-
-def preview_empty_sessions(*, count: int) -> RepairResult:
-    return _repair_result(
-        "empty_sessions",
-        repaired_count=count,
-        success=True,
-        detail=f"Would: {count} rows affected" if count else "Would: No issues found",
-    )
-
-
-def count_superseded_raw_snapshots_sync(conn: sqlite3.Connection) -> int:
-    from polylogue.storage.raw_retention import superseded_raw_snapshot_candidates
-
-    return len(superseded_raw_snapshot_candidates(conn, limit=10_000))
-
-
-def repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
-    """Delete redundant raw snapshots while promotion cannot change the protected set."""
-
-    if dry_run:
-        return _repair_superseded_raw_snapshots(config, dry_run=True)
-
-    from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
-
-    lease = ActiveWriterLease(_raw_materialization_archive_root(config))
-    try:
-        lease.acquire()
-    except RebuildLeaseUnavailableError as exc:
-        return _repair_result(
-            "superseded_raw_snapshots",
-            repaired_count=0,
-            success=False,
-            detail=f"Skipped destructive raw cleanup: {exc}",
-        )
-    try:
-        return _repair_superseded_raw_snapshots(config, dry_run=False)
-    finally:
-        lease.close()
-
-
-def _repair_superseded_raw_snapshots(config: Config, dry_run: bool = False) -> RepairResult:
-    from polylogue.storage.raw_retention import (
-        RawRetentionSafetyError,
-        active_raw_retention_authority,
-        cleanup_superseded_raw_snapshots,
-    )
-    from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
-
-    archive_root = _raw_materialization_archive_root(config)
-    repair_db_path = archive_root / "source.db"
-    if repair_db_path.exists():
-        index_db_path = _raw_materialization_index_path(config, archive_root)
-        if not index_db_path.is_file():
-            return _repair_result(
-                "superseded_raw_snapshots",
-                repaired_count=0,
-                success=False,
-                detail=f"Skipped destructive raw cleanup: index tier is unavailable: {index_db_path}",
-            )
-        try:
-            index_conn = open_readonly_connection(index_db_path)
-        except (OSError, sqlite3.Error) as exc:
-            return _repair_result(
-                "superseded_raw_snapshots",
-                repaired_count=0,
-                success=False,
-                detail=f"Skipped destructive raw cleanup: index tier raw authority is unreadable: {exc}",
-            )
-        with (
-            closing(open_connection(repair_db_path)) as conn,
-            closing(index_conn),
-            conn,
-        ):
-            conn.row_factory = sqlite3.Row
-            try:
-                retention_authority = active_raw_retention_authority(
-                    conn,
-                    index_db_path=index_db_path,
-                )
-            except RawRetentionSafetyError as exc:
-                return _repair_result(
-                    "superseded_raw_snapshots",
-                    repaired_count=0,
-                    success=False,
-                    detail=f"Skipped destructive raw cleanup: {exc}",
-                )
-            result = cleanup_superseded_raw_snapshots(
-                conn,
-                dry_run=dry_run,
-                limit=10_000,
-                protected_raw_ids=retention_authority.protected_raw_ids,
-                eligible_raw_ids=retention_authority.eligible_raw_ids,
-                index_conn=index_conn,
-            )
-    else:
-        with closing(open_connection(config.db_path)) as conn, conn:
-            try:
-                retention_authority = active_raw_retention_authority(
-                    conn,
-                    index_db_path=config.db_path,
-                )
-            except RawRetentionSafetyError as exc:
-                return _repair_result(
-                    "superseded_raw_snapshots",
-                    repaired_count=0,
-                    success=False,
-                    detail=f"Skipped destructive raw cleanup: {exc}",
-                )
-            result = cleanup_superseded_raw_snapshots(
-                conn,
-                dry_run=dry_run,
-                limit=10_000,
-                protected_raw_ids=retention_authority.protected_raw_ids,
-                eligible_raw_ids=retention_authority.eligible_raw_ids,
-                index_conn=conn,
-            )
-    if dry_run:
-        skipped_detail = (
-            f"; skipped {result.skipped_referenced_count:,} active revision raw rows"
-            if result.skipped_referenced_count
-            else ""
-        )
-        return _repair_result(
-            "superseded_raw_snapshots",
-            repaired_count=result.candidate_count,
-            success=True,
-            detail=(
-                f"Would: delete {result.candidate_count:,} superseded raw snapshots "
-                f"({result.deleted_raw_bytes:,} referenced bytes)"
-                f"{skipped_detail}"
-            ),
-        )
-    skipped_detail = (
-        f"; skipped {result.skipped_referenced_count:,} active revision raw rows"
-        if result.skipped_referenced_count
-        else ""
-    )
-    orphaned_plan_detail = (
-        f"; pruned {result.deleted_orphaned_authority_plan_count:,} orphaned raw-authority plan(s)"
-        if result.deleted_orphaned_authority_plan_count
-        else ""
-    )
-    return _repair_result(
-        "superseded_raw_snapshots",
-        repaired_count=result.deleted_raw_count,
-        success=not result.errors,
-        detail=(
-            f"Deleted {result.deleted_raw_count:,} raw rows and {result.deleted_blob_count:,} blob files "
-            f"({result.deleted_blob_bytes:,} bytes)"
-            f"{skipped_detail}{orphaned_plan_detail}"
-            + (f"; errors: {'; '.join(result.errors[:3])}" if result.errors else "")
-        ),
-    )
-
-
-def preview_superseded_raw_snapshots(*, count: int) -> RepairResult:
-    return _repair_result(
-        "superseded_raw_snapshots",
-        repaired_count=count,
-        success=True,
-        detail=(
-            f"Would: delete {count} superseded live raw snapshots"
-            if count
-            else "Would: No superseded live raw snapshots found"
-        ),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Derived repairs (session insights, actions, FTS, WAL)
 # ---------------------------------------------------------------------------
-
-
-def repair_session_insights(
-    config: Config,
-    dry_run: bool = False,
-    *,
-    progress_callback: ProgressCallback | None = None,
-    progress_total: int | None = None,
-    session_ids: tuple[str, ...] | None = None,
-    archive_root_override: Path | None = None,
-    owned_inactive_generation: tuple[str, str] | None = None,
-    resolve_convergence_debt: bool = True,
-) -> RepairResult:
-    """Repair / rebuild session insights.
-
-    When ``session_ids`` is given, the rebuild is narrowed to that
-    set instead of touching the full archive — used by the maintenance
-    planner to honor :class:`MaintenanceScopeFilter.session_ids`.
-
-    This path repairs session-derived rows and archive-wide aggregates. It is
-    also used for inactive generations before they are promoted.
-
-    ``resolve_convergence_debt=False`` is reserved for an owned inactive
-    generation. Its ``ops.db`` is a read-through link to live disposable
-    state, so candidate materialization may prove derived readiness without
-    clearing the active daemon's debt ledger.
-    """
-    from polylogue.paths import archive_root as _resolve_archive_root
-    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    try:
-        archive_root = archive_root_override or resolve_active_index_path(_resolve_archive_root()).parent
-        archive_context = (
-            ArchiveStore.open_owned_inactive_generation(
-                archive_root,
-                generation_id=owned_inactive_generation[0],
-                owner_id=owned_inactive_generation[1],
-            )
-            if owned_inactive_generation is not None
-            else ArchiveStore.open_existing(archive_root, read_only=False)
-        )
-        with archive_context as archive:
-            status = archive.session_insight_status()
-            row_debt = _session_insight_row_debt_count(status)
-            aggregate_debt = _session_insight_aggregate_debt_count(status)
-            targeted_session_ids = (
-                None
-                if session_ids is not None or (row_debt == 0 and aggregate_debt == 0)
-                else _targeted_session_insight_rebuild_ids(getattr(archive, "_conn", None), status)
-            )
-
-            if dry_run:
-                if session_ids is not None:
-                    pending = min(row_debt, len(session_ids))
-                    detail = (
-                        "Would: session insights already ready"
-                        if pending == 0
-                        else f"Would: rebuild session insights for {pending:,} scoped session(s)"
-                    )
-                elif targeted_session_ids is not None:
-                    pending = len(targeted_session_ids)
-                    detail = (
-                        "Would: session insights already ready"
-                        if pending == 0
-                        else (
-                            "Would: rebuild session insights for "
-                            f"{len(targeted_session_ids):,} candidate session(s), including any affected "
-                            "thread aggregate rows"
-                            f" to repair {row_debt:,} total debt row(s)"
-                        )
-                    )
-                elif row_debt == 0:
-                    pending = 0
-                    detail = "Would: session insights already ready"
-                else:
-                    pending = status.total_sessions
-                    detail = (
-                        "Would: rebuild archive-wide session insights "
-                        f"for {pending:,} session(s) to repair {row_debt:,} debt row(s)"
-                    )
-                return _repair_result(
-                    "session_insights",
-                    repaired_count=pending,
-                    success=True,
-                    detail=detail,
-                )
-
-            if session_ids is None and row_debt == 0 and aggregate_debt == 0:
-                return _repair_result(
-                    "session_insights",
-                    repaired_count=0,
-                    success=True,
-                    detail="Session insights already ready",
-                )
-
-            rebuild_session_ids = session_ids if session_ids is not None else targeted_session_ids
-            rebuilt = rebuild_archive_session_insights(
-                archive,
-                session_ids=rebuild_session_ids,
-                progress_callback=progress_callback,
-            )
-            rebuilt_count = rebuilt.total()
-            refreshed = archive.session_insight_status()
-            # A narrowed rebuild only attests its own slice; do not
-            # demand global readiness for a scope-filtered call.
-            success = True if session_ids is not None else _session_insight_row_debt_count(refreshed) == 0
-            if success and resolve_convergence_debt:
-                _resolve_session_insight_convergence_debt(
-                    ops_db=config.archive_root / "ops.db",
-                    session_ids=session_ids,
-                )
-            return _repair_result(
-                "session_insights",
-                repaired_count=rebuilt_count,
-                success=success,
-                detail="Session insights ready" if success else "Session insights still incomplete",
-            )
-    except Exception as exc:
-        return _repair_result(
-            "session_insights",
-            repaired_count=0,
-            success=False,
-            detail=f"Failed to repair session insights: {exc}",
-        )
-
-
-def preview_session_insights(*, count: int) -> RepairResult:
-    return _repair_result(
-        "session_insights",
-        repaired_count=count,
-        success=True,
-        detail="Would: session insights already ready"
-        if count == 0
-        else f"Would: rebuild session-insight rows/fts for {count:,} pending items",
-    )
 
 
 def _resolve_raw_authority_commit_batch_size(commit_batch_size: int | None) -> int | None:
@@ -6334,7 +5119,7 @@ def _resolve_raw_authority_commit_batch_size(commit_batch_size: int | None) -> i
     return configured if configured > 0 else None
 
 
-def repair_raw_materialization(
+def converge_raw_materialization(
     config: Config,
     dry_run: bool = False,
     *,
@@ -6349,11 +5134,11 @@ def repair_raw_materialization(
     progress_callback: ProgressCallback | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
     max_pass_seconds: float | None = None,
-) -> RepairResult:
+) -> RawConvergenceResult:
     """Converge one raw-materialization pass under active-generation ownership."""
 
-    def run() -> RepairResult:
-        return _repair_raw_materialization(
+    def run() -> RawConvergenceResult:
+        return _converge_raw_materialization(
             config,
             dry_run=dry_run,
             raw_artifact_id=raw_artifact_id,
@@ -6386,7 +5171,7 @@ def repair_raw_materialization(
         lease.close()
 
 
-def _repair_raw_materialization(
+def _converge_raw_materialization(
     config: Config,
     dry_run: bool = False,
     *,
@@ -6401,7 +5186,7 @@ def _repair_raw_materialization(
     progress_callback: ProgressCallback | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
     max_pass_seconds: float | None = None,
-) -> RepairResult:
+) -> RawConvergenceResult:
     """Converge retained raws through typed per-session revision authority.
 
     ``ingest_workers`` bounds how many processes parse independent raws
@@ -6496,7 +5281,7 @@ def _repair_raw_materialization(
 
     blocker_count = unresolved_raw_replay_blockers(archive_root)
     if blocker_count:
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -6681,7 +5466,7 @@ def _repair_raw_materialization(
                 f"; {len(census_resource_blocked_raw_ids):,} raw(s) belong to authority components whose "
                 f"aggregate payload exceeds {_format_bytes(max_payload_bytes)}"
             )
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -6826,7 +5611,7 @@ def _repair_raw_materialization(
                 f"; {len(no_progress_plan_ids):,} unchanged plan(s) remain terminal after making zero "
                 "typed progress and require investigation before retry"
             )
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             # A no-progress plan is durable, investigation-requiring debt --
@@ -6885,7 +5670,7 @@ def _repair_raw_materialization(
             )
         if missing_blobs:
             detail += f"; {_raw_materialization_missing_blob_detail(candidates, final=True)}"
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             success=(
@@ -6935,7 +5720,7 @@ def _repair_raw_materialization(
             )
         if oversized_stream_safe_raw_ids:
             detail += f"; {len(oversized_stream_safe_raw_ids):,} oversized stream-record raw rows are stream-capable"
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             # polylogue-f57q: a dry-run PREVIEW that reaches this branch has
@@ -7009,7 +5794,7 @@ def _repair_raw_materialization(
         metrics["raw_materialization_plan_carried_forward_count"] = float(carried_forward_count)
         metrics["raw_materialization_plan_outcome_count"] = float(plan_count)
         metrics["raw_materialization_plan_conservation_error_count"] = float(conservation_error_count)
-        return _internal_derived_repair_result(
+        return _raw_convergence_result(
             "raw_materialization",
             repaired_count=0,
             success=False,
@@ -7353,7 +6138,7 @@ def _repair_raw_materialization(
         detail += f"; {_raw_materialization_missing_blob_detail(remaining, final=True)}"
     if progress_callback is not None:
         progress_callback(replay.replayed_logical_sources, detail)
-    return _internal_derived_repair_result(
+    return _raw_convergence_result(
         "raw_materialization",
         repaired_count=replay.replayed_logical_sources,
         success=success,
@@ -7362,180 +6147,3 @@ def _repair_raw_materialization(
         plan_outcomes=plan_outcomes,
         census_receipt=census_receipt,
     )
-
-
-PREVIEW_HANDLERS: dict[str, Callable[..., RepairResult]] = {
-    "session_insights": preview_session_insights,
-    "empty_sessions": preview_empty_sessions,
-    "superseded_raw_snapshots": preview_superseded_raw_snapshots,
-}
-
-
-REPAIR_HANDLERS: dict[str, Callable[..., RepairResult]] = {
-    "session_insights": repair_session_insights,
-    "empty_sessions": repair_empty_sessions,
-    "superseded_raw_snapshots": repair_superseded_raw_snapshots,
-}
-
-
-# ---------------------------------------------------------------------------
-# Orchestration (run_safe_repairs, run_archive_cleanup, run_selected_maintenance)
-# ---------------------------------------------------------------------------
-
-
-def run_safe_repairs(
-    config: Config,
-    dry_run: bool = False,
-    *,
-    preview_counts: dict[str, int] | None = None,
-    targets: tuple[str, ...] = (),
-    session_insight_progress_callback: ProgressCallback | None = None,
-    session_insight_progress_total: int | None = None,
-    session_ids: tuple[str, ...] | None = None,
-) -> list[RepairResult]:
-    preview_counts = preview_counts or {}
-    selected = set(targets) if targets else set(SAFE_REPAIR_TARGETS)
-    results: list[RepairResult] = []
-    for target_name in SAFE_REPAIR_TARGETS:
-        if target_name not in selected:
-            continue
-        if dry_run and target_name in preview_counts:
-            preview = PREVIEW_HANDLERS.get(target_name)
-            if preview is not None:
-                results.append(preview(count=preview_counts[target_name]))
-                continue
-        repair = REPAIR_HANDLERS[target_name]
-        if target_name == "session_insights":
-            results.append(
-                repair(
-                    config,
-                    dry_run=dry_run,
-                    progress_callback=session_insight_progress_callback,
-                    progress_total=session_insight_progress_total,
-                    session_ids=session_ids,
-                )
-            )
-            continue
-        results.append(repair(config, dry_run=dry_run))
-    return results
-
-
-def run_archive_cleanup(
-    config: Config,
-    dry_run: bool = False,
-    *,
-    preview_counts: dict[str, int] | None = None,
-    targets: tuple[str, ...] = (),
-    session_ids: tuple[str, ...] | None = None,
-) -> list[RepairResult]:
-    preview_counts = preview_counts or {}
-    selected = set(targets) if targets else set(CLEANUP_TARGETS)
-    results: list[RepairResult] = []
-    for target_name in CLEANUP_TARGETS:
-        if target_name not in selected:
-            continue
-        if dry_run and session_ids is None and target_name in preview_counts:
-            results.append(PREVIEW_HANDLERS[target_name](count=preview_counts[target_name]))
-            continue
-        repair = REPAIR_HANDLERS[target_name]
-        if target_name == "empty_sessions" and session_ids is not None:
-            results.append(repair(config, dry_run=dry_run, session_ids=session_ids))
-        else:
-            results.append(repair(config, dry_run=dry_run))
-    return results
-
-
-def run_selected_maintenance(
-    config: Config,
-    *,
-    repair: bool,
-    cleanup: bool,
-    dry_run: bool = False,
-    preview_counts: dict[str, int] | None = None,
-    targets: tuple[str, ...] = (),
-    session_insight_progress_callback: ProgressCallback | None = None,
-    session_insight_progress_total: int | None = None,
-    scope_filter: MaintenanceScopeFilter | None = None,
-) -> list[RepairResult]:
-    blockers = offline_maintenance_blockers(
-        config,
-        repair=repair,
-        cleanup=cleanup,
-        dry_run=dry_run,
-        targets=targets,
-    )
-    if blockers:
-        return blockers
-    results: list[RepairResult] = []
-    repair_targets = tuple(name for name in targets if name in SAFE_REPAIR_TARGETS) or (
-        SAFE_REPAIR_TARGETS if repair and not targets else ()
-    )
-    cleanup_targets = tuple(name for name in targets if name in CLEANUP_TARGETS) or (
-        CLEANUP_TARGETS if cleanup and not targets else ()
-    )
-    effective_filter = scope_filter or MaintenanceScopeFilter()
-    selected_names = (*repair_targets, *cleanup_targets)
-    unsupported_targets: set[str] = set()
-    for target_name in selected_names:
-        unsupported = unsupported_scope_dimensions(effective_filter, target=target_name)
-        if unsupported:
-            unsupported_targets.add(target_name)
-            results.append(
-                _repair_result(
-                    target_name,
-                    repaired_count=0,
-                    success=False,
-                    detail=(f"Unsupported scope dimensions for target {target_name!r}: {', '.join(unsupported)}"),
-                )
-            )
-    repair_targets = tuple(name for name in repair_targets if name not in unsupported_targets)
-    cleanup_targets = tuple(name for name in cleanup_targets if name not in unsupported_targets)
-    if repair and repair_targets:
-        results.extend(
-            run_safe_repairs(
-                config,
-                dry_run=dry_run,
-                preview_counts=preview_counts,
-                targets=repair_targets,
-                session_insight_progress_callback=session_insight_progress_callback,
-                session_insight_progress_total=session_insight_progress_total,
-                session_ids=effective_filter.session_ids,
-            )
-        )
-    if cleanup and cleanup_targets:
-        results.extend(
-            run_archive_cleanup(
-                config,
-                dry_run=dry_run,
-                preview_counts=preview_counts,
-                targets=cleanup_targets,
-                session_ids=effective_filter.session_ids,
-            )
-        )
-    return results
-
-
-__all__ = [
-    "ArchiveDebtStatus",
-    "PREVIEW_HANDLERS",
-    "REPAIR_HANDLERS",
-    "RepairResult",
-    "collect_archive_debt_statuses_sync",
-    "count_empty_sessions_sync",
-    "count_superseded_raw_snapshots_sync",
-    "preview_counts_from_archive_debt",
-    "preview_empty_sessions",
-    "preview_superseded_raw_snapshots",
-    "preview_session_insights",
-    "raw_materialization_lease_refusal_result",
-    "raw_materialization_replay_backlog",
-    "raw_materialization_scale_profile",
-    "repair_empty_sessions",
-    "repair_raw_materialization",
-    "repair_superseded_raw_snapshots",
-    "repair_session_insights",
-    "run_archive_cleanup",
-    "run_safe_repairs",
-    "run_selected_maintenance",
-    "session_insight_repair_count",
-]

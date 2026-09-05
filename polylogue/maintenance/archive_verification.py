@@ -769,7 +769,7 @@ def archive_verification_migrated_owner_adapters(
             name="planner-stats",
             semantic_owner="daemon-index-health",
             applicable_routes=frozenset({_ROUTE_HEALTH_MEDIUM, _ROUTE_LIVE}),
-            production_route="candidate build completion",
+            production_route="daemon index health",
             population=("index.db.sqlite_stat1",),
             owned_reference="test_missing_sqlite_stat1_is_warning_not_error",
             check=lambda: _check_planner_stats(archive_root, sample_limit, index_path=index_path_override),

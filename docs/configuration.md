@@ -344,7 +344,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
 | `ingest_parse_workers` | `POLYLOGUE_INGEST_PARSE_WORKERS` (env only) | Worker count for CPU-bound source parsing. Read from the environment; there is no TOML key. The default adapts to the interpreter — `min(16, cpus-2)` on a free-threaded build (the packaged daemon), `min(8, cpus-1)` under the GIL. Set to `1` to disable pooling. |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
-| `raw_authority_commit_batch_size` | `pipeline.raw_authority.commit_batch_size` | Census-phase commit batch size for raw-materialization repair (polylogue-amg1); unset uses the built-in default, `<=0` disables batching (per-raw commits). |
+| `raw_authority_commit_batch_size` | `pipeline.raw_authority.commit_batch_size` | Census-phase commit batch size for raw materialization; unset uses the built-in default, `<=0` disables batching (per-raw commits). |
 | `raw_authority_whale_payload_bytes` | `pipeline.raw_authority.whale_payload_bytes` | Escalation-tier payload envelope (bytes) for the daemon whale pass (polylogue-t93b); unset/`<=0` uses the built-in default (8 GiB). Widens the resource-block envelope for one dedicated, stream-safe-gated single-component pass only -- the ordinary fast-path envelope is unaffected. |
 | `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool (polylogue-m6tp phase (a); always runs -- pre-parses raw-materialization census candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
@@ -400,7 +400,7 @@ Common runtime overrides:
 | `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
 | `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
 | `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |
-| `POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE` | `raw_authority_commit_batch_size` | Census-phase commit batch size for raw-materialization repair. |
+| `POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE` | `raw_authority_commit_batch_size` | Census-phase commit batch size for raw materialization. |
 | `POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES` | `raw_authority_whale_payload_bytes` | Escalation-tier payload envelope for the daemon whale pass. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
@@ -482,9 +482,7 @@ output.
 ### Health Checks
 
 - `polylogue ops doctor` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
-- `polylogue ops doctor --repair` runs safe derived-data maintenance.
-- `polylogue ops doctor --cleanup` runs destructive archive cleanup; preview it first.
-- `polylogue ops doctor --repair --vacuum` compacts the database after maintenance.
+- `polylogue ops doctor --deep` adds SQLite integrity and exact orphan scans.
 - Workstation-specific policy such as cgroup slice placement and hard caps belongs in the host environment, not in the product CLI.
 
 ---

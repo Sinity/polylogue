@@ -4,7 +4,7 @@ Production dependencies exercised here:
 
 * ``DaemonParseStage.warm`` -- the actual off-writer-hold pre-parse entry
   point the daemon conveyor calls.
-* ``polylogue.storage.repair.raw_materialization_pending_census_raw_ids`` /
+* ``polylogue.storage.raw_convergence.raw_materialization_pending_census_raw_ids`` /
   ``raw_materialization_readonly_descriptors`` -- the read-only candidate
   and descriptor lookups ``warm`` uses.
 * ``polylogue.sources.revision_backfill.census_parse_worker`` -- the same
@@ -462,7 +462,7 @@ def test_warm_parses_indexed_raw_with_missing_parser_receipt(tmp_path: Path) -> 
 
     The raw is already materialized in ``index.db`` but its parser receipt is
     removed. ``DaemonParseStage.warm`` must still parse it outside the writer
-    hold, because ``repair_raw_materialization`` will census that same raw.
+    hold, because ``converge_raw_materialization`` will census that same raw.
     Replacing the preview's parser-census selector with the ordinary replay
     selector makes ``warmed`` zero and leaves the cache empty.
     """

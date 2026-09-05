@@ -58,9 +58,8 @@ def should_skip_stale_replace(
     prefix copy of the same file the operator had uploaded into an AI Studio
     conversation -- without an accepted head, and this function's ordinary
     timestamp comparison (not content-subset awareness) decided the
-    outcome. Recomputing revision membership under current code (any
-    ``rebuild_index_from_source`` replay, which calls
-    ``backfill_historical_revision_evidence``) resolves that case correctly
+    outcome. Recomputing revision membership under current code
+    (``backfill_historical_revision_evidence``) resolves that case correctly
     upstream of this function.
     """
     return (
@@ -209,7 +208,7 @@ def revision_authority_refuses_write(
     ).fetchone()
     if has_revision_heads is not None:
         # Historical drift or an interrupted repair can leave more than one
-        # raw_revision_heads row for a session (storage/repair.py's
+        # raw_revision_heads row for a session (storage/raw_convergence.py's
         # ``parallel_session_heads`` shape). A bare ``LIMIT 1`` examined an
         # arbitrary one of those rows, so an incoming raw matching whichever
         # row happened to be selected was allowed through even when a

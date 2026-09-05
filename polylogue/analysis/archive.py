@@ -44,7 +44,6 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.session.session_profile import SessionProfile
 from polylogue.core.errors import PolylogueError
 from polylogue.core.sources import source_name_to_origin
-from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
 if TYPE_CHECKING:
@@ -567,18 +566,6 @@ class ArchiveDebtInsight(ArchiveInsightModel):
     issue_count: int
     healthy: bool
     detail: str
-
-    @classmethod
-    def from_status(cls, status: ArchiveDebtStatus) -> ArchiveDebtInsight:
-        return cls(
-            debt_name=status.name,
-            category=status.category.value,
-            maintenance_target=status.maintenance_target,
-            destructive=status.destructive,
-            issue_count=status.issue_count,
-            healthy=status.healthy,
-            detail=status.detail,
-        )
 
 
 def profile_bucket_day(profile: SessionProfile) -> date | None:

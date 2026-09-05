@@ -509,24 +509,6 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "Local CLI transport; consumes one daemon-held authorization under the writer gate.",
     ),
     RouteContract(
-        "POST",
-        "/api/maintenance/rebuild-index",
-        "maintenance",
-        "operational",
-        "bearer_if_configured_and_same_origin",
-        "RebuildIndexReceipt",
-        "Runs exactly one source snapshot replay through the daemon write coordinator.",
-    ),
-    RouteContract(
-        "POST",
-        "/api/maintenance/discard-index-candidate",
-        "maintenance",
-        "private",
-        "bearer_if_configured_and_same_origin",
-        "inactive candidate discard receipt",
-        "Reclaims one generation only when its immutable owner id still identifies an inactive candidate.",
-    ),
-    RouteContract(
         "GET",
         "/api/facets",
         "read_query",
@@ -754,22 +736,6 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "GET", "/api/user/workspaces/:id", "user_overlay", "stable", "credential_if_configured", "workspace JSON"
     ),
     RouteContract(
-        "GET",
-        "/api/maintenance/operations",
-        "maintenance",
-        "stable",
-        "credential_if_configured",
-        "maintenance operations JSON",
-    ),
-    RouteContract(
-        "GET",
-        "/api/maintenance/status/:id",
-        "maintenance",
-        "stable",
-        "credential_if_configured",
-        "maintenance operation status JSON",
-    ),
-    RouteContract(
         "POST",
         "/api/telemetry/mcp-calls",
         "operational",
@@ -803,22 +769,6 @@ ROUTE_CONTRACTS: tuple[RouteContract, ...] = (
         "demo augmentation result JSON",
         notes="Applies deterministic demo writes through the write bridge; "
         "exists for the demo archive, not for general archive mutation.",
-    ),
-    RouteContract(
-        "POST",
-        "/api/maintenance/plan",
-        "maintenance",
-        "stable",
-        "bearer_if_configured_and_same_origin",
-        "maintenance operation preview",
-    ),
-    RouteContract(
-        "POST",
-        "/api/maintenance/run",
-        "maintenance",
-        "stable",
-        "bearer_if_configured_and_same_origin",
-        "maintenance operation result",
     ),
     RouteContract(
         "POST", "/api/user/marks", "user_overlay", "stable", "credential_and_same_origin", "mutation envelope"

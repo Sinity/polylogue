@@ -1,4 +1,4 @@
-"""Maintenance command group: preview and run backfills.
+"""Maintenance command group: archive inspection and guarded recovery verbs.
 
 Each subcommand lives in its own submodule and is attached lazily (the
 ``_LazyCommand`` pattern already used for the root CLI's own dispatch,
@@ -25,7 +25,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "beads_origin_census_command",
         "Read-only census and exact plan for retired Beads-origin evidence.",
     ),
-    ("plan", "_plan", "plan_command", "Dry-run summary: show what would be rebuilt without executing."),
     ("archive-plan", "_archive_plan", "archive_plan_command", "Inspect readiness for the archive file set."),
     (
         "backup-plan",
@@ -65,31 +64,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "Recover one authenticated pre-#3868 source liveness transition offline.",
     ),
     (
-        "run-preview",
-        "_run_preview",
-        "run_preview_command",
-        "Preview a maintenance run (dry, resumable) without executing. Read-only.",
-    ),
-    ("run", "_run", "run_command", "Execute maintenance backfill operations."),
-    (
-        "rebuild-index",
-        "_rebuild_index",
-        "rebuild_index_command",
-        "Inspect or execute an authority-safe source-to-index rebuild.",
-    ),
-    (
-        "rebuild-index-status",
-        "_rebuild_index_status",
-        "rebuild_index_status_command",
-        "Report consolidated raw-replay rebuild status (lease/generation/cursor/delta/recovery). Read-only.",
-    ),
-    (
-        "reindex-canary",
-        "_reindex_canary",
-        "reindex_canary_command",
-        "Replay an inactive canary, persist observed or reviewed diff evidence, and validate reports.",
-    ),
-    (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",
@@ -125,7 +99,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "operation_recovery_command",
         "Inspect or adjudicate bounded interrupted-operation recovery evidence.",
     ),
-    ("preview", "_preview", "preview_command", "Staleness inventory by model and scope. Read-only."),
     ("blob-gc", "_blob_gc", "blob_gc_command", "Preview lease-safe blob garbage collection. Read-only."),
     (
         "blob-publications",
@@ -150,12 +123,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "_blob_conservation",
         "blob_conservation_command",
         "Verify both directions of blob/reference conservation without mutation.",
-    ),
-    (
-        "blob-reference-closure",
-        "_blob_reference_closure",
-        "blob_reference_closure_command",
-        "Repair deterministic raw and acquired-attachment reference gaps; dry-run by default.",
     ),
     (
         "blob-reference-recovery-plan",
@@ -200,7 +167,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "gc_recover_command",
         "Inspect or explicitly abandon a blocked pending blob-GC generation without unlinking blobs.",
     ),
-    ("status", "_status", "status_command", "Inspect persisted maintenance operations (#1197)."),
     (
         "verify-archive",
         "_verify_archive",

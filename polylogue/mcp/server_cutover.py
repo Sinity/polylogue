@@ -2076,127 +2076,8 @@ async def _dispatch_run(hooks: ServerCallbacks, *, ref: str, limit: int | None) 
 
 
 async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwargs: dict[str, Any]) -> str:
-    """Preview/execute/inspect maintenance operations, delegating to the existing planner/registry."""
-    from polylogue.maintenance.envelope import envelope_from_operation
-
+    """Dispatch derived-index and recovery maintenance operations."""
     config = hooks.get_config()
-
-    if operation in ("preview", "execute"):
-        from polylogue.core.enums import OperationStatus
-        from polylogue.maintenance.planner import execute_backfill, preview_backfill
-
-        targets = kwargs.get("targets")
-        session_ids = kwargs.get("session_ids")
-        try:
-            from polylogue.maintenance.scope import MaintenanceScopeFilter
-
-            scope_filter = MaintenanceScopeFilter.from_surface_args(
-                session_ids=list(session_ids) if session_ids else None,
-                origin=kwargs.get("origin"),
-                source_family=kwargs.get("source_family"),
-                source_root=kwargs.get("source_root"),
-                since=kwargs.get("since"),
-                until=kwargs.get("until"),
-                failure_kind=kwargs.get("failure_kind"),
-                parser_version=kwargs.get("parser_version"),
-            )
-        except ValueError as exc:
-            return hooks.error_json(str(exc), code="invalid_argument")
-        resolved_targets = tuple(targets) if targets else ()
-        if operation == "preview":
-            result = preview_backfill(config, targets=resolved_targets, scope_filter=scope_filter)
-            envelope = envelope_from_operation(result, origin="mcp", mode="preview")
-        else:
-            dry_run = bool(kwargs.get("dry_run") or False)
-            if not dry_run:
-                confirm_error = _require_confirm(
-                    hooks, bool(kwargs.get("confirm") or False), verb="execute maintenance with dry_run=false"
-                )
-                if confirm_error is not None:
-                    return confirm_error
-            result = execute_backfill(config, targets=resolved_targets, dry_run=dry_run, scope_filter=scope_filter)
-            envelope = envelope_from_operation(result, origin="mcp", mode="execute")
-            if result.status is OperationStatus.FAILED:
-                # Typed failure: surface as an MCP error payload (not a
-                # bare 200-shaped success envelope) while still carrying
-                # the operation id and first failure/error detail so a
-                # client can correlate against `maintenance status`
-                # (polylogue-71ey AC 4).
-                detail = result.error or (
-                    result.failure_samples.samples[0].message
-                    if result.failure_samples.samples
-                    else "no failure detail recorded"
-                )
-                return hooks.error_json(
-                    f"maintenance execute failed: {result.operation_id}",
-                    code="maintenance_execute_failed",
-                    detail=detail,
-                    tool="maintenance",
-                )
-        return hooks.json_payload(envelope)
-
-    if operation == "status":
-        from polylogue.maintenance.registry import MaintenanceOperationRegistry
-
-        operation_id = kwargs.get("operation_id")
-        if not isinstance(operation_id, str) or not operation_id:
-            return hooks.error_json("maintenance(operation='status') requires operation_id", code="invalid_argument")
-        registry = MaintenanceOperationRegistry(config=config)
-        record, issues = registry.get_operation_diagnostic(operation_id)
-        if issues:
-            issue = issues[0]
-            return hooks.error_json(
-                f"maintenance registry could not read {issue.path.name}",
-                code="maintenance_registry_degraded",
-                detail=issue.detail,
-            )
-        if record is None:
-            if (registry.state_dir / f"{operation_id}.json").exists():
-                return hooks.error_json(
-                    f"maintenance registry record is unreadable: {operation_id}",
-                    code="registry_degraded",
-                    tool="maintenance",
-                )
-            return hooks.error_json(f"Operation not found: {operation_id}", code="not_found")
-        envelope = envelope_from_operation(record.operation, origin="mcp", mode="execute")
-        return hooks.json_payload(
-            MCPRootPayload(
-                root={
-                    "envelope": envelope.to_dict(),
-                    "updated_at": record.updated_at,
-                    "state_path": str(record.state_path),
-                }
-            )
-        )
-
-    if operation == "list":
-        from polylogue.maintenance.registry import MaintenanceOperationRegistry
-
-        registry = MaintenanceOperationRegistry(config=config)
-        records, issues = registry.list_operations_diagnostic()
-        if issues:
-            return hooks.error_json(
-                "maintenance registry contains unreadable state files",
-                code="maintenance_registry_degraded",
-                detail="; ".join(f"{issue.path.name}: {issue.detail}" for issue in issues),
-            )
-        items = [
-            {
-                "envelope": envelope_from_operation(r.operation, origin="mcp", mode="execute").to_dict(),
-                "updated_at": r.updated_at,
-                "state_path": str(r.state_path),
-            }
-            for r in records
-        ]
-        return hooks.json_payload(
-            MCPRootPayload(
-                root={
-                    "items": items,
-                    "total": len(items),
-                    "degraded": bool(issues),
-                }
-            )
-        )
 
     if operation == "rebuild_index":
         from polylogue.mcp.payloads import MCPMutationStatusPayload
@@ -2555,37 +2436,21 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
 
         async def maintenance(
             operation: Literal[
-                "preview",
-                "execute",
-                "status",
-                "list",
                 "rebuild_index",
                 "update_index",
                 "rebuild_insights",
                 "recovery_status",
                 "recovery_adjudicate",
             ],
-            targets: list[str] | None = None,
-            dry_run: bool = False,
-            session_ids: list[str] | None = None,
-            origin: str | None = None,
-            source_family: str | None = None,
-            source_root: str | None = None,
-            since: str | None = None,
-            until: str | None = None,
-            failure_kind: str | None = None,
-            parser_version: str | None = None,
             operation_id: str | None = None,
             target_outcomes: dict[str, Literal["applied", "not-applied", "unknown"]] | None = None,
             reason: str | None = None,
             confirm: bool = False,
         ) -> str:
-            """Preview, execute, list, and inspect maintenance operations.
+            """Rebuild derived indexes and inspect or adjudicate operation recovery.
 
-            Destructive/full-effect operations require ``confirm=True``:
-            ``execute`` with ``dry_run=false``, ``rebuild_index``, and
-            ``rebuild_insights`` and ``recovery_adjudicate`` all fail closed without it (interim
-            mitigation, polylogue-jn40).
+            Full-effect operations require ``confirm=True``: ``rebuild_index``,
+            ``rebuild_insights`` and ``recovery_adjudicate`` fail closed without it.
             """
 
             async def run() -> str:
@@ -2593,16 +2458,6 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                     hooks,
                     operation=operation,
                     kwargs={
-                        "targets": targets,
-                        "dry_run": dry_run,
-                        "session_ids": session_ids,
-                        "origin": origin,
-                        "source_family": source_family,
-                        "source_root": source_root,
-                        "since": since,
-                        "until": until,
-                        "failure_kind": failure_kind,
-                        "parser_version": parser_version,
                         "operation_id": operation_id,
                         "target_outcomes": target_outcomes,
                         "reason": reason,
@@ -2610,7 +2465,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                     },
                 )
 
-            return await hooks.async_safe_call("maintenance", run, session_ids=tuple(session_ids or ()))
+            return await hooks.async_safe_call("maintenance", run)
 
         register_declared_handler(mcp, maintenance, name="maintenance")
 

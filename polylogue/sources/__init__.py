@@ -13,7 +13,7 @@ single lightweight type -- otherwise forces this package's own ``__init__``
 to run first, which used to mean eagerly pulling in the entire Google Drive
 subsystem (``.drive``, ``.drive.source``, ``tenacity``, ...) regardless of
 whether Drive is ever touched (polylogue-8s70/h1wt: this was the single
-largest remaining contributor to ``polylogue.storage.repair``'s and
+largest remaining contributor to ``polylogue.storage.raw_convergence``'s and
 ``polylogue.storage.sqlite.archive_tiers.write``'s import cost). Submodule
 imports (``from polylogue.sources import dispatch``) are unaffected by this
 ``__getattr__`` -- Python's import system falls back to importing the

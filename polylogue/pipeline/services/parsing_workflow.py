@@ -341,7 +341,7 @@ async def parse_from_raw(
     byte-for-byte unchanged for existing callers) bounds this call's own
     wall-clock duration -- and therefore the writer-coordinator hold a caller
     (e.g. the daemon's Drive catch-up actor) runs it under. Mirrors
-    ``repair_raw_materialization``'s ``max_pass_seconds`` (polylogue-de2a):
+    ``converge_raw_materialization``'s ``max_pass_seconds`` (polylogue-de2a):
     elapsed time is checked only *between* raw-id batches, the same point
     this loop already commits and would naturally recompute a backlog on the
     next call -- not a mid-write yield (a mid-batch transaction cannot safely

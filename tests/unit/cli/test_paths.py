@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
-import time
 from pathlib import Path
 
 import pytest
@@ -16,11 +14,6 @@ from polylogue.cli.commands.paths import paths_command
 from polylogue.daemon.provenance import _build_raw_preview
 from polylogue.paths import blob_store_root
 from polylogue.storage.blob_store import get_blob_store
-from polylogue.storage.sqlite.archive_tiers.ops_write import record_ingest_attempt
-
-pytestmark = pytest.mark.uses_real_clock(
-    "Rebuild-readiness path test records a live ingest heartbeat timestamp; production readiness compares that heartbeat against the host clock by design."
-)
 
 _ARCHIVE_TIERS = ("source.db", "index.db", "embeddings.db", "ops.db", "user.db")
 
@@ -113,85 +106,6 @@ def test_archive_override_unifies_blob_write_read_maintenance_report_and_reset(
     reset_result = cli_runner.invoke(cli, ["--plain", "ops", "reset", "--blob", "--yes"])
     assert reset_result.exit_code == 0
     assert not expected_blob_root.exists()
-
-
-def test_paths_json_reports_running_rebuild_as_not_ready(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """A current-schema index file is not usable while rebuild-index is running."""
-    ops_db = cli_workspace["archive_root"] / "ops.db"
-    with sqlite3.connect(ops_db) as conn:
-        now_ms = int(time.time() * 1000)
-        record_ingest_attempt(
-            conn,
-            attempt_id="rebuild-active",
-            source_path=str(cli_workspace["archive_root"] / "source.db"),
-            status="running",
-            phase="rebuild-index",
-            started_at_ms=now_ms - 1_000,
-            heartbeat_at_ms=now_ms,
-            storage_route="maintenance",
-        )
-
-    result = cli_runner.invoke(
-        paths_command,
-        ["--format", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["archive_schema_ready"] is True
-    assert payload["archive_layout_ready"] is True
-    assert payload["archive_ready"] is False
-    assert payload["archive_materialization_ready"] is False
-    assert payload["active_rebuild_index_attempts"] == [
-        {
-            "attempt_id": "rebuild-active",
-            "phase": "rebuild-index",
-            "started_at_ms": now_ms - 1_000,
-            "heartbeat_at_ms": now_ms,
-            "parsed_raw_count": 0,
-            "materialized_count": 0,
-        }
-    ]
-    assert isinstance(payload["active_archive_root"], str)
-    assert isinstance(payload["database_path"], str)
-    assert isinstance(payload["config_file_path"], str)
-    assert isinstance(payload["blob_store_root"], str)
-
-
-def test_paths_json_ignores_stale_running_rebuild_as_not_active(
-    cli_workspace: dict[str, Path],
-    cli_runner: CliRunner,
-) -> None:
-    """A stale running rebuild row is telemetry, not active materialization work."""
-    ops_db = cli_workspace["archive_root"] / "ops.db"
-    with sqlite3.connect(ops_db) as conn:
-        record_ingest_attempt(
-            conn,
-            attempt_id="rebuild-stale",
-            source_path=str(cli_workspace["archive_root"] / "source.db"),
-            status="running",
-            phase="rebuild-index",
-            started_at_ms=1_700_000_000_000,
-            heartbeat_at_ms=1_700_000_001_000,
-            storage_route="maintenance",
-        )
-
-    result = cli_runner.invoke(
-        paths_command,
-        ["--format", "json"],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["archive_schema_ready"] is True
-    assert payload["archive_ready"] is True
-    assert payload["archive_materialization_ready"] is True
-    assert payload["active_rebuild_index_attempts"] == []
 
 
 def test_paths_json_reports_raw_materialization_debt_as_not_ready(

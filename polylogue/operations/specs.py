@@ -147,30 +147,6 @@ class OperationCatalog:
 
 RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
     OperationSpec(
-        name="candidate-build",
-        kind=OperationKind.MATERIALIZATION,
-        description=(
-            "Build one source-sealed, resumable, inactive index candidate. The daemon resolves physical roots, "
-            "generation identity, obligations, and budgets; this operation never activates, accepts, or promotes."
-        ),
-        surfaces=("daemon", "cli", "mcp", "api"),
-        mutates_state=True,
-        previewable=True,
-        idempotent=True,
-        effects=("DbRead", "DbWrite"),
-        safety_guards=("write_role_required",),
-        executor_status="declared-not-routed",
-        resumable=True,
-        affected_tiers=("source", "index"),
-        idempotency="effect_key",
-        request_contract="polylogue.operations.candidate_build.CandidateBuildRequest",
-        plan_contract="polylogue.operations.candidate_build.CandidateBuildPlan",
-        progress_contract="polylogue.operations.candidate_build.CandidateBuildProgress",
-        result_contract="polylogue.operations.candidate_build.CandidateBuildResult",
-        error_contract="polylogue.operations.candidate_build.CandidateBuildError",
-        receipt_contract="polylogue.operations.candidate_build.CandidateBuildReceipt",
-    ),
-    OperationSpec(
         name="acquire-raw-sessions",
         kind=OperationKind.MATERIALIZATION,
         description="Traverse configured sources, detect provider-shaped payloads, and persist raw session records plus artifact observations.",

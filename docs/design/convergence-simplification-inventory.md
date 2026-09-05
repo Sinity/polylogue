@@ -427,64 +427,10 @@ generation building is in play); once it exists, the per-pass
 
 ### 6. The CLI bulk importer's operator-surface status
 
-**What it is:** `polylogue ops maintenance rebuild-index`
-(`polylogue/cli/commands/maintenance/_rebuild_index.py:281`
-`@click.command("rebuild-index")`, handler `rebuild_index_command` at `:349`)
-— today a live operator tool: #3145's daemon-side loud recommendation
-(`polylogue/daemon/cli.py` `_maybe_recommend_bulk_rebuild`) tells an operator
-to run it by hand when the trickle conveyor's backlog is bulk-scale, and the
-2026-07-19 restore incident (polylogue-5jak notes) used it directly as the
-only viable path once the daemon's own conveyor made a live backlog
-net-negative.
-
-**Companion status surface (polylogue-b5l.1):**
-`polylogue ops maintenance rebuild-index-status`
-(`polylogue/cli/commands/maintenance/_rebuild_index_status.py`,
-handler `rebuild_index_status_command`) reports the consolidated,
-read-only view an operator needs while `rebuild-index` (or the daemon's own
-bulk-rebuild loop) is running or paused: archive-root lease ownership
-(held/holder pid/host/liveness/staleness), the active generation, the active
-index's schema version, and the resumable transaction's cursor
-(`processed_raw_count`/`last_raw_id`/`updated_at_ms`) alongside a
-source-snapshot delta and explicit stale-lock/failed-transaction recovery
-guidance (`polylogue.maintenance.rebuild_index.rebuild_status`). It never
-acquires the rebuild lease itself.
-
-**Why it exists today:** it is the one code path that already does the
-right thing for a bulk backlog — one resumable transaction, blue-green
-generation, full parse envelope, one census+replay sweep — because it does
-not share the daemon's live-ingest constraints (no concurrent watcher, no
-per-tick writer-sharing budget, can run with the daemon stopped).
-
-**What makes it deletable as an *operator* tool (not as code):** polylogue-m6tp's
-2026-07-19 operator direction states the target plainly: "with free-threaded
-3.14t ... normal daemon convergence could BE the fast path, making the CLI
-bulk importer unnecessary for ordinary backlogs." Phase (c)'s in-process
-blue-green generation building (an inactive generation on a second writer
-connection, live ingest continuing on the active index, promoted via the
-existing generation-store pointer swap) gives the daemon itself everything
-`rebuild-index` does today, without stopping the daemon or freezing the
-source. Once that lands, an operator should never need to invoke
-`rebuild-index` for routine backlog drains.
-
-**What survives:** the *machinery*, not the operator surface. The resumable,
-transactional, blue-green-generation implementation in
-`polylogue/maintenance/rebuild_index.py` becomes daemon-internal — phase (c)
-invokes it from convergence routing. The `ops maintenance rebuild-index` CLI
-command is **deleted** once the daemon path is proven equivalent
-(polylogue-gd6v acceptance). There is no break-glass tier (operator doctrine,
-2026-07-19): a redundant manual surface kept "just in case" is exactly the
-random-machinery packing this codebase aggressively purges. The scenarios
-that seemed to justify one dissolve on inspection — a daemon that cannot run
-is a bug to fix in the daemon, and a corrupted/mismatched derived tier is
-already the daemon's own rebuild-on-mismatch invariant (the derived-tier
-schema regime). Read-only *diagnostic* inspection surfaces may survive;
-nothing that mutates does.
-
-**Which phase deletes/collapses it:** (c) lands the daemon routing and, in
-the same change-train once equivalence is proven, deletes the CLI command,
-its Click plumbing, and its operator documentation. No confirmation flags,
-no deprecation period, no alias.
+Resolved: `polylogue ops maintenance rebuild-index`, `rebuild-index-status`,
+`reindex-canary`, the `maintenance/rebuild_index.py` engine, and the daemon's
+bulk-rebuild routing are deleted. Ordinary daemon convergence is the only
+build path.
 
 ## What phase (a) (this PR) does NOT touch
 

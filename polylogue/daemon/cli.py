@@ -119,7 +119,7 @@ _RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_ORDINA
 # maintenance-priority admission (PR #3289) bounds worst-case queued-actor
 # wait to roughly "this pass's remaining budget + at most one more
 # already-queued, equally-bounded ingest hold" instead of an unbounded
-# multi-minute wait. ``repair_raw_materialization`` checks this budget only
+# multi-minute wait. ``converge_raw_materialization`` checks this budget only
 # between components, at a point it already commits and requeries candidates
 # -- a real transaction-boundary checkpoint, not a mid-write yield -- and
 # always completes at least one component regardless of the budget, so a
@@ -167,21 +167,6 @@ _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
-# Lesson from the 2026-07-18/19 restore (polylogue-m6tp, polylogue-5jak): the
-# trickle conveyor's bounded per-pass passes are sized for steady-state
-# drift, not a bulk-scale backlog. Above this many pending raws or this many
-# pending bytes, grinding through bounded passes turns ~1h of parse work into
-# a weeks-scale projection; `polylogue ops maintenance rebuild-index` (a
-# resumable blue-green generation rebuild) does the same work in one sweep.
-# The daemon does not switch to that path itself (open questions: pausing
-# the watcher, a frozen source-snapshot requirement, and the restart story —
-# tracked as a polylogue-m6tp follow-up); it only recommends it, loudly and
-# rate-limited so a long-lived backlog doesn't spam the journal every pass.
-_BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD = 2_000
-_BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD = 2 * 1024 * 1024 * 1024  # 2 GiB
-_BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS = 3600.0  # at most once/hour
-_last_bulk_rebuild_recommendation_monotonic: float | None = None
-
 # polylogue-m6tp phase (a): one parse-stage warmer lives for the daemon
 # process's lifetime, lazily created on first use. It is deliberately
 # module-level (not per-pass) so its bounded ``ThreadPoolExecutor`` and
@@ -198,24 +183,6 @@ def _daemon_parse_stage() -> DaemonParseStage:
 
         _daemon_parse_stage_singleton = DaemonParseStage()
     return _daemon_parse_stage_singleton
-
-
-# polylogue-gd6v: a SEPARATE parse-stage instance (own bounded thread pool +
-# prefetch cache) from the trickle conveyor's ``_daemon_parse_stage()``
-# above. Trickle mode and bulk-rebuild routing are independent lifecycles
-# (see docs/design/convergence-simplification-inventory.md's "trickle mode
-# stays... bulk mode adds only" framing) that can be in flight
-# simultaneously; sharing one pool would let one starve the other's budget.
-_daemon_bulk_rebuild_parse_stage_singleton: DaemonParseStage | None = None
-
-
-def _daemon_bulk_rebuild_parse_stage() -> DaemonParseStage:
-    global _daemon_bulk_rebuild_parse_stage_singleton
-    if _daemon_bulk_rebuild_parse_stage_singleton is None:
-        from polylogue.daemon.parse_prefetch import DaemonParseStage
-
-        _daemon_bulk_rebuild_parse_stage_singleton = DaemonParseStage()
-    return _daemon_bulk_rebuild_parse_stage_singleton
 
 
 async def _maybe_warm_raw_materialization_parse_stage(
@@ -1003,146 +970,6 @@ async def _run_periodic_fts_convergence_once(db: Path) -> None:
         )
 
 
-def _bulk_scale_raw_materialization_backlog(counts: RawMaterializationCounts) -> bool:
-    """Whether a pass's measured backlog is bulk-scale, not steady-state drift."""
-    return (
-        counts.candidate_count > _BULK_REBUILD_RECOMMENDATION_CANDIDATE_THRESHOLD
-        or counts.pending_blob_bytes > _BULK_REBUILD_RECOMMENDATION_BYTES_THRESHOLD
-    )
-
-
-def _maybe_recommend_bulk_rebuild(counts: RawMaterializationCounts) -> None:
-    """Loudly recommend the bulk rebuild path once a backlog is bulk-scale.
-
-    This only journals a recommendation; it does not run the bulk path
-    itself (see the module-level constants' comment and polylogue-m6tp for
-    why: watcher-pause, frozen source-snapshot, and restart semantics are
-    still open questions for a daemon-driven bulk path). Rate-limited to at
-    most once per hour per daemon process so a long-lived backlog doesn't
-    re-log every burst pass.
-    """
-    global _last_bulk_rebuild_recommendation_monotonic
-    if not _bulk_scale_raw_materialization_backlog(counts):
-        return
-    now = time.monotonic()
-    last = _last_bulk_rebuild_recommendation_monotonic
-    if last is not None and (now - last) < _BULK_REBUILD_RECOMMENDATION_MIN_INTERVAL_SECONDS:
-        return
-    _last_bulk_rebuild_recommendation_monotonic = now
-    logger.warning(
-        "raw materialization: backlog is bulk-scale (%d candidate(s), %.2f GiB pending) -- "
-        "the trickle conveyor is sized for steady-state drift and can take weeks on a backlog "
-        "this size; run `polylogue ops maintenance rebuild-index` for a resumable blue-green "
-        "bulk rebuild instead of waiting on this conveyor",
-        counts.candidate_count,
-        counts.pending_blob_bytes / (1024**3),
-    )
-
-
-async def _daemon_bulk_rebuild_transaction_in_flight() -> bool:
-    """Whether the daemon's own well-known bulk-rebuild transaction is running.
-
-    Read-only fast path (at most one JSON file read). Used by
-    ``_periodic_raw_materialization_convergence`` to stand its trickle
-    census/drain pass down for the current tick instead of duplicating work
-    the bulk-rebuild engine already subsumes: both walk the SAME
-    ``raw_sessions`` -> index materialization pipeline over the same backlog
-    (see docs/design/convergence-simplification-inventory.md item 5 -- the
-    bulk engine's own paged cursor query is unfiltered by any fixed
-    snapshot, so it naturally absorbs raws that arrive while it runs; there
-    is no work left for the trickle pass to do on the SAME raws in the
-    meantime).
-
-    Checking survives a daemon restart via a durable transaction record.
-    """
-    from polylogue.daemon.bulk_rebuild import has_resumable_daemon_bulk_rebuild_transaction
-    from polylogue.maintenance.schema_inference_gate import (
-        SchemaInferenceGateError,
-        resolve_schema_inference_receipt_reference,
-        validate_schema_inference_receipt,
-    )
-    from polylogue.paths import archive_root
-
-    root = archive_root()
-    try:
-        receipt_path = resolve_schema_inference_receipt_reference(root)
-        await asyncio.to_thread(validate_schema_inference_receipt, root, receipt_path)
-    except (SchemaInferenceGateError, RuntimeError, OSError, ValueError):
-        return False
-    return await asyncio.to_thread(has_resumable_daemon_bulk_rebuild_transaction, root)
-
-
-async def _maybe_route_daemon_bulk_rebuild(counts: RawMaterializationCounts) -> bool:
-    """polylogue-gd6v: route a bulk-scale backlog into a daemon-owned blue-green rebuild.
-
-    Unconditional. This was gated behind a ``daemon_bulk_rebuild_routing``
-    config flag that defaulted off, which meant the ONLY path that ever ran
-    was the operator hand-driving ``ops maintenance rebuild-index`` -- the
-    exact inversion polylogue-gd6v's own acceptance criteria forbid ("no
-    break-glass residue -- redundant manual surfaces are purged, not
-    demoted"). The measured cost of leaving it off: the two rebuilds that
-    actually happened were hand-resumed across days, 88% and 69% of their
-    wall-clock idle, because nothing drove them between operator sessions.
-    A flag whose off-state is strictly worse is not a choice; it is a defect
-    with a toggle. Once a bulk-rebuild transaction is in flight (this tick or a prior one,
-    surviving a daemon restart -- see ``polylogue.daemon.bulk_rebuild``),
-    keeps driving it every tick regardless of the instantaneous trickle
-    backlog reading: abandoning a partially-built generation mid-flight
-    would waste every page already replayed into it. This runs after the
-    trickle pass has already released the writer coordinator, so scheduling
-    another writer-coordinated pass here is safe.
-
-    Returns whether a pass was genuinely attempted this call (``True``) or
-    the call was a structural no-op / hit a swallowed failure (``False``).
-    ``_periodic_raw_materialization_convergence``'s trickle-suppression
-    branch (residual of polylogue-gd6v) uses this in place of the trickle
-    pass's own ``made_progress`` signal to decide whether to keep bursting
-    bulk-rebuild passes back-to-back or fall back to the slower outer
-    interval -- a genuine pass failure must not turn into a tight 1s retry
-    storm, matching how a trickle pass failure already falls back to the
-    outer interval via the caller's exception handling.
-    """
-    from polylogue.config import Config
-    from polylogue.daemon.bulk_rebuild import (
-        DAEMON_BULK_REBUILD_OPERATION_ID,
-        run_daemon_bulk_rebuild_pass,
-    )
-    from polylogue.paths import archive_root, render_root
-
-    root = archive_root()
-    if not _bulk_scale_raw_materialization_backlog(counts) and not await _daemon_bulk_rebuild_transaction_in_flight():
-        return False
-    config = Config(archive_root=root, render_root=render_root(), sources=[])
-    try:
-        receipt = await run_daemon_bulk_rebuild_pass(
-            config=config,
-            parse_stage=_daemon_bulk_rebuild_parse_stage(),
-            max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
-            candidate_build=True,
-        )
-    except Exception:
-        logger.warning("bulk-rebuild: routed pass failed", exc_info=True)
-        return False
-    if receipt is None:
-        return True
-    transaction_status = str(receipt.transaction["status"]) if receipt.transaction else receipt.status
-    processed = receipt.transaction.get("processed_raw_count") if receipt.transaction else None
-    logger.info(
-        "bulk-rebuild: pass status=%s transaction_status=%s processed_raw_count=%s selected=%d",
-        receipt.status,
-        transaction_status,
-        processed,
-        receipt.selected_raw_count,
-    )
-    if transaction_status == "promoted":
-        logger.warning(
-            "bulk-rebuild: promoted a daemon-built generation covering the backlog (operation %s); "
-            "the trickle conveyor's remaining backlog reflects the new active index from the next tick",
-            DAEMON_BULK_REBUILD_OPERATION_ID,
-        )
-    return True
-
-
 async def _periodic_raw_materialization_convergence(
     *,
     catch_up_complete: asyncio.Event | None = None,
@@ -1171,49 +998,11 @@ async def _periodic_raw_materialization_convergence(
         recover = True
         # polylogue-t93b: set True only at the genuine-quiescence break below
         # (no progress AND no remaining ordinary-envelope candidates this
-        # tick) -- never on the bulk-rebuild-in-flight or spool-pending
-        # breaks, which are deferrals for unrelated reasons, not evidence the
-        # ordinary backlog is settled.
+        # tick) -- never on the spool-pending break, which is a deferral for
+        # an unrelated reason, not evidence the ordinary backlog is settled.
         quiescent = False
         try:
             while True:
-                # polylogue-gd6v residual: while the daemon's own bulk-rebuild
-                # transaction is in flight, it already subsumes exactly the
-                # raw->index materialization work this pass would do over
-                # the SAME backlog (see
-                # ``_daemon_bulk_rebuild_transaction_in_flight`` and
-                # docs/design/convergence-simplification-inventory.md item 5).
-                # Standing the trickle census/drain pass down here avoids
-                # both mechanisms converging on the same raws every tick --
-                # double parse/replay work plus needless writer-hold
-                # contention between the two. Everything else the trickle
-                # conveyor is NOT responsible for (live-ingest acquisition,
-                # hook-spool drain, embedding catch-up, already-committed
-                # session insights) lives in separate periodic loops and
-                # keeps running unaffected. Driving the bulk pass here
-                # (instead of only from the trickle branch below) also lets
-                # bulk-rebuild progress burst at the same 1s cadence the
-                # trickle conveyor uses, rather than waiting a full quiet
-                # interval between passes.
-                if await _daemon_bulk_rebuild_transaction_in_flight():
-                    logger.debug(
-                        "raw materialization: standing down trickle census/drain -- "
-                        "a daemon bulk-rebuild transaction already subsumes this backlog"
-                    )
-                    from polylogue.maintenance.raw_authority import RawMaterializationCounts
-
-                    bulk_progressed = await _maybe_route_daemon_bulk_rebuild(RawMaterializationCounts())
-                    if not bulk_progressed:
-                        # A swallowed pass failure -- fall back to the slower
-                        # outer interval instead of retrying every burst
-                        # second (mirrors how a trickle pass failure already
-                        # escapes to the outer interval via the exception
-                        # handlers below).
-                        break
-                    if _browser_capture_spool_has_pending_files():
-                        break
-                    await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
-                    continue
                 # polylogue-m6tp item 4: census throughput is no longer bounded
                 # by escalating the writer-held pass's OWN limit (the old
                 # ``census_mode`` switch) -- it is bounded by how much the
@@ -1247,8 +1036,6 @@ async def _periodic_raw_materialization_convergence(
                     ),
                 )
                 recover = False
-                _maybe_recommend_bulk_rebuild(materialized)
-                await _maybe_route_daemon_bulk_rebuild(materialized)
                 if materialized.made_progress:
                     logger.info(
                         "raw materialization: repaired %d session(s), executed %d frontier plan(s), %d candidate(s) remaining",
@@ -1417,7 +1204,7 @@ def _drain_raw_materialization_once(
                     auto_resolved,
                 )
             try:
-                result = raw_authority.repair_materialization(
+                result = raw_authority.converge_materialization(
                     config,
                     dry_run=False,
                     raw_artifact_limit=limit,
@@ -1516,7 +1303,7 @@ def _run_raw_materialization_whale_pass_once(
             result = refused_result
         else:
             try:
-                result = raw_authority.repair_materialization(
+                result = raw_authority.converge_materialization(
                     config,
                     dry_run=False,
                     raw_artifact_limit=1,
@@ -1765,9 +1552,8 @@ async def _maybe_run_raw_materialization_whale_pass() -> bool:
     a permanent offline-only requirement for whale components is the policy
     bug this closes, so there is no off switch.
 
-    Returns whether a pass was genuinely attempted this call, mirroring
-    ``_maybe_route_daemon_bulk_rebuild``'s return-value contract so the
-    caller can decide burst-vs-outer-interval pacing the same way.
+    Returns whether a pass was genuinely attempted this call so the caller
+    can decide burst-vs-outer-interval pacing.
     """
     from polylogue.config import Config
     from polylogue.daemon.events import emit_daemon_event
@@ -3317,11 +3103,6 @@ async def _run_daemon_services_under_active_writer_lease(
                 # needed: it cannot itself hang the shutdown sequence; it just
                 # stops the pool from keeping the process alive at exit.
                 _daemon_parse_stage_singleton.shutdown()
-            if _daemon_bulk_rebuild_parse_stage_singleton is not None:
-                # polylogue-gd6v: same non-blocking shutdown contract as the
-                # trickle conveyor's parse-stage warmer above, for the
-                # bulk-rebuild routing's own (separate) pool.
-                _daemon_bulk_rebuild_parse_stage_singleton.shutdown()
             if server is not None:
                 await _shutdown_server_if_serving(server, server_task, label="browser-capture")
             if api_server is not None:

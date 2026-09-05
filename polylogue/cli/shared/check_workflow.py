@@ -5,24 +5,14 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from polylogue.cli.shared.check_maintenance import (
-    build_preview_counts as _build_preview_counts,
-)
-from polylogue.cli.shared.check_maintenance import (
-    persist_maintenance_run,
-)
-from polylogue.cli.shared.check_maintenance import (
-    resolve_selected_maintenance_targets as _resolve_selected_maintenance_targets,
-)
-from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
+from polylogue.cli.shared.check_models import CheckCommandResult
 from polylogue.cli.shared.check_validation import validate_check_options as _validate_check_options
 from polylogue.cli.shared.helpers import load_effective_config
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.core.protocols import ProgressCallback
 from polylogue.daemon.status import daemon_status_payload
-from polylogue.readiness import ReadinessReport, get_readiness, run_runtime_readiness
+from polylogue.readiness import get_readiness, run_runtime_readiness
 from polylogue.schemas.operator.workflow import (
     list_artifact_cohorts,
     list_artifact_observations,
@@ -35,13 +25,10 @@ from polylogue.schemas.validation.requests import (
     ArtifactObservationQuery,
     SchemaVerificationRequest,
 )
-from polylogue.storage.repair import run_selected_maintenance
 
 from .check_support import (
     make_schema_progress_callback,
-    make_session_insight_progress_callback,
     parse_schema_samples,
-    vacuum_database,
 )
 
 
@@ -49,10 +36,6 @@ from .check_support import (
 class CheckCommandOptions:
     json_output: bool
     verbose: bool
-    repair: bool
-    cleanup: bool
-    preview: bool
-    vacuum: bool
     deep: bool
     runtime: bool
     check_daemon: bool
@@ -72,13 +55,6 @@ class CheckCommandOptions:
     schema_record_limit: int | None
     schema_record_offset: int
     schema_quarantine_malformed: bool
-    maintenance_targets: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class _MaintenanceRunInputs:
-    selected_targets: tuple[str, ...]
-    preview_counts: dict[str, int] | None
 
 
 def validate_check_options(options: CheckCommandOptions) -> None:
@@ -88,10 +64,6 @@ def validate_check_options(options: CheckCommandOptions) -> None:
 def _runtime_only_requested(options: CheckCommandOptions) -> bool:
     return options.runtime and not any(
         (
-            options.repair,
-            options.cleanup,
-            options.preview,
-            options.vacuum,
             options.deep,
             options.check_daemon,
             options.check_blob,
@@ -144,79 +116,13 @@ def _run_schema_verification(options: CheckCommandOptions, config: Config) -> Sc
     return report
 
 
-def _session_insight_progress_callback(
-    options: CheckCommandOptions,
-    selected_targets: tuple[str, ...],
-) -> ProgressCallback | None:
-    if (
-        options.repair
-        and not options.preview
-        and not options.json_output
-        and (not selected_targets or "session_insights" in selected_targets)
-    ):
-        return make_session_insight_progress_callback()
-    return None
-
-
-def _maintenance_run_inputs(options: CheckCommandOptions, report: ReadinessReport) -> _MaintenanceRunInputs:
-    return _MaintenanceRunInputs(
-        selected_targets=_resolve_selected_maintenance_targets(options),
-        preview_counts=_build_preview_counts(report) if options.preview else None,
-    )
-
-
-def _run_maintenance(
-    config: Config,
-    result: CheckCommandResult,
-    options: CheckCommandOptions,
-    inputs: _MaintenanceRunInputs,
-) -> None:
-    result.maintenance_targets = inputs.selected_targets
-    result.maintenance_results = run_selected_maintenance(
-        config,
-        repair=options.repair,
-        cleanup=options.cleanup,
-        dry_run=options.preview,
-        preview_counts=inputs.preview_counts,
-        targets=inputs.selected_targets,
-        session_insight_progress_callback=_session_insight_progress_callback(options, inputs.selected_targets),
-    )
-
-
-def _persist_maintenance_run(
-    env: AppEnv,
-    *,
-    report: ReadinessReport,
-    result: CheckCommandResult,
-    options: CheckCommandOptions,
-    inputs: _MaintenanceRunInputs,
-) -> None:
-    persist_maintenance_run(
-        env,
-        report=report,
-        options=options,
-        targets=inputs.selected_targets,
-        maintenance_results=result.maintenance_results or [],
-        vacuum_result=result.vacuum_result,
-        preview_counts=inputs.preview_counts,
-    )
-
-
 def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckCommandResult:
     config = load_effective_config(env)
     if _runtime_only_requested(options):
         return CheckCommandResult(report=run_runtime_readiness(config))
 
-    explicit_target_probe = (
-        (options.repair or options.cleanup) and bool(options.maintenance_targets) and not options.deep
-    )
-    report = get_readiness(
-        config,
-        deep=options.deep,
-        probe_only=explicit_target_probe or not (options.deep or options.repair or options.cleanup),
-    )
+    report = get_readiness(config, deep=options.deep, probe_only=not options.deep)
     result = CheckCommandResult(report=report)
-    maintenance_inputs: _MaintenanceRunInputs | None = None
 
     if options.runtime:
         result.runtime_report = run_runtime_readiness(config)
@@ -251,24 +157,5 @@ def run_check_workflow(env: AppEnv, options: CheckCommandOptions) -> CheckComman
             _artifact_query(options),
             db_path=config.db_path,
         ).rows
-
-    if options.repair or options.cleanup:
-        maintenance_inputs = _maintenance_run_inputs(options, report)
-        _run_maintenance(config, result, options, maintenance_inputs)
-
-    if (options.repair or options.cleanup) and options.vacuum:
-        if options.preview:
-            result.vacuum_result = VacuumResult(ok=True, preview=True, detail="Preview mode: VACUUM skipped.")
-        elif options.json_output:
-            result.vacuum_result = vacuum_database(env)
-
-    if result.maintenance_results is not None and maintenance_inputs is not None:
-        _persist_maintenance_run(
-            env,
-            report=report,
-            result=result,
-            options=options,
-            inputs=maintenance_inputs,
-        )
 
     return result

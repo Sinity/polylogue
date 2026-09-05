@@ -21,7 +21,7 @@ def session_profile_stale_predicate(
 
     Single source of truth for the sort-key staleness comparison, shared by
     the daemon converger (``daemon/convergence_stages.py``), ops repair
-    (``storage/repair.py``), and the repair-candidate prefilter
+    (``storage/raw_convergence.py``), and the candidate prefilter
     (``storage/derived/session/status.py``) — see polylogue-a7xr.2.
 
     ``sessions_alias.sort_key_ms`` is milliseconds; ``profile_alias`` caches it

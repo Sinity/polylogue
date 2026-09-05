@@ -142,7 +142,7 @@ profile evidence and probabilistic enrichment in one payload.
 Archive coverage and archive debt are public insights too:
 
 - `ArchiveCoverageInsight`: provider/day/week session, message, cost, and activity coverage rollups
-- `ArchiveDebtInsight`: governed cleanup/repair debt with maintenance targets plus preview/apply/validation lineage
+- `ArchiveDebtInsight`: derived-tier debt rows (FTS, profile, materialization, raw-link, user-overlay coverage) with issue counts
 
 ## Filter Chain API
 

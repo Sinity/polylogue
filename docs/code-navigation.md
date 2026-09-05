@@ -9,7 +9,7 @@ landmarks in [Internals](internals.md).
 The governing rule is simple:
 
 > Put a change in the layer that owns its meaning, then adapt outward. Do not
-> start from the CLI, daemon, or a repair command and work inward.
+> start from the CLI, daemon, or a maintenance verb and work inward.
 
 ## Five-minute mental model
 
@@ -39,8 +39,9 @@ CLI / API / MCP / HTTP / rendering surfaces
 
 `polylogued` owns normal writes. `source.db`, `user.db`, and source blob bytes
 are durable evidence. `index.db`, `embeddings.db`, insights, FTS, and most
-status products are rebuildable. Maintenance code may verify or repair an
-invariant, but it is never the normal home for new archive semantics.
+status products are rebuildable and converge through the daemon. Maintenance
+code verifies invariants or recovers durable evidence; it is never the normal
+home for new archive semantics.
 
 ## Read the code in this order
 
@@ -63,7 +64,7 @@ entire package tree:
    declared multi-surface operations.
 8. [`polylogue/daemon/convergence.py`](../polylogue/daemon/convergence.py) and
    [`convergence_stages.py`](../polylogue/daemon/convergence_stages.py) —
-   bounded repair of rebuildable products after ingest.
+   bounded convergence of rebuildable products after ingest.
 9. [`polylogue/surfaces/payloads.py`](../polylogue/surfaces/payloads.py) —
    provider-neutral response payloads shared by public surfaces.
 10. [`docs/plans/layering.yaml`](plans/layering.yaml) — enforced import and
@@ -144,8 +145,8 @@ enforced boundary authority.
 
 ### Verification worlds
 
-- `maintenance/` — fail-closed verification and operator-supervised repair over
-  typed storage primitives; never the primary write path.
+- `maintenance/` — fail-closed verification and guarded recovery over typed
+  storage primitives; never the primary write path.
 - `schemas/` — provider schema observation, inference, validation, and drift.
 - `scenarios/` — reusable scenario declarations and executable workload worlds.
 - `demo/` — deterministic private-data-free product demonstrations.
@@ -172,7 +173,7 @@ registry or declaration, not the rendered output.
 
 - **Raw SQL outside `storage/`.** Add or call a storage accessor instead.
 - **Normal semantics in `maintenance/`.** Fix the write path; keep maintenance
-  for diagnosis, one-shot repair, and recovery.
+  for diagnosis and recovery.
 - **Inferring `Provider` from `Origin`.** The mapping is not injective. Preserve
   original acquisition evidence at wire boundaries.
 - **Surface-specific copies of domain policy.** Put the rule in `archive/`,

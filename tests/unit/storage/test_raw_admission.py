@@ -732,7 +732,7 @@ def test_admit_raw_observation_rejects_grouped_with_prior_head(tmp_path: Path) -
 def test_insert_reconstructed_raw_row_preserves_byte_proven_repair_authority(tmp_path: Path) -> None:
     """polylogue-1fijp: the copy-forward exemption keeps the authority it was given.
 
-    ``storage/repair.py``'s browser-origin copy-forward rebuilds a raw row from
+    ``storage/raw_convergence.py``'s browser-origin copy-forward rebuilds a raw row from
     a plan that already proved the bytes. Routing it through
     ``admit_raw_observation`` instead would resolve BASELINE/``asserted``
     against the absent prior head for the corrected logical key and silently

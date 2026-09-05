@@ -16,13 +16,13 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.revision_backfill import _parse_one
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
+from polylogue.storage.raw_convergence import _stageable_quarantined_census_cohort, inspect_quarantined_accepted_raws
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierState,
     apply_raw_authority_frontier,
     inspect_raw_authority_frontier,
 )
-from polylogue.storage.repair import _stageable_quarantined_census_cohort, inspect_quarantined_accepted_raws
 from polylogue.storage.sqlite.archive_tiers import revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root

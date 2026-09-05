@@ -335,7 +335,6 @@ def _static_get_routes() -> tuple[_StaticGetRoute, ...]:
         _static_get_route("/api/compare", "_handle_compare", passes_params=True),
         _static_get_route("/api/sources", "_handle_sources"),
         _static_get_route("/api/thread-continue-templates", "_handle_get_thread_continue_templates"),
-        _static_get_route("/api/maintenance/operations", "_handle_maintenance_operations"),
     ) + tuple(route for route in _declared_get_routes() if isinstance(route, _StaticGetRoute))
 
 
@@ -448,7 +447,6 @@ def _parameterized_get_routes() -> tuple[_ParameterizedGetRoute, ...]:
         _parameterized_get_route("/api/insights/sessions/:id", "_handle_get_session_insights", passes_params=True),
         _parameterized_get_route("/api/webui/insights/:name", "_handle_webui_insight", passes_params=True),
         _parameterized_get_route("/api/raw_artifacts/:id", "_handle_get_raw_artifact"),
-        _parameterized_get_route("/api/maintenance/status/:id", "_handle_maintenance_status"),
     ) + tuple(route for route in _declared_get_routes() if isinstance(route, _ParameterizedGetRoute))
 
 
@@ -484,18 +482,6 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
         _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/demo/augment", ("api", "demo", "augment"), "_handle_demo_augment"),
-        _StaticPostRoute("/api/maintenance/plan", ("api", "maintenance", "plan"), "_handle_maintenance_plan"),
-        _StaticPostRoute("/api/maintenance/run", ("api", "maintenance", "run"), "_handle_maintenance_run"),
-        _StaticPostRoute(
-            "/api/maintenance/rebuild-index",
-            ("api", "maintenance", "rebuild-index"),
-            "_handle_rebuild_index",
-        ),
-        _StaticPostRoute(
-            "/api/maintenance/discard-index-candidate",
-            ("api", "maintenance", "discard-index-candidate"),
-            "_handle_discard_index_candidate",
-        ),
     )
 
 
@@ -730,38 +716,6 @@ def _archive_filter_kwargs_from_spec(
         "boolean_predicate": spec.boolean_predicate,
         "root": resolve_default_root_filter(spec.root, boolean_predicate=spec.boolean_predicate),
     }
-
-
-_SCOPE_FILTER_KEYS = frozenset(
-    {
-        "session_ids",
-        "origin",
-        "source_family",
-        "source_root",
-        "time_range",
-        "failure_kind",
-        "parser_version",
-    }
-)
-
-
-def _parse_scope_filter_body(body: dict[str, Any]) -> dict[str, Any]:
-    """Extract scope-filter fields from a maintenance POST body.
-
-    Accepts both a nested ``{"scope": {"filter": {...}}}`` envelope and
-    a flat top-level shape (``session_ids`` etc. directly on the
-    body). The flat form is the one the CLI's ``--output-format json``
-    plan reuses when an operator pipes it back to the daemon, so
-    parity with the CLI is what pins the daemon-side parser.
-    """
-
-    scope = body.get("scope")
-    if isinstance(scope, dict):
-        scope_filter = scope.get("filter")
-        if isinstance(scope_filter, dict):
-            return dict(scope_filter)
-    # Fall back to flat keys on the body itself.
-    return {key: body[key] for key in _SCOPE_FILTER_KEYS if key in body}
 
 
 def _dump_target_ref(target_ref: TargetRefPayload) -> dict[str, object]:
@@ -1343,18 +1297,6 @@ class _AuthResult:
 
     def __bool__(self) -> bool:
         return self.allowed
-
-
-# polylogue-ogn1: the write bridge's default run_sync/hold timeout (30s,
-# DaemonWriteThreadBridge.__init__) is sized for ordinary request-scoped
-# writes. A bounded rebuild-index pass is allowed to run far longer -- the
-# CLI's own --daemon HTTP client already tolerates up to 600s
-# (_rebuild_index.py's _run_daemon_rebuild, urlopen(..., timeout=600)) -- so
-# the HTTP route asks the bridge to wait that same 600s instead of the 30s
-# default. The bound returns control to the request path when parser or
-# acceptance work stalls, rather than leaving the daemon writer request
-# unbounded forever.
-_REBUILD_INDEX_WRITE_TIMEOUT_S: float = 600.0
 
 
 class DaemonAPIHandler(BaseHTTPRequestHandler):
@@ -2027,7 +1969,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "_handle_mcp_call_log": "http.telemetry.mcp-call",
                 "_handle_reset": "http.reset",
                 "_handle_ingest": "http.ingest",
-                "_handle_maintenance_run": "http.maintenance.run",
             }.get(authenticated_route.handler_name)
             gate = self._write_gate(mutating_actor) if mutating_actor is not None else contextlib.nullcontext()
             with gate:
@@ -5929,271 +5870,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             augment,
         )
         self._send_json(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": with_overlays})
-
-    @daemon_safe_handler
-    def _handle_maintenance_plan(self) -> None:
-        """POST /api/maintenance/plan — dry-run summary for maintenance targets."""
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        body_text = body_raw.decode("utf-8")
-        try:
-            body = json.loads(body_text)
-        except json.JSONDecodeError:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        raw_targets: list[str] = body.get("targets", [])
-        targets: tuple[str, ...] = tuple(str(t) for t in raw_targets)
-
-        from polylogue.config import Config
-        from polylogue.maintenance.envelope import envelope_from_operation
-        from polylogue.maintenance.planner import preview_backfill
-        from polylogue.maintenance.scope import MaintenanceScopeFilter
-        from polylogue.paths import archive_root, render_root
-
-        try:
-            scope_filter = MaintenanceScopeFilter.from_dict(_parse_scope_filter_body(body))
-        except (TypeError, ValueError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        config = Config(
-            archive_root=archive_root(),
-            render_root=render_root(),
-            sources=[],
-        )
-        result = preview_backfill(config, targets=targets, scope_filter=scope_filter)
-        envelope = envelope_from_operation(result, origin="daemon", mode="preview")
-        self._send_json(HTTPStatus.OK, envelope.to_dict())
-
-    @daemon_safe_handler
-    def _handle_maintenance_run(self) -> None:
-        """POST /api/maintenance/run — execute (or dry-run) maintenance."""
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        body_text = body_raw.decode("utf-8")
-        try:
-            body = json.loads(body_text)
-        except json.JSONDecodeError:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        raw_targets: list[str] = body.get("targets", [])
-        targets: tuple[str, ...] = tuple(str(t) for t in raw_targets)
-        dry_run: bool = bool(body.get("dry_run", False))
-
-        from polylogue.config import Config
-        from polylogue.core.enums import OperationStatus
-        from polylogue.maintenance.envelope import envelope_from_operation
-        from polylogue.maintenance.planner import execute_backfill
-        from polylogue.maintenance.scope import MaintenanceScopeFilter
-        from polylogue.paths import archive_root, render_root
-
-        try:
-            scope_filter = MaintenanceScopeFilter.from_dict(_parse_scope_filter_body(body))
-        except (TypeError, ValueError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        config = Config(
-            archive_root=archive_root(),
-            render_root=render_root(),
-            sources=[],
-        )
-        result = execute_backfill(config, targets=targets, dry_run=dry_run, scope_filter=scope_filter)
-        envelope = envelope_from_operation(result, origin="daemon", mode="execute")
-        # A failed maintenance envelope is a semantic failure of this
-        # request, not a successful response describing a failure --
-        # surface it as 422 so callers do not have to parse the body to
-        # notice (polylogue-71ey AC 4).
-        status = HTTPStatus.UNPROCESSABLE_ENTITY if result.status is OperationStatus.FAILED else HTTPStatus.OK
-        self._send_json(status, envelope.to_dict())
-
-    @daemon_safe_handler
-    def _handle_rebuild_index(self) -> None:
-        """POST /api/maintenance/rebuild-index — one coordinator-owned replay pass.
-
-        The replay route has a finite bridge wait so an uncooperative parser or
-        acceptance check cannot leave the request path blocked indefinitely.
-        Canary receipt consumption remains a separate daemon-owned operation.
-        """
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        try:
-            body = json.loads(body_raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if not isinstance(body, dict):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        raw_ids_value = body.get("raw_ids", [])
-        selected_session_ids = body.get("selected_session_ids", [])
-        candidate_acceptance_checks = body.get("candidate_acceptance_checks")
-        canary = body.get("canary", False)
-        if not isinstance(raw_ids_value, list) or not all(
-            isinstance(raw_id, str) and raw_id for raw_id in raw_ids_value
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if not isinstance(selected_session_ids, list) or not all(
-            isinstance(session_id, str) and session_id for session_id in selected_session_ids
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if candidate_acceptance_checks is not None and (
-            not isinstance(candidate_acceptance_checks, list)
-            or not all(isinstance(check, str) and check for check in candidate_acceptance_checks)
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        only_missing = body.get("only_missing", False)
-        promote = body.get("promote", True)
-        max_blob_mb = body.get("max_blob_mb")
-        operation_id = body.get("operation_id")
-        schema_inference_receipt_path = body.get("schema_inference_receipt_path")
-        raw_batch_size = body.get("raw_batch_size", 500)
-        pass_byte_budget_mb = body.get("pass_byte_budget_mb")
-        pass_deadline_seconds = body.get("pass_deadline_seconds")
-        if not isinstance(only_missing, bool) or not isinstance(promote, bool) or not isinstance(canary, bool):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if max_blob_mb is not None and (
-            isinstance(max_blob_mb, bool) or not isinstance(max_blob_mb, int | float) or max_blob_mb <= 0
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if operation_id is not None and (not isinstance(operation_id, str) or not operation_id):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if schema_inference_receipt_path is not None and (
-            not isinstance(schema_inference_receipt_path, str) or not schema_inference_receipt_path
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if isinstance(raw_batch_size, bool) or not isinstance(raw_batch_size, int):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if pass_byte_budget_mb is not None and (
-            isinstance(pass_byte_budget_mb, bool) or not isinstance(pass_byte_budget_mb, int | float)
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if pass_deadline_seconds is not None and (
-            isinstance(pass_deadline_seconds, bool) or not isinstance(pass_deadline_seconds, int | float)
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        from polylogue.maintenance.rebuild_index import (
-            RebuildIndexRequest,
-            rebuild_index_from_source_sync,
-            validate_rebuild_index_request,
-        )
-        from polylogue.paths import archive_root
-
-        request = RebuildIndexRequest(
-            archive_root=archive_root(),
-            only_missing=only_missing,
-            raw_ids=tuple(raw_ids_value),
-            selected_session_ids=tuple(selected_session_ids),
-            max_blob_mb=float(max_blob_mb) if max_blob_mb is not None else None,
-            promote=promote,
-            canary=canary,
-            candidate_acceptance_checks=(
-                tuple(candidate_acceptance_checks) if candidate_acceptance_checks is not None else None
-            ),
-            operation_id=operation_id,
-            schema_inference_receipt_path=(
-                Path(schema_inference_receipt_path) if schema_inference_receipt_path is not None else None
-            ),
-            raw_batch_size=raw_batch_size,
-            pass_byte_budget_mb=float(pass_byte_budget_mb) if pass_byte_budget_mb is not None else None,
-            pass_deadline_seconds=(float(pass_deadline_seconds) if pass_deadline_seconds is not None else None),
-        )
-        try:
-            validate_rebuild_index_request(request)
-        except ValueError:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-
-        bridge = getattr(self.server, "write_bridge", None)
-        if bridge is None:
-            # polylogue-ogn1: a real DaemonAPIHTTPServer always installs
-            # write_bridge in __init__ (either the caller's coordinator or an
-            # owned standalone one) -- this branch is never reachable there.
-            # Fail closed instead of running the rebuild directly outside the
-            # sole-writer coordinator: a route that can execute an authority-
-            # promoting archive write without ever holding the writer gate is
-            # a bypass of this daemon's single-writer invariant, not a safe
-            # fallback, even if nothing exercises it in production today.
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-            return
-        receipt = cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-            "http.maintenance.rebuild-index",
-            _REBUILD_INDEX_WRITE_TIMEOUT_S,
-            rebuild_index_from_source_sync,
-            request,
-        )
-        self._send_json(HTTPStatus.OK, receipt.to_dict())
-
-    @daemon_safe_handler
-    def _handle_discard_index_candidate(self) -> None:
-        """Discard one owned inactive index candidate through the daemon."""
-
-        content_length = int(self.headers.get("Content-Length", 0))
-        body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
-        try:
-            body = json.loads(body_raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        if not isinstance(body, dict):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        generation_id = body.get("generation_id")
-        generation_owner_id = body.get("generation_owner_id")
-        if (
-            not isinstance(generation_id, str)
-            or not generation_id
-            or not isinstance(generation_owner_id, str)
-            or not generation_owner_id
-        ):
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
-            return
-        from polylogue.maintenance.rebuild_index import discard_inactive_rebuild_candidate
-        from polylogue.paths import archive_root
-
-        bridge = getattr(self.server, "write_bridge", None)
-        if bridge is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-            return
-        cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-            "http.maintenance.discard-index-candidate",
-            # Candidate cleanup must retain daemon ownership until completion:
-            # timing it out can orphan an inactive generation after a canary
-            # request has already released its receipt.
-            None,
-            discard_inactive_rebuild_candidate,
-            archive_root(),
-            generation_id,
-            generation_owner_id,
-        )
-        self._send_json(HTTPStatus.OK, {"discarded": True, "generation_id": generation_id})
-
-    @daemon_safe_handler
-    def _handle_maintenance_status(self, operation_id: str) -> None:
-        """GET /api/maintenance/status/<op_id> — delegate to maintenance_registry_http."""
-        from polylogue.daemon.maintenance_registry_http import handle_status
-
-        handle_status(self, operation_id)
-
-    @daemon_safe_handler
-    def _handle_maintenance_operations(self) -> None:
-        """GET /api/maintenance/operations — delegate to maintenance_registry_http."""
-        from polylogue.daemon.maintenance_registry_http import handle_operations
-
-        handle_operations(self)
 
 
 # Bound for concurrent archive-query execution (polylogue-0hqs). ThreadingHTTPServer

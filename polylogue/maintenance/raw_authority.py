@@ -18,8 +18,8 @@ from polylogue.core.json import JSONDocument
 
 if TYPE_CHECKING:
     from polylogue.sources.revision_backfill import RawParsePrefetchCache
+    from polylogue.storage.raw_convergence import RawConvergenceResult
     from polylogue.storage.raw_reconciler import RawAuthorityFrontierApplyReport, RawAuthorityFrontierCensus
-    from polylogue.storage.repair import RepairResult
 
 
 RAW_MATERIALIZATION_ORDINARY_BLOB_LIMIT_BYTES: Final = 64 * 1024 * 1024
@@ -37,7 +37,7 @@ class RawMaterializationCounts:
 
     ``candidate_count`` and ``pending_blob_bytes`` describe the *whole*
     unbounded backlog the pass measured (not the bounded per-pass batch):
-    ``repair_materialization`` enumerates every matching raw before
+    ``converge_materialization`` enumerates every matching raw before
     applying ``raw_artifact_limit``, so these two fields are how a caller
     detects a bulk-scale backlog the trickle conveyor is not designed for
     (polylogue-m6tp) without re-querying storage itself.
@@ -126,7 +126,7 @@ def auto_resolve_stale_plan_blockers(config: Config) -> int:
     See ``storage.raw_authority.auto_resolve_stale_plan_blockers`` for why
     this is safe to run unattended: a stale-plan blocker requires no
     judgment content, and this is the one non-frontier blocker kind
-    ``repair_materialization`` checks archive-wide before doing any repair
+    ``converge_materialization`` checks archive-wide before doing any
     work at all (``unresolved_raw_replay_blockers``).
     """
     from polylogue.storage.raw_authority import auto_resolve_stale_plan_blockers as _auto_resolve
@@ -188,18 +188,18 @@ def archive_writer_rebuild_exclusion(archive_root: Path) -> Iterator[ArchiveWrit
         exclusion.release_if_safe()
 
 
-def materialization_lease_refusal_result(error: BaseException) -> RepairResult | None:
-    """Translate only a rebuild-lease refusal into raw repair's typed result."""
+def materialization_lease_refusal_result(error: BaseException) -> RawConvergenceResult | None:
+    """Translate only a rebuild-lease refusal into the typed pass result."""
     from polylogue.storage.index_generation import RebuildLeaseUnavailableError
 
     if not isinstance(error, RebuildLeaseUnavailableError):
         return None
-    from polylogue.storage.repair import raw_materialization_lease_refusal_result
+    from polylogue.storage.raw_convergence import raw_materialization_lease_refusal_result
 
     return raw_materialization_lease_refusal_result(error)
 
 
-def repair_materialization(
+def converge_materialization(
     config: Config,
     *,
     dry_run: bool,
@@ -234,12 +234,12 @@ def repair_materialization(
     process-wide writer lock (the daemon's trickle conveyor) has a declared,
     enforced ceiling on how long it can hold that lock in one call,
     independent of ``raw_artifact_limit`` -- see
-    ``polylogue.storage.repair.repair_raw_materialization`` for why a fixed
+    ``polylogue.storage.raw_convergence.converge_raw_materialization`` for why a fixed
     component count alone did not bound hold time in practice.
     """
-    from polylogue.storage.repair import repair_raw_materialization
+    from polylogue.storage.raw_convergence import converge_raw_materialization
 
-    return repair_raw_materialization(
+    return converge_raw_materialization(
         config,
         dry_run=dry_run,
         raw_artifact_limit=raw_artifact_limit,
@@ -260,10 +260,10 @@ def whale_pass_candidate(
     """Read-only: pick one resource-blocked, stream-safe component to escalate.
 
     polylogue-t93b. See
-    ``polylogue.storage.repair.raw_materialization_whale_pass_candidate`` for
+    ``polylogue.storage.raw_convergence.raw_materialization_whale_pass_candidate`` for
     the selection contract; safe to call without the writer hold.
     """
-    from polylogue.storage.repair import raw_materialization_whale_pass_candidate
+    from polylogue.storage.raw_convergence import raw_materialization_whale_pass_candidate
 
     return raw_materialization_whale_pass_candidate(
         config,
@@ -309,5 +309,5 @@ __all__ = [
     "read_census",
     "read_detail",
     "recover_interrupted_frontier",
-    "repair_materialization",
+    "converge_materialization",
 ]

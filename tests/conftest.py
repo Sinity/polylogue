@@ -76,13 +76,13 @@ def _file_batch(path: Path, count: int) -> int:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Apply suite-wide timeout and bounded-memory execution contracts.
+    """Apply suite-wide file-batch selection and timeout contracts.
 
     Pluggy only injects hook arguments that are required parameters; a
     parameter with a default is treated as optional and silently omitted,
     which previously made pytest call this hook with both arguments as
-    ``None`` and disabled file-batch deselection, the rebuild-index load
-    groups, and timeout-marker validation. Keep both parameters required.
+    ``None`` and disabled file-batch deselection and timeout-marker
+    validation. Keep both parameters required.
     """
     from tests.infra.timeout_policy import timeout_marker_error
 
@@ -103,16 +103,6 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         config.hook.pytest_deselected(items=deselected)
 
     for item in items:
-        # A merged-head 12-worker census measured 0.5-0.9 GiB of private
-        # memory per worker while rebuild-index tests from the same files ran
-        # concurrently, producing a 14.6 GiB cgroup peak. Keep file-local
-        # fixture isolation, but distribute this family over four stable
-        # loadgroups so unrelated tests can still use every configured worker.
-        item_path = Path(str(item.path))
-        if item_path.parent.name == "maintenance" and item_path.name.startswith("test_rebuild_index_"):
-            bucket = zlib.crc32(item_path.name.encode()) % 4
-            item.add_marker(pytest.mark.xdist_group(name=f"rebuild-index-memory-{bucket}"))
-
         marker = item.get_closest_marker("timeout")
         if marker is None:
             continue

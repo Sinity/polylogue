@@ -41,7 +41,6 @@ from polylogue.archive.semantic.pricing import (
     CostEstimatePayload,
     estimate_session_cost,
 )
-from polylogue.core.enums import OperationStatus
 from polylogue.cost.aggregation import session_costs_to_daily_usd
 from polylogue.cost.outlook import (
     CycleOutlook,
@@ -60,16 +59,6 @@ from polylogue.cost.plans import (
     cycle_for,
     plan_by_name,
 )
-from polylogue.maintenance.cost_backfill import (
-    SESSION_PROFILES_REBUILD_TARGET,
-    SINGLE_BASIS_COST_PROVENANCE_MARKERS,
-    SINGLE_BASIS_COST_SOURCE,
-    SingleBasisCostRow,
-    find_single_basis_cost_rows,
-    plan_cost_backfill,
-)
-from polylogue.maintenance.invalidation import InvalidationReason
-from polylogue.maintenance.planner import BackfillKind
 from tests.infra.builders import make_conv, make_msg
 
 # ---------------------------------------------------------------------------
@@ -569,73 +558,3 @@ async def test_mcp_get_cost_outlook_unknown_plan_reports_typed_error() -> None:
 
     payload = _json.loads(raw)
     assert payload.get("code") == "invalid_argument", payload
-
-
-# ---------------------------------------------------------------------------
-# Cost backfill contracts (#1140)
-# ---------------------------------------------------------------------------
-
-
-def _single_basis_reader(rows: tuple[SingleBasisCostRow, ...]) -> object:
-    def _reader(
-        *,
-        provenance_markers: frozenset[str] = SINGLE_BASIS_COST_PROVENANCE_MARKERS,
-        min_total_usd: float = 0.0,
-    ) -> tuple[SingleBasisCostRow, ...]:
-        return rows
-
-    return _reader
-
-
-def test_find_single_basis_cost_rows_filters_by_provenance_and_amount() -> None:
-    """Only untyped positive-cost rows need the single-basis backfill."""
-    candidates = (
-        SingleBasisCostRow("conv-stale", "claude-code", total_cost_usd=0.42, cost_provenance="unknown"),
-        # Excluded: already typed provenance.
-        SingleBasisCostRow("conv-typed", "claude-code", total_cost_usd=0.42, cost_provenance="provider_reported"),
-        # Excluded: zero cost — no basis to backfill.
-        SingleBasisCostRow("conv-zero", "chatgpt", total_cost_usd=0.0, cost_provenance="unknown"),
-    )
-    stale_rows = find_single_basis_cost_rows(_single_basis_reader(candidates))  # type: ignore[arg-type]
-    assert len(stale_rows) == 1
-    assert stale_rows[0].session_id == "conv-stale"
-
-
-def test_plan_cost_backfill_emits_typed_backfill() -> None:
-    """The backfill returns a typed ``BackfillOperation`` with the source tag.
-
-    The planner-driven shape pins:
-    - ``kind == DERIVED_REBUILD``
-    - target == ``session_profiles``
-    - reason == ``STALE_MATERIALIZER_VERSION``
-    - scope filter carries ``cost_basis = single-basis-cost`` and the
-      session-id list — both load-bearing for the executor.
-    """
-    rows = (
-        SingleBasisCostRow("conv-a", "claude-code", total_cost_usd=1.0, cost_provenance="unknown"),
-        SingleBasisCostRow("conv-b", "chatgpt", total_cost_usd=2.5, cost_provenance="unknown"),
-    )
-    op = plan_cost_backfill(rows)
-    assert op.kind is BackfillKind.DERIVED_REBUILD
-    assert op.status is OperationStatus.PENDING
-    assert op.targets == (SESSION_PROFILES_REBUILD_TARGET,)
-    assert op.affected_rows == 2
-    assert op.reason is InvalidationReason.STALE_MATERIALIZER_VERSION
-    assert op.scope is not None
-    # The cost-backfill plan now uses the typed MaintenanceScopeFilter
-    # and surfaces the stale session set via ``session_ids``.
-    # ``cost_basis`` / ``dry_run`` are no longer scope dimensions — they
-    # are encoded in the per-result rows and in the operation status.
-    assert op.scope.filter.session_ids == ("conv-a", "conv-b")
-    # Each result row exposes the source tag so downstream surfaces can render it.
-    for result in op.results:
-        assert result["source"] == SINGLE_BASIS_COST_SOURCE
-
-
-def test_plan_cost_backfill_empty_input_produces_zero_affected() -> None:
-    """An empty stale set still produces a valid pending op with zero work."""
-    op = plan_cost_backfill(())
-    assert op.affected_rows == 0
-    assert op.estimated_time_s == 0.0
-    assert op.status is OperationStatus.PENDING
-    assert op.results == []

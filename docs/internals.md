@@ -1219,7 +1219,7 @@ Cross-check adjacent surfaces after changes:
 
 - query: `cli/query*.py` ↔ `archive/filter/filters.py` ↔ `storage/search*.py`
 - pipeline: `daemon/` ↔ `pipeline/` ↔ `storage/` ↔ `insights/`
-- maintenance: `cli/commands/check.py` ↔ `storage/repair.py` ↔ `health.py`
+- readiness: `cli/commands/check.py` ↔ `readiness/` ↔ `daemon/health.py`
 - publication: `rendering/` ↔ `site/` ↔ `devtools/`
 - schema: `schemas/` ↔ `sources/providers/` ↔ `pipeline/services/validation_*`
 

@@ -645,10 +645,10 @@ def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
     stale_raw_id, canonical_raw_id, heads = _seed_duplicate_raw_fanout(tmp_path)
     (session_a, key_a), (session_b, key_b) = heads
 
-    import polylogue.storage.repair as repair_module
-    from polylogue.storage.repair import DuplicateRawIdentityRepairItem
+    import polylogue.storage.raw_convergence as raw_convergence_module
+    from polylogue.storage.raw_convergence import DuplicateRawIdentityRepairItem
 
-    real_inspect = repair_module._inspect_duplicate_raw_identity
+    real_inspect = raw_convergence_module._inspect_duplicate_raw_identity
 
     def fake_inspect(
         conn: object, archive_root: object, stale: str, canonical: str, logical_source_key: str
@@ -662,7 +662,7 @@ def test_duplicate_alias_ineligible_proof_does_not_crash_the_whole_census(
             )
         return real_inspect(conn, archive_root, stale, canonical, logical_source_key)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(repair_module, "_inspect_duplicate_raw_identity", fake_inspect)
+    monkeypatch.setattr(raw_convergence_module, "_inspect_duplicate_raw_identity", fake_inspect)
 
     # The regression: this must not raise, and must still classify session A
     # (the genuinely eligible sibling) correctly.
