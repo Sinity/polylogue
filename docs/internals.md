@@ -111,6 +111,14 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`, and bounded backfills.
   Destructive durable-tier changes require a copy-forward design and explicit
   operator consent.
+- **Durable tiers carry structural closed-vocabulary CHECKs but never
+  enum-generated ones.** A hand-written literal list is a deliberate schema
+  constraint; a CHECK rendered from a `PolylogueStrEnum` by
+  `check()`/`nullable_check()` pins that enum's value set into durable DDL, so
+  every token added later becomes a durable migration. Enum membership is
+  validated at the write boundary by `require_vocabulary()` instead. The
+  `durable-enum-checks` gate holds that line, refusing any durable-tier
+  membership list whose member set equals a reachable enum's values.
 - **Durable change trains** make that migration window machine-readable.
   Every source migration above v37 and every user migration above v10 must
   ship beside the SQL resource as `migrations/{source,user}/NNN.train.json`.
