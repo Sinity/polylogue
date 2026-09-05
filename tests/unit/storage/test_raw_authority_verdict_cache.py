@@ -304,3 +304,22 @@ def test_warmup_does_not_recompute_fresh_cohorts(tmp_path: Path, monkeypatch: py
 
     assert outcome.warmed_cohorts == 0
     assert outcome.pending_cohorts is False
+
+
+def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
+    """A raw cached under one logical key is written again under another.
+
+    Anti-vacuity: dropping the raw_id delete in the writer makes this raise
+    ``IntegrityError: UNIQUE constraint failed: raw_authority_verdicts.raw_id``,
+    which stalled the converger 84 times in rehearsal-10 (2026-09-05).
+    """
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        _bind_full(archive, raw_id="moved", payload=b"one\n", logical_source_key="codex:pending")
+        write_raw_authority_verdict_cache(
+            archive, "codex:pending", {"moved": RawAuthorityVerdict.VERIFIED}, now_ms=1000
+        )
+        write_raw_authority_verdict_cache(archive, "codex:s1", {"moved": RawAuthorityVerdict.VERIFIED}, now_ms=2000)
+        conn = archive._ensure_source_conn()
+        rows = conn.execute("SELECT logical_source_key FROM raw_authority_verdicts WHERE raw_id = 'moved'").fetchall()
+    assert [row[0] for row in rows] == ["codex:s1"]
