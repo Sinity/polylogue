@@ -23,6 +23,7 @@ from devtools import (
     verify,
     verify_runs,
     why,
+    worker_memory,
 )
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
 from devtools.verification_result import declared_verification_result
@@ -47,16 +48,20 @@ def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPa
     ignoring the variable makes the override cases fail.
     """
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == str(
+        worker_memory.CORPUS_MAX_WORKERS
+    )
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "0"
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == "0"
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "1")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "1"
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == "1"
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "64")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == str(
+        worker_memory.CORPUS_MAX_WORKERS
+    )
 
 
 def test_quick_steps_are_static_gates() -> None:

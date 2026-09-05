@@ -33,6 +33,7 @@ from polylogue.storage.sqlite.archive_tiers.embeddings import (
     EMBEDDINGS_SCHEMA_VERSION,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 _METADATA_FILENAME = "embeddings-generation.json"
@@ -282,7 +283,7 @@ def prepare_inactive_embedding_generation(
         return metadata
 
     initialize_archive_database(destination.path, ArchiveTier.EMBEDDINGS, inactive_destination=destination)
-    with sqlite3.connect(destination.path) as conn:
+    with sqlite_connection(destination.path) as conn:
         if conn.execute("SELECT COUNT(*) FROM message_embeddings_meta").fetchone()[0] != 0:
             raise EmbeddingTupleGenerationError("candidate has vectors but no authenticated metadata")
     metadata = _new_metadata(destination, manifest, recipe)
@@ -311,7 +312,7 @@ def publish_embedding_partition(
         raise ValueError("embedding partition exceeds bounded row limit")
 
     hashes: list[str] = []
-    with sqlite3.connect(destination.path) as conn:
+    with sqlite_connection(destination.path) as conn:
         loaded, error = try_load_sqlite_vec(conn)
         if not loaded:
             raise EmbeddingTupleGenerationError("embedding candidate requires sqlite-vec") from error
@@ -380,7 +381,7 @@ def seal_inactive_embedding_generation(
     _assert_manifest_bindings(metadata, manifest)
     _assert_recipe(metadata, recipe)
     _assert_bindings(metadata, source_generation=source_generation, index_generation=index_generation)
-    with sqlite3.connect(destination.path) as conn:
+    with sqlite_connection(destination.path) as conn:
         membership_digest = _membership_digest(conn, recipe)
     if metadata.sealed:
         if metadata.membership_digest != membership_digest:

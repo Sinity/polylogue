@@ -70,6 +70,7 @@ from polylogue.storage.blob_liveness import (
 from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage, prepare_match_stage
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 logger = logging.getLogger(__name__)
 
@@ -495,7 +496,7 @@ def _commit_gc_generation_intent(
     namespace_identity: _BlobNamespaceIdentity,
 ) -> None:
     """Commit a generation and all exact member intents before any unlink."""
-    with sqlite3.connect(control_db_path) as conn:
+    with sqlite_connection(control_db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         if not _gc_member_table_available(conn):
             raise RuntimeError("blob GC durable member-intent schema is unavailable")
@@ -552,7 +553,7 @@ def _commit_gc_member_outcome(
 
 def _finalize_gc_generation(control_db_path: Path, generation_id: str) -> bool:
     """Complete one generation only once every durable member is explained."""
-    with sqlite3.connect(control_db_path) as conn:
+    with sqlite_connection(control_db_path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)
@@ -1473,7 +1474,7 @@ def _abandon_pending_gc_generation(
     if not confirmed:
         raise ValueError("explicit confirmation is required to abandon a pending blob GC generation")
     path = Path(control_db_path)
-    with sqlite3.connect(path) as conn:
+    with sqlite_connection(path) as conn:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT completed_at_ms FROM gc_generations WHERE generation_id = ?", (generation_id,)

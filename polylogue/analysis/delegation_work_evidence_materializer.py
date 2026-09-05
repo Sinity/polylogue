@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 from pathlib import Path
 
 from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
 from polylogue.archive.query.predicate import QueryBoolPredicate
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 DELEGATION_WORK_EVIDENCE_GRAPH_ID = "delegation:archive"
 
@@ -19,7 +19,7 @@ def delegation_work_evidence_snapshot(archive_root: Path) -> ObjectRef:
     """Return a content-derived snapshot for the current delegation view."""
 
     index_db = Path(archive_root) / "index.db"
-    with sqlite3.connect(index_db) as conn:
+    with sqlite_connection(index_db) as conn:
         rows = conn.execute("SELECT * FROM delegations ORDER BY parent_session_id, child_session_id").fetchall()
     payload = json.dumps(rows, separators=(",", ":"), default=str).encode()
     return ObjectRef(kind="context-snapshot", object_id=f"delegations:{hashlib.sha256(payload).hexdigest()[:24]}")
@@ -48,7 +48,7 @@ def delegation_work_evidence_materialization_needed(archive_root: Path) -> bool:
 
     index_db = Path(archive_root) / "index.db"
     snapshot = delegation_work_evidence_snapshot(archive_root).format()
-    with sqlite3.connect(index_db) as conn:
+    with sqlite_connection(index_db) as conn:
         row = conn.execute(
             "SELECT corpus_snapshot_ref FROM work_evidence_graphs WHERE graph_id = ?",
             (DELEGATION_WORK_EVIDENCE_GRAPH_ID,),
@@ -62,7 +62,7 @@ def _replace_graph(index_db: Path, graph: object) -> None:
 
     if not isinstance(graph, WorkEvidenceGraph):
         raise TypeError("expected WorkEvidenceGraph")
-    with sqlite3.connect(index_db) as conn:
+    with sqlite_connection(index_db) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")
         conn.execute("DELETE FROM work_evidence_graphs WHERE graph_id = ?", (graph.graph_id,))
