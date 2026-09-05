@@ -101,14 +101,12 @@ def test_identical_content_across_two_sessions_embeds_once(tmp_path: Path) -> No
     outcome_b = embed_archive_session_sync(index_db, provider, session_b)
     assert outcome_a.status == "embedded"
     assert outcome_b.status == "embedded"
-    # Each session's embed pass still calls the provider once (per-session
-    # materialization does not consult prior vectors before calling out) --
-    # the dedup win is in STORAGE, not in avoiding this particular pass's
-    # API call. The real cost saving is a subsequent session that reaches
-    # the freshness predicate already-fresh (see
-    # test_embedding_rebuild_survival.py), or the rescue path skipping the
-    # API entirely (see test_embedding_rescue_content_addressed_layout.py).
-    assert len(provider.calls) == 2
+    # Session b's materialization pass consults present vector addresses by
+    # content hash before calling the provider (_present_vector_addresses)
+    # and reuses session a's vector, so the provider is called once total.
+    # Anti-vacuity: a regression that drops the reuse check before the
+    # provider call makes this 2.
+    assert len(provider.calls) == 1
 
     with _connect_vec(embeddings_db) as conn:
         vector_rows = conn.execute("SELECT COUNT(*) FROM message_embeddings").fetchone()[0]
