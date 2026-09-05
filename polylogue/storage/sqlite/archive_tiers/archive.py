@@ -137,6 +137,7 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
+from polylogue.storage.introspection import relation_exists as _relation_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -5558,11 +5559,13 @@ class ArchiveStore:
             orphan_count,
             artifact_names,
         ) = spec
-        table_present = _table_exists(self._conn, table_name)
+        # Several insights are backed by query-time views (threads, delegations,
+        # actions), which exist and carry rows; presence is relation presence.
+        table_present = _relation_exists(self._conn, table_name)
         artifacts = tuple(
             InsightStorageArtifact(
                 name=artifact,
-                present=_table_exists(self._conn, artifact),
+                present=_relation_exists(self._conn, artifact),
             )
             for artifact in artifact_names
         )
