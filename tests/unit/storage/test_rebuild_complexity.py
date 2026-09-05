@@ -14,7 +14,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.sources import revision_backfill
-from polylogue.storage import repair as repair_mod
+from polylogue.storage import raw_convergence as raw_convergence_mod
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.growth_budgets import GrowthBudget, GrowthObservation, evaluate_growth_budgets
@@ -86,7 +86,7 @@ def _seed_raw_archive(root: Path, count: int, *, prefix: str = "session") -> lis
 
 
 def _materialize_all(root: Path, raw_count: int) -> None:
-    result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=raw_count)
+    result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=raw_count)
     assert result.success is True
     assert result.repaired_count == raw_count
 
@@ -94,7 +94,7 @@ def _materialize_all(root: Path, raw_count: int) -> None:
 def _quiesce_census(root: Path, *, limit: int) -> None:
     config = _config(root)
     for _ in range(100):
-        result = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
+        result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
         assert result.census_receipt is not None
         if result.census_receipt.quiescent:
             return
@@ -129,7 +129,7 @@ def _run_component_measurement(
         if install_mutation is not None:
             install_mutation(mutation)
         with sqlite_work_counter(step_interval=1) as counter:
-            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=component_count)
+            result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=component_count)
 
     assert result.repaired_count == component_count
     return GrowthObservation(
@@ -249,7 +249,7 @@ def test_bounded_replay_work_is_batch_bounded_independent_of_backlog(
 
         with monkeypatch.context() as mutation:
             mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", counted_backfill)
-            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=batch_size)
+            result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=batch_size)
 
         assert result.metrics["raw_materialization_executed_count"] == float(batch_size)
         assert result.metrics["raw_materialization_scanned_raw_count"] <= float(batch_size)
@@ -276,7 +276,7 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
     with sqlite3.connect(root / "source.db") as conn:
         conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
+            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
         )
         conn.commit()
     _quiesce_census(root, limit=1)
@@ -296,7 +296,7 @@ def test_mixed_hot_cold_large_small_components_all_receive_a_turn(
         mutation.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_hot_component)
         selected: list[str] = []
         for _ in range(3):
-            result = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
+            result = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=1)
             assert len(result.plan_outcomes) == 1
             selected.append(result.plan_outcomes[0].input_raw_ids[0])
 
@@ -318,7 +318,7 @@ def test_progress_counter_is_monotonic_and_resumable_across_bounded_passes(tmp_p
     selected: list[str] = []
     config = _config(root)
     for _ in range(4):
-        result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=2)
+        result = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=2)
         remaining.append(int(result.metrics["raw_materialization_remaining_candidate_count"]))
         repaired.append(result.repaired_count)
         selected.extend(
@@ -331,4 +331,4 @@ def test_progress_counter_is_monotonic_and_resumable_across_bounded_passes(tmp_p
     assert repaired == [2, 2, 2, 1]
     assert len(selected) == raw_count
     assert len(set(selected)) == raw_count
-    assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=2).success is True
+    assert raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=2).success is True

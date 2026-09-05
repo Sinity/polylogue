@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
 
 import pytest
 
@@ -111,61 +110,6 @@ class TestDecoderConvergence:
         assert len(sample_records) == 2
         assert len(stream_records) == len(sample_records), "Decoders must agree on empty-line skipping"
         assert sample_malformed == 0
-
-
-# ---------------------------------------------------------------------------
-# 2. Health debt vs repair counts
-# ---------------------------------------------------------------------------
-
-
-class TestHealthRepairConvergence:
-    """Health/doctor and repair must agree on debt counts when querying
-    the same database state."""
-
-    def test_empty_session_count_agrees(self: object, workspace_env: dict[str, Path]) -> None:
-        """``count_empty_sessions_sync`` only counts a message-less session as
-        debris when its raw artifact positively fails the live
-        ``classify_artifact`` pipeline (polylogue-ne6k) -- so this seeds a
-        real ``agent-*.meta.json`` sidecar raw artifact (the genuinely-phantom
-        shape) behind the empty session, not a bare session row."""
-        import sqlite3
-
-        from polylogue.storage.blob_store import BlobStore
-        from polylogue.storage.repair import count_empty_sessions_sync
-        from tests.infra.archive_scenarios import open_index_db
-        from tests.infra.storage_records import SessionBuilder, db_setup
-
-        db_path = db_setup(workspace_env)
-        # Seed one real session so the archive schema is bootstrapped.
-        SessionBuilder(db_path, "seed").provider("chatgpt").title("Seed").add_message(role="user", text="hi").save()
-
-        archive_root = workspace_env["archive_root"]
-        blob_store = BlobStore(archive_root / "blob")
-        raw_id, blob_size = blob_store.write_from_bytes(b'{"agentType":"general-purpose"}')
-        with sqlite3.connect(archive_root / "source.db") as source_conn:
-            source_conn.execute(
-                """
-                INSERT INTO raw_sessions (
-                    raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-                ) VALUES (?, 'chatgpt-export', 'ext-empty', 'agent-empty.meta.json', 0, ?, ?, 1)
-                """,
-                (raw_id, bytes.fromhex(raw_id), blob_size),
-            )
-            source_conn.commit()
-
-        with open_index_db(db_path) as conn:
-            # A archive session row with no messages is the "empty session"
-            # shape; ``content_hash`` is a 32-byte BLOB by CHECK constraint.
-            conn.execute(
-                "INSERT INTO sessions (native_id, origin, raw_id, title, content_hash) "
-                "VALUES ('ext-empty', 'chatgpt-export', ?, 'Empty', "
-                "X'0011223344556677889900112233445566778899001122334455667788990011')",
-                (raw_id,),
-            )
-            conn.commit()
-            count = count_empty_sessions_sync(conn)
-
-        assert count >= 1, "Should detect empty session whose raw artifact fails classification"
 
 
 # ---------------------------------------------------------------------------

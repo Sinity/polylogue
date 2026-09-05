@@ -15,11 +15,10 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, json_document
-from polylogue.maintenance.models import MaintenanceCategory
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
 from polylogue.storage import raw_authority as raw_authority_mod
+from polylogue.storage import raw_convergence as raw_convergence_mod
 from polylogue.storage import raw_reconciler as raw_reconciler_mod
-from polylogue.storage import repair as repair_mod
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot, raw_materialization_ready
 from polylogue.storage.blob_store import BlobStore
@@ -40,13 +39,13 @@ from polylogue.storage.raw_authority import (
     resolve_raw_authority_blocker,
     validate_raw_replay_plan,
 )
+from polylogue.storage.raw_convergence import RawConvergenceResult, converge_raw_materialization
 from polylogue.storage.raw_reconciler import (
     RawAuthorityActuator,
     RawAuthorityFrontierItem,
     RawAuthorityFrontierState,
     inspect_raw_authority_frontier,
 )
-from polylogue.storage.repair import RepairResult, repair_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.revision_application import RevisionApplicationReceipt
@@ -275,8 +274,8 @@ def test_moved_path_census_stabilizes_preview_and_apply_plan_identity(tmp_path: 
     # before an immutable plan is assigned.
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[old_raw])
 
-    preview = repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
-    applied = repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    preview = converge_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
+    applied = converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
 
     assert len(preview.plan_outcomes) == len(applied.plan_outcomes) == 1
     assert preview.plan_outcomes[0].plan_id == applied.plan_outcomes[0].plan_id
@@ -289,12 +288,12 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
     _write_codex_raw(tmp_path, native_id="first", source_path="first.jsonl", acquired_at_ms=1)
     _write_codex_raw(tmp_path, native_id="second", source_path="second.jsonl", acquired_at_ms=2)
 
-    incomplete = repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    incomplete = converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert incomplete.census_receipt is not None
     assert incomplete.census_receipt.quiescent is False
     assert incomplete.census_receipt.plan_count == 0
 
-    result = repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    result = converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
 
     assert result.census_receipt is not None
     assert result.census_receipt.plan_count == 2
@@ -370,10 +369,10 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
 def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="fixed", source_path="fixed.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
-    first_empty = repair_raw_materialization(_config(tmp_path), dry_run=True)
-    second_empty = repair_raw_materialization(_config(tmp_path), dry_run=True)
+    first_empty = converge_raw_materialization(_config(tmp_path), dry_run=True)
+    second_empty = converge_raw_materialization(_config(tmp_path), dry_run=True)
 
     assert first_empty.census_receipt is not None
     assert second_empty.census_receipt is not None
@@ -417,14 +416,14 @@ def test_stale_plan_persists_blocker_before_automatic_replay_refuses_work(tmp_pa
             ).fetchone()[0]
             == "rejected_stale"
         )
-    refused = repair_raw_materialization(_config(tmp_path))
+    refused = converge_raw_materialization(_config(tmp_path))
     assert refused.success is False
     assert refused.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
     assert raw_materialization_ready(raw_materialization_readiness_snapshot(tmp_path)) is False
 
 
 def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tmp_path: Path) -> None:
-    """polylogue-d7im: one stale-plan blocker halts repair_materialization
+    """polylogue-d7im: one stale-plan blocker halts converge_materialization
     archive-wide (unresolved_raw_replay_blockers counts it), even though
     resolving it requires no operator judgment -- it only recomputes the
     plan from current evidence, exactly as an unattended crash-recovery pass
@@ -451,7 +450,7 @@ def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tm
     assert valid is False
     reject_stale_raw_replay_plan(tmp_path, census.census_id, plan, observed)
 
-    refused = repair_raw_materialization(_config(tmp_path))
+    refused = converge_raw_materialization(_config(tmp_path))
     assert refused.success is False
 
     resolved_count = auto_resolve_stale_plan_blockers(tmp_path)
@@ -466,7 +465,7 @@ def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tm
         ).fetchone()[0]
         assert resolution == AUTO_STALE_PLAN_RESOLUTION
 
-    proceeds = repair_raw_materialization(_config(tmp_path))
+    proceeds = converge_raw_materialization(_config(tmp_path))
     assert proceeds.metrics.get("raw_materialization_unresolved_blocker_count", 0.0) == 0.0
 
     # Idempotent: nothing left to clear on a second call.
@@ -874,7 +873,7 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
 
     incomplete_receipts = []
     for _expected_pass in range(2):
-        incomplete = repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
+        incomplete = converge_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
         assert incomplete.census_receipt is not None
         assert incomplete.census_receipt.quiescent is False
         assert incomplete.census_receipt.plan_count == 0
@@ -893,7 +892,7 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
         incomplete_receipts.append(incomplete.census_receipt.census_id)
     assert len(set(incomplete_receipts)) == 2
 
-    preview = repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
+    preview = converge_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_limit=1)
 
     assert preview.census_receipt is not None
     assert preview.census_receipt.quiescent is True
@@ -962,9 +961,11 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
         text="interrupted-authority-fts-needle",
     )
 
-    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
+    with patch.object(
+        raw_convergence_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")
+    ):
         with pytest.raises(RuntimeError, match="synthetic crash"):
-            repair_raw_materialization(_config(tmp_path))
+            converge_raw_materialization(_config(tmp_path))
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert (
@@ -1009,7 +1010,7 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
     assert fts_before_resume["exists"] is True
     assert fts_hits_before_resume
 
-    recovered = repair_raw_materialization(_config(tmp_path))
+    recovered = converge_raw_materialization(_config(tmp_path))
     assert recovered.metrics["raw_materialization_recovered_census_count"] == 1.0
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(
@@ -1064,9 +1065,11 @@ def test_interrupted_recovery_receives_repair_pinned_index_path(tmp_path: Path) 
     initialize_active_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="pinned-recovery", source_path="pinned-recovery.jsonl", acquired_at_ms=1)
 
-    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
+    with patch.object(
+        raw_convergence_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")
+    ):
         with pytest.raises(RuntimeError, match="synthetic crash"):
-            repair_raw_materialization(_config(tmp_path))
+            converge_raw_materialization(_config(tmp_path))
 
     expected_index = resolve_active_index_path(tmp_path)
     recover = raw_authority_mod.recover_interrupted_raw_authority_censuses
@@ -1076,8 +1079,10 @@ def test_interrupted_recovery_receives_repair_pinned_index_path(tmp_path: Path) 
         received.append(index_db_path)
         return recover(root, index_db_path=index_db_path)
 
-    with patch.object(repair_mod, "recover_interrupted_raw_authority_censuses", side_effect=capture_pinned_index):
-        result = repair_raw_materialization(_config(tmp_path))
+    with patch.object(
+        raw_convergence_mod, "recover_interrupted_raw_authority_censuses", side_effect=capture_pinned_index
+    ):
+        result = converge_raw_materialization(_config(tmp_path))
 
     assert result.metrics["raw_materialization_recovered_census_count"] == 1.0
     assert received == [expected_index]
@@ -1098,8 +1103,8 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
         payload["head_rows"] = []
         return json_document(payload)
 
-    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=incomplete_receipt):
-        result = repair_raw_materialization(_config(tmp_path))
+    with patch.object(raw_convergence_mod, "raw_replay_application_receipt", side_effect=incomplete_receipt):
+        result = converge_raw_materialization(_config(tmp_path))
 
     assert result.plan_outcomes[0].status is RawReplayPlanStatus.REJECTED_STALE
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -1111,7 +1116,7 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
 def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="active-receipt", source_path="active.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).success is True
+    assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
@@ -1126,7 +1131,7 @@ def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_pa
 def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="active-plan", source_path="active-plan.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).success is True
+    assert converge_raw_materialization(_config(tmp_path)).success is True
     shadow_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     assert shadow_plan.index_preconditions["sessions"]
 
@@ -1159,7 +1164,7 @@ def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: 
 def test_application_receipt_requires_exact_application_authority(tmp_path: Path, field: str) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id=f"exact-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).success is True
+    assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
     application_rows = cast(list[dict[str, object]], receipt["application_rows"])
@@ -1191,7 +1196,7 @@ def test_application_receipt_recovery_rejects_malformed_authority_evidence(
 ) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id=f"malformed-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).success is True
+    assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
     application_rows = cast(list[dict[str, object]], receipt["application_rows"])
@@ -1208,7 +1213,7 @@ def test_application_receipt_recovery_rejects_source_revision_from_another_share
     """A grouped raw cannot lend key B's revision evidence to key A's application."""
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="shared-memberships", source_path="shared.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).success is True
+    assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
     receipt = dict(raw_authority_mod.raw_replay_application_receipt(tmp_path, plan))
     membership_rows = cast(list[dict[str, object]], receipt["membership_rows"])
@@ -1286,15 +1291,17 @@ def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: P
         text="new",
     )
 
-    with patch.object(repair_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")):
+    with patch.object(
+        raw_convergence_mod, "raw_replay_application_receipt", side_effect=RuntimeError("synthetic crash")
+    ):
         with pytest.raises(RuntimeError, match="synthetic crash"):
-            repair_raw_materialization(_config(tmp_path))
+            converge_raw_materialization(_config(tmp_path))
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("DELETE FROM raw_session_memberships WHERE raw_id = ?", (second,))
         conn.commit()
 
-    recovered = repair_raw_materialization(_config(tmp_path))
+    recovered = converge_raw_materialization(_config(tmp_path))
 
     assert recovered.success is False
     assert recovered.metrics["raw_materialization_unresolved_blocker_count"] == 1.0
@@ -1348,7 +1355,7 @@ def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path:
     with pytest.raises(RuntimeError, match="raw authority detail changed"):
         read_raw_authority_detail(tmp_path, stale_continuation, chunk_chars=256)
     current_detail = _read_detail_document(tmp_path, cast(str, resolution["detail_query_handle"]))
-    resumed = repair_raw_materialization(_config(tmp_path))
+    resumed = converge_raw_materialization(_config(tmp_path))
 
     assert resolution["blocker_id"] == blocker_id
     resolution_plan = cast(dict[str, object], resolution["current_plan"])
@@ -1446,7 +1453,7 @@ def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_pat
         RawReplayPlanOutcome(plan.plan_id, plan.input_raw_ids, RawReplayPlanStatus.EXECUTED, "done", "none"),
     )
 
-    recovered = repair_raw_materialization(_config(tmp_path))
+    recovered = converge_raw_materialization(_config(tmp_path))
 
     assert recovered.metrics["raw_materialization_recovered_census_count"] == 1.0
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -1577,7 +1584,7 @@ def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path:
 def test_stale_per_raw_parser_fingerprint_is_recensused_before_planning(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="parser-drift", source_path="parser-drift.jsonl", acquired_at_ms=1)
-    first = repair_raw_materialization(_config(tmp_path), dry_run=True)
+    first = converge_raw_materialization(_config(tmp_path), dry_run=True)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             "UPDATE raw_authority_parser_census SET parser_fingerprint = 'old-parser' WHERE raw_id = ?",
@@ -1585,7 +1592,7 @@ def test_stale_per_raw_parser_fingerprint_is_recensused_before_planning(tmp_path
         )
         conn.commit()
 
-    second = repair_raw_materialization(_config(tmp_path), dry_run=True)
+    second = converge_raw_materialization(_config(tmp_path), dry_run=True)
 
     assert first.plan_outcomes[0].plan_id == second.plan_outcomes[0].plan_id
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -1636,8 +1643,8 @@ def _seed_ambiguous_membership_component(
             )
         conn.commit()
     (plan,) = build_raw_replay_plans(tmp_path, [(raw_id,)])
-    empty_remaining = repair_mod.RawMaterializationCandidates([], 0, 0)
-    (outcome,) = repair_mod._raw_replay_plan_outcomes(
+    empty_remaining = raw_convergence_mod.RawMaterializationCandidates([], 0, 0)
+    (outcome,) = raw_convergence_mod._raw_replay_plan_outcomes(
         tmp_path,
         resolve_active_index_path(tmp_path),
         [plan],
@@ -1671,9 +1678,9 @@ def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(
     Anti-vacuity: this exercises the real production route
     ``repair._raw_replay_plan_outcome`` (via the public
     ``build_raw_replay_plans``/``_raw_replay_plan_outcomes`` pair used by
-    ``repair_raw_materialization``, the daemon's live raw-materialization
+    ``converge_raw_materialization``, the daemon's live raw-materialization
     repair entrypoint). Reverting the fingerprint-gating clause added to the
-    terminal query in ``storage/repair.py`` (the ``LEFT JOIN
+    terminal query in ``storage/raw_convergence.py`` (the ``LEFT JOIN
     raw_authority_parser_census`` + ``NOT COALESCE(... IN (SELECT value FROM
     json_each(?)) ...)`` guard) makes this test fail by re-classifying the
     plan as TERMINAL.
@@ -1697,7 +1704,7 @@ def test_ambiguous_verdict_with_no_census_row_stays_terminal(tmp_path: Path) -> 
     assert outcome.status is RawReplayPlanStatus.TERMINAL
 
 
-def test_repair_result_bounds_public_plan_outcomes() -> None:
+def test_raw_convergence_result_bounds_public_plan_outcomes() -> None:
     outcomes = tuple(
         RawReplayPlanOutcome(
             f"plan-{index}",
@@ -1708,10 +1715,8 @@ def test_repair_result_bounds_public_plan_outcomes() -> None:
         )
         for index in range(10)
     )
-    result = RepairResult(
+    result = RawConvergenceResult(
         "raw_materialization",
-        MaintenanceCategory.DERIVED_REPAIR,
-        False,
         0,
         False,
         plan_outcomes=outcomes,
@@ -1721,7 +1726,7 @@ def test_repair_result_bounds_public_plan_outcomes() -> None:
     assert result["plan_outcomes_truncated"] is True
 
 
-def test_repair_result_omits_unbounded_receipt_rows_from_outcome_sample() -> None:
+def test_raw_convergence_result_omits_unbounded_receipt_rows_from_outcome_sample() -> None:
     outcome = RawReplayPlanOutcome(
         "plan-with-receipt",
         tuple(f"raw-{index}" for index in range(100)),
@@ -1730,10 +1735,8 @@ def test_repair_result_omits_unbounded_receipt_rows_from_outcome_sample() -> Non
         "none",
         json_document({"application_rows": [{"row": index} for index in range(1000)]}),
     )
-    result = RepairResult(
+    result = RawConvergenceResult(
         "raw_materialization",
-        MaintenanceCategory.DERIVED_REPAIR,
-        False,
         1,
         True,
         plan_outcomes=(outcome,),
@@ -1762,7 +1765,7 @@ def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) ->
     """
     initialize_active_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="dangling-session", source_path="dangling.jsonl", acquired_at_ms=1)
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         session_id = index_conn.execute(
@@ -1812,7 +1815,7 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     accepted_raw_id = _write_codex_raw(
         tmp_path, native_id="mismatch-one", source_path="mismatch.jsonl", acquired_at_ms=1
     )
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
     # An independent, never-materialized raw acquisition -- stands in for the
     # "wrong" raw a corrupted head could point at.
     phantom_raw_id = _write_codex_raw(tmp_path, native_id="phantom-only", source_path="phantom.jsonl", acquired_at_ms=2)
@@ -1864,7 +1867,7 @@ def test_verified_blob_receipt_invalidates_when_blob_bytes_change_underneath_it(
     raw_id = _write_codex_raw(
         tmp_path, native_id="tamper-target", source_path="tamper.jsonl", acquired_at_ms=1, text="hello"
     )
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         blob_hash_hex = str(
@@ -1908,7 +1911,7 @@ def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_pass
     raw_id = _write_codex_raw(
         tmp_path, native_id="unchanged-target", source_path="unchanged.jsonl", acquired_at_ms=1, text="hello"
     )
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
     verify_calls: list[str] = []
     real_verify = BlobStore.verify
@@ -1964,7 +1967,7 @@ def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quaranti
     raw_id = _write_codex_raw(
         tmp_path, native_id="quarantine-ineligible", source_path="quarantine.jsonl", acquired_at_ms=1
     )
-    assert repair_raw_materialization(_config(tmp_path)).repaired_count == 1
+    assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(

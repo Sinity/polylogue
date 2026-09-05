@@ -8,15 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.cli.shared import check_workflow
-from polylogue.cli.shared.check_models import CheckCommandResult, VacuumResult
 from polylogue.cli.shared.check_workflow import CheckCommandOptions
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.targets import MaintenanceTargetMode
 from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
 from polylogue.schemas.validation.models import SchemaVerificationReport
-from polylogue.storage.repair import RepairResult
 
 
 def _env() -> AppEnv:
@@ -42,10 +39,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
     payload = {
         "json_output": False,
         "verbose": False,
-        "repair": False,
-        "cleanup": False,
-        "preview": False,
-        "vacuum": False,
         "deep": False,
         "runtime": False,
         "check_daemon": False,
@@ -65,7 +58,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "schema_record_limit": None,
         "schema_record_offset": 0,
         "schema_quarantine_malformed": False,
-        "maintenance_targets": (),
     }
     payload.update(overrides)
     return CheckCommandOptions(**cast(Any, payload))
@@ -74,9 +66,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
 @pytest.mark.parametrize(
     ("overrides", "expected"),
     [
-        ({"vacuum": True}, "--vacuum requires --repair or --cleanup"),
-        ({"preview": True}, "--preview requires --repair or --cleanup"),
-        ({"maintenance_targets": ("session_insights",)}, "--target requires --repair or --cleanup"),
         ({"schema_providers": ("claude-code",)}, "--schema-origin requires --schemas"),
         ({"schema_samples": "10"}, "--schema-samples requires --schemas"),
         ({"schema_record_limit": 5}, "--schema-record-limit requires --schemas"),
@@ -102,19 +91,6 @@ def test_validate_check_options_rejects_invalid_flag_combinations(
 ) -> None:
     with pytest.raises(SystemExit, match=expected):
         check_workflow.validate_check_options(_options(**overrides))
-
-
-def test_validate_check_options_rejects_target_mode_mismatches() -> None:
-    cleanup_spec = SimpleNamespace(mode=MaintenanceTargetMode.CLEANUP)
-    repair_spec = SimpleNamespace(mode=MaintenanceTargetMode.REPAIR)
-    catalog = SimpleNamespace(resolve=lambda names: [cleanup_spec] if names == ("cleanup_only",) else [repair_spec])
-
-    with patch("polylogue.cli.shared.check_validation.build_maintenance_target_catalog", return_value=catalog):
-        with pytest.raises(SystemExit, match="only selected cleanup targets"):
-            check_workflow.validate_check_options(_options(repair=True, maintenance_targets=("cleanup_only",)))
-
-        with pytest.raises(SystemExit, match="only selected repair targets"):
-            check_workflow.validate_check_options(_options(cleanup=True, maintenance_targets=("repair_only",)))
 
 
 def test_run_blob_store_check_reports_missing_orphaned_and_verified_states() -> None:
@@ -147,7 +123,7 @@ def test_run_blob_store_check_returns_json_payload_without_emitting() -> None:
     assert payload == {"ok": True, "findings": []}
 
 
-def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> None:
+def test_schema_verification_helpers_cover_runtime_paths() -> None:
     config = _config()
     options = _options(
         check_schemas=True,
@@ -156,9 +132,7 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
         schema_record_limit=10,
         schema_record_offset=2,
         schema_quarantine_malformed=True,
-        repair=True,
     )
-    report = _report()
 
     schema_report = cast(SchemaVerificationReport, SimpleNamespace())
     session_progress_callback = cast(Any, lambda: None)
@@ -183,94 +157,32 @@ def test_schema_verification_and_maintenance_helpers_cover_runtime_paths() -> No
     parse_samples.assert_called_once_with("25")
     builtins_print.assert_called_once()
 
-    with patch(
-        "polylogue.cli.shared.check_workflow.make_session_insight_progress_callback",
-        return_value=session_progress_callback,
-    ):
-        assert (
-            check_workflow._session_insight_progress_callback(options, ("session_insights",))
-            is session_progress_callback
-        )
-    assert check_workflow._session_insight_progress_callback(_options(repair=True, preview=True), ()) is None
-    assert check_workflow._session_insight_progress_callback(_options(repair=True, json_output=True), ()) is None
 
-    with (
-        patch(
-            "polylogue.cli.shared.check_workflow._resolve_selected_maintenance_targets",
-            return_value=("session_insights",),
-        ),
-        patch("polylogue.cli.shared.check_workflow._build_preview_counts", return_value={"session_insights": 2}),
-    ):
-        preview_inputs = check_workflow._maintenance_run_inputs(_options(repair=True, preview=True), report)
-        assert preview_inputs.selected_targets == ("session_insights",)
-        assert preview_inputs.preview_counts == {"session_insights": 2}
-
-    result = CheckCommandResult(report=report)
-    inputs = check_workflow._MaintenanceRunInputs(selected_targets=("session_insights",), preview_counts={"x": 1})
-    repair_result = cast(RepairResult, SimpleNamespace())
-    with patch(
-        "polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]
-    ) as run_selected:
-        check_workflow._run_maintenance(config, result, _options(repair=True), inputs)
-    assert result.maintenance_targets == ("session_insights",)
-    assert result.maintenance_results == [repair_result]
-    assert run_selected.call_args.kwargs["targets"] == ("session_insights",)
-
-    env = _env()
-    result.vacuum_result = VacuumResult(ok=True, detail="done")
-    with patch("polylogue.cli.shared.check_workflow.persist_maintenance_run") as persist_run:
-        check_workflow._persist_maintenance_run(
-            env,
-            report=report,
-            result=result,
-            options=_options(repair=True),
-            inputs=inputs,
-        )
-    persist_run.assert_called_once()
-
-
-def test_run_check_workflow_covers_runtime_blob_vacuum_and_persist_paths() -> None:
+def test_run_check_workflow_covers_runtime_and_blob_paths() -> None:
     env = _env()
     config = _config()
     object.__setattr__(env, "config", config)
     report = _report()
     runtime_report = ReadinessReport(checks=[ReadinessCheck("runtime", VerifyStatus.OK, summary="ok")])
     options = _options(
-        repair=True,
         runtime=True,
         check_blob=True,
-        vacuum=True,
         json_output=True,
     )
 
-    repair_result = cast(RepairResult, SimpleNamespace())
     with (
         patch("polylogue.cli.shared.check_workflow.load_effective_config", return_value=config),
-        patch("polylogue.cli.shared.check_workflow.get_readiness", return_value=report),
+        patch("polylogue.cli.shared.check_workflow.get_readiness", return_value=report) as get_readiness,
         patch("polylogue.cli.shared.check_workflow.run_runtime_readiness", return_value=runtime_report),
         patch("polylogue.cli.shared.check_workflow._run_blob_store_check") as run_blob_check,
-        patch(
-            "polylogue.cli.shared.check_workflow._maintenance_run_inputs",
-            return_value=check_workflow._MaintenanceRunInputs(
-                selected_targets=("session_insights",), preview_counts=None
-            ),
-        ),
-        patch("polylogue.cli.shared.check_workflow.run_selected_maintenance", return_value=[repair_result]),
-        patch("polylogue.cli.shared.check_workflow.make_session_insight_progress_callback", return_value="progress"),
-        patch(
-            "polylogue.cli.shared.check_workflow.vacuum_database", return_value=VacuumResult(ok=True, detail="vacuumed")
-        ),
-        patch("polylogue.cli.shared.check_workflow.persist_maintenance_run") as persist_run,
     ):
         result = check_workflow.run_check_workflow(env, options)
 
     assert result.report is report
     assert result.runtime_report is runtime_report
-    assert result.maintenance_results == [repair_result]
-    assert result.vacuum_result == VacuumResult(ok=True, detail="vacuumed")
     assert result.blob_report is run_blob_check.return_value
     run_blob_check.assert_called_once_with(config, full=False)
-    persist_run.assert_called_once()
+    get_readiness.assert_called_once_with(config, deep=False, probe_only=True)
 
 
 def test_run_check_workflow_includes_daemon_status_when_requested() -> None:

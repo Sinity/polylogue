@@ -8,24 +8,8 @@ import pytest
 from polylogue.cli.convergence_feedback import convergence_warning_line
 
 
-def test_convergence_warning_line_prefers_active_rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
-    monkeypatch.setattr(
-        "polylogue.storage.archive_readiness.active_rebuild_index_attempts",
-        lambda _ops_db: [{"parsed_raw_count": 12, "materialized_count": 3}],
-    )
-
-    warning = convergence_warning_line()
-
-    assert warning == (
-        "Archive is converging: 1 index rebuild attempt(s) active "
-        "(3 sessions materialized from 12 parsed raw rows); results may be partial."
-    )
-
-
 def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
-    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
     monkeypatch.setattr(
         "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
         lambda _root: {
@@ -49,7 +33,6 @@ def test_convergence_warning_line_reports_actionable_raw_debt(monkeypatch: pytes
 
 def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
-    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
     monkeypatch.setattr(
         "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
         lambda _root: {
@@ -70,7 +53,6 @@ def test_convergence_warning_line_omits_classified_raw_gaps(monkeypatch: pytest.
 
 def test_convergence_warning_line_reports_unclassified_join_gaps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
-    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", lambda _ops_db: [])
     monkeypatch.setattr(
         "polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot",
         lambda _root: {
@@ -102,18 +84,15 @@ def test_convergence_warning_line_reports_undetermined_when_probe_raises(
 ) -> None:
     """An unanswerable readiness check must not render as a healthy archive.
 
-    This warning is what tells the operator that query results may be partial
-    while a rebuild is in flight or raw materialization is behind. Swallowing the
-    failure and returning ``None`` made every such error indistinguishable from
-    "checked, and results are complete", so partial results were presented as
-    complete with nothing to indicate the check never ran.
+    ``None`` means "checked, and results are complete". A probe failure that
+    returned ``None`` would present partial results as complete.
     """
 
-    def _raise(_ops_db: Path) -> list[dict[str, object]]:
-        raise sqlite3.OperationalError("no such table: index_rebuild_attempts")
+    def _raise(_root: Path) -> dict[str, object]:
+        raise sqlite3.OperationalError("no such table: raw_materialization_status")
 
     monkeypatch.setattr("polylogue.paths.archive_root", lambda: Path("/archive"))
-    monkeypatch.setattr("polylogue.storage.archive_readiness.active_rebuild_index_attempts", _raise)
+    monkeypatch.setattr("polylogue.storage.archive_readiness.raw_materialization_readiness_snapshot", _raise)
 
     warning = convergence_warning_line()
 

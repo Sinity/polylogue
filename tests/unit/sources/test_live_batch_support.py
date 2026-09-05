@@ -7220,7 +7220,7 @@ def test_bundle_replay_respects_unconvertible_single_session_head(
         # polylogue-5iz4: this guard's refusal is transient/retry-eligible by
         # construction (a later pass over the same durable bytes can succeed
         # once sibling evidence resolves), but a plain RuntimeError leaves the
-        # retry-candidate query (storage/repair.py) nothing stable to match
+        # retry-candidate query (storage/raw_convergence.py) nothing stable to match
         # once the message text drifts -- exactly what happened to a real
         # production session that hit this guard under #2718's original
         # wording.
@@ -7451,7 +7451,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
             """,
             (str(incident_recovery),),
         ).fetchone() == ("deferred_cas_frontier",)
-    from polylogue.storage.repair import _raw_materialization_retryable_missing_blob_error
+    from polylogue.storage.raw_convergence import _raw_materialization_retryable_missing_blob_error
 
     assert _raw_materialization_retryable_missing_blob_error(parse_error) is True
     assert _raw_materialization_retryable_missing_blob_error("RuntimeError: unrelated parser failure") is False
@@ -7491,7 +7491,7 @@ def test_growing_file_incident_recovery_duplicate_recovers_after_head_advances(
     # succeeds and reaches the index with a plausible message_count --
     # note this exercises the live-watcher's own retry path
     # (``_ingest_full_paths_sync`` again), not
-    # ``storage/repair.py``'s offline ``repair_raw_materialization``:
+    # ``storage/raw_convergence.py``'s offline ``converge_raw_materialization``:
     # that offline path reprocesses every retained typed-'full' raw for
     # this logical_source_key on every pass (including ``current``'s own
     # cohort), which re-establishes an accepted head before ever reaching

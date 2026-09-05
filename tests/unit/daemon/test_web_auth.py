@@ -145,9 +145,6 @@ def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> No
     [
         ("/api/reset", "_handle_reset"),
         ("/api/ingest", "_handle_ingest"),
-        ("/api/maintenance/plan", "_handle_maintenance_plan"),
-        ("/api/maintenance/run", "_handle_maintenance_run"),
-        ("/api/maintenance/rebuild-index", "_handle_rebuild_index"),
     ],
 )
 def test_web_credential_cannot_execute_archive_control_routes(path: str, handler_name: str) -> None:

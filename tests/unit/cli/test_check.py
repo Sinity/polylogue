@@ -35,9 +35,8 @@ from tests.infra.json_contracts import (
     json_int,
     json_object,
     json_object_field,
-    parse_json_object,
 )
-from tests.infra.storage_records import DbFactory, SessionBuilder
+from tests.infra.storage_records import DbFactory
 
 pytestmark = pytest.mark.uses_real_clock(
     "Constructs a wall-clock anchor for doctor envelope assertions; production envelope embeds the same now() within the same call."
@@ -50,15 +49,6 @@ WorkspacePaths = dict[str, Path]
 def cli_runner() -> CliRunner:
     """Provide a Click CLI test runner."""
     return CliRunner()
-
-
-def _rebuild_native_insights(db_path: Path) -> None:
-    """Materialize session insights for a seeded index.db."""
-    from polylogue.storage.insights.session.rebuild import rebuild_archive_session_insights
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    with ArchiveStore.open_existing(db_path.parent, read_only=False) as archive:
-        rebuild_archive_session_insights(archive)
 
 
 def _find_named_check(payload: JSONDocument, name: str) -> JSONDocument:
@@ -168,94 +158,6 @@ class TestReadinessReportConstruction:
         assert report.summary == {"ok": 0, "warning": 0, "error": 0}
 
 
-def test_check_records_scoped_maintenance_preview(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    db_path = cli_workspace["db_path"]
-    old_timestamp = "2020-01-01T00:00:00+00:00"
-    (
-        SessionBuilder(db_path, "conv-check-insights")
-        .provider("claude-code")
-        .title("Scoped Check Repair")
-        .updated_at(old_timestamp)
-        .add_message("u1", role="user", text="Plan the cleanup", timestamp=old_timestamp)
-        .save()
-    )
-    _rebuild_native_insights(db_path)
-    with open_index_db(db_path) as conn:
-        conn.execute("DELETE FROM session_profiles")
-        conn.commit()
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "ops",
-            "doctor",
-            "--format",
-            "json",
-            "--repair",
-            "--preview",
-            "--target",
-            "session_insights",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    maintenance = json_object_field(payload, "maintenance", context="check payload")
-    assert maintenance.get("targets") == ["session_insights"]
-    maintenance_item = json_array_item(
-        json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
-    )
-    assert maintenance_item.get("name") == "session_insights"
-    # `_targeted_session_insight_rebuild_ids` (polylogue/storage/repair.py)
-    # returns DISTINCT session_ids needing repair; this fixture seeds exactly
-    # one session, so at most one session can ever be pending here.
-    assert maintenance_item.get("repaired_count") == 1
-
-
-def test_check_records_scoped_maintenance_apply(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
-    db_path = cli_workspace["db_path"]
-    old_timestamp = "2020-01-01T00:00:00+00:00"
-    (
-        SessionBuilder(db_path, "conv-check-insights-apply")
-        .provider("claude-code")
-        .title("Scoped Check Repair Apply")
-        .updated_at(old_timestamp)
-        .add_message("u1", role="user", text="Repair the durable insights", timestamp=old_timestamp)
-        .save()
-    )
-    _rebuild_native_insights(db_path)
-    with open_index_db(db_path) as conn:
-        conn.execute("DELETE FROM session_profiles")
-        conn.commit()
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "doctor",
-            "--deep",
-            "--format",
-            "json",
-            "--repair",
-            "--target",
-            "session_insights",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    payload = _extract_json(result.output)
-    maintenance = json_object_field(payload, "maintenance", context="check payload")
-    assert maintenance.get("targets") == ["session_insights"]
-    maintenance_item = json_array_item(
-        json_array_field(maintenance, "items", context="maintenance"), 0, context="maintenance.items"
-    )
-    assert maintenance_item.get("name") == "session_insights"
-    assert maintenance_item.get("success") is True
-
-
 def test_check_daemon_json_uses_shared_daemon_status(cli_runner: CliRunner) -> None:
     daemon_report: JSONDocument = {
         "ok": True,
@@ -296,45 +198,6 @@ def test_check_daemon_plain_renders_component_status(cli_runner: CliRunner) -> N
     assert "Live sources: 1/1 available" in result.output
     assert "codex: /tmp/codex (available)" in result.output
     assert "Browser capture spool: ready" in result.output
-
-
-def test_check_plain_preview_summarizes_changes_not_issues(
-    cli_workspace: WorkspacePaths, cli_runner: CliRunner
-) -> None:
-    db_path = cli_workspace["db_path"]
-    old_timestamp = "2020-01-01T00:00:00+00:00"
-    (
-        SessionBuilder(db_path, "conv-check-insights-preview-plain")
-        .provider("claude-code")
-        .title("Scoped Check Repair Preview Plain")
-        .updated_at(old_timestamp)
-        .add_message("u1", role="user", text="Preview the repair output", timestamp=old_timestamp)
-        .save()
-    )
-    _rebuild_native_insights(db_path)
-    with open_index_db(db_path) as conn:
-        conn.execute("DELETE FROM session_profiles")
-        conn.commit()
-
-    result = cli_runner.invoke(
-        cli,
-        [
-            "--plain",
-            "ops",
-            "doctor",
-            "--deep",
-            "--repair",
-            "--preview",
-            "--target",
-            "session_insights",
-        ],
-        catch_exceptions=False,
-    )
-
-    assert result.exit_code == 0
-    assert "Would apply" in result.output
-    assert "change(s)" in result.output
-    assert "issue(s)" not in result.output
 
 
 def test_check_warns_when_message_index_is_incomplete(cli_workspace: WorkspacePaths, cli_runner: CliRunner) -> None:
@@ -470,10 +333,6 @@ class TestCheckCommand:
         options = CheckCommandOptions(
             json_output=True,
             verbose=False,
-            repair=False,
-            cleanup=False,
-            preview=False,
-            vacuum=False,
             deep=False,
             runtime=True,
             check_daemon=False,
@@ -493,7 +352,6 @@ class TestCheckCommand:
             schema_record_limit=None,
             schema_record_offset=0,
             schema_quarantine_malformed=False,
-            maintenance_targets=(),
         )
 
         monkeypatch.setattr(
@@ -778,8 +636,6 @@ class TestCheckCommandSupplementary:
     # --- Flag validation: invalid combos rejected with correct error ---
 
     INVALID_FLAG_COMBOS = [
-        (["ops", "doctor", "--vacuum"], "--vacuum requires --repair or --cleanup"),
-        (["ops", "doctor", "--preview"], "--preview requires --repair or --cleanup"),
         (["ops", "doctor", "--schema-origin", "chatgpt"], "--schema-origin requires --schemas"),
         (["ops", "doctor", "--schema-record-limit", "100"], "--schema-record-limit requires --schemas"),
         (["ops", "doctor", "--schema-record-offset", "10"], "--schema-record-offset requires --schemas"),
@@ -810,71 +666,6 @@ class TestCheckCommandSupplementary:
         assert expected_error in result.output
 
     # --- Remaining non-repetitive tests ---
-
-    def test_json_output_with_repair(self, cli_workspace: WorkspacePaths) -> None:
-        """--format json with --repair includes maintenance results."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["ops", "doctor", "--format", "json", "--repair", "--preview"])
-        assert result.exit_code == 0
-        envelope = parse_json_object(
-            result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output,
-            context="repair preview envelope",
-        )
-        data = json_object(envelope.get("result", envelope), context="repair preview payload")
-        assert "maintenance" in data
-        maintenance = json_object_field(data, "maintenance", context="repair preview payload")
-        assert "resource_boundary" not in maintenance
-
-    def test_repair_with_no_issues_shows_message(self, cli_workspace: WorkspacePaths) -> None:
-        """When repair finds no issues, should show a maintenance status message."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["ops", "doctor", "--repair"])
-        assert result.exit_code == 0
-        assert (
-            "No selected maintenance work" in result.output
-            or "Changed" in result.output
-            or "maintenance" in result.output.lower()
-        )
-
-    def test_vacuum_with_repair(self, cli_workspace: WorkspacePaths) -> None:
-        """--vacuum with --repair should attempt VACUUM."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(cli, ["ops", "doctor", "--repair", "--vacuum"])
-        assert result.exit_code == 0
-        assert "VACUUM" in result.output
-
-    def test_json_output_with_repair_and_vacuum_is_machine_safe(self, cli_workspace: WorkspacePaths) -> None:
-        """`--format json --repair --vacuum` should stay valid JSON."""
-        from click.testing import CliRunner
-
-        from polylogue.cli.click_app import cli
-
-        runner = CliRunner()
-        result = runner.invoke(
-            cli, ["--plain", "ops", "doctor", "--format", "json", "--repair", "--preview", "--vacuum"]
-        )
-
-        assert result.exit_code == 0
-        envelope = parse_json_object(result.output, context="repair vacuum envelope")
-        data = json_object(envelope.get("result", envelope), context="repair vacuum payload")
-        assert "maintenance" in data
-        maintenance = json_object_field(data, "maintenance", context="repair vacuum payload")
-        assert "resource_boundary" not in maintenance
-        vacuum = json_object_field(data, "vacuum", context="repair vacuum payload")
-        assert vacuum.get("ok") is True
-        assert vacuum.get("preview") is True
 
     def test_check_schemas_json_output(self, cli_workspace: WorkspacePaths) -> None:
         """--schemas adds schema_verification block to JSON output."""

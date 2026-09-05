@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,14 +16,12 @@ from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.json import json_document
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.daemon.status import raw_failure_info_for_root
-from polylogue.maintenance.models import DerivedModelStatus, MaintenanceCategory
-from polylogue.maintenance.scope import MaintenanceScopeFilter
 from polylogue.sources.revision_backfill import census_historical_revision_evidence
-from polylogue.storage import repair as repair_mod
+from polylogue.storage import raw_convergence as raw_convergence_mod
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.insights.session.repair_assessment import assess_session_insight_repairs
-from polylogue.storage.insights.session.runtime import SessionInsightCounts, SessionInsightStatusSnapshot
+from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
@@ -88,37 +85,10 @@ def test_raw_materialization_binds_current_generation_under_writer_lease(
                 pass
         raise InnerReachedError
 
-    monkeypatch.setattr(repair_mod, "_repair_raw_materialization", inspect_inner)
+    monkeypatch.setattr(raw_convergence_mod, "_converge_raw_materialization", inspect_inner)
 
     with pytest.raises(InnerReachedError):
-        repair_mod.repair_raw_materialization(config)
-    with RebuildLease(tmp_path):
-        pass
-
-
-def test_raw_snapshot_cleanup_binds_authority_and_delete_under_writer_lease(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Promotion cannot change the protected generation during destructive raw cleanup."""
-
-    from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-
-    initialize_active_archive_root(tmp_path)
-    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
-
-    class InnerReachedError(RuntimeError):
-        pass
-
-    def inspect_inner(*_args: object, **_kwargs: object) -> Any:
-        with pytest.raises(RebuildLeaseUnavailableError):
-            with RebuildLease(tmp_path):
-                pass
-        raise InnerReachedError
-
-    monkeypatch.setattr(repair_mod, "_repair_superseded_raw_snapshots", inspect_inner)
-
-    with pytest.raises(InnerReachedError):
-        repair_mod.repair_superseded_raw_snapshots(config)
+        raw_convergence_mod.converge_raw_materialization(config)
     with RebuildLease(tmp_path):
         pass
 
@@ -129,19 +99,7 @@ def test_raw_materialization_returns_a_typed_failure_while_rebuild_owns_archive(
 
     initialize_active_archive_root(tmp_path)
     with RebuildLease(tmp_path):
-        result = repair_mod.repair_raw_materialization(_config(tmp_path))
-
-    assert result.success is False
-    assert "offline index rebuild owns archive" in result.detail
-
-
-def test_raw_snapshot_cleanup_returns_a_typed_failure_while_rebuild_owns_archive(tmp_path: Path) -> None:
-    """Destructive raw cleanup reports a lease conflict through RepairResult."""
-    from polylogue.storage.index_generation import RebuildLease
-
-    initialize_active_archive_root(tmp_path)
-    with RebuildLease(tmp_path):
-        result = repair_mod.repair_superseded_raw_snapshots(_config(tmp_path))
+        result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
     assert result.success is False
     assert "offline index rebuild owns archive" in result.detail
@@ -184,7 +142,7 @@ def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_p
         )
         conn.commit()
 
-    repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True)
+    raw_convergence_mod.converge_raw_materialization(_config(tmp_path), dry_run=True)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipt = conn.execute(
@@ -228,7 +186,7 @@ def test_raw_materialization_parser_census_respects_raw_scope(tmp_path: Path) ->
         conn.execute("DELETE FROM raw_authority_parser_census WHERE raw_id IN (?, ?)", raw_ids)
         conn.commit()
 
-    repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_id=raw_ids[0])
+    raw_convergence_mod.converge_raw_materialization(_config(tmp_path), dry_run=True, raw_artifact_id=raw_ids[0])
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         receipts = dict(
@@ -239,11 +197,13 @@ def test_raw_materialization_parser_census_respects_raw_scope(tmp_path: Path) ->
     assert raw_ids[1] not in receipts
 
 
-def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_mod.RepairResult, list[str]]:
+def _complete_bounded_raw_census(
+    config: Config, *, limit: int
+) -> tuple[raw_convergence_mod.RawConvergenceResult, list[str]]:
     """Advance census-only passes until a quiescent preview can publish plans."""
     incomplete_census_ids: list[str] = []
     for _pass in range(1_000):
-        result = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
+        result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, raw_artifact_limit=limit)
         assert result.census_receipt is not None
         if result.census_receipt.quiescent:
             return result, incomplete_census_ids
@@ -254,242 +214,15 @@ def _complete_bounded_raw_census(config: Config, *, limit: int) -> tuple[repair_
     raise AssertionError("bounded raw census did not quiesce")
 
 
-def _repair_after_persisted_census(
+def _converge_after_persisted_census(
     config: Config,
     *,
     dry_run: bool = False,
     raw_artifact_id: str | None = None,
-) -> repair_mod.RepairResult:
+) -> raw_convergence_mod.RawConvergenceResult:
     """Exercise replay only after the durable parser census reaches quiescence."""
     _complete_bounded_raw_census(config, limit=1_000)
-    return repair_mod.repair_raw_materialization(config, dry_run=dry_run, raw_artifact_id=raw_artifact_id)
-
-
-def _status(
-    *,
-    source_documents: int = 0,
-    materialized_documents: int = 0,
-    materialized_rows: int = 0,
-    pending_documents: int = 0,
-    pending_rows: int = 0,
-    stale_rows: int = 0,
-    orphan_rows: int = 0,
-) -> DerivedModelStatus:
-    return DerivedModelStatus(
-        name="test",
-        ready=pending_documents == 0 and pending_rows == 0 and stale_rows == 0 and orphan_rows == 0,
-        detail="",
-        source_documents=source_documents,
-        materialized_documents=materialized_documents,
-        materialized_rows=materialized_rows,
-        pending_documents=pending_documents,
-        pending_rows=pending_rows,
-        stale_rows=stale_rows,
-        orphan_rows=orphan_rows,
-    )
-
-
-def test_session_insight_repair_count_uses_public_phase_status_key() -> None:
-    statuses = {
-        "session_profile_rows": _status(),
-        "session_work_events": _status(),
-        "session_work_events_fts": _status(),
-        "session_phases": _status(pending_rows=2),
-        "threads": _status(),
-        "session_tag_rollups": _status(),
-    }
-
-    assert repair_mod.session_insight_repair_count(statuses) == 2
-
-    legacy_statuses = dict(statuses)
-    legacy_statuses["session_phase_inference"] = legacy_statuses.pop("session_phases")
-    assert repair_mod.session_insight_repair_count(legacy_statuses) == 0
-
-    legacy_statuses = dict(statuses)
-    legacy_statuses["session_work_event_inference"] = legacy_statuses.pop("session_work_events")
-    assert repair_mod.session_insight_repair_count(legacy_statuses) == 0
-
-
-def test_deleted_orphan_repairs_are_unreachable() -> None:
-    """The schema FK/CASCADE guarantee replaces these manual repair paths."""
-    from polylogue.maintenance.targets import build_maintenance_target_catalog
-
-    catalog = build_maintenance_target_catalog()
-    assert not hasattr(repair_mod, "repair_orphaned_messages")
-    assert not hasattr(repair_mod, "repair_orphaned_attachments")
-    assert not hasattr(repair_mod, "preview_orphaned_messages")
-    assert not hasattr(repair_mod, "preview_orphaned_attachments")
-    assert "orphaned_messages" not in repair_mod.REPAIR_HANDLERS
-    assert "orphaned_attachments" not in repair_mod.REPAIR_HANDLERS
-    assert "orphaned_messages" not in repair_mod.PREVIEW_HANDLERS
-    assert "orphaned_attachments" not in repair_mod.PREVIEW_HANDLERS
-    assert catalog.resolve_name("orphaned_messages") is None
-    assert catalog.resolve_name("orphaned_attachments") is None
-
-
-def test_session_insights_convergence_matches_repair_archive_route(tmp_path: Path) -> None:
-    """The daemon's real archive route repairs the same session rows as repair."""
-    from polylogue.core.enums import BlockType, Provider, Role
-    from polylogue.daemon.convergence_stages import make_insights_stage
-    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-
-    initialize_active_archive_root(tmp_path)
-    source_path = tmp_path / "codex-session.jsonl"
-    source_path.write_bytes(b"real archive source\n")
-    session = ParsedSession(
-        source_name=Provider.CODEX,
-        provider_session_id="convergence-parity",
-        title="Convergence parity",
-        messages=[
-            ParsedMessage(
-                provider_message_id="message-1",
-                role=Role.USER,
-                text="Exercise the real archive route.",
-                position=0,
-                blocks=[
-                    ParsedContentBlock(
-                        type=BlockType.TEXT,
-                        text="Exercise the real archive route.",
-                    )
-                ],
-            )
-        ],
-    )
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        _raw_id, session_id = archive.write_raw_and_parsed(
-            session,
-            payload=source_path.read_bytes(),
-            source_path=str(source_path),
-            acquired_at_ms=1,
-        )
-
-    def insight_facts() -> tuple[tuple[object, ...], ...]:
-        with sqlite3.connect(tmp_path / "index.db") as conn:
-            profile = conn.execute(
-                """
-                SELECT materializer_version, input_row_count, message_count, word_count
-                FROM session_profiles WHERE session_id = ?
-                """,
-                (session_id,),
-            ).fetchone()
-            materialization = conn.execute(
-                """
-                SELECT insight_type, materializer_version, input_row_count
-                FROM insight_materialization WHERE session_id = ? ORDER BY insight_type
-                """,
-                (session_id,),
-            ).fetchall()
-            work_events = conn.execute(
-                """
-                SELECT position, work_event_type, summary
-                FROM session_work_events WHERE session_id = ? ORDER BY position
-                """,
-                (session_id,),
-            ).fetchall()
-            phases = conn.execute(
-                """
-                SELECT position, start_index, end_index, word_count
-                FROM session_phases WHERE session_id = ? ORDER BY position
-                """,
-                (session_id,),
-            ).fetchall()
-        return (
-            tuple(profile) if profile is not None else (),
-            *map(tuple, materialization),
-            *map(tuple, work_events),
-            *map(tuple, phases),
-        )
-
-    manual_result = repair_mod.repair_session_insights(
-        _config(tmp_path),
-        archive_root_override=tmp_path,
-    )
-    assert manual_result.success is True
-    manual_facts = insight_facts()
-
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
-        conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (session_id,))
-        conn.commit()
-
-    stage = make_insights_stage(tmp_path / "index.db")
-    assert stage.check(source_path) is True
-    stage_result = stage.execute(source_path)
-    assert getattr(stage_result, "success", stage_result) is True
-    assert stage.check(source_path) is False
-    assert insight_facts() == manual_facts
-
-
-def test_preview_counts_from_archive_debt_include_healthy_preview_targets_only() -> None:
-    statuses = {
-        "session_insights": repair_mod.ArchiveDebtStatus(
-            name="session_insights",
-            category=repair_mod._maintenance_target_spec("session_insights").category,
-            destructive=False,
-            issue_count=0,
-            detail="ready",
-            maintenance_target="session_insights",
-        ),
-        "empty_sessions": repair_mod.ArchiveDebtStatus(
-            name="empty_sessions",
-            category=repair_mod._maintenance_target_spec("empty_sessions").category,
-            destructive=True,
-            issue_count=4,
-            detail="needs cleanup",
-            maintenance_target="empty_sessions",
-        ),
-    }
-
-    assert repair_mod.preview_counts_from_archive_debt(statuses) == {
-        "session_insights": 0,
-        "empty_sessions": 4,
-    }
-
-
-def test_probe_only_archive_debt_skips_large_message_scans(monkeypatch: pytest.MonkeyPatch) -> None:
-    class Conn:
-        def execute(self, *_args: object, **_kwargs: object) -> object:
-            raise AssertionError("large probe mode should not run exact SQL scans")
-
-    statuses = {
-        "messages_fts": _status(),
-    }
-    monkeypatch.setattr(repair_mod, "_table_has_more_than", lambda *_args: True)
-    monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", lambda _conn: (_ for _ in ()).throw(AssertionError))
-    debt = repair_mod.collect_archive_debt_statuses_sync(
-        cast(Any, Conn()), derived_statuses=statuses, include_expensive=False, probe_only=True
-    )
-
-    assert debt["empty_sessions"].skipped is True
-
-
-def test_archive_debt_collection_honors_target_scope(monkeypatch: pytest.MonkeyPatch) -> None:
-    statuses = {
-        "session_profile_rows": _status(pending_rows=3),
-        "session_work_events": _status(),
-        "session_work_events_fts": _status(),
-        "session_phases": _status(),
-        "threads": _status(),
-        "session_tag_rollups": _status(),
-    }
-
-    def fail_unrelated(*_args: object, **_kwargs: object) -> int:
-        raise AssertionError("target-scoped session_insights preview must not scan unrelated maintenance debt")
-
-    monkeypatch.setattr(repair_mod, "count_empty_sessions_sync", fail_unrelated)
-    monkeypatch.setattr(repair_mod, "count_superseded_raw_snapshots_sync", fail_unrelated)
-
-    with sqlite3.connect(":memory:") as conn:
-        debt = repair_mod.collect_archive_debt_statuses_sync(
-            conn,
-            derived_statuses=statuses,
-            target_names=("session_insights",),
-        )
-
-    assert tuple(debt) == ("session_insights",)
-    assert debt["session_insights"].issue_count == 3
+    return raw_convergence_mod.converge_raw_materialization(config, dry_run=dry_run, raw_artifact_id=raw_artifact_id)
 
 
 def test_raw_materialization_preview_counts_replayable_rows_without_erasing_missing_blobs(tmp_path: Path) -> None:
@@ -563,7 +296,7 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
         )
         index_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.success is False
@@ -610,7 +343,7 @@ def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling
         )
         index_conn.commit()
 
-    result = _repair_after_persisted_census(config, dry_run=True)
+    result = _converge_after_persisted_census(config, dry_run=True)
 
     assert result.success is True
     assert result.repaired_count == 0
@@ -653,8 +386,8 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
         db_path=routed_root / "index.db",
     )
 
-    backlog = repair_mod.raw_materialization_replay_backlog(config)
-    result = _repair_after_persisted_census(config)
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(config)
+    result = _converge_after_persisted_census(config)
 
     assert backlog["execution_blocked"] is False
     assert backlog["execution_block_reason"] is None
@@ -691,7 +424,7 @@ def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path
         )
         source_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 1
@@ -797,11 +530,11 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
         )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(config)
     assert raw_ids["cas"] in candidates.raw_ids
     assert raw_ids["sibling"] not in candidates.raw_ids
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
 
     assert result.metrics["raw_materialization_candidate_count"] == 3.0
     assert result.metrics["raw_materialization_total_blob_bytes"] == float(
@@ -845,7 +578,7 @@ def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: P
         )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path))
 
     assert raw_id not in candidates.raw_ids
 
@@ -891,7 +624,7 @@ def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path:
             )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path))
 
     assert raw_id not in candidates.raw_ids
 
@@ -933,8 +666,8 @@ def test_raw_materialization_validation_failure_cannot_reuse_deferred_authority(
         source_conn.commit()
 
     config = _config(tmp_path)
-    assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
-    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    assert raw_id not in raw_convergence_mod._raw_materialization_candidate_ids(config).raw_ids
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(config)
     assert backlog["candidate_count"] == 0
 
 
@@ -957,7 +690,7 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
             acquired_at_ms=1,
         )
 
-    assert repair_mod.repair_raw_materialization(_config(tmp_path)).success is True
+    assert raw_convergence_mod.converge_raw_materialization(_config(tmp_path)).success is True
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.finalize_raw_parse_state(
@@ -1004,7 +737,7 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
             "SELECT COUNT(*) FROM raw_revision_applications WHERE raw_id = ?", (raw_id,)
         ).fetchone()
 
-    replay = repair_mod.repair_raw_materialization(_config(tmp_path))
+    replay = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
     assert replay.success is True
     assert replay.repaired_count == 1
@@ -1041,7 +774,7 @@ def test_raw_materialization_refuses_non_parse_authoritative_validation_failure(
         )
 
     config = _config(tmp_path)
-    assert repair_mod.repair_raw_materialization(config).success is True
+    assert raw_convergence_mod.converge_raw_materialization(config).success is True
     with sqlite3.connect(tmp_path / "source.db") as conn:
         parsed_at_ms = int(
             conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
@@ -1060,8 +793,8 @@ def test_raw_materialization_refuses_non_parse_authoritative_validation_failure(
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
 
-    assert raw_id not in repair_mod._raw_materialization_candidate_ids(config).raw_ids
-    assert repair_mod.raw_materialization_replay_backlog(config)["candidate_count"] == 0
+    assert raw_id not in raw_convergence_mod._raw_materialization_candidate_ids(config).raw_ids
+    assert raw_convergence_mod.raw_materialization_replay_backlog(config)["candidate_count"] == 0
 
 
 def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path) -> None:
@@ -1113,9 +846,11 @@ def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path
         json_document({}),
         json_document({}),
     )
-    remaining = repair_mod.RawMaterializationCandidates(raw_ids=[], missing_blobs=0, already_parsed=0)
+    remaining = raw_convergence_mod.RawMaterializationCandidates(raw_ids=[], missing_blobs=0, already_parsed=0)
 
-    outcome = repair_mod._raw_replay_plan_outcomes(tmp_path, tmp_path / "index.db", [plan], remaining=remaining)[0]
+    outcome = raw_convergence_mod._raw_replay_plan_outcomes(
+        tmp_path, tmp_path / "index.db", [plan], remaining=remaining
+    )[0]
 
     assert outcome.status is RawReplayPlanStatus.TERMINAL
 
@@ -1157,7 +892,7 @@ def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path,
         )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path))
 
     assert raw_id not in candidates.raw_ids
 
@@ -1189,7 +924,7 @@ def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: P
         )
         source_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 1
@@ -1237,7 +972,7 @@ def test_raw_materialization_preserves_bounded_historical_cas_retry_authority(tm
         )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path))
 
     assert set(candidates.raw_ids) == {raw_ids["prefix"], raw_ids["frontier"], raw_ids["byte"]}
 
@@ -1280,7 +1015,7 @@ def test_raw_materialization_terminal_carrier_overrides_legacy_cas_marker(tmp_pa
         )
         source_conn.commit()
 
-    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+    assert raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
 
 
 def test_raw_cas_frontier_error_is_typed_transient() -> None:
@@ -1358,7 +1093,7 @@ def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: P
     assert lifecycle.terminal == 0
     assert lifecycle.deferred == 0
     assert lifecycle.unexplained == 1
-    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+    assert raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
 
 
 def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
@@ -1429,7 +1164,7 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
     assert lifecycle.deferred == 2
     assert lifecycle.unexplained == 0
     assert {sample["raw_id"] for sample in lifecycle.samples} == {old_raw_id, new_raw_id}
-    candidates = repair_mod._raw_materialization_candidate_ids(_config(tmp_path))
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path))
     assert set(candidates.raw_ids) == {old_raw_id, new_raw_id}
 
 
@@ -1629,8 +1364,8 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
     status = raw_failure_info_for_root(tmp_path)
     assert status["terminal_rejections"] == 0
     assert status["unexplained_failures"] == 2
-    assert repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
-    assert repair_mod.raw_materialization_replay_backlog(_config(tmp_path))["candidate_count"] == 0
+    assert raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids == []
+    assert raw_convergence_mod.raw_materialization_replay_backlog(_config(tmp_path))["candidate_count"] == 0
 
 
 def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_blob(tmp_path: Path) -> None:
@@ -1667,7 +1402,7 @@ def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_bl
         db_path=routed_root / "index.db",
     )
 
-    result = _repair_after_persisted_census(config, dry_run=True)
+    result = _converge_after_persisted_census(config, dry_run=True)
 
     assert result.success is True
     assert result.repaired_count == 0
@@ -1687,260 +1422,11 @@ def test_raw_materialization_skips_current_non_session_census(tmp_path: Path) ->
             acquired_at_ms=1,
         )
 
-    assert raw_id in repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
+    assert raw_id in raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
 
     census_historical_revision_evidence(tmp_path)
 
-    assert raw_id not in repair_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
-
-
-def test_superseded_raw_cleanup_protects_split_index_referenced_raw_ids(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
-    source_file = tmp_path / "source.jsonl"
-    source_file.write_text("{}", encoding="utf-8")
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                (
-                    "raw-referenced-old",
-                    "chatgpt-export",
-                    "native-old",
-                    str(source_file),
-                    0,
-                    bytes.fromhex("11" * 32),
-                    10,
-                    1,
-                ),
-                (
-                    "raw-newer",
-                    "chatgpt-export",
-                    "native-newer",
-                    str(source_file),
-                    0,
-                    bytes.fromhex("22" * 32),
-                    11,
-                    2,
-                ),
-            ),
-        )
-        source_conn.commit()
-
-    with sqlite3.connect(tmp_path / "index.db") as index_conn:
-        index_conn.execute(
-            """
-            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("native-old", "chatgpt-export", "raw-referenced-old", "old", bytes(32)),
-        )
-        index_conn.commit()
-
-    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
-
-    assert result.repaired_count == 0
-    assert "skipped 1 active revision raw rows" in result.detail
-
-
-def test_superseded_raw_cleanup_follows_active_index_pointer(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    shadow_index = tmp_path / "index.db"
-    active_index = tmp_path / "generations" / "active" / "index.db"
-    initialize_archive_database(shadow_index, ArchiveTier.INDEX)
-    initialize_archive_database(active_index, ArchiveTier.INDEX)
-    source_file = tmp_path / "source.jsonl"
-    source_file.write_text("{}", encoding="utf-8")
-
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                (
-                    "raw-referenced-old",
-                    "chatgpt-export",
-                    "native-old",
-                    str(source_file),
-                    0,
-                    bytes.fromhex("11" * 32),
-                    10,
-                    1,
-                ),
-                (
-                    "raw-newer",
-                    "chatgpt-export",
-                    "native-newer",
-                    str(source_file),
-                    0,
-                    bytes.fromhex("22" * 32),
-                    11,
-                    2,
-                ),
-            ),
-        )
-        source_conn.commit()
-    with sqlite3.connect(active_index) as index_conn:
-        index_conn.execute(
-            """
-            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("native-old", "chatgpt-export", "raw-referenced-old", "old", bytes(32)),
-        )
-        index_conn.commit()
-    (tmp_path / ".index-active-pointer").write_text(f"{active_index}\n", encoding="utf-8")
-
-    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
-
-    assert result.success is True
-    assert result.repaired_count == 0
-    assert "skipped 1 active revision raw rows" in result.detail
-
-
-def test_superseded_raw_cleanup_preserves_explicit_index_override(tmp_path: Path) -> None:
-    """An explicit generation remains cleanup authority even when a pointer differs."""
-
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    pointer_index = tmp_path / "generations" / "pointer" / "index.db"
-    explicit_index = tmp_path / "generations" / "explicit" / "index.db"
-    initialize_archive_database(pointer_index, ArchiveTier.INDEX)
-    initialize_archive_database(explicit_index, ArchiveTier.INDEX)
-    source_file = tmp_path / "source.jsonl"
-    source_file.write_text("{}", encoding="utf-8")
-    with sqlite3.connect(tmp_path / "source.db") as source_conn:
-        source_conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, 'chatgpt-export', ?, ?, 0, ?, ?, ?)
-            """,
-            (
-                ("raw-explicit", "native-explicit", str(source_file), bytes.fromhex("11" * 32), 10, 1),
-                ("raw-newer", "native-newer", str(source_file), bytes.fromhex("22" * 32), 11, 2),
-            ),
-        )
-        source_conn.commit()
-    with sqlite3.connect(explicit_index) as index_conn:
-        index_conn.execute(
-            """
-            INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
-            VALUES ('native-explicit', 'chatgpt-export', 'raw-explicit', 'explicit', ?)
-            """,
-            (bytes(32),),
-        )
-        index_conn.commit()
-    (tmp_path / ".index-active-pointer").write_text(f"{pointer_index}\n", encoding="utf-8")
-    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=explicit_index)
-
-    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
-
-    assert result.success is True
-    assert result.repaired_count == 0
-    assert "skipped 1 active revision raw rows" in result.detail
-
-
-def test_superseded_raw_cleanup_allows_history_before_active_full(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
-    source_file = tmp_path / "source.jsonl"
-    source_file.write_text("{}", encoding="utf-8")
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, source_index, blob_hash,
-                blob_size, acquired_at_ms, logical_source_key, revision_kind,
-                source_revision, acquisition_generation, revision_authority
-            ) VALUES (?, 'codex-session', 'session-1', ?, 0, ?, ?, ?,
-                      'codex-session:session-1', 'full', ?, ?, 'byte_proven')
-            """,
-            (
-                ("raw-old-full", str(source_file), bytes.fromhex("11" * 32), 10, 1, "revision-old", 0),
-                ("raw-new-full", str(source_file), bytes.fromhex("22" * 32), 20, 2, "revision-new", 1),
-            ),
-        )
-    with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute(
-            """INSERT INTO sessions (native_id, origin, raw_id, title, content_hash)
-               VALUES ('session-1', 'codex-session', 'raw-new-full', 'session', ?)""",
-            (bytes(32),),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_revision_heads (
-                logical_source_key, session_id, accepted_raw_id,
-                accepted_source_revision, accepted_content_hash,
-                accepted_frontier_kind, accepted_frontier,
-                acquisition_generation, append_end_offset, decided_at_ms
-            ) VALUES ('codex-session:session-1', 'codex-session:session-1', 'raw-new-full',
-                      'revision-new', ?, 'byte', 20, 1, NULL, 1)
-            """,
-            (bytes(32),),
-        )
-        conn.execute(
-            """
-            INSERT INTO raw_revision_applications (
-                decision_id, raw_id, session_id, logical_source_key,
-                source_revision, acquisition_generation, decision,
-                accepted_raw_id, accepted_source_revision, accepted_content_hash,
-                accepted_frontier_kind, accepted_frontier, detail, decided_at_ms
-            ) VALUES ('old-superseded', 'raw-old-full', 'codex-session:session-1',
-                      'codex-session:session-1', 'revision-old', 1, 'superseded',
-                      'raw-new-full', 'revision-new', ?, 'byte', 20,
-                      'superseded by accepted full', 1)
-            """,
-            (bytes(32),),
-        )
-
-    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=True)
-
-    # Anti-vacuity: traversing a full raw's historical cohort would protect
-    # raw-old-full and reduce this production repair preview to zero.
-    assert result.success is True
-    assert result.repaired_count == 1
-
-
-def test_superseded_raw_cleanup_fails_closed_without_index(tmp_path: Path) -> None:
-    config = _config(tmp_path)
-    initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
-    # This valid but unrelated legacy anchor must never authorize deletion
-    # from the split archive_root/source.db file set.
-    initialize_archive_database(tmp_path / "archive.db", ArchiveTier.INDEX)
-    source_file = tmp_path / "source.jsonl"
-    source_file.write_text("{}", encoding="utf-8")
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        conn.executemany(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms
-            ) VALUES (?, 'chatgpt-export', ?, 0, ?, 10, ?)
-            """,
-            (
-                ("raw-old", str(source_file), bytes.fromhex("11" * 32), 1),
-                ("raw-new", str(source_file), bytes.fromhex("22" * 32), 2),
-            ),
-        )
-
-    result = repair_mod.repair_superseded_raw_snapshots(config, dry_run=False)
-
-    # Anti-vacuity: the old fail-open empty-set fallback would delete raw-old.
-    assert result.success is False
-    assert result.repaired_count == 0
-    assert "index tier is unavailable" in result.detail
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (2,)
+    assert raw_id not in raw_convergence_mod._raw_materialization_candidate_ids(_config(tmp_path)).raw_ids
 
 
 def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path: Path) -> None:
@@ -1988,7 +1474,7 @@ def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path
         )
         source_conn.commit()
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=True)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 1.0
@@ -2024,7 +1510,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
         )
         source_conn.commit()
 
-    result = _repair_after_persisted_census(config, dry_run=True)
+    result = _converge_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.success is True
@@ -2085,7 +1571,7 @@ def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild
         )
         index_conn.commit()
 
-    result = _repair_after_persisted_census(config, dry_run=True)
+    result = _converge_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.success is True
@@ -2169,7 +1655,7 @@ def test_raw_materialization_receipts_partition_terminal_deferred_and_executable
         )
         index_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(config)
 
     assert candidates.raw_ids == [executable_raw_id]
     assert candidates.adoption_deferred == 1
@@ -2231,7 +1717,7 @@ def test_raw_materialization_replays_complete_governed_bundle_membership_after_i
                 )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(config)
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(config)
 
     assert set(candidates.raw_ids) == {raw_ids[0], raw_ids[2], raw_ids[3]}
     assert candidates.authority_quarantined == 1
@@ -2274,7 +1760,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
             acquired_at_ms=1,
         )
 
-    first = repair_mod.repair_raw_materialization(_config(tmp_path))
+    first = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
     assert first.success is True
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT status FROM raw_membership_census WHERE raw_id = ?", (raw_id,)).fetchone() == (
@@ -2289,7 +1775,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
     (tmp_path / "index.db").unlink()
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
 
-    replay = repair_mod.repair_raw_materialization(_config(tmp_path))
+    replay = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
     assert replay.success is True
     assert replay.repaired_count == 2
@@ -2313,9 +1799,9 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
         )
         source_conn.commit()
 
-    candidates = repair_mod._raw_materialization_candidate_ids(config)
-    backlog = repair_mod.raw_materialization_replay_backlog(config)
-    targeted = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
+    candidates = raw_convergence_mod._raw_materialization_candidate_ids(config)
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(config)
+    targeted = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_id=raw_id)
 
     assert candidates.raw_ids == []
     assert candidates.byte_authority_pending == 1
@@ -2351,8 +1837,8 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
         assert cursor.rowcount == 1
         source_conn.commit()
 
-    governed = repair_mod._raw_materialization_candidate_ids(config)
-    governed_target = repair_mod.repair_raw_materialization(config, raw_artifact_id=raw_id)
+    governed = raw_convergence_mod._raw_materialization_candidate_ids(config)
+    governed_target = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_id=raw_id)
 
     assert governed.byte_authority_pending == 0
     assert governed.byte_authority_quarantined == 1
@@ -2365,7 +1851,7 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
         )
         source_conn.commit()
 
-    proven = repair_mod._raw_materialization_candidate_ids(config)
+    proven = raw_convergence_mod._raw_materialization_candidate_ids(config)
     assert proven.byte_authority_quarantined == 0
     assert proven.byte_authority_fragments == 1
 
@@ -2415,12 +1901,12 @@ def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_pa
         )
         source_conn.commit()
 
-    first = _repair_after_persisted_census(config)
+    first = _converge_after_persisted_census(config)
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         receipts_after_first = index_conn.execute(
             "SELECT decision_id, raw_id, decision FROM raw_revision_applications ORDER BY decision_id"
         ).fetchall()
-    second = repair_mod.repair_raw_materialization(config)
+    second = raw_convergence_mod.converge_raw_materialization(config)
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
         receipts_after_second = index_conn.execute(
             "SELECT decision_id, raw_id, decision FROM raw_revision_applications ORDER BY decision_id"
@@ -2442,7 +1928,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
 
     Reproduces the exact production-shaped defect this bead names: a raw is
     classified as a replayable/selected authority component by
-    ``repair_raw_materialization``, but its logical cohort has no unique
+    ``converge_raw_materialization``, but its logical cohort has no unique
     byte-proven full baseline (a genuinely orphaned ``append``-kind row with
     no sibling ``full`` row for the same ``logical_source_key``) and no
     membership evidence either -- so ``backfill_historical_revision_evidence``
@@ -2513,7 +1999,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
         )
         source_conn.commit()
 
-    first = _repair_after_persisted_census(config)
+    first = _converge_after_persisted_census(config)
     assert first.success is False
     assert first.repaired_count == 0
     assert first.metrics.get("raw_materialization_no_progress_count") == 1.0
@@ -2526,7 +2012,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
         ).fetchone()[0]
     assert terminal_rows_after_first == 1
 
-    second = repair_mod.repair_raw_materialization(config)
+    second = raw_convergence_mod.converge_raw_materialization(config)
     # The stalled plan must not be reselected: no second execution attempt,
     # so the metric that only appears when a component is actually selected
     # for this pass is absent, and the terminal receipt count is unchanged
@@ -2613,7 +2099,7 @@ def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
 
     monkeypatch.setattr(parsing_module, "ParsingService", FakeParsingService)
 
-    result = _repair_after_persisted_census(config)
+    result = _converge_after_persisted_census(config)
 
     assert result.success is True
     assert result.repaired_count == 2
@@ -2710,7 +2196,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    result = _repair_after_persisted_census(config)
+    result = _converge_after_persisted_census(config)
 
     assert result.success is False
     assert result.repaired_count == 0
@@ -2758,7 +2244,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
     readiness_categories = cast(dict[str, int], readiness["category_counts"])
     assert readiness_categories["adoption_deferred"] == 1
 
-    retry = repair_mod.repair_raw_materialization(config, dry_run=False)
+    retry = raw_convergence_mod.converge_raw_materialization(config, dry_run=False)
     assert retry.success is False
     assert retry.metrics["raw_materialization_candidate_count"] == 0.0
     assert retry.metrics["raw_materialization_adoption_deferred_count"] == 1.0
@@ -2834,7 +2320,7 @@ def test_raw_materialization_execute_limits_authority_selection(
     config = _config(tmp_path)
 
     preview, incomplete_censuses = _complete_bounded_raw_census(config, limit=2)
-    result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=2)
+    result = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=2)
 
     assert len(incomplete_censuses) == 1
     assert len(preview.plan_outcomes) == 2
@@ -2885,8 +2371,8 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
         )
         source_conn.commit()
 
-    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
-    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=target_raw_id)
+    broad = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
+    scoped = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, raw_artifact_id=target_raw_id)
 
     assert broad.repaired_count == 0
     assert scoped.repaired_count == 0
@@ -2935,13 +2421,13 @@ def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_p
         )
         source_conn.commit()
 
-    result = _repair_after_persisted_census(config, dry_run=True)
+    result = _converge_after_persisted_census(config, dry_run=True)
 
     assert result.repaired_count == 0
     assert result.metrics["raw_materialization_candidate_count"] == 2.0
     assert "1 already parsed but not materialized" in result.detail
 
-    scoped = _repair_after_persisted_census(config, dry_run=True, raw_artifact_id=parsed_raw_id)
+    scoped = _converge_after_persisted_census(config, dry_run=True, raw_artifact_id=parsed_raw_id)
 
     assert scoped.repaired_count == 0
     assert scoped.metrics["raw_materialization_candidate_count"] == 1.0
@@ -2980,8 +2466,8 @@ def test_raw_materialization_excludes_parsed_non_session_artifacts(tmp_path: Pat
         )
         source_conn.commit()
 
-    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
-    scoped = repair_mod.repair_raw_materialization(config, dry_run=True, raw_artifact_id=raw_id)
+    broad = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
+    scoped = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, raw_artifact_id=raw_id)
 
     assert broad.repaired_count == 0
     assert scoped.repaired_count == 0
@@ -3027,9 +2513,13 @@ def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_pat
         source_conn.commit()
 
     _complete_bounded_raw_census(config, limit=1_000)
-    broad = repair_mod.repair_raw_materialization(config, dry_run=True)
-    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="gemini-cli-session")
-    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/gemini"))
+    broad = raw_convergence_mod.converge_raw_materialization(config, dry_run=True)
+    by_family = raw_convergence_mod.converge_raw_materialization(
+        config, dry_run=True, source_family="gemini-cli-session"
+    )
+    by_root = raw_convergence_mod.converge_raw_materialization(
+        config, dry_run=True, source_root=Path("/captures/gemini")
+    )
 
     assert broad.repaired_count == 0
     assert by_family.repaired_count == 0
@@ -3107,9 +2597,11 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
         )
         source_conn.commit()
 
-    by_provider = repair_mod.repair_raw_materialization(config, dry_run=True, provider="claude-code")
-    by_family = repair_mod.repair_raw_materialization(config, dry_run=True, source_family="codex-session")
-    by_root = repair_mod.repair_raw_materialization(config, dry_run=True, source_root=Path("/captures/claude"))
+    by_provider = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, provider="claude-code")
+    by_family = raw_convergence_mod.converge_raw_materialization(config, dry_run=True, source_family="codex-session")
+    by_root = raw_convergence_mod.converge_raw_materialization(
+        config, dry_run=True, source_root=Path("/captures/claude")
+    )
 
     assert by_provider.repaired_count == 0
     assert by_family.repaired_count == 0
@@ -3121,7 +2613,7 @@ def test_raw_materialization_scope_filters_count_only_matching_raw_rows(tmp_path
     assert by_provider.metrics["raw_materialization_max_blob_bytes"] == float(
         max(claude_size, other_root_size, learned_size)
     )
-    census_candidates = repair_mod._raw_materialization_parser_census_candidates(
+    census_candidates = raw_convergence_mod._raw_materialization_parser_census_candidates(
         config,
         provider="claude-code",
     )
@@ -3156,7 +2648,7 @@ def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=False)
 
     assert result.success is True
     assert result.repaired_count == 1
@@ -3189,7 +2681,7 @@ def test_raw_materialization_reports_authority_progress_and_payload_size(
     config = _config(tmp_path)
     progress: list[str] = []
 
-    result = repair_mod.repair_raw_materialization(
+    result = raw_convergence_mod.converge_raw_materialization(
         config,
         dry_run=False,
         progress_callback=lambda _amount, desc=None: progress.append(desc or ""),
@@ -3231,7 +2723,7 @@ def test_raw_materialization_blocks_oversized_actual_replay(
 
     monkeypatch.setattr("polylogue.pipeline.services.parsing.ParsingService", UnexpectedParsingService)
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=False)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         first_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0])
         parser_fingerprint = str(
@@ -3239,7 +2731,7 @@ def test_raw_materialization_blocks_oversized_actual_replay(
                 "SELECT parser_fingerprint FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
             ).fetchone()[0]
         )
-    repeated = repair_mod.repair_raw_materialization(config, dry_run=False)
+    repeated = raw_convergence_mod.converge_raw_materialization(config, dry_run=False)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         repeated_census_count = int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0])
 
@@ -3284,7 +2776,7 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
         lambda *_args, **_kwargs: pytest.fail("stream-safe oversized replay must not eagerly read a blob"),
     )
 
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), dry_run=False)
 
     assert result.success is False
     assert result.repaired_count == 0
@@ -3321,7 +2813,7 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, oversized_raw),
+            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, oversized_raw),
         )
         source_conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[small_raw, oversized_raw])
@@ -3330,7 +2822,7 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
         "polylogue.sources.revision_backfill._parse_retained_raw",
         lambda *_args, **_kwargs: pytest.fail("expanded cohort size must be checked before opening any blob"),
     )
-    result = repair_mod.repair_raw_materialization(
+    result = raw_convergence_mod.converge_raw_materialization(
         _config(tmp_path),
         raw_artifact_id=small_raw,
         dry_run=False,
@@ -3363,7 +2855,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
         source_conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, large_raw),
+            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, large_raw),
         )
         source_conn.commit()
     with sqlite3.connect(tmp_path / "index.db") as index_conn:
@@ -3374,7 +2866,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
         index_conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[small_raw, large_raw])
 
-    backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(_config(tmp_path))
     assert backlog["candidate_count"] == 1
     assert backlog["expanded_candidate_count"] == 2
     assert backlog["execution_blocked"] is True
@@ -3384,7 +2876,7 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
         "polylogue.sources.revision_backfill._parse_retained_raw",
         lambda *_args, **_kwargs: pytest.fail("oversized materialized sibling must block before blob open"),
     )
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=small_raw)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_id=small_raw)
     assert result.success is False
     assert "authority components" in result.detail
 
@@ -3417,7 +2909,7 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
         source_conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=raw_ids)
 
-    backlog = repair_mod.raw_materialization_replay_backlog(_config(tmp_path))
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(_config(tmp_path))
     assert backlog["oversized_count"] == 0
     assert backlog["expanded_aggregate_blocked"] is True
     assert backlog["execution_blocked"] is True
@@ -3426,8 +2918,8 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
         "polylogue.sources.revision_backfill._parse_retained_raw",
         lambda *_args, **_kwargs: pytest.fail("aggregate cohort limit must be checked before blob open"),
     )
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
-    repeated = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    repeated = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert result.success is False
     assert result.metrics["raw_materialization_resource_blocked_count"] == 2.0
     assert len(result.plan_outcomes) == 1
@@ -3456,11 +2948,11 @@ def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_id),
+            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_id),
         )
         conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
-    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    first = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert first.census_receipt is not None
     with sqlite3.connect(tmp_path / "source.db") as conn:
         scope = json.loads(
@@ -3478,7 +2970,7 @@ def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path
         )
         conn.commit()
 
-    repeated = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    repeated = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
 
     assert repeated.success is True
     assert repeated.census_receipt is not None
@@ -3505,7 +2997,9 @@ def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path
         conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
 
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), dry_run=True, max_payload_bytes=max_payload_bytes)
+    result = raw_convergence_mod.converge_raw_materialization(
+        _config(tmp_path), dry_run=True, max_payload_bytes=max_payload_bytes
+    )
 
     assert result.success is True
     assert result.metrics["raw_materialization_execute_blob_limit_bytes"] == float(max_payload_bytes)
@@ -3543,11 +3037,12 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
         source_conn.commit()
 
     config = _config(tmp_path)
-    backlog = repair_mod.raw_materialization_replay_backlog(config)
+    backlog = raw_convergence_mod.raw_materialization_replay_backlog(config)
     assert backlog["candidate_count"] == raw_count
     assert backlog["authority_component_count"] == raw_count
     assert (
-        int(cast(int, backlog["expanded_total_blob_bytes"])) > repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
+        int(cast(int, backlog["expanded_total_blob_bytes"]))
+        > raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
     )
     assert backlog["execution_blocked"] is False
     assert backlog["executable_authority_component_count"] == raw_count
@@ -3557,10 +3052,10 @@ def test_raw_materialization_processes_independent_components_across_bounded_pas
     assert len(preview.plan_outcomes) == 5
     repaired_per_pass: list[int] = []
     for _pass in range(5):
-        result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=5)
+        result = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=5)
         repaired_per_pass.append(result.repaired_count)
     assert repaired_per_pass == [5, 5, 5, 5, 5]
-    assert repair_mod.repair_raw_materialization(config, raw_artifact_limit=5).success is True
+    assert raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=5).success is True
 
 
 def test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_progress(
@@ -3609,7 +3104,7 @@ def test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_prog
     elapsed = iter(float(step) * 100.0 for step in range(1000))
     monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
 
-    bounded = repair_mod.repair_raw_materialization(
+    bounded = raw_convergence_mod.converge_raw_materialization(
         config,
         raw_artifact_limit=raw_count,
         max_pass_seconds=1.0,
@@ -3621,7 +3116,7 @@ def test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_prog
     assert bounded.success is False
 
     monkeypatch.undo()
-    remainder = repair_mod.repair_raw_materialization(config, raw_artifact_limit=raw_count)
+    remainder = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=raw_count)
     assert remainder.repaired_count == raw_count - 1
     assert remainder.success is True
 
@@ -3653,23 +3148,23 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-            (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_ids[0]),
+            (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES + 1, raw_ids[0]),
         )
         conn.commit()
     census_historical_revision_evidence(tmp_path, selected_raw_ids=raw_ids)
 
-    original_stream_safe = repair_mod._raw_materialization_stream_safe
+    original_stream_safe = raw_convergence_mod._raw_materialization_stream_safe
     monkeypatch.setattr(
-        repair_mod,
+        raw_convergence_mod,
         "_raw_materialization_stream_safe",
         lambda candidates, raw_id: raw_id != raw_ids[0] and original_stream_safe(candidates, raw_id),
     )
 
-    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    first = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert first.plan_outcomes[0].status.value == "terminal"
     (tmp_path / "ops.db").unlink()
 
-    second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
+    second = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=1)
     assert second.repaired_count == 1
     assert second.plan_outcomes[0].input_raw_ids == (raw_ids[1],)
 
@@ -3718,9 +3213,9 @@ def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
                         key=lambda component: min(candidates.raw_acquired_at_ms[raw_id] for raw_id in component),
                     )
 
-                mutation.setattr(repair_mod, "_raw_materialization_ordered_components", acquisition_only_order)
-            first = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
-            second = repair_mod.repair_raw_materialization(_config(root), raw_artifact_limit=1)
+                mutation.setattr(raw_convergence_mod, "_raw_materialization_ordered_components", acquisition_only_order)
+            first = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=1)
+            second = raw_convergence_mod.converge_raw_materialization(_config(root), raw_artifact_limit=1)
 
         assert first.plan_outcomes[0].input_raw_ids == (raw_ids[0],)
         return first.plan_outcomes[0].input_raw_ids, second.plan_outcomes[0].input_raw_ids
@@ -3772,7 +3267,7 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
             # generating megabytes of fixture bytes.
             source_conn.execute(
                 "UPDATE raw_sessions SET blob_size = ? WHERE raw_id = ?",
-                (repair_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
+                (raw_convergence_mod.RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES // 2, large_raw_id),
             )
             source_conn.commit()
 
@@ -3798,8 +3293,8 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
                         ),
                     )
 
-                mutation.setattr(repair_mod, "_raw_materialization_ordered_components", cheap_first_order)
-            result = repair_mod.repair_raw_materialization(config, raw_artifact_limit=1)
+                mutation.setattr(raw_convergence_mod, "_raw_materialization_ordered_components", cheap_first_order)
+            result = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=1)
         return result.plan_outcomes[0].input_raw_ids, large_raw_id
 
     fair_selected, fair_large_id = run(prefer_cheap=False)
@@ -3842,7 +3337,7 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
         return original(*args, selected_raw_ids=selected_raw_ids, **kwargs)
 
     monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_oldest)
-    result = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_limit=3)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path), raw_artifact_limit=3)
 
     assert result.repaired_count == 2
     assert [outcome.status.value for outcome in result.plan_outcomes].count("retryable") == 1
@@ -3856,14 +3351,13 @@ def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
     FTS/trigram/action_pairs/delegation_facts only for the session(s) that
     component touched -- never the archive-wide ``rebuild_fts_index_sync`` /
     ``rebuild_command_trigram_index_sync`` / ``rebuild_all_action_pairs_sync`` /
-    ``rebuild_all_delegation_facts_sync`` quartet ``maintenance/rebuild_index.py``'s
-    terminal blue-green pass owns. Proven at fixture scale with N pre-existing,
+    ``rebuild_all_delegation_facts_sync`` quartet. Proven at fixture scale with N pre-existing,
     fully materialized sessions already holding real ``action_pairs`` rows
     (each carries one Codex ``function_call``/``function_call_output`` pair):
     patching all four archive-wide rebuild functions to raise, then replaying
     exactly one NEW single-session component, must still succeed without
     tripping any of them. Reverting ``bulk_build=False`` back to ``True`` in
-    ``repair_raw_materialization`` (the exact regression this guards) makes
+    ``converge_raw_materialization`` (the exact regression this guards) makes
     this test fail immediately on the patched raise, not on some indirect
     symptom.
     """
@@ -3897,7 +3391,7 @@ def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
             )
 
     config = _config(tmp_path)
-    baseline = repair_mod.repair_raw_materialization(config)
+    baseline = raw_convergence_mod.converge_raw_materialization(config)
     assert baseline.success is True
     assert baseline.repaired_count == len(existing_native_ids)
 
@@ -3929,7 +3423,7 @@ def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
             acquired_at_ms=1000,
         )
 
-    result = repair_mod.repair_raw_materialization(config)
+    result = raw_convergence_mod.converge_raw_materialization(config)
 
     assert result.success is True
     assert result.repaired_count == 1
@@ -3995,7 +3489,7 @@ def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_su
     monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", fail_once)
 
     config = _config(tmp_path)
-    first = repair_mod.repair_raw_materialization(config)
+    first = raw_convergence_mod.converge_raw_materialization(config)
     assert first.plan_outcomes[0].status.value == "retryable"
     assert "database is locked" in first.plan_outcomes[0].reason
     first_plan_id = first.plan_outcomes[0].plan_id
@@ -4008,7 +3502,7 @@ def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_su
         )
 
     should_fail = False
-    second = repair_mod.repair_raw_materialization(config)
+    second = raw_convergence_mod.converge_raw_materialization(config)
 
     assert second.plan_outcomes[0].status.value == "executed"
     assert second.plan_outcomes[0].plan_id == first_plan_id
@@ -4051,7 +3545,7 @@ def test_raw_materialization_cas_conflict_outcome_is_typed_durable_and_non_mutat
         raise RuntimeError(cas_message)
 
     monkeypatch.setattr(revision_backfill, "backfill_historical_revision_evidence", raise_cas_conflict)
-    result = repair_mod.repair_raw_materialization(_config(tmp_path))
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
     outcome = result.plan_outcomes[0]
     assert outcome.status.value == "retryable"
@@ -4108,7 +3602,7 @@ def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
             acquired_at_ms=1,
         )
 
-    original = repair_mod._raw_replay_conservation_metrics
+    original = raw_convergence_mod._raw_replay_conservation_metrics
 
     def corrupt_outcome_algebra(
         plans: Sequence[RawReplayPlan],
@@ -4118,8 +3612,8 @@ def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
         plan_count, carried_forward, _errors = original(plans, selected_plan_ids, outcomes)
         return plan_count, carried_forward, 1
 
-    monkeypatch.setattr(repair_mod, "_raw_replay_conservation_metrics", corrupt_outcome_algebra)
-    result = repair_mod.repair_raw_materialization(_config(tmp_path))
+    monkeypatch.setattr(raw_convergence_mod, "_raw_replay_conservation_metrics", corrupt_outcome_algebra)
+    result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
     assert result.repaired_count == 1
     assert result.metrics["raw_materialization_plan_conservation_error_count"] == 1.0
@@ -4183,13 +3677,13 @@ def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: P
         source_conn.commit()
 
     config = _config(tmp_path)
-    before = repair_mod.raw_materialization_replay_backlog(config)
+    before = raw_convergence_mod.raw_materialization_replay_backlog(config)
     assert before["candidate_count"] == 9
     assert before["authority_component_count"] == 5
 
     preview, incomplete_censuses = _complete_bounded_raw_census(config, limit=3)
-    first = repair_mod.repair_raw_materialization(config, raw_artifact_limit=3)
-    after = repair_mod.raw_materialization_replay_backlog(config)
+    first = raw_convergence_mod.converge_raw_materialization(config, raw_artifact_limit=3)
+    after = raw_convergence_mod.raw_materialization_replay_backlog(config)
 
     # The first bounded attempt discovers the five-revision shared component
     # transitively; the next pass handles the remaining independent components
@@ -4238,438 +3732,12 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("synthetic retained-byte decode failure")),
     )
 
-    result = repair_mod.repair_raw_materialization(config, dry_run=False)
+    result = raw_convergence_mod.converge_raw_materialization(config, dry_run=False)
 
     assert result.success is False
     assert result.repaired_count == 0
     assert "parser census completes" in result.detail
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
-
-
-def _ready_session_insight_status() -> SessionInsightStatusSnapshot:
-    return SessionInsightStatusSnapshot(
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        run_rows_ready=True,
-        observed_event_rows_ready=True,
-        context_snapshot_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-    )
-
-
-def test_repair_session_insights_noops_when_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    @contextmanager
-    def fake_connection_context(_path: Path) -> Iterator[object]:
-        yield object()
-
-    def fail_rebuild(*args: object, **kwargs: object) -> int:
-        raise AssertionError("ready session insights must not run a full rebuild")
-
-    monkeypatch.setattr("polylogue.storage.sqlite.connection.connection_context", fake_connection_context)
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.status.session_insight_status_sync",
-        lambda _conn: _ready_session_insight_status(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_session_insights_sync",
-        fail_rebuild,
-    )
-
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 0
-    assert result.detail == "Session insights already ready"
-
-
-def test_repair_session_insights_dry_run_reports_archive_wide_rebuild(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeArchive:
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return SessionInsightStatusSnapshot(
-                total_sessions=16_358,
-                profile_rows_ready=False,
-                latency_profile_rows_ready=True,
-                work_event_inference_rows_ready=True,
-                work_event_inference_fts_ready=True,
-                phase_inference_rows_ready=True,
-                threads_ready=True,
-                tag_rollups_ready=True,
-                missing_profile_row_count=103,
-            )
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=True)
-
-    assert result.success is True
-    assert result.repaired_count == 16_358
-    assert result.detail == (
-        "Would: rebuild archive-wide session insights for 16,358 session(s) to repair 103 debt row(s)"
-    )
-
-
-def test_repair_session_insights_dry_run_reports_scoped_rebuild(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class FakeArchive:
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return SessionInsightStatusSnapshot(
-                total_sessions=16_358,
-                profile_rows_ready=False,
-                latency_profile_rows_ready=True,
-                work_event_inference_rows_ready=True,
-                work_event_inference_fts_ready=True,
-                phase_inference_rows_ready=True,
-                threads_ready=True,
-                tag_rollups_ready=True,
-                missing_profile_row_count=103,
-            )
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-
-    result = repair_mod.repair_session_insights(
-        _config(tmp_path),
-        dry_run=True,
-        session_ids=("a", "b", "c"),
-    )
-
-    assert result.success is True
-    assert result.repaired_count == 3
-    assert result.detail == "Would: rebuild session insights for 3 scoped session(s)"
-
-
-def test_repair_session_insights_clears_scoped_convergence_debt(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            """
-            CREATE TABLE convergence_debt (
-                debt_id TEXT PRIMARY KEY,
-                stage TEXT NOT NULL,
-                target_type TEXT NOT NULL,
-                target_id TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'failed' CHECK(status IN ('failed', 'deferred')),
-                priority INTEGER NOT NULL DEFAULT 0,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT,
-                next_retry_at TEXT,
-                materializer_version TEXT,
-                created_at_ms INTEGER NOT NULL,
-                updated_at_ms INTEGER NOT NULL,
-                UNIQUE(stage, target_type, target_id)
-            )
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO convergence_debt (
-                debt_id, stage, target_type, target_id, status, priority,
-                attempts, last_error, next_retry_at, materializer_version,
-                created_at_ms, updated_at_ms
-            )
-            VALUES (?, ?, 'session_id', ?, 'deferred', 0, 1, 'quiet window', NULL, NULL, 1, 1)
-            """,
-            (
-                ("debt-1", "insights", "codex-session:target"),
-                ("debt-2", "insights", "codex-session:other"),
-                ("debt-3", "fts", "codex-session:target"),
-            ),
-        )
-
-    class FakeArchive:
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return _ready_session_insight_status()
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
-        lambda _archive, **_kwargs: SessionInsightCounts(profiles=1),
-    )
-
-    result = repair_mod.repair_session_insights(
-        _config(tmp_path),
-        dry_run=False,
-        session_ids=("codex-session:target",),
-    )
-
-    assert result.success is True
-    assert result.repaired_count == 1
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        rows = conn.execute(
-            """
-            SELECT stage, target_id
-            FROM convergence_debt
-            ORDER BY debt_id
-            """
-        ).fetchall()
-
-    assert rows == [
-        ("insights", "codex-session:other"),
-        ("fts", "codex-session:target"),
-    ]
-
-
-def test_repair_session_insights_uses_candidate_session_ids(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL, updated_at_ms INTEGER);
-        CREATE TABLE session_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT,
-            work_event_count INTEGER,
-            phase_count INTEGER
-        );
-        CREATE TABLE session_latency_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT
-        );
-        CREATE TABLE session_work_events (session_id TEXT);
-        CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (
-            insight_type TEXT,
-            session_id TEXT,
-            materializer_version INTEGER,
-            source_sort_key_ms INTEGER
-        );
-        """
-    )
-    conn.executemany(
-        "INSERT INTO sessions(session_id, sort_key_ms) VALUES (?, ?)",
-        (("ready", 1_000.0), ("missing", 2_000.0)),
-    )
-    conn.execute(
-        """
-        INSERT INTO session_profiles(
-            session_id, materializer_version, source_sort_key, work_event_count, phase_count
-        )
-        VALUES ('ready', ?, 1.0, 0, 0)
-        """,
-        (repair_mod._session_insight_materializer_version(),),
-    )
-    conn.execute(
-        """
-        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
-        VALUES ('ready', ?, 1.0)
-        """,
-        (repair_mod._session_insight_materializer_version(),),
-    )
-    conn.executemany(
-        """
-        INSERT INTO insight_materialization(
-            insight_type, session_id, materializer_version, source_sort_key_ms
-        ) VALUES (?, 'ready', ?, 1000)
-        """,
-        (
-            ("session_profile", repair_mod._session_insight_materializer_version()),
-            ("latency", repair_mod._session_insight_materializer_version()),
-            ("work_events", repair_mod._session_insight_materializer_version()),
-            ("phases", repair_mod._session_insight_materializer_version()),
-            ("thread", repair_mod._session_insight_materializer_version()),
-            ("runs", repair_mod._session_insight_materializer_version()),
-            ("observed_events", repair_mod._session_insight_materializer_version()),
-            ("context_snapshots", repair_mod._session_insight_materializer_version()),
-        ),
-    )
-
-    calls: list[tuple[str, ...] | None] = []
-
-    class FakeArchive:
-        _conn = conn
-
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return next(statuses)
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    stale_status = SessionInsightStatusSnapshot(
-        total_sessions=2,
-        profile_rows_ready=False,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-        missing_profile_row_count=1,
-    )
-    statuses = iter((stale_status, _ready_session_insight_status()))
-
-    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
-        calls.append(session_ids)
-        return SessionInsightCounts(profiles=1)
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
-        fake_rebuild,
-    )
-
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 1
-    assert calls == [("missing",)]
-
-
-def test_repair_session_insights_targets_stale_thread_materialization(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE sessions (session_id TEXT PRIMARY KEY, sort_key_ms REAL, updated_at_ms INTEGER);
-        CREATE TABLE session_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT,
-            work_event_count INTEGER,
-            phase_count INTEGER
-        );
-        CREATE TABLE session_latency_profiles (
-            session_id TEXT PRIMARY KEY,
-            materializer_version INTEGER,
-            source_sort_key REAL,
-            source_updated_at TEXT
-        );
-        CREATE TABLE session_work_events (session_id TEXT);
-        CREATE TABLE session_phases (session_id TEXT);
-        CREATE TABLE insight_materialization (
-            insight_type TEXT,
-            session_id TEXT,
-            materializer_version INTEGER,
-            source_sort_key_ms INTEGER
-        );
-        """
-    )
-    conn.execute("INSERT INTO sessions(session_id, sort_key_ms) VALUES ('stale-thread-marker', 1000)")
-    current_version = repair_mod._session_insight_materializer_version()
-    conn.execute(
-        """
-        INSERT INTO session_profiles(
-            session_id, materializer_version, source_sort_key, work_event_count, phase_count
-        )
-        VALUES ('stale-thread-marker', ?, 1.0, 0, 0)
-        """,
-        (current_version,),
-    )
-    conn.execute(
-        """
-        INSERT INTO session_latency_profiles(session_id, materializer_version, source_sort_key)
-        VALUES ('stale-thread-marker', ?, 1.0)
-        """,
-        (current_version,),
-    )
-    conn.executemany(
-        """
-        INSERT INTO insight_materialization(
-            insight_type, session_id, materializer_version, source_sort_key_ms
-        ) VALUES (?, 'stale-thread-marker', ?, 1000)
-        """,
-        (
-            ("session_profile", current_version),
-            ("latency", current_version),
-            ("work_events", current_version),
-            ("phases", current_version),
-            ("runs", current_version),
-            ("observed_events", current_version),
-            ("context_snapshots", current_version),
-            ("thread", current_version - 1),
-        ),
-    )
-
-    calls: list[tuple[str, tuple[str, ...] | None]] = []
-
-    class FakeArchive:
-        _conn = conn
-
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return next(statuses)
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    stale_status = SessionInsightStatusSnapshot(
-        total_sessions=1,
-        profile_rows_ready=True,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=True,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=False,
-        tag_rollups_ready=True,
-        missing_thread_materialization_count=1,
-    )
-    statuses = iter((stale_status, _ready_session_insight_status()))
-
-    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
-        calls.append(("rebuild", session_ids))
-        return SessionInsightCounts(threads=1)
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
-        fake_rebuild,
-    )
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 1
-    assert calls == [("rebuild", ("stale-thread-marker",))]
 
 
 def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
@@ -4694,167 +3762,6 @@ def test_repair_assessment_ignores_optional_run_projection_cache_gaps() -> None:
     assert assessment.row_debt == 0
 
 
-def test_repair_session_insights_uses_stale_profile_candidates(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    calls: list[tuple[str, tuple[str, ...] | None]] = []
-
-    class FakeArchive:
-        def session_insight_status(self) -> SessionInsightStatusSnapshot:
-            return next(statuses)
-
-        def __enter__(self) -> FakeArchive:
-            return self
-
-        def __exit__(self, *_args: object) -> None:
-            pass
-
-    stale_status = SessionInsightStatusSnapshot(
-        profile_rows_ready=False,
-        latency_profile_rows_ready=True,
-        work_event_inference_rows_ready=False,
-        work_event_inference_fts_ready=True,
-        phase_inference_rows_ready=True,
-        threads_ready=True,
-        tag_rollups_ready=True,
-        stale_profile_row_count=2,
-        stale_work_event_inference_count=2,
-        work_event_inference_fts_count=4,
-        work_event_inference_count=4,
-        thread_count=1,
-    )
-    statuses = iter((stale_status, _ready_session_insight_status()))
-
-    def fake_rebuild(_archive: FakeArchive, *, session_ids: tuple[str, ...] | None, **_kwargs: object) -> Any:
-        calls.append(("rebuild", session_ids))
-        return SessionInsightCounts(profiles=2, work_events=2)
-
-    monkeypatch.setattr(
-        "polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_existing",
-        lambda _archive_root, read_only=False: FakeArchive(),
-    )
-    monkeypatch.setattr(
-        "polylogue.storage.insights.session.rebuild.rebuild_archive_session_insights",
-        fake_rebuild,
-    )
-
-    result = repair_mod.repair_session_insights(_config(tmp_path), dry_run=False)
-
-    assert result.success is True
-    assert result.repaired_count == 4
-    assert ("rebuild", None) in calls
-
-
-def test_offline_maintenance_refuses_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 1234)
-
-    results = repair_mod.run_selected_maintenance(
-        _config(tmp_path),
-        repair=True,
-        cleanup=False,
-        targets=("session_insights",),
-    )
-
-    assert len(results) == 1
-    assert results[0].name == "session_insights"
-    assert results[0].success is False
-    assert "polylogued PID 1234 is running" in results[0].detail
-
-
-def test_offline_maintenance_preview_allowed_with_live_daemon(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("polylogue.maintenance.offline_guard.running_daemon_pid", lambda _config: 1234)
-
-    results = repair_mod.run_selected_maintenance(
-        _config(tmp_path),
-        repair=True,
-        cleanup=False,
-        dry_run=True,
-        preview_counts={"session_insights": 2},
-        targets=("session_insights",),
-    )
-
-    assert len(results) == 1
-    assert results[0].success is True
-    assert results[0].repaired_count == 2
-
-
-def test_selected_cleanup_passes_session_scope_to_empty_session_handler(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    seen: list[tuple[str, ...] | None] = []
-
-    def empty_sessions(
-        _config: Config, dry_run: bool, *, session_ids: tuple[str, ...] | None = None
-    ) -> repair_mod.RepairResult:
-        del dry_run
-        seen.append(session_ids)
-        return repair_mod.RepairResult(
-            name="empty_sessions",
-            category=MaintenanceCategory.ARCHIVE_CLEANUP,
-            destructive=True,
-            repaired_count=1,
-            success=True,
-            detail="scoped",
-        )
-
-    monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
-    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, "empty_sessions", empty_sessions)
-
-    results = repair_mod.run_selected_maintenance(
-        _config(tmp_path),
-        repair=False,
-        cleanup=True,
-        targets=("empty_sessions",),
-        scope_filter=MaintenanceScopeFilter(session_ids=("s-1", "s-2")),
-    )
-
-    assert [result.name for result in results] == ["empty_sessions"]
-    assert seen == [("s-1", "s-2")]
-
-
-@pytest.mark.parametrize(
-    ("repair", "cleanup", "target", "scope_filter"),
-    [
-        (True, False, "session_insights", MaintenanceScopeFilter(origin="codex-session")),
-        (False, True, "superseded_raw_snapshots", MaintenanceScopeFilter(session_ids=("s-1",))),
-    ],
-)
-def test_selected_maintenance_does_not_expand_rejected_target_to_all_dispatch(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    repair: bool,
-    cleanup: bool,
-    target: str,
-    scope_filter: MaintenanceScopeFilter,
-) -> None:
-    """A refused explicit target cannot fall back to an unscoped run."""
-
-    def rejected_target(*_args: object, **_kwargs: object) -> repair_mod.RepairResult:
-        raise AssertionError("rejected target was dispatched")
-
-    monkeypatch.setattr(repair_mod, "offline_maintenance_blockers", lambda *_args, **_kwargs: [])
-    monkeypatch.setitem(repair_mod.REPAIR_HANDLERS, target, rejected_target)
-
-    results = repair_mod.run_selected_maintenance(
-        _config(tmp_path),
-        repair=repair,
-        cleanup=cleanup,
-        targets=(target,),
-        scope_filter=scope_filter,
-    )
-
-    assert [(result.name, result.success) for result in results] == [(target, False)]
-    assert "Unsupported scope dimensions" in results[0].detail
-
-
-# polylogue-t93b: the daemon whale pass. A component whose aggregate raw
-# payload exceeds the ordinary fast-path envelope must not stay
-# permanently resource-blocked when every member is stream-record-safe --
-# ``raw_materialization_whale_pass_candidate`` selects it for a dedicated,
-# single-component pass at a widened envelope, and the very same
-# ``repair_raw_materialization`` entrypoint (now ``raw_artifact_id``-scoped)
-# converges it. Non-stream-safe oversized components must never be
-# selected and must carry a distinct typed reason instead.
-
-
 def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_component(tmp_path: Path) -> None:
     from tests.infra.revision_backfill_benchmark import build_revision_chain_corpus
 
@@ -4864,7 +3771,7 @@ def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_co
     # Envelope wide enough to admit the whole chain: nothing is oversized,
     # no escalation needed.
     assert (
-        repair_mod.raw_materialization_whale_pass_candidate(
+        raw_convergence_mod.raw_materialization_whale_pass_candidate(
             config, ordinary_max_payload_bytes=10_000_000, whale_max_payload_bytes=10_000_000
         )
         is None
@@ -4873,14 +3780,14 @@ def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_co
     # Ordinary envelope too small for the chain, but the whale envelope is
     # wide enough and every member is stream-safe (Provider.CODEX, .jsonl):
     # the earliest-acquired raw (the fairness seed) is selected.
-    seed = repair_mod.raw_materialization_whale_pass_candidate(
+    seed = raw_convergence_mod.raw_materialization_whale_pass_candidate(
         config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=10_000_000
     )
     assert seed == raw_ids[0]
 
     # Whale envelope also too small: genuinely still blocked, no candidate.
     assert (
-        repair_mod.raw_materialization_whale_pass_candidate(
+        raw_convergence_mod.raw_materialization_whale_pass_candidate(
             config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=500
         )
         is None
@@ -4893,7 +3800,7 @@ def test_stream_safe_resolves_non_candidate_component_members_via_expanded_maps(
     maps. Stream-safety must resolve them there, not read origin=None and judge a
     fully stream-safe codex component non-safe -- the bug that made the daemon
     whale pass skip the 6.33GB codex witness component (polylogue-t93b)."""
-    candidates = repair_mod.RawMaterializationCandidates(
+    candidates = raw_convergence_mod.RawMaterializationCandidates(
         raw_ids=["cand"],
         missing_blobs=0,
         already_parsed=0,
@@ -4903,10 +3810,10 @@ def test_stream_safe_resolves_non_candidate_component_members_via_expanded_maps(
         expanded_source_paths={"cand": "/c/rollout-2026-a.jsonl", "noncand": "/c/rollout-2026-b.jsonl"},
     )
     # Candidate member: stream-safe as before.
-    assert repair_mod._raw_materialization_stream_safe(candidates, "cand") is True
+    assert raw_convergence_mod._raw_materialization_stream_safe(candidates, "cand") is True
     # Non-candidate member present ONLY in the expanded maps must ALSO be
     # judged by its real codex origin -- True, not False from a missing lookup.
-    assert repair_mod._raw_materialization_stream_safe(candidates, "noncand") is True
+    assert raw_convergence_mod._raw_materialization_stream_safe(candidates, "noncand") is True
 
 
 def test_raw_materialization_whale_pass_candidate_excludes_non_stream_safe_component(tmp_path: Path) -> None:
@@ -4929,7 +3836,7 @@ def test_raw_materialization_whale_pass_candidate_excludes_non_stream_safe_compo
     # ChatGPT export + non-jsonl source path is not stream-record-safe --
     # must never be selected for escalation, at any whale envelope width.
     assert (
-        repair_mod.raw_materialization_whale_pass_candidate(
+        raw_convergence_mod.raw_materialization_whale_pass_candidate(
             config, ordinary_max_payload_bytes=500, whale_max_payload_bytes=1_000_000_000
         )
         is None
@@ -4969,10 +3876,10 @@ def test_raw_materialization_ordinary_pass_census_detail_distinguishes_escalatio
         )
         conn.commit()
 
-    stream_safe_result = repair_mod.repair_raw_materialization(
+    stream_safe_result = raw_convergence_mod.converge_raw_materialization(
         _config(tmp_path), raw_artifact_id=stream_safe_raw_id, max_payload_bytes=ordinary_limit
     )
-    non_stream_safe_result = repair_mod.repair_raw_materialization(
+    non_stream_safe_result = raw_convergence_mod.converge_raw_materialization(
         _config(tmp_path), raw_artifact_id=non_stream_safe_raw_id, max_payload_bytes=ordinary_limit
     )
 
@@ -5011,8 +3918,12 @@ def test_non_stream_safe_envelope_terminal_never_reports_deferred_success(tmp_pa
         conn.execute("UPDATE raw_sessions SET blob_size = 501 WHERE raw_id = ?", (raw_id,))
         conn.commit()
 
-    first = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500)
-    second = repair_mod.repair_raw_materialization(_config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500)
+    first = raw_convergence_mod.converge_raw_materialization(
+        _config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500
+    )
+    second = raw_convergence_mod.converge_raw_materialization(
+        _config(tmp_path), raw_artifact_id=raw_id, max_payload_bytes=500
+    )
 
     assert first.success is False
     # Removing the terminal/deferred distinction from the envelope query makes
@@ -5040,12 +3951,12 @@ def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_
     whale_limit = 10_000_000
 
     # The ordinary fast-path envelope permanently blocks the whole chain.
-    blocked = repair_mod.repair_raw_materialization(
+    blocked = raw_convergence_mod.converge_raw_materialization(
         config, raw_artifact_id=raw_ids[0], max_payload_bytes=ordinary_limit
     )
     assert blocked.success is False
 
-    seed = repair_mod.raw_materialization_whale_pass_candidate(
+    seed = raw_convergence_mod.raw_materialization_whale_pass_candidate(
         config, ordinary_max_payload_bytes=ordinary_limit, whale_max_payload_bytes=whale_limit
     )
     assert seed is not None
@@ -5078,7 +3989,7 @@ def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_
         assert stage.cache.contains(seed)
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(RawParsePrefetchCache, "pop", counting_pop)
-            converged = repair_mod.repair_raw_materialization(
+            converged = raw_convergence_mod.converge_raw_materialization(
                 config,
                 raw_artifact_id=seed,
                 max_payload_bytes=whale_limit,
@@ -5102,7 +4013,7 @@ def test_raw_materialization_whale_pass_converges_blocked_component_to_resolved_
 
     # Fully converged: no longer a whale-pass candidate at any envelope.
     assert (
-        repair_mod.raw_materialization_whale_pass_candidate(
+        raw_convergence_mod.raw_materialization_whale_pass_candidate(
             config, ordinary_max_payload_bytes=ordinary_limit, whale_max_payload_bytes=whale_limit
         )
         is None
@@ -5140,7 +4051,7 @@ def test_raw_materialization_whale_pass_commit_batches_bounded(tmp_path: Path) -
             original_commit(self)
 
         with mock.patch.object(ArchiveStore, "commit", counting_commit):
-            result = repair_mod.repair_raw_materialization(
+            result = raw_convergence_mod.converge_raw_materialization(
                 _config(root),
                 raw_artifact_id=raw_ids[0],
                 max_payload_bytes=whale_limit,
@@ -5178,7 +4089,7 @@ def test_raw_materialization_converges_component_with_byte_governed_append_fragm
     (767 append fragments, 20 cleanly parsed fulls, ~20k messages) has sat
     unmaterialized in exactly this state.
 
-    Drives the real ``repair_raw_materialization`` entry point, not the
+    Drives the real ``converge_raw_materialization`` entry point, not the
     census helper directly, because the livelock is a property of the pass's
     census/planning handshake rather than of either half alone.
     """
@@ -5245,11 +4156,11 @@ def test_raw_materialization_converges_component_with_byte_governed_append_fragm
         store.commit()
 
     config = _config(tmp_path)
-    result = repair_mod.repair_raw_materialization(config)
+    result = raw_convergence_mod.converge_raw_materialization(config)
     for _ in range(2):
         if result.repaired_count:
             break
-        result = repair_mod.repair_raw_materialization(config)
+        result = raw_convergence_mod.converge_raw_materialization(config)
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         append_receipt = conn.execute(

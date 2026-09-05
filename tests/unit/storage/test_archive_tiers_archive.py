@@ -77,7 +77,7 @@ def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_
     assert refusal.generation_id == "gen-stale-read"
     assert refusal.lifecycle_action == "rebuild_index"
     assert "gen-stale-read" in str(refusal)
-    assert "polylogue ops maintenance rebuild-index" in str(refusal)
+    assert "Reset the derived index and let `polylogued run` rebuild it from source." in str(refusal)
 
 
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(

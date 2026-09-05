@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from http import HTTPStatus
-from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -163,62 +161,6 @@ def test_find_openapi_operation_carries_declaration_contract() -> None:
         "domain_operation": "sessions.find",
         "owner_path": "polylogue/daemon/http.py",
     }
-
-
-def test_rebuild_index_handler_forwards_resumable_pass_options_through_writer_bridge() -> None:
-    """The live HTTP handler reaches the daemon bridge with the canonical request model.
-
-    This fails if the handler drops any bounded-pass field before handing the
-    request to ``rebuild_index_from_source_sync``.
-    """
-    from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
-
-    receipt = RebuildIndexReceipt(
-        archive_root="/archive",
-        raw_session_count=2,
-        selected_raw_count=1,
-        skipped_by_blob_limit_count=0,
-        status="deferred",
-        materialized=False,
-        materialization={},
-        generation={"generation_id": "candidate"},
-        readiness={},
-        replay={"scheduled_raw_count": 1},
-        transaction={"operation_id": "resume-1", "status": "deferred"},
-    )
-    # polylogue-ogn1: the handler waits up to `_REBUILD_INDEX_WRITE_TIMEOUT_S`
-    # via `run_sync_with_timeout` (a longer-lived variant of `run_sync`,
-    # sized for a bounded rebuild pass rather than an ordinary request-scoped
-    # write) instead of the bridge's shorter default-timeout `run_sync`.
-    bridge = SimpleNamespace(write_bridge=MagicMock())
-    bridge.write_bridge.run_sync_with_timeout.return_value = receipt
-    handler = _make_handler(
-        "POST",
-        "/api/maintenance/rebuild-index",
-        body=json.dumps(
-            {
-                "raw_batch_size": 17,
-                "pass_byte_budget_mb": 12.5,
-                "pass_deadline_seconds": 45,
-                "promote": False,
-            }
-        ).encode(),
-        server=bridge,
-    )
-    _send_error, send_json = capture_responses(handler)
-
-    handler._handle_rebuild_index()
-
-    actor, timeout, function, request = bridge.write_bridge.run_sync_with_timeout.call_args.args
-    assert actor == "http.maintenance.rebuild-index"
-    assert timeout == 600.0
-    assert function.__name__ == "rebuild_index_from_source_sync"
-    assert request.operation_id is None
-    assert request.raw_batch_size == 17
-    assert request.pass_byte_budget_mb == 12.5
-    assert request.pass_deadline_seconds == 45.0
-    assert request.promote is False
-    send_json.assert_called_once_with(HTTPStatus.OK, receipt.to_dict())
 
 
 def test_stable_routes_have_explicit_auth_and_response_contracts() -> None:
