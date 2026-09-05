@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -36,6 +37,32 @@ from devtools.verify_runs import (
 #: executing. These tests drive that code inline through its documented escape
 #: rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
+
+
+def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
+    """Stand in for the pytest process the held slot launches (a process group, waited on)."""
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            self.pid = os.getpid()
+            self.returncode = int(fake_run(argv, **kwargs).returncode)
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+
+
+def _outside_the_pytest_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An agent-pool job: the test itself runs inside the pytest pool, which owns the slot."""
+    for name in agent_env.runtime_env_names(agent_env.QUEUE_POOL_ENV):
+        monkeypatch.delenv(name, raising=False)
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/user.slice/user-1000.slice/user@1000.service/agent.slice/run-1.scope\n", encoding="utf-8")
+    monkeypatch.setattr(agent_env, "_CGROUP_PATH", cgroup)
 
 
 def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -658,9 +685,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         )
         return SimpleNamespace(returncode=1)
 
-    import subprocess
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_held_pytest(monkeypatch, fake_run)
     command = ["python", "-m", "pytest", f"--json-report-file={report_path}"]
 
     result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
@@ -773,7 +798,7 @@ def _flake_rerun_fixture(
         )
         return subprocess.CompletedProcess(command, 0 if rerun_outcome == "passed" else 1)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_held_pytest(monkeypatch, fake_run)
     return report_path, launched
 
 
@@ -932,6 +957,7 @@ def test_focused_managed_runs_also_force_the_full_hypothesis_profile() -> None:
 def test_agent_tier_refusal_honors_the_json_contract(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     """Anti-vacuity: restore the unconditional stderr write and stdout is empty
     so the json.loads below raises.
@@ -940,8 +966,7 @@ def test_agent_tier_refusal_honors_the_json_contract(
     leaves a hole in it exactly where an automated caller needs a verdict.
     """
 
-    from devtools import agent_env
-
+    _outside_the_pytest_pool(monkeypatch, tmp_path)
     monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
 
     exit_code = verify._main(["--json"])
