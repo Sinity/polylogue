@@ -1304,8 +1304,6 @@ def raw_frontier_blocked_source_paths(
         return RawFrontierBlockedPaths(frozenset(), None)
     paths: set[str] = set()
     unattributed: list[str] = []
-    if not projection.available:
-        unattributed.append(projection.summary)
     if projection.missing_source_raw_count:
         unattributed.append(projection.missing_source_raw_reason)
     if projection.broken_head_status == "unknown" and not projection.broken_head_count:
