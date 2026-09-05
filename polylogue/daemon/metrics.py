@@ -104,7 +104,6 @@ from polylogue.storage.archive_layout import (
     ARCHIVE_LAYOUT_BLOCKER_LABELS,
     ARCHIVE_STORAGE_LAYOUTS,
 )
-from polylogue.storage.archive_readiness import active_rebuild_index_attempts
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 
@@ -1780,9 +1779,7 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path, *, configured_root
         schema_mismatches=schema_mismatches,
         missing_backup_required=missing_backup_required,
     )
-    active_rebuild_attempts = active_rebuild_index_attempts(configured_root / "ops.db")
-    materialization_blockers = ["active_rebuild_index"] if active_rebuild_attempts else []
-    archive_ready = physical_archive_store and not blockers and not materialization_blockers
+    archive_ready = physical_archive_store and not blockers
     _emit_metric(
         lines,
         name="polylogue_archive_storage_layout",
@@ -1798,15 +1795,8 @@ def _emit_archive_storage_metrics(lines: list[str], db: Path, *, configured_root
         samples=[
             ({"state": "archive_runtime"}, 1 if archive_ready else 0),
             ({"state": "final_shape"}, 1 if final_shape_ready else 0),
-            ({"state": "materialized"}, 0 if materialization_blockers else 1),
+            ({"state": "materialized"}, 1),
         ],
-    )
-    _emit_metric(
-        lines,
-        name="polylogue_archive_rebuild_index_attempts",
-        help_text="Number of active rebuild-index maintenance attempts.",
-        metric_type="gauge",
-        samples=[(None, len(active_rebuild_attempts))],
     )
     _emit_metric(
         lines,

@@ -136,8 +136,8 @@ def action_pairs_refresh_all_sql() -> str:
 def rebuild_all_action_pairs_sync(conn: sqlite3.Connection) -> None:
     """Repopulate ``action_pairs`` for every session in one bulk delete+insert.
 
-    The bulk-build readiness repopulate step (``maintenance/rebuild_index.py``)
-    calls this once after replay instead of relying on any per-session refresh.
+    A bulk repopulate calls this once after replay instead of relying on any
+    per-session refresh.
     """
     conn.execute("DELETE FROM action_pairs")
     conn.execute(action_pairs_refresh_all_sql())

@@ -84,7 +84,6 @@ class ReadinessReport(OutcomeReport):
     timestamp: int = field(default_factory=lambda: int(time.time()))
     derived_models: dict[str, DerivedModelStatus] = field(default_factory=dict)
     archive_debt: dict[str, ArchiveDebtStatus] = field(default_factory=dict)
-    active_rebuild_index_attempts: list[dict[str, object]] = field(default_factory=list)
     raw_materialization_readiness: dict[str, object] = field(default_factory=dict)
     raw_frontier_integrity: dict[str, object] = field(default_factory=dict)
 
@@ -101,9 +100,7 @@ class ReadinessReport(OutcomeReport):
 
     @property
     def archive_convergence(self) -> dict[str, object]:
-        archive_state_checked = bool(
-            self.raw_materialization_readiness or self.raw_frontier_integrity or self.active_rebuild_index_attempts
-        )
+        archive_state_checked = bool(self.raw_materialization_readiness or self.raw_frontier_integrity)
         materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
         frontier_ready = (
             not self.raw_frontier_integrity or self.raw_frontier_integrity.get("overall_status") == "healthy"
@@ -118,11 +115,9 @@ class ReadinessReport(OutcomeReport):
         }
         return {
             "checked": archive_state_checked,
-            "converging": archive_state_checked
-            and (bool(self.active_rebuild_index_attempts) or not materialization_ready or not frontier_ready),
+            "converging": archive_state_checked and (not materialization_ready or not frontier_ready),
             "materialization_ready": materialization_ready,
             "materialization_progress": materialization_progress,
-            "active_rebuild_index_attempts": self.active_rebuild_index_attempts,
             "raw_materialization_readiness": self.raw_materialization_readiness,
             "raw_frontier_integrity": self.raw_frontier_integrity,
         }
@@ -662,13 +657,9 @@ def _raw_frontier_integrity_check(projection: RawFrontierIntegrityProjection) ->
 
 def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
     checks: list[ReadinessCheck] = []
-    from polylogue.storage.archive_readiness import (
-        active_rebuild_index_attempts,
-        raw_materialization_readiness_snapshot,
-    )
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
     archive_root = _config_archive_root(config)
-    active_rebuild_attempts = active_rebuild_index_attempts(archive_root / "ops.db")
     raw_materialization_readiness = raw_materialization_readiness_snapshot(archive_root)
     raw_frontier_projection = raw_frontier_integrity_projection(archive_root, raw_materialization_readiness)
     raw_frontier_payload = raw_frontier_projection.to_dict()
@@ -686,7 +677,6 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
         checks.append(_skipped_index_check(db_error))
         return ReadinessReport(
             checks=checks,
-            active_rebuild_index_attempts=active_rebuild_attempts,
             raw_materialization_readiness=raw_materialization_readiness,
             raw_frontier_integrity=raw_frontier_payload,
         )
@@ -745,7 +735,6 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
         checks=checks,
         derived_models=derived_statuses,
         archive_debt=archive_debt,
-        active_rebuild_index_attempts=active_rebuild_attempts,
         raw_materialization_readiness=raw_materialization_readiness,
         raw_frontier_integrity=raw_frontier_payload,
     )

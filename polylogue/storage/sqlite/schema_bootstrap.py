@@ -59,7 +59,7 @@ def schema_version_mismatch_message(current_version: int, *, generation_id: str 
     else:
         message = (
             f"Database schema version {current_version} is not the expected archive version {SCHEMA_VERSION}. "
-            "Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`."
+            "Reset the derived index and let `polylogued run` rebuild it from source."
         )
     if generation_id is not None:
         action = "upgrade_runtime" if current_version > SCHEMA_VERSION else "rebuild_index"

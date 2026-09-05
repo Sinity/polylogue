@@ -492,8 +492,7 @@ def write_parsed_session_to_archive(
     bulk-generation-build lifecycle this session write may be part of: a
     full source-to-index replay that always finishes with exactly one
     archive-wide repopulate of ``messages_fts``/``blocks_command_trigram``/
-    ``action_pairs``/``delegation_facts`` before readiness (see
-    ``maintenance/rebuild_index.py``). When ``True``, this write skips every
+    ``action_pairs``/``delegation_facts`` before readiness. When ``True``, this write skips every
     per-session refresh of those four derived surfaces entirely (not just the
     guard-gated bulk delete+insert ``bulk_fts`` performs) -- the final
     repopulate covers every session regardless, so per-session work here is

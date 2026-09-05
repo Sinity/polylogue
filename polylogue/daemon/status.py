@@ -70,7 +70,6 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.watcher import default_sources
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import (
-    active_rebuild_index_attempts,
     probe_archive_tier,
     raw_materialization_readiness_snapshot,
     raw_materialization_ready,
@@ -332,7 +331,6 @@ class ArchiveStorageStatus(BaseModel):
     archive_root_matches_configured: bool = True
     archive_ready: bool = False
     archive_materialization_ready: bool = False
-    active_rebuild_index_attempts: list[dict[str, object]] = Field(default_factory=list)
     final_shape_ready: bool = False
     archive_schema_ready: bool = False
     schema_mismatches: list[str] = Field(default_factory=list)
@@ -701,13 +699,10 @@ def _archive_storage_info() -> ArchiveStorageStatus:
     missing_tiers = [str(tier.name) for tier in tiers if not tier.exists]
     index_exists = "index" in present_tiers
     source_exists = "source" in present_tiers
-    active_rebuild_attempts = active_rebuild_index_attempts(tier_paths["ops"])
     final_shape_ready = not missing_tiers
     schema_mismatches = [str(tier.name) for tier in tiers if tier.exists and tier.version_status != "ok"]
     archive_schema_ready = final_shape_ready and not schema_mismatches
-    archive_ready = (
-        index_exists and source_exists and archive_schema_ready and not active_rebuild_attempts and not conflicts
-    )
+    archive_ready = index_exists and source_exists and archive_schema_ready and not conflicts
     if index_exists and source_exists:
         active_store: Literal["archive_file_set", "empty"] = "archive_file_set"
     else:
@@ -720,7 +715,6 @@ def _archive_storage_info() -> ArchiveStorageStatus:
         archive_root_matches_configured=root == configured_root,
         archive_ready=archive_ready,
         archive_materialization_ready=archive_ready,
-        active_rebuild_index_attempts=active_rebuild_attempts,
         final_shape_ready=final_shape_ready,
         archive_schema_ready=archive_schema_ready,
         schema_mismatches=schema_mismatches,
@@ -2012,13 +2006,10 @@ def _daemon_claim_guard(
     """Derive the claim-guard block for the daemon-serving status path."""
     raw_component = _component_from_raw_materialization_readiness(raw_materialization_readiness)
     fts_component = _component_from_fts_readiness(fts_readiness)
-    rebuild_attempts = len(archive_storage.active_rebuild_index_attempts)
-    active_writer = bool(live_ingest_attempts.running_count) or bool(rebuild_attempts)
+    active_writer = bool(live_ingest_attempts.running_count)
     writer_parts: list[str] = []
     if live_ingest_attempts.running_count:
         writer_parts.append(f"{live_ingest_attempts.running_count} live ingest attempt(s) running")
-    if rebuild_attempts:
-        writer_parts.append(f"{rebuild_attempts} index rebuild attempt(s) running")
     convergence_debt_pending = convergence.failed_count > 0 or convergence.deferred_count > 0
     if not convergence.available:
         convergence_debt_summary = convergence.error or "convergence debt unavailable; convergence state is unknown"
@@ -2184,8 +2175,6 @@ def _daemon_embedding_repair_hint(
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
     if storage.archive_ready:
         state = CapabilityReadinessState.READY
-    elif storage.active_rebuild_index_attempts:
-        state = CapabilityReadinessState.REBUILDING
     elif storage.final_shape_ready and storage.archive_schema_ready and not storage.archive_materialization_ready:
         state = CapabilityReadinessState.STALE
     elif storage.final_shape_ready or storage.schema_mismatches:
@@ -2205,12 +2194,7 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
         caveats += ("materialization_pending",)
     repair_hint = None
     if state is not CapabilityReadinessState.READY:
-        if storage.schema_mismatches == ["index"]:
-            repair_hint = "polylogue ops maintenance rebuild-index"
-        elif storage.missing_tiers:
-            repair_hint = "polylogue ops maintenance archive-init --yes"
-        else:
-            repair_hint = "polylogued run"
+        repair_hint = "polylogue ops maintenance archive-init --yes" if storage.missing_tiers else "polylogued run"
     return ComponentReadiness(
         component="archive_storage",
         scope="archive",
@@ -2223,7 +2207,6 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
             "final_shape_ready": storage.final_shape_ready,
             "archive_schema_ready": storage.archive_schema_ready,
             "schema_mismatch_count": len(storage.schema_mismatches),
-            "active_rebuild_index_attempt_count": len(storage.active_rebuild_index_attempts),
         },
         caveats=caveats,
         repair_hint=repair_hint,

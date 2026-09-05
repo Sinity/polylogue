@@ -72,24 +72,6 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
     ),
     ("run", "_run", "run_command", "Execute maintenance backfill operations."),
     (
-        "rebuild-index",
-        "_rebuild_index",
-        "rebuild_index_command",
-        "Inspect or execute an authority-safe source-to-index rebuild.",
-    ),
-    (
-        "rebuild-index-status",
-        "_rebuild_index_status",
-        "rebuild_index_status_command",
-        "Report consolidated raw-replay rebuild status (lease/generation/cursor/delta/recovery). Read-only.",
-    ),
-    (
-        "reindex-canary",
-        "_reindex_canary",
-        "reindex_canary_command",
-        "Replay an inactive canary, persist observed or reviewed diff evidence, and validate reports.",
-    ),
-    (
         "raw-authority-frontier",
         "_raw_identity",
         "raw_authority_frontier_command",

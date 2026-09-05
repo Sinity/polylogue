@@ -966,9 +966,9 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
     whether raw rows under the path are still acquired but never
     materialized, and ``execute`` re-drives ``repair_raw_materialization``
     scoped to exactly that path via ``source_root`` -- the same replay engine
-    the archive-wide trickle conveyor and manual ``ops maintenance
-    rebuild-index`` already use, just requeued deterministically instead of
-    waiting for an accidental future touch of the same path.
+    the archive-wide trickle conveyor already uses, just requeued
+    deterministically instead of waiting for an accidental future touch of
+    the same path.
     """
 
     def check(path: Path) -> bool:

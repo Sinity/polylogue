@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import time
 from collections import Counter
 from collections.abc import Mapping
 from contextlib import closing
@@ -107,45 +106,6 @@ CLAUDE_WORKFLOW_STAGE_NAME = "claude_workflow"
 """daemon_stage_events ``stage`` value written by the claude_workflow
 convergence stage (daemon/convergence_stages.py); imported from there so the
 writer and this reader cannot drift apart."""
-
-ACTIVE_REBUILD_STALE_AFTER_S = 180.0
-"""Maximum heartbeat/start age for a rebuild-index row to count as active."""
-
-
-def active_rebuild_index_attempts(ops_db: Path) -> list[dict[str, object]]:
-    """Return active index-rebuild attempts recorded in the ops tier."""
-    if not ops_db.exists():
-        return []
-    cutoff_ms = int((time.time() - ACTIVE_REBUILD_STALE_AFTER_S) * 1000)
-    try:
-        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
-            conn.row_factory = sqlite3.Row
-            rows = conn.execute(
-                """
-                SELECT attempt_id, phase, started_at_ms, heartbeat_at_ms, parsed_raw_count, materialized_count
-                FROM ingest_attempts
-                WHERE status = 'running'
-                  AND phase = 'rebuild-index'
-                  AND COALESCE(heartbeat_at_ms, started_at_ms) >= ?
-                ORDER BY started_at_ms DESC
-                LIMIT 8
-                """,
-                (cutoff_ms,),
-            ).fetchall()
-    except sqlite3.Error as exc:
-        logger.warning("active rebuild-index attempts query failed for %s: %s", ops_db, exc, exc_info=True)
-        return []
-    return [
-        {
-            "attempt_id": str(row["attempt_id"]),
-            "phase": str(row["phase"]),
-            "started_at_ms": int(row["started_at_ms"]),
-            "heartbeat_at_ms": int(row["heartbeat_at_ms"]) if row["heartbeat_at_ms"] is not None else None,
-            "parsed_raw_count": int(row["parsed_raw_count"] or 0),
-            "materialized_count": int(row["materialized_count"] or 0),
-        }
-        for row in rows
-    ]
 
 
 def claude_workflow_materialization_status(ops_db: Path) -> dict[str, object] | None:
@@ -1112,24 +1072,13 @@ def _raw_gap_parsed_non_session_artifact(
 
 
 # ---------------------------------------------------------------------------
-# Archive readiness surfaces (polylogue-ogn1)
+# Archive readiness surfaces
 #
-# Extracted from ``polylogue/cli/commands/status.py``: the substrate module
-# ``polylogue/maintenance/rebuild_index.py`` was importing a private
-# CLI-surface helper (``_archive_readiness_status``) to check whether a freshly
-# rebuilt generation is exact-ready before promotion. That is the inverse of
-# this repo's documented layering rule ("surfaces may not import substrate
-# internals directly", ``docs/plans/layering.yaml``) — here the substrate was
-# reaching *up* into a CLI leaf adapter. This block gives both the CLI
-# (`status.py`, human-facing readiness reporting) and the substrate
-# (`rebuild_index.py`, promotion gating) a single shared home for the
-# computation; the CLI now delegates to ``archive_readiness_status`` below
-# instead of owning the only copy. The handful of tiny SQLite-introspection
-# one-liners below (``_fast_count``/``_safe_int``/``_table_exists``/etc.) are
-# intentionally duplicated from ``status.py``'s own private copies rather than
-# migrated wholesale: those are used throughout the rest of ``status.py`` for
-# unrelated status surfaces outside this cluster's scope, and a bulk
-# utility-relocation refactor was not part of the layering fix being made.
+# The substrate home for the exact-readiness computation; the CLI
+# (``status.py``) delegates to ``archive_readiness_status`` below. The tiny
+# SQLite-introspection one-liners (``_fast_count``/``_safe_int``/
+# ``_table_exists``/etc.) are duplicated from ``status.py``'s own private
+# copies, which serve unrelated status surfaces.
 # ---------------------------------------------------------------------------
 
 
@@ -1445,10 +1394,7 @@ def _archive_status_surfaces(counts: dict[str, Any], *, source_check_available: 
 def archive_readiness_status(root: Path) -> dict[str, Any]:
     """Return the exact-readiness surface report for one archive root.
 
-    Shared by the CLI's ``status``/``rebuild-index --plan`` reporting and the
-    substrate's ``rebuild_index_from_source`` promotion gate: a freshly
-    rebuilt generation is only promoted once every surface here reports
-    ``ready``.
+    Serves the CLI's ``status`` reporting.
     """
     index_db = root / "index.db"
     source_db = root / "source.db"
@@ -1521,8 +1467,6 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
 
 
 __all__ = [
-    "ACTIVE_REBUILD_STALE_AFTER_S",
-    "active_rebuild_index_attempts",
     "archive_readiness_status",
     "missing_source_raw_session_evidence",
     "raw_materialization_readiness_snapshot",

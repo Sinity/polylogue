@@ -58,9 +58,8 @@ def should_skip_stale_replace(
     prefix copy of the same file the operator had uploaded into an AI Studio
     conversation -- without an accepted head, and this function's ordinary
     timestamp comparison (not content-subset awareness) decided the
-    outcome. Recomputing revision membership under current code (any
-    ``rebuild_index_from_source`` replay, which calls
-    ``backfill_historical_revision_evidence``) resolves that case correctly
+    outcome. Recomputing revision membership under current code
+    (``backfill_historical_revision_evidence``) resolves that case correctly
     upstream of this function.
     """
     return (
