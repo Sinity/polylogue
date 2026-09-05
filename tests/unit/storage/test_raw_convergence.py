@@ -22,7 +22,6 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -3737,8 +3736,6 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
     assert result.repaired_count == 0
     assert "parser census completes" in result.detail
     assert result.metrics["raw_materialization_already_parsed_count"] == 1.0
-
-
 
 
 def test_raw_materialization_whale_pass_candidate_selects_stream_safe_blocked_component(tmp_path: Path) -> None:

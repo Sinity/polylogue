@@ -623,15 +623,15 @@ expected mid-rebuild noise or a real regression — do not silently retry.
 ### Investigating a stuck source
 
 **Symptoms.** A source family stops producing new sessions even
-though source files are present. `polylogue sources` shows a source
-with stale `last_seen`. Daemon logs show repeated parse errors for
-the same artifact id.
+though source files are present. `polylogue ops status --json` reports
+stale ingestion progress for the source. Daemon logs show repeated parse
+errors for the same artifact id.
 
 **Recovery.**
 
 ```bash
 # 1. Identify the stuck source.
-polylogue sources --output-format json | jq '.[] | select(.healthy==false)'
+polylogue ops status --json | jq '.components[]? | select(.state != "ready")'
 
 # 2. Inspect raw-artifact failures from that source.
 polylogue ops diagnostics workload --json \

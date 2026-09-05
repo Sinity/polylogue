@@ -4832,20 +4832,6 @@ x-polylogue-route-contracts:
   auth_policy: bearer_if_configured_and_same_origin
   response_contract: MutationResultPayload
   notes: Local CLI transport; consumes one daemon-held authorization under the writer gate.
-- method: POST
-  pattern: /api/maintenance/rebuild-index
-  kind: maintenance
-  stability: operational
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: RebuildIndexReceipt
-  notes: Runs exactly one source snapshot replay through the daemon write coordinator.
-- method: POST
-  pattern: /api/maintenance/discard-index-candidate
-  kind: maintenance
-  stability: private
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: inactive candidate discard receipt
-  notes: Reclaims one generation only when its immutable owner id still identifies an inactive candidate.
 - method: GET
   pattern: /api/facets
   kind: read_query
@@ -5095,18 +5081,6 @@ x-polylogue-route-contracts:
   stability: stable
   auth_policy: credential_if_configured
   response_contract: workspace JSON
-- method: GET
-  pattern: /api/maintenance/operations
-  kind: maintenance
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: maintenance operations JSON
-- method: GET
-  pattern: /api/maintenance/status/:id
-  kind: maintenance
-  stability: stable
-  auth_policy: credential_if_configured
-  response_contract: maintenance operation status JSON
 - method: POST
   pattern: /api/telemetry/mcp-calls
   kind: operational
@@ -5134,18 +5108,6 @@ x-polylogue-route-contracts:
   response_contract: demo augmentation result JSON
   notes: Applies deterministic demo writes through the write bridge; exists for the demo archive, not for general archive
     mutation.
-- method: POST
-  pattern: /api/maintenance/plan
-  kind: maintenance
-  stability: stable
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: maintenance operation preview
-- method: POST
-  pattern: /api/maintenance/run
-  kind: maintenance
-  stability: stable
-  auth_policy: bearer_if_configured_and_same_origin
-  response_contract: maintenance operation result
 - method: POST
   pattern: /api/user/marks
   kind: user_overlay

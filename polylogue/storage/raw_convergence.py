@@ -69,7 +69,6 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
     validate_raw_replay_plan,
 )
-from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ReconstructedRawRow,
     insert_reconstructed_raw_row,
@@ -6148,8 +6147,3 @@ def _converge_raw_materialization(
         plan_outcomes=plan_outcomes,
         census_receipt=census_receipt,
     )
-
-
-# ---------------------------------------------------------------------------
-# Orchestration (run_safe_repairs, run_archive_cleanup, run_selected_maintenance)
-# ---------------------------------------------------------------------------

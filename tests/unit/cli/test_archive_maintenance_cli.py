@@ -3571,3 +3571,43 @@ def test_migrate_tier_cli_adoption_fails_closed_during_publication(
     else:
         assert not audit.exists()
     assert (root / ".maintenance-state" / "durable-change-trains" / "audit-adoption.json").is_file()
+
+
+#: Verbs the manual rebuild engine and the generic repair product owned. They
+#: were deleted with those products, so the CLI must not resolve them.
+_RETIRED_MAINTENANCE_VERBS = (
+    "rebuild-index",
+    "rebuild-index-status",
+    "reindex-canary",
+    "plan",
+    "run",
+    "run-preview",
+    "preview",
+    "status",
+    "blob-reference-closure",
+)
+
+
+def test_retired_maintenance_verbs_are_absent_from_the_command_inventory() -> None:
+    """Generated docs and shell completion must not rediscover the retired verbs.
+
+    Anti-vacuity: re-registering any retired verb in
+    ``polylogue.cli.commands.maintenance`` turns this red.
+    """
+    paths = {item.path for item in iter_command_paths(cli, include_root=False)}
+
+    resurrected = sorted(verb for verb in _RETIRED_MAINTENANCE_VERBS if ("ops", "maintenance", verb) in paths)
+    assert not resurrected, f"retired maintenance verbs back in the inventory: {resurrected}"
+
+
+@pytest.mark.parametrize("verb", _RETIRED_MAINTENANCE_VERBS)
+def test_retired_maintenance_verb_fails_discovery(verb: str, cli_runner: CliRunner) -> None:
+    """Invoking a retired verb is a usage error, not a silent no-op run.
+
+    Anti-vacuity: a compatibility shim that accepts the verb and exits 0 turns
+    this red.
+    """
+    result = cli_runner.invoke(cli, ["ops", "maintenance", verb, "--help"])
+
+    assert result.exit_code != 0
+    assert "No such command" in result.output
