@@ -36,6 +36,7 @@ from typing import IO, Any, Final
 
 from devtools.agent_env import inside_declared_pytest_worker
 from devtools.cloud_sentinels import cloud_sentinel_declined
+from devtools.worker_memory import resize_worker_argument
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
@@ -625,10 +626,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         os._exit(128 + signal_number)
 
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
+    # The width is chosen here rather than where the command was built: a run
+    # can sit in this queue for hours, and what matters is the memory present
+    # when its workers start.
+    command, sizing = resize_worker_argument(list(launch["argv"]))
     with open(log_path, "wb") as log:
+        if sizing is not None and sizing.get("narrowed"):
+            log.write(
+                f"pytest slot: {sizing['available_mib']} MiB available holds {sizing['workers']} workers, "
+                f"not {sizing['requested_workers']}; running narrower rather than being killed.\n".encode()
+            )
+            log.flush()
         try:
             child = subprocess.Popen(
-                list(launch["argv"]),
+                command,
                 cwd=launch["working_directory"],
                 env=environment,
                 stdout=log,
