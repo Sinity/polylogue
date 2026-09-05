@@ -234,6 +234,16 @@ def test_archive_debt_preserves_unknown_embedding_message_counts(
     assert row.caveats == ("Run `polylogue ops embed status --detail` for bounded exact-count attempts.",)
 
 
+def _stamp_tier_version(path: Path, tier: ArchiveTier) -> None:
+    """Stamp a hand-built tier fixture with the version its schema emulates."""
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_TIER_SPECS[tier].version}")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
     source_db = root / "source.db"
     index_db = root / "index.db"
@@ -439,6 +449,11 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
 
     with sqlite3.connect(index_db) as conn:
         conn.execute("CREATE TABLE sessions (session_id TEXT, origin TEXT, native_id TEXT, raw_id TEXT)")
+
+    # A tier holding tables must declare the schema version it emulates; the
+    # read guard treats a stamped-zero populated tier as skew.
+    _stamp_tier_version(source_db, ArchiveTier.SOURCE)
+    _stamp_tier_version(index_db, ArchiveTier.INDEX)
 
     return source_db, index_db, source_file
 

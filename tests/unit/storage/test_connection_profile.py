@@ -237,3 +237,30 @@ def test_index_write_profiles_refuse_stale_sibling_before_attach(
     assert excinfo.value.tier == sibling_tier.value
     assert excinfo.value.expected == ARCHIVE_VERSION_BY_TIER[sibling_tier]
     assert excinfo.value.found == ARCHIVE_VERSION_BY_TIER[sibling_tier] - 1
+
+
+def test_unprovisioned_durable_tier_opens_instead_of_reporting_skew(tmp_path: Path) -> None:
+    """An empty tier file carries no schema, so it cannot be skewed against one.
+
+    Anti-vacuity: restoring the version-only comparison makes the open raise
+    ``SchemaSkew`` for ``found == 0``.
+    """
+    db_path = tmp_path / "source.db"
+    sqlite3.connect(db_path).close()
+
+    with connection_profile.open_readonly_connection(db_path) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (0,)
+
+
+def test_populated_durable_tier_at_version_zero_still_reports_skew(tmp_path: Path) -> None:
+    """A durable tier holding tables without a version stamp is skew, not a fresh file.
+
+    Anti-vacuity: exempting every ``found == 0`` tier regardless of its schema
+    makes this open succeed.
+    """
+    db_path = tmp_path / "source.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY)")
+
+    with pytest.raises(SchemaSkew, match="source schema skew"):
+        connection_profile.open_readonly_connection(db_path)
