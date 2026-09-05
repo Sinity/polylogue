@@ -239,13 +239,11 @@ def _seed_coherent_archive(root: Path) -> None:
         index_conn.execute(
             """
             INSERT INTO blocks(message_id, session_id, position, block_type, text)
-            VALUES ('codex-session:session:0.0', 'codex-session:session', 0, 'text', 'hello world')
+            VALUES ('codex-session:session:p:0.0', 'codex-session:session', 0, 'text', 'hello world')
             """
         )
         index_conn.commit()
-        index_conn.execute("ANALYZE blocks")
-        index_conn.execute("ANALYZE messages")
-        index_conn.execute("ANALYZE session_links")
+        index_conn.execute("ANALYZE")
         index_conn.commit()
     finally:
         index_conn.close()
@@ -1203,10 +1201,12 @@ def test_missing_sqlite_stat1_is_warning_not_error(tmp_path: Path) -> None:
 
 
 def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
+    """Anti-vacuity: collapsing the check to a single all-or-nothing verdict
+    drops the per-table name this asserts on."""
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
-        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'session_links'")
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'blocks'")
         conn.commit()
     finally:
         conn.close()
@@ -1215,7 +1215,27 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
 
     check = _check(report, "planner-stats")
     assert check.status is OutcomeStatus.WARNING
-    assert check.evidence["missing_tables"] == ["session_links"]
+    assert check.evidence["missing_tables"] == ["blocks"]
+
+
+def test_empty_covered_table_without_stats_is_not_missing_coverage(tmp_path: Path) -> None:
+    """ANALYZE writes no sqlite_stat1 row for an empty table.
+
+    Anti-vacuity: dropping the emptiness exemption makes every archive with no
+    action pairs warn, which is what this fixture is."""
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl = 'action_pairs'").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("planner-stats",))
+
+    check = _check(report, "planner-stats")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["missing_tables"] == []
 
 
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:

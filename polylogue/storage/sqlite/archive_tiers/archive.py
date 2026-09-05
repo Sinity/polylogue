@@ -137,6 +137,7 @@ from polylogue.storage.fts.sql import (
     trigram_delete_session_rows_sql,
 )
 from polylogue.storage.hook_event_authority import HookEventAuthorityCensus, census_hook_event_authority
+from polylogue.storage.introspection import relation_exists as _relation_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -3376,6 +3377,7 @@ class ArchiveStore:
                    (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
                    COALESCE((SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id), CASE WHEN s.reported_cost_usd IS NOT NULL THEN 'origin_reported' END) AS cost_provenance,
                    (SELECT COALESCE(SUM(u.provider_cost_usd), SUM(u.catalog_cost_usd), s.reported_cost_usd) FROM session_model_usage u WHERE u.session_id = s.session_id) AS total_cost_usd, sp.total_duration_ms,
+                   sp.input_row_count,
                    sp.evidence_payload_json, sp.inference_payload_json, sp.enrichment_payload_json
             FROM session_profiles sp
             JOIN sessions s ON s.session_id = sp.session_id
@@ -5557,11 +5559,13 @@ class ArchiveStore:
             orphan_count,
             artifact_names,
         ) = spec
-        table_present = _table_exists(self._conn, table_name)
+        # Several insights are backed by query-time views (threads, delegations,
+        # actions), which exist and carry rows; presence is relation presence.
+        table_present = _relation_exists(self._conn, table_name)
         artifacts = tuple(
             InsightStorageArtifact(
                 name=artifact,
-                present=_table_exists(self._conn, artifact),
+                present=_relation_exists(self._conn, artifact),
             )
             for artifact in artifact_names
         )

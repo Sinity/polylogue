@@ -644,6 +644,7 @@ def _raw_frontier_integrity_check(projection: RawFrontierIntegrityProjection) ->
         "cursor_head_comparison_count": projection.cursor_head_comparison_count,
         "cursor_ahead_comparison_count": projection.cursor_ahead_comparison_count,
         "cursor_authority_gap_count": projection.cursor_authority_gap_count,
+        "cursor_authority_deferred_count": projection.cursor_authority_deferred_count,
     }
     issue_count = (
         projection.broken_head_count

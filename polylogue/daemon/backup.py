@@ -216,16 +216,18 @@ def _open_backup_readonly_connection(
     immutable: bool,
     timeout_class: str,
 ) -> sqlite3.Connection:
-    """Open backup evidence while retaining support for older source tiers."""
+    """Open backup evidence recorded at or below this runtime's tier version.
+
+    A backup-gated migration is authorized by a backup taken before it runs, so
+    that backup carries the tier's pre-migration version by construction.
+    Demanding the current version here would make every such migration
+    unapplicable. A version above the expected one is still refused: this
+    runtime cannot interpret it. An unstamped tier (version 0) is refused too.
+    """
     try:
         return open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class)
     except SchemaSkew as exc:
-        if (
-            path.name != "source.db"
-            or not isinstance(exc.found, int)
-            or not isinstance(exc.expected, int)
-            or not (0 < exc.found < exc.expected)
-        ):
+        if not isinstance(exc.found, int) or not isinstance(exc.expected, int) or not (0 < exc.found < exc.expected):
             raise
         suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
         return sqlite3.connect(f"file:{path}{suffix}", uri=True, timeout=30.0)

@@ -1,28 +1,18 @@
 from __future__ import annotations
 
-import os
-import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 
 import pytest
 
 from polylogue.core.localtime import format_local_datetime
+from tests.infra.local_timezone import pinned_local_timezone
 
 
 @pytest.fixture
 def fixed_local_timezone(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    previous = os.environ.get("TZ")
-    monkeypatch.setenv("TZ", "America/Los_Angeles")
-    time.tzset()
-    try:
+    with pinned_local_timezone(monkeypatch, "America/Los_Angeles"):
         yield
-    finally:
-        if previous is None:
-            monkeypatch.delenv("TZ", raising=False)
-        else:
-            monkeypatch.setenv("TZ", previous)
-        time.tzset()
 
 
 def test_format_local_datetime_converts_utc_and_marks_zone(fixed_local_timezone: None) -> None:

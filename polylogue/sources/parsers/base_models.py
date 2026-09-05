@@ -468,6 +468,11 @@ class ParsedDispatchObservation(BaseModel):
     child_provider_id: str | None = None
     child_identity_namespace: str = "provider-session"
     observation_kind: Literal["parent_dispatch"] = "parent_dispatch"
+    # Display metadata the dispatching side recorded about the child
+    # (Claude Code ``toolUseResult.agentType`` / ``description``). Never an
+    # identity input to the resolver.
+    agent_type: str | None = None
+    description: str | None = None
     first_seen: str | None = None
     last_seen: str | None = None
     resolution_reason: (

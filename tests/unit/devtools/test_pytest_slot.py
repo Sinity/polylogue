@@ -155,7 +155,7 @@ def test_outside_a_task_the_run_is_queued(tmp_path: Path, monkeypatch: pytest.Mo
     assert launch["operation"] == "test"
     assert launch["pool"] == "pytest"
     assert launch["result_kind"] == "exit"
-    assert launch["timeout_seconds"] == 3600
+    assert launch["timeout_seconds"] == 7200
     assert [call["argv"][0] for call in _calls(record)] == ["add", "wait", "status"]
 
 

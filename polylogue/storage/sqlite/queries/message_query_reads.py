@@ -57,6 +57,7 @@ async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> t
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
           AND {topology_status_composes_sql()}
+        ORDER BY link_type, dst_origin, dst_native_id
         LIMIT 1
         """,
         (session_id,),

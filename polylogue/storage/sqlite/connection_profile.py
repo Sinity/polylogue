@@ -579,6 +579,12 @@ def _schema_skew_remedy(tier: ArchiveTier) -> str:
     )
 
 
+def _tier_holds_no_schema(conn: sqlite3.Connection) -> bool:
+    """Report whether a tier file carries any non-internal schema object."""
+    row = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
+    return row is None
+
+
 def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: ArchiveTier | None) -> None:
     """Reject a known archive tier before any caller can issue SQL against it."""
     from polylogue.core.errors import SchemaSkew
@@ -593,6 +599,12 @@ def _assert_schema_supported(conn: sqlite3.Connection, path: str | Path, tier: A
     except KeyError as exc:
         raise ValueError(f"unknown archive tier: {resolved_tier!r}") from exc
     found = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if found == 0 and _tier_holds_no_schema(conn):
+        # A tier file with neither a version stamp nor any schema object has
+        # never been provisioned. Reading it is reading an absent tier: the
+        # caller fails on the missing table it asked for, which is a truthful
+        # not-provisioned answer, where skew would misreport corruption.
+        return
     if resolved_tier is ArchiveTier.INDEX and found == 0:
         return
     if found != expected:

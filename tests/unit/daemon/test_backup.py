@@ -24,7 +24,11 @@ from polylogue.storage.blob_integrity import BlobLivenessProjection
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.bootstrap import (
+    ARCHIVE_TIER_SPECS,
+    initialize_active_archive_root,
+    initialize_archive_database,
+)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
 from tests.infra.storage_records import SessionBuilder, db_setup
@@ -2031,3 +2035,34 @@ def test_backup_still_proves_a_window_shaped_append_row(
     assert unproven == []
     assert len(proofs) == 1
     assert proofs[0]["kind"] == "live_append_segment_sha256"
+
+
+@pytest.mark.parametrize("tier", [ArchiveTier.SOURCE, ArchiveTier.USER, ArchiveTier.AUDIT])
+def test_backup_evidence_opens_any_durable_tier_below_the_expected_version(
+    tmp_path: Path,
+    tier: ArchiveTier,
+) -> None:
+    """A pre-migration backup is readable evidence for every durable tier.
+
+    Anti-vacuity: keying the allowance on ``source.db`` again makes the user
+    and audit cases raise SchemaSkew, and dropping the ordering guard below
+    makes the newer-version and unstamped cases stop raising.
+    """
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
+
+    expected = ARCHIVE_VERSION_BY_TIER[tier]
+    path = tmp_path / f"{tier.value}.db"
+    initialize_archive_database(path, tier)
+
+    for older in (expected - 1, 1):
+        with sqlite3.connect(path) as stamp:
+            stamp.execute(f"PRAGMA user_version = {older}")
+        with backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk") as conn:
+            assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == older
+
+    for refused in (expected + 1, 0):
+        with sqlite3.connect(path) as stamp:
+            stamp.execute(f"PRAGMA user_version = {refused}")
+        with pytest.raises(SchemaSkew):
+            backup_mod._open_backup_readonly_connection(path, immutable=True, timeout_class="offline-bulk")

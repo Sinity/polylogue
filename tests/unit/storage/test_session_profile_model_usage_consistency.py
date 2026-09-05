@@ -1,4 +1,4 @@
-"""session_profiles token/cost columns must agree with session_model_usage.
+"""Session-profile token totals must agree with session_model_usage.
 
 polylogue-r7p6: for Codex sessions, session_profiles token columns undercounted
 session_model_usage by roughly 1000x (6.43M vs 6.74B input tokens across the
@@ -17,8 +17,13 @@ estimate from the wrong source.
 The fix (``ModelUsageTotals`` plumbed through ``compute_session_cost`` /
 ``build_session_profile`` / ``build_session_insight_records``) makes profile
 building read ``session_model_usage`` back directly -- the same substrate the
-archive's own cost/usage rollups are built from -- so profile columns are
+archive's own cost/usage rollups are built from -- so profile totals are
 identical to that rollup by construction, for every origin, not just Codex.
+
+``session_profiles`` stores no token or cost columns; ``session_model_usage``
+is the sole authority and the reader overlays it onto each record. These tests
+assert on the composed read path, so they go red if the overlay is dropped or
+the write path stops populating ``session_model_usage``.
 
 These tests exercise the real production write path
 (``write_parsed_session_to_archive``) and both session-insight materializer
@@ -36,12 +41,17 @@ import aiosqlite
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.storage.derived.session.profile_cost import (
+    apply_profile_cost_lanes,
+    read_model_usage_batch_sync,
+)
 from polylogue.storage.derived.session.rebuild import (
     rebuild_session_insights_async,
     rebuild_session_insights_sync,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.queries.mappers import _row_to_session_profile_record
 
 # Realistic Codex cumulative usage: input is inclusive of cached (96% cached,
 # matching the corpus finding in _provider_usage_disjoint_lanes's docstring),
@@ -148,16 +158,26 @@ def _model_usage_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int,
 
 
 def _profile_totals(conn: sqlite3.Connection, session_id: str) -> tuple[int, int, int, int]:
-    row = conn.execute(
-        """
-        SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_write_tokens
-        FROM session_profiles
-        WHERE session_id = ?
-        """,
-        (session_id,),
-    ).fetchone()
+    """Session-profile token totals as a reader sees them.
+
+    ``session_profiles`` stores no token columns; ``session_model_usage`` is
+    the sole authority and the reader overlays it onto the profile record.
+    This helper composes exactly the production read path
+    (``session_insight_profile_reads``) so the assertion covers the overlay a
+    consumer of ``SessionProfileRecord`` actually depends on.
+    """
+    row = conn.execute("SELECT * FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()
     assert row is not None, f"no session_profiles row for {session_id}"
-    return (int(row[0]), int(row[1]), int(row[2]), int(row[3]))
+    record = apply_profile_cost_lanes(
+        _row_to_session_profile_record(row),
+        read_model_usage_batch_sync(conn, [session_id]),
+    )
+    return (
+        int(record.total_input_tokens),
+        int(record.total_output_tokens),
+        int(record.total_cache_read_tokens),
+        int(record.total_cache_write_tokens),
+    )
 
 
 def test_codex_profile_tokens_match_model_usage_after_sync_rebuild(tmp_path: Path) -> None:

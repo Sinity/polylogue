@@ -12,12 +12,35 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
-AGENT_PRINCIPAL_ENV = "SINNIXD_PRINCIPAL"
+#: The queue runner exports ``AGENTCTL_<NAME>``; the earlier daemon exported
+#: ``SINNIXD_<NAME>``. Every read accepts both, newest first.
+RUNTIME_ENV_PREFIXES = ("AGENTCTL_", "SINNIXD_")
+AGENT_PRINCIPAL_ENV = "AGENTCTL_PRINCIPAL"
 AGENT_PRINCIPAL = "agent-control"
 AGENT_MAX_PYTEST_WORKERS = 2
 HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
-QUEUE_WORKER_ENV = "SINNIXD_QUEUE_WORKER"
-QUEUE_POOL_ENV = "SINNIXD_QUEUE_POOL"
+QUEUE_WORKER_ENV = "AGENTCTL_QUEUE_WORKER"
+QUEUE_POOL_ENV = "AGENTCTL_QUEUE_POOL"
+
+
+def runtime_env(env: Mapping[str, str], name: str) -> str | None:
+    """Read a queue-runner variable under any of its prefixes.
+
+    ``name`` is the bare suffix (``"JOB_ID"``) or a full name under either
+    prefix; the newest prefix wins when both are set.
+    """
+    suffix = name
+    for prefix in RUNTIME_ENV_PREFIXES:
+        if name.startswith(prefix):
+            suffix = name[len(prefix) :]
+            break
+    for prefix in RUNTIME_ENV_PREFIXES:
+        value = env.get(prefix + suffix)
+        if value is not None:
+            return value
+    return None
+
+
 QUEUE_WORKER_VALUE = "1"
 PYTEST_POOL = "pytest"
 #: Every operation declaring ``pool = "pytest"`` in ``.agentctl/project.toml``,
@@ -53,7 +76,7 @@ def _inside_pytest_cgroup(cgroup_reader: Callable[[], str] | None) -> bool:
 
 
 def inside_agent_job(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
-    return env.get(AGENT_PRINCIPAL_ENV) == AGENT_PRINCIPAL or _inside_agent_cgroup(cgroup_reader)
+    return runtime_env(env, AGENT_PRINCIPAL_ENV) == AGENT_PRINCIPAL or _inside_agent_cgroup(cgroup_reader)
 
 
 def inside_declared_pytest_worker(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
@@ -64,13 +87,13 @@ def inside_declared_pytest_worker(env: Mapping[str, str], *, cgroup_reader: Call
     come from ``sinnixd-queue-run``; the pytest slice binds that identity to the
     pool declared by the operation.
     """
-    if env.get(QUEUE_WORKER_ENV) != QUEUE_WORKER_VALUE or not env.get("SINNIXD_JOB_ID"):
+    if runtime_env(env, QUEUE_WORKER_ENV) != QUEUE_WORKER_VALUE or not runtime_env(env, "JOB_ID"):
         return False
-    declared_pool = env.get(QUEUE_POOL_ENV)
+    declared_pool = runtime_env(env, QUEUE_POOL_ENV)
     if declared_pool is not None:
         if declared_pool != PYTEST_POOL:
             return False
-    elif env.get("SINNIXD_OPERATION") not in PYTEST_WORKER_OPERATIONS:
+    elif runtime_env(env, "OPERATION") not in PYTEST_WORKER_OPERATIONS:
         return False
     return _inside_pytest_cgroup(cgroup_reader)
 

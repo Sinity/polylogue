@@ -133,7 +133,11 @@ def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield DaemonClient(socket_path, timeout_s=2.0, auth_token="delete-authority-token")
+        # These routes delete hundreds of sessions through a real daemon. The
+        # client budget bounds one request, not the test: at two seconds it
+        # measured how loaded the host was. A genuine hang is still caught by
+        # the suite-wide pytest timeout.
+        yield DaemonClient(socket_path, timeout_s=60.0, auth_token="delete-authority-token")
     finally:
         server.shutdown()
         server.server_close()

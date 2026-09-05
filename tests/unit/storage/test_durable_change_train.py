@@ -3483,6 +3483,11 @@ def test_bootstrap_reconciles_and_persists_interrupted_train_evidence(
         "CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
     )
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    # Fresh-DDL parity projects the runtime target back to the train's slot.
+    # Left unpatched, the runner replays the real source migration history over
+    # this synthetic tier and fails on tables the fixture never declares.
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())
@@ -3518,6 +3523,11 @@ def test_bootstrap_finishes_persisted_applied_train_without_reapplying(
         "CREATE TABLE durable_items (item_id TEXT PRIMARY KEY, payload TEXT NOT NULL) STRICT;"
     )
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
+    # Fresh-DDL parity projects the runtime target back to the train's slot.
+    # Left unpatched, the runner replays the real source migration history over
+    # this synthetic tier and fails on tables the fixture never declares.
+    monkeypatch.setattr(migration_runner, "ARCHIVE_VERSION_BY_TIER", versions)
+    monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
     _create_current_database(db_path)
     train = _admitted(ArchiveTier.SOURCE, rider=_production_rider())

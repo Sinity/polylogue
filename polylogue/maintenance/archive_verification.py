@@ -40,7 +40,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD, HOOK_CONTRADICTED_LINK_METHOD
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import (
@@ -57,6 +56,11 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_attachment_fidelity,
     audit_chatgpt_content_conservation,
     audit_revision_fidelity,
+)
+from polylogue.maintenance.source_conservation import (
+    audit_source_conservation,
+    logical_head_cohort_expr,
+    valid_byte_duplicate_supersession_expr,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_integrity import scan_attachment_coverage, scan_blob_integrity
@@ -76,7 +80,7 @@ DEFAULT_SAMPLE_LIMIT = 10
 
 #: index-tier tables the planner-stats check expects ``ANALYZE`` coverage for
 #: (polylogue-l3tk: fresh generations without stats pick pathological plans).
-_PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "action_pairs")
+_PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "session_links", "action_pairs")
 
 
 @dataclass
@@ -332,53 +336,6 @@ def _check_pointer_coherence(archive_root: Path, _sample_limit: int) -> ArchiveV
 # ---------------------------------------------------------------------------
 
 
-def _valid_byte_duplicate_supersession_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str:
-    """Return the receipt predicate shared by source/index coverage checks.
-
-    A supersession receipt is authority only when it still names the same
-    bytes and an index materialization of the recorded duplicate twin. Keep
-    the predicate in one place so backlog freshness cannot classify a receipt
-    differently from source-index coverage.
-    """
-    if not table_exists(conn, "raw_byte_duplicate_supersession_receipts"):
-        return "0"
-    return f"""
-        EXISTS(
-            SELECT 1
-            FROM raw_byte_duplicate_supersession_receipts receipt
-            JOIN raw_sessions twin ON twin.raw_id = receipt.duplicate_of_raw_id
-            JOIN idx_tier.sessions twin_session
-              ON twin_session.raw_id = twin.raw_id
-             AND twin_session.session_id = receipt.duplicate_of_session_id
-            WHERE receipt.raw_id = {raw_alias}.raw_id
-              AND receipt.blob_hash = {raw_alias}.blob_hash
-              AND receipt.blob_size = {raw_alias}.blob_size
-              AND twin.blob_hash = {raw_alias}.blob_hash
-              AND twin.blob_size = {raw_alias}.blob_size
-              AND twin.origin IS {raw_alias}.origin
-              AND twin.source_path IS {raw_alias}.source_path
-              AND twin.source_index IS {raw_alias}.source_index
-        )
-    """
-
-
-def _logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str:
-    """Return the durable identity used to group raw revisions into one head.
-
-    A full-revision row retired into membership governance intentionally loses
-    its raw-level ``logical_source_key``.  Its single retained membership key
-    remains the authoritative identity, so use it before the legacy
-    native-id/path fallback.  Shared raws can hold several membership keys;
-    they have no one raw-level cohort and must keep that fallback instead of
-    being arbitrarily assigned to one member.
-    """
-    return logical_head_cohort_sql(
-        conn,
-        raw_alias=raw_alias,
-        has_memberships=table_exists(conn, "raw_session_memberships"),
-    )
-
-
 def _check_source_index_coverage(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
     return _check_source_index_coverage_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
 
@@ -426,8 +383,8 @@ def _check_source_index_coverage_at_index_path(
             census_expr = (
                 "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
             )
-            valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
-            logical_cohort_expr = _logical_head_cohort_expr(conn, raw_alias="r")
+            valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
+            logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
 
             # A read-only connection (``query_only=ON``, connection-wide, not
             # per-attached-db) cannot ``CREATE TEMP VIEW`` -- the temp schema
@@ -625,6 +582,65 @@ def _check_source_index_coverage_at_candidate(
     archive_root: Path, index_path: Path, sample_limit: int
 ) -> ArchiveVerificationCheck:
     return _check_source_index_coverage_at_index_path(archive_root, index_path, sample_limit)
+
+
+def _check_source_conservation(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_source_conservation_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_source_conservation_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Every acquired source item and every index row types into one term.
+
+    Forward: each ``raw_sessions`` row (not only logical heads), hook event,
+    and history sidecar is materialized or carries a typed exclusion whose
+    rule the report cites; an on-disk probe turns a raw row whose source file
+    vanished into ``source_missing``. Reverse: every session traces to a raw
+    row that is not a declared non-session artifact, and every message,
+    block, and attachment ref traces to its owner. Blocking terms are the
+    unexplained ones (``unexplained``, ``unclassified_shape``,
+    ``source_lost``, orphans, phantoms); a source file that is gone while its
+    raw payload bytes are retained (``source_missing``) is typed accounting,
+    and ``pending`` plus hook events whose session file was never acquired are
+    warnings.
+    """
+    name = "source-conservation"
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check(name, "source.db or index.db not present")
+    try:
+        conn = _open_ro(source_path)
+    except sqlite3.Error as exc:
+        return _error_check(name, f"could not open source.db: {exc}", exc=exc)
+    try:
+        try:
+            conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{index_path}?mode=ro",))
+        except sqlite3.Error as exc:
+            return _error_check(name, f"could not attach index.db: {exc}", exc=exc)
+        try:
+            report = audit_source_conservation(conn, archive_root=archive_root, sample_limit=sample_limit)
+        except sqlite3.Error as exc:
+            return _error_check(name, f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        conn.close()
+
+    if report.blocking_count:
+        status = OutcomeStatus.ERROR
+    elif report.warning_count:
+        status = OutcomeStatus.WARNING
+    else:
+        status = OutcomeStatus.OK
+    return ArchiveVerificationCheck(
+        name=name,
+        status=status,
+        summary=report.summary(),
+        count=report.blocking_count,
+        details=[
+            f"{term.name}:{item}" for term in report.terms if term.blocking and term.count for item in term.sample
+        ],
+        evidence=dict(report.to_json()),
+    )
 
 
 def archive_verification_owner_adapters(
@@ -845,6 +861,23 @@ def archive_verification_migrated_owner_adapters(
                 if index_path_override is not None
                 else _check_source_index_coverage(archive_root, sample_limit)
             ),
+        ),
+        _declared_owner(
+            name="source-conservation",
+            semantic_owner="source-materialization",
+            applicable_routes=frozenset({_ROUTE_LIVE}),
+            production_route="source-to-index replay",
+            population=(
+                "source.db.raw_sessions",
+                "source.db.raw_artifacts",
+                "source.db.raw_hook_events",
+                "index.db.sessions",
+                "index.db.messages",
+                "index.db.blocks",
+                "index.db.attachment_refs",
+            ),
+            owned_reference="test_deleted_source_file_without_retained_bytes_trips_source_conservation",
+            check=lambda: _check_source_conservation(archive_root, sample_limit),
         ),
         _declared_owner(
             name="hook-authority-topology-conflict",
@@ -2360,12 +2393,20 @@ def _check_planner_stats(
                 _PLANNER_STATS_COVERED_TABLES,
             )
         }
+        # ANALYZE writes no sqlite_stat1 row for an empty table, so absent
+        # stats there are nothing to fix. Only a populated table can be
+        # genuinely uncovered.
+        populated = {
+            table
+            for table in _PLANNER_STATS_COVERED_TABLES
+            if table_exists(conn, table) and conn.execute(f"SELECT EXISTS(SELECT 1 FROM {table})").fetchone()[0]
+        }
     except sqlite3.Error as exc:
         return _error_check("planner-stats", f"could not read index.db: {exc}", exc=exc)
     finally:
         conn.close()
 
-    missing = [table for table in _PLANNER_STATS_COVERED_TABLES if table not in analyzed]
+    missing = [table for table in _PLANNER_STATS_COVERED_TABLES if table in populated and table not in analyzed]
     if missing:
         return ArchiveVerificationCheck(
             name="planner-stats",
@@ -2377,7 +2418,7 @@ def _check_planner_stats(
     return ArchiveVerificationCheck(
         name="planner-stats",
         status=OutcomeStatus.OK,
-        summary="sqlite_stat1 covers blocks/messages/action_pairs",
+        summary="sqlite_stat1 covers blocks/messages/session_links/action_pairs",
         evidence={"covered_tables": sorted(analyzed), "missing_tables": []},
     )
 
@@ -2711,8 +2752,8 @@ def _unindexed_backlog_gap(conn: sqlite3.Connection) -> int:
     """
     has_census = table_exists(conn, "raw_membership_census")
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
-    valid_supersession_expr = _valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
-    logical_cohort_expr = _logical_head_cohort_expr(conn, raw_alias="r")
+    valid_supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
+    logical_cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
     row = conn.execute(
         f"""
         WITH heads AS (

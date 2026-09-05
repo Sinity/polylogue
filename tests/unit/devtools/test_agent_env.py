@@ -99,3 +99,12 @@ def test_every_declared_pytest_pool_operation_classifies_its_own_worker() -> Non
         }
 
         assert agent_env.inside_declared_pytest_worker(environment, cgroup_reader=deployed_pytest_cgroup), operation
+
+
+def test_runtime_env_prefers_the_agentctl_prefix_and_falls_back() -> None:
+    """Anti-vacuity: dropping the SINNIXD_ fallback makes the second assertion red."""
+    from devtools.agent_env import runtime_env
+
+    assert runtime_env({"AGENTCTL_JOB_ID": "new", "SINNIXD_JOB_ID": "old"}, "JOB_ID") == "new"
+    assert runtime_env({"SINNIXD_JOB_ID": "old"}, "AGENTCTL_JOB_ID") == "old"
+    assert runtime_env({}, "JOB_ID") is None

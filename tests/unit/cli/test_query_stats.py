@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import time
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
@@ -11,21 +9,13 @@ import pytest
 
 from polylogue.archive.stats import ArchiveStats
 from polylogue.cli.query_stats import output_stats_sql
+from tests.infra.local_timezone import pinned_local_timezone
 
 
 @pytest.fixture
 def fixed_local_timezone(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    previous = os.environ.get("TZ")
-    monkeypatch.setenv("TZ", "America/Los_Angeles")
-    time.tzset()
-    try:
+    with pinned_local_timezone(monkeypatch, "America/Los_Angeles"):
         yield
-    finally:
-        if previous is None:
-            monkeypatch.delenv("TZ", raising=False)
-        else:
-            monkeypatch.setenv("TZ", previous)
-        time.tzset()
 
 
 @pytest.mark.asyncio

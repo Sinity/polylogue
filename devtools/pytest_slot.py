@@ -53,10 +53,13 @@ __all__ = [
 ]
 
 #: Exported into every task started by ``sinnixd-queue-run``.
-QUEUE_TASK_ENV: Final = "SINNIXD_JOB_ID"
+QUEUE_TASK_ENV: Final = "AGENTCTL_JOB_ID"
 #: The installed queue runner moves the workload out of pueued.service and
 #: into the slice selected by the launch document's pool.
-QUEUE_RUNNER: Final = "sinnixd-queue-run"
+#: The queue runner, newest name first; the daemon-era name still resolves on
+#: a host that has not switched.
+QUEUE_RUNNERS: Final = ("agentctl-run", "sinnixd-queue-run")
+QUEUE_RUNNER: Final = QUEUE_RUNNERS[0]
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
 SLOT_HELD: Final = "held"
@@ -319,7 +322,7 @@ def _write_launch(
         "argv": list(argv),
         "working_directory": cwd,
         "environment": dict(env),
-        "timeout_seconds": 3600,
+        "timeout_seconds": 7200,
         "result_kind": "exit",
         "log_path": str(log_path),
     }
@@ -341,7 +344,10 @@ def _queue(
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
     adder = adder_environment(env)
-    queue_runner = shutil.which(QUEUE_RUNNER, path=adder.get("PATH") or os.defpath)
+    queue_runner = next(
+        (found for name in QUEUE_RUNNERS if (found := shutil.which(name, path=adder.get("PATH") or os.defpath))),
+        None,
+    )
     if queue_runner is None:
         raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{QUEUE_RUNNER}` is not on PATH"))
     _write_launch(

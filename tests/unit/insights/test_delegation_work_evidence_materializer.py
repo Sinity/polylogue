@@ -44,14 +44,6 @@ def _seed_delegation(archive_root: Path) -> None:
         ).fetchone()[0]
         conn.execute(
             """
-            INSERT INTO session_links (
-                src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id, observed_at_ms
-            ) VALUES (?, 'claude-code-session', 'parent', 'subagent', ?, 1)
-            """,
-            (child_id, parent_id),
-        )
-        conn.execute(
-            """
             INSERT INTO messages (session_id, native_id, position, role, message_type, content_hash, occurred_at_ms)
             VALUES (?, 'dispatch', 0, 'assistant', 'message', ?, 1)
             """,
@@ -67,6 +59,21 @@ def _seed_delegation(archive_root: Path) -> None:
             ) VALUES (?, ?, 0, 'tool_use', 'Task', 'task-1', 'subagent', '{"prompt":"review"}')
             """,
             (message_id, parent_id),
+        )
+        # block_id is generated as message_id || ':' || position; a literal
+        # tool_id ("task-1") is a different value and would leave the join
+        # in delegation_facts_source (index.py) unresolved.
+        block_id = conn.execute(
+            "SELECT block_id FROM blocks WHERE message_id = ? AND position = 0", (message_id,)
+        ).fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO session_links (
+                src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
+                parent_tool_use_block_id, observed_at_ms
+            ) VALUES (?, 'claude-code-session', 'parent', 'subagent', ?, ?, 1)
+            """,
+            (child_id, parent_id, block_id),
         )
 
 

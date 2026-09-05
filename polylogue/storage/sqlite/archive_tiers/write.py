@@ -32,6 +32,7 @@ from polylogue.archive.topology.edge import (
     HOOK_CONTRADICTED_LINK_METHOD,
     HOOK_DERIVED_LINK_METHODS,
     HOOK_SUPERSEDED_LINK_METHOD,
+    DispatchResolutionReason,
     TopologyEdgeStatus,
     TopologyEdgeType,
     branch_type_to_edge_type,
@@ -57,7 +58,7 @@ from polylogue.core.timestamp_authority import producer_timestamp_flags, session
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.logging import get_logger
 from polylogue.pipeline.ids import MessageOwnerResolution, attachment_message_owner_key, message_owner_resolution
-from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParseAccounting,
     ParsedAttachment,
@@ -68,6 +69,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
+from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
@@ -1101,6 +1103,8 @@ def write_parsed_session_to_archive(
             }
             if invalidated_identity_children:
                 graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
+            if source_conn is not None:
+                graph_kwargs["source_conn"] = source_conn
             _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
             add_timing("index.graph_resolve", t0)
             t0 = time.perf_counter()
@@ -3765,39 +3769,15 @@ def _write_attachments(
         )
         attachment_positions.update(_attachment_reference_positions(message_group, occupied_positions=occupied))
     touched_attachment_ids: set[str] = set()
-    unowned_attachment_ids: set[str] = set()
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(id(attachment))
-        acquired_blob = (preacquired_blobs or {}).get(id(attachment))
-        blob_hash, byte_count, acquisition_status = (
-            acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
-        )
-        conn.execute(
-            """
-            INSERT INTO attachments (
-                attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
-            ) VALUES (?, ?, ?, ?, ?, ?, 0)
-            ON CONFLICT(attachment_id) DO UPDATE SET
-                display_name = COALESCE(excluded.display_name, attachments.display_name),
-                media_type = COALESCE(excluded.media_type, attachments.media_type),
-                byte_count = excluded.byte_count,
-                blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
-                acquisition_status =
-                    CASE WHEN excluded.acquisition_status = 'acquired'
-                         THEN 'acquired' ELSE attachments.acquisition_status END
-            """,
-            (
-                attachment_id,
-                _sqlite_text(attachment.name),
-                _sqlite_text(attachment.mime_type),
-                byte_count,
-                blob_hash,
-                acquisition_status,
-            ),
-        )
         if message_id is None:
-            unowned_attachment_ids.add(attachment_id)
+            # The owner is ambiguous, so no ref may be guessed, but the
+            # attachment's identity and bytes are still evidence. The row is
+            # written unreferenced and kept out of the ref-count sweep, which
+            # exists to collect rows whose refs went away.
+            _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
             continue
         direction, producer_ref = _attachment_provenance(
             attachment, owning_messages.get(message_id), resolved_message_id=message_id
@@ -3810,6 +3790,7 @@ def _write_attachments(
                 f"attachment_id={attachment.provider_attachment_id!r}"
             )
         touched_attachment_ids.add(attachment_id)
+        _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
         ref_position = attachment_positions[id(attachment)]
         ref_id = f"{message_id}:attachment:{ref_position}"
         # Bulk rebuilds may suspend FK enforcement. Mirror REPLACE's cascade
@@ -3853,7 +3834,7 @@ def _write_attachments(
             ),
         )
         _write_attachment_native_ids(conn, ref_id, attachment)
-    affected_attachment_ids = (touched_attachment_ids | (refresh_attachment_ids or set())) - unowned_attachment_ids
+    affected_attachment_ids = touched_attachment_ids | (refresh_attachment_ids or set())
     # polylogue-w06b: a full-replace re-ingest (or a re-ingest whose attachment
     # can no longer be matched to a message via the shared owner key, e.g.
     # the owning message became a duplicate-native-id exclusion or dropped
@@ -3866,6 +3847,42 @@ def _write_attachments(
     # attachment_refs), while still reporting acquisition_status='acquired'
     # and real fetched bytes.
     refresh_and_sweep_attachment_rows(conn, affected_attachment_ids)
+
+
+def _write_attachment_row(
+    conn: sqlite3.Connection,
+    attachment_id: str,
+    attachment: ParsedAttachment,
+    preacquired_blobs: dict[int, tuple[bytes | None, int, str]] | None,
+) -> None:
+    """Upsert the attachment's identity and bytes, leaving refs to the caller."""
+    acquired_blob = (preacquired_blobs or {}).get(id(attachment))
+    blob_hash, byte_count, acquisition_status = (
+        acquired_blob if acquired_blob is not None else _acquire_attachment_blob(conn, attachment)
+    )
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
+        ) VALUES (?, ?, ?, ?, ?, ?, 0)
+        ON CONFLICT(attachment_id) DO UPDATE SET
+            display_name = COALESCE(excluded.display_name, attachments.display_name),
+            media_type = COALESCE(excluded.media_type, attachments.media_type),
+            byte_count = excluded.byte_count,
+            blob_hash = COALESCE(excluded.blob_hash, attachments.blob_hash),
+            acquisition_status =
+                CASE WHEN excluded.acquisition_status = 'acquired'
+                     THEN 'acquired' ELSE attachments.acquisition_status END
+        """,
+        (
+            attachment_id,
+            _sqlite_text(attachment.name),
+            _sqlite_text(attachment.mime_type),
+            byte_count,
+            blob_hash,
+            acquisition_status,
+        ),
+    )
 
 
 def refresh_and_sweep_attachment_rows(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:
@@ -4251,12 +4268,15 @@ def _write_session_link(
     if not dst_native_id:
         return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
-    parent_tool_use_block_id = _resolve_parent_tool_use_block_id(conn, session)
-    method = "parser-parent" if parent_tool_use_block_id is None else "parent-tool-use-id"
+    dispatch = _resolve_parent_tool_use_block(conn, session, source_conn=source_conn)
+    parent_tool_use_block_id = dispatch.block_id
+    method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
     identity_reason = _session_target_resolution_reason(conn, origin, dst_native_id)
     if identity_reason is not None:
         evidence["resolution_reason"] = identity_reason
+    if dispatch.reason is not None:
+        evidence["dispatch_reason"] = dispatch.reason
     status: str | None = None
 
     # A conflict is scoped to (child, link_type), NOT to the primary key.
@@ -4352,22 +4372,26 @@ def _session_target_resolution_reason(conn: sqlite3.Connection, origin: str, pro
     return "target-not-yet-observed"
 
 
-def _resolve_parent_tool_use_block_id(conn: sqlite3.Connection, session: ParsedSession) -> str | None:
+def _resolve_parent_tool_use_block(
+    conn: sqlite3.Connection,
+    session: ParsedSession,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+) -> _DispatchResolution:
     """Resolve parent-side dispatch evidence to the exact TOOL_USE block.
 
     A supplied parent identity scopes the lookup to that exact resolved
-    session. ``None`` (not found / not supplied) leaves the column NULL,
-    never a guess.
+    session. A parent not yet in the archive is pending, not refused.
     """
     parent_id = getattr(session, "parent_session_provider_id", None)
     if not parent_id:
-        return None
+        return _DISPATCH_PENDING
     origin = origin_from_provider(session.source_name).value
     parent_session_id = _existing_parent_session_id(conn, session, origin)
     if parent_session_id is None:
-        return None
+        return _DISPATCH_PENDING
     child_session_id = archive_session_id(origin, session.provider_session_id.strip())
-    return _resolve_parent_dispatch_block_id(conn, parent_session_id, child_session_id)
+    return _resolve_parent_dispatch_block(conn, parent_session_id, child_session_id, source_conn=source_conn)
 
 
 def _branch_type_from_link_type(link_type: object) -> str | None:
@@ -4495,6 +4519,7 @@ def _resolve_session_graph(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     invalidated_session_ids: set[str] | None = None,
+    source_conn: sqlite3.Connection | None = None,
 ) -> None:
     def record_substage(name: str, started_at: float) -> None:
         if add_timing is not None:
@@ -4514,7 +4539,7 @@ def _resolve_session_graph(
     _resolve_outbound_session_links(conn, session_id, origin)
     record_substage("outbound_links", t0)
     t0 = time.perf_counter()
-    _refill_inbound_dispatch_block_ids(conn, session_id)
+    _refill_inbound_dispatch_block_ids(conn, session_id, source_conn=source_conn)
     record_substage("inbound_dispatch_blocks", t0)
     t0 = time.perf_counter()
     has_outbound_link = (
@@ -4574,14 +4599,14 @@ def _resolve_session_graph(
                 observed_at_ms=int(time.time() * 1000),
             )
             continue
-        parent_tool_use_block_id = _resolve_parent_dispatch_block_id(conn, session_id, child_id)
+        dispatch = _resolve_parent_dispatch_block(conn, session_id, child_id, source_conn=source_conn)
         conn.execute(
-            """
+            f"""
             UPDATE session_links
             SET resolved_dst_session_id = ?,
                 resolved_at_ms = COALESCE(resolved_at_ms, observed_at_ms),
                 parent_tool_use_block_id = COALESCE(parent_tool_use_block_id, ?),
-                evidence_json = json_remove(evidence_json, '$.resolution_reason'),
+                evidence_json = json_remove({_DISPATCH_REASON_EVIDENCE_SQL}, '$.resolution_reason'),
                 method = CASE
                     WHEN parent_tool_use_block_id IS NULL AND ? IS NOT NULL THEN 'parent-tool-use-id'
                     ELSE method
@@ -4592,7 +4617,16 @@ def _resolve_session_graph(
               AND resolved_dst_session_id IS NULL
               AND status IS NULL
             """,
-            (session_id, parent_tool_use_block_id, parent_tool_use_block_id, child_id, dst_native_id, link_type),
+            (
+                session_id,
+                dispatch.block_id,
+                dispatch.reason,
+                dispatch.reason,
+                dispatch.block_id,
+                child_id,
+                dst_native_id,
+                link_type,
+            ),
         )
         resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
@@ -4622,7 +4656,12 @@ def _resolve_session_graph(
     record_substage("projection_refresh", t0)
 
 
-def _refill_inbound_dispatch_block_ids(conn: sqlite3.Connection, parent_session_id: str) -> None:
+def _refill_inbound_dispatch_block_ids(
+    conn: sqlite3.Connection,
+    parent_session_id: str,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+) -> None:
     """Rebind resolved children to this parent's dispatch blocks.
 
     Writing a parent replaces its messages and blocks, and
@@ -4630,7 +4669,10 @@ def _refill_inbound_dispatch_block_ids(conn: sqlite3.Connection, parent_session_
     every inbound child edge loses the join key while the replacement
     reinserts the same deterministic block ids. Identity resolution revisits
     only unresolved edges, so an already-resolved child is repaired here or
-    not at all.
+    not at all. This is also where a child written before its parent carried
+    dispatch evidence converges: parent-first and child-first ingest reach
+    the same edge. A refusal is re-typed each time so the recorded reason
+    reflects the parent as it stands now.
     """
     rows = conn.execute(
         """SELECT src_session_id, dst_origin, dst_native_id, link_type
@@ -4641,16 +4683,24 @@ def _refill_inbound_dispatch_block_ids(conn: sqlite3.Connection, parent_session_
         (parent_session_id,),
     ).fetchall()
     for src_session_id, dst_origin, dst_native_id, link_type in rows:
-        block_id = _resolve_parent_dispatch_block_id(conn, parent_session_id, str(src_session_id))
-        if block_id is None:
-            continue
+        dispatch = _resolve_parent_dispatch_block(conn, parent_session_id, str(src_session_id), source_conn=source_conn)
         conn.execute(
-            """UPDATE session_links
+            f"""UPDATE session_links
                SET parent_tool_use_block_id = ?,
-                   method = CASE WHEN method = 'parser-parent' THEN 'parent-tool-use-id' ELSE method END
+                   evidence_json = {_DISPATCH_REASON_EVIDENCE_SQL},
+                   method = CASE WHEN method = 'parser-parent' AND ? IS NOT NULL THEN 'parent-tool-use-id' ELSE method END
                WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
                  AND parent_tool_use_block_id IS NULL""",
-            (block_id, src_session_id, dst_origin, dst_native_id, link_type),
+            (
+                dispatch.block_id,
+                dispatch.reason,
+                dispatch.reason,
+                dispatch.block_id,
+                src_session_id,
+                dst_origin,
+                dst_native_id,
+                link_type,
+            ),
         )
 
 
@@ -6381,6 +6431,7 @@ def _composed_db_signatures(
               AND resolved_dst_session_id IS NOT NULL
               AND branch_point_message_id IS NOT NULL
               AND {topology_status_composes_sql()}
+            ORDER BY link_type, dst_origin, dst_native_id
             LIMIT 1
             """,
             (cursor_session_id,),
@@ -7180,6 +7231,7 @@ def _prefix_sharing_edge_sync(conn: sqlite3.Connection, session_id: str) -> tupl
           AND resolved_dst_session_id IS NOT NULL
           AND branch_point_message_id IS NOT NULL
           AND {topology_status_composes_sql()}
+        ORDER BY link_type, dst_origin, dst_native_id
         LIMIT 1
         """,
         (session_id,),
@@ -7272,26 +7324,131 @@ def _canonical_identity_session_ids(conn: sqlite3.Connection, origin: str, value
     return resolved
 
 
-def _resolve_parent_dispatch_block_id(
-    conn: sqlite3.Connection, parent_session_id: str, child_session_id: str
-) -> str | None:
-    """Resolve parent-side delegation evidence after either session arrives.
+@dataclass(frozen=True, slots=True)
+class _DispatchResolution:
+    """Outcome of binding a child edge to its parent's dispatching block.
 
-    Provider names are compared as the sessions they resolve to: several exact
-    names for one child are one identity, and only names resolving to
-    different sessions contradict each other.
+    Exactly one of ``block_id`` / ``reason`` is set: a refusal always names
+    why, and a bound block never carries a stale reason.
+    """
+
+    block_id: str | None
+    reason: DispatchResolutionReason | None
+
+    @property
+    def method(self) -> str | None:
+        return "parent-tool-use-id" if self.block_id is not None else None
+
+
+_DISPATCH_PENDING = _DispatchResolution(None, None)
+"""The parent is not in the archive yet; nothing can be said either way."""
+
+
+_ORIGIN_SPECS_BY_VALUE: dict[str, Any] | None = None
+
+
+def _origin_carries_dispatch_identity(origin: str) -> bool:
+    global _ORIGIN_SPECS_BY_VALUE
+    if _ORIGIN_SPECS_BY_VALUE is None:
+        _ORIGIN_SPECS_BY_VALUE = {spec.origin.value: spec for spec in origin_specs()}
+    spec = _ORIGIN_SPECS_BY_VALUE.get(origin)
+    if spec is None:
+        return False
+    return bool(spec.topology_capabilities.parent_dispatch.state != "structurally-absent")
+
+
+def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[str]:
+    values = {
+        str(row[0])
+        for row in conn.execute(
+            """SELECT provider_value FROM session_identity_claims
+               WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'""",
+            (session_id,),
+        ).fetchall()
+    }
+    row = conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is not None and row[0]:
+        values.add(str(row[0]))
+    return values
+
+
+def _sidecar_dispatch_tool_ids(
+    source_conn: sqlite3.Connection | None,
+    *,
+    origin: str,
+    parent_values: set[str],
+    child_values: set[str],
+) -> set[str]:
+    """Tool ids the child's ``agent-*.meta.json`` sidecar names, bound to this parent.
+
+    The sidecar lives at ``<parent>/subagents/<child stem>.meta.json`` in the
+    durable source tier; the parent directory must be one of the parent's own
+    provider names, so a sidecar can never bind to a different session that
+    happens to share a child stem.
+    """
+    if source_conn is None or origin != Origin.CLAUDE_CODE_SESSION.value:
+        return set()
+    stems = {value for value in child_values if value.startswith("agent-") and ":" not in value}
+    if not stems:
+        return set()
+    if (
+        source_conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_sessions'").fetchone()
+        is None
+    ):
+        return set()
+    tool_ids: set[str] = set()
+    store = get_blob_store()
+    for stem in sorted(stems):
+        rows = source_conn.execute(
+            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = ? AND source_path LIKE ?",
+            (origin, f"%/subagents/{stem}.meta.json"),
+        ).fetchall()
+        for source_path, blob_hash in rows:
+            parts = str(source_path).replace("\\", "/").split("/")
+            if len(parts) < 3 or parts[-3] not in parent_values:
+                continue
+            try:
+                payload = store.read_all(bytes(blob_hash).hex())
+                artifact = parse_claude_orchestration_artifact(str(source_path), payload)
+            except (OSError, ValueError):
+                continue
+            if artifact is None:
+                continue
+            tool_ids.update(fact.tool_use_id for fact in artifact.facts if fact.tool_use_id)
+    return tool_ids
+
+
+def _resolve_parent_dispatch_block(
+    conn: sqlite3.Connection,
+    parent_session_id: str,
+    child_session_id: str,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+) -> _DispatchResolution:
+    """Bind a child edge to the exact parent tool_use block that dispatched it.
+
+    Two exact witnesses are joined: the parent's own dispatch observations
+    (``claude_delegation_progress`` events whose child identity resolves to
+    ``child_session_id``) and the child's dispatch sidecar in the source tier.
+    Provider names are compared as the sessions they resolve to: several
+    exact names for one child are one identity, and only names resolving to
+    different sessions contradict each other. Every refusal is typed; there
+    is no ordinal, count, timestamp, or nearest-call fallback.
     """
     origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (parent_session_id,)).fetchone()
     if origin_row is None:
-        return None
+        return _DISPATCH_PENDING
     origin = str(origin_row[0])
+    if not _origin_carries_dispatch_identity(origin):
+        return _DispatchResolution(None, "origin-no-dispatch-identity")
     rows = conn.execute(
         """SELECT source_message_provider_id, payload_json
            FROM session_events
            WHERE session_id = ? AND event_type = 'claude_delegation_progress'""",
         (parent_session_id,),
     ).fetchall()
-    matching_blocks: set[str] = set()
+    tool_ids: set[str] = set()
+    contradicted = False
     for source_id, payload_json in rows:
         try:
             payload = json.loads(str(payload_json))
@@ -7312,20 +7469,49 @@ def _resolve_parent_dispatch_block_id(
         identity_values = _dispatch_child_identity_values(observation, observation_payload)
         if not identity_values:
             continue
-        if _canonical_identity_session_ids(conn, origin, identity_values) != {child_session_id}:
+        resolved = _canonical_identity_session_ids(conn, origin, identity_values)
+        if resolved is None or child_session_id not in resolved:
             continue
-        block_rows = conn.execute(
-            """SELECT b.block_id FROM blocks b
-               JOIN messages m ON m.message_id = b.message_id
-               WHERE b.tool_id = ? AND b.block_type = 'tool_use' AND m.session_id = ?
-               ORDER BY b.block_id""",
-            (observation.provider_tool_id, parent_session_id),
-        ).fetchall()
-        if len(block_rows) == 1:
-            matching_blocks.add(str(block_rows[0][0]))
-    if len(matching_blocks) == 1:
-        return next(iter(matching_blocks))
-    return None
+        if len(resolved) > 1:
+            contradicted = True
+            continue
+        tool_ids.add(observation.provider_tool_id)
+    tool_ids |= _sidecar_dispatch_tool_ids(
+        source_conn,
+        origin=origin,
+        parent_values=_session_provider_values(conn, parent_session_id),
+        child_values=_session_provider_values(conn, child_session_id),
+    )
+    if contradicted or len(tool_ids) > 1:
+        return _DispatchResolution(None, "dispatch-identity-contradiction")
+    if not tool_ids:
+        return _DispatchResolution(None, "dispatch-evidence-absent")
+    (tool_id,) = tool_ids
+    block_rows = conn.execute(
+        """SELECT b.block_id FROM blocks b
+           JOIN messages m ON m.message_id = b.message_id
+           WHERE b.tool_id = ? AND b.block_type = 'tool_use' AND m.session_id = ?
+           ORDER BY b.block_id""",
+        (tool_id, parent_session_id),
+    ).fetchall()
+    if not block_rows:
+        return _DispatchResolution(None, "dispatch-block-missing")
+    if len(block_rows) > 1:
+        return _DispatchResolution(None, "dispatch-tool-id-duplicate")
+    return _DispatchResolution(str(block_rows[0][0]), None)
+
+
+# ``evidence_json`` update fragment: bind the reason, or clear it once a block
+# binds. Bound as (reason, reason). Older rows default to a JSON array, so the
+# object form is established before json_set.
+_DISPATCH_REASON_EVIDENCE_SQL = """
+    CASE WHEN ? IS NULL
+         THEN json_remove(evidence_json, '$.dispatch_reason')
+         ELSE json_set(
+                  CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{}' END,
+                  '$.dispatch_reason', ?)
+    END
+"""
 
 
 def _write_session_identity_claims(

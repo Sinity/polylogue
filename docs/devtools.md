@@ -70,7 +70,6 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools gate` | Run one named invariant check. |
 | `devtools scenario` | Run a named archive verification scenario. |
-| `devtools schema-manifest` | Compare canonical SQLite schema manifests with archive tier files. |
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run the local verification baseline: every quick gate, then the selected or complete test corpus. |
 

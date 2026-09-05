@@ -190,11 +190,11 @@ GATES: tuple[Gate, ...] = (
         label="gate schema-inference-gate",
     ),
     Gate(
-        "blob-conservation",
-        "Verify both directions of blob/reference conservation without mutation.",
+        "population-coverage",
+        "Verify every origin, detector route, and artifact kind in the source inventory is declared and witnessed.",
         "module",
-        ("polylogue.maintenance.blob_conservation",),
-        label="gate blob-conservation",
+        ("devtools.verify_population_coverage",),
+        label="gate population-coverage",
     ),
     Gate(
         "agent-integration",

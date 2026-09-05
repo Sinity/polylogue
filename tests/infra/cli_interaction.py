@@ -111,6 +111,7 @@ COMMAND_ROOT_OWNERS: dict[str, str] = {
     "hooks": "tests/unit/cli/test_hooks.py",
     "import": "tests/unit/cli/test_import.py",
     "init": "tests/unit/cli/test_init.py",
+    "insights": "tests/unit/cli/test_insights.py",
     "judge": "tests/unit/cli/test_judge_command.py",
     "manual": "tests/unit/cli/test_manual_command.py",
     "mark": "tests/unit/cli/test_mark_note_identity.py",

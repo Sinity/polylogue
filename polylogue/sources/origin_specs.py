@@ -1230,8 +1230,10 @@ def _claude_code_spec() -> OriginSpec:
         parent_dispatch=TopologyCapability(
             "positive-derived",
             (
+                "claude_code user.toolUseResult.agentId + tool_result.tool_use_id (Agent/Task result)",
                 "claude_code progress.data.type=agent_progress.parentToolUseID",
                 "claude_code progress.data.childSessionId/agentId when present",
+                "claude_code subagents/agent-*.meta.json toolUseId (source tier, child-bound)",
             ),
             "parent-side dispatch evidence is retained only when the wire carries an exact child identity",
         ),
