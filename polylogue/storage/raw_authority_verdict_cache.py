@@ -183,6 +183,16 @@ def write_raw_authority_verdict_cache(
             "DELETE FROM raw_authority_verdicts WHERE logical_source_key = ?",
             (logical_source_key,),
         )
+        # A raw re-keyed since it was cached (a pending key resolved after
+        # parse) still holds its row under the old key; raw_id is unique, so
+        # that row goes too or the insert fails and the converger stalls.
+        raw_ids = list(verdicts)
+        for offset in range(0, len(raw_ids), 500):
+            batch = raw_ids[offset : offset + 500]
+            conn.execute(
+                f"DELETE FROM raw_authority_verdicts WHERE raw_id IN ({','.join('?' for _ in batch)})",
+                batch,
+            )
         conn.executemany(
             """
             INSERT INTO raw_authority_verdicts
