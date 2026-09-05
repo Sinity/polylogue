@@ -916,3 +916,234 @@ async def test_session_identity_alias_conflict_invalidates_resolved_child(tmp_pa
     assert link["resolved_dst_session_id"] is None
     assert link["parent_session_id"] is None
     assert link["root_session_id"] == child_id
+
+
+def _dispatching_parent_records(*, extra_text: str | None = None) -> list[object]:
+    """Provider-shaped parent transcript that dispatches one subagent."""
+    records: list[object] = [
+        {
+            "type": "assistant",
+            "uuid": "parent-assistant",
+            "sessionId": "parent-native",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "dispatch-tool-1",
+                        "name": "Task",
+                        "input": {"description": "spawn"},
+                    }
+                ],
+            },
+        },
+        {
+            "type": "progress",
+            "uuid": "parent-progress",
+            "sessionId": "parent-native",
+            "parentToolUseID": "dispatch-tool-1",
+            "data": {"type": "agent_progress", "childSessionId": "agent-child-native"},
+        },
+    ]
+    if extra_text is not None:
+        records.append(
+            {
+                "type": "assistant",
+                "uuid": "parent-assistant-2",
+                "sessionId": "parent-native",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": extra_text}]},
+            }
+        )
+    return records
+
+
+def _dispatched_child_records() -> list[object]:
+    return [
+        {
+            "type": "user",
+            "uuid": "child-user",
+            "sessionId": "parent-native",
+            "message": {"role": "user", "content": "work"},
+        }
+    ]
+
+
+async def test_parent_replacement_preserves_child_dispatch_block_id(tmp_path: Path) -> None:
+    """Replacing a resolved parent keeps the child's dispatch join key.
+
+    Full replacement deletes the parent's blocks, and the ON DELETE SET NULL
+    foreign key nulls every inbound ``parent_tool_use_block_id`` while the
+    replacement reinserts the same deterministic block ids. Red if the writer
+    only refills that column for edges whose session identity is still
+    unresolved.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "parent-replacement-dispatch.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        parent_id = await ingest_session(parse_code(_dispatching_parent_records(), "parent-file"), backend=backend)
+        child_id = await ingest_session(parse_code(_dispatched_child_records(), "agent-child-native"), backend=backend)
+
+        async with backend.connection() as conn:
+            [before] = await conn.execute_fetchall(
+                """SELECT resolved_dst_session_id, parent_tool_use_block_id, method
+                   FROM session_links WHERE src_session_id = ?""",
+                (child_id,),
+            )
+
+        await ingest_session(
+            parse_code(_dispatching_parent_records(extra_text="second turn"), "parent-file"),
+            backend=backend,
+        )
+
+        async with backend.connection() as conn:
+            [after] = await conn.execute_fetchall(
+                """SELECT resolved_dst_session_id, parent_tool_use_block_id, method
+                   FROM session_links WHERE src_session_id = ?""",
+                (child_id,),
+            )
+            [fact] = await conn.execute_fetchall(
+                """SELECT mapping_state, child_session_id FROM delegation_facts
+                   WHERE parent_session_id = ?""",
+                (parent_id,),
+            )
+    finally:
+        await repo.close()
+
+    dispatch_block_id = archive_block_id(archive_message_id(parent_id, "parent-assistant", position=0), position=0)
+    assert before["parent_tool_use_block_id"] == dispatch_block_id
+    assert after["resolved_dst_session_id"] == parent_id
+    assert after["parent_tool_use_block_id"] == dispatch_block_id
+    assert after["method"] == "parent-tool-use-id"
+    assert fact["mapping_state"] == "resolved"
+    assert fact["child_session_id"] == child_id
+
+
+async def test_dispatch_child_aliases_resolve_to_one_canonical_child(tmp_path: Path) -> None:
+    """Two exact names for one child are one identity, not a contradiction.
+
+    The progress payload names the child under both its composed identity and
+    its alias. Red if identity classification compares the raw provider
+    strings instead of the sessions they resolve to.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "dispatch-child-aliases.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        parent_id = await ingest_session(
+            parse_code(
+                [
+                    {
+                        "type": "assistant",
+                        "uuid": "parent-assistant",
+                        "sessionId": "parent-native",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "dispatch-tool-1",
+                                    "name": "Task",
+                                    "input": {"description": "spawn"},
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "type": "progress",
+                        "uuid": "parent-progress",
+                        "sessionId": "parent-native",
+                        "parentToolUseID": "dispatch-tool-1",
+                        "data": {
+                            "type": "agent_progress",
+                            "childSessionId": "parent-native:agent-child-native",
+                            "agentId": "agent-child-native",
+                        },
+                    },
+                ],
+                "parent-file",
+            ),
+            backend=backend,
+        )
+        child = parse_code(_dispatched_child_records(), "agent-child-native")
+        assert child.provider_session_id == "parent-native:agent-child-native"
+        assert child.provider_session_aliases == ["agent-child-native"]
+        child_id = await ingest_session(child, backend=backend)
+
+        async with backend.connection() as conn:
+            [link] = await conn.execute_fetchall(
+                """SELECT resolved_dst_session_id, parent_tool_use_block_id, method
+                   FROM session_links WHERE src_session_id = ?""",
+                (child_id,),
+            )
+    finally:
+        await repo.close()
+
+    assert link["resolved_dst_session_id"] == parent_id
+    assert link["parent_tool_use_block_id"] == archive_block_id(
+        archive_message_id(parent_id, "parent-assistant", position=0), position=0
+    )
+    assert link["method"] == "parent-tool-use-id"
+
+
+async def test_dispatch_contradiction_refuses_both_candidate_children(tmp_path: Path) -> None:
+    """Names resolving to different sessions stay a contradiction.
+
+    Red if canonical identity resolution degrades into accepting whichever
+    candidate name happens to match the child being resolved.
+    """
+    backend = SQLiteBackend(db_path=tmp_path / "dispatch-contradiction.db")
+    repo = SessionRepository(backend=backend)
+    try:
+        await ingest_session(
+            parse_code(
+                [
+                    {
+                        "type": "assistant",
+                        "uuid": "parent-assistant",
+                        "sessionId": "parent-native",
+                        "message": {
+                            "role": "assistant",
+                            "content": [
+                                {
+                                    "type": "tool_use",
+                                    "id": "dispatch-tool-1",
+                                    "name": "Task",
+                                    "input": {"description": "spawn"},
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "type": "progress",
+                        "uuid": "parent-progress-a",
+                        "sessionId": "parent-native",
+                        "parentToolUseID": "dispatch-tool-1",
+                        "data": {"type": "agent_progress", "childSessionId": "parent-native:agent-child-a"},
+                    },
+                    {
+                        "type": "progress",
+                        "uuid": "parent-progress-b",
+                        "sessionId": "parent-native",
+                        "parentToolUseID": "dispatch-tool-1",
+                        "data": {"type": "agent_progress", "childSessionId": "parent-native:agent-child-b"},
+                    },
+                ],
+                "parent-file",
+            ),
+            backend=backend,
+        )
+        child_a = await ingest_session(parse_code(_dispatched_child_records(), "agent-child-a"), backend=backend)
+        child_b = await ingest_session(parse_code(_dispatched_child_records(), "agent-child-b"), backend=backend)
+
+        async with backend.connection() as conn:
+            links = list(
+                await conn.execute_fetchall(
+                    """SELECT src_session_id, resolved_dst_session_id, parent_tool_use_block_id
+                       FROM session_links WHERE src_session_id IN (?, ?)""",
+                    (child_a, child_b),
+                )
+            )
+    finally:
+        await repo.close()
+
+    assert {link["src_session_id"] for link in links} == {child_a, child_b}
+    assert all(link["parent_tool_use_block_id"] is None for link in links)

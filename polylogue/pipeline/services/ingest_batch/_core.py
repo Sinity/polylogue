@@ -1386,6 +1386,14 @@ def _drain_ready_session_entries(
     source_conn: sqlite3.Connection | None = None,
 ) -> int:
     _delete_stale_sessions_for_raw_entries(conn, ready_entries)
+    from polylogue.storage.fts.freshness import message_fts_recorded_exact_stale_sync
+
+    if message_fts_recorded_exact_stale_sync(conn):
+        # An exact stale verdict is archive-wide negative evidence. Keep the
+        # materialized sessions in the repair queue even when cleanup leaves
+        # equal row counts and the session-local probe has no missing row.
+        for _raw_id, cdata in ready_entries:
+            summary.fts_repair_session_ids.append(cdata.session_id)
     written_count = 0
     # One signature cache per drained batch memoizes each session's own composed
     # signatures so a parent with K fork-children is computed once, not K times

@@ -533,7 +533,10 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     payload = extract_json_result(result.output)
-    assert payload["aggregate_verdict"] == "degraded"
+    # The seeded workspace has an ops tier with an empty debt ledger: readiness
+    # is exactly "convergence has caught up".
+    assert payload["converged"] is True
+    assert payload["debt_stages"] == []
     insights = {item["insight_name"]: item for item in json_object_list(payload["insights"])}
     assert set(insights) >= {
         "session_profiles",
@@ -543,7 +546,7 @@ def test_insights_status_json(cli_workspace: CliWorkspace) -> None:
         "session_tag_rollups",
         "archive_coverage",
     }
-    assert insights["session_profiles"]["verdict"] == "degraded"
+    assert insights["session_profiles"]["table_present"] is True
     assert json_int(insights["session_profiles"]["degraded_count"]) == 2
     assert json_int(insights["session_work_events"]["row_count"]) >= 1
 
@@ -585,7 +588,7 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     result = runner.invoke(cli, ["ops", "insights", "status", "--insight", "profiles"], catch_exceptions=False)
 
     assert result.exit_code == 0
-    assert "Insight Readiness: degraded" in result.output
+    assert "Convergence: caught up" in result.output
     assert "session_profiles: degraded" in result.output
 
 

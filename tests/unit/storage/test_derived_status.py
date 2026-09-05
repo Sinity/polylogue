@@ -80,7 +80,7 @@ def test_collect_derived_statuses_preserves_independent_readiness_conditions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from polylogue.storage.derived import derived_status as derived_status_mod
-    from polylogue.storage.insights.session.runtime import SessionInsightStatusSnapshot
+    from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 
     conn = sqlite3.connect(":memory:")
     snapshot = SessionInsightStatusSnapshot(

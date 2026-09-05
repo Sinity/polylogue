@@ -1852,10 +1852,24 @@ def read_session_agent_policies(conn: sqlite3.Connection, session_id: str) -> li
 
 
 def search_archive_blocks(conn: sqlite3.Connection, query: str) -> list[str]:
-    """Return block ids matched by the archive contentless FTS table."""
+    """Return block ids matched by the archive contentless FTS table.
+
+    A read open admits an index whose message FTS surface is absent
+    (``MESSAGE_FTS_DEGRADABLE_OBJECTS``) because search reports that state
+    itself. Honour that here rather than reaching SQL and raising
+    ``no such table: messages_fts``. Presence, not freshness, is the check:
+    rebuild and differential routes read this surface mid-convergence, when
+    it is legitimately behind ``blocks``.
+    """
+    from polylogue.core.errors import DatabaseError
+    from polylogue.storage.fts.fts_lifecycle import MESSAGE_SEARCH_REPAIR_HINT
+    from polylogue.storage.introspection import table_exists
+
     match_query = normalize_fts5_query(query)
     if match_query is None:
         return []
+    if not table_exists(conn, "messages_fts"):
+        raise DatabaseError(f"Search index not built. {MESSAGE_SEARCH_REPAIR_HINT}")
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
         """
@@ -4498,6 +4512,9 @@ def _resolve_session_graph(
     _resolve_outbound_session_links(conn, session_id, origin)
     record_substage("outbound_links", t0)
     t0 = time.perf_counter()
+    _refill_inbound_dispatch_block_ids(conn, session_id)
+    record_substage("inbound_dispatch_blocks", t0)
+    t0 = time.perf_counter()
     has_outbound_link = (
         conn.execute("SELECT 1 FROM session_links WHERE src_session_id = ? LIMIT 1", (session_id,)).fetchone()
         is not None
@@ -4601,6 +4618,38 @@ def _resolve_session_graph(
     for impacted_session_id in impacted_session_ids:
         _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
     record_substage("projection_refresh", t0)
+
+
+def _refill_inbound_dispatch_block_ids(conn: sqlite3.Connection, parent_session_id: str) -> None:
+    """Rebind resolved children to this parent's dispatch blocks.
+
+    Writing a parent replaces its messages and blocks, and
+    ``session_links.parent_tool_use_block_id`` is ``ON DELETE SET NULL``, so
+    every inbound child edge loses the join key while the replacement
+    reinserts the same deterministic block ids. Identity resolution revisits
+    only unresolved edges, so an already-resolved child is repaired here or
+    not at all.
+    """
+    rows = conn.execute(
+        """SELECT src_session_id, dst_origin, dst_native_id, link_type
+           FROM session_links
+           WHERE resolved_dst_session_id = ?
+             AND parent_tool_use_block_id IS NULL
+             AND status IS NULL""",
+        (parent_session_id,),
+    ).fetchall()
+    for src_session_id, dst_origin, dst_native_id, link_type in rows:
+        block_id = _resolve_parent_dispatch_block_id(conn, parent_session_id, str(src_session_id))
+        if block_id is None:
+            continue
+        conn.execute(
+            """UPDATE session_links
+               SET parent_tool_use_block_id = ?,
+                   method = CASE WHEN method = 'parser-parent' THEN 'parent-tool-use-id' ELSE method END
+               WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+                 AND parent_tool_use_block_id IS NULL""",
+            (block_id, src_session_id, dst_origin, dst_native_id, link_type),
+        )
 
 
 def _root_projection_current(conn: sqlite3.Connection, session_id: str) -> bool:
@@ -6657,13 +6706,22 @@ def _reextract_prefix_tail_db(
     t0 = time.perf_counter()
     _refresh_session_counts(conn, child_session_id)
     # Late-parent resolution mutates an already-materialized child outside its
-    # own write path. Rebuild every projection whose input rows just changed;
-    # otherwise incremental convergence can retain the pre-extraction prefix
-    # in usage, delegation, and insight products indefinitely.
+    # own write path, so usage must be rebuilt here: it is aggregated at write
+    # time and nothing else revisits it. Derived session rows converge on their
+    # own -- the refreshed counts move the child's high-water mark, which is
+    # what the staleness comparison reads.
     conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child_session_id,))
     _aggregate_message_tokens_into_model_usage(conn, child_session_id)
     _aggregate_provider_usage_into_model_usage(conn, child_session_id)
-    conn.execute("DELETE FROM insight_materialization WHERE session_id = ?", (child_session_id,))
+    # Derived session products cache the pre-extraction message set. Their
+    # staleness predicate compares the session's sort key, updated-at and
+    # content hash, none of which re-extraction moves, so the rows are dropped
+    # outright: a missing profile is what makes the child a convergence
+    # candidate again.
+    conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (child_session_id,))
+    conn.execute("DELETE FROM session_phases WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
 
 
@@ -7173,20 +7231,58 @@ def _existing_parent_session_id(conn: sqlite3.Connection, session: ParsedSession
     return str(row[0][0]) if len(row) == 1 else None
 
 
+def _dispatch_child_identity_values(observation: ParsedDispatchObservation, payload: Mapping[str, object]) -> set[str]:
+    """Every exact provider name this dispatch observation offers for its child."""
+    values = {observation.child_provider_id.strip()} if observation.child_provider_id else set()
+    candidates = payload.get("child_provider_ids")
+    if isinstance(candidates, list):
+        values |= {str(value).strip() for value in candidates if str(value).strip()}
+    return values
+
+
+def _canonical_identity_session_ids(conn: sqlite3.Connection, origin: str, values: set[str]) -> set[str] | None:
+    """Resolve exact provider names to the sessions that claim them.
+
+    ``None`` means at least one name is not resolvable to exactly one session
+    -- an unclaimed or contested name could still turn out to be a different
+    session, so the caller must refuse rather than assume agreement.
+    """
+    resolved: set[str] = set()
+    for value in values:
+        claimants = {
+            str(row[0])
+            for row in conn.execute(
+                """SELECT DISTINCT claimant_session_id FROM session_identity_claims
+                   WHERE origin = ? AND identity_namespace = 'provider-session'
+                     AND provider_value = ?""",
+                (origin, value),
+            ).fetchall()
+        }
+        if len(claimants) > 1:
+            return None
+        if claimants:
+            resolved |= claimants
+            continue
+        canonical_id = archive_session_id(origin, value)
+        if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (canonical_id,)).fetchone() is None:
+            return None
+        resolved.add(canonical_id)
+    return resolved
+
+
 def _resolve_parent_dispatch_block_id(
     conn: sqlite3.Connection, parent_session_id: str, child_session_id: str
 ) -> str | None:
-    """Resolve parent-side delegation evidence after either session arrives."""
-    child_ids = {
-        str(row[0])
-        for row in conn.execute(
-            """SELECT provider_value FROM session_identity_claims
-               WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'""",
-            (child_session_id,),
-        ).fetchall()
-    }
-    if not child_ids:
+    """Resolve parent-side delegation evidence after either session arrives.
+
+    Provider names are compared as the sessions they resolve to: several exact
+    names for one child are one identity, and only names resolving to
+    different sessions contradict each other.
+    """
+    origin_row = conn.execute("SELECT origin FROM sessions WHERE session_id = ?", (parent_session_id,)).fetchone()
+    if origin_row is None:
         return None
+    origin = str(origin_row[0])
     rows = conn.execute(
         """SELECT source_message_provider_id, payload_json
            FROM session_events
@@ -7194,7 +7290,6 @@ def _resolve_parent_dispatch_block_id(
         (parent_session_id,),
     ).fetchall()
     matching_blocks: set[str] = set()
-    matching_child_ids: set[str] = set()
     for source_id, payload_json in rows:
         try:
             payload = json.loads(str(payload_json))
@@ -7207,22 +7302,26 @@ def _resolve_parent_dispatch_block_id(
             observation = ParsedDispatchObservation.model_validate(observation_payload)
         except (TypeError, ValueError):
             continue
-        if observation.resolution_reason is not None:
+        # A parser-side contradiction is provisional: it compares raw names
+        # without an archive to resolve them against. Every other refusal
+        # reason stands.
+        if observation.resolution_reason is not None and observation.resolution_reason != "identity-contradiction":
             continue
-        child_provider_id = observation.child_provider_id
-        if child_provider_id is None or child_provider_id not in child_ids:
+        identity_values = _dispatch_child_identity_values(observation, observation_payload)
+        if not identity_values:
             continue
-        rows = conn.execute(
+        if _canonical_identity_session_ids(conn, origin, identity_values) != {child_session_id}:
+            continue
+        block_rows = conn.execute(
             """SELECT b.block_id FROM blocks b
                JOIN messages m ON m.message_id = b.message_id
                WHERE b.tool_id = ? AND b.block_type = 'tool_use' AND m.session_id = ?
                ORDER BY b.block_id""",
             (observation.provider_tool_id, parent_session_id),
         ).fetchall()
-        if len(rows) == 1:
-            matching_blocks.add(str(rows[0][0]))
-            matching_child_ids.add(child_provider_id)
-    if len(matching_blocks) == 1 and len(matching_child_ids) == 1:
+        if len(block_rows) == 1:
+            matching_blocks.add(str(block_rows[0][0]))
+    if len(matching_blocks) == 1:
         return next(iter(matching_blocks))
     return None
 

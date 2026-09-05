@@ -169,8 +169,8 @@ condition — what mutation or bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep
-ambient machine data out of tests. Per-PR CI runs only the quick gate — a
-green PR check does not mean tests ran; verify locally.
+ambient machine data out of tests. The required per-PR `verify` check runs
+affected pytest through the host slot; the quick gate remains a separate check.
 
 Change cross-checks: parser/detection → origin specs + real fixtures + replay
 parity; storage/schema → fresh DDL + declared lifecycle + readers/writers +

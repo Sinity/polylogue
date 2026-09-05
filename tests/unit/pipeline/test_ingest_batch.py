@@ -68,6 +68,8 @@ from polylogue.storage.blob_gc import BlobGCResult, run_blob_gc_report
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.derived.session.refresh import SessionInsightRefreshChunkObservation
+from polylogue.storage.fts.freshness import record_fts_invariant_snapshot_sync
+from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.repository import SessionRepository
@@ -3058,6 +3060,7 @@ def test_process_ingest_batch_sync_commits_targeted_fts_repair_and_invalidates_s
     )
 
     with open_connection(db_path) as conn:
+        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
         conn.commit()
 
     first_result = search_messages(needle, archive_root=archive_root, db_path=db_path, limit=10)

@@ -80,6 +80,18 @@ PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
 #: overlap without multiplying cache churn or exhausting the pytest cgroup.
 CORPUS_MAX_WORKERS = 2
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
+_PROJECT_DESCRIPTOR = ".agentctl/project.toml"
+# These tests read the AgentCTL descriptor directly. They are the bounded
+# contract for a descriptor-only change; Python changes still use Testmon.
+DESCRIPTOR_CONTRACT_TESTS = (
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_browser_smoke_has_no_private_browser_service_lease",
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_live_provider_proof_declares_no_port_lease",
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_sinnixd_parser_accepts_the_unleased_shared_chrome_operation",
+    "tests/unit/devtools/test_dev_loop_service.py::test_declared_operation_has_a_json_contract_and_no_retired_keys",
+    "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
+    "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
+    "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
+)
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
     "current_rss_bytes",
@@ -153,7 +165,8 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection with tracing."""
-    testmon = selection != "all"
+    testmon = selection not in {"all", "descriptor"}
+    collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
     command = [
         venv_python(root=ROOT),
         "-m",
@@ -169,11 +182,12 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         "-p",
         PROGRESS_PLUGIN_NAME,
         *managed_plugin_args(testmon=testmon),
-        *CLOSED_WORLD_COLLECTION_ARGS,
+        *collection_args,
         *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-forceselect"] if testmon else []),
         "-p",
         "no:randomly",
         *worker_args,
+        *(DESCRIPTOR_CONTRACT_TESTS if selection == "descriptor" else []),
         # Never under pytest-cov: testmon owns the tracer, and refuses to share
         # it with branch coverage.
     ]
@@ -190,6 +204,53 @@ def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
     return steps
+
+
+def _git_changed_paths(root: Path) -> frozenset[str] | None:
+    """Return committed and working-tree paths, or ``None`` if Git is unavailable."""
+    try:
+        base = None
+        for candidate in ("origin/master", "master", "HEAD^"):
+            resolved = subprocess.run(
+                ["git", "rev-parse", "--verify", candidate],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if resolved.returncode == 0 and resolved.stdout.strip():
+                base = resolved.stdout.strip()
+                break
+        if base is None:
+            return None
+        paths: set[str] = set()
+        for command in (
+            ["git", "diff", "--name-only", "--no-ext-diff", f"{base}...HEAD", "--"],
+            ["git", "diff", "--name-only", "--no-ext-diff", "HEAD", "--"],
+            ["git", "ls-files", "--others", "--exclude-standard"],
+        ):
+            result = subprocess.run(
+                command,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=10,
+            )
+            if result.returncode != 0:
+                return None
+            paths.update(line for line in result.stdout.splitlines() if line)
+        return frozenset(paths)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
+    """Choose bounded descriptor checks only for an exact descriptor diff."""
+    if changed_paths == frozenset({_PROJECT_DESCRIPTOR}):
+        return "descriptor"
+    return "affected"
 
 
 def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
@@ -522,7 +583,7 @@ def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> d
 def _scope(*, quick: bool, selection: str) -> VerificationScope:
     if quick:
         return VerificationScope.NON_TEST
-    return VerificationScope.AFFECTED if selection == "affected" else VerificationScope.COMPLETE
+    return VerificationScope.AFFECTED if selection in {"affected", "descriptor"} else VerificationScope.COMPLETE
 
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
@@ -584,6 +645,7 @@ def _finish_interrupted_verification(
     started: float,
     scope: VerificationScope,
     args: argparse.Namespace,
+    selection: str,
     agentctl_operation: str | None,
     exit_code: int,
     termination_reason: str,
@@ -602,7 +664,7 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "quick" if args.quick else "all" if args.all_tests else "affected",
+            "selection_mode": "quick" if args.quick else selection,
             "outcomes": {},
             "terminal_green": False,
             "complete_corpus_covered": False,
@@ -712,14 +774,16 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     _anchor_verification_paths()
     validate_authority_matrix()
     started = time.monotonic()
+    selection = "all" if args.all_tests else "affected"
+    if not args.quick and not args.all_tests:
+        selection = _selection_for_changes(_git_changed_paths(ROOT))
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
-    if graph.status is TestmonGraphStatus.UNUSABLE:
+    if graph.status is TestmonGraphStatus.UNUSABLE and selection != "descriptor":
         # An unusable lane copy cannot be an authority. If the primary seed
         # was unavailable, discard it so this run honestly reseeds.
         discard_testmon_graph(ROOT)
         graph = inspect_testmon_graph(ROOT)
-    selection = "all" if args.all_tests else "affected"
     scope = _scope(quick=args.quick, selection=selection)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools verify")
@@ -749,13 +813,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             selection_mode=selection,
             graph_status=str(graph.status),
             graph_reason=graph.reason,
-            full_rerun_cause=graph.full_rerun_cause,
+            full_rerun_cause=graph.full_rerun_cause if selection != "descriptor" else None,
             seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
         )
-        if graph.status is TestmonGraphStatus.UNUSABLE:
+        if graph.status is TestmonGraphStatus.UNUSABLE and selection != "descriptor":
             payload = _finish_and_record_verification(
                 run=run,
                 exit_code=2,
@@ -767,12 +831,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             sys.stderr.write(f"verify: {graph.reason}; no usable primary seed was available.\n")
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-        if graph.status is TestmonGraphStatus.ABSENT:
-            sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
-        elif graph.full_rerun_cause:
-            sys.stderr.write(
-                f"verify: {graph.full_rerun_cause} since the graph was written: this run re-executes every test.\n"
-            )
+        if selection != "descriptor":
+            if graph.status is TestmonGraphStatus.ABSENT:
+                sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
+            elif graph.full_rerun_cause:
+                sys.stderr.write(
+                    f"verify: {graph.full_rerun_cause} since the graph was written: this run re-executes every test.\n"
+                )
     steps = build_verify_steps(quick=args.quick, selection=selection)
     try:
         results: list[dict[str, Any]] = []
@@ -795,6 +860,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             started=started,
             scope=scope,
             args=args,
+            selection=selection,
             agentctl_operation=agentctl_operation,
             exit_code=128 + exc.signum,
             termination_reason=signal.Signals(exc.signum).name.lower(),
@@ -805,6 +871,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             started=started,
             scope=scope,
             args=args,
+            selection=selection,
             agentctl_operation=agentctl_operation,
             exit_code=130,
             termination_reason="operator_interrupt",

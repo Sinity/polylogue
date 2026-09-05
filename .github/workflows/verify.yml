@@ -56,6 +56,8 @@ jobs:
 
       - name: Verify
         if: steps.pr-state.outputs.skip != 'true'
-        run: nix develop --command devtools verify
+        run: |
+          export PATH="/run/current-system/sw/bin:$PATH"
+          nix develop --command devtools verify
         env:
           POLYLOGUE_FORCE_PLAIN: "1"

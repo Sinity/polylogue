@@ -5249,9 +5249,9 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert candidates[0].file_overlap == ("/realm/project/polylogue/polylogue/api/archive.py",)
         readiness_by_name = {entry.insight_name: entry for entry in readiness.insights}
         assert readiness.total_sessions == 2
-        assert readiness_by_name["session_profiles"].verdict == "stale"
+        assert readiness_by_name["session_profiles"].diverged
         assert readiness_by_name["session_profiles"].missing_count == 1
-        assert readiness_by_name["threads"].verdict == "stale"
+        assert readiness_by_name["threads"].diverged
         assert readiness_by_name["threads"].row_count == 1
         assert readiness_by_name["threads"].expected_row_count == 1
         assert readiness_by_name["threads"].stale_count == 1
@@ -5275,7 +5275,7 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
         assert coverage["total_sessions"] == 2
         assert exported_threads == []
         threads_summary = next(entry for entry in manifest["insights"] if entry["insight_name"] == "threads")
-        assert threads_summary["readiness_verdict"] == "stale"
+        assert "diverge" in threads_summary["withheld_reason"]
         assert threads_summary["row_count"] == 0
         assert any("withheld" in error for error in threads_summary["errors"])
         assert (export_target / "schemas" / "threads.schema.json").exists()

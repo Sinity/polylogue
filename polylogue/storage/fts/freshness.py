@@ -587,6 +587,12 @@ def message_fts_recorded_readiness_sync(conn: sqlite3.Connection) -> dict[str, i
     return None
 
 
+def message_fts_recorded_exact_stale_sync(conn: sqlite3.Connection) -> bool:
+    """Return whether the ledger contains an exact negative verdict."""
+    record = _message_fts_record_sync(conn)
+    return record is not None and str(record["state"]) == STALE and str(record.get("verification_kind")) == EXACT
+
+
 async def message_fts_recorded_readiness_async(conn: aiosqlite.Connection) -> dict[str, int | bool] | None:
     """Async counterpart to :func:`message_fts_recorded_readiness_sync`."""
     record = await _message_fts_record_async(conn)
@@ -608,6 +614,12 @@ async def message_fts_recorded_readiness_async(conn: aiosqlite.Connection) -> di
     if state == STALE:
         return None
     return None
+
+
+async def message_fts_recorded_exact_stale_async(conn: aiosqlite.Connection) -> bool:
+    """Return whether the ledger contains an exact negative verdict."""
+    record = await _message_fts_record_async(conn)
+    return record is not None and str(record["state"]) == STALE and str(record.get("verification_kind")) == EXACT
 
 
 def message_fts_recorded_ready_trusted_sync(conn: sqlite3.Connection) -> bool:
@@ -648,6 +660,8 @@ __all__ = [
     "message_fts_recorded_ready_trusted_sync",
     "message_fts_recorded_readiness_async",
     "message_fts_recorded_readiness_sync",
+    "message_fts_recorded_exact_stale_async",
+    "message_fts_recorded_exact_stale_sync",
     "message_fts_recorded_state_async",
     "message_fts_recorded_state_sync",
     "record_fts_invariant_snapshot_sync",

@@ -962,7 +962,7 @@ def compute_session_insight_bundles(
 
     Each job is expected to be pure Python compute over an already-hydrated
     ``Session`` (see ``build_session_insight_record_bundles`` and
-    ``storage/insights/session/refresh.py``): no SQLite connection, no
+    ``storage/derived/session/refresh.py``): no SQLite connection, no
     shared mutable state, so results are safe to compute concurrently. A
     caller-supplied ``stage_timing_add`` sink is the one shared piece of
     mutable state jobs may still touch; callers that pass one MUST make its

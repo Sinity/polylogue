@@ -77,9 +77,9 @@ from polylogue.analysis.readiness import (
     InsightReadinessEntry,
     InsightReadinessQuery,
     InsightReadinessReport,
-    InsightReadinessVerdict,
     InsightStorageArtifact,
     InsightVersionCoverage,
+    insight_display_name,
     known_insight_readiness_names,
     normalize_insight_readiness_name,
 )
@@ -5288,9 +5288,11 @@ class ArchiveStore:
             )
             is not None
         )
+        converged, debt_stages = self._derived_convergence_signal()
         return InsightReadinessReport(
             checked_at=datetime.now(UTC).isoformat(),
-            aggregate_verdict=_insight_readiness_aggregate_verdict(entries),
+            converged=converged,
+            debt_stages=debt_stages,
             total_sessions=total_sessions,
             origin=request.origin,
             since=request.since,
@@ -5419,6 +5421,30 @@ class ArchiveStore:
                 reason_totals[reason] = reason_totals.get(reason, 0) + int(row["occurrences"])
         return (degraded_count, dict(sorted(reason_totals.items())))
 
+    def _derived_convergence_signal(self) -> tuple[bool | None, tuple[str, ...]]:
+        """Report whether convergence has caught up, and which stages have not.
+
+        Derived rows have no lifecycle of their own: their readiness is exactly
+        the ordinary convergence signal. A missing ledger reports ``None``;
+        read failures remain visible to the status error boundary.
+        """
+        if not self.ops_db_path.exists():
+            return (None, ())
+        conn = sqlite3.connect(f"file:{self.ops_db_path}?mode=ro", uri=True)
+        try:
+            present = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'convergence_debt'"
+            ).fetchone()
+            if present is None:
+                return (None, ())
+            rows = conn.execute(
+                "SELECT DISTINCT stage FROM convergence_debt WHERE status IN ('failed', 'deferred') ORDER BY stage"
+            ).fetchall()
+        finally:
+            conn.close()
+        stages = tuple(str(row[0]) for row in rows)
+        return (not stages, stages)
+
     def _insight_readiness_entry(
         self,
         name: str,
@@ -5432,7 +5458,6 @@ class ArchiveStore:
     ) -> InsightReadinessEntry | None:
         specs = {
             "session_profiles": (
-                "Session Profiles",
                 "session_profiles",
                 status.profile_row_count,
                 total_sessions,
@@ -5442,7 +5467,6 @@ class ArchiveStore:
                 ("session_profiles",),
             ),
             "session_work_events": (
-                "Work Events",
                 "session_work_events",
                 status.work_event_inference_count,
                 status.expected_work_event_inference_count,
@@ -5452,7 +5476,6 @@ class ArchiveStore:
                 ("session_work_events",),
             ),
             "session_phases": (
-                "Session Phases",
                 "session_phases",
                 status.phase_count,
                 status.expected_phase_count,
@@ -5461,8 +5484,40 @@ class ArchiveStore:
                 status.orphan_phase_count,
                 ("session_phases",),
             ),
+            # polylogue-dab/itvd: runs, observed events and context snapshots are
+            # source-derived CTE relations, never tables, so they can never appear
+            # in sqlite_master. The presence probe reads `sessions` (always
+            # present) and the real count comes from the status snapshot;
+            # `artifacts` keeps the legacy table name because reporting it
+            # permanently absent distinguishes "no cache table" from "no rows".
+            "session_runs": (
+                "sessions",
+                status.run_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_runs",),
+            ),
+            "session_observed_events": (
+                "sessions",
+                status.observed_event_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_observed_events",),
+            ),
+            "session_context_snapshots": (
+                "sessions",
+                status.context_snapshot_count,
+                None,
+                0,
+                0,
+                0,
+                ("session_context_snapshots",),
+            ),
             "threads": (
-                "Threads",
                 "threads",
                 status.thread_count,
                 status.root_threads,
@@ -5472,7 +5527,6 @@ class ArchiveStore:
                 ("threads", "thread_sessions"),
             ),
             "session_tag_rollups": (
-                "Session Tag Rollups",
                 "session_tags",
                 status.tag_rollup_count,
                 status.expected_tag_rollup_count,
@@ -5482,7 +5536,6 @@ class ArchiveStore:
                 ("session_tags",),
             ),
             "archive_coverage": (
-                "Archive Coverage",
                 "sessions",
                 total_sessions,
                 total_sessions,
@@ -5496,7 +5549,6 @@ class ArchiveStore:
         if spec is None:
             return None
         (
-            display_name,
             table_name,
             row_count,
             expected_row_count,
@@ -5527,21 +5579,10 @@ class ArchiveStore:
                 since_ms=since_ms,
                 until_ms=until_ms,
             )
-        verdict = _archive_insight_readiness_verdict(
-            table_present=table_present,
-            row_count=row_count,
-            expected_row_count=expected_row_count,
-            missing_count=missing_count,
-            stale_count=stale_count,
-            orphan_count=orphan_count,
-            incompatible_count=incompatible_count,
-            degraded_count=degraded_count,
-            total_sessions=total_sessions,
-        )
         return InsightReadinessEntry(
             insight_name=name,
-            display_name=display_name,
-            verdict=verdict,
+            display_name=insight_display_name(name),
+            table_present=table_present,
             row_count=row_count,
             expected_row_count=expected_row_count,
             missing_count=missing_count,
@@ -7880,49 +7921,6 @@ _INSIGHT_FALLBACK_PAYLOAD: dict[str, tuple[str, tuple[tuple[str, str], ...]]] = 
         ),
     ),
 }
-
-
-def _archive_insight_readiness_verdict(
-    *,
-    table_present: bool,
-    row_count: int,
-    expected_row_count: int | None,
-    missing_count: int,
-    stale_count: int,
-    orphan_count: int,
-    incompatible_count: int,
-    degraded_count: int,
-    total_sessions: int,
-) -> InsightReadinessVerdict:
-    if not table_present:
-        return "missing"
-    if incompatible_count:
-        return "incompatible"
-    if stale_count or orphan_count:
-        return "stale"
-    if missing_count or (expected_row_count is not None and row_count < expected_row_count):
-        return "partial"
-    if row_count == 0:
-        # An empty archive (no sessions at all) reports every surface as empty.
-        # In a populated archive a surface with 0 expected rows is vacuously
-        # ready (e.g. no tags to roll up); a surface that should hold rows was
-        # already caught by the partial branch above.
-        if total_sessions > 0 and expected_row_count == 0:
-            return "ready"
-        return "empty"
-    if degraded_count:
-        return "degraded"
-    return "ready"
-
-
-def _insight_readiness_aggregate_verdict(
-    entries: tuple[InsightReadinessEntry, ...],
-) -> InsightReadinessVerdict:
-    verdicts = {entry.verdict for entry in entries}
-    for verdict in ("incompatible", "stale", "partial", "missing", "degraded", "unknown", "empty"):
-        if verdict in verdicts:
-            return verdict
-    return "ready"
 
 
 def _archive_insight_readiness_evidence(

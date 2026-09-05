@@ -443,7 +443,12 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # observations. Existing indexes must be replayed to reconstruct topology.
 # v92 removes content and cardinality pairing from delegation projection;
 # existing materialized rows must be regenerated from exact session links.
-INDEX_SCHEMA_VERSION = 92
+# polylogue-vid0.1: v93 reads dispatch child identity from the progress
+# payload alone and compares identities as the sessions they resolve to.
+# SEMANTIC_REPARSE: links materialized under v92 recorded the emitting
+# session's own name as a competing child identity, and no clone-safe SQL
+# delta can recover the dispatch join key those rows refused.
+INDEX_SCHEMA_VERSION = 93
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -462,7 +467,6 @@ CREATE TABLE IF NOT EXISTS fts_freshness_state (
 ) STRICT;
 """
 
-# ddl-lifecycle-waiver: derived CREATE TABLE insight_materialization retirement removes the obsolete marker; ordinary convergence regenerates surviving rows.
 INDEX_DDL = f"""
 {DERIVED_SCHEMA_META_DDL}
 

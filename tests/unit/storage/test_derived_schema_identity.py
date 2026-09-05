@@ -6,6 +6,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
+from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_active_archive_root,
@@ -101,6 +102,22 @@ def test_current_unstamped_ops_tier_is_adopted_before_identity_validation(tmp_pa
     initialize_archive_database(path, ArchiveTier.OPS)
 
     with sqlite3.connect(path) as conn:
+        assert read_schema_identity(conn, DerivedTier.OPS) == derived_schema_identity(DerivedTier.OPS)
+
+
+def test_superseded_ops_identity_converges_to_the_current_schema(tmp_path: Path) -> None:
+    """Disposable ops state is rebuilt in place instead of blocking startup."""
+    path = tmp_path / "ops.db"
+    with sqlite3.connect(path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        conn.execute("UPDATE schema_identity SET identity = 'from-another-runtime' WHERE tier = 'ops'")
+        conn.execute("PRAGMA user_version = 1")
+        conn.commit()
+
+    initialize_archive_database(path, ArchiveTier.OPS)
+
+    with sqlite3.connect(path) as conn:
+        assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.OPS]
         assert read_schema_identity(conn, DerivedTier.OPS) == derived_schema_identity(DerivedTier.OPS)
 
 

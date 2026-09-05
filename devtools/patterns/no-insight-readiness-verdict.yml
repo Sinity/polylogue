@@ -1,0 +1,10 @@
+id: no-insight-readiness-verdict
+language: Python
+severity: error
+message: "Insight readiness is convergence debt, not a per-model verdict taxonomy"
+rule:
+  any:
+    - pattern: "InsightReadinessVerdict = $$$"
+    - pattern: "verdict: InsightReadinessVerdict"
+    - pattern: "aggregate_verdict: $TYPE"
+    - pattern: "aggregate_verdict: $TYPE = $DEFAULT"

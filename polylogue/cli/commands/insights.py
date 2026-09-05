@@ -206,7 +206,12 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     def origin_label(value: str | None) -> str:
         return value or "-"
 
-    click.echo(f"Insight Readiness: {report.aggregate_verdict}")
+    if report.converged is None:
+        click.echo("Convergence: unknown (debt ledger unreadable)")
+    elif report.converged:
+        click.echo("Convergence: caught up")
+    else:
+        click.echo(f"Convergence: debt in {', '.join(report.debt_stages)}")
     click.echo(f"Total sessions: {report.total_sessions}")
     if report.origin or report.since or report.until:
         click.echo(
@@ -215,7 +220,8 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
     click.echo("")
     for insight in report.insights:
         expected = f" expected={insight.expected_row_count}" if insight.expected_row_count is not None else ""
-        click.echo(f"{insight.insight_name}: {insight.verdict} rows={insight.row_count}{expected}")
+        presence = "" if insight.table_present else " (table absent)"
+        click.echo(f"{insight.insight_name}: rows={insight.row_count}{expected}{presence}")
         if insight.missing_count or insight.stale_count or insight.orphan_count or insight.incompatible_count:
             click.echo(
                 "  "
@@ -240,7 +246,8 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
     click.echo(f"Coverage: {result.coverage_path}")
     click.echo("")
     for insight in result.manifest.insights:
-        click.echo(f"{insight.insight_name}: rows={insight.row_count} readiness={insight.readiness_verdict or '-'}")
+        withheld = f" withheld={insight.withheld_reason}" if insight.withheld_reason else ""
+        click.echo(f"{insight.insight_name}: rows={insight.row_count}{withheld}")
         for warning in insight.warnings:
             click.echo(f"  warning: {warning}")
         for error in insight.errors:

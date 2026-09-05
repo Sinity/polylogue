@@ -93,8 +93,8 @@ compact indexed `action_pairs` and `delegation_facts` relations, query-time
 `session_model_usage`, the auto-tag side of
 `session_tags`, and the insight
 read models (`session_profiles`, `session_work_events`, `session_phases`,
-`session_latency_profiles`) plus
-`insight_materialization` for cache invalidation.
+`session_latency_profiles`), whose freshness the converger derives from the
+owning session's sort key and content hash.
 
 ### `embeddings.db` — vectors (rebuildable, expensive)
 

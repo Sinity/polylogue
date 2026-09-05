@@ -23,7 +23,7 @@ root = "/realm/worktrees"
 default_base = "origin/master"
 identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
 checkpoint_untracked = true
-verification_operations = ["verify_affected", "verify_quick", "verify_all"]
+verification_operations = ["verify_quick"]
 
 [conflicts]
 exact_files = ["pyproject.toml", "uv.lock"]

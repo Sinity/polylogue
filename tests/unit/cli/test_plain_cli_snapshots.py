@@ -23,14 +23,22 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
 import pytest
 from click.testing import CliRunner
 
-from tests.infra.workload_artifacts import SeededArchiveClone, SeededArchiveQueryLease
+from tests.infra.workload_artifacts import (
+    SeededArchiveClone,
+    SeededArchiveQueryLease,
+    acquire_query_only_seeded_archive,
+    build_seeded_archive,
+    clone_seeded_archive,
+    named_corpus_specs,
+    seeded_archive_key,
+)
 
 syrupy = pytest.importorskip("syrupy")
 
@@ -73,42 +81,49 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(scope="module")
+def query_archive_lease(request: pytest.FixtureRequest) -> SeededArchiveQueryLease:
+    """Pin one immutable ``cli-chatgpt`` artifact for every query snapshot here.
+
+    The artifact is generated through the production pipeline and read in
+    place: every consumer invokes read-only query verbs, so one shared lease
+    serves the whole module rather than one validation pass per test.
+    """
+    specs = named_corpus_specs("cli-chatgpt")
+    artifact = build_seeded_archive(specs)
+    lease = acquire_query_only_seeded_archive(artifact, seeded_archive_key(specs))
+    request.addfinalizer(lease.close)
+    return lease
+
+
 @pytest.fixture
 def seeded_db_env(
-    named_seeded_archive_ro: Callable[[str], SeededArchiveQueryLease],
+    query_archive_lease: SeededArchiveQueryLease,
+    workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
 ) -> Path:
-    """Point the CLI query verbs at a deterministic corpus DB.
-
-    The named artifact is generated through the production pipeline and read
-    in place: every consumer of this fixture invokes read-only query verbs,
-    so the archive root is the immutable shared artifact rather than a
-    private clone of it. ``postmortem_seeded_env`` below is the mutating
-    counterpart and keeps the clone.
-    """
-    db_path = named_seeded_archive_ro("cli-chatgpt").path
+    """Point the CLI query verbs at the module's deterministic corpus DB."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(query_archive_lease.root))
+    monkeypatch.setattr("polylogue.daemon.api_auth.load_or_mint_api_auth_token", lambda *_args, **_kwargs: None)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    return db_path
+    return query_archive_lease.path
 
 
-@pytest.fixture
-def postmortem_seeded_env(
-    named_seeded_archive: Callable[[str], SeededArchiveClone],
-    monkeypatch: pytest.MonkeyPatch,
-) -> Path:
-    """Seed a corpus DB and materialize the session-profile insights.
+@pytest.fixture(scope="module")
+def postmortem_archive(tmp_path_factory: pytest.TempPathFactory) -> Iterator[SeededArchiveClone]:
+    """Clone ``cli-mixed`` once and materialize its session-profile insights.
 
     The postmortem bundle reads durable ``session_profile`` insight records,
-    which the bare corpus ingest does not build. This fixture rebuilds them so
-    the snapshot exercises a populated bundle rather than an empty scope.
+    which the bare corpus ingest does not build. Rebuilding them is the
+    module's whole setup cost, and every consumer only runs read verbs against
+    the result, so it is paid once.
     """
     import asyncio
 
     from polylogue.api import Polylogue
 
-    clone = named_seeded_archive("cli-mixed")
-    db_path = clone.root / "index.db"
-    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    artifact = build_seeded_archive(named_corpus_specs("cli-mixed"))
+    clone = clone_seeded_archive(artifact, tmp_path_factory.mktemp("postmortem") / "archive")
 
     async def _rebuild() -> None:
         plg = Polylogue.open()
@@ -117,8 +132,30 @@ def postmortem_seeded_env(
         finally:
             await plg.close()
 
-    asyncio.run(_rebuild())
-    return db_path
+    home = tmp_path_factory.mktemp("postmortem-home")
+    try:
+        with pytest.MonkeyPatch.context() as patcher:
+            patcher.setenv("HOME", str(home))
+            patcher.setenv("XDG_DATA_HOME", str(home / "data"))
+            patcher.setenv("XDG_STATE_HOME", str(home / "state"))
+            patcher.setenv("POLYLOGUE_SCHEMA_VALIDATION", "off")
+            patcher.setenv("POLYLOGUE_ARCHIVE_ROOT", str(clone.root))
+            asyncio.run(_rebuild())
+        yield clone
+    finally:
+        clone.close()
+
+
+@pytest.fixture
+def postmortem_seeded_env(
+    postmortem_archive: SeededArchiveClone,
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Point the CLI at the module's insight-materialized corpus DB."""
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(postmortem_archive.root))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    return postmortem_archive.root / "index.db"
 
 
 def _invoke(runner: CliRunner, args: list[str]) -> str:

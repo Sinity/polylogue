@@ -14,7 +14,15 @@ from typing import Any
 import pytest
 import tomllib
 
-from devtools import agent_env, gate, required_gate, verify, verify_runs, why
+from devtools import (
+    agent_env,
+    gate,
+    required_gate,
+    verify,
+    verify_runs,
+    why,
+)
+from devtools.testmon_provision import TestmonGraphStatus
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -284,15 +292,93 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
     descriptor = tomllib.loads((verify.ROOT / ".agentctl/project.toml").read_text(encoding="utf-8"))
 
     operation = descriptor["operations"]["verify_quick"]
+    affected = descriptor["operations"]["verify_affected"]
+    complete = descriptor["operations"]["verify_all"]
     projection = declared_verification_result(
         {"exit_code": 0, "status": "success", "verification_scope": "non-test"},
         operation="verify_quick",
     )
 
+    assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
+    assert affected["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]
+    assert affected["pool"] == "pytest"
+    assert affected["result"] == "pytest"
+    assert complete["exec"] == ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify", "--all"]
+    assert complete["checkout"] == "default"
+    assert complete["schedule"] == "*-*-* 03:17:00"
+    assert complete["pool"] == "pytest"
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
+
+
+def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testmon() -> None:
+    """A descriptor-only diff is bounded to descriptor contracts.
+
+    Anti-vacuity: selecting the affected mode for the descriptor or selecting
+    descriptor contracts for a Python diff makes one of the boundary checks
+    below fail.
+    """
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml"})) == "descriptor"
+    assert verify._selection_for_changes(frozenset({"polylogue/example.py"})) == "affected"
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "polylogue/example.py"})) == "affected"
+    assert verify._selection_for_changes(None) == "affected"
+
+    descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
+    assert "--testmon" not in descriptor_command
+    assert "tests" not in descriptor_command
+    assert descriptor_command[-len(verify.DESCRIPTOR_CONTRACT_TESTS) :] == list(verify.DESCRIPTOR_CONTRACT_TESTS)
+
+    affected_command = verify._pytest_steps(selection="affected", worker_args=[])[0][1]
+    assert "--testmon" in affected_command
+    assert "--testmon-forceselect" in affected_command
+    assert not any(nodeid in affected_command for nodeid in verify.DESCRIPTOR_CONTRACT_TESTS)
+
+
+def test_verify_main_routes_descriptor_diff_to_bounded_selection(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The default verifier route applies the descriptor boundary."""
+    from devtools.agent_env import AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV
+
+    captured: dict[str, Any] = {}
+    history: dict[str, Any] = {}
+    monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({".agentctl/project.toml"}))
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    monkeypatch.setattr(
+        verify,
+        "inspect_testmon_graph",
+        lambda _root: SimpleNamespace(
+            status=TestmonGraphStatus.USABLE,
+            reason="testmon datafile present",
+            full_rerun_cause="the installed packages changed",
+        ),
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_steps(**kwargs: Any) -> list[tuple[str, list[str]]]:
+        captured.update(kwargs)
+        return [("gate lint", ["true"])]
+
+    monkeypatch.setattr(
+        verify,
+        "build_verify_steps",
+        capture_steps,
+    )
+    monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    assert verify._main([]) == 0
+    assert captured["selection"] == "descriptor"
+    assert history["pytest_aggregate"]["selection_mode"] == "descriptor"
 
 
 def test_pytest_receipt_decodes_report_and_selection(tmp_path: Path) -> None:
