@@ -76,9 +76,12 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: SQLite archive construction makes the corpus IO-bound. Two workers provide
-#: overlap without multiplying cache churn or exhausting the pytest cgroup.
-CORPUS_MAX_WORKERS = 2
+#: One fixed width for the corpus and the runner's affected tier, sized to the
+#: pytest pool's 12 GiB cgroup ceiling (eight workers peak near 10 GB) rather
+#: than host cores or free RAM. Measured 2026-09-03 uncontended: 47 minutes for
+#: 20,860 tests at eight workers; at two the same run takes about seven hours
+#: and the required check cannot finish inside its slot timeout.
+CORPUS_MAX_WORKERS = 8
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 # These tests read the AgentCTL descriptor directly. They are the bounded

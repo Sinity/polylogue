@@ -319,7 +319,7 @@ def _write_launch(
         "argv": list(argv),
         "working_directory": cwd,
         "environment": dict(env),
-        "timeout_seconds": 3600,
+        "timeout_seconds": 7200,
         "result_kind": "exit",
         "log_path": str(log_path),
     }
