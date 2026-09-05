@@ -123,12 +123,12 @@ async def test_tool_result_outcome_unknown_reason_round_trips(tmp_path: Path) ->
     assert tool_result_blocks[0].tool_result_outcome_unknown_reason == "not_reported"
 
 
-async def test_session_display_name_and_run_settings_round_trip(tmp_path: Path) -> None:
-    """sessions.display_name / run_settings_json: written by the real writer.
+async def test_session_display_name_round_trips_through_writer_and_repository(tmp_path: Path) -> None:
+    """sessions.display_name: written by the real writer.
 
-    Fails if the writer stops persisting ``ParsedSession.display_name``/
-    ``run_settings`` (a revert of the ``sessions`` INSERT column list), or if
-    ``SessionRepository.get`` stops selecting/mapping either column.
+    Fails if the writer stops persisting ``ParsedSession.display_name`` (a
+    revert of the ``sessions`` INSERT column list), or if
+    ``SessionRepository.get`` stops selecting/mapping the column.
     """
     backend = SQLiteBackend(db_path=tmp_path / "display-name.db")
     repo = SessionRepository(backend=backend)
@@ -139,7 +139,6 @@ async def test_session_display_name_and_run_settings_round_trip(tmp_path: Path) 
                 provider_session_id="display-name-1",
                 title="Untitled",
                 display_name="greedy-squishing-hamming",
-                run_settings={"temperature": 0.7, "topP": 0.9},
                 messages=[
                     ParsedMessage(
                         provider_message_id="m1",
@@ -158,7 +157,6 @@ async def test_session_display_name_and_run_settings_round_trip(tmp_path: Path) 
 
     assert len(sessions) == 1
     assert sessions[0].display_name == "greedy-squishing-hamming"
-    assert sessions[0].run_settings == {"temperature": 0.7, "topP": 0.9}
 
 
 async def test_session_pending_drafts_round_trips_through_writer_and_repository(tmp_path: Path) -> None:

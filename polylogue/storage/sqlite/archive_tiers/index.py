@@ -23,10 +23,8 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #   - blocks.tool_result_outcome_unknown_reason (ToolResultUnknownReason) --
 #     distinguishes "provider emitted nothing" / "parser distrusts it" /
 #     "parser doesn't read this origin's field" instead of one flat NULL.
-#   - sessions.display_name, sessions.run_settings_json -- subagent slug
-#     display name and per-session provider run-config (aistudio-drive
-#     temperature/topP/topK/... ), landed as a JSON column since decomposing
-#     it into columns would couple the schema to one provider.
+#   - sessions.display_name -- the subagent slug display name behind an
+#     opaque native id.
 #   - session_links.parent_tool_use_block_id -- the real join-key column
 #     replacing delegation_facts' cardinality-gated ordinal dispatch<->child
 #     pairing (parentToolUseID, 842,819 records on the wire).
@@ -197,10 +195,10 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 #
 # polylogue-0cn3 / polylogue-5dfu: v55 bundles a derived-tier vocabulary
 # cleanup across two related columns:
-#  - sessions.title_source/title_ref/title_confidence drop the COALESCE
+#  - sessions.title_source/title_ref drop the COALESCE
 #    ratchet in write.py's session upsert (`= excluded.X` instead of
 #    `COALESCE(excluded.X, sessions.X)`) -- a purely derived provenance
-#    triple should always reflect the current parse, not preserve a stale
+#    pair should always reflect the current parse, not preserve a stale
 #    verdict. TitleSource.UNKNOWN is also deleted: it was a second, redundant
 #    spelling of "no title evidence" on an already-nullable column (every
 #    read site branching on title_source already treated NULL and 'unknown'
@@ -456,7 +454,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # refuses. SEMANTIC_REPARSE: parents materialized under v93 carry no
 # observation for result-only dispatches (the live wire shape), so the join
 # key cannot be derived from stored rows.
-INDEX_SCHEMA_VERSION = 94
+# polylogue-k1eiz: v95 removes sessions.title_confidence and
+# sessions.run_settings_json from fresh DDL. title_confidence was a fabricated
+# heuristic score -- every producer derived it from the same evidence that
+# already determines title_source/title_ref, so it carried no information the
+# retained pair does not, while reading as measured precision on public
+# payloads. run_settings_json had no reader on any surface. Neither column
+# feeds a derived value, so this needs no raw replay: the DDL change moves the
+# tier's identity hash, and the reconvergence that follows is the whole remedy.
+INDEX_SCHEMA_VERSION = 95
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

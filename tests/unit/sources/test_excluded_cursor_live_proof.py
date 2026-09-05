@@ -89,12 +89,17 @@ def test_parser_fingerprint_revival_calls_real_actuator_and_excludes_unchanged_r
         monkeypatch.setattr(cursor, "revive_replaced_exclusion", actuator)
         monkeypatch.setattr(live_watcher, "_PARSER_FINGERPRINT", "new-parser")
 
+        # polylogue-6q16u: the parser change schedules a fresh attempt, which
+        # is what ``_needs_work`` reporting True means. The quarantine itself
+        # survives the notice and is lifted by the cursor write of an ingest
+        # that retained something, so a path that fails again stays dark and a
+        # never-admitted path never presents a stale byte offset to the
+        # raw-frontier cursor map as committed authority.
         assert watcher._needs_work(path)
-        actuator.assert_called_once()
-        revived = cursor.get_record(path)
-        assert revived is not None
-        assert not revived.excluded
-        assert revived.failure_count == 0
+        actuator.assert_not_called()
+        still_quarantined = cursor.get_record(path)
+        assert still_quarantined is not None
+        assert still_quarantined.excluded
         assert cursor.list_retry_records() == []
     finally:
         watcher.stop()

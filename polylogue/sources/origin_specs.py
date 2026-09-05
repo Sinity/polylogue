@@ -850,6 +850,34 @@ def materializer_fingerprint() -> str:
     return _fingerprint_sources(_MATERIALIZER_FINGERPRINT_PATHS, namespace="session-materializer")
 
 
+#: The fingerprint entry points that feed ``derived_schema_identity``. The
+#: per-origin parser fingerprints are deliberately absent: they are not part of
+#: the derived identity.
+_DERIVED_IDENTITY_ENTRY_PATHS: tuple[str, ...] = tuple(
+    sorted(set(_LOWERING_FINGERPRINT_PATHS + _MATERIALIZER_FINGERPRINT_PATHS + _REPLAY_ROUTING_FINGERPRINT_PATHS))
+)
+
+
+def derived_identity_source_closure() -> tuple[Path, ...]:
+    """Return every source file whose content feeds the derived schema identity.
+
+    The identity digests AST-normalized source, so editing any file in this
+    closure moves it — a pure-performance change with no schema edit moves it
+    just as surely as a new column. Membership follows the import graph, not
+    directory boundaries, which is why callers must ask rather than assume.
+    """
+    return _semantic_source_paths(_DERIVED_IDENTITY_ENTRY_PATHS)
+
+
+def in_derived_identity_closure(path: Path | str) -> bool:
+    """Whether editing ``path`` would move the derived schema identity."""
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        candidate = _SOURCE_ROOT / candidate
+    candidate = candidate.resolve(strict=False)
+    return candidate in {member.resolve(strict=False) for member in derived_identity_source_closure()}
+
+
 @dataclass(frozen=True, slots=True)
 class OriginSpecDiagnostic:
     """Actionable domain diagnostic layered over the shared declaration kernel."""
@@ -1790,9 +1818,8 @@ def _aistudio_drive_spec() -> OriginSpec:
         coverage_refs=("origin:aistudio-drive:admitted",),
         fidelity_notes=(
             "Provider reverse mapping remains intentionally non-injective.",
-            "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
-            "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
-            "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "runSettings (model/temperature/topP/topK/... ) is read for the model_config session_event; "
+            "the settings bag itself is not projected onto the session row.",
             "chunkedPrompt.pendingInputs (unsent textbox drafts) is read and stored verbatim as "
             "sessions.pending_drafts_json (polylogue-o4j2), deliberately as a session-row field rather than a "
             "session_event: a draft is mutable current UI state, and session_events participate in "
@@ -2583,6 +2610,8 @@ def validate_assembly_spec_parity(
 
 __all__ = [
     "DROPPED_VALUE_VOCABULARIES",
+    "derived_identity_source_closure",
+    "in_derived_identity_closure",
     "ORIGIN_SPECS",
     "frontier_kind_for_origin",
     "ORIGIN_SPEC_REGISTRY",

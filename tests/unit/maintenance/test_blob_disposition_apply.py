@@ -9,8 +9,12 @@ into a silent success.
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import time
 from pathlib import Path
+
+import pytest
 
 from polylogue.maintenance.blob_disposition import (
     BlobDisposition,
@@ -27,6 +31,7 @@ from polylogue.maintenance.blob_disposition_apply import (
 )
 from polylogue.sources.hooks import read_hook_spool_record
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
 
 def _hook_envelope(event_id: str = "event-1", *, text: str = "ran a tool") -> dict[str, object]:
@@ -424,3 +429,55 @@ def test_restoration_proceeds_while_other_members_are_unresolved(tmp_path: Path)
         dry_run=False,
     )
     assert not refused.ok
+
+
+@pytest.mark.uses_real_clock("backdates the fixture blob to pass production GC's age gate")
+def test_an_unreferenced_proven_member_is_really_unlinked(tmp_path: Path) -> None:
+    """One real deletion, end to end, against a real archive and the GC seam.
+
+    Anti-vacuity: stubbing out the unlink — returning before
+    ``blob_gc.unlink_unreferenced_blob_hashes_under_exclusion`` removes the
+    object, or replacing that call with a no-op — leaves the file on disk and
+    the member's outcome ``retained_absent``, and this goes red.
+    """
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_active_archive_root(archive_root)
+    hooks_root = archive_root / "hooks"
+    hooks_root.mkdir(exist_ok=True)
+    capture_spool = archive_root / "browser-capture"
+    capture_spool.mkdir(exist_ok=True)
+    legacy_root = tmp_path / "legacy-hooks"
+    envelope = _hook_envelope("proven")
+    _write_spool_file(legacy_root, envelope)
+    store = BlobStore(archive_root / "blob")
+    blob_hash, _ = store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    blob_path = store.blob_path(blob_hash)
+    size_bytes = blob_path.stat().st_size
+    old = time.time() - 3600
+    os.utime(blob_path, (old, old))
+
+    plan, context = _plan_and_context(archive_root, store.root, legacy_root=legacy_root, capture_spool=capture_spool)
+    assert plan.accepted
+    assert plan.reclaimable_bytes == size_bytes
+
+    receipt = apply_disposition_plan(
+        plan,
+        context=context,
+        authorized_digest=plan.digest(),
+        source_db=archive_root / "source.db",
+        index_db=archive_root / "index.db",
+        hook_spool_root=hooks_root,
+        browser_capture_spool=capture_spool,
+        dry_run=False,
+    )
+
+    assert receipt.ok, receipt.blockers
+    assert [result.outcome for result in receipt.results] == [MemberOutcome.DELETED]
+    assert not blob_path.exists()
+    assert receipt.reclaimed_bytes == size_bytes
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
+        ).fetchall()
+    assert rows == [("removed",)]
