@@ -520,7 +520,6 @@ class ParsedSession(BaseModel):
     # title_source is set; assemblies that resolve title from a specific
     # dated row (Codex thread name / history / state db / message) set both.
     title_ref: str | None = None
-    title_confidence: float | None = None
     instructions_text: str | None = None
     reported_duration_ms: int | None = None
     reported_cost_usd: float | None = None
@@ -551,19 +550,14 @@ class ParsedSession(BaseModel):
     # "greedy-squishing-hamming") -- distinct from ``title``, which is the
     # session's own resolved content title.
     display_name: str | None = None
-    # polylogue-2qx.4 / polylogue-cgfy: per-session provider run
-    # configuration (aistudio-drive runSettings: temperature/topP/topK/
-    # maxOutputTokens/thinkingLevel/safetySettings/enable* flags). Stored
-    # verbatim as a JSON column -- see sessions.run_settings_json.
-    run_settings: dict[str, object] | None = None
     # polylogue-o4j2: non-blank chunkedPrompt.pendingInputs entries (unsent
     # AI Studio textbox drafts), each {"text": ..., "role": ..., optionally
     # "token_count": ...}. Deliberately NOT a session_event: a draft is
     # mutable current UI state -- edited in place, gone entirely once
     # submitted -- and session_events participate in
     # session_revision_projection's append-only comparison axes
-    # (polylogue-aggz Invariant 1). Stored verbatim as a JSON column, same
-    # pattern as run_settings -- see sessions.pending_drafts_json.
+    # (polylogue-aggz Invariant 1). Stored verbatim as a JSON column --
+    # see sessions.pending_drafts_json.
     pending_drafts: list[dict[str, object]] = Field(default_factory=list)
     # polylogue-2qx.4 / polylogue-cgfy: tracker-agnostic external references
     # (pr-link today, issue refs generalize to the same relation).

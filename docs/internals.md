@@ -347,10 +347,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   85-99% `unknown`); `blocks.tool_result_outcome_unknown_reason`
   (distinguishes "provider emitted nothing" / "parser distrusts it" /
   "parser doesn't read this origin's field" instead of one flat `NULL`);
-  `sessions.display_name` (subagent slug display name) and
-  `sessions.run_settings_json` (per-session provider run config, e.g.
-  AI Studio/Drive temperature/topP/topK, kept as JSON rather than coupling
-  the schema to one provider); `session_links.parent_tool_use_block_id` (the
+  `sessions.display_name` (subagent slug display name);
+  `session_links.parent_tool_use_block_id` (the
   real join-key column replacing `delegation_facts`' cardinality-gated
   ordinal dispatch<->child pairing, 842,819 live records); the new
   `file_edits` table (structured diff evidence from Claude Code Edit/Write

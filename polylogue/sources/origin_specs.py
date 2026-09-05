@@ -1790,9 +1790,8 @@ def _aistudio_drive_spec() -> OriginSpec:
         coverage_refs=("origin:aistudio-drive:admitted",),
         fidelity_notes=(
             "Provider reverse mapping remains intentionally non-injective.",
-            "runSettings (temperature/topP/topK/maxOutputTokens/thinkingLevel/safetySettings/enable* flags) "
-            "is read and stored verbatim as sessions.run_settings_json (polylogue-2qx.4 / polylogue-cgfy); "
-            "deliberately not decomposed into columns so the schema stays uncoupled from one provider's knobs.",
+            "runSettings (model/temperature/topP/topK/... ) is read for the model_config session_event; "
+            "the settings bag itself is not projected onto the session row.",
             "chunkedPrompt.pendingInputs (unsent textbox drafts) is read and stored verbatim as "
             "sessions.pending_drafts_json (polylogue-o4j2), deliberately as a session-row field rather than a "
             "session_event: a draft is mutable current UI state, and session_events participate in "

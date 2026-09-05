@@ -127,7 +127,6 @@ SESSION_COLUMNS = (
     "title",
     "title_source",
     "title_ref",
-    "title_confidence",
     "target_ref",
     "anchor",
     "actions",
