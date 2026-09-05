@@ -101,6 +101,8 @@ def executable_gate_result(command: Sequence[str], *, gate: str, env: Mapping[st
     """Preflight the executable owned by a required subprocess gate."""
     executable = str(command[0]) if command else None
     available = executable is not None and _resolved(executable, env)
+    diagnosis: str
+    details: tuple[str, ...]
     if available:
         diagnosis, details = "gate_passed", ()
     elif (venv_root := unprovisioned_environment(executable)) is not None:
