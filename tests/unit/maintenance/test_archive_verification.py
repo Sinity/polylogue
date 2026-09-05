@@ -35,6 +35,7 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -1236,6 +1237,71 @@ def test_empty_covered_table_without_stats_is_not_missing_coverage(tmp_path: Pat
     check = _check(report, "planner-stats")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["missing_tables"] == []
+
+
+def _populate_session_links(index_db: Path) -> None:
+    conn = _connect(index_db)
+    try:
+        session_id = str(conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                confidence, evidence_json, observed_at_ms
+            ) VALUES (?, 'codex-session', 'parent', 'resume', 1.0, '{}', 100)
+            """,
+            (session_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_convergence_builder_analyze_covers_every_verified_table(tmp_path: Path) -> None:
+    """The archive builders ANALYZE the set planner-stats verifies.
+
+    Drives the builders' own ANALYZE seam rather than a restatement of it, so
+    a builder that reverts to a hand-copied table list fails here.
+
+    Anti-vacuity: the control below ANALYZEs the drifted set and still warns,
+    so this passing case cannot be green because the check stopped noticing an
+    uncovered populated table.
+    """
+    from tests.infra.convergence_harness import _analyze_registry_tables
+
+    _seed_coherent_archive(tmp_path)
+    _populate_session_links(tmp_path / "index.db")
+    _analyze_registry_tables(tmp_path / "index.db")
+
+    check = _check(verify_archive(tmp_path, checks=("planner-stats",)), "planner-stats")
+
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert check.evidence["missing_tables"] == []
+
+
+def test_populated_session_links_left_unanalyzed_still_warns(tmp_path: Path) -> None:
+    """Control for the test above: a populated covered table with no stats warns.
+
+    This is the exact shape the archive builders produced while they ANALYZEd
+    a hand-copied list that had drifted from the verified set.
+
+    Anti-vacuity: vacuous if planner-stats stopped covering session_links, in
+    which case no ANALYZE set could make it warn.
+    """
+    _seed_coherent_archive(tmp_path)
+    _populate_session_links(tmp_path / "index.db")
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'session_links'")
+        analyze_planner_stats_tables(conn, tables=("blocks", "messages", "action_pairs"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("planner-stats",)), "planner-stats")
+
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["missing_tables"] == ["session_links"]
 
 
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:

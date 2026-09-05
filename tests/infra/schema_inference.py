@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 
 
 def seed_schema_inference_archive(root: Path) -> Path:
@@ -60,7 +61,5 @@ def seed_schema_inference_archive(root: Path) -> Path:
             VALUES ('codex-session:session:0.0', 'codex-session:session', 0, 'text', 'hello')
             """
         )
-        conn.execute("ANALYZE blocks")
-        conn.execute("ANALYZE messages")
-        conn.execute("ANALYZE action_pairs")
+        analyze_planner_stats_tables(conn)
     return ground_truth
