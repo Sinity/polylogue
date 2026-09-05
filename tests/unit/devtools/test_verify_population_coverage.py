@@ -182,3 +182,40 @@ def test_gate_exit_code_follows_inventory_coverage(tmp_path: Path, capsys: pytes
         conn.close()
     assert main(["--archive-root", str(tmp_path)]) == 1
     assert "UNCOVERED detector-route codex-session/chatgpt" in capsys.readouterr().out
+
+
+def test_drive_applet_log_is_covered_by_its_declared_artifact_rule(tmp_path: Path) -> None:
+    """polylogue-1wjiw: the AI Studio applet access log has a declared route."""
+    source_db = _seed_inventory(tmp_path)
+    conn = sqlite3.connect(source_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-applet', 'aistudio-drive', NULL, '/drive-cache/gemini/applet_access_history.json', ?, 10, 100)
+            """,
+            (b"e" * 32,),
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_artifacts(artifact_id, raw_id, origin, source_path, artifact_kind, support_status,
+                                      classification_reason, parse_as_session, first_observed_at_ms,
+                                      last_observed_at_ms)
+            VALUES ('art-applet', 'raw-applet', 'aistudio-drive', '/drive-cache/gemini/applet_access_history.json',
+                    'metadata_document', 'recognized_unparsed', 'test', 0, 100, 100)
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    kinds = _by_key(inventory_constructs(source_db), "artifact-kind")
+    covered = kinds["aistudio-drive/metadata_document/recognized_unparsed"]
+    assert covered.status == COVERED
+    assert covered.witness == "applet_access_log"
+
+    stripped = tuple(
+        replace(spec, artifact_rules=()) if spec.origin is Origin.AISTUDIO_DRIVE else spec for spec in ORIGIN_SPECS
+    )
+    without = _by_key(inventory_constructs(source_db, specs=stripped), "artifact-kind")
+    assert without["aistudio-drive/metadata_document/recognized_unparsed"].status == UNCOVERED

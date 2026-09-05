@@ -1306,6 +1306,11 @@ def raw_frontier_blocked_source_paths(
 ) -> RawFrontierBlockedPaths:
     """Attribute the frontier proof's refusals to exact source paths."""
 
+    if not (archive_root / "source.db").is_file():
+        # No source tier means nothing has been acquired yet, so there is
+        # nothing to select and nothing to refuse. An unreadable tier still
+        # refuses below: absence and damage are different states.
+        return RawFrontierBlockedPaths(frozenset(), None)
     projection = raw_frontier_integrity_projection(
         archive_root,
         raw_materialization_readiness,

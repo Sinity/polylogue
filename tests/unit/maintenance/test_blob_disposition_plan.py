@@ -336,3 +336,82 @@ def test_source_file_proof_accepts_the_recorded_append_span(tmp_path: Path) -> N
     with_span = RawSourceFileProver({blob_hash: (RawSourceCarrier(str(source), 9),)})
     proof = with_span.prove(blob_hash, store.blob_path(blob_hash), len(increment))
     assert proof is not None and proof.mode is SourceProofMode.STRICT_PREFIX
+
+
+def test_reclaimable_total_excludes_members_a_reference_pins(tmp_path: Path) -> None:
+    """Anti-vacuity: totalling every source_present member overstates apply's effect.
+
+    Apply deletes only unreferenced members, so a proven object whose hash a
+    durable row still names must not be counted as reclaimable. Summing
+    ``bytes_by_disposition['source_present']`` instead makes this red.
+    """
+    spool_root = tmp_path / "legacy-hooks"
+    free = _hook_envelope("free")
+    pinned = _hook_envelope("pinned", text="a much longer detail string to separate the byte totals")
+    free_file = _write_spool_file(spool_root, free, indent=4)
+    pinned_file = _write_spool_file(spool_root, pinned, indent=4)
+    store = BlobStore(tmp_path / "blob")
+    free_hash = _publish_blob(store, _stored_envelope_bytes(free_file))
+    pinned_hash = _publish_blob(store, _stored_envelope_bytes(pinned_file))
+    source_db = _empty_source_db(tmp_path / "source.db")
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, ?)", (bytes.fromhex(pinned_hash), "raw"))
+
+    context = build_disposition_context(
+        archive_root=tmp_path,
+        blob_root=store.root,
+        source_db=source_db,
+        hook_spool_sources=(("legacy-hook-spool-0", spool_root),),
+        browser_capture_spool=tmp_path / "browser-capture",
+    )
+    plan = compile_disposition_plan(archive_root=tmp_path, blob_root=store.root, source_db=source_db, context=context)
+
+    free_size = store.blob_path(free_hash).stat().st_size
+    pinned_size = store.blob_path(pinned_hash).stat().st_size
+    assert plan.counts["source_present"] == 2
+    assert plan.reclaimable_count == 1
+    assert plan.reclaimable_bytes == free_size
+    assert plan.retained_by_reference_count == 1
+    assert plan.retained_by_reference_bytes == pinned_size
+    assert plan.bytes_by_disposition["source_present"] == free_size + pinned_size
+    payload = plan.to_dict()
+    assert payload["reclaimable_bytes"] == free_size
+    assert payload["retained_by_reference_bytes"] == pinned_size
+
+
+def test_superseded_prefix_members_are_reported_as_retained_not_reclaimable(tmp_path: Path) -> None:
+    """Anti-vacuity: a raw_sessions-keyed member is always referenced, never deletable.
+
+    ``referenced_blob_hashes`` unions ``raw_sessions.blob_hash``, which is the
+    same relation append supersession is derived from, so every
+    ``superseded_prefix`` member is pinned by a durable row. Counting it as
+    reclaimable promises the operator bytes apply cannot free.
+    """
+    store = BlobStore(tmp_path / "blob")
+    short = _publish_blob(store, b'{"a": 1}\n')
+    long = _publish_blob(store, b'{"a": 1}\n{"a": 2}\n')
+    source_db = _empty_source_db(tmp_path / "source.db")
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            "INSERT INTO raw_sessions (raw_id, origin, native_id, blob_hash, blob_size, source_path, "
+            "append_start_offset) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("r1", "claude-code-session", "s1", bytes.fromhex(short), 9, None, None),
+                ("r2", "claude-code-session", "s1", bytes.fromhex(long), 18, None, None),
+            ],
+        )
+
+    context = build_disposition_context(
+        archive_root=tmp_path,
+        blob_root=store.root,
+        source_db=source_db,
+        hook_spool_sources=(),
+        browser_capture_spool=tmp_path / "browser-capture",
+    )
+    plan = compile_disposition_plan(archive_root=tmp_path, blob_root=store.root, source_db=source_db, context=context)
+
+    superseded = plan.members_for(BlobDisposition.SUPERSEDED_PREFIX)
+    assert [member.blob_hash for member in superseded] == [short]
+    assert all(member.referenced for member in superseded)
+    assert plan.reclaimable_bytes == 0
+    assert plan.retained_by_reference_bytes == 9

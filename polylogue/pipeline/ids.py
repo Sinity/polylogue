@@ -88,7 +88,6 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "branch_type",
             "title_source",
             "title_ref",
-            "title_confidence",
             "instructions_text",
             "working_directories",
             "git_branch",
@@ -96,7 +95,6 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "provider_project_ref",
             "git_commit_hash",
             "display_name",
-            "run_settings",
             "pending_drafts",
             "session_refs",
         }

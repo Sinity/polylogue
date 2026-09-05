@@ -418,7 +418,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
         },
         "production_route": {
             "cursor_gate": "LiveWatcher._needs_work",
-            "transition": "CursorStore.revive_replaced_exclusion",
+            "transition": "LiveBatchProcessor._record_full_cursor -> CursorStore.set",
             "catch_up": (
                 "LiveWatcher._catch_up -> _scan_catch_up_candidates -> _catch_up_candidates -> "
                 "_plan_catch_up -> coordinated chunk ingest"

@@ -604,14 +604,9 @@ SESSIONS_SPEC = _make_table_spec(
             "title_ref",
             """-- Specific provenance beyond TitleSource's coarse strategy label: which
     -- exact evidence row won (e.g. "codex-thread-name:<id>",
-    -- "codex-history:<id>", "message:<provider_message_id>") plus a 0..1
-    -- confidence signal for that resolution (polylogue-ih67 AC#5, ref/
-    -- confidence slice). Both derived/rebuildable, never hand-edited.
+    -- "codex-history:<id>", "message:<provider_message_id>").
+    -- Derived/rebuildable, never hand-edited.
     title_ref               TEXT""",
-        ),
-        _raw_column(
-            "title_confidence",
-            """title_confidence        REAL CHECK(title_confidence IS NULL OR (title_confidence >= 0 AND title_confidence <= 1))""",
         ),
         _raw_column(
             "display_name",
@@ -623,17 +618,6 @@ SESSIONS_SPEC = _make_table_spec(
     -- not its content.
     display_name            TEXT""",
             record_name="display_name",
-        ),
-        _raw_column(
-            "run_settings_json",
-            f"""-- polylogue-2qx.4 (v46): per-session provider run configuration
-    -- (aistudio-drive runSettings: temperature/topP/topK/maxOutputTokens/
-    -- thinkingLevel/safetySettings/enable* flags). A JSON column by
-    -- deliberate decision -- decomposing a provider-specific settings bag
-    -- into typed columns would couple this schema to one provider for no
-    -- query benefit; nothing here is queried across origins today.
-    run_settings_json       TEXT CHECK ({json_object_check("run_settings_json", nullable=True)})""",
-            record_name="run_settings_json",
         ),
         _raw_column(
             "pending_drafts_json",

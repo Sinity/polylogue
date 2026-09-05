@@ -496,7 +496,6 @@ class TestCodexAssemblySpec:
 
         assert enriched.title == "take over claude's session 755b624d"
         assert enriched.title_source == TitleSource.HEURISTIC
-        assert enriched.title_confidence == 0.5
 
     def test_enrich_session_keeps_thread_name_distinct_from_first_prompt(self) -> None:
         spec = CodexAssemblySpec()
@@ -512,7 +511,6 @@ class TestCodexAssemblySpec:
 
         assert enriched.title == "Session handoff triage"
         assert enriched.title_source == TitleSource.ORIGIN
-        assert enriched.title_confidence == 1.0
 
 
 class TestParseCodexSessionIndex:
@@ -848,7 +846,6 @@ class TestCodexHistoryTitles:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title_source == TitleSource.HEURISTIC
-        assert enriched.title_confidence == 0.5
 
     def test_history_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()
@@ -1102,7 +1099,6 @@ class TestCodexStateTitles:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title_source == TitleSource.HEURISTIC
-        assert enriched.title_confidence == 0.5
 
     def test_state_title_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()
@@ -1132,7 +1128,6 @@ class TestCodexStateTitles:
         assert enriched.title == "Durable acquired title"
         assert enriched.title_source == TitleSource.ORIGIN
         assert enriched.title_ref == "codex-thread-title-hook-event:thread-1"
-        assert enriched.title_confidence == 0.7
 
     def test_state_title_beats_hook_event_title(self) -> None:
         """A live state_5.sqlite read (step 3) is fresher than the durable
@@ -1178,7 +1173,6 @@ class TestCodexStateTitles:
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title_source == TitleSource.HEURISTIC
-        assert enriched.title_confidence == 0.5
 
     def test_hook_event_title_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()

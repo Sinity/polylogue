@@ -193,6 +193,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools schema list --provider chatgpt --json",),
     ),
     CommandSpec(
+        "schema closure",
+        "schema",
+        "Report which source files feed the derived schema identity.",
+        "devtools.schema_closure",
+        json_flag=True,
+        use_when=(
+            "Before merging a substrate change, to learn whether it moves the derived schema identity -- "
+            "membership follows the import graph, so a third of the package qualifies and no directory rule "
+            "describes it."
+        ),
+        examples=(
+            "devtools schema closure polylogue/daemon/write_coordinator.py",
+            "devtools schema closure",
+        ),
+    ),
+    CommandSpec(
         "schema compare",
         "schema",
         "Compare two committed schema package versions for a provider.",

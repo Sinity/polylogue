@@ -10,7 +10,8 @@ from pathlib import Path
 
 from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
 from devtools.toolchain import venv_python
-from devtools.verify import CORPUS_MAX_WORKERS, _pytest_worker_args
+from devtools.verify import _pytest_worker_args
+from devtools.worker_memory import CORPUS_MAX_WORKERS
 
 
 def main(_argv: list[str] | None = None) -> int:

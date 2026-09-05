@@ -44,6 +44,7 @@ from polylogue.storage.embeddings.tuple_generation import (
 )
 from polylogue.storage.introspection import index_exists as _index_exists
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 
 def ensure_embedding_lifecycle(archive_root: Path, *, active_path: Path | None = None) -> Path:
@@ -82,7 +83,7 @@ def resolve_embedding_failure_with_lifecycle(
     from polylogue.storage.sqlite.archive_tiers.embedding_write import resolve_embedding_failure
 
     store = EmbeddingGenerationStore(embeddings_db.parent, active_path=embeddings_db)
-    with store.writer_lock() as binding, sqlite3.connect(binding, timeout=30.0) as conn:
+    with store.writer_lock() as binding, sqlite_connection(binding, timeout=30.0) as conn:
         store.assert_binding(binding)
         return resolve_embedding_failure(
             conn,

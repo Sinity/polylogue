@@ -97,6 +97,16 @@ edit therefore costs a full reconvergence of the archive — cheap only while th
 archive is small. Classify every schema change before editing: metadata-only,
 index-only, additive-derived, additive-durable, or semantic-reparse.
 
+**The identity moves on ordinary code edits, not just DDL.** Those three
+fingerprints are AST closures over imported source, so a pure-performance change
+touching no schema moves the identity exactly as a new column does. The closure
+is 442 of 1,241 modules and follows the import graph, not directory boundaries:
+`daemon/write_coordinator.py` is in it while `daemon/convergence.py` and
+`sources/live/watcher.py` are not. Do not classify by path — ask:
+`devtools schema closure <file>`. Because comments are absent from an AST, a
+comment-only edit does not move it. Land every closure change *before* a rebuild
+starts; one landing mid-run silently invalidates it.
+
 Enum membership is not a schema constraint. Durable DDL carries no
 enum-generated `CHECK(col IN (...))`; vocabulary membership is validated at the
 write boundary (`require_vocabulary` in `archive_tiers/common.py`), so adding a
@@ -184,8 +194,8 @@ ambient machine data out of tests. The required per-PR `verify` check runs
 affected pytest through the host slot; the quick gate remains a separate check.
 
 Change cross-checks: parser/detection → origin specs + real fixtures + replay
-parity; storage/schema → fresh DDL + declared lifecycle + readers/writers +
-restart; query/read → CLI/API/MCP parity + pagination + cancellation; daemon →
+parity; storage/schema → fresh DDL + declared migration or moved identity +
+readers/writers + restart; query/read → CLI/API/MCP parity + pagination + cancellation; daemon →
 lifecycle + cancellation + restart; MCP → registry + shared product route;
 fixture/harness → proves a production route.
 

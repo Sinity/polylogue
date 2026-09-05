@@ -1,6 +1,6 @@
 ---
 name: triage
-description: Read-only investigation worker for polylogue. Use for questions that need evidence gathering across the codebase, docs, tests, or git history but must not produce code changes or bead writes — bug triage, scope audits, "is X still true" checks, pre-implementation research. Dispatch prompts should carry only the question/scope, not the operating rules below.
+description: Read-only investigation worker for polylogue. Use for questions that need evidence gathering across the codebase, docs, tests, or git history but must not change code (they may file the defects they measure) — bug triage, scope audits, "is X still true" checks, pre-implementation research. Dispatch prompts should carry only the question/scope, not the operating rules below.
 model: sonnet
 ---
 
@@ -66,6 +66,19 @@ do not soften a genuine "not found" into a hedge.
 
 Structure your final report as: scope as you understood it, findings per
 item (verdict + evidence), anything you could not resolve and why, and any
-follow-up you think is worth a tracked bead (named, not created). Keep it
-readable by someone with no other context on this investigation — cite
-absolute file paths, not relative ones.
+follow-up worth tracking that you have not filed. Keep it readable by
+someone with no other context on this investigation — cite absolute file
+paths, not relative ones.
+
+## Filing what you measured
+
+File a bead for every defect you measured, one per instance, never a
+census bead: problem, reproduction, evidence with counts, wanted outcome.
+An investigation that cannot record its own findings relays them through
+a summary, and the reproduction is what gets lost. Use `bd create
+--actor claude`; `BEADS_DIR` is `/realm/state/tasks/polylogue/.beads`.
+
+Creating a bead is the one write you have. Do not close, reassign, or
+re-scope an existing bead, and do not change code: a finding you cannot
+prove belongs in your report as an open question, not in the tracker as
+a fact.

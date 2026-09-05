@@ -15,12 +15,17 @@ from typing import Literal
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
+from polylogue.core.raw_failure_evidence import (
+    RAW_FAILURE_EVIDENCE_KINDS,
+    terminal_carrier_overwrite_predicate,
+)
 from polylogue.security.excision_policy import ExcisionPolicyError, ExcisionPolicySnapshot
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.sqlite.archive_tiers.common import require_vocabulary
 from polylogue.storage.sqlite.raw_state_update import compile_raw_state_update
+
+_TERMINAL_CARRIER_GUARD_SQL = f"\nWHERE NOT {terminal_carrier_overwrite_predicate()}\n"
 
 
 class ContentExcisedError(ExcisionPolicyError):
@@ -1330,7 +1335,12 @@ def _insert_artifact(conn: sqlite3.Connection, raw_id: str, artifact: ArchiveSou
             link_group_key = excluded.link_group_key,
             sidecar_agent_type = excluded.sidecar_agent_type,
             last_observed_at_ms = excluded.last_observed_at_ms
-        """,
+        """
+        # A terminal failure carrier is the durable statement that these
+        # bytes will never become a session, and the raw-frontier gate reads
+        # it to settle the path. Re-observing the coordinate re-derives an
+        # ordinary path classification, which must not take the row back.
+        + _TERMINAL_CARRIER_GUARD_SQL,
         (
             artifact.artifact_id,
             raw_id,

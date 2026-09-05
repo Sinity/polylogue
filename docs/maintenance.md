@@ -173,6 +173,52 @@ reclassifies under `BEGIN IMMEDIATE` before fsyncing the prepared receipt and
 deleting the exact candidate set. Review the receipt's final `committed` line
 before treating the pass as complete.
 
+### `polylogue ops maintenance blob-disposition` — physical namespace disposition
+
+One-time transition tooling for the blob-store maneuver. `plan` is read-only:
+it walks the complete physical namespace and gives every object exactly one
+disposition proven against a configured source — `source_present`,
+`superseded_prefix`, `restore_required`, or `unresolved`. A plan is acceptable
+only at zero unresolved members, and its digest binds the archive identity,
+the namespace, the denominators, and every member outcome.
+
+The plan reports two separate totals. `reclaimable_bytes` counts only the
+`source_present` and `superseded_prefix` members that no durable row
+references — exactly what `apply` can unlink. `retained_by_reference_bytes`
+counts the members proven at a source that a durable reference keeps on disk;
+removing those is the reference owner's decision, and the GC seam refuses them
+anyway. `restore_required` members are in neither total: `apply` restores them
+and never deletes them.
+
+```bash
+polylogue ops maintenance blob-disposition plan \
+  --archive-root /path/to/archive \
+  --output /path/to/disposition-plan.json --output-format json
+polylogue ops maintenance blob-disposition apply \
+  --archive-root /path/to/archive \
+  --plan /path/to/disposition-plan.json \
+  --authorized-digest <digest of the reviewed plan> \
+  --receipt /path/to/new/disposition-receipt.json --active
+```
+
+`restore` is the additive half on its own: it publishes sole-copy carriers
+into their ordinary spool and deletes nothing, so it does not wait on the
+plan reaching zero unresolved. `apply` is a dry rehearsal without `--active`. It makes no classification
+judgment: it revalidates every member's own proof immediately before its
+effect, restores sole-copy carriers into their ordinary spool before any
+deletion, never touches a historical carrier during restoration, and deletes
+only unreferenced members through the canonical blob-GC seam. Any drift — a
+changed source, a changed object, a new referent, a different digest or
+denominator — refuses the whole plan.
+
+Hook-event and browser-capture carriers are proven by the owning production
+read route, not by bytes: acquisition derives fields the spool file does not
+carry, so byte equality would misreport reproducible material as a sole copy.
+
+Deletion trigger: this command, both maintenance modules, and their tests are
+removed with the terminal disposition receipt. The recurring liveness,
+publication, GC, and spool-admission laws stay with their owners.
+
 
 ### Blob-reference integrity — preview and apply pairs
 

@@ -44,6 +44,7 @@ from polylogue.storage.sqlite.durable_change_train import (
     refresh_released_source_train_continuity,
     write_source_continuity_pending_intent,
 )
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.migration_runner import (
     capture_durable_database_evidence,
     validate_migration_backup_live_fingerprint,
@@ -368,7 +369,7 @@ def _recover_prepared_receipt(
     Recovery appends durable evidence but never performs another mutation.
     """
 
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with sqlite_connection(f"file:{source_db}?mode=ro", uri=True) as conn:
         candidate_count, table_name, _header = _stage_receipt_candidates(
             conn,
             receipt_path,
@@ -785,7 +786,7 @@ def reconcile_blob_ref_liveness(
         raise FileNotFoundError(f"no source.db at {source_db}")
 
     if dry_run:
-        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+        with sqlite_connection(f"file:{source_db}?mode=ro", uri=True) as conn:
             dry_classification = classify_blob_ref_liveness(conn)
         return BlobRefLivenessReconciliationReport(
             source_db=str(source_db),
@@ -954,7 +955,7 @@ def reconcile_blob_ref_liveness(
 
     post_classification: BlobRefLivenessClassification
     try:
-        with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as verify_conn:
+        with sqlite_connection(f"file:{source_db}?mode=ro", uri=True) as verify_conn:
             quick_check = verify_conn.execute("PRAGMA quick_check").fetchone()
             if quick_check is None or str(quick_check[0]).lower() != "ok":
                 raise BlobRefLivenessReconciliationError(f"source.db quick_check failed after commit: {quick_check!r}")
@@ -1055,7 +1056,7 @@ def census_blob_ref_liveness(archive_root: Path) -> OrphanedBlobRefCensus:
     from polylogue.storage.blob_gc import census_orphaned_blob_refs
 
     source_db = archive_root / "source.db"
-    with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+    with sqlite_connection(f"file:{source_db}?mode=ro", uri=True) as conn:
         return census_orphaned_blob_refs(conn)
 
 

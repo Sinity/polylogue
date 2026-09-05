@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
+
 
 def _tier_path(archive_root: Path, tier: str) -> Path:
     if tier == "index":
@@ -44,7 +46,7 @@ class PathologyZooInvariant:
             if self.tier == "index" and index_path_override is not None
             else _tier_path(archive_root, self.tier)
         )
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{path}?mode=ro", uri=True) as connection:
             return bool(connection.execute(self.query, self.parameters).fetchone() == self.expected)
 
 
@@ -389,7 +391,7 @@ def pathology_zoo_is_present(archive_root: Path, *, index_path_override: Path | 
     if index_path.exists():
         placeholders = ", ".join("?" for _ in session_ids)
         try:
-            with sqlite3.connect(f"file:{index_path}?mode=ro", uri=True) as connection:
+            with sqlite_connection(f"file:{index_path}?mode=ro", uri=True) as connection:
                 if (
                     connection.execute(
                         f"SELECT 1 FROM sessions WHERE session_id IN ({placeholders}) LIMIT 1", session_ids
@@ -402,7 +404,7 @@ def pathology_zoo_is_present(archive_root: Path, *, index_path_override: Path | 
     source_path = archive_root / "source.db"
     if source_path.exists():
         try:
-            with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+            with sqlite_connection(f"file:{source_path}?mode=ro", uri=True) as connection:
                 return (
                     connection.execute(
                         "SELECT 1 FROM raw_hook_events WHERE hook_event_id = 'hook:zoo-hook-event' LIMIT 1"

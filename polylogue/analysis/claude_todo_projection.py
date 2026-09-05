@@ -29,6 +29,7 @@ from polylogue.core.refs import ObjectRef
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.todos import ClaudeTodoSnapshot, parse_claude_todo_artifact
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,7 +92,7 @@ def load_claude_todo_plan_states(archive_root: Path) -> tuple[ClaudeTodoPlanStat
     if not source_db.exists():
         return ()
 
-    with sqlite3.connect(source_db) as conn:
+    with sqlite_connection(source_db) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
