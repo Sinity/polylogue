@@ -589,7 +589,10 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
 
     assert result.exit_code == 0
     assert "Convergence: caught up" in result.output
-    assert "session_profiles: degraded" in result.output
+    # Readiness is convergence plus counts: one row per seeded session, and the
+    # expected denominator gated on the product table. A reader that stopped
+    # reporting either would print a bare name.
+    assert "session_profiles: rows=2 expected=2" in result.output
 
 
 def test_insights_hermes_health_json_reports_disabled_without_a_hermes_root(

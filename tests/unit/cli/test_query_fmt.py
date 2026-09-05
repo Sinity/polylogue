@@ -18,8 +18,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,6 +50,7 @@ from polylogue.core.types import SessionId
 from polylogue.rendering.formatting import _conv_to_dict, _yaml_safe, format_session
 from tests.infra.builders import make_conv as build_conv
 from tests.infra.builders import make_msg as build_msg
+from tests.infra.local_timezone import pinned_local_timezone
 
 
 @dataclass(frozen=True)
@@ -489,10 +488,7 @@ class TestListFormatting:
     def test_text_summary_list_localizes_dates_without_changing_json_rows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        previous = os.environ.get("TZ")
-        monkeypatch.setenv("TZ", "America/Los_Angeles")
-        time.tzset()
-        try:
+        with pinned_local_timezone(monkeypatch, "America/Los_Angeles"):
             summary = SessionSummary(
                 id=SessionId("conv-summary-local-date"),
                 origin=Origin.CLAUDE_AI_EXPORT,
@@ -502,21 +498,12 @@ class TestListFormatting:
 
             text = format_summary_list([summary], "text", None)
             payload = json.loads(format_summary_list([summary], "json", None))
-        finally:
-            if previous is None:
-                monkeypatch.delenv("TZ", raising=False)
-            else:
-                monkeypatch.setenv("TZ", previous)
-            time.tzset()
 
         assert "2025-05-31" in text
         assert payload["items"][0]["date"] == "2025-06-01"
 
     def test_csv_dates_stay_canonical_when_text_is_localized(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        previous = os.environ.get("TZ")
-        monkeypatch.setenv("TZ", "America/Los_Angeles")
-        time.tzset()
-        try:
+        with pinned_local_timezone(monkeypatch, "America/Los_Angeles"):
             timestamp = datetime(2025, 6, 1, 1, tzinfo=timezone.utc)
             summary = SessionSummary(
                 id=SessionId("conv-csv-local-date"),
@@ -535,12 +522,6 @@ class TestListFormatting:
             summary_csv = format_summary_list([summary], "csv", None)
             hit_csv = format_search_hit_list([hit], "csv", None)
             session_csv = _format_list([session], "csv", None)
-        finally:
-            if previous is None:
-                monkeypatch.delenv("TZ", raising=False)
-            else:
-                monkeypatch.setenv("TZ", previous)
-            time.tzset()
 
         assert next(csv.DictReader(io.StringIO(summary_csv)))["date"] == "2025-06-01"
         assert next(csv.DictReader(io.StringIO(hit_csv)))["date"] == "2025-06-01"

@@ -245,7 +245,14 @@ def _status_operation_result(
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.version import POLYLOGUE_VERSION
 
-    config = load_effective_config(env) if daemon_url in (None, _BUILTIN_DAEMON_URL) else None
+    config: Any = None
+    if daemon_url in (None, _BUILTIN_DAEMON_URL):
+        try:
+            config = load_effective_config(env)
+        except Exception:
+            # Without a resolved config there is no socket to address, but a
+            # daemon on a discovered API port is still reachable over HTTP.
+            config = None
     client = (
         DaemonClient(
             daemon_socket_path(config.archive_root),
@@ -261,15 +268,22 @@ def _status_operation_result(
     request = OperationRequest("status", {"include_archive_readiness": include_archive_readiness})
 
     def daemon_call(lowered: Any) -> Any:
-        if daemon_url is None or daemon_url == _BUILTIN_DAEMON_URL:
-            assert config is not None and client is not None
-            return client.operation(
-                lowered.operation,
-                dict(lowered.payload),
-                archive_root=str(config.archive_root),
-                daemon_version=POLYLOGUE_VERSION,
-            )
-        for candidate in _candidate_daemon_urls(daemon_url):
+        if client is not None and config is not None:
+            try:
+                uds_value = client.operation(
+                    lowered.operation,
+                    dict(lowered.payload),
+                    archive_root=str(config.archive_root),
+                    daemon_version=POLYLOGUE_VERSION,
+                )
+            except Exception:
+                uds_value = None
+            if uds_value is not None:
+                return uds_value
+            # No socket for this archive root does not mean no daemon: a
+            # dev-loop daemon on a discovered API port still answers over
+            # HTTP, which is what _candidate_daemon_urls is for.
+        for candidate in _candidate_daemon_urls(daemon_url or _BUILTIN_DAEMON_URL):
             try:
                 request = Request(f"{candidate}/api/status", headers={"Accept": "application/json"}, method="GET")
                 with urlopen(request, timeout=_FULL_TIMEOUT_S) as response:
@@ -279,15 +293,10 @@ def _status_operation_result(
                 continue
         return None
 
-    return OperationKernel(
-        daemon_call,
-        lambda _lowered: _show_direct_json(
-            env,
-            full=True,
-            include_archive_readiness=include_archive_readiness,
-            emit=False,
-        ),
-    ).execute(request)
+    # No direct fallback here: both callers render the direct surface
+    # themselves, so a fallback would assemble the whole direct payload once
+    # to be discarded. An unreachable daemon raises OperationKernelError.
+    return OperationKernel(daemon_call).execute(request)
 
 
 def _candidate_daemon_urls(primary_url: str) -> tuple[str, ...]:
@@ -493,7 +502,7 @@ def _archive_one_tier_status(tier: str, path: Path) -> dict[str, Any]:
         return status
 
     try:
-        conn = open_readonly_connection(path, timeout_class="interactive-read")
+        conn = _open_status_connection(path)
         try:
             counts, precision = _archive_table_counts(conn, _ARCHIVE_TIER_TABLES[tier], db_size_bytes=probe.size_bytes)
             status["table_counts"] = counts
@@ -588,6 +597,17 @@ def _sqlite_stat1_rows(conn: sqlite3.Connection) -> int:
     return _fast_count(conn, "SELECT COUNT(*) FROM sqlite_stat1")
 
 
+def _open_status_connection(path: Path) -> sqlite3.Connection:
+    """Open a tier read-only for reporting.
+
+    Status reports a skewed or unstamped tier as data. Validating the schema
+    on the way in raises the whole status surface out of service on exactly
+    the archive whose state the operator is asking about, so these reads
+    never validate.
+    """
+    return open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
+
+
 def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
     tiers: dict[str, dict[str, Any]] = {}
     total_wal_bytes = 0
@@ -603,7 +623,7 @@ def _sqlite_maintenance_status(root: Path) -> dict[str, Any]:
         total_wal_bytes += int(tier_status["wal_bytes"])
         if path.exists():
             try:
-                conn = open_readonly_connection(path, timeout_class="interactive-read")
+                conn = _open_status_connection(path)
                 try:
                     stat_rows = _sqlite_stat1_rows(conn)
                 finally:
@@ -683,7 +703,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
         if not source_db.exists():
             return -1
         try:
-            source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
+            source_conn = _open_status_connection(source_db)
             try:
                 if not _table_exists(source_conn, table):
                     return -1
@@ -703,7 +723,7 @@ def _archive_source_table_count(conn: Any, *, table: str, sql: str, configured_r
     if not source_db.exists():
         return -1
     try:
-        source_conn = open_readonly_connection(source_db, timeout_class="interactive-read")
+        source_conn = _open_status_connection(source_db)
         try:
             if not _table_exists(source_conn, table):
                 return -1
@@ -735,7 +755,7 @@ def _ops_workload_status(active_root: Path, *, now_ms: int) -> dict[str, Any]:
     if not ops_db.exists():
         return {"available": False, "reason": "missing_ops_tier"}
     try:
-        conn = open_readonly_connection(ops_db, timeout_class="interactive-read")
+        conn = _open_status_connection(ops_db)
     except sqlite3.Error as exc:
         return {"available": False, "reason": f"ops workload status unavailable: {exc}"}
     try:
@@ -1004,6 +1024,22 @@ def status_command(
             )
         except Exception:
             operation_result = None
+        # An unparseable or timed-out /api/status is not a stopped daemon. When
+        # the named daemon still answers its liveness probe, say so instead of
+        # publishing local archive facts as daemon truth.
+        daemon_answered = operation_result is not None and operation_result.authority.get("mode") != "direct"
+        if (
+            not daemon_answered
+            and daemon_url not in (None, _BUILTIN_DAEMON_URL)
+            and _daemon_live(daemon_url, timeout=_FAST_TIMEOUT_S)
+        ):
+            obs.attributes["daemon_reachable"] = True
+            obs.daemon_path = "daemon"
+            if output_format == "json":
+                _show_daemon_status_unavailable_json(env)
+            else:
+                _show_daemon_status_unavailable(env, compact=not full_payload)
+            raise click.exceptions.Exit(1)
         if operation_result is None:
             obs.attributes["daemon_reachable"] = False
             obs.daemon_path = "direct"
@@ -1891,7 +1927,7 @@ def _direct_assertion_component(active_root: Path) -> dict[str, Any]:
         return component_from_assertion_substrate(table_exists=False).to_dict()
 
     try:
-        conn = open_readonly_connection(user_db, timeout_class="interactive-read")
+        conn = _open_status_connection(user_db)
         try:
             table_exists = _table_exists(conn, "assertions")
             if not table_exists:
