@@ -64,7 +64,10 @@ from polylogue.maintenance.source_conservation import (
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_integrity import scan_attachment_coverage, scan_blob_integrity
-from polylogue.storage.blob_liveness import validated_blob_ref_liveness_joins
+from polylogue.storage.blob_liveness import (
+    acquired_attachment_missing_ref_predicate,
+    validated_blob_ref_liveness_joins,
+)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.introspection import table_exists
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
@@ -1756,10 +1759,9 @@ def _check_blob_reference_closure_for_index(
         attachment_sample = [
             str(row[0])
             for row in index_conn.execute(
-                """
+                f"""
                 SELECT a.attachment_id FROM attachments a
-                WHERE a.acquisition_status = 'acquired'
-                  AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
+                WHERE {acquired_attachment_missing_ref_predicate()}
                 ORDER BY a.attachment_id LIMIT ?
                 """,
                 (sample_limit,),
@@ -1968,7 +1970,10 @@ def _check_attachment_coverage_at_index_path(
         summary=(
             f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
             if debt_count
-            else f"all {report.acquired_count:,} acquired attachment(s) have bytes and a live attachment reference"
+            else (
+                f"all {report.acquired_reachable_count:,} acquired attachment(s) have bytes and a live attachment reference"
+                + (f"; {report.acquired_unowned_count:,} retained unowned" if report.acquired_unowned_count else "")
+            )
         ),
         count=debt_count,
         details=details,

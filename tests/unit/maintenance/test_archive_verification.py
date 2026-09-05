@@ -1540,14 +1540,23 @@ def test_full_blob_integrity_red_twin(tmp_path: Path, mutation: str) -> None:
 
 
 def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> None:
-    """Acquired bytes without an attachment_refs edge are not queryable."""
+    """Acquired bytes whose refs went away are not queryable.
+
+    The non-zero ``ref_count`` is what makes this debt rather than the
+    writer's deliberate unowned retention: the sweep set it while refs
+    existed, then the refs disappeared without the sweep running again.
+
+    Anti-vacuity: the companion test below inserts the same row with
+    ``ref_count`` 0 and must stay green, so this cannot pass merely because
+    every ref-less acquired attachment is reported.
+    """
     _seed_coherent_archive(tmp_path)
     blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unreachable attachment")
     with _connect(tmp_path / "index.db") as conn:
         conn.execute(
             """
             INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
-            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 1)
             """,
             (bytes.fromhex(blob_hash), size),
         )
@@ -1560,6 +1569,43 @@ def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> Non
     assert report.blocking
     assert check.evidence["unreachable_count"] == 1
     assert "unreachable-attachment" in check.details[0]
+
+
+def test_owner_ambiguous_attachment_is_not_coverage_or_closure_debt(tmp_path: Path) -> None:
+    """The writer's typed unowned retention is not attachment debt.
+
+    ``_write_attachments`` inserts an attachment whose owning message is
+    ambiguous with ``ref_count`` 0 and keeps it out of the ref-count sweep, so
+    it never had a ref to lose. Both declarations that count ref-less acquired
+    attachments must read it as explained.
+
+    Anti-vacuity: the test above inserts the same row with a non-zero
+    ``ref_count`` and must stay red, so this cannot pass because the checks
+    stopped reporting ref-less acquired attachments at all.
+    """
+    _seed_coherent_archive(tmp_path)
+    blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unowned attachment")
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unowned-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("attachment-coverage", "blob-reference-closure"))
+
+    assert not report.blocking, [c.summary for c in report.checks]
+    coverage = _check(report, "attachment-coverage")
+    assert coverage.status is OutcomeStatus.OK
+    assert coverage.evidence["unreachable_count"] == 0
+    assert cast(dict[str, object], coverage.evidence["scan"])["acquired_unowned_count"] == 1
+    assert "retained unowned" in coverage.summary
+    closure = _check(report, "blob-reference-closure")
+    assert closure.status is OutcomeStatus.OK
+    assert closure.evidence["acquired_attachment_missing_ref_count"] == 0
 
 
 def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:
