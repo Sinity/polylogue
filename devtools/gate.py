@@ -154,6 +154,14 @@ GATES: tuple[Gate, ...] = (
         in_quick=True,
     ),
     Gate(
+        "durable-enum-checks",
+        "Verify durable-tier DDL carries no enum-derived membership CHECK.",
+        "module",
+        ("devtools.verify_durable_enum_checks",),
+        label="gate durable-enum-checks",
+        in_quick=True,
+    ),
+    Gate(
         "schema-privacy",
         "Verify the committed-schema privacy registry.",
         "module",
