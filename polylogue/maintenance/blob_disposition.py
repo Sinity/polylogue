@@ -15,9 +15,23 @@ configured source:
     The object is the only verified carrier of wanted material and names an
     ordinary spool destination that current acquisition admits. Restoration
     precedes any removal.
+``positively_excluded``
+    The object is not product material — it entered the archive through a
+    declared non-product route — so no source is expected to hold it. The
+    rule that matched is recorded; a hash allowlist is not such a rule.
+``explained_residue``
+    The object's provenance is known and a named task owns its remaining
+    question, but no configured source holds it and no ordinary spool admits
+    it. It is retained, never deleted, and it does not block: what blocks is
+    material nobody can explain.
 ``unresolved``
     Nothing above holds. Unresolved blocks: it is never downgraded to
     discard, and it never authorizes restoration.
+
+A proof must name a location the acquisition route actually reads. A file
+that merely exists on disk somewhere under a source root proves storage, not
+reacquirability, and the difference decides whether deleting the object loses
+it.
 
 A plan is acceptable only at zero unresolved members. It is immutable, bound
 to the archive identity, blob namespace identity, and exact denominators it
@@ -32,11 +46,17 @@ publication, GC, and spool-admission laws remain in their owners.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
+import mmap
 import os
+import re
 import sqlite3
-from collections.abc import Mapping, Sequence
+import zipfile
+from collections import Counter
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -64,6 +84,8 @@ class BlobDisposition(StrEnum):
     SOURCE_PRESENT = "source_present"
     SUPERSEDED_PREFIX = "superseded_prefix"
     RESTORE_REQUIRED = "restore_required"
+    POSITIVELY_EXCLUDED = "positively_excluded"
+    EXPLAINED_RESIDUE = "explained_residue"
     UNRESOLVED = "unresolved"
 
 
@@ -124,6 +146,7 @@ class BlobDispositionMember:
     reason: str
     proof: SourceProof | None = None
     restoration: RestorationTarget | None = None
+    rule: TerminalRule | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -134,6 +157,7 @@ class BlobDispositionMember:
             "reason": self.reason,
             "proof": self.proof.to_dict() if self.proof is not None else None,
             "restoration": self.restoration.to_dict() if self.restoration is not None else None,
+            "rule": self.rule.to_dict() if self.rule is not None else None,
         }
 
 
@@ -273,6 +297,14 @@ def _member_from_dict(payload: object) -> BlobDispositionMember:
             destination=RestorationDestination(str(restoration_payload["destination"])),
             logical_id=str(restoration_payload["logical_id"]),
         )
+    rule_payload = payload.get("rule")
+    rule = None
+    if isinstance(rule_payload, Mapping):
+        rule = TerminalRule(
+            rule=str(rule_payload["rule"]),
+            owner=str(rule_payload["owner"]),
+            reason=str(rule_payload.get("reason", "")),
+        )
     return BlobDispositionMember(
         blob_hash=str(payload["blob_hash"]),
         size_bytes=int(payload["size_bytes"]),
@@ -281,6 +313,7 @@ def _member_from_dict(payload: object) -> BlobDispositionMember:
         reason=str(payload["reason"]),
         proof=proof,
         restoration=restoration,
+        rule=rule,
     )
 
 
@@ -323,6 +356,12 @@ class HookEventSpoolProver:
     spool file does not carry, and both sides are serialized independently.
     Byte equality is therefore the wrong law here: the proof is equality of
     the production-route record, which is what admission would reproduce.
+
+    Only each declared root's ``pending`` directory counts. That is what
+    ``drain_hook_event_spool`` and the live watcher read; an acknowledged
+    receipt is addressed to the source tier that consumed it, so on a fresh
+    archive it is re-ingested by nothing. An envelope surviving only there
+    falls through to restoration.
     """
 
     name = "hook-event-spool"
@@ -335,8 +374,11 @@ class HookEventSpoolProver:
     def _spool_index(self) -> dict[str, tuple[str, Path]]:
         if self._index is not None:
             return self._index
+        from polylogue.sources.hooks import pending_hook_spool_dir
+
         index: dict[str, tuple[str, Path]] = {}
-        for source_id, root in self._sources:
+        for source_id, spool_root in self._sources:
+            root = pending_hook_spool_dir(spool_root)
             for directory, subdirectories, filenames in os.walk(root):
                 subdirectories.sort()
                 for filename in sorted(filenames):
@@ -561,6 +603,1045 @@ class AppendPrefixProver:
         return None
 
 
+_UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+# A needle larger than this is not an append span; searching for it would read
+# the whole object into memory to answer a question its size already answers.
+_MAX_SUBSTRING_NEEDLE_BYTES = 64 << 20
+_MAX_SUBSTRING_CARRIER_BYTES = 4 << 30
+_MAX_JSON_DOCUMENT_BYTES = 1 << 30
+_SQLITE_MAGIC = b"SQLite format 3\x00"
+
+
+def blob_candidate_sizes(blob_root: Path) -> frozenset[int]:
+    """Every physical object size present in the namespace.
+
+    Content indexes are bounded by this set. A string, a base64 decode, or a
+    file whose length no physical object has cannot prove anything, and
+    hashing it would turn a bounded pass over the sources into an unbounded
+    one over every byte the operator owns.
+    """
+    sizes: set[int] = set()
+    for directory, subdirectories, filenames in os.walk(blob_root):
+        subdirectories.sort()
+        for filename in filenames:
+            try:
+                sizes.add(os.stat(os.path.join(directory, filename)).st_size)
+            except OSError:
+                continue
+    sizes.discard(0)
+    return frozenset(sizes)
+
+
+def _sha256(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _open_sqlite_immutable(path: Path) -> sqlite3.Connection:
+    """Open an arbitrary file as a database without touching it.
+
+    ``immutable=1`` is required rather than preferred: opening a blob-store
+    object as an ordinary database creates ``-wal``/``-shm`` siblings inside
+    the physical namespace, which invalidates the namespace being planned.
+    """
+    return sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+
+
+def _load_json_document(path: Path, *, limit: int = _MAX_JSON_DOCUMENT_BYTES) -> object | None:
+    try:
+        if path.stat().st_size > limit:
+            return None
+        with path.open("rb") as handle:
+            document: object = json.load(handle)
+        return document
+    except (OSError, json.JSONDecodeError, RecursionError, ValueError):
+        return None
+
+
+def _b64_decoded_length(text: str) -> int | None:
+    """Exact decoded length of an unwrapped base64 string, else ``None``."""
+    length = len(text)
+    if length < 4 or length % 4:
+        return None
+    padding = 2 if text.endswith("==") else 1 if text.endswith("=") else 0
+    return length // 4 * 3 - padding
+
+
+def _iter_json_strings(document: object) -> Iterator[tuple[str, str]]:
+    """Yield every string value in a decoded document with its JSON path."""
+    stack: list[tuple[object, str]] = [(document, "$")]
+    while stack:
+        node, where = stack.pop()
+        if isinstance(node, str):
+            yield node, where
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                stack.append((value, f"{where}.{key}"))
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                stack.append((value, f"{where}[{index}]"))
+
+
+class _EmbeddedPayloadIndex:
+    """Content hashes of payloads embedded as strings inside JSON carriers.
+
+    Both a string's raw UTF-8 and its base64 decode are candidates: carriers
+    hold extracted text the first way and binary attachments the second.
+    """
+
+    def __init__(self, candidate_sizes: frozenset[int]) -> None:
+        self._sizes = candidate_sizes
+        self._index: dict[str, str] = {}
+
+    def __len__(self) -> int:
+        return len(self._index)
+
+    def get(self, blob_hash: str) -> str | None:
+        return self._index.get(blob_hash)
+
+    def absorb(self, document: object, *, location: str) -> None:
+        for text, trail in _iter_json_strings(document):
+            raw = text.encode("utf-8")
+            if len(raw) in self._sizes:
+                self._index.setdefault(_sha256(raw), f"{location}!{trail}")
+            decoded_length = _b64_decoded_length(text)
+            if decoded_length is None or decoded_length not in self._sizes:
+                continue
+            try:
+                decoded = base64.b64decode(text, validate=True)
+            except (binascii.Error, ValueError):
+                continue
+            if len(decoded) != decoded_length:
+                continue
+            self._index.setdefault(_sha256(decoded), f"{location}!{trail}|base64")
+
+
+@dataclass(frozen=True, slots=True)
+class HookEventCarrier:
+    """One acquired hook event and the state it was read out of."""
+
+    source_path: str
+    event_type: str
+    payload_json: str
+
+
+@dataclass(frozen=True, slots=True)
+class StateRowSpec:
+    """How one hook event's payload maps onto a live state-database row."""
+
+    table: str
+    key_columns: tuple[str, ...]
+    column_for: tuple[tuple[str, str], ...] = ()
+
+    def column(self, payload_key: str) -> str:
+        for key, column in self.column_for:
+            if key == payload_key:
+                return column
+        return payload_key
+
+
+CODEX_STATE_ROW_SPECS: Mapping[str, StateRowSpec] = {
+    "codex_thread_title": StateRowSpec(table="threads", key_columns=("thread_id",), column_for=(("thread_id", "id"),)),
+    "codex_thread_spawn_edge": StateRowSpec(
+        table="thread_spawn_edges", key_columns=("parent_thread_id", "child_thread_id")
+    ),
+}
+
+
+def _normalized_sql_value(value: object) -> object:
+    """JSON booleans and SQLite integers denote the same stored value."""
+    if isinstance(value, bool):
+        return int(value)
+    return value
+
+
+def hook_event_carriers_by_hash(source_db: Path) -> dict[str, tuple[HookEventCarrier, ...]]:
+    """Map each hook-event payload hash to the state it was acquired from."""
+    mapping: dict[str, set[HookEventCarrier]] = {}
+    with closing(_open_ro(source_db)) as conn:
+        present = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "raw_hook_events" not in present:
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT lower(hex(blob_hash)), source_path, event_type, payload_json FROM raw_hook_events "
+                "WHERE blob_hash IS NOT NULL AND source_path IS NOT NULL AND payload_json IS NOT NULL"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise BlobDispositionError(f"raw_hook_events is unreadable: {exc}") from exc
+    for blob_hash, source_path, event_type, payload_json in rows:
+        carrier = HookEventCarrier(str(source_path), str(event_type), str(payload_json))
+        mapping.setdefault(str(blob_hash), set()).add(carrier)
+    return {key: tuple(sorted(value, key=lambda item: item.source_path)) for key, value in mapping.items()}
+
+
+class CodexStateRowProver:
+    """Prove a hook event's payload against the live state-database row.
+
+    The row is the source, not the file: these databases are rewritten in
+    place, so comparing bytes against the carrier decides nothing, while the
+    row the acquisition route reads is either present and equal or gone.
+    """
+
+    name = "codex-state-row"
+
+    def __init__(
+        self,
+        carriers_by_hash: Mapping[str, tuple[HookEventCarrier, ...]],
+        *,
+        specs: Mapping[str, StateRowSpec] = CODEX_STATE_ROW_SPECS,
+    ) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._specs = dict(specs)
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        for carrier in self._carriers.get(blob_hash, ()):
+            spec = self._specs.get(carrier.event_type)
+            if spec is None:
+                continue
+            if _sha256(carrier.payload_json.encode("utf-8")) != blob_hash:
+                continue
+            try:
+                payload = json.loads(carrier.payload_json)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if not isinstance(payload, dict) or not payload:
+                continue
+            if not all(key in payload for key in spec.key_columns):
+                continue
+            source = Path(carrier.source_path)
+            if not source.is_file():
+                continue
+            keys = tuple(payload)
+            try:
+                with closing(_open_sqlite_immutable(source)) as connection:
+                    columns = {
+                        str(row[1]) for row in connection.execute(f'PRAGMA table_info("{spec.table}")').fetchall()
+                    }
+                    if not columns or not columns.issuperset(spec.column(key) for key in keys):
+                        continue
+                    selected = ", ".join(f'"{spec.column(key)}"' for key in keys)
+                    predicate = " AND ".join(f'"{spec.column(key)}" = ?' for key in spec.key_columns)
+                    row = connection.execute(
+                        f'SELECT {selected} FROM "{spec.table}" WHERE {predicate}',
+                        tuple(_normalized_sql_value(payload[key]) for key in spec.key_columns),
+                    ).fetchone()
+            except sqlite3.Error:
+                continue
+            if row is None:
+                continue
+            if any(
+                _normalized_sql_value(payload[key]) != _normalized_sql_value(value)
+                for key, value in zip(keys, row, strict=True)
+            ):
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.SEMANTIC_EQUIVALENT,
+                source_id="codex-state-database",
+                source_path=f"{source}::{spec.table}",
+                detail=f"{carrier.event_type} reproduces from the live {spec.table} row",
+            )
+        return None
+
+
+class ExportBundleMemberProver:
+    """Prove an extracted sub-object against the export bundle it came from.
+
+    An export bundle is the acquisition route's own input, so a payload the
+    archive extracted out of one is reproduced by re-reading the bundle. The
+    bundle roots are declared, never discovered.
+    """
+
+    name = "export-bundle-member"
+
+    def __init__(
+        self,
+        roots: Sequence[Path],
+        *,
+        candidate_sizes: frozenset[int],
+        source_id: str = "declared-export-bundle",
+    ) -> None:
+        self._roots = tuple(Path(root) for root in roots)
+        self._sizes = candidate_sizes
+        self._source_id = source_id
+        self._index: _EmbeddedPayloadIndex | None = None
+
+    def _payloads(self) -> _EmbeddedPayloadIndex:
+        if self._index is not None:
+            return self._index
+        index = _EmbeddedPayloadIndex(self._sizes)
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for bundle in sorted(root.rglob("*.zip")):
+                try:
+                    with zipfile.ZipFile(bundle) as archive:
+                        for member in archive.namelist():
+                            if not member.endswith(".json"):
+                                continue
+                            with archive.open(member) as handle:
+                                document = json.load(handle)
+                            index.absorb(document, location=f"{bundle}::{member}")
+                except (OSError, zipfile.BadZipFile, json.JSONDecodeError, RecursionError, ValueError):
+                    continue
+        self._index = index
+        return index
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        located = self._payloads().get(blob_hash)
+        if located is None:
+            return None
+        return SourceProof(
+            prover=self.name,
+            mode=SourceProofMode.BYTE_IDENTICAL,
+            source_id=self._source_id,
+            source_path=located,
+            detail="byte-identical to a value an export bundle member still carries",
+        )
+
+
+class DataLakeFileProver:
+    """Prove an object byte-identical to a file under a declared data root.
+
+    The roots are an explicit list because the claim is "this content is at
+    its source" and the plan has to say which source. A walk of the
+    filesystem at large would make the claim unauditable.
+    """
+
+    name = "data-lake-file"
+
+    def __init__(
+        self,
+        roots: Sequence[Path],
+        *,
+        candidate_sizes: frozenset[int],
+        source_id: str = "declared-data-root",
+    ) -> None:
+        self._roots = tuple(Path(root) for root in roots)
+        self._sizes = candidate_sizes
+        self._source_id = source_id
+        self._by_size: dict[int, list[Path]] | None = None
+        self._hashes: dict[Path, str | None] = {}
+
+    def _size_index(self) -> dict[int, list[Path]]:
+        if self._by_size is not None:
+            return self._by_size
+        index: dict[int, list[Path]] = {}
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for directory, subdirectories, filenames in os.walk(root):
+                subdirectories.sort()
+                for filename in sorted(filenames):
+                    candidate = Path(directory) / filename
+                    try:
+                        size = candidate.stat().st_size
+                    except OSError:
+                        continue
+                    if size in self._sizes:
+                        index.setdefault(size, []).append(candidate)
+        self._by_size = index
+        return index
+
+    def _digest(self, candidate: Path) -> str | None:
+        if candidate in self._hashes:
+            return self._hashes[candidate]
+        digest: str | None
+        try:
+            with candidate.open("rb") as handle:
+                digest, _ = _hash_stream(handle)
+        except OSError:
+            digest = None
+        self._hashes[candidate] = digest
+        return digest
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        for candidate in self._size_index().get(size_bytes, ()):
+            if self._digest(candidate) != blob_hash:
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.BYTE_IDENTICAL,
+                source_id=self._source_id,
+                source_path=str(candidate),
+                detail="fresh hash of a byte-identical file under a declared data root",
+            )
+        return None
+
+
+def _jsonl_line_digests(path: Path) -> list[str] | None:
+    try:
+        with path.open("rb") as handle:
+            return [_sha256(line.rstrip(b"\n")) for line in handle]
+    except OSError:
+        return None
+
+
+def _jsonl_session_id(path: Path, *, records: int = 3) -> str | None:
+    """Read the session identity the provider names in its own leading records."""
+    try:
+        with path.open("rb") as handle:
+            for _ in range(records):
+                line = handle.readline()
+                if not line:
+                    return None
+                try:
+                    record = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    return None
+                if not isinstance(record, dict):
+                    return None
+                candidates: list[object] = [record.get("sessionId"), record.get("session_id")]
+                payload = record.get("payload")
+                if isinstance(payload, dict):
+                    candidates.extend((payload.get("id"), payload.get("session_id")))
+                for value in candidates:
+                    if isinstance(value, str) and _UUID.fullmatch(value):
+                        return value
+    except OSError:
+        return None
+    return None
+
+
+class JsonlLineContainmentProver:
+    """Prove a session snapshot against the JSONL its provider still appends to.
+
+    A snapshot is a moment in an append-structured file, so byte equality is
+    the wrong law and line containment is the right one — with exactly one
+    exception the format forces: Codex rewrites its leading ``session_meta``
+    record in place, so index 0 may be absent. Nothing beyond index 0 may be,
+    because a general subset rule would accept a carrier that dropped the
+    snapshot's content.
+    """
+
+    name = "jsonl-line-containment"
+
+    def __init__(
+        self,
+        carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]],
+        *,
+        session_roots: Sequence[Path],
+    ) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._roots = tuple(Path(root) for root in session_roots)
+        self._by_session: dict[str, list[Path]] | None = None
+
+    def _session_index(self) -> dict[str, list[Path]]:
+        if self._by_session is not None:
+            return self._by_session
+        index: dict[str, list[Path]] = {}
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for directory, subdirectories, filenames in os.walk(root):
+                subdirectories.sort()
+                for filename in sorted(filenames):
+                    if not filename.endswith(".jsonl"):
+                        continue
+                    found = _UUID.findall(filename)
+                    if found:
+                        index.setdefault(found[-1], []).append(Path(directory) / filename)
+        self._by_session = index
+        return index
+
+    def _candidates(self, blob_hash: str, path: Path) -> list[Path]:
+        candidates = [Path(carrier.source_path) for carrier in self._carriers.get(blob_hash, ())]
+        session_id = _jsonl_session_id(path)
+        if session_id is not None:
+            candidates.extend(self._session_index().get(session_id, ()))
+        return candidates
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        if _jsonl_session_id(path) is None and blob_hash not in self._carriers:
+            return None
+        blob_lines = _jsonl_line_digests(path)
+        if not blob_lines:
+            return None
+        for candidate in self._candidates(blob_hash, path):
+            if not candidate.is_file():
+                continue
+            live = _jsonl_line_digests(candidate)
+            if live is None:
+                continue
+            available = Counter(live)
+            absent: list[int] = []
+            for index, digest in enumerate(blob_lines):
+                if available[digest]:
+                    available[digest] -= 1
+                    continue
+                absent.append(index)
+                if absent != [0]:
+                    break
+            if absent and absent != [0]:
+                continue
+            detail = (
+                "every line is present in the live carrier"
+                if not absent
+                else "every line but the provider-rewritten leading record is present in the live carrier"
+            )
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.SEMANTIC_EQUIVALENT,
+                source_id="live-session-jsonl",
+                source_path=str(candidate),
+                detail=detail,
+            )
+        return None
+
+
+class TrajectoryStepPrefixProver:
+    """Prove a trajectory snapshot is a strict step prefix of the live file.
+
+    Identity fields must be equal and every retained step identical; only the
+    step list may be shorter, and only by truncation. ``final_metrics`` is
+    excluded because it is computed over the whole run rather than carried
+    forward from the prefix.
+    """
+
+    name = "trajectory-step-prefix"
+    STEP_FIELD = "steps"
+    EXCLUDED_FIELDS = frozenset({"steps", "final_metrics"})
+
+    def __init__(self, carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]]) -> None:
+        self._carriers = dict(carriers_by_hash)
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        snapshot = _load_json_document(path)
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get(self.STEP_FIELD), list):
+            return None
+        retained = snapshot[self.STEP_FIELD]
+        for carrier in self._carriers.get(blob_hash, ()):
+            source = Path(carrier.source_path)
+            live = _load_json_document(source)
+            if not isinstance(live, dict) or not isinstance(live.get(self.STEP_FIELD), list):
+                continue
+            if {key for key in snapshot if key not in self.EXCLUDED_FIELDS} != {
+                key for key in live if key not in self.EXCLUDED_FIELDS
+            }:
+                continue
+            if any(snapshot[key] != live[key] for key in snapshot if key not in self.EXCLUDED_FIELDS):
+                continue
+            live_steps = live[self.STEP_FIELD]
+            if len(retained) >= len(live_steps) or retained != live_steps[: len(retained)]:
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.STRICT_PREFIX,
+                source_id="live-trajectory-file",
+                source_path=str(source),
+                detail=f"identity fields equal and steps are the live file's first {len(retained)} of {len(live_steps)}",
+            )
+        return None
+
+
+class ByteSpanSubstringProver:
+    """Prove an append span is still a contiguous byte range of its carrier.
+
+    A row that captured only its own increment may carry no
+    ``append_start_offset``, which is the coordinate ``RawSourceFileProver``
+    needs. The span itself is unchanged, so it is located by search rather
+    than by a stored coordinate; anything short of an exact contiguous match
+    refuses.
+    """
+
+    name = "byte-span-substring"
+
+    def __init__(self, carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]]) -> None:
+        self._carriers = dict(carriers_by_hash)
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        if not 0 < size_bytes <= _MAX_SUBSTRING_NEEDLE_BYTES:
+            return None
+        needle: bytes | None = None
+        for carrier in self._carriers.get(blob_hash, ()):
+            source = Path(carrier.source_path)
+            try:
+                source_size = source.stat().st_size
+            except OSError:
+                continue
+            if not source.is_file() or not size_bytes < source_size <= _MAX_SUBSTRING_CARRIER_BYTES:
+                continue
+            if needle is None:
+                try:
+                    needle = path.read_bytes()
+                except OSError:
+                    return None
+            try:
+                with source.open("rb") as handle, mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as view:
+                    offset = view.find(needle)
+            except (OSError, ValueError):
+                continue
+            if offset < 0:
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.STRICT_PREFIX,
+                source_id="configured-source-file",
+                source_path=str(source),
+                detail=f"contiguous {size_bytes} bytes at offset {offset} of the live source",
+            )
+        return None
+
+
+def _without_key(node: object, key: str) -> object:
+    if isinstance(node, dict):
+        return {name: _without_key(value, key) for name, value in node.items() if name != key}
+    if isinstance(node, list):
+        return [_without_key(value, key) for value in node]
+    return node
+
+
+class DriveCacheInjectedKeyProver:
+    """Prove a Drive cache document against the same document at a declared root.
+
+    Polylogue injects each Drive item's live bytes into its own cache file,
+    so a carrier recorded before that injection differs from the current one
+    by exactly that key. Stripping it is the whole permitted transformation:
+    any other difference, a changed chunk included, refuses.
+    """
+
+    name = "drive-cache-injected-key"
+    INJECTED_KEY = "_polylogue_drive_live_bytes_b64"
+
+    def __init__(
+        self,
+        carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]],
+        *,
+        roots: Sequence[Path],
+        injected_key: str = INJECTED_KEY,
+    ) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._roots = tuple(Path(root) for root in roots)
+        self._injected_key = injected_key
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        recorded = _load_json_document(path)
+        if not isinstance(recorded, dict):
+            return None
+        stripped = _without_key(recorded, self._injected_key)
+        for carrier in self._carriers.get(blob_hash, ()):
+            basename = Path(carrier.source_path).name
+            for root in self._roots:
+                candidate = root / basename
+                if not candidate.is_file():
+                    continue
+                live = _load_json_document(candidate)
+                if not isinstance(live, dict):
+                    continue
+                if _without_key(live, self._injected_key) != stripped:
+                    continue
+                return SourceProof(
+                    prover=self.name,
+                    mode=SourceProofMode.SEMANTIC_EQUIVALENT,
+                    source_id="declared-drive-cache-root",
+                    source_path=str(candidate),
+                    detail=f"equal once the injected {self._injected_key} key is stripped from both sides",
+                )
+        return None
+
+
+class CaptureEmbeddedPayloadProver:
+    """Prove an extracted payload against the capture document that embeds it.
+
+    Attachment bytes and Drive documents live inside the capture and cache
+    JSON the acquisition route reads, as raw text or as base64. The roots are
+    declared, so a payload surviving only under a retired path does not prove.
+    """
+
+    name = "capture-embedded-payload"
+
+    def __init__(
+        self,
+        roots: Sequence[Path],
+        *,
+        candidate_sizes: frozenset[int],
+        suffixes: tuple[str, ...] = (".json", ".jsonl"),
+        source_id: str = "declared-capture-root",
+    ) -> None:
+        self._roots = tuple(Path(root) for root in roots)
+        self._sizes = candidate_sizes
+        self._suffixes = suffixes
+        self._source_id = source_id
+        self._index: _EmbeddedPayloadIndex | None = None
+
+    def _payloads(self) -> _EmbeddedPayloadIndex:
+        if self._index is not None:
+            return self._index
+        index = _EmbeddedPayloadIndex(self._sizes)
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for directory, subdirectories, filenames in os.walk(root):
+                subdirectories.sort()
+                for filename in sorted(filenames):
+                    if not filename.endswith(self._suffixes):
+                        continue
+                    carrier = Path(directory) / filename
+                    document = _load_json_document(carrier)
+                    if document is None:
+                        continue
+                    index.absorb(document, location=str(carrier))
+        self._index = index
+        return index
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        located = self._payloads().get(blob_hash)
+        if located is None:
+            return None
+        return SourceProof(
+            prover=self.name,
+            mode=SourceProofMode.BYTE_IDENTICAL,
+            source_id=self._source_id,
+            source_path=located,
+            detail="byte-identical to a payload a live capture document embeds",
+        )
+
+
+class SqliteRowContainmentProver:
+    """Prove a state-database snapshot's rows still exist in the live database.
+
+    These files are rewritten in place and their schema drifts, so ``SELECT *``
+    compares differently shaped tuples on the two sides and can decide
+    nothing. The comparison is over the columns both sides declare. Full-text
+    shadow tables are excluded because they are rebuilt from the rows they
+    index; every other table must be contained, so a snapshot holding rows
+    the live database dropped refuses.
+    """
+
+    name = "sqlite-row-containment"
+    _SHADOW_TABLE = re.compile(r"_fts(_[a-z0-9]+)?$")
+
+    def __init__(self, carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]]) -> None:
+        self._carriers = dict(carriers_by_hash)
+
+    @staticmethod
+    def _is_sqlite(path: Path) -> bool:
+        try:
+            with path.open("rb") as handle:
+                return handle.read(len(_SQLITE_MAGIC)) == _SQLITE_MAGIC
+        except OSError:
+            return False
+
+    @classmethod
+    def _user_tables(cls, connection: sqlite3.Connection) -> list[str]:
+        rows = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()
+        return [str(row[0]) for row in rows if not cls._SHADOW_TABLE.search(str(row[0]))]
+
+    @staticmethod
+    def _columns(connection: sqlite3.Connection, table: str) -> list[str]:
+        return [str(row[1]) for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()]
+
+    def _contained(self, snapshot: sqlite3.Connection, live: sqlite3.Connection) -> str | None:
+        tables = self._user_tables(snapshot)
+        if not tables:
+            return None
+        live_tables = set(self._user_tables(live))
+        compared = 0
+        for table in tables:
+            if table not in live_tables:
+                return None
+            snapshot_columns = self._columns(snapshot, table)
+            shared = [column for column in snapshot_columns if column in set(self._columns(live, table))]
+            if not shared:
+                return None
+            projection = ", ".join(f'"{column}"' for column in shared)
+            wanted = Counter(snapshot.execute(f'SELECT {projection} FROM "{table}"').fetchall())
+            if not wanted:
+                continue
+            held = Counter(live.execute(f'SELECT {projection} FROM "{table}"').fetchall())
+            for row, count in wanted.items():
+                if held[row] < count:
+                    return None
+            compared += 1
+        if not compared:
+            return None
+        return f"{compared} tables contained over their shared columns"
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        if not self._is_sqlite(path):
+            return None
+        for carrier in self._carriers.get(blob_hash, ()):
+            source = Path(carrier.source_path)
+            if not source.is_file() or not self._is_sqlite(source):
+                continue
+            try:
+                with (
+                    closing(_open_sqlite_immutable(path)) as snapshot,
+                    closing(_open_sqlite_immutable(source)) as live,
+                ):
+                    detail = self._contained(snapshot, live)
+            except sqlite3.Error:
+                continue
+            if detail is None:
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.SEMANTIC_EQUIVALENT,
+                source_id="live-state-database",
+                source_path=str(source),
+                detail=detail,
+            )
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class TerminalRule:
+    """A named, owned rule that ends an object's classification without a source."""
+
+    rule: str
+    owner: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"rule": self.rule, "owner": self.owner, "reason": self.reason}
+
+
+class BlobTerminalRuleResolver(Protocol):
+    """Decides an object needs no source proof, and says under which rule."""
+
+    disposition: BlobDisposition
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None: ...
+
+
+class NonProductRouteExcluder:
+    """Exclude material that entered the archive through a non-product route.
+
+    The rule is the route, not the object: an acquisition whose declared
+    source path lies under a test, fixture, or development-loop directory is
+    not product material, so no source is expected to reproduce it. Matching
+    by hash would record the answer instead of the reason, and would say
+    nothing about the next object the same route admits.
+    """
+
+    disposition = BlobDisposition.POSITIVELY_EXCLUDED
+
+    def __init__(
+        self,
+        carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]],
+        *,
+        markers: Sequence[str],
+        owner: str,
+        rule: str = "non-product-acquisition-route",
+    ) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._markers = tuple(markers)
+        self._owner = owner
+        self._rule = rule
+
+    def _matched_marker(self, source_path: str) -> str | None:
+        parts = Path(source_path).parts
+        for marker in self._markers:
+            needle = tuple(Path(marker).parts)
+            if any(parts[index : index + len(needle)] == needle for index in range(len(parts))):
+                return marker
+        return None
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        carriers = self._carriers.get(blob_hash, ())
+        if not carriers:
+            return None
+        matched = [self._matched_marker(carrier.source_path) for carrier in carriers]
+        if not all(matched):
+            return None
+        return TerminalRule(
+            rule=self._rule,
+            owner=self._owner,
+            reason=f"every acquisition of this object came from the non-product route {matched[0]!r}",
+        )
+
+
+class ExplainedResidueResolver:
+    """Mark residue whose provenance is known and whose question has an owner.
+
+    Explained residue is retained, never deleted, and it does not block: the
+    plan blocks on material nobody can account for, which is a different
+    state and has to be counted separately from material a named task is
+    already carrying.
+    """
+
+    disposition = BlobDisposition.EXPLAINED_RESIDUE
+
+    def __init__(self, hashes: Mapping[str, TerminalRule]) -> None:
+        self._hashes = dict(hashes)
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        return self._hashes.get(blob_hash)
+
+
+class BrowserCaptureAttachmentResidue:
+    """Mark a capture attachment payload no live capture document embeds.
+
+    The payload is understood — the durable tables name it as one capture's
+    attachment — but it is not itself a capture envelope, so the capture
+    spool admits nothing for it and no ordinary destination exists. Its
+    disposition is owned rather than unknown.
+    """
+
+    disposition = BlobDisposition.EXPLAINED_RESIDUE
+
+    def __init__(self, payload_hashes: frozenset[str], *, owner: str, rule: str) -> None:
+        self._payloads = payload_hashes
+        self._owner = owner
+        self._rule = rule
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        if blob_hash not in self._payloads:
+            return None
+        return TerminalRule(
+            rule=self._rule,
+            owner=self._owner,
+            reason="a durable row names this object as a browser-capture attachment payload, "
+            "and no capture document the acquisition route reads still embeds it",
+        )
+
+
+def browser_capture_attachment_payloads(source_db: Path) -> frozenset[str]:
+    """Hashes durable rows name as browser-capture attachment payloads.
+
+    Both halves of the predicate carry weight: ``ref_type`` says the object
+    is an attachment payload rather than the capture envelope around it, and
+    the capture-spool path says which acquisition owns it. Attachments from
+    any other route are a different question.
+    """
+    with closing(_open_ro(source_db)) as conn:
+        present = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "blob_refs" not in present:
+            return frozenset()
+        try:
+            columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(blob_refs)").fetchall()}
+            if not {"blob_hash", "ref_type", "source_path"}.issubset(columns):
+                return frozenset()
+            rows = conn.execute(
+                "SELECT DISTINCT lower(hex(blob_hash)) FROM blob_refs "
+                "WHERE blob_hash IS NOT NULL AND ref_type = 'attachment' "
+                "AND source_path LIKE '%browser-capture%'"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise BlobDispositionError(f"blob_refs is unreadable: {exc}") from exc
+    return frozenset(str(row[0]) for row in rows)
+
+
+class TestCorpusFixtureExcluder:
+    """Exclude synthetic material the tracked test corpus itself composes.
+
+    These objects carry no durable row at all — no acquisition ever recorded
+    a source for them — so no route predicate can reach them. What is
+    observable is that every line they contain is a literal the checkout's
+    own tests write. Product material does not have that property: a real
+    session's records are not string constants in the test suite. The rule is
+    therefore content against a declared corpus, which stays true for the
+    next fixture the same tests leak, rather than a list of hashes, which
+    only records the answer to this run.
+    """
+
+    disposition = BlobDisposition.POSITIVELY_EXCLUDED
+
+    def __init__(
+        self,
+        corpus_roots: Sequence[Path],
+        *,
+        referenced_hashes: frozenset[str],
+        owner: str,
+        rule: str = "tracked-test-corpus-literal",
+        max_object_bytes: int = 1 << 16,
+    ) -> None:
+        self._roots = tuple(Path(root) for root in corpus_roots)
+        self._referenced = referenced_hashes
+        self._owner = owner
+        self._rule = rule
+        self._max_object_bytes = max_object_bytes
+        self._lines: frozenset[str] | None = None
+
+    def _corpus_lines(self) -> frozenset[str]:
+        if self._lines is not None:
+            return self._lines
+        digests: set[str] = set()
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for directory, subdirectories, filenames in os.walk(root):
+                subdirectories.sort()
+                for filename in sorted(filenames):
+                    if not filename.endswith(".py"):
+                        continue
+                    try:
+                        text = (Path(directory) / filename).read_text(encoding="utf-8", errors="strict")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    for line in text.splitlines():
+                        stripped = line.strip()
+                        if stripped:
+                            digests.add(_sha256(stripped.encode("utf-8")))
+        self._lines = frozenset(digests)
+        return self._lines
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        if blob_hash in self._referenced or not 0 < size_bytes <= self._max_object_bytes:
+            return None
+        try:
+            with path.open("rb") as handle:
+                lines = [line.strip() for line in handle.read().splitlines()]
+        except (OSError, ValueError):
+            return None
+        content = [line for line in lines if line]
+        if not content:
+            return None
+        corpus = self._corpus_lines()
+        if any(_sha256(line) not in corpus for line in content):
+            return None
+        return TerminalRule(
+            rule=self._rule,
+            owner=self._owner,
+            reason=(
+                f"unreferenced object whose {len(content)} content lines are all literals in the tracked test corpus"
+            ),
+        )
+
+
+class ForeignStateSnapshotResidue:
+    """Mark a foreign application's state snapshot the live database outgrew.
+
+    The object is understood: a declared acquisition names the state database
+    it was copied from, and that database is still there but no longer holds
+    these rows. Polylogue has no write path into another application's state,
+    so there is no destination to restore it to. That is a different fact
+    from not knowing what an object is, and it is counted differently.
+    """
+
+    disposition = BlobDisposition.EXPLAINED_RESIDUE
+
+    def __init__(
+        self,
+        carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]],
+        *,
+        owner: str,
+        rule: str = "foreign-state-database-snapshot",
+    ) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._owner = owner
+        self._rule = rule
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        if not SqliteRowContainmentProver._is_sqlite(path):
+            return None
+        for carrier in self._carriers.get(blob_hash, ()):
+            source = Path(carrier.source_path)
+            if source.is_file() and SqliteRowContainmentProver._is_sqlite(source):
+                return TerminalRule(
+                    rule=self._rule,
+                    owner=self._owner,
+                    reason=(
+                        f"a snapshot of {source}, which is still present but no longer holds these rows; "
+                        "no ordinary route writes into a foreign application's state database"
+                    ),
+                )
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BlobDispositionContext:
     """Everything a compilation needs, resolved once and reused per member."""
@@ -569,6 +1650,8 @@ class BlobDispositionContext:
     provers: tuple[BlobSourceProver, ...]
     referenced_hashes: frozenset[str]
     restoration_provers: tuple[BlobRestorationResolver, ...] = field(default=())
+    excluders: tuple[BlobTerminalRuleResolver, ...] = field(default=())
+    residue_resolvers: tuple[BlobTerminalRuleResolver, ...] = field(default=())
 
 
 def _open_ro(path: Path) -> sqlite3.Connection:
@@ -703,6 +1786,17 @@ def classify_blob(
             reason=f"{proof.prover} proved {proof.mode.value}",
             proof=proof,
         )
+    for excluder in context.excluders:
+        rule = excluder.resolve(blob_hash, entry.path, size_bytes)
+        if rule is not None:
+            return BlobDispositionMember(
+                blob_hash=blob_hash,
+                size_bytes=size_bytes,
+                referenced=referenced,
+                disposition=excluder.disposition,
+                reason=f"excluded by {rule.rule}: no source is expected to hold non-product material",
+                rule=rule,
+            )
     restoration = _restoration_target(entry.path, context.restoration_provers)
     if restoration is not None:
         return BlobDispositionMember(
@@ -713,12 +1807,23 @@ def classify_blob(
             reason="no configured source holds this content and it names an ordinary spool destination",
             restoration=restoration,
         )
+    for resolver in context.residue_resolvers:
+        rule = resolver.resolve(blob_hash, entry.path, size_bytes)
+        if rule is not None:
+            return BlobDispositionMember(
+                blob_hash=blob_hash,
+                size_bytes=size_bytes,
+                referenced=referenced,
+                disposition=resolver.disposition,
+                reason=f"explained residue owned by {rule.owner} under {rule.rule}",
+                rule=rule,
+            )
     return BlobDispositionMember(
         blob_hash=blob_hash,
         size_bytes=size_bytes,
         referenced=referenced,
         disposition=BlobDisposition.UNRESOLVED,
-        reason="no source proof and no ordinary restoration destination",
+        reason="no source proof, no ordinary restoration destination, and no named owner",
     )
 
 
@@ -738,6 +1843,60 @@ def resolve_disposition_roots(archive_root: Path) -> tuple[Path, tuple[tuple[str
     return hooks_root, sources, archive_root / "browser-capture"
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredSourceRoots:
+    """The explicit locations a proof is allowed to name.
+
+    Every root is declared rather than discovered, because "the content is
+    still at its source" is only auditable if the plan says which source. A
+    prover that walked the filesystem at large would make the same claim
+    without anyone being able to check it.
+    """
+
+    data_roots: tuple[Path, ...] = ()
+    export_bundle_roots: tuple[Path, ...] = ()
+    drive_cache_roots: tuple[Path, ...] = ()
+    session_jsonl_roots: tuple[Path, ...] = ()
+    capture_document_roots: tuple[Path, ...] = ()
+    test_corpus_roots: tuple[Path, ...] = ()
+
+    @classmethod
+    def declared(cls, *, home: Path | None = None, data_lake: Path | None = None) -> DeclaredSourceRoots:
+        """The operator-declared topology this one-time transition plans against."""
+        base = (home or Path.home()).expanduser()
+        lake = (data_lake or Path("/realm/data")).expanduser()
+        drive_cache = lake / "ai" / "polylogue" / "drive-cache" / "gemini"
+        return cls(
+            data_roots=(lake,),
+            export_bundle_roots=(lake / "ai" / "chatlog" / "raw" / "claude",),
+            drive_cache_roots=(drive_cache,),
+            session_jsonl_roots=(base / ".claude" / "projects", base / ".codex" / "sessions"),
+            capture_document_roots=(drive_cache,),
+            test_corpus_roots=(Path(__file__).resolve().parents[2] / "tests",),
+        )
+
+    def to_dict(self) -> dict[str, list[str]]:
+        return {
+            "data_roots": [str(root) for root in self.data_roots],
+            "export_bundle_roots": [str(root) for root in self.export_bundle_roots],
+            "drive_cache_roots": [str(root) for root in self.drive_cache_roots],
+            "session_jsonl_roots": [str(root) for root in self.session_jsonl_roots],
+            "capture_document_roots": [str(root) for root in self.capture_document_roots],
+        }
+
+
+# Acquisitions whose declared source path lies under one of these is not
+# product material: these are test, fixture, and development-loop routes.
+NON_PRODUCT_ROUTE_MARKERS: tuple[str, ...] = (
+    ".cache/dev-loop",
+    "tests/fixtures",
+    "tests/data",
+    "tests/infra",
+)
+NON_PRODUCT_ROUTE_OWNER = "polylogue-251y8"
+CAPTURE_ATTACHMENT_RESIDUE_OWNER = "polylogue-hcm7h"
+
+
 def build_disposition_context(
     *,
     archive_root: Path,
@@ -745,22 +1904,55 @@ def build_disposition_context(
     source_db: Path,
     hook_spool_sources: Sequence[tuple[str, Path]],
     browser_capture_spool: Path,
+    declared_roots: DeclaredSourceRoots | None = None,
 ) -> BlobDispositionContext:
-    """Resolve the prover set from configured sources, not from history."""
+    """Resolve the prover set from configured sources, not from history.
+
+    Order is cost: the provers that answer from a row or a recorded carrier
+    run before the ones that must index a source tree, so an object is
+    usually decided without any index being built at all.
+    """
+    roots = declared_roots if declared_roots is not None else DeclaredSourceRoots.declared()
     store = BlobStore(blob_root)
+    carriers = raw_source_carriers_by_hash(source_db)
+    referenced = referenced_blob_hashes(source_db)
+    sizes = blob_candidate_sizes(blob_root)
     hook_prover = HookEventSpoolProver(hook_spool_sources)
     capture_prover = BrowserCaptureSpoolProver(browser_capture_spool)
     provers: tuple[BlobSourceProver, ...] = (
         hook_prover,
         capture_prover,
-        RawSourceFileProver(raw_source_carriers_by_hash(source_db)),
+        RawSourceFileProver(carriers),
+        CodexStateRowProver(hook_event_carriers_by_hash(source_db)),
+        DriveCacheInjectedKeyProver(carriers, roots=roots.drive_cache_roots),
+        TrajectoryStepPrefixProver(carriers),
+        SqliteRowContainmentProver(carriers),
         AppendPrefixProver(append_successors_by_hash(source_db), blob_store=store),
+        JsonlLineContainmentProver(carriers, session_roots=roots.session_jsonl_roots),
+        ByteSpanSubstringProver(carriers),
+        CaptureEmbeddedPayloadProver((browser_capture_spool, *roots.capture_document_roots), candidate_sizes=sizes),
+        ExportBundleMemberProver(roots.export_bundle_roots, candidate_sizes=sizes),
+        DataLakeFileProver(roots.data_roots, candidate_sizes=sizes),
     )
     return BlobDispositionContext(
         blob_store=store,
         provers=provers,
-        referenced_hashes=referenced_blob_hashes(source_db),
+        referenced_hashes=referenced,
         restoration_provers=(hook_prover, capture_prover),
+        excluders=(
+            NonProductRouteExcluder(carriers, markers=NON_PRODUCT_ROUTE_MARKERS, owner=NON_PRODUCT_ROUTE_OWNER),
+            TestCorpusFixtureExcluder(
+                roots.test_corpus_roots, referenced_hashes=referenced, owner=NON_PRODUCT_ROUTE_OWNER
+            ),
+        ),
+        residue_resolvers=(
+            BrowserCaptureAttachmentResidue(
+                browser_capture_attachment_payloads(source_db),
+                owner=CAPTURE_ATTACHMENT_RESIDUE_OWNER,
+                rule="browser-capture-attachment-payload",
+            ),
+            ForeignStateSnapshotResidue(carriers, owner=CAPTURE_ATTACHMENT_RESIDUE_OWNER),
+        ),
     )
 
 
@@ -821,7 +2013,6 @@ def compile_disposition_plan(
 
 
 __all__ = [
-    "TOOL_VERSION",
     "AppendPrefixProver",
     "BlobDisposition",
     "BlobDispositionContext",
@@ -831,19 +2022,46 @@ __all__ = [
     "BlobDispositionPlan",
     "BlobRestorationResolver",
     "BlobSourceProver",
+    "BlobTerminalRuleResolver",
+    "BrowserCaptureAttachmentResidue",
     "BrowserCaptureSpoolProver",
+    "ByteSpanSubstringProver",
+    "CAPTURE_ATTACHMENT_RESIDUE_OWNER",
+    "CODEX_STATE_ROW_SPECS",
+    "CaptureEmbeddedPayloadProver",
+    "CodexStateRowProver",
+    "DataLakeFileProver",
+    "DeclaredSourceRoots",
+    "DriveCacheInjectedKeyProver",
+    "ExplainedResidueResolver",
+    "ExportBundleMemberProver",
+    "HookEventCarrier",
     "HookEventSpoolProver",
+    "JsonlLineContainmentProver",
+    "NON_PRODUCT_ROUTE_MARKERS",
+    "NON_PRODUCT_ROUTE_OWNER",
+    "NonProductRouteExcluder",
     "RawSourceCarrier",
     "RawSourceFileProver",
     "RestorationDestination",
     "RestorationTarget",
     "SourceProof",
     "SourceProofMode",
+    "SqliteRowContainmentProver",
+    "StateRowSpec",
+    "TOOL_VERSION",
+    "ForeignStateSnapshotResidue",
+    "TerminalRule",
+    "TestCorpusFixtureExcluder",
+    "TrajectoryStepPrefixProver",
     "append_successors_by_hash",
+    "blob_candidate_sizes",
+    "browser_capture_attachment_payloads",
     "build_disposition_context",
     "classify_blob",
     "compile_disposition_plan",
+    "hook_event_carriers_by_hash",
     "raw_source_carriers_by_hash",
-    "resolve_disposition_roots",
     "referenced_blob_hashes",
+    "resolve_disposition_roots",
 ]
