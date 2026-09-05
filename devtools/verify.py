@@ -56,6 +56,7 @@ from devtools.verify_runs import (
     git_head,
     prune_successful_verify_runs,
 )
+from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -76,12 +77,6 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: One fixed width for the corpus and the runner's affected tier, sized to the
-#: pytest pool's 12 GiB cgroup ceiling (eight workers peak near 10 GB) rather
-#: than host cores or free RAM. Measured 2026-09-03 uncontended: 47 minutes for
-#: 20,860 tests at eight workers; at two the same run takes about seven hours
-#: and the required check cannot finish inside its slot timeout.
-CORPUS_MAX_WORKERS = 8
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 #: Path classes no test exercises: orchestration metadata, documentation and
@@ -174,8 +169,16 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """Build one complete collection, or an affected collection with tracing."""
-    testmon = selection not in {"all", "descriptor"}
+    """Build one complete collection, or an affected collection, both tracing.
+
+    Both tiers load testmon so every managed corpus or affected run advances the
+    one datafile. ``all`` deselects nothing -- it executes the whole collection
+    and records what it traced, which is what makes the next affected run
+    selectable. Only ``descriptor`` opts out: it collects a contract slice, not
+    a corpus, so its fingerprints would describe a collection no later run has.
+    """
+    testmon = selection != "descriptor"
+    select_flag = "--testmon-noselect" if selection == "all" else "--testmon-forceselect"
     collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
     command = [
         venv_python(root=ROOT),
@@ -193,7 +196,7 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         PROGRESS_PLUGIN_NAME,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
-        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-forceselect"] if testmon else []),
+        *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
         "-p",
         "no:randomly",
         *worker_args,
@@ -501,7 +504,9 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             step_id=artifacts.step_id,
             result=_early_gate_failure_result(started, early_metadata),
         )
-        sys.stderr.write("FAILED (missing executable)\n")
+        sys.stderr.write(f"FAILED ({executable_result.diagnosis})\n")
+        for detail in executable_result.details:
+            sys.stderr.write(f"    {detail}\n")
         return 127, time.monotonic() - started, early_metadata
     slot = None
     metadata_receipt = None

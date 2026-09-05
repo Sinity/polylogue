@@ -59,7 +59,12 @@ TopologyCapabilityDimension = Literal[
     "inheritance_branch_point",
     "parent_dispatch",
 ]
-SourceFrontierKind = Literal["exact-prefix", "claude-header-body"]
+#: ``whole-snapshot``: one logical session is written as complete files
+#: that share no byte prefix, so successive observations are competing
+#: snapshots rather than continuations and byte revision authority has
+#: nothing to be a proof about. Such an origin is governed by membership
+#: authority from its first observation.
+SourceFrontierKind = Literal["exact-prefix", "claude-header-body", "whole-snapshot"]
 DatabaseMemberDisposition = Literal["acquire", "acquire-partial", "out-of-scope"]
 
 _SOURCE_ROOT = Path(__file__).resolve().parents[2]
@@ -1360,6 +1365,7 @@ def _executable_spec(
     tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
     database_capability: DatabaseSourceCapability | None = None,
+    frontier_kind: SourceFrontierKind = "exact-prefix",
     topology_capabilities: TopologyCapabilities,
 ) -> OriginSpec:
     return OriginSpec(
@@ -1384,6 +1390,7 @@ def _executable_spec(
         public_filter=public_filter,
         topology_capabilities=topology_capabilities,
         database_capability=database_capability,
+        frontier_kind=frontier_kind,
     )
 
 
@@ -1508,6 +1515,10 @@ def _gemini_cli_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
         display_description="Gemini CLI local sessions (lab: Google)",
+        # Gemini CLI writes one session as several complete checkpoint
+        # files that share a ``sessionId`` and no byte prefix, so the
+        # cohort has no byte revision chain to accept a head from.
+        frontier_kind="whole-snapshot",
         topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "
@@ -1752,6 +1763,28 @@ def _aistudio_drive_spec() -> OriginSpec:
         detector_tightness=90,
         parser_paths=("polylogue/sources/parsers/drive.py",),
         stream_parser_path=None,
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="metadata_document",
+                # AI Studio writes the applet access log into the same Drive
+                # folder as the conversation exports. Its ``{"applets": [...]}`
+                # body carries no turn, so content classification can only
+                # reach ``ArtifactKind.UNKNOWN`` -- a kind the coverage gate
+                # refuses by construction. The path is the declaration.
+                path_pattern=r"(?:^|/)applet_access_history\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="applet_access_log",
+                fidelity_note=(
+                    "AI Studio applet access log retained as acquired evidence and never parsed as a "
+                    "session: it records which applets an account opened, not a conversation."
+                ),
+                path_suffixes=(".json",),
+                # One named file, not a suffix family: enumeration of the
+                # Drive root stays governed by ``path_pattern``.
+                watch_suffixes=(),
+            ),
+        ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
         fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
         coverage_refs=("origin:aistudio-drive:admitted",),

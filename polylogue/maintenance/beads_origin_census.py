@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.config import ResolvedRuntimeConfig
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 FORMAT = "polylogue.beads-origin-census.v1"
 PLAN_FORMAT = "polylogue.beads-origin-removal-plan.v1"
@@ -93,7 +94,7 @@ def _db_rows(
     if not path.is_file():
         return "unavailable", None, (), f"missing database: {path}"
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0) as conn:
+        with sqlite_connection(f"file:{path}?mode=ro", uri=True, timeout=5.0) as conn:
             conn.row_factory = sqlite3.Row
             rows = {name: int(conn.execute(sql).fetchone()[0]) for name, sql in queries.items()}
             evidence = tuple(

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDINGS_SCHEMA_VERSION
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
@@ -235,7 +236,7 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError(f"embedding database has an uncheckpointed WAL: {path}")
         uri = f"file:{path}?mode=ro"
         try:
-            with sqlite3.connect(uri, uri=True, timeout=1.0) as conn:
+            with sqlite_connection(uri, uri=True, timeout=1.0) as conn:
                 ok, error = try_load_sqlite_vec(conn)
                 if not ok:
                     raise EmbeddingGenerationError("embedding database requires sqlite-vec") from error
@@ -268,7 +269,7 @@ class EmbeddingGenerationStore:
         """
         self._validate_database(path)
         try:
-            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+            with sqlite_connection(f"file:{path}?mode=ro", uri=True) as conn:
                 rows = conn.execute(
                     """
                     SELECT vector_derivation_hash, model, dimension, recipe_hash, output_contract_hash
@@ -332,7 +333,7 @@ class EmbeddingGenerationStore:
         if not _regular_file(self.active_path):
             raise EmbeddingGenerationError("embedding active path is not a regular file")
         try:
-            with sqlite3.connect(self.active_path, timeout=30.0) as conn:
+            with sqlite_connection(self.active_path, timeout=30.0) as conn:
                 row = checkpoint_connection(conn, "TRUNCATE")
         except (OSError, sqlite3.Error) as exc:
             raise EmbeddingGenerationError("could not checkpoint legacy embedding database") from exc

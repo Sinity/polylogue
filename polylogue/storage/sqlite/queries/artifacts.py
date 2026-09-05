@@ -22,6 +22,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RawFailureEvidenceKind,
     raw_failure_classification_reason,
+    terminal_carrier_overwrite_predicate,
     validated_raw_failure_evidence_kind,
 )
 from polylogue.core.sources import origin_from_provider
@@ -75,7 +76,8 @@ ON CONFLICT(artifact_id) DO UPDATE SET
     link_group_key = excluded.link_group_key,
     sidecar_agent_type = excluded.sidecar_agent_type,
     last_observed_at_ms = excluded.last_observed_at_ms
-WHERE excluded.last_observed_at_ms > raw_artifacts.last_observed_at_ms
+WHERE (
+    excluded.last_observed_at_ms > raw_artifacts.last_observed_at_ms
    OR (
        excluded.last_observed_at_ms = raw_artifacts.last_observed_at_ms
        -- ``>=``, not ``>``: this tie-break exists to make ownership
@@ -94,7 +96,13 @@ WHERE excluded.last_observed_at_ms > raw_artifacts.last_observed_at_ms
            SELECT rowid FROM raw_sessions WHERE raw_id = raw_artifacts.raw_id
        )
    )
+)
+__TERMINAL_CARRIER_GUARD__
 """
+
+RAW_ARTIFACT_UPSERT_SQL = RAW_ARTIFACT_UPSERT_SQL.replace(
+    "__TERMINAL_CARRIER_GUARD__", f"AND NOT {terminal_carrier_overwrite_predicate()}"
+)
 
 
 def _iso_to_ms(value: str) -> int:

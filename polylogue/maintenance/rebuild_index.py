@@ -35,6 +35,7 @@ from polylogue.storage.introspection import table_exists
 from polylogue.storage.sqlite.action_pairs import rebuild_all_action_pairs_sync
 from polylogue.storage.sqlite.connection_profile import BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
 from polylogue.storage.sqlite.delegation_facts import rebuild_all_delegation_facts_sync
+from polylogue.storage.sqlite.maintenance import PLANNER_STATS_COVERED_TABLES
 
 if TYPE_CHECKING:
     from polylogue.operations.candidate_build import CandidateBuildRequest
@@ -54,13 +55,10 @@ _PLANNER_STATS_REFRESH_RAW_INTERVAL = 1000
 # so analyzing their virtual-table backing stores does not improve any replay
 # plan and can dominate a large archive's checkpoint.  These row stores are
 # the tables used by the writer-hot replacement/link/action-pair queries.
-_PLANNER_STATS_ANALYZE_STATEMENTS = (
-    "ANALYZE sessions",
-    "ANALYZE messages",
-    "ANALYZE blocks",
-    "ANALYZE session_links",
-    "ANALYZE action_pairs",
-)
+# ``sessions`` is analyzed in addition to the verified set because replay's
+# session-scoped lookups depend on it; the verified set itself is shared so the
+# replay route cannot drift from what planner-stats requires.
+_PLANNER_STATS_ANALYZE_STATEMENTS = tuple(f"ANALYZE {table}" for table in ("sessions", *PLANNER_STATS_COVERED_TABLES))
 
 logger = get_logger(__name__)
 

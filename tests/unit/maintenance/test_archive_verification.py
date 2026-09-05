@@ -19,7 +19,7 @@ from polylogue.archive.topology.edge import (
     HOOK_AUTHORITATIVE_LINK_METHOD,
     HOOK_CONTRADICTED_LINK_METHOD,
 )
-from polylogue.core.enums import ArtifactSupportStatus, Origin
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, Role
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
@@ -31,10 +31,13 @@ from polylogue.maintenance.archive_verification import (
     verify_archive,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS, initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
@@ -1219,14 +1222,19 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
 
 
 def test_empty_covered_table_without_stats_is_not_missing_coverage(tmp_path: Path) -> None:
-    """ANALYZE writes no sqlite_stat1 row for an empty table.
+    """An empty covered table with no sqlite_stat1 row is not uncovered.
 
-    Anti-vacuity: dropping the emptiness exemption makes every archive with no
-    action pairs warn, which is what this fixture is."""
+    Per-table ``ANALYZE`` records zero-row entries for an empty table, so the
+    fixture's rows are removed to build the uncovered-but-empty shape (a bare
+    ``ANALYZE`` produces it directly).
+
+    Anti-vacuity: dropping the emptiness exemption makes this archive warn."""
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
         assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'action_pairs'")
+        conn.commit()
         assert conn.execute("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl = 'action_pairs'").fetchone()[0] == 0
     finally:
         conn.close()
@@ -1236,6 +1244,71 @@ def test_empty_covered_table_without_stats_is_not_missing_coverage(tmp_path: Pat
     check = _check(report, "planner-stats")
     assert check.status is OutcomeStatus.OK
     assert check.evidence["missing_tables"] == []
+
+
+def _populate_session_links(index_db: Path) -> None:
+    conn = _connect(index_db)
+    try:
+        session_id = str(conn.execute("SELECT session_id FROM sessions LIMIT 1").fetchone()[0])
+        conn.execute(
+            """
+            INSERT INTO session_links(
+                src_session_id, dst_origin, dst_native_id, link_type,
+                confidence, evidence_json, observed_at_ms
+            ) VALUES (?, 'codex-session', 'parent', 'resume', 1.0, '{}', 100)
+            """,
+            (session_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_convergence_builder_analyze_covers_every_verified_table(tmp_path: Path) -> None:
+    """The archive builders ANALYZE the set planner-stats verifies.
+
+    Drives the builders' own ANALYZE seam rather than a restatement of it, so
+    a builder that reverts to a hand-copied table list fails here.
+
+    Anti-vacuity: the control below ANALYZEs the drifted set and still warns,
+    so this passing case cannot be green because the check stopped noticing an
+    uncovered populated table.
+    """
+    from tests.infra.convergence_harness import _analyze_registry_tables
+
+    _seed_coherent_archive(tmp_path)
+    _populate_session_links(tmp_path / "index.db")
+    _analyze_registry_tables(tmp_path / "index.db")
+
+    check = _check(verify_archive(tmp_path, checks=("planner-stats",)), "planner-stats")
+
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert check.evidence["missing_tables"] == []
+
+
+def test_populated_session_links_left_unanalyzed_still_warns(tmp_path: Path) -> None:
+    """Control for the test above: a populated covered table with no stats warns.
+
+    This is the exact shape the archive builders produced while they ANALYZEd
+    a hand-copied list that had drifted from the verified set.
+
+    Anti-vacuity: vacuous if planner-stats stopped covering session_links, in
+    which case no ANALYZE set could make it warn.
+    """
+    _seed_coherent_archive(tmp_path)
+    _populate_session_links(tmp_path / "index.db")
+    conn = _connect(tmp_path / "index.db")
+    try:
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'session_links'")
+        analyze_planner_stats_tables(conn, tables=("blocks", "messages", "action_pairs"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    check = _check(verify_archive(tmp_path, checks=("planner-stats",)), "planner-stats")
+
+    assert check.status is OutcomeStatus.WARNING
+    assert check.evidence["missing_tables"] == ["session_links"]
 
 
 def test_missing_archive_root_reports_skips_not_crashes(tmp_path: Path) -> None:
@@ -1364,6 +1437,57 @@ def test_blob_reference_closure_rejects_acquired_attachment_without_ref(tmp_path
     assert check.evidence["acquired_attachment_missing_ref_count"] == 1
 
 
+def test_unowned_attachment_evidence_keeps_closure_and_coverage_clean(tmp_path: Path) -> None:
+    """The writer's typed-unowned attachment row is evidence, not archive debt.
+
+    ``_write_attachments`` retains an attachment whose owner coordinate is
+    claimed by more than one message: the row is written with no
+    ``attachment_refs`` edge and no acquired bytes. Both required checks key
+    on acquired-and-unreferenced, so this shape must stay clean.
+
+    Anti-vacuity: give the row ``acquisition_status = 'acquired'`` and both
+    checks turn ERROR (``test_blob_reference_closure_rejects_acquired_attachment_without_ref``
+    and ``test_acquired_unreachable_attachment_debt_is_blocking`` pin that).
+    """
+    _seed_coherent_archive(tmp_path)
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session = ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="ambiguous-attachment-owner",
+            messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)],
+            attachments=[
+                ParsedAttachment(
+                    provider_attachment_id="ambiguous-drive-doc",
+                    message_provider_id="",
+                    message_position=0,
+                    name="note.txt",
+                    mime_type="text/plain",
+                )
+            ],
+        )
+        write_parsed_session_to_archive(conn, session)
+        conn.commit()
+        unowned = conn.execute(
+            "SELECT acquisition_status, ref_count FROM attachments WHERE display_name = 'note.txt'"
+        ).fetchone()
+        assert unowned is not None
+        assert tuple(unowned) == ("unfetched", 0)
+        assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+    report = verify_archive(tmp_path, checks=("blob-reference-closure", "attachment-coverage"))
+
+    assert not report.blocking
+    closure = _check(report, "blob-reference-closure")
+    coverage = _check(report, "attachment-coverage")
+    assert closure.status is OutcomeStatus.OK, closure.summary
+    assert closure.evidence["acquired_attachment_missing_ref_count"] == 0
+    assert coverage.status in {OutcomeStatus.OK, OutcomeStatus.SKIP}, coverage.summary
+    assert coverage.evidence.get("unreachable_count", 0) == 0
+
+
 def test_attachment_blob_ref_joins_its_parent_raw_session(tmp_path: Path) -> None:
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "source.db")
@@ -1416,14 +1540,23 @@ def test_full_blob_integrity_red_twin(tmp_path: Path, mutation: str) -> None:
 
 
 def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> None:
-    """Acquired bytes without an attachment_refs edge are not queryable."""
+    """Acquired bytes whose refs went away are not queryable.
+
+    The non-zero ``ref_count`` is what makes this debt rather than the
+    writer's deliberate unowned retention: the sweep set it while refs
+    existed, then the refs disappeared without the sweep running again.
+
+    Anti-vacuity: the companion test below inserts the same row with
+    ``ref_count`` 0 and must stay green, so this cannot pass merely because
+    every ref-less acquired attachment is reported.
+    """
     _seed_coherent_archive(tmp_path)
     blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unreachable attachment")
     with _connect(tmp_path / "index.db") as conn:
         conn.execute(
             """
             INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
-            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 1)
             """,
             (bytes.fromhex(blob_hash), size),
         )
@@ -1436,6 +1569,43 @@ def test_acquired_unreachable_attachment_debt_is_blocking(tmp_path: Path) -> Non
     assert report.blocking
     assert check.evidence["unreachable_count"] == 1
     assert "unreachable-attachment" in check.details[0]
+
+
+def test_owner_ambiguous_attachment_is_not_coverage_or_closure_debt(tmp_path: Path) -> None:
+    """The writer's typed unowned retention is not attachment debt.
+
+    ``_write_attachments`` inserts an attachment whose owning message is
+    ambiguous with ``ref_count`` 0 and keeps it out of the ref-count sweep, so
+    it never had a ref to lose. Both declarations that count ref-less acquired
+    attachments must read it as explained.
+
+    Anti-vacuity: the test above inserts the same row with a non-zero
+    ``ref_count`` and must stay red, so this cannot pass because the checks
+    stopped reporting ref-less acquired attachments at all.
+    """
+    _seed_coherent_archive(tmp_path)
+    blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(b"unowned attachment")
+    with _connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
+            VALUES ('unowned-attachment', ?, ?, 'acquired', 0)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+        conn.commit()
+
+    report = verify_archive(tmp_path, checks=("attachment-coverage", "blob-reference-closure"))
+
+    assert not report.blocking, [c.summary for c in report.checks]
+    coverage = _check(report, "attachment-coverage")
+    assert coverage.status is OutcomeStatus.OK
+    assert coverage.evidence["unreachable_count"] == 0
+    assert cast(dict[str, object], coverage.evidence["scan"])["acquired_unowned_count"] == 1
+    assert "retained unowned" in coverage.summary
+    closure = _check(report, "blob-reference-closure")
+    assert closure.status is OutcomeStatus.OK
+    assert closure.evidence["acquired_attachment_missing_ref_count"] == 0
 
 
 def test_orphaned_embedding_ref_trips_embeddings_refs_liveness(tmp_path: Path) -> None:

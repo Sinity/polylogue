@@ -295,6 +295,44 @@ recorded separately in the receipt so a retry can safely continue an additive
 repair. Reindex acceptance runs the same closure check against the candidate
 index before promotion.
 
+### `polylogue ops maintenance blob-disposition` — physical namespace disposition
+
+One-time transition tooling for the blob-store maneuver. `plan` is read-only:
+it walks the complete physical namespace and gives every object exactly one
+disposition proven against a configured source — `source_present`,
+`superseded_prefix`, `restore_required`, or `unresolved`. A plan is acceptable
+only at zero unresolved members, and its digest binds the archive identity,
+the namespace, the denominators, and every member outcome.
+
+```bash
+polylogue ops maintenance blob-disposition plan \
+  --archive-root /path/to/archive \
+  --output /path/to/disposition-plan.json --output-format json
+polylogue ops maintenance blob-disposition apply \
+  --archive-root /path/to/archive \
+  --plan /path/to/disposition-plan.json \
+  --authorized-digest <digest of the reviewed plan> \
+  --receipt /path/to/new/disposition-receipt.json --active
+```
+
+`restore` is the additive half on its own: it publishes sole-copy carriers
+into their ordinary spool and deletes nothing, so it does not wait on the
+plan reaching zero unresolved. `apply` is a dry rehearsal without `--active`. It makes no classification
+judgment: it revalidates every member's own proof immediately before its
+effect, restores sole-copy carriers into their ordinary spool before any
+deletion, never touches a historical carrier during restoration, and deletes
+only unreferenced members through the canonical blob-GC seam. Any drift — a
+changed source, a changed object, a new referent, a different digest or
+denominator — refuses the whole plan.
+
+Hook-event and browser-capture carriers are proven by the owning production
+read route, not by bytes: acquisition derives fields the spool file does not
+carry, so byte equality would misreport reproducible material as a sole copy.
+
+Deletion trigger: this command, both maintenance modules, and their tests are
+removed with the terminal disposition receipt. The recurring liveness,
+publication, GC, and spool-admission laws stay with their owners.
+
 ### `polylogue ops maintenance preview` — staleness inventory
 
 Read-only. Produces a per-model inventory of stale, missing, orphan,
@@ -419,7 +457,7 @@ extensible registry):
 | `tier-schema` | Every tier file (source/index/embeddings/user/ops) exists at its current `PRAGMA user_version`. |
 | `pointer-coherence` | The conventional `index.db` path and the active `.index-active-pointer` generation agree (an interrupted blue-green promotion leaves these diverged — polylogue-k8kj class). |
 | `source-index-coverage` | Every raw logical head is materialized, has an explicit terminal disposition, or is quarantined, and every index session's `raw_id` still resolves to a real raw row (orphans). The raw source population, not the derived census ledger, defines the coverage universe. |
-| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. Unexplained, unclassified, lost-source, orphan, and phantom terms block; pending is a warning. The acceptance instrument for a rebuilt archive: zero blocking terms. |
+| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. An attachment with no ref splits on `ref_count`: `attachment_unowned` (ref_count 0) is the writer's typed retention of an owner-ambiguous attachment and is explained, while `attachment_unreferenced` (non-zero ref_count) lost its refs without the ref-count sweep and blocks. Unexplained, unclassified, lost-source, orphan, and phantom terms block; pending is a warning. The acceptance instrument for a rebuilt archive: zero blocking terms. |
 | `fts-parity` | `messages_fts`/`blocks_command_trigram` exactly cover their source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |
 | `planner-stats` | `sqlite_stat1` covers `blocks`/`messages`/`session_links`/`action_pairs` (warn-level: a fresh generation without `ANALYZE` picks pathological query plans, polylogue-l3tk class). |

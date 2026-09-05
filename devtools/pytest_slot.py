@@ -39,6 +39,7 @@ from typing import IO, Any, Final
 
 from devtools.agent_env import PYTEST_POOL, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
+from devtools.worker_memory import resize_worker_argument
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
@@ -61,6 +62,8 @@ __all__ = [
 AGENTCTL: Final = "agentctl"
 #: The declared operation in the pytest pool that runs one launch file.
 PYTEST_OPERATION: Final = "pytest_focused"
+#: The runtime's executor, as it appears in a job's process ancestry.
+QUEUE_RUNNERS: Final = ("agentctl-run", "sinnixd-queue-run")
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
 SLOT_HELD: Final = "held"
@@ -193,13 +196,74 @@ def contained_pytest_run(
     return argv, contained, scratch
 
 
-def holds_pytest_slot(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
+def _process_ancestry(pid: int, *, proc: Path) -> Iterator[int]:
+    """This process and each of its parents, ending at pid 1 or an unreadable one."""
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        yield pid
+        try:
+            fields = (proc / str(pid) / "stat").read_text(encoding="utf-8").rpartition(")")[2].split()
+        except OSError:
+            return
+        try:
+            pid = int(fields[1])
+        except (IndexError, ValueError):
+            return
+
+
+def _launch_document_of(pid: int, *, proc: Path) -> Path | None:
+    """The launch document a queue-runner process was started with, if this is one."""
+    try:
+        argv = (proc / str(pid) / "cmdline").read_bytes().decode("utf-8", "replace").split("\0")
+    except OSError:
+        return None
+    words = [word for word in argv if word]
+    if not any(Path(word).name.removeprefix(".").removesuffix("-wrapped") in QUEUE_RUNNERS for word in words):
+        return None
+    return Path(words[-1]) if words and words[-1].endswith(".json") else None
+
+
+def declared_pool_of_enclosing_job(env: Mapping[str, str], *, proc: Path = Path("/proc")) -> str | None:
+    """The pool declared by the queue task this process runs inside, if any.
+
+    The queue runner exports nothing that names the job's pool, and the pool's
+    systemd slice is not visible from every host configuration, so neither the
+    environment nor the cgroup classifies the process reliably. The launch
+    document does: the runner is an ancestor of this process and carries the
+    document's path as its final argument, and the document declares ``pool``.
+    """
+    del env
+    for pid in _process_ancestry(os.getpid(), proc=proc):
+        document_path = _launch_document_of(pid, proc=proc)
+        if document_path is None:
+            continue
+        try:
+            document = json.loads(document_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        pool = document.get("pool") if isinstance(document, Mapping) else None
+        if isinstance(pool, str):
+            return pool
+    return None
+
+
+def holds_pytest_slot(
+    env: Mapping[str, str],
+    *,
+    cgroup_reader: Callable[[], str] | None = None,
+    proc: Path = Path("/proc"),
+) -> bool:
     """Whether this process is already inside the host's pytest slot.
 
-    Ownership is the pytest pool: the cgroup the runtime placed the job in, or
-    the pool name it exported. A job id alone never is.
+    Ownership is the pytest pool: the cgroup the runtime placed the job in, the
+    pool name it exported, or the pool the enclosing job's launch document
+    declares. A job id alone never is. Enqueueing from inside the pool waits on
+    a single-slot group only this job can drain, which is a deadlock.
     """
-    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_pytest_pool(env, cgroup_reader=cgroup_reader)
+    if env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_pytest_pool(env, cgroup_reader=cgroup_reader):
+        return True
+    return declared_pool_of_enclosing_job(env, proc=proc) == PYTEST_POOL
 
 
 def client_environment(env: Mapping[str, str]) -> dict[str, str]:
@@ -604,10 +668,20 @@ def _run_launch(launch_path: Path) -> int:
         os._exit(128 + signal_number)
 
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
+    # The width is chosen here rather than where the command was built: a run
+    # can sit in this queue for hours, and what matters is the memory present
+    # when its workers start.
+    command, sizing = resize_worker_argument(list(launch["argv"]))
     with open(log_path, "wb") as log:
+        if sizing is not None and sizing.get("narrowed"):
+            log.write(
+                f"pytest slot: {sizing['available_mib']} MiB available holds {sizing['workers']} workers, "
+                f"not {sizing['requested_workers']}; running narrower rather than being killed.\n".encode()
+            )
+            log.flush()
         try:
             child = subprocess.Popen(
-                list(launch["argv"]),
+                command,
                 cwd=launch["working_directory"],
                 env=environment,
                 stdout=log,

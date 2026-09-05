@@ -38,7 +38,12 @@ from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_identity_coordinate
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
-from polylogue.storage.blob_liveness import BlobLivenessProjection, project_index_blob_hashes, project_live_blob_hashes
+from polylogue.storage.blob_liveness import (
+    BlobLivenessProjection,
+    acquired_attachment_missing_ref_predicate,
+    project_index_blob_hashes,
+    project_live_blob_hashes,
+)
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
@@ -2332,6 +2337,10 @@ class AttachmentCoverageReport:
     # disk somewhere, most of which nothing can ever reach".
     acquired_unreachable_count: int
     acquired_unreachable_sample: tuple[str, ...]
+    #: Acquired attachments the writer retained with an ambiguous owner
+    #: (ref_count 0, never swept). Unreferenced by construction, so never
+    #: coverage debt -- and not reachable either, so they are their own term.
+    acquired_unowned_count: int = 0
 
     @property
     def ok(self) -> bool:
@@ -2339,7 +2348,7 @@ class AttachmentCoverageReport:
 
     @property
     def acquired_reachable_count(self) -> int:
-        return self.acquired_count - self.acquired_unreachable_count
+        return self.acquired_count - self.acquired_unreachable_count - self.acquired_unowned_count
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -2349,6 +2358,7 @@ class AttachmentCoverageReport:
             "acquired_reachable_count": self.acquired_reachable_count,
             "acquired_unreachable_count": self.acquired_unreachable_count,
             "acquired_unreachable_sample": list(self.acquired_unreachable_sample),
+            "acquired_unowned_count": self.acquired_unowned_count,
             "acquired_missing_blob_count": self.acquired_missing_blob_count,
             "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
             "unavailable_count": self.unavailable_count,
@@ -2382,16 +2392,25 @@ def scan_attachment_coverage(
         # as its own dimension, distinct from "bytes missing from the blob
         # store" (acquired_missing_blob_count, below).
         unreachable_rows = conn.execute(
-            """
+            f"""
             SELECT a.attachment_id AS attachment_id
             FROM attachments a
-            WHERE a.acquisition_status = 'acquired'
-              AND NOT EXISTS (
-                  SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id
-              )
+            WHERE {acquired_attachment_missing_ref_predicate()}
             ORDER BY a.attachment_id
             """
         ).fetchall()
+        # The writer's owner-ambiguous retention: unreferenced by construction,
+        # so it is reported as its own dimension rather than as debt.
+        unowned_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM attachments a
+                WHERE a.acquisition_status = 'acquired'
+                  AND a.ref_count = 0
+                  AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
+                """
+            ).fetchone()[0]
+        )
 
     missing_sample: list[str] = []
     missing_count = 0
@@ -2417,6 +2436,7 @@ def scan_attachment_coverage(
         unfetched_count=status_counts.get("unfetched", 0),
         acquired_unreachable_count=len(unreachable_rows),
         acquired_unreachable_sample=unreachable_sample,
+        acquired_unowned_count=unowned_count,
     )
 
 

@@ -333,6 +333,7 @@ class LiveWatcher:
         self._ingest_lock = asyncio.Lock()
         self._stop = asyncio.Event()
         self._catch_up_complete = asyncio.Event()
+        self._catch_up_active = False
         self._archived_cursor_conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         # Set once per reconciliation scope: True when the index tier has no
         # materialized sessions at all despite source.db holding successfully
@@ -369,6 +370,15 @@ class LiveWatcher:
     @property
     def catch_up_complete(self) -> asyncio.Event:
         return self._catch_up_complete
+
+    @property
+    def catch_up_active(self) -> bool:
+        """Whether a chunked catch-up ingest loop is running right now.
+
+        Whole-archive maintenance passes wait for it to finish rather than
+        repeating archive-wide work between chunks.
+        """
+        return self._catch_up_active
 
     def _existing_source_roots(self) -> list[Path]:
         """Return configured roots that exist at the instant of a scan."""
@@ -590,9 +600,10 @@ class LiveWatcher:
                 len(hot_candidates),
             )
         for group in (hot_candidates, cold_candidates):
-            if self._stop.is_set() or not group:
+            if self._stop.is_set():
                 break
-            await self._catch_up_candidates(group)
+            if group:
+                await self._catch_up_candidates(group)
         await self._drain_hook_spools()
 
     async def _catch_up_candidates(self, candidates: tuple[CandidateSourceFile, ...]) -> None:
@@ -652,6 +663,7 @@ class LiveWatcher:
             plan.skipped_file_count,
             len(chunks),
         )
+        self._catch_up_active = True
         try:
             for index, chunk in enumerate(chunks, start=1):
                 if self._stop.is_set():
@@ -675,11 +687,16 @@ class LiveWatcher:
                     chunk_paths: list[Path] = chunk_paths,
                 ) -> None:
                     nonlocal attempted, ingested, failed
-                    metrics = await self._ingest_files(
-                        chunk_paths,
-                        queued_file_count=len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
-                        skipped_file_count=plan.skipped_file_count if chunk_index == 1 else 0,
-                    )
+                    # Whole-archive convergence stages run once, on the last
+                    # chunk, so each earlier chunk pays only for its own
+                    # subjects.
+                    ingest_kwargs: dict[str, Any] = {
+                        "queued_file_count": len(plan.candidates) if chunk_index == 1 else len(chunk_paths),
+                        "skipped_file_count": plan.skipped_file_count if chunk_index == 1 else 0,
+                    }
+                    if chunk_index != len(chunks):
+                        ingest_kwargs["whole_archive_convergence"] = False
+                    metrics = await self._ingest_files(chunk_paths, **ingest_kwargs)
                     if metrics is not None:
                         _log_ingest_metrics(f"live.watcher: catch-up chunk {chunk_index}/{len(chunks)}", metrics)
                         # Keep the catch-up coordinator compatible with older
@@ -753,6 +770,8 @@ class LiveWatcher:
                 operation_id, "failure", plan, attempted, ingested, failed, stage_timings_s, cycle_started
             )
             raise
+        finally:
+            self._catch_up_active = False
 
     def _hook_sources(self) -> tuple[WatchSource, ...]:
         """Return the declared hook topology, preserving configured order.
@@ -1191,17 +1210,16 @@ class LiveWatcher:
             # parser fingerprint change is exactly the other legitimate
             # reason a previously-poisoned observation deserves a fresh
             # attempt: the code that failed to parse it no longer exists.
-            if identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT:
-                return False
-            self._cursor.revive_replaced_exclusion(
-                path,
-                byte_size=size,
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-                current_parser_fingerprint=_PARSER_FINGERPRINT,
-            )
-            return True
+            # Report the fresh attempt without clearing ``excluded``. The
+            # quarantine is lifted by the cursor write of an ingest that
+            # actually retained something, so a path that fails again stays
+            # quarantined. Clearing it here instead left the row
+            # ``excluded = 0`` carrying its old byte offset for the whole
+            # window before acquisition ran, and the raw-frontier cursor map
+            # reads exactly that shape as committed ingest authority with no
+            # accepted head -- a source whose stat changes on every poll, a
+            # live database, re-entered that window on every poll.
+            return not (identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT)
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False
@@ -1701,6 +1719,7 @@ class LiveWatcher:
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        whole_archive_convergence: bool = True,
     ) -> LiveBatchMetrics:
         """Ingest files through the reusable daemon live batch processor."""
         self._batch_processor.require_cursor_authority(paths)
@@ -1712,6 +1731,7 @@ class LiveWatcher:
                     queued_file_count=queued_file_count,
                     skipped_file_count=skipped_file_count,
                     max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                    whole_archive_convergence=whole_archive_convergence,
                 )
 
             run = getattr(self._write_coordinator, "run", None)

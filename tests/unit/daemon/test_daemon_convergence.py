@@ -70,7 +70,7 @@ def test_converger_batches_stage_execution(tmp_path: Path) -> None:
     assert checked == [tuple(paths)]
     assert [set(candidates) for candidates in executed] == [set(paths)]
     assert set(states) == set(paths)
-    assert set(stage_times) == {"derived"}
+    assert set(stage_times) == {"derived", "derived.check"}
     assert all(state.converged for state in states.values())
     assert converger._file_states == {}
 
@@ -247,3 +247,65 @@ def test_converger_clears_session_false_items_that_recheck_clean() -> None:
     assert states["conv-b"].stages["embed"] is StageState.PENDING
     assert states["conv-b"].last_error == "session stage embed returned False"
     assert set(converger._session_states) == {"conv-b"}
+
+
+def test_converge_batch_chunk_scope_skips_whole_archive_stages(tmp_path: Path) -> None:
+    """Anti-vacuity: dropping the ``whole_archive`` skip runs the archive-wide stage per chunk."""
+    paths = [tmp_path / "a.jsonl", tmp_path / "b.jsonl"]
+    for path in paths:
+        path.write_text("{}\n", encoding="utf-8")
+    archive_wide_checks: list[tuple[Path, ...]] = []
+    archive_wide_runs: list[tuple[Path, ...]] = []
+    scoped_runs: list[tuple[Path, ...]] = []
+
+    def archive_wide_check_many(candidates: Sequence[Path]) -> set[Path]:
+        archive_wide_checks.append(tuple(candidates))
+        return set(candidates)
+
+    def archive_wide_execute_many(candidates: Sequence[Path]) -> bool:
+        archive_wide_runs.append(tuple(candidates))
+        return True
+
+    def scoped_execute_many(candidates: Sequence[Path]) -> bool:
+        scoped_runs.append(tuple(candidates))
+        return True
+
+    converger = DaemonConverger(
+        [
+            ConvergenceStage(
+                name="graph",
+                description="rebuilt from every raw artifact",
+                check=lambda _path: True,
+                execute=lambda _path: True,
+                check_many=archive_wide_check_many,
+                execute_many=archive_wide_execute_many,
+                whole_archive=True,
+            ),
+            ConvergenceStage(
+                name="derived",
+                description="bounded by the batch's subjects",
+                check=lambda _path: True,
+                execute=lambda _path: True,
+                check_many=lambda candidates: set(candidates),
+                execute_many=scoped_execute_many,
+            ),
+        ]
+    )
+
+    chunk_states, chunk_timings = converger.converge_batch(paths, whole_archive=False)
+
+    assert archive_wide_checks == []
+    assert archive_wide_runs == []
+    assert scoped_runs == [tuple(paths)]
+    assert all(state.stages["graph"] is StageState.SKIPPED for state in chunk_states.values())
+    assert all(state.stages["derived"] is StageState.DONE for state in chunk_states.values())
+    assert all(state.converged for state in chunk_states.values())
+    assert "graph" not in chunk_timings
+    assert "derived.check" in chunk_timings
+
+    final_states, final_timings = converger.converge_batch(paths)
+
+    assert archive_wide_checks == [tuple(paths)]
+    assert archive_wide_runs == [tuple(paths)]
+    assert all(state.stages["graph"] is StageState.DONE for state in final_states.values())
+    assert {"graph", "graph.check", "derived", "derived.check"} <= set(final_timings)

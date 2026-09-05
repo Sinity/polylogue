@@ -219,9 +219,15 @@ _COMMANDS: tuple[tuple[str, str, str, str], ...] = (
         "blob_residue_compare_command",
         "Compare present blob-residue candidates through the production parse route.",
     ),
+    (
+        "blob-disposition",
+        "_blob_disposition",
+        "blob_disposition_group",
+        "Compile or consume the physical blob namespace disposition plan.",
+    ),
 )
 
-_NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "source-continuity-recovery"})
+_NESTED_GROUP_COMMANDS = frozenset({"archive-root-relocation", "blob-disposition", "source-continuity-recovery"})
 
 
 @click.group("maintenance")

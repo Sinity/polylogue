@@ -10,6 +10,20 @@ from pathlib import Path
 DEFAULT_OPTIMIZE_ANALYSIS_LIMIT = 1_000
 ARCHIVE_TIER_OPTIMIZE_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
 
+#: Index-tier tables that must carry measured ``ANALYZE`` statistics
+#: (polylogue-l3tk: a generation without stats picks pathological plans for
+#: writer-hot session-scoped queries). Every route that produces a queryable
+#: index tier -- the rebuild replay, and the test archive builders -- ANALYZEs
+#: this set, and the ``planner-stats`` verification check reads the same
+#: constant, so a table added here cannot go uncovered on only one route.
+PLANNER_STATS_COVERED_TABLES: tuple[str, ...] = ("blocks", "messages", "session_links", "action_pairs")
+
+
+def analyze_planner_stats_tables(conn: sqlite3.Connection, *, tables: tuple[str, ...] | None = None) -> None:
+    """Run ``ANALYZE`` over each covered table on an open write connection."""
+    for table in tables if tables is not None else PLANNER_STATS_COVERED_TABLES:
+        conn.execute(f"ANALYZE {table}")
+
 
 @dataclass(frozen=True, slots=True)
 class SqliteOptimizeObservation:

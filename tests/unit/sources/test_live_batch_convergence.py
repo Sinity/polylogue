@@ -80,7 +80,8 @@ def test_live_batch_converges_known_paths_by_source_path(tmp_path: Path) -> None
 
     assert completed == {source}
     assert elapsed >= 0.0
-    assert timings == {"batch": 1.0}
+    assert timings["batch"] == 1.0
+    assert timings["hook_paste_enrichment"] >= 0.0
     assert debts == []
     assert converger.session_calls == []
     assert converger.batch_calls == [(source,)]

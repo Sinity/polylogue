@@ -23,6 +23,7 @@ from polylogue.storage.attachment_relink import (
     UnrecoverableAttachmentReason,
     plan_orphaned_attachment_relink,
 )
+from polylogue.storage.blob_liveness import acquired_attachment_missing_ref_predicate
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import (
     validate_backup_manifest_covers_derived_tier,
@@ -563,10 +564,9 @@ def closure_counts(source_conn: sqlite3.Connection, index_conn: sqlite3.Connecti
     )
     attachment_missing = int(
         index_conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM attachments a
-            WHERE a.acquisition_status = 'acquired'
-              AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
+            WHERE {acquired_attachment_missing_ref_predicate()}
             """
         ).fetchone()[0]
     )

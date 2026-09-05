@@ -69,6 +69,7 @@ _TERM_MESSAGE_ORPHAN = "message_orphan"
 _TERM_BLOCK_ORPHAN = "block_orphan"
 _TERM_ATTACHMENT_REF_ORPHAN = "attachment_ref_orphan"
 _TERM_ATTACHMENT_UNREFERENCED = "attachment_unreferenced"
+_TERM_ATTACHMENT_UNOWNED = "attachment_unowned"
 
 _RULES: dict[str, str] = {
     _TERM_SOURCE_MISSING: ("acquired source file no longer exists on disk; the archive retains its raw payload bytes"),
@@ -98,7 +99,14 @@ _RULES: dict[str, str] = {
     _TERM_MESSAGE_ORPHAN: "message names no session",
     _TERM_BLOCK_ORPHAN: "block names no message",
     _TERM_ATTACHMENT_REF_ORPHAN: "attachment ref names no message",
-    _TERM_ATTACHMENT_UNREFERENCED: "attachment has no ref and therefore no source lineage",
+    _TERM_ATTACHMENT_UNREFERENCED: (
+        "attachment has no ref yet still carries a non-zero ref_count; its refs went away "
+        "without the ref-count sweep, so the row is unreachable from every read path"
+    ),
+    _TERM_ATTACHMENT_UNOWNED: (
+        "attachment was written unreferenced because its owning message is ambiguous "
+        "(ref_count 0, never swept); identity and bytes are retained as evidence"
+    ),
 }
 
 _BLOCKING: frozenset[str] = frozenset(
@@ -510,6 +518,8 @@ def audit_source_conservation(
     attachment_ref_orphans: list[tuple[Any, ...]] = []
     attachment_unreferenced_count = 0
     attachment_unreferenced: list[tuple[Any, ...]] = []
+    attachment_unowned_count = 0
+    attachment_unowned: list[tuple[Any, ...]] = []
     if table_exists(conn, "attachment_refs", schema="idx_tier"):
         attachment_ref_orphan_count = int(
             conn.execute(
@@ -527,18 +537,43 @@ def audit_source_conservation(
             """,
             (sample_limit,),
         ).fetchall()
+        # A ref-less attachment splits on ``ref_count``. The writer inserts an
+        # owner-ambiguous row with ref_count 0 and keeps it out of the sweep,
+        # so ref_count 0 means "never had a ref" -- explained, non-blocking.
+        # Any ref-less row whose ref_count is non-zero was refreshed while refs
+        # existed and then lost them without the sweep running: it is
+        # unreachable from every read path and blocks.
+        unreferenced_predicate = """
+            NOT EXISTS (SELECT 1 FROM idx_tier.attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
+        """
         attachment_unreferenced_count = int(
             conn.execute(
-                """
+                f"""
                 SELECT COUNT(*) FROM idx_tier.attachments a
-                WHERE NOT EXISTS (SELECT 1 FROM idx_tier.attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
+                WHERE {unreferenced_predicate} AND a.ref_count != 0
                 """
             ).fetchone()[0]
         )
         attachment_unreferenced = conn.execute(
-            """
+            f"""
             SELECT a.attachment_id FROM idx_tier.attachments a
-            WHERE NOT EXISTS (SELECT 1 FROM idx_tier.attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
+            WHERE {unreferenced_predicate} AND a.ref_count != 0
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+        attachment_unowned_count = int(
+            conn.execute(
+                f"""
+                SELECT COUNT(*) FROM idx_tier.attachments a
+                WHERE {unreferenced_predicate} AND a.ref_count = 0
+                """
+            ).fetchone()[0]
+        )
+        attachment_unowned = conn.execute(
+            f"""
+            SELECT a.attachment_id FROM idx_tier.attachments a
+            WHERE {unreferenced_predicate} AND a.ref_count = 0
             LIMIT ?
             """,
             (sample_limit,),
@@ -602,6 +637,11 @@ def audit_source_conservation(
                 _TERM_ATTACHMENT_UNREFERENCED,
                 attachment_unreferenced_count,
                 _sample(attachment_unreferenced, sample_limit),
+            ),
+            _term(
+                _TERM_ATTACHMENT_UNOWNED,
+                attachment_unowned_count,
+                _sample(attachment_unowned, sample_limit),
             ),
         )
     )

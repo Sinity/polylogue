@@ -707,6 +707,11 @@ class LiveBatchProcessor:
         # path explains still blocks everything.
         blocked = self._blocked_source_paths()
         if blocked.unattributed_reason is None:
+            if not blocked.source_paths:
+                # Only authority gaps remain; ingesting their paths is what
+                # resolves them, so nothing is refused.
+                logger.debug("live.watcher: cursor authority names only resolvable gaps: %s", reason)
+                return None
             if paths is None:
                 logger.warning(
                     "live.watcher: cursor authority refuses %d source path(s); path-less route proceeds: %s",
@@ -759,8 +764,14 @@ class LiveBatchProcessor:
         skipped_file_count: int = 0,
         emit_event: bool = True,
         max_pass_seconds: float | None = None,
+        whole_archive_convergence: bool = True,
     ) -> LiveBatchMetrics:
-        """Ingest files in batch, run post-ingest convergence, and return metrics."""
+        """Ingest files in batch, run post-ingest convergence, and return metrics.
+
+        ``whole_archive_convergence=False`` bounds post-ingest convergence to
+        this batch's own subjects (a catch-up chunk); the caller runs one
+        whole-archive pass at the end of its catch-up.
+        """
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
@@ -906,6 +917,8 @@ class LiveBatchProcessor:
                 "watcher.live_ingest.append_convergence",
                 self._converge_paths,
                 [plan.path for plan in append_result.succeeded],
+                whole_archive=whole_archive_convergence,
+                session_ids=tuple(append_result.session_ids_by_path.values()),
             )
             convergence_time_s += elapsed
             release_process_memory()
@@ -1156,6 +1169,8 @@ class LiveBatchProcessor:
                         "watcher.live_ingest.full_convergence",
                         self._converge_paths,
                         full_result.succeeded,
+                        whole_archive=whole_archive_convergence,
+                        session_ids=full_result.changed_session_ids,
                     )
                     convergence_time_s += elapsed
                     release_process_memory()
@@ -1470,6 +1485,26 @@ class LiveBatchProcessor:
             )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
+        if raw_fingerprint is None and self._archive_source_db_path().exists():
+            # A cursor commit is a claim that these bytes were consumed and
+            # their evidence retained. With the source tier present and no
+            # raw row for this path, nothing was retained, so advancing would
+            # make the bytes unreachable: the frontier gate then reads the
+            # path as a cursor absent from the source tier, and no route can
+            # ever re-read it. Leave the cursor where it is with a typed,
+            # retryable reason instead.
+            self._last_cursor_write_stale = True
+            logger.warning(
+                "live.watcher: refusing to advance cursor past bytes that left no source evidence: %s",
+                path,
+            )
+            self._cursor.record_convergence_debt(
+                stage="raw_parse_recovery",
+                subject_type="source_path",
+                subject_id=str(path),
+                error="cursor advance refused: ingest retained no source-tier evidence for this path",
+            )
+            return 0
         # SQLite-backed sources are identified by an acquisition revision,
         # not by the snapshot file's byte length. Record the live database
         # observation so a stable source does not look perpetually grown when
@@ -1733,7 +1768,11 @@ class LiveBatchProcessor:
         record_convergence_outcome(self._cursor, path, debts, archive_root=archive_root)
 
     def _converge_paths(
-        self, paths: Iterable[Path]
+        self,
+        paths: Iterable[Path],
+        *,
+        whole_archive: bool = True,
+        session_ids: Iterable[str] = (),
     ) -> tuple[set[Path], float, dict[str, float], list[ConvergenceDebt]]:
         unique_paths = tuple(sorted(dict.fromkeys(paths)))
         if not unique_paths:
@@ -1745,23 +1784,33 @@ class LiveBatchProcessor:
         try:
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
-                states, timings = converge_batch(unique_paths)
+                # The keyword is passed only when it narrows the pass, so
+                # convergers without the parameter keep their whole-archive
+                # default.
+                states, timings = (
+                    converge_batch(unique_paths) if whole_archive else converge_batch(unique_paths, whole_archive=False)
+                )
                 batch_completed = {
                     path for path in unique_paths if path in states and bool(getattr(states[path], "converged", False))
                 }
                 debt_items = convergence_debt_from_states(unique_paths, states)
-                # #1654: after convergence, check for new hook events
-                # that carry paste evidence and update matching messages.
+                batch_stage_timings = {stage_name: float(elapsed) for stage_name, elapsed in timings.items()}
+                # #1654: after convergence, check for new hook events that
+                # carry paste evidence and update matching messages. Scoped to
+                # this batch's sessions so the scan is bounded by the batch,
+                # not by the archive's whole hook history.
+                t_paste = time.perf_counter()
                 try:
                     from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
 
-                    enrich_paste_from_hooks(self._cursor._db_path)
+                    enrich_paste_from_hooks(self._cursor._db_path, session_ids=tuple(dict.fromkeys(session_ids)))
                 except Exception:
                     logger.debug("hook_paste: enrichment failed (non-fatal)", exc_info=True)
+                batch_stage_timings["hook_paste_enrichment"] = time.perf_counter() - t_paste
                 return (
                     batch_completed,
                     time.perf_counter() - started,
-                    {stage_name: float(elapsed) for stage_name, elapsed in timings.items()},
+                    batch_stage_timings,
                     debt_items,
                 )
 
@@ -3147,8 +3196,15 @@ class LiveBatchProcessor:
                         # from the first observation. Replacement snapshots
                         # can then advance only through strict parsed-content
                         # growth while every prior raw blob remains retained.
+                        # An origin declared ``whole-snapshot`` says the same
+                        # thing about its own files: one logical session is
+                        # written as several complete files that share no byte
+                        # prefix, so a byte-revision cohort can only ever fail
+                        # to order them. Admit both through the same typed
+                        # membership authority.
                         is_browser_capture_snapshot = (
                             self._source_name_for(Path(record.source_path)) == "browser-capture"
+                            or frontier_kind_for_origin(origin_from_provider(provider)) == "whole-snapshot"
                         )
                         if is_browser_capture_snapshot or archive.raw_membership_raw_ids(logical_source_key):
                             archive.replace_raw_membership_census(
@@ -3259,12 +3315,32 @@ class LiveBatchProcessor:
                                     logical_source_key
                                 )
                                 if not retired_siblings:
+                                    # Competing full revisions of one logical
+                                    # key with no orderable byte chain. The
+                                    # bytes are retained and a later
+                                    # observation can still order them, so
+                                    # this is a deferred frontier conflict --
+                                    # but it must leave a typed carrier.
+                                    # Dropping straight through left the raw
+                                    # quarantined with no receipt at all,
+                                    # which the raw-frontier gate can neither
+                                    # settle nor resolve.
                                     logger.warning(
                                         "live.watcher: no unique byte-revision candidate accepted for %s "
-                                        "(logical_source_key=%s) -- surfacing as failed",
+                                        "(logical_source_key=%s) -- deferring as a frontier conflict",
                                         record.source_path,
                                         logical_source_key,
                                     )
+                                    archive.record_raw_failure_evidence(
+                                        source_raw_id,
+                                        provider=provider,
+                                        source_path=record.source_path,
+                                        source_index=record.source_index or 0,
+                                        acquired_at_ms=acquired_at_ms,
+                                        kind=RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
+                                    )
+                                    result.deferred_raw_ids[record.raw_id] = source_raw_id
+                                    _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
                                 logger.info(
                                     "live.watcher: reunifying %s with %d retired sibling(s) under membership "

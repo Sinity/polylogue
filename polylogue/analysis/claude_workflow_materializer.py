@@ -40,6 +40,7 @@ from polylogue.sources.parsers.claude.orchestration import (
 )
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 logger = get_logger(__name__)
 
@@ -189,7 +190,7 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
         raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
 
     blob_store = BlobStore(archive_root / "blob")
-    with sqlite3.connect(source_db) as source_conn:
+    with sqlite_connection(source_db) as source_conn:
         source_conn.row_factory = sqlite3.Row
         source_conn.execute("PRAGMA foreign_keys = ON")
         _ensure_current_artifact_inventory(source_conn, blob_store=blob_store)
@@ -230,7 +231,7 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
             )
         parsed.append(value)
 
-    with sqlite3.connect(index_db) as index_conn:
+    with sqlite_connection(index_db) as index_conn:
         index_conn.row_factory = sqlite3.Row
         coordinator_invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
         sessions = _load_session_evidence(index_conn, raw_artifacts)

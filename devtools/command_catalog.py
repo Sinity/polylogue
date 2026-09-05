@@ -293,6 +293,17 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=("devtools bench memory --max-rss-mb 1536 -- polylogue --plain analyze",),
     ),
     CommandSpec(
+        "bench query-envelope",
+        "benchmarking",
+        "Measure repeated incident-scale query RSS, PSS, swap, and temp envelopes.",
+        "devtools.query_execution_envelope",
+        json_flag=False,
+        use_when="Run the opt-in live archive proof for repeated aggregate query_units calls and emit a receipt.",
+        examples=(
+            "devtools bench query-envelope --archive-root /path/to/archive --receipt .cache/query-envelope.json",
+        ),
+    ),
+    CommandSpec(
         "archive lineage-validation",
         "archive",
         "Validate lineage-count evidence before citing archive counts externally.",

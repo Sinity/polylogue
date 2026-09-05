@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlo
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
 from tests.infra.pathology_composer import (
     ComposedPathology,
     compose_append_revision_chain,
@@ -642,8 +643,7 @@ def _acquired_at_ms(index: int) -> int:
 
 def _analyze_registry_tables(index_db: Path) -> None:
     with closing(open_connection(index_db)) as conn:
-        for table in ("blocks", "messages", "action_pairs"):
-            conn.execute(f"ANALYZE {table}")
+        analyze_planner_stats_tables(conn)
         conn.commit()
 
 
