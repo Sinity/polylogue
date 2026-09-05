@@ -45,6 +45,7 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.security.lifecycle import LifecycleMode
 from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -286,7 +287,7 @@ class SessionLifecycleRequestActuator(_FailClosedRecovery):
         from polylogue.security.lifecycle import submit_lifecycle_request_with_outcome
 
         user_db = args.archive_root / "user.db"
-        with sqlite3.connect(user_db) as connection:
+        with sqlite_connection(user_db) as connection:
             submission = submit_lifecycle_request_with_outcome(
                 connection,
                 target_ref=make_target_ref("session", args.session_id),

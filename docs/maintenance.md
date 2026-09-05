@@ -304,6 +304,14 @@ disposition proven against a configured source — `source_present`,
 only at zero unresolved members, and its digest binds the archive identity,
 the namespace, the denominators, and every member outcome.
 
+The plan reports two separate totals. `reclaimable_bytes` counts only the
+`source_present` and `superseded_prefix` members that no durable row
+references — exactly what `apply` can unlink. `retained_by_reference_bytes`
+counts the members proven at a source that a durable reference keeps on disk;
+removing those is the reference owner's decision, and the GC seam refuses them
+anyway. `restore_required` members are in neither total: `apply` restores them
+and never deletes them.
+
 ```bash
 polylogue ops maintenance blob-disposition plan \
   --archive-root /path/to/archive \

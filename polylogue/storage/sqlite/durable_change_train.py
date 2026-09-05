@@ -32,6 +32,7 @@ from polylogue.storage.blob_ref_liveness import (
 )
 from polylogue.storage.sqlite import migration_runner as _migration_runner
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 from polylogue.storage.sqlite.migration_runner import (
     DURABLE_CHANGE_TRAIN_FORMAT,
     DurableChangeTrain,
@@ -475,7 +476,7 @@ def _record_fresh_durable_bootstrap(archive_root: Path) -> None:
     marker_root.mkdir(parents=True, exist_ok=True)
     versions: dict[str, int] = {}
     for tier in DURABLE_MIGRATION_ADOPTION_FLOORS:
-        with sqlite3.connect(archive_root / f"{tier.value}.db") as connection:
+        with sqlite_connection(archive_root / f"{tier.value}.db") as connection:
             versions[tier.value] = int(connection.execute("PRAGMA user_version").fetchone()[0])
     payload: dict[str, object] = {
         "format": _FRESH_DURABLE_BOOTSTRAP_FORMAT,
@@ -894,7 +895,7 @@ def assert_source_continuity_apply_allowed(
         raise DurableChangeTrainError("source liveness apply is blocked while source continuity recovery is pending")
 
     source_path = archive_root / "source.db"
-    with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+    with sqlite_connection(f"file:{source_path}?mode=ro", uri=True) as connection:
         current_version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
     manifest_root = archive_root / ".maintenance-state" / "durable-change-trains"
     if not manifest_root.is_dir():
@@ -930,7 +931,7 @@ def assert_source_continuity_apply_allowed(
             "source liveness apply requires exactly one released source train for the live schema"
         )
     if released:
-        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{source_path}?mode=ro", uri=True) as connection:
             _verify_released_train_live_tier(archive_root, connection, released[0])
 
 
@@ -994,7 +995,7 @@ def _recover_pending_source_continuity_intents(archive_root: Path) -> frozenset[
             from polylogue.storage.blob_ref_liveness import classify_blob_ref_liveness
 
             def validate_recovered_postcondition(pending_path: Path = path) -> None:
-                with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
+                with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as connection:
                     classification = classify_blob_ref_liveness(connection)
                     if not classification.safe_to_apply or classification.orphaned_count != 0:
                         raise DurableChangeTrainError(
@@ -1704,7 +1705,7 @@ def _refresh_released_source_train_continuity_locked(
         owner_id=f"source-continuity-refresh:{os.getpid()}",
         allow_reentrant=True,
     ):
-        with sqlite3.connect(f"file:{source_path}?mode=ro", uri=True) as connection:
+        with sqlite_connection(f"file:{source_path}?mode=ro", uri=True) as connection:
             current = capture_durable_database_evidence(connection, ArchiveTier.SOURCE)
 
         manifest_candidates = sorted(
@@ -1900,7 +1901,7 @@ def _fresh_ddl_parity_for_train(
         _migration_runner._prepare_fresh_connection_for_target(connection, train.tier, train.target_version)
 
     if migrated_connection is None:
-        with sqlite3.connect(":memory:") as migrated, sqlite3.connect(":memory:") as fresh:
+        with sqlite_connection(":memory:") as migrated, sqlite_connection(":memory:") as fresh:
             initialize_archive_tier(migrated, train.tier)
             initialize_archive_tier(fresh, train.tier)
             prepare_target_schema(migrated)
@@ -1912,7 +1913,7 @@ def _fresh_ddl_parity_for_train(
                 fresh_connection=fresh,
                 evidence_ref=f"proof:canonical-bootstrap:{train.tier.value}:v{train.target_version}",
             )
-    with sqlite3.connect(":memory:") as fresh:
+    with sqlite_connection(":memory:") as fresh:
         initialize_archive_tier(fresh, train.tier)
         prepare_target_schema(fresh)
         return prove_durable_fresh_ddl_parity(
@@ -1961,7 +1962,7 @@ def _runtime_consumer_results(
                     else:
                         value(tier_path, train.tier, allow_create=False, expected_version=train.target_version)
                 elif reference.endswith(":initialize_archive_tier"):
-                    with sqlite3.connect(":memory:") as probe:
+                    with sqlite_connection(":memory:") as probe:
                         value(probe, train.tier)
                 elif reference.endswith(":write_source_hook_event"):
                     if train.tier is not ArchiveTier.SOURCE:
@@ -2143,7 +2144,7 @@ def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
         session_native_id="durable-change-train-source-v27-session",
     )
     expected_blob_hash = deterministic_blob_hash(payload)
-    with sqlite3.connect(":memory:") as probe:
+    with sqlite_connection(":memory:") as probe:
         initialize_archive_tier(probe, ArchiveTier.SOURCE)
         returned_raw_id = writer(
             probe,
@@ -2804,7 +2805,7 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
 
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-hydration-") as directory:
         source_path = Path(directory) / "source.db"
-        with sqlite3.connect(source_path) as connection:
+        with sqlite_connection(source_path) as connection:
             connection.row_factory = sqlite3.Row
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
             _seed_probe_raw_row(
@@ -2842,7 +2843,7 @@ def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Pa
     del archive_root
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
         source_path = Path(directory) / "source.db"
-        with sqlite3.connect(source_path) as connection:
+        with sqlite_connection(source_path) as connection:
             from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
@@ -2861,7 +2862,7 @@ def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archiv
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-disposition-") as directory:
         root = Path(directory)
         source_path = root / "source.db"
-        with sqlite3.connect(source_path) as connection:
+        with sqlite_connection(source_path) as connection:
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
             _seed_probe_raw_row(
                 connection,
@@ -3289,7 +3290,7 @@ def execute_durable_change_train(
             tier,
             tuple((step.name, step.sql) for step in migration_steps),
         )
-        with sqlite3.connect(":memory:") as preflight:
+        with sqlite_connection(":memory:") as preflight:
             _migration_runner._pending_migration_steps(
                 preflight,
                 tier,
@@ -3299,7 +3300,7 @@ def execute_durable_change_train(
     legacy_result: MigrationResult | None = None
     floor = DURABLE_MIGRATION_ADOPTION_FLOORS.get(tier)
     if floor is not None and current_version < floor:
-        with sqlite3.connect(tier_path) as conn:
+        with sqlite_connection(tier_path) as conn:
             legacy_result = _migration_runner.migrate_archive_tier(
                 conn,
                 tier,
@@ -3411,7 +3412,7 @@ def execute_durable_change_train(
         train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
     if train.state is DurableChangeTrainState.RESERVED:
         previous_revision = train.revision
-        with sqlite3.connect(tier_path) as conn:
+        with sqlite_connection(tier_path) as conn:
             train = authorize_durable_change_train_backup(
                 conn,
                 train,
@@ -3422,7 +3423,7 @@ def execute_durable_change_train(
     if train.state is DurableChangeTrainState.BACKUP_AUTHORIZED:
         previous_revision = train.revision
         try:
-            with sqlite3.connect(tier_path) as conn:
+            with sqlite_connection(tier_path) as conn:
                 train = apply_durable_change_train(conn, train)
         except DurableChangeTrainApplyError as exc:
             _persist_train_transition(manifest_path, exc.failed_train, expected_revision=previous_revision)

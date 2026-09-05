@@ -258,7 +258,6 @@ class ArchiveSessionEnvelope:
     branch_type: str | None = None
     title_source: str | None = None
     title_ref: str | None = None
-    title_confidence: float | None = None
     instructions_text: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
@@ -713,8 +712,8 @@ def write_parsed_session_to_archive(
                 INSERT INTO sessions (
                     native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint,
                     branch_type, active_leaf_message_id,
-                    title, session_kind, title_source, title_ref, title_confidence,
-                    display_name, run_settings_json, pending_drafts_json,
+                    title, session_kind, title_source, title_ref,
+                    display_name, pending_drafts_json,
                     git_branch, git_repository_url, commit_hash,
                     instructions_text, reported_duration_ms, reported_cost_usd, provider_project_ref,
                     message_count, word_count, tool_use_count, thinking_count,
@@ -722,7 +721,7 @@ def write_parsed_session_to_archive(
                     assistant_message_count, system_message_count,
                     tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
                     content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     parser_fingerprint = excluded.parser_fingerprint,
@@ -732,10 +731,10 @@ def write_parsed_session_to_archive(
                     title = COALESCE(excluded.title, sessions.title),
                     session_kind = excluded.session_kind,
                     -- Plain overwrite, NOT COALESCE (polylogue-0cn3): title_source/
-                    -- title_ref/title_confidence are a purely derived provenance
-                    -- triple -- every parser branch that sets one of the three sets
-                    -- all three together (see e.g. code_parser.py's title heuristic
-                    -- chain), and no durable/user-authored path ever writes them
+                    -- title_ref are a purely derived provenance pair -- every parser
+                    -- branch that sets one of the two sets both together (see e.g.
+                    -- code_parser.py's title heuristic chain), and no
+                    -- durable/user-authored path ever writes them
                     -- (no rename verb exists on any surface). A COALESCE here was a
                     -- ratchet: once a weaker parser stored title_source='unknown'
                     -- (a definite, non-NULL verdict), a later run of an *improved*
@@ -754,10 +753,8 @@ def write_parsed_session_to_archive(
                     -- frozen at their first-ever verdict.
                     title_source = excluded.title_source,
                     title_ref = excluded.title_ref,
-                    title_confidence = excluded.title_confidence,
                     display_name = COALESCE(excluded.display_name, sessions.display_name),
-                    run_settings_json = COALESCE(excluded.run_settings_json, sessions.run_settings_json),
-                    -- Plain overwrite, NOT COALESCE like run_settings_json above:
+                    -- Plain overwrite, NOT COALESCE like display_name above:
                     -- a draft is current mutable state, so a reprocess that finds
                     -- no non-blank pendingInputs (submitted, or cleared) must
                     -- actually clear the stored value rather than preserving a
@@ -767,7 +764,7 @@ def write_parsed_session_to_archive(
                     git_repository_url = excluded.git_repository_url,
                     commit_hash = excluded.commit_hash,
                     provider_project_ref = excluded.provider_project_ref,
-                    -- title/display_name/run_settings_json/instructions_text keep
+                    -- title/display_name/instructions_text keep
                     -- their COALESCE (polylogue-0cn3 sibling audit): each is
                     -- sometimes genuinely omitted on a given write (e.g. an
                     -- append-only delta batch, or an origin whose parser doesn't
@@ -835,9 +832,7 @@ def write_parsed_session_to_archive(
                     ).value,
                     _enum_value(session.title_source),
                     _sqlite_text(session.title_ref),
-                    session.title_confidence,
                     _sqlite_text(session.display_name),
-                    _json_dumps(session.run_settings) if session.run_settings else None,
                     _json_dumps(session.pending_drafts) if session.pending_drafts else None,
                     _sqlite_text(session.git_branch),
                     _sqlite_text(session.git_repository_url),
@@ -1330,7 +1325,7 @@ def read_archive_session_envelope(
         """
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
-               title_source, title_ref, title_confidence, instructions_text,
+               title_source, title_ref, instructions_text,
                created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
                reported_cost_usd
         FROM sessions
@@ -1535,7 +1530,6 @@ def read_archive_session_envelope(
         branch_type=session["branch_type"],
         title_source=session["title_source"],
         title_ref=session["title_ref"],
-        title_confidence=session["title_confidence"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),
@@ -1742,7 +1736,7 @@ def read_archive_session_page(
         """
         SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
                parent_session_id, root_session_id, branch_type,
-               title_source, title_ref, title_confidence, instructions_text,
+               title_source, title_ref, instructions_text,
                created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
                reported_cost_usd
         FROM sessions
@@ -1813,7 +1807,6 @@ def read_archive_session_page(
         branch_type=session["branch_type"],
         title_source=session["title_source"],
         title_ref=session["title_ref"],
-        title_confidence=session["title_confidence"],
         instructions_text=session["instructions_text"],
         created_at=_iso_from_ms(session["created_at_ms"]),
         updated_at=_iso_from_ms(session["updated_at_ms"]),

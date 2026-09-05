@@ -1991,7 +1991,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     title = str(composed_session_id)
     title_source: TitleSource | None = None
     title_ref: str | None = None
-    title_confidence: float | None = None
     for message in messages:
         # Title heuristic: the first plain human-authored user turn. Claude Code
         # has enough structural provenance (`isMeta`, `toolUseResult`, `origin`)
@@ -2011,7 +2010,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
                     title += "..."
                 title_source = TitleSource.HEURISTIC
                 title_ref = f"message:{message.provider_message_id}"
-                title_confidence = 0.5
                 break
 
     # polylogue-pbuh: the ``agent-name`` sidecar record is a provider-assigned
@@ -2028,7 +2026,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
             title = cleaned_agent_name[:80] + ("..." if len(cleaned_agent_name) > 80 else "")
             title_source = TitleSource.ORIGIN
             title_ref = f"claude-agent-name:{composed_session_id}"
-            title_confidence = 0.9
 
     # polylogue-pbuh: Claude Code's own ``ai-title`` sidecar record is a
     # provider-computed session title (Codex's equivalent-tier evidence is its
@@ -2042,7 +2039,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
             title = cleaned_ai_title[:80] + ("..." if len(cleaned_ai_title) > 80 else "")
             title_source = TitleSource.ORIGIN
             title_ref = f"claude-ai-title:{composed_session_id}"
-            title_confidence = 1.0
 
     # An explicit user rename (``custom-title``) is a stronger intent signal
     # than the provider-suggested ``ai-title`` and wins over it when both are
@@ -2054,7 +2050,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
             title = cleaned_custom_title[:80] + ("..." if len(cleaned_custom_title) > 80 else "")
             title_source = TitleSource.ORIGIN
             title_ref = f"claude-custom-title:{composed_session_id}"
-            title_confidence = 1.0
     # polylogue-5dfu: leave title_source as None (not a TitleSource.UNKNOWN
     # sentinel) when no branch above resolved a title -- NULL already means
     # "no title evidence" for this nullable column, and TitleSource.UNKNOWN
@@ -2071,7 +2066,6 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         title=title,
         title_source=title_source,
         title_ref=title_ref,
-        title_confidence=title_confidence,
         created_at=acc.created_at,
         updated_at=acc.updated_at,
         messages=messages,

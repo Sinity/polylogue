@@ -49,9 +49,6 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
     values["parent_session_id"] = SessionId(parent_session_id) if parent_session_id is not None else None
     values["branch_type"] = BranchType(branch_type) if branch_type is not None else None
     values["metadata"] = _json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"]))
-    values["run_settings"] = _json_object(
-        _parse_json(_row_get(row, "run_settings_json"), field="run_settings_json", record_id=row["session_id"])
-    )
     values["pending_drafts"] = _json_object_list(
         _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
     )

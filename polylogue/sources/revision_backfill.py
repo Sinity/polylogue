@@ -85,6 +85,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
 _REPLAY_PROVIDER_DETECTION_PREFIX_BYTES: Final[int] = 8192
@@ -1043,7 +1044,7 @@ def uncensused_historical_revision_raw_ids(
     )
     known_fingerprints = [RAW_AUTHORITY_PARSER_FINGERPRINT, *sorted(SUPERSEDED_MEMBERSHIP_FINGERPRINTS)]
     known_placeholders = ",".join("?" for _ in known_fingerprints)
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
         uncensused: list[str] = []
         for offset in range(0, len(raw_ids), 500):
             raw_id_chunk = raw_ids[offset : offset + 500]
@@ -1183,7 +1184,7 @@ def record_resource_blocked_revision_census(
         "current parser census deferred before blob open: "
         f"component payload {total_payload_bytes} exceeds envelope {max_payload_bytes}{escalation_note}"
     )
-    with sqlite3.connect(archive_root / "source.db") as conn, conn:
+    with sqlite_connection(archive_root / "source.db") as conn:
         for raw_id in raw_ids:
             conn.execute(
                 """
@@ -2114,7 +2115,7 @@ def _lineage_aware_replay_order(
         return sorted_keys
 
     placeholders = ",".join("?" for _ in sorted_keys)
-    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
         rows = conn.execute(
             f"""
             SELECT logical_source_key, raw_id
@@ -3500,7 +3501,7 @@ class _ReplaySpillPrefetcher:
     def _run_inner(self, generation: int, keys: tuple[str, ...], extra_members: dict[str, frozenset[str]]) -> None:
         if not keys:
             return
-        # NOTE: ``with sqlite3.connect(...)`` would only manage a
+        # NOTE: ``with sqlite_connection(...)`` would only manage a
         # transaction, not the connection lifetime -- close explicitly.
         source_conn = sqlite3.connect(f"file:{self._source_db_path}?mode=ro", uri=True, timeout=30.0)
         spill_conn: sqlite3.Connection | None = None

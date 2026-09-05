@@ -42,6 +42,7 @@ from polylogue.sources.decoders import (
     _ZipEntryValidator,
 )
 from polylogue.sources.dispatch import (
+    _TITLE_EVIDENCE_PRECEDENCE,
     detect_provider,
     merge_parsed_session_chunks,
     parse_payload,
@@ -1739,10 +1740,9 @@ def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_
     heuristic) permanently just because it happened to resolve in an
     earlier chunk and was already a non-raw-id string. A later chunk's
     stronger provider-supplied evidence (an ``ai-title`` sidecar record,
-    TitleSource.ORIGIN/confidence 1.0) must win over an earlier chunk's
-    TitleSource.HEURISTIC/confidence 0.5 guess -- and title_source/title_ref/
-    title_confidence must describe the SAME evidence as the winning title
-    text, never a stale mix pulled from a different chunk.
+    TitleSource.ORIGIN) must win over an earlier chunk's TitleSource.HEURISTIC
+    guess -- and title_source/title_ref must describe the SAME evidence as the
+    winning title text, never a stale mix pulled from a different chunk.
 
     This reproduces the live-archive regression this bead measured: raw
     JSONL files large enough to stream in multiple chunks kept a UUID or
@@ -1756,7 +1756,6 @@ def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_
         title="Fix the flaky retry loop",
         title_source=TitleSource.HEURISTIC,
         title_ref="message:u-1",
-        title_confidence=0.5,
         messages=[],
     )
     later_chunk = ParsedSession(
@@ -1765,7 +1764,6 @@ def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_
         title="Recover what was lost",
         title_source=TitleSource.ORIGIN,
         title_ref="claude-ai-title:session-1",
-        title_confidence=1.0,
         messages=[],
     )
 
@@ -1775,7 +1773,6 @@ def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_
     assert merged[0].title == "Recover what was lost"
     assert merged[0].title_source is TitleSource.ORIGIN
     assert merged[0].title_ref == "claude-ai-title:session-1"
-    assert merged[0].title_confidence == 1.0
 
 
 def test_merge_parsed_session_chunks_keeps_stronger_earlier_title_over_weaker_later_chunk() -> None:
@@ -1788,7 +1785,6 @@ def test_merge_parsed_session_chunks_keeps_stronger_earlier_title_over_weaker_la
         title="Recover what was lost",
         title_source=TitleSource.ORIGIN,
         title_ref="claude-ai-title:session-1",
-        title_confidence=1.0,
         messages=[],
     )
     later_chunk = ParsedSession(
@@ -1803,7 +1799,6 @@ def test_merge_parsed_session_chunks_keeps_stronger_earlier_title_over_weaker_la
     assert merged[0].title == "Recover what was lost"
     assert merged[0].title_source is TitleSource.ORIGIN
     assert merged[0].title_ref == "claude-ai-title:session-1"
-    assert merged[0].title_confidence == 1.0
 
 
 def test_merge_parsed_session_chunks_fills_missing_first_chunk_title_from_later_chunk() -> None:
@@ -1825,7 +1820,6 @@ def test_merge_parsed_session_chunks_fills_missing_first_chunk_title_from_later_
         title="Recover what was lost",
         title_source=TitleSource.ORIGIN,
         title_ref="claude-ai-title:session-1",
-        title_confidence=1.0,
         messages=[],
     )
 
@@ -1833,6 +1827,68 @@ def test_merge_parsed_session_chunks_fills_missing_first_chunk_title_from_later_
 
     assert merged[0].title == "Recover what was lost"
     assert merged[0].title_source is TitleSource.ORIGIN
+
+
+@pytest.mark.parametrize(
+    ("stronger_ref", "weaker_source", "weaker_ref"),
+    [
+        # An explicit rename beats the provider's own computed title.
+        ("claude-custom-title:session-1", TitleSource.ORIGIN, "claude-ai-title:session-1"),
+        # A provider-computed title beats a provider-assigned agent label.
+        ("claude-ai-title:session-1", TitleSource.ORIGIN, "claude-agent-name:session-1"),
+        # A provider-curated title with no weaker-tier prefix still beats one.
+        ("codex-thread-name:session-1", TitleSource.ORIGIN, "codex-state-db:session-1"),
+        # Every provider signal beats a parser heuristic.
+        ("claude-agent-name:session-1", TitleSource.HEURISTIC, "message:u-1"),
+    ],
+)
+def test_merge_parsed_session_chunks_follows_declared_title_precedence(
+    stronger_ref: str, weaker_source: TitleSource, weaker_ref: str
+) -> None:
+    """Pin ``_TITLE_EVIDENCE_PRECEDENCE``'s declared order.
+
+    Anti-vacuity: reordering the declared tiers so the ``weaker_ref`` tier
+    sits above the ``stronger_ref`` tier makes the merge keep the weaker
+    chunk's title and flips every assertion below. The weaker chunk is passed
+    SECOND, so a merge that simply kept the first chunk would also pass -- the
+    inverse ordering is covered by the sibling test that passes the stronger
+    evidence second.
+    """
+    stronger = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Stronger evidence",
+        title_source=TitleSource.ORIGIN,
+        title_ref=stronger_ref,
+        messages=[],
+    )
+    weaker = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="session-1",
+        title="Weaker evidence",
+        title_source=weaker_source,
+        title_ref=weaker_ref,
+        messages=[],
+    )
+
+    forward = merge_parsed_session_chunks([weaker, stronger])[0]
+    assert forward.title == "Stronger evidence"
+    assert forward.title_ref == stronger_ref
+
+    reverse = merge_parsed_session_chunks([stronger, weaker])[0]
+    assert reverse.title == "Stronger evidence"
+    assert reverse.title_ref == stronger_ref
+
+
+def test_title_evidence_precedence_declares_each_tier_once() -> None:
+    """No ``(title_source, title_ref prefix)`` pair may appear in two tiers.
+
+    Anti-vacuity: duplicating any entry into a second tier makes this red.
+    A duplicated pair would make the winning tier depend on scan order rather
+    than on the declared precedence.
+    """
+    entries = [entry for tier in _TITLE_EVIDENCE_PRECEDENCE for entry in tier]
+    assert len(entries) == len(set(entries))
 
 
 def test_merge_parsed_session_chunks_marks_exactly_one_active_leaf_with_duplicate_ids() -> None:

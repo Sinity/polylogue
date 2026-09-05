@@ -54,10 +54,6 @@ class SessionRecord(BaseModel):
     # polylogue-2qx.4 (v46): human-readable name behind an opaque native/slug
     # id (e.g. a Claude Code Task-tool subagent slug), distinct from `title`.
     display_name: str | None = None
-    # polylogue-2qx.4 (v46): per-session provider run configuration, stored
-    # verbatim (aistudio-drive runSettings). None when the read path didn't
-    # select the column or the provider carries none.
-    run_settings: JSONObject | None = None
     # polylogue-gt1z (v49): exact provider-reported session cost total, when
     # the origin's export carries one. None means the origin never reports
     # a session-level total (not a measured zero).
@@ -88,7 +84,7 @@ class SessionRecord(BaseModel):
             raise ValueError("Field cannot be empty")
         return v
 
-    @field_validator("metadata", "run_settings", mode="before")
+    @field_validator("metadata", mode="before")
     @classmethod
     def coerce_json_document(cls, value: object) -> JSONObject | None:
         return _coerce_json_object(value)

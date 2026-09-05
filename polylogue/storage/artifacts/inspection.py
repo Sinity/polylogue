@@ -245,7 +245,23 @@ def _support_status(
 
 
 _INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
-_FULL_JSON_INSPECTION_MAX_BYTES = 8 * 1024 * 1024  # 8 MB — bounded fallback for large JSON documents
+
+#: Ceiling on the full-document re-read used when the 64 KB prefix is not
+#: itself valid JSON. A prefix that stops mid-value is evidence about the
+#: bound, not about the document: refusing the re-read records a valid
+#: single-JSON export as ``decode_failed`` / ``ArtifactKind.UNKNOWN``, which
+#: leaves it with no declared parser route at all.
+#:
+#: Single-document exports reach a few hundred megabytes -- an AI Studio
+#: conversation carrying inline media is 203 MB across 58 turns -- and
+#: classifying one costs less than the parse that must follow it anyway
+#: (measured on that document: 438 MB peak RSS to decode and classify,
+#: 638 MB to parse). A ceiling that stops classification short of what
+#: parsing the same bytes costs only discards the document earlier. The
+#: 64 KB prefix bound above still keeps the *first* pass off multi-GB
+#: payloads, so this ceiling is paid only by a document whose prefix was
+#: not self-contained.
+_FULL_JSON_INSPECTION_MAX_BYTES = 256 * 1024 * 1024
 
 
 def _inspection_prefix(record: RawSessionRecord, *, blob_store: BlobStore | None = None) -> bytes:

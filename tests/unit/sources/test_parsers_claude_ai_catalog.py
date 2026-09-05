@@ -361,7 +361,6 @@ def test_claude_ai_conversation_summary_persists_as_event() -> None:
     assert session.title == "Summary Session"
     assert session.title_source == TitleSource.ORIGIN
     assert session.title_ref == "claude-ai-title:claude-3"
-    assert session.title_confidence == 1.0
 
 
 def test_claude_ai_no_provider_title_falls_back_to_id_with_no_title_source() -> None:
@@ -382,7 +381,6 @@ def test_claude_ai_no_provider_title_falls_back_to_id_with_no_title_source() -> 
     assert session.title == "claude-4"
     assert session.title_source is None
     assert session.title_ref is None
-    assert session.title_confidence is None
 
 
 def test_claude_ai_plain_text_message_has_no_synthetic_content_block() -> None:

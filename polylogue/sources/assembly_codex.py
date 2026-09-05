@@ -345,7 +345,6 @@ class CodexAssemblySpec:
                         "title": name,
                         "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-thread-name:{cid}",
-                        "title_confidence": 0.5 if is_echo else 1.0,
                     }
                 )
             return conv
@@ -371,7 +370,6 @@ class CodexAssemblySpec:
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-history:{cid}",
-                        "title_confidence": 0.5 if is_echo else 0.9,
                     }
                 )
 
@@ -396,7 +394,6 @@ class CodexAssemblySpec:
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-state-db:{cid}",
-                        "title_confidence": 0.5 if is_echo else 0.75,
                     }
                 )
 
@@ -417,7 +414,6 @@ class CodexAssemblySpec:
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
                         "title_ref": f"codex-thread-title-hook-event:{cid}",
-                        "title_confidence": 0.5 if is_echo else 0.7,
                     }
                 )
 
@@ -434,7 +430,6 @@ class CodexAssemblySpec:
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC,
                         "title_ref": f"message:{msg.provider_message_id}",
-                        "title_confidence": 0.5,
                     }
                 )
 
