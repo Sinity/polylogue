@@ -23,6 +23,7 @@ from polylogue.storage.raw_retention import (
     cleanup_superseded_raw_snapshots,
     plan_stale_supersession_reissue,
     protected_active_raw_revision_ids,
+    raw_frontier_blocked_source_paths,
     raw_frontier_integrity_projection,
     raw_frontier_integrity_snapshot,
     raw_frontier_integrity_summary,
@@ -2574,6 +2575,65 @@ def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
     _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10, deferred_end_offset=20)
 
     assert raw_frontier_source_selection_block_reason(tmp_path) is None
+
+
+def test_blocked_source_paths_refuse_violations_and_admit_authority_gaps(tmp_path: Path) -> None:
+    """A violation names the path it refuses; a gap names a path only processing can resolve.
+
+    Anti-vacuity: folding ``gap_source_paths`` back into ``source_paths``
+    (the pre-split attribution) makes the refused set contain the gap path
+    and this test red; so does attributing the cursor-ahead violation to the
+    gap set.
+    """
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    violated_path = tmp_path / "cursor-ahead.jsonl"
+    gap_path = tmp_path / "no-head.jsonl"
+    violated_path.write_text("{}\n", encoding="utf-8")
+    gap_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=violated_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash, blob_size, acquired_at_ms
+            ) VALUES (?, 'claude-code-session', 'no-head', ?, 0, ?, 3, 2)
+            """,
+            ("raw-no-head", str(gap_path), bytes([2]) * 32),
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-baseline",
+        accepted_raw_id="raw-baseline",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=violated_path, byte_offset=20)
+    with sqlite3.connect(ops_db) as conn:
+        upsert_ingest_cursor(conn, source_path=str(gap_path), updated_at_ms=1, byte_offset=3)
+        conn.commit()
+
+    blocked = raw_frontier_blocked_source_paths(tmp_path, raw_materialization_readiness_snapshot(tmp_path))
+
+    assert blocked.unattributed_reason is None
+    assert blocked.source_paths == frozenset({str(violated_path)})
+    assert blocked.gap_source_paths == frozenset({str(gap_path)})
 
 
 def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_unknown(tmp_path: Path) -> None:
