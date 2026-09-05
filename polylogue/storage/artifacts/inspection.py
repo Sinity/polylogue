@@ -250,12 +250,17 @@ _INSPECTION_PREFIX_BYTES = JSONL_RECORD_INSPECTION_BYTES
 #: itself valid JSON. A prefix that stops mid-value is evidence about the
 #: bound, not about the document: refusing the re-read records a valid
 #: single-JSON export as ``decode_failed`` / ``ArtifactKind.UNKNOWN``, which
-#: then has no declared parser route at all. Single-document exports run to
-#: hundreds of megabytes (AI Studio Drive conversations carrying inline
-#: media), and the parse stage reads those in full regardless, so a
-#: classification bound below that only makes the recorded kind depend on
-#: which acquisition route reached the record first. The 64 KB prefix bound
-#: above still keeps the *first* pass off multi-GB payloads.
+#: leaves it with no declared parser route at all.
+#:
+#: Single-document exports reach a few hundred megabytes -- an AI Studio
+#: conversation carrying inline media is 203 MB across 58 turns -- and
+#: classifying one costs less than the parse that must follow it anyway
+#: (measured on that document: 438 MB peak RSS to decode and classify,
+#: 638 MB to parse). A ceiling that stops classification short of what
+#: parsing the same bytes costs only discards the document earlier. The
+#: 64 KB prefix bound above still keeps the *first* pass off multi-GB
+#: payloads, so this ceiling is paid only by a document whose prefix was
+#: not self-contained.
 _FULL_JSON_INSPECTION_MAX_BYTES = 256 * 1024 * 1024
 
 
