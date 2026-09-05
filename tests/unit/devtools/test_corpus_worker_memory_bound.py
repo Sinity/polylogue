@@ -106,6 +106,8 @@ def test_the_slot_resizes_the_queued_command(tmp_path: Path, monkeypatch: pytest
     A run can sit in the single-slot pytest queue for hours; the memory that
     matters is the memory present when its workers start.
     """
+    import subprocess
+
     import devtools.pytest_slot as slot
 
     launched: dict[str, list[str]] = {}
@@ -130,7 +132,7 @@ def test_the_slot_resizes_the_queued_command(tmp_path: Path, monkeypatch: pytest
         '{"argv": ["python", "-m", "pytest", "-n", "8", "tests"], "environment": {}, '
         f'"working_directory": "{tmp_path}", "log_path": "{log}"}}'
     )
-    monkeypatch.setattr(slot.subprocess, "Popen", _popen)
+    monkeypatch.setattr(subprocess, "Popen", _popen)
     monkeypatch.setattr(slot, "resize_worker_argument", lambda argv: (argv[:-3] + ["-n", "3", "tests"], None))
     assert slot.main([str(launch)]) == 0
     assert launched["command"][launched["command"].index("-n") + 1] == "3"
