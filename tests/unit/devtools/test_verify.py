@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import signal
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from devtools import (
     why,
 )
 from devtools.testmon_provision import TestmonGraphStatus
+from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -35,6 +37,32 @@ from devtools.verify_runs import (
 #: executing. These tests drive that code inline through its documented escape
 #: rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
+
+
+def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
+    """Stand in for the pytest process the held slot launches (a process group, waited on)."""
+
+    class FakeProcess:
+        def __init__(self, argv: list[str], **kwargs: Any) -> None:
+            self.pid = os.getpid()
+            self.returncode = int(fake_run(argv, **kwargs).returncode)
+
+        def poll(self) -> int:
+            return self.returncode
+
+        def wait(self, timeout: float | None = None) -> int:
+            return self.returncode
+
+    monkeypatch.setattr(subprocess, "Popen", FakeProcess)
+
+
+def _outside_the_pytest_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """An agent-pool job: the test itself runs inside the pytest pool, which owns the slot."""
+    for name in agent_env.runtime_env_names(agent_env.QUEUE_POOL_ENV):
+        monkeypatch.delenv(name, raising=False)
+    cgroup = tmp_path / "cgroup"
+    cgroup.write_text("0::/user.slice/user-1000.slice/user@1000.service/agent.slice/run-1.scope\n", encoding="utf-8")
+    monkeypatch.setattr(agent_env, "_CGROUP_PATH", cgroup)
 
 
 def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,8 +309,11 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
     }
 
 
-def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SINNIXD_OPERATION", "verify_quick")
+@pytest.mark.parametrize("variable", ["AGENTCTL_OPERATION", "SINNIXD_OPERATION"])
+def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch, variable: str) -> None:
+    monkeypatch.delenv("AGENTCTL_OPERATION", raising=False)
+    monkeypatch.delenv("SINNIXD_OPERATION", raising=False)
+    monkeypatch.setenv(variable, "verify_quick")
 
     assert verify._declared_agentctl_operation(["--quick"]) == "verify_quick"
     assert verify._declared_agentctl_operation([]) is None
@@ -299,7 +330,12 @@ def test_verify_quick_descriptor_accepts_the_declared_json_projection() -> None:
         operation="verify_quick",
     )
 
-    assert descriptor["workspace"]["verification_operations"] == ["verify_quick"]
+    assert descriptor["workspace"]["verify"] == {
+        "focused": "pytest_focused",
+        "candidate": "hosted:verify",
+        "corpus": "verify_all",
+    }
+    assert descriptor["workspace"]["publish"] == "pr"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
     assert affected["exec"] == ["devtools", "verify"]
@@ -321,9 +357,11 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     below fail.
     """
     assert verify._selection_for_changes(frozenset({".agentctl/project.toml"})) == "descriptor"
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "README.md"})) == "descriptor"
     assert verify._selection_for_changes(frozenset({"polylogue/example.py"})) == "affected"
     assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "polylogue/example.py"})) == "affected"
     assert verify._selection_for_changes(None) == "affected"
+    assert verify._selection_for_changes(frozenset()) == "affected"
 
     descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
     assert "--testmon" not in descriptor_command
@@ -334,6 +372,79 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     assert "--testmon" in affected_command
     assert "--testmon-forceselect" in affected_command
     assert not any(nodeid in affected_command for nodeid in verify.DESCRIPTOR_CONTRACT_TESTS)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        frozenset({"docs/devtools.md"}),
+        frozenset({".github/workflows/verify.yml"}),
+        frozenset({".agentctl/README.md", "CLAUDE.md", ".github/CODEOWNERS"}),
+    ],
+)
+def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
+    """Orchestration metadata, documentation and workflows are exercised by no test.
+
+    Anti-vacuity: dropping the path-class rule routes these through the testmon
+    graph, which selects most of the corpus for a change outside Python.
+    """
+    assert verify._selection_for_changes(changed) == "none"
+    assert verify._selection_reason("none")
+    assert verify._selection_reason("affected") is None
+    assert verify._scope(quick=False, selection="none") is VerificationScope.NON_TEST
+    labels = [label for label, _command in verify.build_verify_steps(quick=False, selection="none")]
+    assert labels and not any(label.startswith("pytest") for label in labels)
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [
+        (frozenset({"docs/devtools.md", "polylogue/example.py"}), "affected"),
+        (frozenset({"README.md", "tests/unit/test_example.py"}), "affected"),
+        (frozenset({"pyproject.toml"}), "affected"),
+    ],
+)
+def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], expected: str) -> None:
+    assert verify._selection_for_changes(changed) == expected
+
+
+def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A run with no pytest step carries its reason in the receipt, where the hosted check reads it."""
+    from devtools.agent_env import AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV
+
+    history: dict[str, Any] = {}
+    steps_seen: dict[str, Any] = {}
+    monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({"docs/devtools.md"}))
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    monkeypatch.setattr(
+        verify,
+        "inspect_testmon_graph",
+        lambda _root: SimpleNamespace(status=TestmonGraphStatus.UNUSABLE, reason="corrupt", full_rerun_cause=None),
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_steps(**kwargs: Any) -> list[tuple[str, list[str]]]:
+        steps_seen.update(kwargs)
+        return [("gate lint", ["true"])]
+
+    monkeypatch.setattr(verify, "build_verify_steps", capture_steps)
+    monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    assert verify._main([]) == 0, "an unusable graph is irrelevant when no selection consults it"
+    assert steps_seen["selection"] == "none"
+    assert history["testmon_selection"]["selection_mode"] == "none"
+    assert "no test exercises them" in history["testmon_selection"]["selection_reason"]
+    assert history["verification_scope"] == VerificationScope.NON_TEST.value
+    run_payload = json.loads((tmp_path / str(history["artifact_dir"]) / "run.json").read_text())
+    assert run_payload["testmon_selection"]["selection_reason"] == history["testmon_selection"]["selection_reason"]
 
 
 def test_verify_main_routes_descriptor_diff_to_bounded_selection(
@@ -574,9 +685,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         )
         return SimpleNamespace(returncode=1)
 
-    import subprocess
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_held_pytest(monkeypatch, fake_run)
     command = ["python", "-m", "pytest", f"--json-report-file={report_path}"]
 
     result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
@@ -689,7 +798,7 @@ def _flake_rerun_fixture(
         )
         return subprocess.CompletedProcess(command, 0 if rerun_outcome == "passed" else 1)
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    _stub_held_pytest(monkeypatch, fake_run)
     return report_path, launched
 
 
@@ -848,6 +957,7 @@ def test_focused_managed_runs_also_force_the_full_hypothesis_profile() -> None:
 def test_agent_tier_refusal_honors_the_json_contract(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     """Anti-vacuity: restore the unconditional stderr write and stdout is empty
     so the json.loads below raises.
@@ -856,8 +966,7 @@ def test_agent_tier_refusal_honors_the_json_contract(
     leaves a hole in it exactly where an automated caller needs a verdict.
     """
 
-    from devtools import agent_env
-
+    _outside_the_pytest_pool(monkeypatch, tmp_path)
     monkeypatch.setenv(agent_env.AGENT_PRINCIPAL_ENV, agent_env.AGENT_PRINCIPAL)
 
     exit_code = verify._main(["--json"])

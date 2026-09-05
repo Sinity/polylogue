@@ -36,26 +36,35 @@ Foreground commands use pytest's ordinary temporary-directory behavior.
 
 pytest is the heaviest thing this checkout runs and several agent sessions
 share one workstation, so `devtools test` and the pytest step of
-`devtools verify` run only while holding the host's single `pytest` pueue slot
-(group parallelism 1).
+`devtools verify` run only inside the host's single-slot `pytest` pool
+(agentctl group parallelism 1).
 
-- The pytest-group runner sets `POLYLOGUE_PYTEST_SLOT=held` for the task that
-  owns the slot, so pytest runs in place and streams its output as before.
-- Every other caller, including a generic AgentCTL job, is queued as `pueue add --group pytest --label
-  polylogue:{test,verify}:<pid>`, and the command waits for the task, reports
-  the exit code pueue recorded, and prints the captured log path under
-  `.cache/verify/pytest-slot-<pid>.log`. Watch it with `pueue status` or
-  `pueue follow <id>`.
-- pueue 4 persists the `pueue add` client's whole environment into user state,
-  so the adder inherits only `HOME`, `PATH`, `XDG_RUNTIME_DIR`, and
-  `XDG_DATA_HOME`; the managed pytest environment travels in the launch file
-  the queued task consumes and deletes.
-- If pueued is unreachable the run refuses rather than running unqueued:
+- Ownership is the pool: a job the runtime placed in `agentctl-pytest.slice`
+  (`sinnixd-pueue-pytest.slice` on older hosts), or one whose environment
+  says `AGENTCTL_POOL=pytest` (`SINNIXD_QUEUE_POOL` on older hosts), runs
+  pytest in place and streams its output. A job id, principal or operation
+  name is never ownership: a lane queues like everything else.
+- Every other caller submits the declared `pytest_focused` operation,
+  `agentctl job start <checkout> pytest_focused --workspace <checkout> --
+  <launch file>`, waits for the job, reports the exit code the runtime
+  recorded, and prints the captured log path under
+  `.cache/verify/pytest-slot-<pid>.log`. Watch it with `agentctl job list
+  --active` or `agentctl job logs <id>`; a killed waiter cancels its job with
+  `agentctl job cancel <id>`.
+- The `agentctl` client inherits only what the runtime needs (`HOME`, `PATH`,
+  the XDG and session variables); the managed pytest environment travels in
+  the launch file the job consumes and deletes.
+- `agentctl job start polylogue pytest_focused --wait -- <selection>` runs
+  `devtools test <selection>` inside the pool directly.
+- If the runtime is unreachable the run refuses rather than running unqueued:
   `systemctl --user start pueued`, then rerun.
 
 `POLYLOGUE_PYTEST_SLOT=held` is the explicit assertion that the caller already
-holds the slot. Only the pytest-group runner may set it during normal
-execution. Generic `SINNIXD_JOB_ID` does not grant slot ownership.
+holds the slot, for the hermetic test of this mechanism.
+
+Managed runs keep their temporary trees under `.cache/verify/tmp-<pid>-*`
+inside the checkout and remove them on every exit except a failed run's,
+whose leftovers are worth reading.
 
 ### Typed WebUI package checks
 
