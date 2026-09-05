@@ -1752,6 +1752,28 @@ def _aistudio_drive_spec() -> OriginSpec:
         detector_tightness=90,
         parser_paths=("polylogue/sources/parsers/drive.py",),
         stream_parser_path=None,
+        artifact_rules=(
+            OriginArtifactRule(
+                kind="metadata_document",
+                # AI Studio writes the applet access log into the same Drive
+                # folder as the conversation exports. Its ``{"applets": [...]}`
+                # body carries no turn, so content classification can only
+                # reach ``ArtifactKind.UNKNOWN`` -- a kind the coverage gate
+                # refuses by construction. The path is the declaration.
+                path_pattern=r"(?:^|/)applet_access_history\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="applet_access_log",
+                fidelity_note=(
+                    "AI Studio applet access log retained as acquired evidence and never parsed as a "
+                    "session: it records which applets an account opened, not a conversation."
+                ),
+                path_suffixes=(".json",),
+                # One named file, not a suffix family: enumeration of the
+                # Drive root stays governed by ``path_pattern``.
+                watch_suffixes=(),
+            ),
+        ),
         assembly_paths=("polylogue/sources/dispatch.py:_lower_payload_specs",),
         fixture_paths=("tests/unit/sources/test_parsers_drive.py", "tests/data/gemini_chunked_prompt"),
         coverage_refs=("origin:aistudio-drive:admitted",),
