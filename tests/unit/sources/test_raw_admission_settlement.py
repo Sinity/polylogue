@@ -105,3 +105,51 @@ async def test_sibling_checkpoints_sharing_a_session_id_produce_one_accepted_hea
         assert heads == 1
     finally:
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_every_planned_path_is_accounted_for(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A planned path lands in exactly one of succeeded, failed, or excluded.
+
+    A path that reaches none of them is invisible in the batch counters, which
+    reads exactly like an idle source: a fresh-root run logged a thousand
+    chunks of "ingesting 4 file(s)" followed by "succeeded=0 failed=0" with no
+    reason recorded anywhere.
+
+    Anti-vacuity: drop the ``excluded=excluded_paths`` argument from the
+    ``_mark_excluded_cursor`` calls in ``_ingest_full_records`` and
+    ``excluded_file_count`` reads 0 while ``needed_file_count`` stays 2 --
+    the totals stop adding up, which is the final assertion below.
+    """
+    archive_root = workspace_env["archive_root"]
+    chats_root = workspace_env["data_root"] / "gemini" / "tmp" / "project" / "chats"
+    chats_root.mkdir(parents=True)
+    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "gemini-account.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="gemini-cli", root=chats_root, suffixes=(".json", ".jsonl")),),
+        cursor=CursorStore(archive_root / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        admissible = chats_root / "session-2026-04-02T12-00-bbbbbbbb.json"
+        _checkpoint(admissible, kind="main", turns=2, started="2026-04-02T12:00:00.000Z")
+        # Structurally valid JSON under a watched root that is no origin's
+        # session: the acquisition loop quarantines it and moves on.
+        inadmissible = chats_root / "notes.json"
+        inadmissible.write_text(json.dumps({"unrelated": "content", "n": 1}))
+
+        metrics = await processor.ingest_files([admissible, inadmissible], emit_event=False)
+
+        assert metrics.needed_file_count == 2
+        assert metrics.succeeded_file_count == 1
+        assert metrics.excluded_file_count == 1
+        assert metrics.excluded_reasons
+        assert (
+            metrics.succeeded_file_count + metrics.failed_file_count + metrics.excluded_file_count
+            == metrics.needed_file_count
+        )
+    finally:
+        await archive.close()
