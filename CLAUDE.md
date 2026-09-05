@@ -36,7 +36,10 @@ shrink, never grow); substrate→surface imports are forbidden outright.
 Identity is computed, never stored redundantly (SQLite generated columns):
 
 - `sessions.session_id = origin || ':' || native_id`
-- `messages.message_id = session_id || ':' || COALESCE(native_id, position||'.'||variant_index)`
+- `messages.message_id = session_id || ':' || CASE WHEN native_id IS NULL THEN
+  'p:' || position || '.' || variant_index ELSE 'n:' || native_id END` — the
+  `n:`/`p:` prefixes keep a provider-native id from ever colliding with a
+  positional fallback, and `messages.identity_source` records which path fired
 - `blocks.block_id = message_id || ':' || position`
 
 Sessions → messages → blocks, all `STRICT`. Load-bearing semantics:
@@ -82,14 +85,22 @@ message, and block fields are hashed; parser-only coordinates, provider
 signatures, and independently-owned usage/timing/cost measurements are
 excluded with reasons.
 
-**Schema regimes**: durable tiers evolve by additive numbered migrations under
-`storage/sqlite/migrations/{source,user,audit}/` behind a verified backup;
-derived tiers declare a lifecycle delta class per version bump
-(`storage/sqlite/lifecycle.py`) — only `SEMANTIC_REPARSE` deltas force a full
-rebuild, and rebuild runs through the production daemon route (there is no
-separate manual rebuild mechanism). Classify every schema change before
-editing: metadata-only, index-only, additive-derived, additive-durable, or
-semantic-reparse.
+**Schema regimes**: durable tiers (`source`, `user`, `audit`) evolve by additive
+numbered migrations under `storage/sqlite/migrations/{source,user,audit}/`
+behind a verified backup, one `PRAGMA user_version` step at a time. Derived
+tiers carry no version chain: `storage/sqlite/archive_tiers/schema_identity.py`
+stamps one identity hash over the tier's DDL plus the lowering, materializer
+and replay-routing fingerprints, every open compares it, and a mismatch is a
+typed `SchemaSkew` whose only remedy is reconvergence through the production
+daemon route (there is no separate manual rebuild mechanism). A derived-schema
+edit therefore costs a full reconvergence of the archive — cheap only while the
+archive is small. Classify every schema change before editing: metadata-only,
+index-only, additive-derived, additive-durable, or semantic-reparse.
+
+Enum membership is not a schema constraint. Durable DDL carries no
+enum-generated `CHECK(col IN (...))`; vocabulary membership is validated at the
+write boundary (`require_vocabulary` in `archive_tiers/common.py`), so adding a
+vocabulary member is not a durable migration.
 
 ## Provider vs Origin vs Source
 
