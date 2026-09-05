@@ -1220,14 +1220,19 @@ def test_partial_analyze_coverage_is_reported_by_table(tmp_path: Path) -> None:
 
 
 def test_empty_covered_table_without_stats_is_not_missing_coverage(tmp_path: Path) -> None:
-    """ANALYZE writes no sqlite_stat1 row for an empty table.
+    """An empty covered table with no sqlite_stat1 row is not uncovered.
 
-    Anti-vacuity: dropping the emptiness exemption makes every archive with no
-    action pairs warn, which is what this fixture is."""
+    Per-table ``ANALYZE`` records zero-row entries for an empty table, so the
+    fixture's rows are removed to build the uncovered-but-empty shape (a bare
+    ``ANALYZE`` produces it directly).
+
+    Anti-vacuity: dropping the emptiness exemption makes this archive warn."""
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
         assert conn.execute("SELECT COUNT(*) FROM action_pairs").fetchone()[0] == 0
+        conn.execute("DELETE FROM sqlite_stat1 WHERE tbl = 'action_pairs'")
+        conn.commit()
         assert conn.execute("SELECT COUNT(*) FROM sqlite_stat1 WHERE tbl = 'action_pairs'").fetchone()[0] == 0
     finally:
         conn.close()
