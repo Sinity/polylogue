@@ -1036,6 +1036,9 @@ class RawFrontierIntegritySnapshot:
     cursor_ahead_samples: tuple[CursorAheadSample, ...]
     cursor_authority_gap_count: int
     cursor_authority_gap_samples: tuple[CursorAuthorityGapSample, ...]
+    #: Cursors whose durably captured tail awaits the quiet window. A typed,
+    #: safe state: never a gap, never a reason to block other paths.
+    cursor_authority_deferred_count: int
     cursor_ahead_reason: str
 
     @property
@@ -1066,6 +1069,7 @@ class RawFrontierIntegrityProjection:
     cursor_ahead_samples: tuple[CursorAheadSample, ...]
     cursor_authority_gap_count: int
     cursor_authority_gap_samples: tuple[CursorAuthorityGapSample, ...]
+    cursor_authority_deferred_count: int
     cursor_ahead_reason: str
 
     @property
@@ -1110,6 +1114,7 @@ class RawFrontierIntegrityProjection:
                 for sample in self.cursor_ahead_samples
             ],
             "cursor_authority_gap_count": self.cursor_authority_gap_count,
+            "cursor_authority_deferred_count": self.cursor_authority_deferred_count,
             "cursor_authority_gap_samples": [
                 {
                     "state": sample.state,
@@ -1265,6 +1270,7 @@ def raw_frontier_integrity_projection(
         cursor_ahead_samples=snapshot.cursor_ahead_samples,
         cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
         cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
+        cursor_authority_deferred_count=snapshot.cursor_authority_deferred_count,
         cursor_ahead_reason=snapshot.cursor_ahead_reason,
     )
 
@@ -1306,6 +1312,7 @@ def unknown_raw_frontier_integrity_projection(
         cursor_ahead_samples=snapshot.cursor_ahead_samples,
         cursor_authority_gap_count=snapshot.cursor_authority_gap_count,
         cursor_authority_gap_samples=snapshot.cursor_authority_gap_samples,
+        cursor_authority_deferred_count=snapshot.cursor_authority_deferred_count,
         cursor_ahead_reason=snapshot.cursor_ahead_reason,
     )
 
@@ -1370,6 +1377,7 @@ def raw_frontier_integrity_snapshot(
             cursor_samples,
             cursor_gap_count,
             cursor_gap_samples,
+            cursor_deferred_count,
             cursor_reason,
         ) = _check_cursor_ahead_of_accepted(conn, ops_db_path, heads, sample_limit=sample_limit)
         return RawFrontierIntegritySnapshot(
@@ -1386,6 +1394,7 @@ def raw_frontier_integrity_snapshot(
             cursor_ahead_samples=cursor_samples,
             cursor_authority_gap_count=cursor_gap_count,
             cursor_authority_gap_samples=cursor_gap_samples,
+            cursor_authority_deferred_count=cursor_deferred_count,
             cursor_ahead_reason=cursor_reason,
         )
     finally:
@@ -1407,6 +1416,7 @@ def _unavailable_frontier_integrity_snapshot(reason: str) -> RawFrontierIntegrit
         cursor_ahead_samples=(),
         cursor_authority_gap_count=0,
         cursor_authority_gap_samples=(),
+        cursor_authority_deferred_count=0,
         cursor_ahead_reason=reason,
     )
 
@@ -1514,18 +1524,19 @@ def _check_cursor_ahead_of_accepted(
     tuple[CursorAheadSample, ...],
     int,
     tuple[CursorAuthorityGapSample, ...],
+    int,
     str,
 ]:
     try:
         cursor_map = _ops_cursor_byte_offsets(ops_db_path)
     except RawRetentionSafetyError as exc:
-        return "unknown", 0, 0, 0, 0, (), 0, (), str(exc)
+        return "unknown", 0, 0, 0, 0, (), 0, (), 0, str(exc)
 
     try:
         source_path_by_raw_id = _source_paths_for_raw_ids(conn, {head.accepted_raw_id for head in heads})
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: source raw path lookup failed: %s", exc)
-        return "unknown", 0, 0, 0, 0, (), 0, (), f"source raw path lookup failed: {exc}"
+        return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"source raw path lookup failed: {exc}"
 
     byte_heads_by_path: dict[str, list[_IndexRawRevisionHead]] = {}
     all_head_paths: set[str] = set()
@@ -1560,29 +1571,21 @@ def _check_cursor_ahead_of_accepted(
         source_paths = _source_paths_for_paths(conn, set(cursor_map))
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: cursor source path lookup failed: %s", exc)
-        return "unknown", 0, 0, 0, 0, (), 0, (), f"cursor source path lookup failed: {exc}"
+        return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"cursor source path lookup failed: {exc}"
     try:
         terminal_artifact_paths = _terminal_artifact_paths(conn, set(cursor_map))
     except sqlite3.Error as exc:
         logger.warning("raw frontier integrity: terminal artifact authority lookup failed: %s", exc)
-        return "unknown", 0, 0, 0, 0, (), 0, (), f"terminal artifact authority is unreadable: {exc}"
+        return "unknown", 0, 0, 0, 0, (), 0, (), 0, f"terminal artifact authority is unreadable: {exc}"
+    deferred_count = 0
     for path, cursor in cursor_map.items():
         cursor_offset = cursor.byte_offset
         if cursor.is_deferred:
-            gap_count += 1
-            if len(gaps) < sample_limit:
-                gaps.append(
-                    CursorAuthorityGapSample(
-                        state="deferred",
-                        source_path=path,
-                        logical_source_key=None,
-                        cursor_byte_offset=cursor_offset,
-                        reason=(
-                            "ingest cursor has durably captured material awaiting authority resolution "
-                            f"through byte {cursor.deferred_end_offset}"
-                        ),
-                    )
-                )
+            # A deferred cursor is the positive proof of a safe incomplete
+            # tail: the prefix is accepted, the captured range is recorded,
+            # and the quiet window resolves it. Counting it as a gap made
+            # every live host refuse its whole backlog while one file was hot.
+            deferred_count += 1
             continue
         comparable_heads = byte_heads_by_path.get(path)
         if not comparable_heads:
@@ -1638,6 +1641,8 @@ def _check_cursor_ahead_of_accepted(
         )
     if gap_count:
         reasons.append(f"{gap_count} cursor/head authority row(s) could not be compared")
+    if deferred_count:
+        reasons.append(f"{deferred_count} ingest cursor(s) deferred awaiting the quiet window")
     return (
         status,
         ahead_count,
@@ -1647,6 +1652,7 @@ def _check_cursor_ahead_of_accepted(
         tuple(samples),
         gap_count,
         tuple(gaps),
+        deferred_count,
         "; ".join(reasons),
     )
 

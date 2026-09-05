@@ -318,6 +318,7 @@ def component_from_raw_frontier_integrity(payload: Mapping[str, Any] | None) -> 
             "cursor_head_comparison_count": _raw_frontier_count(data.get("cursor_head_comparison_count")),
             "cursor_ahead_comparison_count": _raw_frontier_count(data.get("cursor_ahead_comparison_count")),
             "cursor_authority_gap_count": _raw_frontier_count(data.get("cursor_authority_gap_count")),
+            "cursor_authority_deferred_count": _raw_frontier_count(data.get("cursor_authority_deferred_count")),
         },
         caveats=tuple(caveats),
         repair_hint=None if state == CapabilityReadinessState.READY else "polylogue ops status --full",
@@ -377,6 +378,7 @@ _RAW_FRONTIER_COUNT_KEYS = (
     "cursor_head_comparison_count",
     "cursor_ahead_comparison_count",
     "cursor_authority_gap_count",
+    "cursor_authority_deferred_count",
 )
 _RAW_FRONTIER_SAMPLE_COUNT_KEYS = (
     ("broken_head_samples", "broken_head_count"),
@@ -401,6 +403,9 @@ def _validate_raw_frontier_projection(
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Validate and aggregate one complete canonical frontier projection."""
 
+    # The deferred count is informational: an older producer that omits it
+    # still describes a complete projection.
+    payload = {"cursor_authority_deferred_count": 0, **payload}
     missing = required_keys.difference(payload)
     if missing:
         return None, f"missing field(s): {', '.join(sorted(missing))}"
@@ -498,9 +503,10 @@ def raw_frontier_source_selection_block_reason(
     Raw convergence and reindex both select source rows before they write an
     index. They therefore require the same complete, healthy frontier proof
     exposed by the diagnostic/readiness route. ``None`` means every authority
-    comparison was proven healthy. A deferred or incomparable cursor is a
-    deliberate terminal exception to the byte comparison, but it remains a
-    blocking unknown until its authority can be resolved.
+    comparison was proven healthy. An incomparable cursor is a blocking
+    unknown until its authority can be resolved; a deferred cursor (a durably
+    captured tail awaiting the quiet window) is a typed safe state and never
+    blocks selection of other paths.
     """
 
     projection = raw_frontier_integrity_projection(

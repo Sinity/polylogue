@@ -2524,15 +2524,56 @@ def test_raw_frontier_integrity_snapshot_classifies_deferred_cursor_separately_f
     with sqlite3.connect(source_db) as conn:
         snapshot = raw_frontier_integrity_snapshot(conn, index_db_path=index_db, ops_db_path=ops_db)
 
-    assert snapshot.cursor_ahead_status == "unknown"
+    assert snapshot.cursor_ahead_status == "healthy"
     assert snapshot.cursor_ahead_count == 0
     assert snapshot.cursor_head_comparison_count == 0
-    assert snapshot.cursor_authority_gap_count == 1
-    sample = snapshot.cursor_authority_gap_samples[0]
-    assert sample.state == "deferred"
-    assert sample.cursor_byte_offset == 10
-    assert "awaiting authority resolution" in sample.reason
-    assert snapshot.overall_status == "unknown"
+    assert snapshot.cursor_authority_gap_count == 0
+    assert snapshot.cursor_authority_gap_samples == ()
+    assert snapshot.cursor_authority_deferred_count == 1
+    assert "deferred awaiting the quiet window" in snapshot.cursor_ahead_reason
+    assert snapshot.overall_status == "healthy"
+
+
+def test_deferred_cursor_never_blocks_source_selection(tmp_path: Path) -> None:
+    """A hot file's deferred tail is a typed safe state, not a gate for the backlog.
+
+    Anti-vacuity: counting the deferred cursor as an authority gap again turns
+    the block reason non-None and this test red. On a live host some session
+    file is always being appended, so the old law refused every catch-up.
+    """
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    ops_db = tmp_path / "ops.db"
+    source_path = tmp_path / "deferred.jsonl"
+    source_path.write_text("{}\n", encoding="utf-8")
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    with sqlite3.connect(source_db) as conn:
+        _insert_revision_raw(
+            conn,
+            raw_id="raw-baseline",
+            source_path=source_path,
+            acquired_at_ms=1,
+            kind="full",
+            source_revision="revision-0",
+            generation=0,
+            blob_size=10,
+        )
+        conn.commit()
+    _seed_index_authority(
+        index_db,
+        session_raw_id="raw-baseline",
+        accepted_raw_id="raw-baseline",
+        accepted_revision="revision-0",
+        generation=0,
+        frontier=10,
+        append_end_offset=None,
+    )
+    _seed_ops_cursor(ops_db, source_path=source_path, byte_offset=10, deferred_end_offset=20)
+
+    assert raw_frontier_source_selection_block_reason(tmp_path) is None
 
 
 def test_raw_frontier_integrity_projection_preserves_violation_when_sibling_is_unknown(tmp_path: Path) -> None:
