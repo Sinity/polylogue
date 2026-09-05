@@ -190,6 +190,13 @@ GATES: tuple[Gate, ...] = (
         label="gate schema-inference-gate",
     ),
     Gate(
+        "population-coverage",
+        "Verify every origin, detector route, and artifact kind in the source inventory is declared and witnessed.",
+        "module",
+        ("devtools.verify_population_coverage",),
+        label="gate population-coverage",
+    ),
+    Gate(
         "agent-integration",
         "Verify manual compilation, parser examples, continuation, native delivery, and packaging.",
         "module",
