@@ -759,8 +759,14 @@ class LiveBatchProcessor:
         skipped_file_count: int = 0,
         emit_event: bool = True,
         max_pass_seconds: float | None = None,
+        whole_archive_convergence: bool = True,
     ) -> LiveBatchMetrics:
-        """Ingest files in batch, run post-ingest convergence, and return metrics."""
+        """Ingest files in batch, run post-ingest convergence, and return metrics.
+
+        ``whole_archive_convergence=False`` bounds post-ingest convergence to
+        this batch's own subjects (a catch-up chunk); the caller runs one
+        whole-archive pass at the end of its catch-up.
+        """
         authorization = self.require_cursor_authority(paths)
         refused_paths = self._refused_paths
         self._refused_paths = frozenset()
@@ -906,6 +912,8 @@ class LiveBatchProcessor:
                 "watcher.live_ingest.append_convergence",
                 self._converge_paths,
                 [plan.path for plan in append_result.succeeded],
+                whole_archive=whole_archive_convergence,
+                session_ids=tuple(append_result.session_ids_by_path.values()),
             )
             convergence_time_s += elapsed
             release_process_memory()
@@ -1156,6 +1164,8 @@ class LiveBatchProcessor:
                         "watcher.live_ingest.full_convergence",
                         self._converge_paths,
                         full_result.succeeded,
+                        whole_archive=whole_archive_convergence,
+                        session_ids=full_result.changed_session_ids,
                     )
                     convergence_time_s += elapsed
                     release_process_memory()
@@ -1733,7 +1743,11 @@ class LiveBatchProcessor:
         record_convergence_outcome(self._cursor, path, debts, archive_root=archive_root)
 
     def _converge_paths(
-        self, paths: Iterable[Path]
+        self,
+        paths: Iterable[Path],
+        *,
+        whole_archive: bool = True,
+        session_ids: Iterable[str] = (),
     ) -> tuple[set[Path], float, dict[str, float], list[ConvergenceDebt]]:
         unique_paths = tuple(sorted(dict.fromkeys(paths)))
         if not unique_paths:
@@ -1745,23 +1759,33 @@ class LiveBatchProcessor:
         try:
             converge_batch = getattr(self._converger, "converge_batch", None)
             if callable(converge_batch):
-                states, timings = converge_batch(unique_paths)
+                # The keyword is passed only when it narrows the pass, so
+                # convergers without the parameter keep their whole-archive
+                # default.
+                states, timings = (
+                    converge_batch(unique_paths) if whole_archive else converge_batch(unique_paths, whole_archive=False)
+                )
                 batch_completed = {
                     path for path in unique_paths if path in states and bool(getattr(states[path], "converged", False))
                 }
                 debt_items = convergence_debt_from_states(unique_paths, states)
-                # #1654: after convergence, check for new hook events
-                # that carry paste evidence and update matching messages.
+                batch_stage_timings = {stage_name: float(elapsed) for stage_name, elapsed in timings.items()}
+                # #1654: after convergence, check for new hook events that
+                # carry paste evidence and update matching messages. Scoped to
+                # this batch's sessions so the scan is bounded by the batch,
+                # not by the archive's whole hook history.
+                t_paste = time.perf_counter()
                 try:
                     from polylogue.sources.live.hook_paste_enrichment import enrich_paste_from_hooks
 
-                    enrich_paste_from_hooks(self._cursor._db_path)
+                    enrich_paste_from_hooks(self._cursor._db_path, session_ids=tuple(dict.fromkeys(session_ids)))
                 except Exception:
                     logger.debug("hook_paste: enrichment failed (non-fatal)", exc_info=True)
+                batch_stage_timings["hook_paste_enrichment"] = time.perf_counter() - t_paste
                 return (
                     batch_completed,
                     time.perf_counter() - started,
-                    {stage_name: float(elapsed) for stage_name, elapsed in timings.items()},
+                    batch_stage_timings,
                     debt_items,
                 )
 

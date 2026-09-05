@@ -82,6 +82,12 @@ class ConvergenceStage:
     barrier_check_sessions: Callable[[Sequence[str]], set[str]] | None = None
     # Optional bounded, secret-safe operator status payload.
     status: Callable[[], Mapping[str, object]] | None = None
+    # The stage's work is a function of the whole archive, not of the batch's
+    # subjects (a graph rebuilt from every raw artifact, an exact archive-wide
+    # readiness audit). ``converge_batch(whole_archive=False)`` skips such
+    # stages so a catch-up chunk's cost stays bounded by its own input; the
+    # catch-up's final chunk runs them once for the whole backlog.
+    whole_archive: bool = False
 
 
 @dataclass(slots=True)
@@ -345,8 +351,19 @@ class DaemonConverger:
             if state is not None and state.converged:
                 del self._session_states[session_id]
 
-    def converge_batch(self, files: Iterable[Path]) -> tuple[dict[Path, FileState], dict[str, float]]:
-        """Converge a changed source batch with per-subject stage barriers."""
+    def converge_batch(
+        self, files: Iterable[Path], *, whole_archive: bool = True
+    ) -> tuple[dict[Path, FileState], dict[str, float]]:
+        """Converge a changed source batch with per-subject stage barriers.
+
+        ``whole_archive=False`` bounds the pass to the batch's own subjects:
+        stages declared ``whole_archive`` are recorded ``SKIPPED`` (converged,
+        no debt) because their staleness is re-derived from archive content by
+        the next whole-archive pass, never from this batch's outcome.
+
+        Stage ``check``/``check_many`` time is charged to ``<stage>.check`` in
+        the returned ledger so the batch's convergence time is fully attributed.
+        """
         paths = tuple(dict.fromkeys(files))
         if not paths:
             return {}, {}
@@ -366,10 +383,15 @@ class DaemonConverger:
             active_paths = tuple(path for path in paths if path not in blocked_paths)
             if not active_paths:
                 continue
+            if stage.whole_archive and not whole_archive:
+                for path in active_paths:
+                    self._file_states[path].stages[stage_name] = StageState.SKIPPED
+                continue
 
             if stage.check_many is None or stage.execute_many is None:
                 for path in active_paths:
                     state = self._file_states[path]
+                    t_check = time.perf_counter()
                     try:
                         needs_work = stage.check(path)
                     except Exception:
@@ -382,6 +404,8 @@ class DaemonConverger:
                         state.stages[stage_name] = StageState.FAILED
                         state.error_count += 1
                         continue
+                    finally:
+                        _record_stage_times(batch_stage_times, f"{stage_name}.check", time.perf_counter() - t_check, {})
 
                     if not needs_work:
                         state.stages[stage_name] = StageState.DONE
@@ -419,6 +443,7 @@ class DaemonConverger:
                         scope="stage",
                     )
             else:
+                t_check = time.perf_counter()
                 try:
                     batch_needs_work = set(stage.check_many(active_paths)).intersection(active_paths)
                 except Exception:
@@ -428,6 +453,7 @@ class DaemonConverger:
                         state.stages[stage_name] = StageState.FAILED
                         state.error_count += 1
                 else:
+                    _record_stage_times(batch_stage_times, f"{stage_name}.check", time.perf_counter() - t_check, {})
                     for path in active_paths:
                         if path not in batch_needs_work:
                             self._file_states[path].stages[stage_name] = StageState.DONE

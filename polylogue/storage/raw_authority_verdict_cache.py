@@ -98,21 +98,35 @@ def find_raw_authority_verdict_cache_work(
     ``max_cohorts`` bounds returned work. Append fragments share the same
     cache now that the projection reads their persisted byte-authority links.
     """
-    rows = conn.execute(
+    # One pass over each table instead of two point queries per cohort: the
+    # staleness rule is the one ``_read_cached_raw_authority_verdicts_from_connection``
+    # applies per key (missing rows, member-count drift, fingerprint drift).
+    current_rows: dict[str, list[tuple[str, str, str, str, str]]] = {}
+    for row in conn.execute(
         """
-        SELECT logical_source_key
+        SELECT logical_source_key, raw_id, revision_kind, lower(hex(blob_hash)), revision_authority,
+               COALESCE(predecessor_raw_id, '')
         FROM raw_sessions
         WHERE logical_source_key IS NOT NULL
           AND logical_source_key != ''
-        GROUP BY logical_source_key
         ORDER BY logical_source_key
         """
-    ).fetchall()
+    ):
+        current_rows.setdefault(str(row[0]), []).append(
+            (str(row[1]), str(row[2]), str(row[3]), str(row[4]), str(row[5]))
+        )
+    cached_rows: dict[str, list[bytes]] = {}
+    for logical_source_key, cached_fingerprint in conn.execute(
+        "SELECT logical_source_key, cohort_fingerprint FROM raw_authority_verdicts"
+    ):
+        cached_rows.setdefault(str(logical_source_key), []).append(bytes(cached_fingerprint))
     pending: list[str] = []
-    for (logical_source_key,) in rows:
-        key = str(logical_source_key)
-        if _read_cached_raw_authority_verdicts_from_connection(conn, key) is not None:
-            continue
+    for key, rows in current_rows.items():
+        cached = cached_rows.get(key)
+        if cached is not None and len(cached) == len(rows):
+            fingerprint = _cohort_fingerprint(rows)
+            if all(cached_fingerprint == fingerprint for cached_fingerprint in cached):
+                continue
         if max_cohorts is None or len(pending) < max_cohorts:
             pending.append(key)
     return RawAuthorityVerdictCacheWork(tuple(pending))

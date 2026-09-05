@@ -1326,11 +1326,13 @@ def test_real_catch_up_route_emits_terminal_receipt_when_stopped(
         *,
         queued_file_count: int | None = None,
         skipped_file_count: int = 0,
+        whole_archive_convergence: bool = True,
     ) -> LiveBatchMetrics:
         metrics = await original_ingest(
             paths,
             queued_file_count=queued_file_count,
             skipped_file_count=skipped_file_count,
+            whole_archive_convergence=whole_archive_convergence,
         )
         watcher.stop()
         return metrics

@@ -1171,6 +1171,7 @@ def test_default_convergence_stages_always_register_embed_stage(
         "claude_workflow",
         "delegation_work_evidence",
         "derived",
+        "fts_readiness",
         "standing-queries",
     ]
 
