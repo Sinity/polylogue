@@ -1279,14 +1279,25 @@ def raw_frontier_integrity_projection(
 class RawFrontierBlockedPaths:
     """Which source paths the frontier proof refuses, and what it cannot attribute.
 
-    ``source_paths`` holds every path a violation or authority gap names. A
-    batch may proceed with its other paths. ``unattributed_reason`` is set
-    when something blocks that no path explains (an unreadable tier, a raw
-    with no source path, missing source raws); that still blocks everything.
+    ``source_paths`` holds every path a *violation* names: an ingest cursor
+    committed past accepted raw material, or an accepted head whose source
+    chain is broken. Processing such a path cannot repair it, so it is
+    refused while the rest of a batch proceeds.
+
+    ``gap_source_paths`` holds every path an authority *gap* names: a cursor
+    whose head could not be compared (raw evidence with no accepted head, a
+    cursor path absent from the source tier). A gap is an unknown, and
+    ingesting or materializing the path is the only thing that resolves it,
+    so callers admit these paths.
+
+    ``unattributed_reason`` is set when something blocks that no path
+    explains (an unreadable tier, a raw with no source path, missing source
+    raws); that still blocks everything.
     """
 
     source_paths: frozenset[str]
     unattributed_reason: str | None
+    gap_source_paths: frozenset[str] = frozenset()
 
 
 def raw_frontier_blocked_source_paths(
@@ -1303,6 +1314,7 @@ def raw_frontier_blocked_source_paths(
     if projection.available and projection.overall_status == "healthy":
         return RawFrontierBlockedPaths(frozenset(), None)
     paths: set[str] = set()
+    gap_paths: set[str] = set()
     unattributed: list[str] = []
     if projection.missing_source_raw_count:
         unattributed.append(projection.missing_source_raw_reason)
@@ -1318,7 +1330,7 @@ def raw_frontier_blocked_source_paths(
         if gap.source_path is None:
             unattributed.append(gap.reason)
         else:
-            paths.add(gap.source_path)
+            gap_paths.add(gap.source_path)
     if projection.broken_head_samples:
         raw_ids = {sample.accepted_raw_id for sample in projection.broken_head_samples}
         source_db_path = archive_root / "source.db"
@@ -1342,7 +1354,11 @@ def raw_frontier_blocked_source_paths(
                     unattributed.append(f"broken head {sample.accepted_raw_id} has no source path")
                 else:
                     paths.add(path)
-    return RawFrontierBlockedPaths(frozenset(paths), "; ".join(unattributed) or None)
+    return RawFrontierBlockedPaths(
+        frozenset(paths),
+        "; ".join(unattributed) or None,
+        gap_source_paths=frozenset(gap_paths.difference(paths)),
+    )
 
 
 def unknown_raw_frontier_integrity_projection(

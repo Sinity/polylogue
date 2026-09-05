@@ -22,7 +22,7 @@ from polylogue.operations.operation_status import OperationStatus
 from polylogue.storage.repair import ArchiveDebtStatus
 
 if TYPE_CHECKING:
-    from polylogue.storage.raw_retention import RawFrontierIntegrityProjection
+    from polylogue.storage.raw_retention import RawFrontierBlockedPaths, RawFrontierIntegrityProjection
 
 
 class CapabilityReadinessState(str, Enum):
@@ -521,6 +521,27 @@ def raw_frontier_source_selection_block_reason(
     return raw_frontier_integrity_summary(payload)
 
 
+def raw_frontier_source_selection_refusal(
+    archive_root: Path,
+    raw_materialization_readiness: Mapping[str, object] | None = None,
+) -> RawFrontierBlockedPaths:
+    """Attribute the source-selection block to the exact source paths it names.
+
+    Raw convergence refuses only the violation-named paths and proceeds with
+    the rest; a refusal no path explains
+    (``unattributed_reason``) still blocks the whole pass. Authority gaps
+    are admitted: materializing the path is what resolves them.
+    """
+    from polylogue.storage.raw_retention import raw_frontier_blocked_source_paths
+
+    return raw_frontier_blocked_source_paths(
+        archive_root,
+        raw_materialization_readiness
+        if raw_materialization_readiness is not None
+        else _raw_materialization_readiness_for_source_selection(archive_root),
+    )
+
+
 def _raw_materialization_readiness_for_source_selection(archive_root: Path) -> Mapping[str, object]:
     from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
@@ -938,6 +959,7 @@ __all__ = [
     "raw_frontier_integrity_projection",
     "raw_frontier_integrity_is_proven_healthy",
     "raw_frontier_source_selection_block_reason",
+    "raw_frontier_source_selection_refusal",
     "raw_frontier_integrity_summary",
     "status_snapshot_has_fresh_provenance",
     "unknown_raw_frontier_integrity_projection",

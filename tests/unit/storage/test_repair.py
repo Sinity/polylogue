@@ -808,6 +808,42 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
     )
 
 
+def test_raw_materialization_candidates_leave_out_refused_source_paths(tmp_path: Path) -> None:
+    """A refused physical path drops out of both the replay and census selections.
+
+    Anti-vacuity: dropping the ``NOT IN`` clause from either query puts the
+    refused raw back into that selection.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        refused_raw = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"mapping":{"refused":true}}',
+            source_path="refused.jsonl",
+            acquired_at_ms=1,
+        )
+        admitted_raw = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"mapping":{"admitted":true}}',
+            source_path="admitted.jsonl",
+            acquired_at_ms=2,
+        )
+    config = _config(tmp_path)
+
+    unrestricted = repair_mod._raw_materialization_candidate_ids(config)
+    assert {refused_raw, admitted_raw} <= set(unrestricted.raw_ids)
+
+    candidates = repair_mod._raw_materialization_candidate_ids(config, excluded_source_paths=("refused.jsonl",))
+    census = repair_mod._raw_materialization_parser_census_candidates(config, excluded_source_paths=("refused.jsonl",))
+
+    assert set(candidates.raw_ids) == {admitted_raw}
+    assert set(census.raw_ids) == {admitted_raw}
+
+
 def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: Path) -> None:
     """A deferred kind with terminal support cannot authorize replay."""
     from polylogue.core.enums import Provider
