@@ -21,15 +21,17 @@ No operator content is reproduced: the payload strings are invented.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from pathlib import Path
 
 from polylogue.core.enums import BlockType, Provider
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     join_gemini_tool_output_sidecars,
     resolve_tool_outputs_dir,
 )
+from polylogue.sources.parsers.base import ParsedSession
 
 _MASK = (
     "<tool_output_masked>\n"
@@ -42,7 +44,7 @@ _MASK = (
 )
 
 
-def _tool_call(tool_id: str, *, output: str, result_display: object) -> JSONDocument:
+def _tool_call(tool_id: str, *, output: str, result_display: JSONValue) -> JSONDocument:
     return {
         "id": tool_id,
         "name": tool_id.rsplit("_", 2)[0],
@@ -65,21 +67,21 @@ def _tool_call(tool_id: str, *, output: str, result_display: object) -> JSONDocu
     }
 
 
-def _session(messages: list[JSONDocument], *, session_id: str = "sess-1") -> JSONDocument:
+def _session(messages: Sequence[JSONValue], *, session_id: str = "sess-1") -> JSONDocument:
     return {
         "sessionId": session_id,
         "projectHash": "hash-1",
         "kind": "chat",
         "startTime": "2026-03-14T21:41:00.000Z",
         "lastUpdated": "2026-03-14T21:45:00.000Z",
-        "messages": messages,
+        "messages": list(messages),
     }
 
 
-def _tool_result_texts(session: object) -> list[str]:
+def _tool_result_texts(session: ParsedSession) -> list[str]:
     return [
         block.text
-        for message in session.messages  # type: ignore[attr-defined]
+        for message in session.messages
         for block in message.blocks
         if block.type is BlockType.TOOL_RESULT and block.text
     ]
@@ -131,7 +133,7 @@ def test_unmasked_output_is_kept_even_when_result_display_is_longer() -> None:
     Anti-vacuity: changing the rule from "masked" to "longer wins" makes this
     assert the cell text instead of ``ok``.
     """
-    cells = [[{"text": "ok", "fg": "white", "bold": False}] for _ in range(50)]
+    cells: JSONValue = [[{"text": "ok", "fg": "white", "bold": False}] for _ in range(50)]
     payload = _session(
         [
             {
