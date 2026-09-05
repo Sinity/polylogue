@@ -193,9 +193,10 @@ class BlobDispositionPlan:
     def reclaimable_bytes(self) -> int:
         """Bytes apply can actually unlink.
 
-        Apply deletes only an unreferenced member, so a member whose content
-        is proven at its source while a durable row still names its hash is
-        not reclaimable and must not be totalled as if it were.
+        Apply deletes only an unreferenced member whose disposition
+        authorizes removal, so a member a durable row still names, and a
+        ``restore_required`` member apply only ever restores, are both
+        outside this total.
         """
         return sum(
             member.size_bytes
