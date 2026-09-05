@@ -552,12 +552,15 @@ def _local_agent_document_spec(
     provider: Provider,
     payload: PayloadRecord,
     fallback_id: str,
+    *,
+    source_path: str | None = None,
 ) -> LoweredPayloadSpec:
     return LoweredPayloadSpec(
         provider=provider,
         fallback_id=fallback_id,
         mode="local_agent_document",
         payload=payload,
+        source_path=source_path,
     )
 
 
@@ -1447,7 +1450,7 @@ def _lower_payload_specs(
     if runtime_provider is Provider.GEMINI_CLI:
         record = _single_document_record(shaped_payload)
         if record is not None and local_agent.looks_like_gemini_cli(record):
-            return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
+            return [_local_agent_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
         return []
     if runtime_provider in DRIVE_LIKE_PROVIDERS:
         return _lower_drive_like_payload(
