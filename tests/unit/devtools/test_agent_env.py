@@ -10,7 +10,6 @@ from tests.unit.devtools.cgroups import (
     AGENT_CGROUPS,
     PYTEST_CGROUPS,
     deployed_agent_cgroup,
-    deployed_pytest_cgroup,
     outside_cgroup,
     reader,
 )
@@ -91,33 +90,55 @@ def test_every_agent_cgroup_family_rejects_direct_pytest_without_routing_environ
     assert agent_env.refuse_bare_pytest(environment, cgroup_reader=reader(cgroup)) is not None
 
 
-@pytest.mark.parametrize("prefix", PREFIXES)
 @pytest.mark.parametrize("cgroup", PYTEST_CGROUPS)
-def test_declared_pytest_worker_is_not_refused_for_its_own_operation(prefix: str, cgroup: str) -> None:
-    environment = _worker(prefix, "verify_affected")
+def test_a_job_in_the_pytest_pool_slice_is_not_refused(cgroup: str) -> None:
+    """The slice is ownership on its own: a job whose environment says nothing still holds the slot."""
+    environment = {**AGENT, "AGENTCTL_JOB_ID": "verify-affected-1", "AGENTCTL_OPERATION": "verify_affected"}
 
-    assert agent_env.inside_agent_job(environment, cgroup_reader=reader(cgroup))
-    assert agent_env.inside_declared_pytest_worker(environment, cgroup_reader=reader(cgroup))
+    assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(cgroup))
     assert agent_env.refuse_verify_tier([], environment, cgroup_reader=reader(cgroup)) is None
     assert agent_env.refuse_bare_pytest(environment, cgroup_reader=reader(cgroup)) is None
 
 
-@pytest.mark.parametrize("prefix", PREFIXES)
-def test_non_pytest_queue_worker_remains_agent_bound(prefix: str) -> None:
-    environment = _worker(prefix, "lane")
+@pytest.mark.parametrize("pool_variable", ["AGENTCTL_POOL", "SINNIXD_QUEUE_POOL"])
+def test_the_exported_pytest_pool_is_ownership(pool_variable: str) -> None:
+    environment = {**AGENT, pool_variable: "pytest"}
 
-    assert not agent_env.inside_declared_pytest_worker(environment, cgroup_reader=deployed_agent_cgroup)
+    assert agent_env.declared_pool(environment) == "pytest"
+    assert agent_env.inside_pytest_pool(environment, cgroup_reader=outside_cgroup)
+    assert agent_env.refuse_verify_tier([], environment, cgroup_reader=outside_cgroup) is None
+    assert agent_env.refuse_bare_pytest(environment, cgroup_reader=outside_cgroup) is None
+
+
+@pytest.mark.parametrize("prefix", PREFIXES)
+@pytest.mark.parametrize("operation", ["lane", "verify_affected", "verify_all"])
+def test_a_job_id_never_grants_the_pytest_slot(prefix: str, operation: str) -> None:
+    """Anti-vacuity: classifying by job id or operation name lets a lane run pytest outside the pool."""
+    environment = _worker(prefix, operation)
+
+    assert not agent_env.inside_pytest_pool(environment, cgroup_reader=deployed_agent_cgroup)
     assert agent_env.refuse_bare_pytest(environment, cgroup_reader=deployed_agent_cgroup) is not None
+    assert agent_env.refuse_verify_tier([], environment, cgroup_reader=deployed_agent_cgroup) is not None
 
 
 @pytest.mark.parametrize("prefix", PREFIXES)
-def test_every_declared_pytest_pool_operation_classifies_its_own_worker(prefix: str) -> None:
-    """A pytest-pool worker that queues again waits on the slot it already occupies.
+def test_a_declared_agent_pool_never_grants_the_pytest_slot(prefix: str) -> None:
+    pool_variable = agent_env.runtime_env_names("AGENTCTL_POOL")[PREFIXES.index(prefix)]
+    environment = _worker(prefix, "lane", **{pool_variable: "agent"})
 
-    Anti-vacuity: dropping any pytest-pool operation from
-    ``PYTEST_WORKER_OPERATIONS`` makes this red, and that deadlock is what a
-    queue runner not exporting the pool would hit.
-    """
+    assert not agent_env.inside_pytest_pool(environment, cgroup_reader=deployed_agent_cgroup)
+
+
+@pytest.mark.parametrize("cgroup", AGENT_CGROUPS)
+def test_a_managed_lane_running_bare_pytest_is_told_the_route(cgroup: str) -> None:
+    refusal = agent_env.refuse_bare_pytest({}, cgroup_reader=reader(cgroup))
+
+    assert refusal is not None
+    assert "devtools test" in refusal
+
+
+def test_every_declared_pytest_pool_operation_is_owned_by_its_slice() -> None:
+    """Every operation the descriptor puts in the pytest pool holds the slot by its cgroup alone."""
     declarations = tomllib.loads(
         (Path(__file__).resolve().parents[3] / ".agentctl" / "project.toml").read_text(encoding="utf-8")
     )
@@ -125,9 +146,6 @@ def test_every_declared_pytest_pool_operation_classifies_its_own_worker(prefix: 
         name for name, operation in declarations["operations"].items() if operation.get("pool") == agent_env.PYTEST_POOL
     }
 
-    assert declared, "the project declares the pytest pool; an empty set would assert nothing"
-    assert declared <= agent_env.PYTEST_WORKER_OPERATIONS, sorted(declared - agent_env.PYTEST_WORKER_OPERATIONS)
-    for operation in sorted(declared):
-        environment = _worker(prefix, operation)
-
-        assert agent_env.inside_declared_pytest_worker(environment, cgroup_reader=deployed_pytest_cgroup), operation
+    assert {"pytest_focused", "verify_affected", "verify_all"} <= declared
+    for cgroup in PYTEST_CGROUPS:
+        assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(cgroup))

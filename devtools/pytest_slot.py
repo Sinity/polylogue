@@ -1,22 +1,25 @@
-"""The host's single pytest slot, acquired through pueue.
+"""The host's single pytest slot: agentctl's ``pytest`` pool.
 
 pytest is the heaviest thing this checkout runs, and several agent sessions
 share one workstation. A run started from a session subagent sits outside every
-load control the daemon applies to its own jobs, so concurrent runs contend for
-the same cores and disk until a long job passes its timeout.
+load control the runtime applies to its own jobs, so concurrent runs contend
+for the same cores and disk until a long job passes its timeout.
 
-Every managed pytest run therefore holds the host's `pytest` pueue group (one
-task at a time). A run already inside the pytest queue task holds the slot
-already, marked explicitly with ``POLYLOGUE_PYTEST_SLOT=held``. Generic
-Sinnixd job identity does not imply pytest-slot ownership: lane jobs queue and
-wait here.
+Every managed pytest run therefore runs inside the host's ``pytest`` pool (one
+task at a time). A process already inside that pool holds the slot: the
+runtime places the job in ``agentctl-pytest.slice`` (``sinnixd-pueue-pytest.slice``
+on older hosts) and exports the pool name. A job id alone is not ownership:
+lane jobs and every other caller submit the declared ``pytest_focused``
+operation through ``agentctl job start`` and wait for it.
+``POLYLOGUE_PYTEST_SLOT=held`` is the explicit escape for a hermetic test of
+this mechanism.
 
-pueue 4 records the full client environment of ``pueue add`` into a user-only
-state file, so the adder runs with a reduced environment and the managed pytest
-environment travels in the launch file instead.
+The managed pytest environment travels in a launch file the queued operation
+consumes, because the queue persists the submitting client's environment and
+the declared operation resolves its own.
 
-Every run started here also keeps its temporary trees inside the checkout; see
-:func:`basetemp_root`.
+Every run started here also keeps its temporary trees inside the checkout and
+disposes of them on every exit but a failed run's; see :func:`basetemp_root`.
 """
 
 from __future__ import annotations
@@ -29,22 +32,24 @@ import signal
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
-from devtools.agent_env import inside_declared_pytest_worker
+from devtools.agent_env import PYTEST_POOL, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
     "INHERITED_ENVIRONMENT_KEYS",
     "REAPED_SIGNALS",
-    "PYTEST_GROUP",
+    "PYTEST_OPERATION",
+    "PYTEST_POOL",
     "PytestSlotUnavailableError",
     "SlotOutcome",
     "basetemp_root",
+    "client_environment",
     "contained_pytest_run",
     "holds_pytest_slot",
     "main",
@@ -52,28 +57,38 @@ __all__ = [
     "run_pytest",
 ]
 
-#: Exported into every task the runtime starts (``SINNIXD_JOB_ID`` on older hosts).
-QUEUE_TASK_ENV: Final = "AGENTCTL_JOB_ID"
-#: The installed queue runner moves the workload out of pueued.service and
-#: into the slice selected by the launch document's pool; older hosts install
-#: it under the second name.
-QUEUE_RUNNERS: Final[tuple[str, ...]] = ("agentctl-run", "sinnixd-queue-run")
+#: The runtime's command line.
+AGENTCTL: Final = "agentctl"
+#: The declared operation in the pytest pool that runs one launch file.
+PYTEST_OPERATION: Final = "pytest_focused"
 #: Explicit escape, for the hermetic test of this mechanism.
 SLOT_ESCAPE_ENV: Final = "POLYLOGUE_PYTEST_SLOT"
 SLOT_HELD: Final = "held"
+#: How often the waiter asks the runtime whether its job has ended.
+POLL_INTERVAL_S: Final = 2.0
 
-#: The host group whose parallelism is one.
-PYTEST_GROUP: Final = "pytest"
-
-#: Signals that end this process while it waits on a task it owns. The task
-#: outlives the waiter, and the slot's parallelism is one, so an unreaped task
+#: Signals that end this process while it waits on a job it owns. The job
+#: outlives the waiter, and the pool's parallelism is one, so an unreaped job
 #: starves every other checkout on the host until someone notices.
 REAPED_SIGNALS: Final[tuple[signal.Signals, ...]] = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 
-#: The only keys the ``pueue add`` client inherits. Everything pytest needs
-#: travels in the launch file, because pueue persists the adder's environment
-#: into shared state.
-INHERITED_ENVIRONMENT_KEYS: Final[tuple[str, ...]] = ("HOME", "PATH", "XDG_RUNTIME_DIR", "XDG_DATA_HOME")
+#: The only keys the ``agentctl`` client inherits: what the runtime needs to
+#: reach the queue and enter the project environment. Everything pytest needs
+#: travels in the launch file, because the queue persists the client's
+#: environment into shared state.
+INHERITED_ENVIRONMENT_KEYS: Final[tuple[str, ...]] = (
+    "HOME",
+    "USER",
+    "PATH",
+    "LANG",
+    "TERM",
+    "SSH_AUTH_SOCK",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_STATE_HOME",
+)
 
 LAUNCH_DIR: Final = Path(".cache/verify")
 
@@ -91,7 +106,7 @@ class PytestSlotUnavailableError(RuntimeError):
 @dataclass(frozen=True)
 class SlotOutcome:
     returncode: int
-    #: What the receipt records: ``pueue task 12`` or ``held``.
+    #: What the receipt records: ``agentctl job 12`` or ``held``.
     slot: str
     #: Where the queued run's output landed, or None when it streamed.
     log_path: Path | None = None
@@ -151,7 +166,8 @@ def contained_pytest_run(
 
     Both halves are needed: ``--basetemp`` covers the fixtures pytest hands
     out, and TMPDIR covers what the code under test asks the standard library
-    for. Returns the scratch directory the caller owns.
+    for. Returns the scratch directory the caller owns; the basetemp is its
+    sibling without the ``.tmpdir`` suffix.
     """
     argv = list(command)
     declared = _declared_basetemp(argv)
@@ -177,25 +193,24 @@ def contained_pytest_run(
     return argv, contained, scratch
 
 
-def holds_pytest_slot(env: Mapping[str, str]) -> bool:
-    """Whether this process is already inside the host's pytest slot."""
-    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_declared_pytest_worker(env)
+def holds_pytest_slot(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
+    """Whether this process is already inside the host's pytest slot.
+
+    Ownership is the pytest pool: the cgroup the runtime placed the job in, or
+    the pool name it exported. A job id alone never is.
+    """
+    return env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_pytest_pool(env, cgroup_reader=cgroup_reader)
 
 
-def adder_environment(env: Mapping[str, str]) -> dict[str, str]:
-    """The reduced environment the ``pueue add`` client runs with."""
+def client_environment(env: Mapping[str, str]) -> dict[str, str]:
+    """The reduced environment the ``agentctl`` client runs with."""
     return {key: env[key] for key in INHERITED_ENVIRONMENT_KEYS if env.get(key)}
 
 
-def _pueue_executable(env: Mapping[str, str]) -> str:
-    found = shutil.which("pueue", path=env.get("PATH") or os.defpath)
-    if found is None:
-        raise PytestSlotUnavailableError(REFUSAL.format(reason="`pueue` is not on PATH"))
-    return found
-
-
-def _pueue(arguments: Sequence[str], *, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
-    executable = _pueue_executable(env)
+def _agentctl(arguments: Sequence[str], *, env: Mapping[str, str]) -> subprocess.CompletedProcess[str]:
+    executable = shutil.which(AGENTCTL, path=env.get("PATH") or os.defpath)
+    if executable is None:
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL}` is not on PATH"))
     try:
         return subprocess.run(
             [executable, *arguments],
@@ -206,70 +221,72 @@ def _pueue(arguments: Sequence[str], *, env: Mapping[str, str]) -> subprocess.Co
         )
     except OSError as exc:
         raise PytestSlotUnavailableError(
-            REFUSAL.format(reason=f"`pueue {arguments[0]}` could not start: {exc}")
+            REFUSAL.format(reason=f"`{AGENTCTL} {' '.join(arguments)}` could not start: {exc}")
         ) from exc
 
 
-def _cancel_task(task_id: str, *, env: Mapping[str, str]) -> None:
-    """Cancel through the owner that also empties the task's systemd scope."""
-    executable = shutil.which("agentctl", path=env.get("PATH") or os.defpath)
-    if executable is None:
-        raise PytestSlotUnavailableError(REFUSAL.format(reason="`agentctl` is not on PATH"))
-    try:
-        completed = subprocess.run(
-            [executable, "job", "cancel", task_id],
-            env=dict(env),
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as exc:
-        raise PytestSlotUnavailableError(
-            REFUSAL.format(reason=f"`agentctl job cancel` could not start: {exc}")
-        ) from exc
+def _document(completed: subprocess.CompletedProcess[str], *, verb: str) -> dict[str, Any]:
     if completed.returncode != 0:
         detail = completed.stderr.strip() or completed.stdout.strip()
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`agentctl job cancel` failed: {detail}"))
-
-
-def _task_result(status_json: str, task_id: str) -> int:
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} {verb}` failed: {detail}"))
     try:
-        document = json.loads(status_json)
+        document = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`pueue status --json` was unreadable: {exc}")) from exc
-    task = (document.get("tasks") or {}).get(task_id) if isinstance(document, Mapping) else None
-    if not isinstance(task, Mapping):
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"pueue no longer knows task {task_id}"))
-    status = task.get("status")
-    detail = status.get("Done") if isinstance(status, Mapping) else None
-    if not isinstance(detail, Mapping):
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"pueue task {task_id} did not reach Done: {status!r}"))
-    result = detail.get("result")
-    if result == "Success":
+        raise PytestSlotUnavailableError(
+            REFUSAL.format(reason=f"`{AGENTCTL} {verb}` printed no document: {exc}")
+        ) from exc
+    if not isinstance(document, dict):
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} {verb}` printed no document"))
+    return document
+
+
+def _cancel_job(job_id: int, *, env: Mapping[str, str]) -> None:
+    """Cancel through the owner that also stops the job's transient unit."""
+    completed = _agentctl(["job", "cancel", str(job_id)], env=env)
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job cancel` failed: {detail}"))
+
+
+def _wait_for(job_id: int, *, env: Mapping[str, str]) -> dict[str, Any]:
+    """The job's terminal view. The queue wait has no deadline; the job itself has one."""
+    while True:
+        view = _document(_agentctl(["--json", "job", "get", str(job_id)], env=env), verb="job get")
+        if view.get("terminal"):
+            return view
+        time.sleep(POLL_INTERVAL_S)
+
+
+def _job_exit_status(view: Mapping[str, Any], *, receipt: Mapping[str, Any] | None) -> int:
+    phase = view.get("phase")
+    exit_code = view.get("exit_code")
+    status = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
+    if phase == "succeeded":
         return 0
-    if isinstance(result, Mapping) and "Failed" in result:
-        return int(result["Failed"])
-    # Killed, and every other terminal-but-not-exited result.
-    raise PytestSlotUnavailableError(REFUSAL.format(reason=f"pueue task {task_id} ended as {result!r}"))
+    if phase == "failed":
+        return status or 1
+    if phase == "timed-out" or (receipt is not None and receipt.get("status") == "timed_out"):
+        return 124
+    # Cancelled, refused, vanished, slot-occupied: the run did not happen.
+    raise PytestSlotUnavailableError(
+        REFUSAL.format(reason=f"{AGENTCTL} job {view.get('job_id')} ended {phase!r} (exit {status!r})")
+    )
 
 
-def _reap_task(task_id: str, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:
-    """End a task this process owns and empty its execution scope.
+def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None) -> None:
+    """End a job this process owns and stop its transient unit.
 
     Best effort by construction: the reason we are here is that the waiter is
     being killed, so a failing reap must not replace the original cause of
-    death with its own error. AgentCTL owns cancellation because pueue kills
-    the queue runner with SIGKILL, which leaves the workload alive in the
-    transient systemd scope that only AgentCTL names and stops.
+    death with its own error.
 
     The launch file belongs to whoever ends the run, so deleting it is part of
-    a cancellation that succeeded: a task still on the queue reads it when it
+    a cancellation that succeeded: a job still on the queue reads it when it
     starts.
     """
-
     cancelled = False
     try:
-        _cancel_task(task_id, env=env)
+        _cancel_job(job_id, env=env)
         cancelled = True
     except PytestSlotUnavailableError:
         pass
@@ -279,11 +296,21 @@ def _reap_task(task_id: str, *, env: Mapping[str, str], launch_path: Path | None
 
 
 @contextlib.contextmanager
-def _reaping(task_id: str, *, env: Mapping[str, str], launch_path: Path | None = None) -> Iterator[None]:
-    """Reap ``task_id`` if this process is signalled or unwound while waiting."""
+def _on_exit(*actions: Callable[[], None]) -> Iterator[None]:
+    """Run ``actions`` if this process is signalled or unwound inside the block.
+
+    A signal runs the actions, restores the previous handler and re-raises the
+    signal, so an outer handler (or the default action) decides what the
+    signal means; the actions are what must not be skipped on the way there.
+    """
+
+    def run_actions() -> None:
+        for action in actions:
+            with contextlib.suppress(Exception):
+                action()
 
     def handle(signal_number: int, frame: object) -> None:
-        _reap_task(task_id, env=env, launch_path=launch_path)
+        run_actions()
         signal.signal(signal_number, previous.get(signal.Signals(signal_number), signal.SIG_DFL))
         os.kill(os.getpid(), signal_number)
 
@@ -294,7 +321,7 @@ def _reaping(task_id: str, *, env: Mapping[str, str], launch_path: Path | None =
     try:
         yield
     except BaseException:
-        _reap_task(task_id, env=env, launch_path=launch_path)
+        run_actions()
         raise
     finally:
         for number, handler in previous.items():
@@ -309,19 +336,13 @@ def _write_launch(
     cwd: str,
     env: Mapping[str, str],
     log_path: Path,
-    job_id: str,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
-        "job_id": job_id,
-        "project_id": "polylogue",
-        "operation": "test",
-        "pool": PYTEST_GROUP,
+        "kind": "polylogue.pytest-slot-launch",
         "argv": list(argv),
         "working_directory": cwd,
         "environment": dict(env),
-        "timeout_seconds": 3600,
-        "result_kind": "exit",
         "log_path": str(log_path),
     }
     # The launch file carries the resolved environment; keep it off other users.
@@ -330,76 +351,53 @@ def _write_launch(
         json.dump(document, stream)
 
 
-def _queue(
+def _submit(
     command: Sequence[str],
     *,
     cwd: str,
     env: Mapping[str, str],
     root: Path,
-    label: str,
+    on_exit: Callable[[], None],
 ) -> SlotOutcome:
+    """Run ``command`` as the declared pytest-pool operation and wait for it."""
     identity = f"{os.getpid()}"
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
-    adder = adder_environment(env)
-    queue_runner = next(
-        (found for name in QUEUE_RUNNERS if (found := shutil.which(name, path=adder.get("PATH") or os.defpath))),
-        None,
-    )
-    if queue_runner is None:
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"none of {', '.join(QUEUE_RUNNERS)} is on PATH"))
-    _write_launch(
-        launch_path,
-        argv=command,
-        cwd=cwd,
-        env=env,
-        log_path=log_path,
-        job_id=f"polylogue-test-{identity}",
-    )
-    added = _pueue(
-        [
-            "add",
-            "--escape",
-            "--group",
-            PYTEST_GROUP,
-            "--label",
-            label,
-            "--working-directory",
-            str(root),
-            "--print-task-id",
-            "--",
-            queue_runner,
-            str(launch_path),
-        ],
-        env=adder,
-    )
-    if added.returncode != 0:
-        launch_path.unlink(missing_ok=True)
-        raise PytestSlotUnavailableError(
-            REFUSAL.format(reason=f"`pueue add` failed: {added.stderr.strip() or added.stdout.strip()}")
+    client = client_environment(env)
+    _write_launch(launch_path, argv=command, cwd=cwd, env=env, log_path=log_path)
+    try:
+        started = _agentctl(
+            [
+                "--json",
+                "job",
+                "start",
+                str(root),
+                PYTEST_OPERATION,
+                "--workspace",
+                str(root),
+                "--",
+                str(launch_path),
+            ],
+            env=client,
         )
-    task_id = added.stdout.strip()
-    if not task_id.isdigit():
+        job_id = _document(started, verb="job start").get("job_id")
+        if not isinstance(job_id, int) or isinstance(job_id, bool):
+            raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job start` returned no job id"))
+    except PytestSlotUnavailableError:
         launch_path.unlink(missing_ok=True)
-        raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`pueue add` printed no task id: {added.stdout!r}"))
-    sys.stderr.write(f"  waiting for the host pytest slot (pueue task {task_id}, group {PYTEST_GROUP}) ...\n")
+        raise
+    sys.stderr.write(f"  waiting for the host pytest slot ({AGENTCTL} job {job_id}, pool {PYTEST_POOL}) ...\n")
     sys.stderr.flush()
-    with _reaping(task_id, env=adder, launch_path=launch_path):
-        _pueue(["wait", task_id], env=adder)
-        status = _pueue(["status", "--json"], env=adder)
-        receipt = _read_timeout_receipt(log_path)
-        try:
-            returncode = _task_result(status.stdout, task_id)
-        except PytestSlotUnavailableError:
-            if receipt is None or receipt.get("status") != "timed_out":
-                raise
-            returncode = 124
+    with _on_exit(lambda: _reap_job(job_id, env=client, launch_path=launch_path), on_exit):
+        view = _wait_for(job_id, env=client)
+    receipt = _read_timeout_receipt(log_path)
+    returncode = _job_exit_status(view, receipt=receipt)
     launch_path.unlink(missing_ok=True)
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
     return SlotOutcome(
         returncode=returncode,
-        slot=f"pueue task {task_id}",
+        slot=f"{AGENTCTL} job {job_id}",
         log_path=log_path,
         receipt=receipt,
     )
@@ -476,33 +474,66 @@ def _write_timeout_receipt(
     return receipt
 
 
+def _run_held(
+    argv: Sequence[str], *, cwd: str, env: Mapping[str, str], stdout: IO[Any] | None, on_exit: Callable[[], None]
+) -> int:
+    """Run pytest here, in its own process group so a signalled waiter takes it along."""
+    process = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
+
+    def stop() -> None:
+        if process.poll() is not None:
+            return
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+
+    with _on_exit(stop, on_exit):
+        return process.wait()
+
+
 def run_pytest(
     command: Sequence[str],
     *,
     cwd: str,
     env: Mapping[str, str],
     root: Path,
-    label: str,
     stdout: IO[Any] | None = None,
 ) -> SlotOutcome:
     """Run a managed pytest command, acquiring the host's pytest slot first.
 
-    When the pytest-group runner sets ``POLYLOGUE_PYTEST_SLOT=held``, the slot
-    is already held and the command runs here, streaming as before. Every other
-    caller is queued in the host's single-slot ``pytest`` group and its output
-    is captured.
+    A caller inside the pytest pool (or marked ``POLYLOGUE_PYTEST_SLOT=held``)
+    runs the command here, streaming as before. Every other caller submits it
+    as the ``pytest_focused`` operation in the host's single-slot pytest pool
+    and reads the captured log.
+
+    The temporary trees are removed on every exit except a failed run's, whose
+    leftovers are worth reading.
     """
     argv, contained, scratch = contained_pytest_run(command, env=env, root=root)
-    if holds_pytest_slot(env):
-        completed = subprocess.run(argv, cwd=cwd, env=contained, stdout=stdout, stderr=stdout)
-        outcome = SlotOutcome(returncode=completed.returncode, slot=SLOT_HELD)
-    else:
-        outcome = _queue(argv, cwd=cwd, env=contained, root=root, label=label)
-    # A failed run keeps its scratch: that is when the leftovers are worth
-    # reading.
-    if outcome.returncode == 0:
-        remove_temp_tree(scratch)
-    return outcome
+    basetemp = scratch.with_name(scratch.name.removesuffix(".tmpdir"))
+    keep = False
+
+    def dispose() -> None:
+        if not keep:
+            remove_temp_tree(scratch)
+            remove_temp_tree(basetemp)
+
+    try:
+        if holds_pytest_slot(env):
+            returncode = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
+            outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD)
+        else:
+            outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
+        keep = outcome.returncode != 0
+        return outcome
+    finally:
+        dispose()
 
 
 def _read_launch(path: Path) -> dict[str, Any]:
@@ -515,13 +546,8 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Run one launch file inside the pueue task holding the pytest slot."""
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    if len(arguments) != 1:
-        sys.stderr.write("usage: python -m devtools.pytest_slot <launch file>\n")
-        return 2
-    launch_path = Path(arguments[0])
+def _run_launch(launch_path: Path) -> int:
+    """Run one launch file inside the job holding the pytest slot."""
     try:
         launch = _read_launch(launch_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -554,12 +580,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     child.wait(timeout=2)
         with contextlib.suppress(OSError):
-            _write_timeout_receipt(
+            receipt = _write_timeout_receipt(
                 log_path,
                 environment=environment,
                 started=started,
                 signal_number=signal_number,
             )
+            _print_result(receipt)
         os._exit(128 + signal_number)
 
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
@@ -581,7 +608,41 @@ def main(argv: Sequence[str] | None = None) -> int:
             for number, handler in previous.items():
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(number, handler)
+    _print_result(
+        {
+            "schema_version": 1,
+            "kind": "polylogue.pytest-slot-result",
+            "status": "success" if returncode == 0 else "failed",
+            "exit_code": returncode,
+            "elapsed_s": round(time.monotonic() - started, 3),
+            "log_path": str(log_path),
+        }
+    )
     return returncode
+
+
+def _print_result(document: Mapping[str, Any]) -> None:
+    """The job's typed result: its stdout is the result artifact."""
+    with contextlib.suppress(OSError):
+        sys.stdout.write(json.dumps(document, sort_keys=True) + "\n")
+        sys.stdout.flush()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """The ``pytest_focused`` operation: one launch file, or a ``devtools test`` selection.
+
+    Either way the job is in the pytest pool, so the run holds the slot and
+    executes in place.
+    """
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) == 1 and arguments[0].endswith(".json"):
+        return _run_launch(Path(arguments[0]))
+    if not arguments:
+        sys.stderr.write("usage: python -m devtools.pytest_slot <launch file> | <devtools test selection>\n")
+        return 2
+    from devtools.run_tests import main as run_focused_tests
+
+    return run_focused_tests(arguments)
 
 
 if __name__ == "__main__":  # pragma: no cover - console entry point

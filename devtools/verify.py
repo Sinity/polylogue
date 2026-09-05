@@ -81,6 +81,13 @@ PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
 CORPUS_MAX_WORKERS = 2
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
+#: Path classes no test exercises: orchestration metadata, documentation and
+#: hosted workflow definitions. A change set inside them selects no pytest
+#: step; the static gates still run.
+_NO_TEST_PATH_PREFIXES = (".agentctl/", ".github/")
+_NO_TEST_PATH_SUFFIXES = (".md",)
+#: Selections that do not consult the testmon graph.
+_GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 # These tests read the AgentCTL descriptor directly. They are the bounded
 # contract for a descriptor-only change; Python changes still use Testmon.
 DESCRIPTOR_CONTRACT_TESTS = (
@@ -200,7 +207,7 @@ NON_BLOCKING_LABELS: frozenset[str] = frozenset(gate.label for gate in quick_gat
 
 def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
-    if not quick:
+    if not quick and selection != "none":
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
         steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
     return steps
@@ -246,11 +253,35 @@ def _git_changed_paths(root: Path) -> frozenset[str] | None:
         return None
 
 
+def _no_test_path(path: str) -> bool:
+    return path.startswith(_NO_TEST_PATH_PREFIXES) or path.endswith(_NO_TEST_PATH_SUFFIXES)
+
+
 def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
-    """Choose bounded descriptor checks only for an exact descriptor diff."""
-    if changed_paths == frozenset({_PROJECT_DESCRIPTOR}):
-        return "descriptor"
-    return "affected"
+    """The pytest selection a change set earns.
+
+    ``affected``: the testmon graph selects. ``descriptor``: the change stays
+    inside orchestration metadata and includes the AgentCTL descriptor, so the
+    explicit descriptor contract tests are the whole selection. ``none``: the
+    change stays inside orchestration metadata, documentation and hosted
+    workflow definitions, which no test exercises. An unknown or empty change
+    set is ``affected``.
+    """
+    if not changed_paths or not all(_no_test_path(path) for path in changed_paths):
+        return "affected"
+    return "descriptor" if _PROJECT_DESCRIPTOR in changed_paths else "none"
+
+
+def _selection_reason(selection: str) -> str | None:
+    if selection == "none":
+        return (
+            "every changed path is orchestration metadata, documentation or a hosted workflow "
+            f"({', '.join(f'{prefix}**' for prefix in _NO_TEST_PATH_PREFIXES)}, "
+            f"{', '.join(f'*{suffix}' for suffix in _NO_TEST_PATH_SUFFIXES)}); no test exercises them"
+        )
+    if selection == "descriptor":
+        return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
+    return None
 
 
 def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
@@ -336,14 +367,7 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
     # The rerun is pytest too, so it holds the host's pytest slot like the run
     # it is adjudicating.
     try:
-        rerun_completed = run_pytest(
-            rerun_command,
-            cwd=str(ROOT),
-            env=rerun_env,
-            root=ROOT,
-            label=f"polylogue:verify-rerun:{os.getpid()}",
-            stdout=sys.stderr,
-        )
+        rerun_completed = run_pytest(rerun_command, cwd=str(ROOT), env=rerun_env, root=ROOT, stdout=sys.stderr)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
@@ -465,14 +489,7 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         try:
-            outcome = run_pytest(
-                command,
-                cwd=str(ROOT),
-                env=env,
-                root=ROOT,
-                label=f"polylogue:verify:{os.getpid()}",
-                stdout=sys.stderr,
-            )
+            outcome = run_pytest(command, cwd=str(ROOT), env=env, root=ROOT, stdout=sys.stderr)
         except PytestSlotUnavailableError as exc:
             early_metadata = {"diagnosis": "pytest_slot_unavailable", "error": str(exc)}
             run.finish_step(
@@ -581,7 +598,7 @@ def _early_gate_failure_result(started: float, metadata: Mapping[str, Any]) -> d
 
 
 def _scope(*, quick: bool, selection: str) -> VerificationScope:
-    if quick:
+    if quick or selection == "none":
         return VerificationScope.NON_TEST
     return VerificationScope.AFFECTED if selection in {"affected", "descriptor"} else VerificationScope.COMPLETE
 
@@ -779,7 +796,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         selection = _selection_for_changes(_git_changed_paths(ROOT))
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
-    if graph.status is TestmonGraphStatus.UNUSABLE and selection != "descriptor":
+    if graph.status is TestmonGraphStatus.UNUSABLE and selection not in _GRAPH_FREE_SELECTIONS:
         # An unusable lane copy cannot be an authority. If the primary seed
         # was unavailable, discard it so this run honestly reseeds.
         discard_testmon_graph(ROOT)
@@ -813,13 +830,16 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             selection_mode=selection,
             graph_status=str(graph.status),
             graph_reason=graph.reason,
-            full_rerun_cause=graph.full_rerun_cause if selection != "descriptor" else None,
+            full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
             seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
+            selection_reason=_selection_reason(selection),
         )
-        if graph.status is TestmonGraphStatus.UNUSABLE and selection != "descriptor":
+        if selection == "none":
+            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection)) + "\n")
+        if graph.status is TestmonGraphStatus.UNUSABLE and selection not in _GRAPH_FREE_SELECTIONS:
             payload = _finish_and_record_verification(
                 run=run,
                 exit_code=2,
@@ -831,7 +851,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             sys.stderr.write(f"verify: {graph.reason}; no usable primary seed was available.\n")
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-        if selection != "descriptor":
+        if selection not in _GRAPH_FREE_SELECTIONS:
             if graph.status is TestmonGraphStatus.ABSENT:
                 sys.stderr.write("verify: no testmon datafile: this run seeds it and runs every test.\n")
             elif graph.full_rerun_cause:

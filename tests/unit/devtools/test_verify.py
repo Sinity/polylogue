@@ -23,6 +23,7 @@ from devtools import (
     why,
 )
 from devtools.testmon_provision import TestmonGraphStatus
+from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
@@ -324,9 +325,11 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     below fail.
     """
     assert verify._selection_for_changes(frozenset({".agentctl/project.toml"})) == "descriptor"
+    assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "README.md"})) == "descriptor"
     assert verify._selection_for_changes(frozenset({"polylogue/example.py"})) == "affected"
     assert verify._selection_for_changes(frozenset({".agentctl/project.toml", "polylogue/example.py"})) == "affected"
     assert verify._selection_for_changes(None) == "affected"
+    assert verify._selection_for_changes(frozenset()) == "affected"
 
     descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
     assert "--testmon" not in descriptor_command
@@ -337,6 +340,79 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     assert "--testmon" in affected_command
     assert "--testmon-forceselect" in affected_command
     assert not any(nodeid in affected_command for nodeid in verify.DESCRIPTOR_CONTRACT_TESTS)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        frozenset({"docs/devtools.md"}),
+        frozenset({".github/workflows/verify.yml"}),
+        frozenset({".agentctl/README.md", "CLAUDE.md", ".github/CODEOWNERS"}),
+    ],
+)
+def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
+    """Orchestration metadata, documentation and workflows are exercised by no test.
+
+    Anti-vacuity: dropping the path-class rule routes these through the testmon
+    graph, which selects most of the corpus for a change outside Python.
+    """
+    assert verify._selection_for_changes(changed) == "none"
+    assert verify._selection_reason("none")
+    assert verify._selection_reason("affected") is None
+    assert verify._scope(quick=False, selection="none") is VerificationScope.NON_TEST
+    labels = [label for label, _command in verify.build_verify_steps(quick=False, selection="none")]
+    assert labels and not any(label.startswith("pytest") for label in labels)
+
+
+@pytest.mark.parametrize(
+    ("changed", "expected"),
+    [
+        (frozenset({"docs/devtools.md", "polylogue/example.py"}), "affected"),
+        (frozenset({"README.md", "tests/unit/test_example.py"}), "affected"),
+        (frozenset({"pyproject.toml"}), "affected"),
+    ],
+)
+def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], expected: str) -> None:
+    assert verify._selection_for_changes(changed) == expected
+
+
+def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A run with no pytest step carries its reason in the receipt, where the hosted check reads it."""
+    from devtools.agent_env import AGENT_PRINCIPAL, AGENT_PRINCIPAL_ENV
+
+    history: dict[str, Any] = {}
+    steps_seen: dict[str, Any] = {}
+    monkeypatch.setenv(AGENT_PRINCIPAL_ENV, AGENT_PRINCIPAL)
+    monkeypatch.setattr(verify, "refuse_verify_tier", lambda _argv, _env: None)
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_git_changed_paths", lambda _root: frozenset({"docs/devtools.md"}))
+    monkeypatch.setattr(verify, "sync_testmon_graph", lambda _root: False)
+    monkeypatch.setattr(
+        verify,
+        "inspect_testmon_graph",
+        lambda _root: SimpleNamespace(status=TestmonGraphStatus.UNUSABLE, reason="corrupt", full_rerun_cause=None),
+    )
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+
+    def capture_steps(**kwargs: Any) -> list[tuple[str, list[str]]]:
+        steps_seen.update(kwargs)
+        return [("gate lint", ["true"])]
+
+    monkeypatch.setattr(verify, "build_verify_steps", capture_steps)
+    monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    assert verify._main([]) == 0, "an unusable graph is irrelevant when no selection consults it"
+    assert steps_seen["selection"] == "none"
+    assert history["testmon_selection"]["selection_mode"] == "none"
+    assert "no test exercises them" in history["testmon_selection"]["selection_reason"]
+    assert history["verification_scope"] == VerificationScope.NON_TEST.value
+    run_payload = json.loads((tmp_path / str(history["artifact_dir"]) / "run.json").read_text())
+    assert run_payload["testmon_selection"]["selection_reason"] == history["testmon_selection"]["selection_reason"]
 
 
 def test_verify_main_routes_descriptor_diff_to_bounded_selection(

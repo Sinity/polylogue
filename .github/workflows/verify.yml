@@ -61,3 +61,12 @@ jobs:
           nix develop --command devtools verify
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+
+      # A zero exit is not the evidence; the run receipt is. The check fails
+      # unless the newest receipt succeeded and either a pytest step ran to
+      # success or the selection was "none" for a recorded reason.
+      - name: Require test evidence in the run receipt
+        if: steps.pr-state.outputs.skip != 'true'
+        run: |
+          export PATH="/run/current-system/sw/bin:$PATH"
+          nix develop --command python -m devtools.verify_receipt_check

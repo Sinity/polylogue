@@ -294,6 +294,7 @@ class VerifyRun:
         full_rerun_cause: str | None = None,
         seed_source: str | None = None,
         seed_source_mtime_ns: int | None = None,
+        selection_reason: str | None = None,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -302,6 +303,9 @@ class VerifyRun:
             "full_rerun_cause": full_rerun_cause,
             "seed_source": seed_source,
             "seed_source_mtime_ns": seed_source_mtime_ns,
+            # Why the selection is bounded or empty; what a reader of a run
+            # with no pytest step needs to accept it.
+            "selection_reason": selection_reason,
         }
         self.write()
 

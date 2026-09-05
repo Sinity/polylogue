@@ -23,6 +23,8 @@ root = "/realm/worktrees"
 default_base = "origin/master"
 identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
 checkpoint_untracked = true
+# Pre-publication: the static gates. Affected tests are the pull request's
+# hosted `verify` check; the corpus is the nightly master-boundary run.
 verification_operations = ["verify_quick"]
 
 [conflicts]
@@ -34,6 +36,15 @@ archive-schema = ["polylogue/storage/schema.py", "polylogue/storage/sqlite/migra
 command-catalog = ["devtools/command_catalog.py", "docs/devtools.md"]
 verification-graph = ["devtools/verify.py", "pyproject.toml"]
 
+[operations.pytest_focused]
+description = "Run one managed pytest launch file, or a devtools test selection, inside the host's pytest slot"
+exec = ["python", "-m", "devtools.pytest_slot"]
+pool = "pytest"
+result = "pytest"
+cache = "none"
+timeout_seconds = 3600
+
+# Manual: the pull request's hosted `verify` check runs this for a candidate.
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
 exec = ["env", "POLYLOGUE_PYTEST_WORKERS=2", "devtools", "verify"]

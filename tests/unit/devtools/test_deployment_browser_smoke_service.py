@@ -59,6 +59,8 @@ print(json.dumps({
     "project_id": adapter.project_id,
     "operation_count": len(adapter.operations),
     "proof": {"command": proof.command, "pool": proof.pool, "result": proof.result},
+    "publish": adapter.workspace.publish,
+    "verification_operations": list(adapter.workspace.verification_operations),
 }))
 """
     completed = subprocess.run(
@@ -79,6 +81,9 @@ print(json.dumps({
         "pool": "interactive",
         "result": "json",
     }
+    # Publication runs the static gates only; affected tests are the hosted
+    # PR check and the corpus is the nightly run (no local corpus per lane).
+    assert parsed["verification_operations"] == ["verify_quick"]
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
