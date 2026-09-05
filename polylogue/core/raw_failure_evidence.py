@@ -194,6 +194,22 @@ RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS = tuple(
 )
 
 
+def terminal_carrier_overwrite_predicate() -> str:
+    """SQL predicate that is true when an upsert would take back a terminal carrier.
+
+    A raw refused with a typed terminal outcome owns its ``raw_artifacts``
+    row: that carrier is the only durable statement that the bytes will
+    never become a session, and the raw-frontier gate reads it to settle
+    the path. Re-observing the same coordinate re-derives an ordinary path
+    classification; only another failure-evidence write may change a
+    carrier's kind. Written against the ``raw_artifacts``/``excluded``
+    aliases an ``ON CONFLICT`` clause exposes.
+    """
+    terminal = ", ".join(f"'{kind}'" for kind in sorted(RAW_FAILURE_TERMINAL_EVIDENCE_KINDS))
+    evidence = ", ".join(f"'{kind}'" for kind in sorted(RAW_FAILURE_EVIDENCE_KINDS))
+    return f"(raw_artifacts.artifact_kind IN ({terminal}) AND excluded.artifact_kind NOT IN ({evidence}))"
+
+
 __all__ = [
     "RAW_FAILURE_DEFERRED_EVIDENCE_KINDS",
     "RAW_FAILURE_DEFERRED_SUPPORT_STATUS",
@@ -207,6 +223,7 @@ __all__ = [
     "RAW_FAILURE_VALIDATION_FAILURE_KINDS",
     "RawFailureEvidenceKind",
     "has_trusted_raw_failure_provenance",
+    "terminal_carrier_overwrite_predicate",
     "raw_failure_classification_reason",
     "raw_failure_outcome_code",
     "validated_raw_failure_evidence_kind",
