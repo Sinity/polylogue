@@ -216,7 +216,8 @@ Primary keys in `index.db` are **generated** from natural components rather than
 opaque UUIDs (see the `GENERATED ALWAYS AS (...) STORED` columns in `index.py`):
 
 - `sessions.session_id` = `origin || ':' || native_id`
-- `messages.message_id` = `session_id || ':' || COALESCE(native_id, position || '.' || variant_index)`
+- `messages.message_id` = `session_id || ':' || CASE WHEN native_id IS NULL THEN 'p:' || position || '.' || variant_index ELSE 'n:' || native_id END`
+  (`messages.identity_source` records which branch produced it: `native` or `positional`)
 - `blocks.block_id` = `message_id || ':' || position`
 
 `origin` is a closed vocabulary (`Origin` enum in `polylogue/core/enums.py`,

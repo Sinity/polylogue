@@ -127,46 +127,27 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (v26-36), `raw_sessions` (v26-32), `raw_hook_events` and
   `raw_failure_disposition_receipts` (v26-28) to shapes canonical DDL no longer
   declares. A tier below the floor is not admitted for forward migration.
-- **Derived tiers** (`index.db`, `embeddings.db`) do not have in-place migration
-  chains. They are rebuildable products over durable source/user evidence:
-  schema mismatches are handled by rebuilding or blue-green replacing the
-  affected derived tier from source, preserving durable tiers.
-- **Index-tier open-path fast-forward executor** (polylogue-t3gk): a version
-  gap is not automatically a rebuild. `storage/sqlite/lifecycle.py` declares,
-  per `INDEX_DELTA_DECLARATIONS` entry, whether a schema-version delta is
-  clone-safe (`FastForwardOperation`s with no `SEMANTIC_REPARSE` class) or
-  requires raw reparse. `initialize_archive_database`
-  (`storage/sqlite/archive_tiers/bootstrap.py`) calls
-  `index_fast_forward_plan(current_version, expected_version)`: when the gap
-  is covered by a contiguous chain of eligible declarations, the executor in
-  `storage/sqlite/archive_tiers/index_fast_forward_executor.py` applies each
-  declaration's operations in order, dispatching generically on
-  `FastForwardOperationKind` (`REPLACE_TABLE` copy-forwards shared columns
-  onto the canonical shape, `REPLACE_VIEW`/`CREATE_INDEX` re-run canonical
-  DDL resolved from a scratch in-memory connection, `DROP_TABLE` drops,
-  `REBUILD_FTS` drops the declared triggers and repopulates only the
-  declared FTS surfaces) — never a version-specific branch. Each declaration
-  commits (and bumps `PRAGMA user_version` to that declaration's version) in
-  its own transaction, so a crash mid-chain resumes idempotently from
-  whatever version actually landed on disk. Only when no eligible plan
-  covers the exact gap (e.g. a `SEMANTIC_REPARSE` declaration is in the
-  span, as with v39 and v42) does the open path fall back to the
-  rebuild-required `RuntimeError`. This closes the gap where the v43
-  `messages_fts_identity` declaration existed but had no consumer: a freshly
-  promoted v42 archive could not be opened by v43 code at all before this
-  executor existed.
-- **Index transition ownership map** (polylogue-9rw0 / polylogue-b5l.3):
-  `storage/sqlite/lifecycle.py` owns version declarations and generated
-  operations; `storage/sqlite/archive_tiers/index_fast_forward_executor.py`
-  owns generic operation execution; `devtools/index_fast_forward.py` owns
-  stopped-root clone, retained-raw sample replay, receipt, and atomic
-  promotion. The actuator has no per-version branch. Every eligible plan
-  records raw and session sample IDs, parser/lowering/materializer
-  fingerprints, structural hashes, canonical replay hashes, mismatch details,
-  and an equivalent verdict. Activation refuses absent proof, changed source,
-  changed fingerprints, changed schema, or changed clone bytes. The old
-  former version-specific actuator was the only surviving duplicate and was
-  removed after its v37 cleanup became a declared lifecycle operation.
+- **Derived tiers** (`index.db`, `ops.db`, `embeddings.db`) have no migration
+  chain. They still stamp a tier version constant, which the profile seam
+  compares like any other tier, but their governing contract is one identity
+  hash over schema *and* the code that fills it. They are rebuildable products
+  over durable source/user evidence:
+  `storage/sqlite/archive_tiers/schema_identity.py:derived_schema_identity()`
+  digests the tier's canonical DDL together with the runtime-index DDL and the
+  `lowering`, `materializer` and `replay_routing` fingerprints from
+  `polylogue.sources.origin_specs`, and stamps it into the tier's
+  `schema_identity` table at create. Every open recomputes and compares it
+  (`storage/sqlite/schema_bootstrap.py:assert_derived_schema_identity`), so any
+  change to derived schema *or* to the code that lowers records into it moves
+  the hash automatically. A mismatch is one typed `SchemaSkew` refusal naming
+  expected and found; the remedy is always the same and always available —
+  reconverge from durable evidence through the daemon route. There is no delta
+  classification, no fast-forward plan, and no per-version actuator: the cost of
+  a derived-schema edit is one full reconvergence, which is why derived-schema
+  changes are batched rather than trickled.
+- Embedding vectors are content-addressed, so reconvergence rehydrates them from
+  cache rather than recomputing; the identity hash deliberately does not cover
+  the `embeddings` tier's vectors.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
 - **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of
@@ -202,11 +183,12 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   metadata-only, index-only, additive-derived, additive-durable, or
   semantic-reparse-required. Same-tier schema changes should be batched before
   a live rebuild so the active archive is not reset repeatedly.
-- `devtools verify schema-manifest` enforces the boundary: durable SQL
-  migrations are allowed only under the numbered migration resource roots, while
-  derived changes must use declared lifecycle deltas and clone-validated
-  fast-forward plans or rebuild. The gate validates those structured carriers
-  and SQL shapes rather than guessing intent from Python helper names.
+- `devtools verify schema-manifest` enforces the boundary: it renders every
+  tier's canonical create route in `:memory:` and compares the normalized
+  `sqlite_master` projection against the target file, and with
+  `--check-evolution` it requires any effective durable DDL change to arrive as
+  a contiguous numbered migration chain with a matching version bump. Derived
+  changes need no carrier — the identity hash is their whole contract.
   Parser/classifier meaning is
   governed separately by production fingerprints from
   `polylogue.sources.origin_specs`: declared parser and assembly sources feed an
@@ -317,10 +299,9 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   than only ever moving via ingest-time repair or the
   ordinary FTS convergence path. Existing index tiers must
   be rebuilt from source evidence (`polylogue ops reset --index && polylogued
-  run`) to populate the new ledger for already-indexed rows; a declared
-  clone-safe fast-forward exists (`IndexDeltaDeclaration` v43 in
-  `polylogue/storage/sqlite/lifecycle.py`) since every ledgered field is
-  re-derivable from already-persisted `blocks` columns with no raw reparse.
+  run`) to populate the new ledger for already-indexed rows; every ledgered
+  field is re-derivable from already-persisted `blocks` columns with no raw
+  reparse.
 - Index schema version 42 stops materializing `session_events` rows for four
   event types that are fully redundant with a sibling typed table
   (`token_count`, `message_usage`, `agent_policy`, `agent_message`;
@@ -346,9 +327,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   `function_call`/
   `function_call_output` payload-slimming is a separate, not-yet-decided
   change. This is a writer-behavior change with no DDL delta on
-  `session_events` itself, so there is no declared clone-safe SQL
-  fast-forward (see `IndexDeltaDeclaration` for v42 in
-  `polylogue/storage/sqlite/lifecycle.py`); existing index tiers rebuild from
+  `session_events` itself; existing index tiers rebuild from
   source evidence (`polylogue ops reset --index && polylogued run`). A
   companion finding from the same audit -- `session_provider_usage_events.
   payload_json` totaling ~700MB with zero readers in `storage/usage.py` --
@@ -397,9 +376,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   provider-asserted content equality between the dispatch's own instruction
   text and the child's first turn. `ambiguous` is retired from the
   `mapping_state` vocabulary. `delegation_facts` is a materialized table, not
-  a view, so a plain `REPLACE_TABLE` fast-forward cannot re-derive values from
-  the new join logic; existing index tiers must be rebuilt from source
-  evidence.
+  a view, so existing index tiers must be rebuilt from source evidence.
 - Index schema version 41 stops materializing `tool_input`/`output_text` text
   copies on `action_pairs` (polylogue-2i2w). `action_pairs` keeps only
   join/rank/outcome columns for a paired `tool_use`/`tool_result` block
@@ -417,8 +394,7 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   byte-identical `tool_input`/`output_text` payloads with no caller change.
   Existing index tiers must be rebuilt from source evidence (`polylogue ops
   reset --index && polylogued run`), though the transition itself needs no raw
-  reparse (see `polylogue/storage/sqlite/lifecycle.py`'s `IndexDeltaDeclaration`
-  for v41).
+  reparse.
 - Index schema version 37 drops the three run-projection materialized cache
   tables — `session_runs`, `session_observed_events`,
   `session_context_snapshots` — added by v11 (polylogue-dab). Their write
@@ -689,10 +665,9 @@ copy-forward design and explicit operator consent, never a routine migration.
 `storage/sqlite/archive_tiers/bootstrap.py`
 (ingest-cursor runtime fields, cursor-lag rollups). The
 `devtools verify schema-manifest` check enforces the whole boundary:
-numbered durable-tier migrations are allowed; derived-tier lifecycle deltas and
-same-version DDL are validated structurally. Ad hoc open-path upgrades are not a
-supported runtime route, but the lint does not pretend to detect them from
-function names.
+numbered durable-tier migrations are allowed, and derived tiers are held to
+their identity hash. Ad hoc open-path upgrades are not a supported runtime
+route, but the lint does not pretend to detect them from function names.
 
 ## Archive Activation
 

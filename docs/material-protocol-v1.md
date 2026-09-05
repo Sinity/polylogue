@@ -57,7 +57,8 @@ Every record is a JSON object with at least `kind`, `record_id`, and `seq`
 `record_id` formulas mirror `index.db`'s generated columns exactly:
 
 - `session`: `record_id = session_id = "{origin}:{native_id}"`
-- `message`: `record_id = message_id = "{session_id}:{COALESCE(native_id, position||'.'||variant_index)}"`
+- `message`: `record_id = message_id = "{session_id}:n:{native_id}"`, or
+  `"{session_id}:p:{position}.{variant_index}"` when the provider carried no id
 - `block`: `record_id = block_id = "{message_id}:{position}"`
 - `attachment`: `record_id = "{message_id}:attachment:{position}"`
 - `lineage`: `record_id = "{session_id}:lineage:{dst_origin}:{dst_native_id}:{link_type}"`
