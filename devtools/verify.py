@@ -76,9 +76,12 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: SQLite archive construction makes the corpus IO-bound. Two workers provide
-#: overlap without multiplying cache churn or exhausting the pytest cgroup.
-CORPUS_MAX_WORKERS = 2
+#: One fixed width for the corpus and the runner's affected tier, sized to the
+#: pytest pool's 12 GiB cgroup ceiling (eight workers peak near 10 GB) rather
+#: than host cores or free RAM. Measured 2026-09-03 uncontended: 47 minutes for
+#: 20,860 tests at eight workers; at two the same run takes about seven hours
+#: and the required check cannot finish inside its slot timeout.
+CORPUS_MAX_WORKERS = 8
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 # These tests read the AgentCTL descriptor directly. They are the bounded
@@ -293,6 +296,24 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 MAX_RERUN_NODEIDS = 300
 
 
+def _report_nodeid_to_selector(nodeid: str) -> str:
+    """Strip xdist's ``@<group>`` suffix so a report node id selects again.
+
+    ``--dist=loadgroup`` reports ``path::test[param]@group``; pytest cannot
+    collect that literal, so a rerun built from it errors before running.
+    A parametrization id may itself contain ``@``, so only a suffix after the
+    closing bracket (or after the bare test name) is removed.
+    """
+    head, sep, tail = nodeid.rpartition("@")
+    if not sep or "::" not in head:
+        return nodeid
+    if "[" in tail or "]" in tail or "/" in tail or "::" in tail:
+        return nodeid
+    if head.endswith("]") or "[" not in head.rsplit("::", 1)[-1]:
+        return head
+    return nodeid
+
+
 def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifacts: Any) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
 
@@ -306,7 +327,7 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
     if not isinstance(report, Mapping):
         return None
     failed = [
-        str(test["nodeid"])
+        _report_nodeid_to_selector(str(test["nodeid"]))
         for test in report.get("tests", [])
         if isinstance(test, Mapping) and test.get("outcome") in {"failed", "error"} and test.get("nodeid")
     ]
