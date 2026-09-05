@@ -37,6 +37,7 @@ from polylogue.maintenance.blob_disposition import (
     RawSourceCarrier,
     RawSourceFileProver,
     RestorationDestination,
+    SidechainTranscriptResidue,
     SourceProofMode,
     SqliteRowContainmentProver,
     TestCorpusFixtureExcluder,
@@ -854,6 +855,40 @@ def test_test_corpus_fixture_rule_refuses_a_referenced_object(tmp_path: Path) ->
     excluder = TestCorpusFixtureExcluder((corpus,), referenced_hashes=frozenset({blob_hash}), owner="polylogue-251y8")
 
     assert excluder.resolve(blob_hash, store.blob_path(blob_hash), len(fixture)) is None
+
+
+def test_standalone_sidechain_transcript_is_owned_residue(tmp_path: Path) -> None:
+    """A subagent transcript names no carrier of its own, so it has an owner."""
+    store = BlobStore(tmp_path / "blob")
+    payload = _jsonl(
+        {"isSidechain": True, "type": "user", "message": {"role": "user", "content": "a"}},
+        {"isSidechain": True, "type": "assistant", "message": {"role": "assistant", "content": "b"}},
+    )
+    blob_hash = _publish_blob(store, payload)
+
+    resolver = SidechainTranscriptResidue(referenced_hashes=frozenset(), owner="polylogue-hcm7h")
+    rule = resolver.resolve(blob_hash, store.blob_path(blob_hash), len(payload))
+
+    assert rule is not None
+    assert rule.owner == "polylogue-hcm7h"
+
+
+def test_sidechain_residue_refuses_an_ordinary_session(tmp_path: Path) -> None:
+    """Anti-vacuity: one non-sidechain record means a provider file carries this.
+
+    Without the check every unproven JSONL object would acquire an owner and
+    stop blocking, which is the laundering this vocabulary exists to prevent.
+    """
+    store = BlobStore(tmp_path / "blob")
+    payload = _jsonl(
+        {"isSidechain": True, "type": "user", "message": {"role": "user", "content": "a"}},
+        {"isSidechain": False, "type": "assistant", "message": {"role": "assistant", "content": "b"}},
+    )
+    blob_hash = _publish_blob(store, payload)
+
+    resolver = SidechainTranscriptResidue(referenced_hashes=frozenset(), owner="polylogue-hcm7h")
+
+    assert resolver.resolve(blob_hash, store.blob_path(blob_hash), len(payload)) is None
 
 
 def test_explained_residue_is_separated_from_unexplained_material(tmp_path: Path) -> None:

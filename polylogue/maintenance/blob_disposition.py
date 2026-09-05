@@ -1653,6 +1653,62 @@ class TestCorpusFixtureExcluder:
         return None
 
 
+class SidechainTranscriptResidue:
+    """Mark a subagent transcript no provider file ever carried on its own.
+
+    Claude Code writes sidechain records into the parent session rather than
+    to a file of their own, so a standalone object of them names no carrier
+    to reacquire from and no spool that admits one. It is understood
+    material without a destination, which is a different fact from material
+    of unknown provenance.
+    """
+
+    disposition = BlobDisposition.EXPLAINED_RESIDUE
+
+    def __init__(
+        self,
+        *,
+        referenced_hashes: frozenset[str],
+        owner: str,
+        rule: str = "standalone-sidechain-transcript",
+        max_object_bytes: int = 64 << 20,
+    ) -> None:
+        self._referenced = referenced_hashes
+        self._owner = owner
+        self._rule = rule
+        self._max_object_bytes = max_object_bytes
+
+    def resolve(self, blob_hash: str, path: Path, size_bytes: int) -> TerminalRule | None:
+        if blob_hash in self._referenced or not 0 < size_bytes <= self._max_object_bytes:
+            return None
+        records = 0
+        try:
+            with path.open("rb") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        record = json.loads(stripped)
+                    except (json.JSONDecodeError, ValueError):
+                        return None
+                    if not isinstance(record, dict) or record.get("isSidechain") is not True:
+                        return None
+                    records += 1
+        except (OSError, ValueError):
+            return None
+        if not records:
+            return None
+        return TerminalRule(
+            rule=self._rule,
+            owner=self._owner,
+            reason=(
+                f"{records} records, every one a sidechain entry, which the provider writes "
+                "into its parent session rather than to a file of its own"
+            ),
+        )
+
+
 class ForeignStateSnapshotResidue:
     """Mark a foreign application's state snapshot the live database outgrew.
 
@@ -2003,6 +2059,7 @@ def build_disposition_context(
                 rule="browser-capture-attachment-payload",
             ),
             ForeignStateSnapshotResidue(carriers, owner=CAPTURE_ATTACHMENT_RESIDUE_OWNER),
+            SidechainTranscriptResidue(referenced_hashes=referenced, owner=CAPTURE_ATTACHMENT_RESIDUE_OWNER),
         ),
     )
 
@@ -2096,6 +2153,7 @@ __all__ = [
     "RawSourceFileProver",
     "RestorationDestination",
     "RestorationTarget",
+    "SidechainTranscriptResidue",
     "SourceProof",
     "SourceProofMode",
     "SqliteRowContainmentProver",
