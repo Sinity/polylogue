@@ -402,28 +402,6 @@ def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str
     return payload
 
 
-def _message_reference_payload(message: ParsedMessage) -> dict[str, JSONValue]:
-    """Extend the content payload with the reference identity of media blocks.
-
-    An ``image``/``document`` block's metadata names what the turn cites (a
-    Drive file id, an asset pointer, an inline-content digest). Two id-less,
-    timestamp-less, text-less turns that cite different files are different
-    turns, but ``_content_block_payload`` deliberately keeps metadata out of
-    the session content hash, so this payload is a private owner
-    discriminator only: it decides ownership after the content payload has
-    already collided and never feeds a stored hash.
-    """
-    payload = _message_comparison_payload(message)
-    references: list[JSONValue] = [
-        hash_payload(_normalize_nested_for_hash(dict(block.metadata)))
-        for block in message.blocks
-        if block.type in (BlockType.IMAGE, BlockType.DOCUMENT) and block.metadata
-    ]
-    if references:
-        payload["block_references"] = references
-    return payload
-
-
 def _message_semantic_payload(message: ParsedMessage) -> dict[str, JSONValue]:
     """Build the complete semantic payload used by session content hashing."""
     return _message_payload(message, _HASHED_FIELDS["ParsedMessage"])
@@ -519,6 +497,13 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
     reorder-stable evidence when their content is identical. If neither
     distinguishes the occurrences, the duplicate remains typed ambiguity
     instead of receiving a position-derived identity.
+
+    The content discriminator covers a media block's ``metadata`` -- what an
+    ``image``/``document`` turn cites (a Drive file id, an asset pointer, an
+    inline-content digest). AI Studio exports carry runs of id-less,
+    text-less turns that share one timestamp and differ only there, so
+    ``metadata`` is the sole evidence keeping their attachments ownable
+    (polylogue-prjai).
     """
     revision_ids = tuple(_message_revision_match_id(message) for message in messages)
     revision_counts = Counter(revision_ids)
@@ -526,25 +511,17 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
         f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}" for message in messages
     )
     content_counts = Counter(content_ids)
-    reference_ids = tuple(
-        f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_reference_payload(message))}" for message in messages
-    )
-    reference_counts = Counter(reference_ids)
     coordinates = tuple(_message_owner_coordinate(message, index) for index, message in enumerate(messages))
     stable_counts = Counter(coordinate.stable_key for coordinate in coordinates if coordinate.stable_key is not None)
 
     keys: list[str] = []
-    for revision_id, content_id, reference_id, coordinate in zip(
-        revision_ids, content_ids, reference_ids, coordinates, strict=True
-    ):
+    for revision_id, content_id, coordinate in zip(revision_ids, content_ids, coordinates, strict=True):
         if coordinate.stable_key is not None and stable_counts[coordinate.stable_key] == 1:
             key = coordinate.stable_key
         elif revision_counts[revision_id] == 1:
             key = revision_id
         elif content_counts[content_id] == 1:
             key = content_id
-        elif reference_counts[reference_id] == 1:
-            key = reference_id
         elif coordinate.stable_key is not None:
             key = coordinate.stable_key
         else:

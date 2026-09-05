@@ -506,6 +506,10 @@ def test_parse_workers_override_bypasses_process_pool(
     # min(8, cpus-1), which is >= 2 on any real multi-core CI/dev host, so
     # an un-overridden call below would exercise the pool branch.
     monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
+    # The walk-size tiering would send this synthetic corpus down the
+    # in-process branch on bytes alone; report a bulk-sized walk so the
+    # override, not the tier, is what this test measures.
+    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
     archive_root = workspace_env["archive_root"]
 
     sequential_sources = _build_sources(tmp_path, count=2, seed=97)
@@ -513,7 +517,7 @@ def test_parse_workers_override_bypasses_process_pool(
     assert pool_calls == []  # workers<=1 takes the sequential for-loop, no pool constructed
     assert result.counts["sessions"] == _expected_session_count(sequential_sources)
 
-    pooled_sources = _build_sources(tmp_path, count=2, seed=98)
+    pooled_sources = _build_sources(tmp_path, count=4, seed=98)
     result = asyncio.run(parse_sources_archive(archive_root, pooled_sources, parse_workers=3))
     assert pool_calls == [3]  # explicit override reaches the pool construction exactly
     assert result.counts["sessions"] == _expected_session_count(pooled_sources)
@@ -554,6 +558,9 @@ def test_parallel_ingest_pool_uses_shared_safe_process_pool_executor(
 
     monkeypatch.setattr(archive_ingest, "process_pool_executor", spying_process_pool_executor)
     monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
+    # Report a bulk-sized walk so the dispatch tiering selects the pool this
+    # test exists to inspect (see _submission_payload_bytes).
+    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
     archive_root = workspace_env["archive_root"]
     sources = _build_sources(tmp_path, count=2, seed=113)
 
@@ -562,3 +569,60 @@ def test_parallel_ingest_pool_uses_shared_safe_process_pool_executor(
     assert calls == [2]
     assert result.counts["sessions"] == _expected_session_count(sources)
     assert not hasattr(archive_ingest, "ProcessPoolExecutor")
+
+
+def _walk_bytes(sources: Sequence[Source]) -> int:
+    return sum(source.path.stat().st_size for source in sources if source.path is not None)
+
+
+def test_small_walk_parses_in_process_with_identical_results(
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+    empty_archive_template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ordinary small walk parses in-process and lands exactly what the pool lands.
+
+    ``resolve_archive_ingest_dispatch`` used to read CPU count alone, so a walk
+    of a handful of small files spawned one fresh interpreter per ambient
+    worker -- a full ``polylogue`` import each -- to parse them. Measured on a
+    24-thread host, six one-file walks went 33-41 messages/s with the pool and
+    401-424 messages/s without it, at 0.06 versus 0.84 process CPU utilization.
+
+    Anti-vacuity, two ways: reverting the tiering makes the first arm construct
+    a pool and fail on ``pool_calls``; routing the in-process branch through
+    anything other than the same ``_parse_source_path_worker`` call makes the
+    two arms' session and message counts diverge.
+    """
+    from polylogue.pipeline.services.process_pool import process_pool_executor as real_process_pool_executor
+    from tests.infra.archive_templates import clone_archive_template
+
+    pool_calls: list[int] = []
+
+    def spying_process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
+        pool_calls.append(max_workers)
+        return real_process_pool_executor(max_workers=max_workers)
+
+    monkeypatch.setattr(archive_ingest, "process_pool_executor", spying_process_pool_executor)
+    monkeypatch.delenv("POLYLOGUE_INGEST_PARSE_WORKERS", raising=False)
+
+    in_process_root = workspace_env["archive_root"]
+    sources = _build_sources(tmp_path, count=3, seed=211)
+    assert _walk_bytes(sources) <= 8 * 1024 * 1024  # the tier the first arm relies on
+
+    in_process = asyncio.run(parse_sources_archive(in_process_root, sources))
+    assert pool_calls == []
+    assert in_process.counts["sessions"] == _expected_session_count(sources)
+
+    pooled_root = tmp_path / "pooled-archive"
+    clone_archive_template(empty_archive_template, pooled_root)
+    monkeypatch.setattr(archive_ingest, "_submission_payload_bytes", lambda _submissions: 128 * 1024 * 1024)
+    pooled = asyncio.run(parse_sources_archive(pooled_root, sources))
+    # One pool, sized by min(path_count, cpus, ceiling) -- bounded by the walk
+    # rather than fixed, so this holds on a narrower host too.
+    assert len(pool_calls) == 1
+    assert 2 <= pool_calls[0] <= len(sources)
+
+    assert _counts(pooled_root / "index.db") == _counts(in_process_root / "index.db")
+    assert pooled.counts["sessions"] == in_process.counts["sessions"]
+    assert pooled.counts["messages"] == in_process.counts["messages"]

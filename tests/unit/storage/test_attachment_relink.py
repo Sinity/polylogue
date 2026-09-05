@@ -15,9 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.archive.message.roles import Role
-from polylogue.core.enums import Provider
-from polylogue.pipeline.services.ingest_worker import ingest_record
+from polylogue.core.enums import Provider, Role
+from polylogue.pipeline.services.ingest_worker import IngestRecordResult, SessionWritePayload, ingest_record
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.attachment_relink import (
     UnrecoverableAttachmentReason,
@@ -369,3 +368,79 @@ def test_append_merge_attaches_idless_message_at_max_position_plus_one(tmp_path:
     ).fetchone()
     assert tuple(ref) == (f"{session_id}:p:1.0",)
     index.close()
+
+
+def test_owner_ambiguous_orphan_is_reported_typed_not_raised(tmp_path: Path) -> None:
+    """A ref-less attachment whose owner is ambiguous must not abort the plan.
+
+    ``_write_attachments`` retains an attachment claimed by two indistinguishable
+    messages as a typed unowned row with no ``attachment_refs`` edge, so the row
+    is an orphan by ``_read_orphaned_attachment_ids``' definition and the raw
+    re-parse scan reaches it. Re-parsing reproduces the same ambiguity, and
+    ``attachment_message_owner_key`` raises for it.
+
+    Anti-vacuity: remove the ``except MessageOwnerAmbiguityError`` handler in
+    ``_match_session_payload`` and this fails with
+    ``MessageOwnerAmbiguityError: attachment owner coordinate is
+    indistinguishable from another message`` instead of returning a plan --
+    the same traceback that aborts ``polylogue ops maintenance
+    blob-reference-closure``.
+    """
+    blob_store = BlobStore(tmp_path / "blob")
+    index_conn = _index_conn(tmp_path / "index.db")
+    source_conn = _source_conn(tmp_path / "source.db")
+
+    session = ParsedSession(
+        source_name=Provider.GEMINI,
+        provider_session_id="ambiguous-attachment-owner",
+        messages=[ParsedMessage(provider_message_id="", role=Role.ASSISTANT, text="same") for _ in range(2)],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="ambiguous-drive-doc",
+                message_provider_id="",
+                message_position=0,
+                name="note.txt",
+                mime_type="text/plain",
+            )
+        ],
+    )
+    session_id = write_parsed_session_to_archive(index_conn, session)
+    index_conn.commit()
+    orphan_row = index_conn.execute("SELECT attachment_id FROM attachments WHERE display_name = 'note.txt'").fetchone()
+    assert orphan_row is not None
+    assert index_conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0
+
+    _write_raw_row(source_conn, blob_store, _CLAUDE_AI_PAYLOAD, raw_id="raw-1", source_path="conversations.json")
+
+    def _parser(record: RawSessionRecord) -> IngestRecordResult:
+        """Stand in for the raw re-parse: the raw still holds the ambiguity."""
+        return IngestRecordResult(
+            raw_id=record.raw_id,
+            sessions=[SessionWritePayload(session_id=session_id, content_hash="0" * 64, parsed_session=session)],
+        )
+
+    plan = plan_orphaned_attachment_relink(
+        index_conn,
+        source_conn,
+        archive_root=tmp_path,
+        blob_root=blob_store.root,
+        raw_session_parser=_parser,
+    )
+
+    assert plan.orphan_count == 1
+    assert plan.eligible == ()
+    assert plan.unrecoverable_samples[0].attachment_id == str(orphan_row["attachment_id"])
+    assert plan.unrecoverable_samples[0].reason_kind is UnrecoverableAttachmentReason.OWNER_AMBIGUOUS
+    assert "more than one message claims its owner coordinate" in plan.unrecoverable_samples[0].reason
+
+    exec_result = relink_orphaned_attachments(
+        index_conn,
+        source_conn,
+        archive_root=tmp_path,
+        blob_root=blob_store.root,
+        dry_run=False,
+        raw_session_parser=_parser,
+    )
+    index_conn.commit()
+    assert exec_result.relinked_count == 0
+    assert index_conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0] == 0

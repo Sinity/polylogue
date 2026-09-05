@@ -251,7 +251,12 @@ def test_semantic_hash_partition_rejects_unclassified_and_duplicate_fields(monke
 
 
 def test_duplicate_idless_messages_with_only_position_difference_keep_owner_ambiguous() -> None:
-    """Position must not turn indistinguishable owner evidence into identity."""
+    """Position must not turn indistinguishable owner evidence into identity.
+
+    The strict revision projection is where ownership stays fail-closed; the
+    ingest content hash instead degrades the attachment to unowned so a
+    parseable session survives.
+    """
     messages = [
         _parsed_message("", "assistant", "repeat", "2024-01-01T00:00:00Z").model_copy(update={"position": position})
         for position in (0, 1)
@@ -264,12 +269,12 @@ def test_duplicate_idless_messages_with_only_position_difference_keep_owner_ambi
         mime_type="text/plain",
     )
 
+    session = _parsed_session("s1", "title", messages, created_at=None, updated_at=None).model_copy(
+        update={"attachments": [attachment]}
+    )
+
     with pytest.raises(MessageOwnerAmbiguityError):
-        session_content_hash(
-            _parsed_session("s1", "title", messages, created_at=None, updated_at=None).model_copy(
-                update={"attachments": [attachment]}
-            )
-        )
+        session_revision_projection(session)
 
 
 @pytest.mark.parametrize(
@@ -404,10 +409,10 @@ def test_session_revision_projection_golden_hashes() -> None:
     session = _golden_session()
     projection = session_revision_projection(session)
 
-    assert projection.session_hash.hex() == "87702d4073fdae9932d9b61f4399daa841c77528969645d29b8ac3d6b1134419"
+    assert projection.session_hash.hex() == "23d0b219777cf59e1b3b8fbe0a16f217e1f8129f9781c2dc4643e665102c4df7"
     assert [h.hex() for h in projection.message_hashes] == [
         "bf3267d2bbb5b9f281401ca940a5a0f339174e750f6dd7b7a5aa70014b00640b",
-        "a7d0e29040820c1b0285c284a92aa1aad06aca56697aef3b45869f6a31a9bbf3",
+        "2518ce27da65142108dc3d78e65d7d360202814b6420d8644f50cff3cfe503c1",
     ]
     # Content-derived identity (message_id, name, mime_type) -- no longer a
     # hash of the provider attachment id (polylogue-aggz / polylogue-d8al):

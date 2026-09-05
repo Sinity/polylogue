@@ -36,6 +36,7 @@ from polylogue.daemon.convergence_stages import make_raw_parse_recovery_stage
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.raw.models import RawSessionStateUpdate
+from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -147,25 +148,51 @@ def test_raw_parse_recovery_stage_drains_a_stuck_raw_row(tmp_path: Path) -> None
     assert rows[0][0] == "conv-stuck"
 
 
-@pytest.mark.parametrize("authority_state", ["violated", "unknown"])
+@pytest.mark.parametrize("refusal_shape", ["unattributed", "own_path"])
 def test_raw_parse_recovery_stage_blocks_unproven_cursor_authority(
-    authority_state: str,
+    refusal_shape: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     initialize_active_archive_root(tmp_path)
     path = tmp_path / "stuck.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
-    monkeypatch.setattr(
-        "polylogue.readiness.capability.raw_frontier_source_selection_block_reason",
-        lambda _root: f"{authority_state} cursor authority",
+    refusal = (
+        RawFrontierBlockedPaths(frozenset(), "unknown cursor authority")
+        if refusal_shape == "unattributed"
+        else RawFrontierBlockedPaths(frozenset({str(path)}), None)
     )
+    monkeypatch.setattr("polylogue.readiness.capability.raw_frontier_source_selection_refusal", lambda _root: refusal)
 
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
 
     assert stage.execute(path) is False
     assert stage.check(path) is True
     assert _sessions_for_raw(tmp_path, raw_id) == []
+
+
+def test_raw_parse_recovery_stage_proceeds_when_another_path_is_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another path's broken authority does not stall this path's recovery.
+
+    Anti-vacuity: treating any attributed refusal as a global block (the
+    pre-split gate) returns ``False`` here and leaves the raw unmaterialized.
+    """
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "stuck.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+    monkeypatch.setattr(
+        "polylogue.readiness.capability.raw_frontier_source_selection_refusal",
+        lambda _root: RawFrontierBlockedPaths(frozenset({str(tmp_path / "other-broken.jsonl")}), None),
+    )
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert bool(stage.execute(path)) is True
+    assert stage.check(path) is False
+    assert len(_sessions_for_raw(tmp_path, raw_id)) == 1
 
 
 def test_raw_parse_recovery_stage_is_false_means_pending() -> None:
