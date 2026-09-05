@@ -8,7 +8,7 @@ typed product operation rather than importing storage internals directly.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final
@@ -209,8 +209,12 @@ def repair_materialization(
     raw_artifact_id: str | None = None,
     source_root: Path | None = None,
     max_pass_seconds: float | None = None,
+    excluded_source_paths: Sequence[str] = (),
 ) -> Any:
     """Run one bounded raw source->index convergence pass.
+
+    ``excluded_source_paths`` are the physical paths the source-selection
+    proof refused; the pass converges every other raw around them.
 
     ``prefetch_cache`` (polylogue-m6tp phase (a), default ``None``) lets a
     caller substitute parse output already computed off the writer hold for
@@ -248,6 +252,7 @@ def repair_materialization(
         raw_artifact_id=raw_artifact_id,
         source_root=source_root,
         max_pass_seconds=max_pass_seconds,
+        excluded_source_paths=excluded_source_paths,
     )
 
 

@@ -3863,8 +3863,13 @@ def _raw_materialization_candidate_ids(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
+    excluded_source_paths: Sequence[str] = (),
 ) -> RawMaterializationCandidates:
     """Return replayable raw ids plus missing-blob debt count.
+
+    ``excluded_source_paths`` removes every raw acquired from those exact
+    physical paths from this pass: the source-selection proof refused them,
+    and the rest of the backlog must converge around them.
 
     Raw evidence is the durable source of truth, but a raw row whose
     content-addressed blob is absent cannot be reparsed without outside
@@ -3934,6 +3939,7 @@ def _raw_materialization_candidate_ids(
             normalized_root = str(source_root).rstrip("/")
             source_root_filter = " AND (r.source_path = ? OR r.source_path LIKE ?)"
             params.extend((normalized_root, f"{normalized_root}/%"))
+        source_root_filter += _excluded_source_path_filter(excluded_source_paths, params)
         terminal_pair_placeholders = ", ".join("(?, ?)" for _ in RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS)
         rows = conn.execute(
             f"""
@@ -4205,6 +4211,15 @@ def _raw_materialization_candidate_ids(
     )
 
 
+def _excluded_source_path_filter(excluded_source_paths: Sequence[str], params: list[object]) -> str:
+    """Append a ``NOT IN`` clause over refused physical paths, binding into ``params``."""
+    excluded = tuple(dict.fromkeys(str(path) for path in excluded_source_paths))
+    if not excluded:
+        return ""
+    params.extend(excluded)
+    return f" AND r.source_path NOT IN ({', '.join('?' for _ in excluded)})"
+
+
 def _raw_materialization_parser_census_candidates(
     config: Config,
     *,
@@ -4212,6 +4227,7 @@ def _raw_materialization_parser_census_candidates(
     provider: str | None = None,
     source_family: str | None = None,
     source_root: Path | None = None,
+    excluded_source_paths: Sequence[str] = (),
 ) -> RawMaterializationCandidates:
     """Return every raw in this repair scope for bounded parser recensus.
 
@@ -4243,6 +4259,8 @@ def _raw_materialization_parser_census_candidates(
             normalized_root = str(source_root).rstrip("/")
             filters.append("(r.source_path = ? OR r.source_path LIKE ?)")
             params.extend((normalized_root, f"{normalized_root}/%"))
+        if excluded_source_paths:
+            filters.append("1 = 1" + _excluded_source_path_filter(excluded_source_paths, params))
         where = f"WHERE {' AND '.join(filters)}" if filters else ""
         rows = conn.execute(
             f"""
@@ -6349,8 +6367,14 @@ def repair_raw_materialization(
     progress_callback: ProgressCallback | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
     max_pass_seconds: float | None = None,
+    excluded_source_paths: Sequence[str] = (),
 ) -> RepairResult:
-    """Converge one raw-materialization pass under active-generation ownership."""
+    """Converge one raw-materialization pass under active-generation ownership.
+
+    ``excluded_source_paths`` are the physical paths the source-selection
+    proof refused for this pass; their raws are left out of both the census
+    and the replay selection so the rest of the backlog converges.
+    """
 
     def run() -> RepairResult:
         return _repair_raw_materialization(
@@ -6367,6 +6391,7 @@ def repair_raw_materialization(
             progress_callback=progress_callback,
             prefetch_cache=prefetch_cache,
             max_pass_seconds=max_pass_seconds,
+            excluded_source_paths=excluded_source_paths,
         )
 
     if dry_run:
@@ -6401,6 +6426,7 @@ def _repair_raw_materialization(
     progress_callback: ProgressCallback | None = None,
     prefetch_cache: RawParsePrefetchCache | None = None,
     max_pass_seconds: float | None = None,
+    excluded_source_paths: Sequence[str] = (),
 ) -> RepairResult:
     """Converge retained raws through typed per-session revision authority.
 
@@ -6511,6 +6537,7 @@ def _repair_raw_materialization(
         provider=provider,
         source_family=source_family,
         source_root=source_root,
+        excluded_source_paths=excluded_source_paths,
     )
     from polylogue.sources.revision_backfill import (
         RawRevisionReplayResourceBlockedError,
@@ -6524,6 +6551,7 @@ def _repair_raw_materialization(
         provider=provider,
         source_family=source_family,
         source_root=source_root,
+        excluded_source_paths=excluded_source_paths,
     )
     relevant_raw_ids = list(census_candidates.expanded_raw_ids or tuple(census_candidates.raw_ids))
     uncensused_raw_ids = set(
@@ -6593,6 +6621,7 @@ def _repair_raw_materialization(
             provider=provider,
             source_family=source_family,
             source_root=source_root,
+            excluded_source_paths=excluded_source_paths,
         )
         census_candidates = _raw_materialization_parser_census_candidates(
             config,
@@ -6600,6 +6629,7 @@ def _repair_raw_materialization(
             provider=provider,
             source_family=source_family,
             source_root=source_root,
+            excluded_source_paths=excluded_source_paths,
         )
         relevant_raw_ids = list(census_candidates.expanded_raw_ids or tuple(census_candidates.raw_ids))
         uncensused_raw_ids = set(
@@ -6986,6 +7016,7 @@ def _repair_raw_materialization(
             provider=provider,
             source_family=source_family,
             source_root=source_root,
+            excluded_source_paths=excluded_source_paths,
         )
         stale_post_plans, stale_post_residual = _raw_authority_postflight_snapshot(
             archive_root,
@@ -7186,6 +7217,7 @@ def _repair_raw_materialization(
             provider=provider,
             source_family=source_family,
             source_root=source_root,
+            excluded_source_paths=excluded_source_paths,
         )
         # hjpx AC1: an executed plan that produced zero replayed, quarantined,
         # AND adoption-deferred outcomes made no typed progress at all --
@@ -7236,6 +7268,7 @@ def _repair_raw_materialization(
         provider=provider,
         source_family=source_family,
         source_root=source_root,
+        excluded_source_paths=excluded_source_paths,
     )
     metrics.update(
         {

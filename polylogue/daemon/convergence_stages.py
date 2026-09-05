@@ -976,14 +976,22 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
     def execute(path: Path) -> StageExecuteReturn:
         from polylogue.config import Config
         from polylogue.maintenance.raw_authority import repair_materialization
-        from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+        from polylogue.readiness.capability import raw_frontier_source_selection_refusal
 
         configured_root = archive_root or db_path.parent
-        if reason := raw_frontier_source_selection_block_reason(configured_root):
+        refusal = raw_frontier_source_selection_refusal(configured_root)
+        # Only this path's own broken authority defers it; another path's
+        # refusal must not stall this one's recovery.
+        blocked_reason = refusal.unattributed_reason
+        if blocked_reason is None and (
+            str(path) in refusal.source_paths or str(path.resolve()) in refusal.source_paths
+        ):
+            blocked_reason = "source-selection authority is broken for this path"
+        if blocked_reason is not None:
             logger.warning(
                 "raw_parse_recovery: source-selection gate blocked for %s: %s",
                 path,
-                reason,
+                blocked_reason,
             )
             return False
         config = Config(archive_root=configured_root, render_root=configured_root, sources=[])

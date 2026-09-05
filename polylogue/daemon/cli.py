@@ -1343,6 +1343,52 @@ async def _reconcile_blob_publications(
     return outcome
 
 
+def _raw_materialization_refused_source_paths(archive: Path, *, route: str) -> tuple[str, ...]:
+    """Resolve which physical paths this raw-materialization pass must leave out.
+
+    The source-selection proof names the paths whose authority is broken;
+    only those are refused, and each refusal is recorded as retryable
+    ``raw_parse_recovery`` convergence debt so the path is re-driven once
+    its authority resolves. A refusal no path explains raises: nothing may
+    be selected under it.
+    """
+    from polylogue.readiness.capability import raw_frontier_source_selection_refusal
+
+    refusal = raw_frontier_source_selection_refusal(archive)
+    if refusal.unattributed_reason is not None:
+        raise RuntimeError(f"{route} source-selection gate blocked: {refusal.unattributed_reason}")
+    refused = tuple(sorted(refusal.source_paths))
+    if not refused:
+        return ()
+    logger.warning(
+        "%s: source-selection gate refused %d source path(s); converging the rest",
+        route,
+        len(refused),
+    )
+    from polylogue.sources.live.cursor import CursorStore
+
+    cursor_store = CursorStore(_active_index_db_path(), initialize=False, ops_db_path=archive / "ops.db")
+    for path in refused:
+        cursor_store.record_convergence_debt(
+            stage="raw_parse_recovery",
+            subject_type="source_path",
+            subject_id=path,
+            error="raw materialization refused: source-selection authority is broken for this path",
+        )
+    return refused
+
+
+def _raw_source_path(archive: Path, raw_id: str) -> str | None:
+    """Read one raw's physical source path from the source tier, read-only."""
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    with closing(open_readonly_connection(archive / "source.db", validate_schema=False)) as conn:
+        row = conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
 def _drain_raw_materialization_once(
     *,
     limit: int = _RAW_MATERIALIZATION_CONVERGENCE_BATCH_LIMIT,
@@ -1363,7 +1409,6 @@ def _drain_raw_materialization_once(
     from polylogue.config import Config
     from polylogue.maintenance import raw_authority
     from polylogue.paths import archive_root, render_root
-    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
     from polylogue.storage.blob_integrity import restore_direct_blob_reference_debt
 
     archive = archive_root()
@@ -1376,8 +1421,7 @@ def _drain_raw_materialization_once(
     # incomparable cursor row to the gate below, and every route that could
     # finalize it sits behind that gate; finalize from the retained blob first.
     raw_authority.finalize_codex_state_snapshots(config)
-    if reason := raw_frontier_source_selection_block_reason(archive):
-        raise RuntimeError(f"raw materialization source-selection gate blocked: {reason}")
+    refused_source_paths = _raw_materialization_refused_source_paths(archive, route="raw materialization")
     generation_pin_refused = False
     frontier_repaired = 0
     if prefetch_cache is not None and not _daemon_parse_stage().writer_admission_ready():
@@ -1424,6 +1468,7 @@ def _drain_raw_materialization_once(
                     max_payload_bytes=_RAW_MATERIALIZATION_DAEMON_BLOB_LIMIT_BYTES,
                     prefetch_cache=prefetch_cache,
                     max_pass_seconds=_RAW_MATERIALIZATION_MAX_PASS_SECONDS,
+                    excluded_source_paths=refused_source_paths,
                 )
             finally:
                 _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")
@@ -1492,17 +1537,19 @@ def _run_raw_materialization_whale_pass_once(
     specific to this one escalated component, and the ordinary pass already
     runs them on its own cadence.
     """
-    from polylogue.paths import archive_root
-    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-
-    if reason := raw_frontier_source_selection_block_reason(archive_root()):
-        raise RuntimeError(f"raw whale materialization source-selection gate blocked: {reason}")
-
     from polylogue.config import Config
     from polylogue.maintenance import raw_authority
-    from polylogue.paths import render_root
+    from polylogue.paths import archive_root, render_root
 
     archive = archive_root()
+    refused_source_paths = _raw_materialization_refused_source_paths(archive, route="raw whale materialization")
+    if refused_source_paths and _raw_source_path(archive, raw_artifact_id) in refused_source_paths:
+        # The seed's own authority is broken: an empty selection would read
+        # as a clean pass, so refuse it as a typed gate outcome instead.
+        raise RuntimeError(
+            f"raw whale materialization source-selection gate blocked: seed raw {raw_artifact_id} "
+            "is on a refused source path"
+        )
     config = Config(archive_root=archive, render_root=render_root(), sources=[])
     if not _daemon_parse_stage().writer_admission_ready():
         raise RuntimeError("raw whale writer admission refused while parse-stage warm is active")
@@ -1523,6 +1570,7 @@ def _run_raw_materialization_whale_pass_once(
                     max_payload_bytes=max_payload_bytes,
                     prefetch_cache=prefetch_cache,
                     raw_artifact_id=raw_artifact_id,
+                    excluded_source_paths=refused_source_paths,
                 )
             finally:
                 _close_raw_materialization_fts(index_db, ops_db_path=config.archive_root / "ops.db")

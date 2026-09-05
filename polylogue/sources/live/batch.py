@@ -707,6 +707,11 @@ class LiveBatchProcessor:
         # path explains still blocks everything.
         blocked = self._blocked_source_paths()
         if blocked.unattributed_reason is None:
+            if not blocked.source_paths:
+                # Only authority gaps remain; ingesting their paths is what
+                # resolves them, so nothing is refused.
+                logger.debug("live.watcher: cursor authority names only resolvable gaps: %s", reason)
+                return None
             if paths is None:
                 logger.warning(
                     "live.watcher: cursor authority refuses %d source path(s); path-less route proceeds: %s",
