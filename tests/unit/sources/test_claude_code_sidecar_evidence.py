@@ -72,7 +72,6 @@ def test_ai_title_wins_session_title_over_uuid_fallback() -> None:
     assert parsed.title == "Recover what was lost"
     assert parsed.title_source is TitleSource.ORIGIN
     assert parsed.title_ref == "claude-ai-title:sess-title"
-    assert parsed.title_confidence == 1.0
     # Also persisted as an independently queryable audit-trail event, not
     # only consumed for title resolution -- AC2 requires it survive as typed
     # evidence in its own right.
@@ -133,7 +132,6 @@ def test_agent_name_wins_session_title_over_uuid_fallback() -> None:
     assert parsed.title == "orchestration-docs-6np"
     assert parsed.title_source is TitleSource.ORIGIN
     assert parsed.title_ref == "claude-agent-name:sess-agent"
-    assert parsed.title_confidence == 0.9
 
 
 def test_agent_name_yields_to_ai_title_and_custom_title() -> None:

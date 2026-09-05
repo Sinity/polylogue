@@ -140,7 +140,7 @@ def _session_kind(payload: Mapping[str, object]) -> SessionKind:
 
 def _resolve_claude_ai_title(
     payload: Mapping[str, object], resolved_session_id: str, *, ref_prefix: str
-) -> tuple[str, TitleSource | None, str | None, float | None]:
+) -> tuple[str, TitleSource | None, str | None]:
     """Claude AI's web UI auto-titles every conversation with a short
     generated summary of the exchange (distinct from Codex's raw
     first-prompt echoes, bd polylogue-6e7m -- see assembly_codex.py's
@@ -155,8 +155,8 @@ def _resolve_claude_ai_title(
     """
     raw_title = payload.get("title") or payload.get("name")
     if isinstance(raw_title, str) and raw_title.strip():
-        return raw_title, TitleSource.ORIGIN, f"{ref_prefix}:{resolved_session_id}", 1.0
-    return str(resolved_session_id), None, None, None
+        return raw_title, TitleSource.ORIGIN, f"{ref_prefix}:{resolved_session_id}"
+    return str(resolved_session_id), None, None
 
 
 # ---------------------------------------------------------------------------
@@ -527,7 +527,7 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
     active_leaf_message_provider_id = messages[-1].provider_message_id if messages else None
     messages = mark_last_occurrence_as_active_leaf(messages)
 
-    title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
+    title, title_source, title_ref = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-design-title"
     )
     return ParsedSession(
@@ -536,7 +536,6 @@ def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSessi
         title=str(title),
         title_source=title_source,
         title_ref=title_ref,
-        title_confidence=title_confidence,
         session_kind=_session_kind(payload),
         created_at=str(payload.get("created_at")) if payload.get("created_at") else None,
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
@@ -735,7 +734,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     resolved_session_id = conversation_id or fallback_id
-    title, title_source, title_ref, title_confidence = _resolve_claude_ai_title(
+    title, title_source, title_ref = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-ai-title"
     )
     return ParsedSession(
@@ -744,7 +743,6 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         title=str(title),
         title_source=title_source,
         title_ref=title_ref,
-        title_confidence=title_confidence,
         session_kind=_session_kind(payload),
         created_at=created_at,
         updated_at=updated_at,
