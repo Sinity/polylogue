@@ -38,6 +38,20 @@ from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
 
 
+def _resolved_config(**overrides: object) -> Any:
+    """Return a ``load_polylogue_config`` stand-in answering every config key.
+
+    Daemon modules bind ``load_polylogue_config`` at import time, so a module
+    first imported while this seam is patched keeps the stand-in for the rest
+    of the process. Only a fully resolved config can answer the keys those
+    later readers ask for.
+    """
+    from polylogue.config import load_polylogue_config
+
+    resolved = load_polylogue_config(cli_overrides=dict(overrides))
+    return lambda **_kwargs: resolved
+
+
 def test_polylogued_help_lists_watch_command() -> None:
     result = CliRunner().invoke(main, ["--help"])
 
@@ -4159,7 +4173,7 @@ def test_maybe_run_raw_materialization_whale_pass_runs_scoped_pass_and_emits_eve
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(
+        _resolved_config(
             raw_authority_whale_payload_bytes=None,
             daemon_parse_stage_workers=1,
             daemon_parse_stage_max_inflight_bytes=1_000_000,
@@ -4397,7 +4411,7 @@ def test_whale_worker_timeout_fences_before_coordinator_acquisition(
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(
+        _resolved_config(
             raw_authority_whale_payload_bytes=None,
             daemon_parse_stage_warm_timeout_seconds=0.01,
         ),
@@ -4453,7 +4467,7 @@ def test_whale_completion_accounts_for_census_pending_debt(monkeypatch: pytest.M
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(raw_authority_whale_payload_bytes=None, daemon_parse_stage_warm_timeout_seconds=1.0),
+        _resolved_config(raw_authority_whale_payload_bytes=None, daemon_parse_stage_warm_timeout_seconds=1.0),
     )
     monkeypatch.setattr(
         "polylogue.maintenance.raw_authority.whale_pass_candidate",
@@ -4513,9 +4527,8 @@ def test_whale_cancellation_after_admission_records_continuation_then_real_compl
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda **_kwargs: SimpleNamespace(
+        _resolved_config(
             archive_root=tmp_path,
-            render_root=tmp_path / "render",
             raw_authority_whale_payload_bytes=None,
             daemon_parse_stage_warm_timeout_seconds=1.0,
         ),
@@ -4644,7 +4657,7 @@ def test_whale_callback_runs_real_coordinator_product_convergence_and_census(
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(
+        _resolved_config(
             raw_authority_whale_payload_bytes=whale_limit,
             daemon_parse_stage_workers=1,
             daemon_parse_stage_max_inflight_bytes=whale_limit,
@@ -4709,9 +4722,8 @@ def test_maybe_run_raw_materialization_whale_pass_interruption_is_pre_hold(
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda **_kwargs: SimpleNamespace(
+        _resolved_config(
             archive_root=tmp_path,
-            render_root=tmp_path / "render",
             raw_authority_whale_payload_bytes=None,
         ),
     )
@@ -4761,7 +4773,7 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
     monkeypatch.setattr("polylogue.paths.render_root", lambda: tmp_path / "render")
     monkeypatch.setattr(
         "polylogue.config.load_polylogue_config",
-        lambda: SimpleNamespace(
+        _resolved_config(
             raw_authority_whale_payload_bytes=None,
             daemon_parse_stage_workers=1,
             daemon_parse_stage_max_inflight_bytes=1_000_000,
