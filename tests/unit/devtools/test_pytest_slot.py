@@ -8,7 +8,7 @@ either half of the temporary-directory containment (the ``--basetemp``
 argument or the exported TMPDIR) makes
 ``test_a_queued_run_contains_its_temporary_trees`` red.
 
-Every queueing test here resolves ``pueue`` and ``sinnixd-queue-run`` from
+Every queueing test here resolves ``pueue`` and ``agentctl-run`` from
 fakes that are the whole PATH, so a green run says nothing about what the
 workstation has deployed; the cgroup a slot decision depends on is stubbed for
 the same reason.
@@ -76,7 +76,7 @@ def _install_executable(directory: Path, name: str, source: str) -> Path:
 
 def _install_fake_queue_runner(directory: Path) -> Path:
     """The runner ``pueue add`` is handed, so queueing never needs the workstation's."""
-    return _install_executable(directory, pytest_slot.QUEUE_RUNNER, FAKE_QUEUE_RUNNER)
+    return _install_executable(directory, pytest_slot.QUEUE_RUNNERS[0], FAKE_QUEUE_RUNNER)
 
 
 def _install_fake_pueue(
@@ -147,7 +147,7 @@ def test_outside_a_task_the_run_is_queued(tmp_path: Path, monkeypatch: pytest.Mo
     assert add["argv"][add["argv"].index("--label") + 1] == "polylogue:test:1"
     assert "--print-task-id" in add["argv"] and "--escape" in add["argv"]
     assert add["argv"][-2:] == [
-        str(tmp_path / "fakebin" / pytest_slot.QUEUE_RUNNER),
+        str(tmp_path / "fakebin" / pytest_slot.QUEUE_RUNNERS[0]),
         str(tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.json"),
     ]
     launch = json.loads((tmp_path / "queued-launch.json").read_text(encoding="utf-8"))
@@ -164,6 +164,7 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
     secret_environment = _environment(
         PATH=os.environ["PATH"],
         ANTHROPIC_API_KEY="secret",
+        AGENTCTL_PRINCIPAL="agent-control",
         SINNIXD_PRINCIPAL="agent-control",
         POLYLOGUE_ARCHIVE_ROOT="/realm/state/polylogue",
     )
@@ -185,7 +186,7 @@ def test_the_adder_environment_carries_only_the_allowed_keys(tmp_path: Path, mon
 def test_lane_job_is_queued_even_with_generic_job_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = _install_fake_pueue(tmp_path, monkeypatch)
     marker = tmp_path / "pytest-ran"
-    lane_environment = _environment(SINNIXD_JOB_ID="job-1", SINNIXD_OPERATION="lane")
+    lane_environment = _environment(AGENTCTL_JOB_ID="job-1", AGENTCTL_OPERATION="lane")
 
     assert not holds_pytest_slot(lane_environment)
     outcome = run_pytest(
@@ -212,10 +213,10 @@ def test_declared_pytest_worker_runs_directly(tmp_path: Path, monkeypatch: pytes
     stub_cgroup(DEPLOYED_PYTEST_CGROUP, tmp_path=tmp_path, monkeypatch=monkeypatch)
     marker = tmp_path / "pytest-ran"
     holder = {
-        "SINNIXD_JOB_ID": "job-1",
-        "SINNIXD_OPERATION": "verify_affected",
-        "SINNIXD_QUEUE_WORKER": "1",
-        "SINNIXD_QUEUE_POOL": "pytest",
+        "AGENTCTL_JOB_ID": "job-1",
+        "AGENTCTL_OPERATION": "verify_affected",
+        "AGENTCTL_QUEUE_WORKER": "1",
+        "AGENTCTL_POOL": "pytest",
     }
 
     assert holds_pytest_slot(holder)
@@ -263,9 +264,9 @@ def test_an_agent_pool_worker_queues_its_focused_run_in_the_pytest_pool(
         _marker_command(marker),
         cwd=str(tmp_path),
         env=_environment(
-            SINNIXD_JOB_ID="agent-job",
-            SINNIXD_QUEUE_WORKER="1",
-            SINNIXD_QUEUE_POOL="agent",
+            AGENTCTL_JOB_ID="agent-job",
+            AGENTCTL_QUEUE_WORKER="1",
+            AGENTCTL_POOL="agent",
         ),
         root=tmp_path,
         label="polylogue:test:agent",
@@ -283,10 +284,10 @@ def test_missing_scoped_queue_runner_refuses_before_queueing(tmp_path: Path, mon
     monkeypatch.setattr(
         shutil,
         "which",
-        lambda name, path=None: None if name == pytest_slot.QUEUE_RUNNER else original_which(name, path),
+        lambda name, path=None: None if name in pytest_slot.QUEUE_RUNNERS else original_which(name, path),
     )
 
-    with pytest.raises(PytestSlotUnavailableError, match="sinnixd-queue-run"):
+    with pytest.raises(PytestSlotUnavailableError, match="agentctl-run, sinnixd-queue-run"):
         run_pytest(
             _marker_command(tmp_path / "pytest-ran"),
             cwd=str(tmp_path),

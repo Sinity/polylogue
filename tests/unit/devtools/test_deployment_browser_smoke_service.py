@@ -37,40 +37,34 @@ def test_declared_live_provider_proof_declares_no_port_lease() -> None:
     assert all(spec.module != "devtools.live_provider_proof_service" for spec in COMMAND_SPECS)
 
 
-def test_sinnixd_parser_accepts_the_unleased_shared_chrome_operation() -> None:
-    """Cross-contract proof against the production Sinnixd descriptor parser."""
+def test_agentctl_parser_accepts_the_unleased_shared_chrome_operation() -> None:
+    """Cross-contract proof against the production agentctl descriptor parser.
+
+    The parser rejects unknown operation fields, so a successful parse is the
+    proof that the proof operation declares no service lease or parameters.
+    """
     repository_root = Path(__file__).resolve().parents[3]
     sinnix_root = Path("/realm/project/sinnix")
-    package_roots = (
-        sinnix_root / "pkgs" / "sinnixd",
-        sinnix_root / "pkgs" / "sinnix-mcp",
-        sinnix_root / "pkgs" / "sinnix-lib",
-    )
+    package_root = sinnix_root / "pkgs" / "agentctl"
     parser_program = """
 import json
 import sys
 from pathlib import Path
 
-from sinnixd.projects import load_project_adapter
+from agentctl.projects import load_project_adapter
 
 adapter = load_project_adapter(Path(sys.argv[1]))
 proof = adapter.operation("deployment_browser_smoke")
 print(json.dumps({
     "project_id": adapter.project_id,
     "operation_count": len(adapter.operations),
-    "proof": {
-        "command": proof.command,
-        "parameters": proof.parameters,
-    },
-    "service_operations": sorted(
-        operation.name for operation in adapter.operations if getattr(operation, "service", None) is not None
-    ),
+    "proof": {"command": proof.command, "pool": proof.pool, "result": proof.result},
 }))
 """
     completed = subprocess.run(
         [sys.executable, "-c", parser_program, str(repository_root)],
         cwd=sinnix_root,
-        env=os.environ | {"PYTHONPATH": os.pathsep.join(map(str, package_roots))},
+        env=os.environ | {"PYTHONPATH": str(package_root)},
         text=True,
         capture_output=True,
         check=False,
@@ -82,10 +76,9 @@ print(json.dumps({
     assert parsed["operation_count"] >= 6
     assert parsed["proof"] == {
         "command": ["python", "-m", "devtools.deployment_browser_smoke_service", "--json"],
-        "parameters": [],
+        "pool": "interactive",
+        "result": "json",
     }
-    # Sinnixd allocates no ports; every proof binds its own.
-    assert parsed["service_operations"] == []
     assert all(spec.module != "devtools.deployment_browser_smoke_service" for spec in COMMAND_SPECS)
 
 
@@ -140,9 +133,9 @@ def test_live_provider_accepts_a_parked_control_plane_window() -> None:
 
 def test_live_provider_module_rejects_forged_environment_before_node_can_launch(tmp_path: Path) -> None:
     environment = os.environ | {
-        "SINNIXD_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
-        "SINNIXD_PROJECT_ID": "polylogue",
-        "SINNIXD_OPERATION": "live_provider_proof",
+        "AGENTCTL_JOB_ID": "123e4567-e89b-42d3-a456-426614174000",
+        "AGENTCTL_PROJECT_ID": "polylogue",
+        "AGENTCTL_OPERATION": "live_provider_proof",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT": "49120",
         "POLYLOGUE_LIVE_PROVIDER_RECEIVER_TOKEN": "forged",
         "TMPDIR": str(tmp_path),
@@ -157,7 +150,7 @@ def test_live_provider_module_rejects_forged_environment_before_node_can_launch(
     )
 
     assert completed.returncode == 1
-    assert "matching Sinnixd transient unit" in completed.stderr
+    assert "matching runtime transient unit" in completed.stderr
 
 
 def test_shared_browser_service_launches_only_the_fixed_control_proof(

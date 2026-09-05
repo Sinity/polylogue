@@ -36,9 +36,9 @@ def test_declared_operation_has_a_json_contract_and_no_retired_keys() -> None:
 
 def _fixed_service_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dev_loop_service, "require_declared_operation_context", lambda operation: f"unit-{operation}")
-    monkeypatch.setenv("SINNIXD_PROJECT_ID", "polylogue")
-    monkeypatch.setenv("SINNIXD_OPERATION", "dev_loop_proof")
-    monkeypatch.setenv("SINNIXD_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
+    monkeypatch.setenv("AGENTCTL_PROJECT_ID", "polylogue")
+    monkeypatch.setenv("AGENTCTL_OPERATION", "dev_loop_proof")
+    monkeypatch.setenv("AGENTCTL_JOB_ID", "123e4567-e89b-42d3-a456-426614174000")
 
 
 def test_run_proof_uses_self_bound_free_ports_and_product_convergence(
@@ -227,8 +227,8 @@ def test_api_message_convergence_rejects_wrong_or_malformed_response(
 @pytest.mark.parametrize(
     ("environment", "value", "message"),
     [
-        ("SINNIXD_OPERATION", "other", "rejects execution outside its fixed service context"),
-        ("SINNIXD_PROJECT_ID", "other", "rejects execution outside its fixed service context"),
+        ("AGENTCTL_OPERATION", "other", "rejects execution outside its fixed service context"),
+        ("AGENTCTL_PROJECT_ID", "other", "rejects execution outside its fixed service context"),
     ],
 )
 def test_operation_context_guard_rejects_missing_or_wrong_shell_context(
@@ -243,7 +243,7 @@ def test_operation_context_guard_rejects_missing_or_wrong_shell_context(
         "require_declared_operation_context",
         lambda operation: (
             (_ for _ in ()).throw(ValueError("rejects execution outside its fixed service context"))
-            if os.environ.get("SINNIXD_PROJECT_ID") != "polylogue" or os.environ.get("SINNIXD_OPERATION") != operation
+            if os.environ.get("AGENTCTL_PROJECT_ID") != "polylogue" or os.environ.get("AGENTCTL_OPERATION") != operation
             else f"unit-{operation}"
         ),
     )

@@ -55,7 +55,8 @@ share one workstation, so `devtools test` and the pytest step of
 
 `POLYLOGUE_PYTEST_SLOT=held` is the explicit assertion that the caller already
 holds the slot. Only the pytest-group runner may set it during normal
-execution. Generic `SINNIXD_JOB_ID` does not grant slot ownership.
+execution. Generic runtime job identity (`AGENTCTL_JOB_ID`, or `SINNIXD_JOB_ID` on
+older hosts) does not grant slot ownership.
 
 ### Typed WebUI package checks
 

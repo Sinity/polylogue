@@ -1,34 +1,67 @@
-"""Bounds on test execution inside agent jobs.
+"""Runtime environment names and bounds on test execution inside agent jobs.
 
-An agent lane runs under sinnixd's ``sinnixd-pueue-agent.slice``.
-Tests for a lane run exactly once, as the declared ``verify_affected`` job
-in the host's single-worker pytest pool; a lane running the affected or
-complete tier itself doubles that load outside admission. Focused runs stay
-available, bounded to a few workers.
+The Sinnix runtime (agentctl) exports ``AGENTCTL_*`` variables into every job
+it starts and places the job in ``agentctl-<pool>.slice``; older hosts export
+the same values as ``SINNIXD_*`` (the pool as ``SINNIXD_QUEUE_POOL``) and use
+``sinnixd-pueue-<pool>.slice``. Every consumer reads the names through the
+helpers here so the fallback lives in one place.
+
+An agent lane runs in the agent pool. Tests for a lane run exactly once, as
+the declared ``verify_affected`` job in the host's single-worker pytest pool;
+a lane running the affected or complete tier itself doubles that load outside
+admission. Focused runs stay available, bounded to a few workers.
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Mapping
 from pathlib import Path, PurePosixPath
 
-AGENT_PRINCIPAL_ENV = "SINNIXD_PRINCIPAL"
+RUNTIME_ENV_PREFIX = "AGENTCTL_"
+LEGACY_RUNTIME_ENV_PREFIX = "SINNIXD_"
+#: Variables whose legacy name is not the mechanical prefix swap.
+_LEGACY_RUNTIME_ENV_NAMES = {"AGENTCTL_POOL": "SINNIXD_QUEUE_POOL"}
+#: The runtime's transient job unit, ``<prefix>-job-<uuid>.service``.
+RUNTIME_UNIT_PREFIXES = ("agentctl", "sinnixd")
+
+AGENT_PRINCIPAL_ENV = "AGENTCTL_PRINCIPAL"
 AGENT_PRINCIPAL = "agent-control"
 AGENT_MAX_PYTEST_WORKERS = 2
 HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
-QUEUE_WORKER_ENV = "SINNIXD_QUEUE_WORKER"
-QUEUE_POOL_ENV = "SINNIXD_QUEUE_POOL"
+QUEUE_WORKER_ENV = "AGENTCTL_QUEUE_WORKER"
+QUEUE_POOL_ENV = "AGENTCTL_POOL"
 QUEUE_WORKER_VALUE = "1"
 PYTEST_POOL = "pytest"
 #: Every operation declaring ``pool = "pytest"`` in ``.agentctl/project.toml``,
 #: plus the ``test`` operation the pytest slot's own launch document names. A
-#: queue runner that does not export ``SINNIXD_QUEUE_POOL`` leaves this the only
-#: classifier, and a pytest-pool operation missing here re-queues into the
-#: single-slot group its own worker already occupies, which cannot drain.
+#: queue runner that does not export the pool leaves this the only classifier,
+#: and a pytest-pool operation missing here re-queues into the single-slot
+#: group its own worker already occupies, which cannot drain.
 PYTEST_WORKER_OPERATIONS = frozenset({"test", "verify_affected", "verify_all"})
 _CGROUP_PATH = Path("/proc/self/cgroup")
-_AGENT_CGROUP_SLICES = frozenset({"agent.slice", "sinnixd-pueue-agent.slice"})
-_PYTEST_CGROUP_SLICES = frozenset({"sinnixd-pueue-pytest.slice"})
+_AGENT_CGROUP_SLICES = frozenset({"agent.slice", "agentctl-agent.slice", "sinnixd-pueue-agent.slice"})
+_PYTEST_CGROUP_SLICES = frozenset({"agentctl-pytest.slice", "sinnixd-pueue-pytest.slice"})
+
+
+def runtime_env_names(variable: str) -> tuple[str, str]:
+    """``(AGENTCTL_<name>, SINNIXD_<name>)`` for an ``AGENTCTL_<name>`` variable."""
+    if not variable.startswith(RUNTIME_ENV_PREFIX):
+        raise ValueError(f"{variable} is not an {RUNTIME_ENV_PREFIX}* runtime variable")
+    legacy = _LEGACY_RUNTIME_ENV_NAMES.get(variable)
+    if legacy is None:
+        legacy = LEGACY_RUNTIME_ENV_PREFIX + variable.removeprefix(RUNTIME_ENV_PREFIX)
+    return (variable, legacy)
+
+
+def runtime_env(variable: str, env: Mapping[str, str] | None = None) -> str | None:
+    """The runtime variable ``AGENTCTL_<name>``, or its ``SINNIXD_*`` name when only that is set."""
+    source = os.environ if env is None else env
+    for candidate in runtime_env_names(variable):
+        value = source.get(candidate)
+        if value:
+            return value
+    return None
 
 
 def _inside_cgroup(cgroup_reader: Callable[[], str] | None, slices: frozenset[str]) -> bool:
@@ -53,7 +86,7 @@ def _inside_pytest_cgroup(cgroup_reader: Callable[[], str] | None) -> bool:
 
 
 def inside_agent_job(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
-    return env.get(AGENT_PRINCIPAL_ENV) == AGENT_PRINCIPAL or _inside_agent_cgroup(cgroup_reader)
+    return runtime_env(AGENT_PRINCIPAL_ENV, env) == AGENT_PRINCIPAL or _inside_agent_cgroup(cgroup_reader)
 
 
 def inside_declared_pytest_worker(env: Mapping[str, str], *, cgroup_reader: Callable[[], str] | None = None) -> bool:
@@ -61,16 +94,16 @@ def inside_declared_pytest_worker(env: Mapping[str, str], *, cgroup_reader: Call
 
     The queue worker inherits the lane's principal, so principal identity is
     not sufficient to classify the process. The queue marker and job identity
-    come from ``sinnixd-queue-run``; the pytest slice binds that identity to the
-    pool declared by the operation.
+    come from the runtime's queue runner; the pytest slice binds that identity
+    to the pool declared by the operation.
     """
-    if env.get(QUEUE_WORKER_ENV) != QUEUE_WORKER_VALUE or not env.get("SINNIXD_JOB_ID"):
+    if runtime_env(QUEUE_WORKER_ENV, env) != QUEUE_WORKER_VALUE or not runtime_env("AGENTCTL_JOB_ID", env):
         return False
-    declared_pool = env.get(QUEUE_POOL_ENV)
+    declared_pool = runtime_env(QUEUE_POOL_ENV, env)
     if declared_pool is not None:
         if declared_pool != PYTEST_POOL:
             return False
-    elif env.get("SINNIXD_OPERATION") not in PYTEST_WORKER_OPERATIONS:
+    elif runtime_env("AGENTCTL_OPERATION", env) not in PYTEST_WORKER_OPERATIONS:
         return False
     return _inside_pytest_cgroup(cgroup_reader)
 

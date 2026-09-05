@@ -281,8 +281,11 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
     }
 
 
-def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("SINNIXD_OPERATION", "verify_quick")
+@pytest.mark.parametrize("variable", ["AGENTCTL_OPERATION", "SINNIXD_OPERATION"])
+def test_declared_operation_requires_the_fixed_route(monkeypatch: pytest.MonkeyPatch, variable: str) -> None:
+    monkeypatch.delenv("AGENTCTL_OPERATION", raising=False)
+    monkeypatch.delenv("SINNIXD_OPERATION", raising=False)
+    monkeypatch.setenv(variable, "verify_quick")
 
     assert verify._declared_agentctl_operation(["--quick"]) == "verify_quick"
     assert verify._declared_agentctl_operation([]) is None

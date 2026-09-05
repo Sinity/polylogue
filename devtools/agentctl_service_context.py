@@ -1,8 +1,9 @@
-"""Local defense-in-depth checks for declared Sinnixd operations.
+"""Local defense-in-depth checks for declared runtime operations.
 
-Sinnixd remains the authority for admission, exact-head validation, and leases.
-These checks only ensure a private project command did not escape the matching
-transient unit Sinnixd created for that already-authorized job.
+The Sinnix runtime (agentctl) remains the authority for admission, exact-head
+validation, and leases. These checks only ensure a private project command did
+not escape the matching transient unit the runtime created for that
+already-authorized job.
 """
 
 from __future__ import annotations
@@ -17,15 +18,18 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
+from devtools.agent_env import RUNTIME_UNIT_PREFIXES, runtime_env, runtime_env_names
+
 _CGROUP_PATH = Path("/proc/self/cgroup")
 _PROJECT_ID = "polylogue"
 
 
-def _unit_name(job_id: str) -> str:
+def _unit_names(job_id: str) -> tuple[str, ...]:
     try:
-        return f"sinnixd-job-{UUID(job_id)}.service"
+        identity = UUID(job_id)
     except (TypeError, ValueError, AttributeError) as error:
-        raise ValueError("Sinnixd job identity must be a UUID") from error
+        raise ValueError("runtime job identity must be a UUID") from error
+    return tuple(f"{prefix}-job-{identity}.service" for prefix in RUNTIME_UNIT_PREFIXES)
 
 
 def _current_cgroup(read_text: Callable[[], str]) -> str:
@@ -33,7 +37,7 @@ def _current_cgroup(read_text: Callable[[], str]) -> str:
         _hierarchy, separator, path = line.partition("::")
         if separator and path:
             return path
-    raise ValueError("Sinnixd service context requires a unified cgroup path")
+    raise ValueError("runtime service context requires a unified cgroup path")
 
 
 def _unit_exec_start(unit: str) -> str:
@@ -45,19 +49,19 @@ def _unit_exec_start(unit: str) -> str:
         timeout=2,
     )
     if completed.returncode != 0:
-        raise ValueError("Sinnixd service context could not inspect its transient unit")
+        raise ValueError("runtime service context could not inspect its transient unit")
     if not completed.stdout.strip():
-        raise ValueError("Sinnixd service context could not inspect its transient unit command")
+        raise ValueError("runtime service context could not inspect its transient unit command")
     return completed.stdout
 
 
 def _exec_start_declares_child_environment(exec_start: str, expected: Mapping[str, str]) -> bool:
-    """Recognize Sinnixd's fixed ``env -i KEY=value ...`` child command.
+    """Recognize the runtime's fixed ``env -i KEY=value ...`` child command.
 
     The transient unit itself intentionally does not carry the child identity in
-    ``Environment=``. Sinnixd passes that closed environment to ``env -i`` in
-    ExecStart, after its capture helper. Keep this check deliberately narrow so
-    a differently shaped unit cannot be treated as a declared service command.
+    ``Environment=``. The runtime passes that closed environment to ``env -i``
+    in ExecStart, after its capture helper. Keep this check deliberately narrow
+    so a differently shaped unit cannot be treated as a declared service command.
     """
     env_index = exec_start.find("/env -i")
     if env_index < 0:
@@ -76,27 +80,34 @@ def require_declared_operation_context(
     """Require the declared operation's actual transient unit before launch.
 
     Environment variables identify the expected child, but are not trusted on
-    their own. The current cgroup must name the matching Sinnixd unit and that
+    their own. The current cgroup must name the matching runtime unit and that
     unit's rendered ExecStart must declare the same closed ``env -i`` child
-    environment. This does not replace Sinnixd's exact-head or lease validation.
+    environment. This does not replace the runtime's exact-head or lease
+    validation.
+
+    Identity is read as ``AGENTCTL_*`` with ``SINNIXD_*`` fallback. The
+    ExecStart check requires the family the environment supplied, so a unit
+    cannot be matched against variables it never exported.
     """
     env = os.environ if environment is None else environment
-    job_id = env.get("SINNIXD_JOB_ID", "")
-    unit = _unit_name(job_id)
+    family = 0 if env.get("AGENTCTL_JOB_ID") else 1
+    job_id = runtime_env("AGENTCTL_JOB_ID", env) or ""
+    units = _unit_names(job_id)
     expected = {
-        "SINNIXD_JOB_ID": job_id,
-        "SINNIXD_PROJECT_ID": _PROJECT_ID,
-        "SINNIXD_OPERATION": operation,
+        runtime_env_names("AGENTCTL_JOB_ID")[family]: job_id,
+        runtime_env_names("AGENTCTL_PROJECT_ID")[family]: _PROJECT_ID,
+        runtime_env_names("AGENTCTL_OPERATION")[family]: operation,
     }
     if any(env.get(key) != value for key, value in expected.items()):
-        raise ValueError("Sinnixd service context does not match the declared operation")
+        raise ValueError("runtime service context does not match the declared operation")
     read_cgroup = cgroup_reader or (lambda: _CGROUP_PATH.read_text(encoding="utf-8"))
     cgroup = _current_cgroup(read_cgroup)
-    if f"/agent.slice/{unit}" not in cgroup:
-        raise ValueError("Sinnixd service context is not inside the matching transient unit")
+    unit = next((candidate for candidate in units if f"/agent.slice/{candidate}" in cgroup), None)
+    if unit is None:
+        raise ValueError("runtime service context is not inside the matching transient unit")
     read_unit_exec_start = unit_exec_start_reader or _unit_exec_start
     if not _exec_start_declares_child_environment(read_unit_exec_start(unit), expected):
-        raise ValueError("Sinnixd transient unit does not match the declared operation")
+        raise ValueError("runtime transient unit does not match the declared operation")
     return unit
 
 
