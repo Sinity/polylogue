@@ -197,3 +197,63 @@ def test_discard_removes_the_datafile_and_its_sidecars(tmp_path: Path) -> None:
 
     assert not path.exists()
     assert not path.with_name(path.name + "-wal").exists()
+
+
+def test_seeding_keeps_a_usable_local_graph(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A checkout's own current graph is never replaced by the seed.
+
+    Anti-vacuity: seeding unconditionally (the previous behaviour) would replace
+    the local file, and the marker row written below would disappear.
+    """
+    seed_root = tmp_path / "seed"
+    seed = _seed_with_testmon(seed_root)
+    local_root = tmp_path / "local"
+    local = _seed_with_testmon(local_root)
+    connection = sqlite3.connect(local)
+    connection.execute("CREATE TABLE local_marker (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    monkeypatch.chdir(local_root)
+
+    assert testmon_provision.main(["--seed", str(seed)]) == 0
+
+    connection = sqlite3.connect(local)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    connection.close()
+    assert "local_marker" in tables
+
+
+def test_seeding_replaces_a_local_graph_that_would_rerun_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_root = tmp_path / "seed"
+    seed = _seed_with_testmon(seed_root)
+    local_root = tmp_path / "local"
+    local = _seed_with_testmon(local_root, packages="stale 0.1")
+    monkeypatch.chdir(local_root)
+
+    assert testmon_provision.main(["--seed", str(seed)]) == 0
+
+    assert inspect_testmon_graph(local_root).full_rerun_cause is None
+    assert local.exists()
+
+
+def test_seeding_keeps_a_local_graph_when_the_seed_is_no_fresher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_root = tmp_path / "seed"
+    seed = _seed_with_testmon(seed_root, packages="stale-seed 0.1")
+    local_root = tmp_path / "local"
+    local = _seed_with_testmon(local_root, packages="stale-local 0.1")
+    connection = sqlite3.connect(local)
+    connection.execute("CREATE TABLE local_marker (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    monkeypatch.chdir(local_root)
+
+    assert testmon_provision.main(["--seed", str(seed)]) == 0
+
+    connection = sqlite3.connect(local)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    connection.close()
+    assert "local_marker" in tables
