@@ -590,9 +590,10 @@ class LiveWatcher:
                 len(hot_candidates),
             )
         for group in (hot_candidates, cold_candidates):
-            if self._stop.is_set() or not group:
+            if self._stop.is_set():
                 break
-            await self._catch_up_candidates(group)
+            if group:
+                await self._catch_up_candidates(group)
         await self._drain_hook_spools()
 
     async def _catch_up_candidates(self, candidates: tuple[CandidateSourceFile, ...]) -> None:

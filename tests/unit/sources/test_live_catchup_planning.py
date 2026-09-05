@@ -341,6 +341,37 @@ def test_catch_up_ingests_needed_files_in_bounded_chunks(
     assert retry_scan_calls == [3]
 
 
+def test_catch_up_ingests_a_cold_backlog_without_a_recent_source(
+    tmp_path: Path,
+    frozen_clock: FrozenClock,
+) -> None:
+    """Anti-vacuity: breaking out of the priority loop on an empty hot group skips the whole backlog."""
+    root = tmp_path / "src"
+    root.mkdir()
+    historical = [root / f"historical-{index}.jsonl" for index in range(2)]
+    now = 1_800_000_000.0
+    stale = now - live_watcher._CATCH_UP_HOT_FILE_AGE_S - 1
+    for path in historical:
+        path.write_text('{"role":"user","content":"old"}\n')
+        os.utime(path, (stale, stale))
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="test", root=root),),
+    )
+    frozen_clock.set_time(now)
+
+    calls: list[list[Path]] = []
+
+    async def fake_ingest_files(paths: list[Path], **_kwargs: object) -> None:
+        calls.append(paths)
+
+    watcher._ingest_files = fake_ingest_files  # type: ignore[assignment,method-assign]
+
+    asyncio.run(watcher._catch_up([root]))
+
+    assert calls == [historical]
+
+
 def test_catch_up_ingests_recent_source_before_historical_backlog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
