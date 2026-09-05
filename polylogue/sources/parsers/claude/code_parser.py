@@ -584,9 +584,70 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
 @dataclass
 class _DelegationProgressStats:
     count: int = 0
+    result_count: int = 0
     first_seen: str | None = None
     last_seen: str | None = None
     child_provider_ids: set[str] = field(default_factory=set)
+    agent_type: str | None = None
+    description: str | None = None
+
+
+def _subagent_transcript_stem(agent_id: str) -> str:
+    """Return the provider name a dispatched child claims for itself.
+
+    Claude Code writes a subagent's transcript to
+    ``<session>/subagents/agent-<agentId>.jsonl`` and the child parser claims
+    that file stem as its provider alias; parent-side records carry the bare
+    ``agentId``. The stem is the provider's own naming, not an inference.
+    """
+    return agent_id if agent_id.startswith("agent-") else f"agent-{agent_id}"
+
+
+def _accumulate_dispatch_result(
+    item: dict[str, object],
+    timestamp: str | None,
+    accumulator: dict[str, _DelegationProgressStats],
+) -> bool:
+    """Fold a ``user`` record's ``toolUseResult.agentId`` into its dispatch edge.
+
+    The Agent/Task tool's result record names the spawned child (``agentId``)
+    and, through its ``tool_result`` content segment, the dispatching
+    ``tool_use_id``: exact parent-side evidence binding one tool-use block to
+    one child. Returns whether the record carried such evidence.
+    """
+    if item.get("type") != "user":
+        return False
+    tool_result = item.get("toolUseResult")
+    if not isinstance(tool_result, dict):
+        return False
+    agent_id = _string_field(tool_result, "agentId")
+    if not agent_id:
+        return False
+    message = item.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if not isinstance(content, list):
+        return False
+    tool_use_ids = {
+        str(segment["tool_use_id"])
+        for segment in content
+        if isinstance(segment, dict)
+        and segment.get("type") == "tool_result"
+        and isinstance(segment.get("tool_use_id"), str)
+        and segment["tool_use_id"]
+    }
+    if len(tool_use_ids) != 1:
+        return False
+    entry = accumulator.setdefault(next(iter(tool_use_ids)), _DelegationProgressStats())
+    entry.child_provider_ids.add(_subagent_transcript_stem(agent_id))
+    entry.result_count += 1
+    entry.agent_type = _string_field(tool_result, "agentType") or entry.agent_type
+    entry.description = _string_field(tool_result, "description") or entry.description
+    if timestamp:
+        if entry.first_seen is None or timestamp < entry.first_seen:
+            entry.first_seen = timestamp
+        if entry.last_seen is None or timestamp > entry.last_seen:
+            entry.last_seen = timestamp
+    return True
 
 
 def _accumulate_delegation_progress(
@@ -615,10 +676,14 @@ def _accumulate_delegation_progress(
     # The dispatched child is named only inside the progress payload. The
     # record envelope's identity fields name the transcript that emitted the
     # tick -- its own session, which is the dispatching parent.
-    for key in ("childSessionId", "child_session_id", "agentId", "agent_id"):
+    for key in ("childSessionId", "child_session_id"):
         value = _string_field(data, key)
         if value:
             entry.child_provider_ids.add(value)
+    for key in ("agentId", "agent_id"):
+        value = _string_field(data, key)
+        if value:
+            entry.child_provider_ids.add(_subagent_transcript_stem(value))
     entry.count += 1
     if timestamp:
         if entry.first_seen is None or timestamp < entry.first_seen:
@@ -1697,6 +1762,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             timestamp=timestamp,
         )
     )
+    _accumulate_dispatch_result(item, timestamp, acc.delegation_progress)
     tool_execution_payload = _tool_execution_result_payload(item)
     if tool_execution_payload is not None:
         acc.session_events.append(
@@ -1855,6 +1921,8 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         observation = ParsedDispatchObservation(
             provider_tool_id=parent_tool_use_id,
             child_provider_id=child_provider_ids[0] if len(child_provider_ids) == 1 else None,
+            agent_type=stats.agent_type,
+            description=stats.description,
             first_seen=stats.first_seen,
             last_seen=stats.last_seen,
             resolution_reason=(
@@ -1865,12 +1933,11 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
                 else None
             ),
         )
-        observation_payload = observation.model_dump()
-        observation_payload["parent_tool_use_id"] = parent_tool_use_id
-        observation_payload["progress_tick_count"] = stats.count
-        observation_payload["summary"] = (
-            f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)"
+        summary = (
+            f"delegated work under tool_use {parent_tool_use_id} "
+            f"({stats.count} progress ticks, {stats.result_count} dispatch results)"
         )
+        observation_payload = observation.model_dump()
         if len(child_provider_ids) > 1:
             observation_payload["child_provider_ids"] = list(child_provider_ids)
         acc.session_events.append(
@@ -1881,10 +1948,9 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
                 payload={
                     "parent_tool_use_id": parent_tool_use_id,
                     "progress_tick_count": stats.count,
-                    "first_seen": stats.first_seen,
-                    "last_seen": stats.last_seen,
+                    "dispatch_result_count": stats.result_count,
                     **observation_payload,
-                    "summary": f"delegated work under tool_use {parent_tool_use_id} ({stats.count} progress ticks)",
+                    "summary": summary,
                 },
             )
         )

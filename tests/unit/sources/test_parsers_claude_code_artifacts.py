@@ -1070,7 +1070,8 @@ def test_parse_code_ignores_emitting_identity_on_dispatch_progress() -> None:
 
     parsed = parse_code(records, "agent-parent-own-agent")
     [event] = [event for event in parsed.session_events if event.event_type == "claude_delegation_progress"]
-    assert event.payload["child_provider_id"] == "child-agent"
+    # The child is named by its transcript stem, the join key the resolver uses.
+    assert event.payload["child_provider_id"] == "agent-child-agent"
     assert event.payload["resolution_reason"] is None
     assert "child_provider_ids" not in event.payload
 
