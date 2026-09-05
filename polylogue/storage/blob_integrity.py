@@ -2337,9 +2337,10 @@ class AttachmentCoverageReport:
     # disk somewhere, most of which nothing can ever reach".
     acquired_unreachable_count: int
     acquired_unreachable_sample: tuple[str, ...]
-    #: Attachments the writer retained with an ambiguous owner (ref_count 0,
-    #: never swept). Unreferenced by construction, so never coverage debt.
-    unowned_count: int = 0
+    #: Acquired attachments the writer retained with an ambiguous owner
+    #: (ref_count 0, never swept). Unreferenced by construction, so never
+    #: coverage debt -- and not reachable either, so they are their own term.
+    acquired_unowned_count: int = 0
 
     @property
     def ok(self) -> bool:
@@ -2347,7 +2348,7 @@ class AttachmentCoverageReport:
 
     @property
     def acquired_reachable_count(self) -> int:
-        return self.acquired_count - self.acquired_unreachable_count
+        return self.acquired_count - self.acquired_unreachable_count - self.acquired_unowned_count
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -2357,7 +2358,7 @@ class AttachmentCoverageReport:
             "acquired_reachable_count": self.acquired_reachable_count,
             "acquired_unreachable_count": self.acquired_unreachable_count,
             "acquired_unreachable_sample": list(self.acquired_unreachable_sample),
-            "unowned_count": self.unowned_count,
+            "acquired_unowned_count": self.acquired_unowned_count,
             "acquired_missing_blob_count": self.acquired_missing_blob_count,
             "acquired_missing_blob_sample": list(self.acquired_missing_blob_sample),
             "unavailable_count": self.unavailable_count,
@@ -2404,7 +2405,8 @@ def scan_attachment_coverage(
             conn.execute(
                 """
                 SELECT COUNT(*) FROM attachments a
-                WHERE a.ref_count = 0
+                WHERE a.acquisition_status = 'acquired'
+                  AND a.ref_count = 0
                   AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.attachment_id = a.attachment_id)
                 """
             ).fetchone()[0]
@@ -2434,7 +2436,7 @@ def scan_attachment_coverage(
         unfetched_count=status_counts.get("unfetched", 0),
         acquired_unreachable_count=len(unreachable_rows),
         acquired_unreachable_sample=unreachable_sample,
-        unowned_count=unowned_count,
+        acquired_unowned_count=unowned_count,
     )
 
 

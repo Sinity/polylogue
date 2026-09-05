@@ -1971,8 +1971,8 @@ def _check_attachment_coverage_at_index_path(
             f"acquired attachment debt: missing_blob={missing:,}, unreachable={unreachable:,}"
             if debt_count
             else (
-                f"all {report.acquired_count:,} acquired attachment(s) have bytes and a live attachment reference"
-                + (f"; {report.unowned_count:,} retained unowned" if report.unowned_count else "")
+                f"all {report.acquired_reachable_count:,} acquired attachment(s) have bytes and a live attachment reference"
+                + (f"; {report.acquired_unowned_count:,} retained unowned" if report.acquired_unowned_count else "")
             )
         ),
         count=debt_count,

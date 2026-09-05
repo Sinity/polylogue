@@ -492,7 +492,7 @@ def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_
         """
         INSERT INTO attachments (
             attachment_id, display_name, media_type, byte_count, blob_hash, acquisition_status, ref_count
-        ) VALUES (?, ?, ?, ?, ?, 'acquired', 0)
+        ) VALUES (?, ?, ?, ?, ?, 'acquired', 1)
         """,
         ("orphan-att-1", "orphan.txt", "text/plain", blob_size, bytes.fromhex(blob_hash)),
     )
@@ -507,6 +507,11 @@ def test_scan_attachment_coverage_flags_acquired_row_with_no_attachment_ref(tmp_
     assert report.acquired_unreachable_count == 1
     assert report.acquired_unreachable_sample == ("orphan-att-1",)
     assert report.acquired_reachable_count == 0
+    # The stale non-zero ref_count is what makes this debt: refs existed when
+    # the sweep last ran and then went away without it running again. A row
+    # inserted with ref_count 0 is the writer's typed unowned retention and is
+    # reported as `unowned_count` instead.
+    assert report.acquired_unowned_count == 0
     # `ok` only tracks missing blob bytes (a distinct dimension) -- bytes ARE
     # present on disk here, so `ok` stays True even though the row is
     # unreachable. Reachability debt is its own signal

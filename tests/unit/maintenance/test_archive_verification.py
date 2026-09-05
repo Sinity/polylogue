@@ -1543,7 +1543,7 @@ def test_owner_ambiguous_attachment_is_not_coverage_or_closure_debt(tmp_path: Pa
     coverage = _check(report, "attachment-coverage")
     assert coverage.status is OutcomeStatus.OK
     assert coverage.evidence["unreachable_count"] == 0
-    assert cast(dict[str, object], coverage.evidence["scan"])["unowned_count"] == 1
+    assert cast(dict[str, object], coverage.evidence["scan"])["acquired_unowned_count"] == 1
     assert "retained unowned" in coverage.summary
     closure = _check(report, "blob-reference-closure")
     assert closure.status is OutcomeStatus.OK

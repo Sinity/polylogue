@@ -235,7 +235,7 @@ def test_rebuild_preflight_rejects_acquired_unreachable_attachment_before_candid
         conn.execute(
             """
             INSERT INTO attachments(attachment_id, blob_hash, byte_count, acquisition_status, ref_count)
-            VALUES ('unreachable-attachment', ?, ?, 'acquired', 0)
+            VALUES ('unreachable-attachment', ?, ?, 'acquired', 1)
             """,
             (bytes.fromhex(blob_hash), size),
         )
