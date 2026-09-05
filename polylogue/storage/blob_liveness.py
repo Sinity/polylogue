@@ -21,6 +21,23 @@ from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 
 
+#: An attachment the writer retained with an ambiguous owner is unreferenced by
+#: construction: ``_write_attachments`` inserts it with ``ref_count`` 0 and
+#: deliberately keeps it out of the ref-count sweep, so it never had a ref to
+#: lose. Reference-closure debt and unreachable-coverage debt both mean "refs
+#: went away without the sweep running", which only a non-zero ``ref_count``
+#: witnesses. Every site that counts ref-less acquired attachments as debt uses
+#: this predicate, so the two states cannot be conflated on one route.
+def acquired_attachment_missing_ref_predicate(alias: str = "a", *, refs_table: str = "attachment_refs") -> str:
+    """SQL predicate for an acquired attachment whose refs went away."""
+    return (
+        f"{alias}.acquisition_status = 'acquired'\n"
+        f"              AND {alias}.ref_count != 0\n"
+        f"              AND NOT EXISTS (SELECT 1 FROM {refs_table} r "
+        f"WHERE r.attachment_id = {alias}.attachment_id)"
+    )
+
+
 class LivenessState(str, Enum):
     LIVE = "live"
     UNREFERENCED = "unreferenced"
@@ -492,6 +509,7 @@ def project_index_blob_hashes(index_conn: sqlite3.Connection) -> BlobLivenessPro
 
 __all__ = [
     "BLOB_OWNERS",
+    "acquired_attachment_missing_ref_predicate",
     "BlobLiveness",
     "BlobLivenessProjection",
     "LivenessState",
