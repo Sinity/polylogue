@@ -32,10 +32,13 @@ review = "none"
 verify = { focused = "verify_quick", candidate = "verify_quick", corpus = "verify_all" }
 publish = "pr"
 
+# Bounded selections run in their own pool so they never queue behind an
+# affected or corpus run; the pool's 3G slice sizes them to about two
+# workers through devtools' cgroup sizing.
 [operations.pytest_focused]
-description = "Run one managed pytest launch file, or a devtools test selection, inside the host's pytest slot"
+description = "Run one managed pytest launch file, or a devtools test selection, in the host's quick pytest pool"
 exec = ["python", "-m", "devtools.pytest_slot"]
-pool = "pytest"
+pool = "pytest-quick"
 result = "pytest"
 cache = "none"
 timeout_seconds = 7200
