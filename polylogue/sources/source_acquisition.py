@@ -28,6 +28,7 @@ from .source_acquisition_components import (
     iter_zip_entry_raw_data,
     read_plain_source_file,
 )
+from .source_root_admission import refuse_non_capture_source_root
 from .source_walk import _setup_source_walk
 
 logger = get_logger(__name__)
@@ -73,6 +74,17 @@ def iter_source_raw_data(
     if not source.path:
         return
 
+    if blob_store is None and blob_root is None:
+        from polylogue.paths import blob_store_root
+
+        blob_root = blob_store_root()
+    if blob_store is None:
+        assert blob_root is not None
+        blob_store = BlobStore(blob_root)
+    # Ahead of the walk: a foreign archive root is refused whether or not the
+    # walk finds work in it, so the refusal does not depend on cursor state.
+    refuse_non_capture_source_root(source.path, destination=blob_store.root.parent)
+
     walk = _setup_source_walk(
         source,
         cursor_state=cursor_state,
@@ -84,13 +96,6 @@ def iter_source_raw_data(
     if walk is None:
         return
 
-    if blob_store is None and blob_root is None:
-        from polylogue.paths import blob_store_root
-
-        blob_root = blob_store_root()
-    if blob_store is None:
-        assert blob_root is not None
-        blob_store = BlobStore(blob_root)
     failed_count = 0
     empty_artifact_count = 0
     for path, file_mtime in walk.paths_to_process:
