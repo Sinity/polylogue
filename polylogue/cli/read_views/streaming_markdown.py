@@ -7,6 +7,7 @@ import sqlite3
 from pathlib import Path
 from typing import TextIO
 
+from polylogue.core.identity_law import transcript_order_sql
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.rendering.block_models import RenderableBlock
 from polylogue.rendering.blocks import has_structured_blocks, render_blocks_markdown
@@ -110,7 +111,7 @@ def _write_message_stream(
     prose_only: bool,
 ) -> None:
     cursor = conn.execute(
-        """
+        f"""
         SELECT m.message_id,
                m.role,
                m.occurred_at_ms,
@@ -127,7 +128,7 @@ def _write_message_stream(
         FROM messages m
         LEFT JOIN blocks b ON b.message_id = m.message_id
         WHERE m.session_id = ?
-        ORDER BY m.position, m.variant_index, b.position
+        ORDER BY {transcript_order_sql("m")}, b.position
         """,
         (session_id,),
     )
