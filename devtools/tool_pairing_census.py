@@ -57,7 +57,6 @@ COMPLETION_UNKNOWN = "unknown"
 
 #: Terminal classification. Every cohort carries exactly one.
 CLASS_UNSUPPORTED_CONSTRUCT = "unsupported_provider_construct"
-CLASS_SIDECAR_OWNED = "sidecar_owned"
 CLASS_SOURCE_ABSENT = "source_absent"
 CLASS_SOURCE_TRUNCATED = "source_truncated"
 CLASS_IN_FLIGHT = "in_flight_or_interrupted"
