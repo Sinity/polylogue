@@ -486,9 +486,9 @@ def test_codex_state_raw_id_is_stable_and_path_scoped(tmp_path: Path) -> None:
     blob_store = BlobStore(tmp_path / "blobs")
     snap_a = snapshot_sqlite_to_blob(a, blob_store)
     snap_b = snapshot_sqlite_to_blob(b, blob_store)
-    # Byte-identical content -> identical blob hash ...
-    assert snap_a.blob_hash == snap_b.blob_hash
+    # Identical content -> identical logical revision ...
+    assert snap_a.source_revision == snap_b.source_revision
     # ... but raw identity stays scoped to the originating path, matching the
     # Hermes profile-raw pattern (two installs never collapse into one raw row).
-    assert codex_state_raw_id(a, snap_a.blob_hash) != codex_state_raw_id(b, snap_b.blob_hash)
-    assert codex_state_raw_id(a, snap_a.blob_hash) == codex_state_raw_id(a, snap_a.blob_hash)
+    assert codex_state_raw_id(a, snap_a.source_revision) != codex_state_raw_id(b, snap_b.source_revision)
+    assert codex_state_raw_id(a, snap_a.source_revision) == codex_state_raw_id(a, snap_a.source_revision)

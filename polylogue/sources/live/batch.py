@@ -2283,7 +2283,7 @@ class LiveBatchProcessor:
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
-                    raw_id = hermes_profile_raw_id(source_path, 0, blob_hash)
+                    raw_id = hermes_profile_raw_id(source_path, 0, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError:
@@ -2329,7 +2329,7 @@ class LiveBatchProcessor:
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
-                    raw_id = codex_state_raw_id(source_path, blob_hash)
+                    raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError:
