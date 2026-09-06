@@ -338,14 +338,28 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     # so a rendered form never reclassifies a tool turn.
     display_text = _content_text(record.get("displayContent"))
     if display_text and display_text != text:
-        gemini_blocks = [
-            *gemini_blocks,
-            ParsedContentBlock(
-                type=BlockType.TEXT,
-                text=display_text,
-                metadata={"gemini_display_content": True},
+        matching_index = next(
+            (
+                block_index
+                for block_index, block in enumerate(gemini_blocks)
+                if block.type is BlockType.TEXT and block.text == display_text
             ),
-        ]
+            None,
+        )
+        if matching_index is None:
+            gemini_blocks = [
+                *gemini_blocks,
+                ParsedContentBlock(
+                    type=BlockType.TEXT,
+                    text=display_text,
+                    metadata={"gemini_display_content": True},
+                ),
+            ]
+        else:
+            matching = gemini_blocks[matching_index]
+            gemini_blocks[matching_index] = matching.model_copy(
+                update={"metadata": {**(matching.metadata or {}), "gemini_display_content": True}},
+            )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
