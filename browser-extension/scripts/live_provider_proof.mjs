@@ -2,7 +2,7 @@
 // launches a browser or reads a browser profile. Sinnix owns the one existing
 // Chrome process and parks each proof window on its hidden agent workspace.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -35,26 +35,20 @@ function receiverPortFromEnvironment(name) {
 }
 
 function requireExpectedServiceContext() {
-  const jobId = process.env.SINNIXD_JOB_ID || "";
-  const unit = `sinnixd-job-${jobId}.service`;
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jobId)) {
-    throw new Error("live provider proof requires a Sinnixd job UUID");
+  // The runtime exports AGENTCTL_*; older hosts export the same values as SINNIXD_*.
+  const prefix = process.env.AGENTCTL_JOB_ID ? "AGENTCTL_" : "SINNIXD_";
+  if (!process.env[`${prefix}JOB_ID`]) {
+    throw new Error("live provider proof requires a runtime job id");
   }
-  if (process.env.SINNIXD_PROJECT_ID !== "polylogue" || process.env.SINNIXD_OPERATION !== "live_provider_proof") {
+  if (process.env[`${prefix}PROJECT_ID`] !== "polylogue" || process.env[`${prefix}OPERATION`] !== "live_provider_proof") {
     throw new Error("live provider proof rejects execution outside its fixed service context");
   }
+  // The runtime places the declared operation's job in the pool slice of its
+  // declaration (.agentctl/project.toml: pool = "interactive"); a shell cannot.
   const cgroup = readFileSync("/proc/self/cgroup", "utf8").split("\n").find((line) => line.includes("::"))?.split("::", 2)[1] || "";
-  if (!cgroup.includes(`/agent.slice/${unit}`)) {
-    throw new Error("live provider proof is not inside its matching Sinnixd transient unit");
-  }
-  const unitExecStart = spawnSync(
-    "systemctl",
-    ["--user", "show", unit, "--property=ExecStart", "--value"],
-    { encoding: "utf8", timeout: 2000 },
-  );
-  const childCommand = unitExecStart.stdout.slice(unitExecStart.stdout.indexOf("/env -i") + "/env -i".length);
-  if (unitExecStart.status !== 0 || !unitExecStart.stdout.includes("/env -i") || !["SINNIXD_JOB_ID", "SINNIXD_PROJECT_ID", "SINNIXD_OPERATION"].every((name) => childCommand.includes(`${name}=${process.env[name]}`))) {
-    throw new Error("live provider proof transient unit does not match the declared operation");
+  const parts = cgroup.split("/");
+  if (!["agentctl-interactive.slice", "sinnixd-pueue-interactive.slice"].some((slice) => parts.includes(slice))) {
+    throw new Error("live provider proof is not inside the interactive pool");
   }
 }
 

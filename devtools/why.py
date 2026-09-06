@@ -173,6 +173,9 @@ def _render(payload: dict[str, Any], stream: Any) -> None:
     selection = payload.get("testmon_selection")
     if isinstance(selection, dict):
         print(f"\nselection: {selection.get('selection_mode')}", file=stream)
+        selection_reason = selection.get("selection_reason")
+        if selection_reason:
+            print(f"  why: {selection_reason}", file=stream)
         reason = selection.get("graph_reason")
         if reason:
             print(f"  graph: {reason}", file=stream)

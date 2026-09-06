@@ -4,7 +4,7 @@ The providers and receiver are fixed by this operation. The Node workflow uses
 the Sinnix shared-Chrome control boundary, which opens and parks proof-owned
 windows in the existing authenticated browser. The receiver binds a free
 loopback port, passes it to the Node workflow, and publishes it in the result.
-Sinnixd remains the authority for admission and exact-head binding.
+The runtime (agentctl) remains the authority for admission and exact-head binding.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from pathlib import Path
 from threading import Thread
 from typing import Any
 
-from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
+from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
 from polylogue.browser_capture.server import make_server
 
 _RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"

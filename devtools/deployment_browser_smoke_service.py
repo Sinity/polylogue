@@ -8,7 +8,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from devtools.sinnixd_service_context import require_declared_operation_context, terminate_process_group
+from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
 
 _NODE_PROOF_TIMEOUT_S = 90.0
 _MAX_ERROR_MESSAGE = 512

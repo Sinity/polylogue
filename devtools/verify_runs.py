@@ -264,10 +264,10 @@ class VerifyRun:
         # semantic status is still decided by this verifier.
         if agentctl_operation is not None:
             for field, variable in (
-                ("agentctl_job_id", "JOB_ID"),
-                ("agentctl_correlation_id", "CORRELATION_ID"),
+                ("agentctl_job_id", "AGENTCTL_JOB_ID"),
+                ("agentctl_correlation_id", "AGENTCTL_CORRELATION_ID"),
             ):
-                value = runtime_env(os.environ, variable)
+                value = runtime_env(variable)
                 if value:
                     self._payload[field] = value
         # Kept on every receipt so later classification does not depend on a
@@ -294,6 +294,7 @@ class VerifyRun:
         full_rerun_cause: str | None = None,
         seed_source: str | None = None,
         seed_source_mtime_ns: int | None = None,
+        selection_reason: str | None = None,
     ) -> None:
         self._payload["testmon_selection"] = {
             "selection_mode": selection_mode,
@@ -302,6 +303,9 @@ class VerifyRun:
             "full_rerun_cause": full_rerun_cause,
             "seed_source": seed_source,
             "seed_source_mtime_ns": seed_source_mtime_ns,
+            # Why the selection is bounded or empty; what a reader of a run
+            # with no pytest step needs to accept it.
+            "selection_reason": selection_reason,
         }
         self.write()
 

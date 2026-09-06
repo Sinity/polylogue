@@ -127,6 +127,11 @@ def test_progress_plugin_observes_real_pytest_xfail_outcome(tmp_path: Path) -> N
             "-m",
             "pytest",
             "-q",
+            # The selection may name a file outside the checkout, which makes
+            # pytest resolve rootdir to its common ancestor and write the cache
+            # there; this child needs no cache.
+            "-p",
+            "no:cacheprovider",
             # Closed-world like the managed invocation: the configured addopts
             # name plugin options, and this child inherits the managed run's
             # disabled plugin autoload.
@@ -219,6 +224,11 @@ def test_managed_event_ledger_survives_test_host_environment_scrub(tmp_path: Pat
             "-m",
             "pytest",
             "-q",
+            # The selection may name a file outside the checkout, which makes
+            # pytest resolve rootdir to its common ancestor and write the cache
+            # there; this child needs no cache.
+            "-p",
+            "no:cacheprovider",
             "-p",
             "devtools.pytest_progress_plugin",
             "tests/unit/core/test_identity_law.py::test_session_id_is_origin_native_id",

@@ -424,13 +424,7 @@ def _run(
     del label, run
     started = time.monotonic()
     try:
-        outcome = run_pytest(
-            command,
-            cwd=cwd,
-            env=env,
-            root=ROOT,
-            label=f"polylogue:test:{os.getpid()}",
-        )
+        outcome = run_pytest(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         return (

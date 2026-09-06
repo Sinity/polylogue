@@ -8,8 +8,6 @@ root_markers = ["pyproject.toml", "polylogue"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--accept-flake-config", "--command"]
-preflight = ["devtools", "status", "--stderr"]
-preflight_timeout_seconds = 600
 inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 require = ["POLYLOGUE_ARCHIVE_ROOT"]
@@ -18,22 +16,22 @@ require = ["POLYLOGUE_ARCHIVE_ROOT"]
 POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 
 [workspace]
-provider = "git-worktree"
 root = "/realm/worktrees"
 default_base = "origin/master"
-identity_check = ["git", "diff", "--quiet", "--", "pyproject.toml", "uv.lock"]
-checkpoint_untracked = true
-verification_operations = ["verify_quick"]
+# Focused runs go through the pytest pool; a candidate's tests are the pull
+# request's hosted `verify` check; the corpus is the nightly master-boundary run.
+verify = { focused = "pytest_focused", candidate = "hosted:verify", corpus = "verify_all" }
+publish = "pr"
 
-[conflicts]
-exact_files = ["pyproject.toml", "uv.lock"]
-generated_surfaces = ["docs/reference/schema-support-matrix.md"]
+[operations.pytest_focused]
+description = "Run one managed pytest launch file, or a devtools test selection, inside the host's pytest slot"
+exec = ["python", "-m", "devtools.pytest_slot"]
+pool = "pytest"
+result = "pytest"
+cache = "none"
+timeout_seconds = 7200
 
-[conflicts.semantic_slots]
-archive-schema = ["polylogue/storage/schema.py", "polylogue/storage/sqlite/migrations/*.py"]
-command-catalog = ["devtools/command_catalog.py", "docs/devtools.md"]
-verification-graph = ["devtools/verify.py", "pyproject.toml"]
-
+# Manual: the pull request's hosted `verify` check runs this for a candidate.
 [operations.verify_affected]
 description = "Run Polylogue's affected-test verification plan"
 exec = ["devtools", "verify"]
@@ -95,15 +93,3 @@ pool = "interactive"
 result = "json"
 cache = "none"
 timeout_seconds = 180
-
-[owner_adapters.polylogue_archive]
-namespace = "polylogue.archive"
-owner = "polylogue-archive"
-authority = "owner"
-lifecycle = "read_only"
-protocol_versions = [1]
-source_scoped = true
-source_ref = "sinnix://polylogue/archive"
-exec = ["polylogue-agentctl-adapter"]
-timeout_seconds = 300
-documentation = "Argument-free, generation-pinned, bounded Polylogue archive status."
