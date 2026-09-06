@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL
 from polylogue.operations import archive_debt as module
 from polylogue.operations.archive_debt import archive_debt_list
 from polylogue.storage.raw_convergence import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
@@ -950,3 +951,86 @@ def test_archive_debt_classifies_stale_decode_aliases(tmp_path: Path) -> None:
     alias = refs["debt:raw-materialization:codex-session:materialized-alias"]
     assert alias.status == "classified"
     assert alias.severity == "info"
+
+
+def _install_revision_governance(source_db: Path) -> None:
+    """Give the fixture archive the source-tier tables revision governance writes."""
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("ALTER TABLE raw_sessions ADD COLUMN revision_authority TEXT NOT NULL DEFAULT 'quarantined'")
+        conn.execute("CREATE TABLE raw_membership_census (raw_id TEXT, status TEXT, detail TEXT)")
+        conn.execute("CREATE TABLE raw_session_memberships (raw_id TEXT, decision TEXT)")
+
+
+def test_archive_debt_reports_ambiguous_membership_quarantine_as_blocked(tmp_path: Path) -> None:
+    source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    _install_revision_governance(source_db)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            "INSERT INTO raw_membership_census (raw_id, status, detail) VALUES (?, 'complete', NULL)",
+            ("raw-parse-pending",),
+        )
+        conn.execute(
+            "INSERT INTO raw_session_memberships (raw_id, decision) VALUES (?, 'ambiguous')",
+            ("raw-parse-pending",),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    # Anti-vacuity: without the governance classification this raw is reported
+    # as "acquired but not yet parsed" with a "run daemon convergence" action,
+    # while every convergence pass declines it.
+    assert "debt:raw-materialization:codex-session:parse-pending" not in by_ref
+    quarantined = by_ref["debt:raw-materialization:codex-session:revision-authority-quarantined"]
+    assert quarantined.category == "revision-authority-quarantined"
+    assert quarantined.status == "blocked"
+    assert quarantined.severity == "warning"
+    assert quarantined.stage == "raw-authority"
+    assert quarantined.affected_count == 1
+    assert "0 of 1 already parsed" in (quarantined.details or "")
+    assert "Running daemon convergence again does not move them." in (quarantined.details or "")
+    assert [action.command for action in quarantined.actions] == [
+        ("polylogue", "maintenance", "raw-authority-frontier"),
+        ("polylogue", "maintenance", "raw-authority-blockers"),
+    ]
+
+
+def test_archive_debt_reports_byte_authority_quarantine_for_parsed_raws(tmp_path: Path) -> None:
+    source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    _install_revision_governance(source_db)
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET source_index = -1 WHERE raw_id = ?",
+            ("raw-parsed-no-session",),
+        )
+        conn.execute(
+            "INSERT INTO raw_membership_census (raw_id, status, detail) VALUES (?, 'failed', ?)",
+            ("raw-parsed-no-session", BYTE_AUTHORITY_CENSUS_DETAIL),
+        )
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    assert "debt:raw-materialization:aistudio-drive:parsed-without-session" not in by_ref
+    quarantined = by_ref["debt:raw-materialization:aistudio-drive:revision-authority-quarantined"]
+    assert quarantined.status == "blocked"
+    assert quarantined.affected_count == 1
+    assert "1 of 1 already parsed" in (quarantined.details or "")
+
+
+def test_archive_debt_keeps_ungoverned_quarantine_default_as_parse_pending(tmp_path: Path) -> None:
+    """``revision_authority`` defaults to ``quarantined`` at acquisition.
+
+    A raw reconciliation has not reached yet is genuinely pending parse work,
+    so the column alone must never demote it to a blocked authority row.
+    """
+    source_db, _index_db, _source_file = _init_raw_materialization_fixture(tmp_path)
+    _install_revision_governance(source_db)
+
+    payload = archive_debt_list(archive_root=tmp_path, kinds=("raw-materialization",))
+
+    by_ref = {row.debt_ref: row for row in payload.rows}
+    assert "debt:raw-materialization:codex-session:revision-authority-quarantined" not in by_ref
+    pending = by_ref["debt:raw-materialization:codex-session:parse-pending"]
+    assert pending.status == "actionable"
+    assert pending.actions[0].command == ("polylogued", "run")
