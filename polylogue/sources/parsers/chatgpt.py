@@ -540,14 +540,11 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
     Handles the common ``parts`` array (strings and structured dicts carrying
     ``text``) and falls back to non-``parts`` content shapes — ``code`` and
     ``execution_output`` carry a top-level ``text``, browsing display carries a
-    ``result``, and ``thoughts``/``reasoning_recap`` (content_type "thoughts")
-    carry an array of ``{summary, content, ...}`` reasoning-step entries
-    instead. Without the thoughts fallback, the THINKING block built below
-    for those nodes gets an empty ``text`` even though the bridge/export now
-    preserves the raw bytes -- the browser-capture bridge fix that stopped
-    dropping ``content.thoughts`` upstream is not sufficient on its own; this
-    parser also has to read what it now receives. Without any fallback these
-    messages have empty text and are dropped entirely (#1744).
+    ``result``, ``citable_code_output`` carries ``output_str``,
+    ``reasoning_recap`` carries its recap line under ``content``, and
+    ``thoughts`` carries an array of ``{summary, content, ...}`` reasoning-step
+    entries. Without a fallback the block built for such a node gets an empty
+    ``text`` and the message is dropped entirely (#1744).
     """
     parts = content.get("parts")
     if isinstance(parts, list):
@@ -575,6 +572,12 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
     output_str = content.get("output_str")
     if isinstance(output_str, str) and output_str:
         return output_str
+    # ``reasoning_recap`` is the one content type that puts its text under
+    # ``content`` (polylogue-3i043); every other shape reserves that key for
+    # structured payloads, so a string here is message text.
+    recap = content.get("content")
+    if isinstance(recap, str) and recap:
+        return recap
     thoughts = content.get("thoughts")
     if isinstance(thoughts, list):
         thought_parts: list[str] = []
@@ -737,6 +740,17 @@ def extract_messages_from_mapping(
         content_blocks: list[ParsedContentBlock] = []
         forced_message_type: MessageType | None = None
         content_type = content.get("content_type", "text")
+        # ``metadata["language"]`` is the sole input to ``blocks.language``
+        # (``storage/sqlite/archive_tiers/write.py:_block_language``). A
+        # ``code`` content states its language on every record and reaches a
+        # TOOL_USE block through either of the next two branches -- a
+        # recipient-addressed call whose code happens to parse as JSON takes
+        # the first -- so the language is carried here, once, for both
+        # (polylogue-ui3q4).
+        tool_use_metadata: dict[str, object] = {"content_type": content_type}
+        declared_language = _string_value(content, "language")
+        if declared_language:
+            tool_use_metadata["language"] = declared_language
         if tool_call_input is not None:
             # Recipient-addressed tool call whose content is a JSON payload
             # (e.g. ChatGPT's web-search tool: {"search_query": [...]}) --
@@ -753,7 +767,7 @@ def extract_messages_from_mapping(
                     # tool_use/tool_result block pair unjoined).
                     tool_id=str(msg_id),
                     tool_input=tool_call_input,
-                    metadata={"content_type": content_type},
+                    metadata=dict(tool_use_metadata),
                 )
             )
         elif content_type in ("thoughts", "reasoning_recap"):
@@ -790,6 +804,7 @@ def extract_messages_from_mapping(
                     tool_name=recipient or "code_interpreter",
                     tool_id=str(msg_id),
                     tool_input={"code": text},
+                    metadata=dict(tool_use_metadata),
                 )
             )
         elif content_type == "execution_output":
@@ -867,6 +882,14 @@ def extract_messages_from_mapping(
             # CONTENT_REFERENCE's "cited") carried on a DOCUMENT block,
             # mirroring the audio_transcription/audio_asset_pointer DOCUMENT+
             # web_constructs idiom below.
+            #
+            # The record's own ``url`` is its address and its own ``title`` is
+            # its name; ``domain`` is only the label to fall back to when the
+            # shape carries no title (tether_browsing_display carries
+            # neither). The citation path in this file
+            # (``_construct_from_reference``) already reads both, so anything
+            # narrower makes URL conservation depend on which content type
+            # delivered the source.
             domain = _string_value(content, "domain")
             construct_text = text or _string_value(content, "snippet") or None
             source_id = _string_value(content, "tether_id", "ref_id")
@@ -878,7 +901,8 @@ def extract_messages_from_mapping(
                         ParsedWebConstruct(
                             construct_type=WebConstructType.SEARCH_RESULT,
                             provider_key=content_type,
-                            title=domain,
+                            title=_string_value(content, "title") or domain,
+                            url=_string_value(content, "url"),
                             text=construct_text,
                             source_id=source_id,
                         )
