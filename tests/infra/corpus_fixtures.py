@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tests.infra.integration_profile import build_integration_archive, default_integration_selection
+from tests.infra.shared_session_archives import schema_coverage_archive
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
@@ -16,7 +17,6 @@ from tests.infra.workload_artifacts import (
     build_seeded_archive,
     clone_seeded_archive,
     named_corpus_specs,
-    schema_coverage_corpus_specs,
     seeded_archive_key,
 )
 
@@ -24,7 +24,7 @@ from tests.infra.workload_artifacts import (
 @pytest.fixture(scope="session")
 def seeded_archive() -> SeededArchiveArtifact:
     """Shared immutable named schema-coverage archive for read-only consumers."""
-    return build_seeded_archive(schema_coverage_corpus_specs())
+    return schema_coverage_archive()
 
 
 @pytest.fixture(scope="session")

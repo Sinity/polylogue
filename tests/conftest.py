@@ -745,11 +745,11 @@ def pytest_sessionstart(session: pytest.Session) -> None:
     run_root = Path(basetemp).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
     build_empty_archive_template(run_root)
-    from tests.infra.workload_artifacts import NAMED_WORKLOAD_PROFILES, build_seeded_archive
+    from tests.infra.shared_session_archives import warm_shared_session_archives
 
-    build_seeded_archive()
-    for profile in NAMED_WORKLOAD_PROFILES:
-        build_seeded_archive(profile.corpus_specs())
+    outcome = warm_shared_session_archives()
+    for name, reason in outcome.failed:
+        sys.stderr.write(f"pytest: shared archive {name} left cold for its fixture to build: {reason}\n")
 
 
 @pytest.fixture(scope="session")
