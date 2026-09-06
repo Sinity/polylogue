@@ -234,6 +234,10 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude["message_branch_state"]["state"] == "positive-derived"
     assert claude["parent_dispatch"]["state"] == "positive-derived"
     assert "parentToolUseID" in str(claude["parent_dispatch"]["evidence"])
+    # polylogue-esvzb: a forked Claude Code session's own records name the
+    # parent message it diverged at, so this dimension is carried, not absent.
+    assert claude["inheritance_branch_point"]["state"] == "carried"
+    assert "forkedFrom.messageUuid" in str(claude["inheritance_branch_point"]["evidence"])
     assert codex["parent_dispatch"]["state"] == "structurally-absent"
     assert chatgpt["message_parent"]["state"] == "carried"
     assert chatgpt["message_branch_state"]["state"] == "carried"

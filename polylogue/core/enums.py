@@ -396,12 +396,12 @@ class LinkType(PolylogueStrEnum):
     polylogue-5dfu: ``REPAIRED`` was deleted -- it duplicated
     ``TopologyEdgeStatus.REPAIRED`` (same string, different column/meaning:
     a link *type* vs. a link's exceptional *status*) and had no producer,
-    fixture, or doc reference anywhere. ``FORK`` and ``RESUME`` look equally
-    unused from a live-archive row count alone (both are 0 rows today) but
-    each has a concrete, named producer: ``FORK`` is emitted by
-    ``sources/parsers/hermes_state.py``'s ``_branch_type`` whenever a Hermes
-    session's ``model_config._branched_from`` is set (real code, just never
-    yet hit by an ingested Hermes session); ``RESUME`` is the "resume
+    fixture, or doc reference anywhere. ``FORK`` and ``RESUME`` each have a
+    concrete, named producer: ``FORK`` is emitted by
+    ``sources/parsers/claude/code_parser.py`` for a Claude Code session whose
+    records carry ``forkedFrom``, and by ``sources/parsers/hermes_state.py``'s
+    ``_branch_type`` whenever a Hermes session's ``model_config._branched_from``
+    is set; ``RESUME`` is the "resume
     lineage edge" cross-repo fixture documented in
     ``docs/material-protocol-v1.md`` -- Sinex (``sinex-4j2.1.1``) is expected
     to emit it over the material-protocol-v1 wire once that side lands.

@@ -249,6 +249,43 @@ logger = get_logger(__name__)
 #                                    reason this is stored as the producer's
 #                                    claim rather than folded into the
 #                                    derived total.
+#
+# Five more (same audit, counts re-measured over 14,536 session files on
+# 2026-09-06) complete the inventory of record types the live corpus carries:
+#   atis-latch (14,668)            TRANSIENT: ``atis`` is the empty string in
+#                                    every occurrence, over two passes of the
+#                                    live corpus (14,668 records, then 14,723
+#                                    minutes later) -- no information content,
+#                                    the bar ``mode`` above is held to.
+#                                    Re-audit if a non-empty value is seen.
+#   frame-link (234)               EVIDENCE -> claude_frame_link event. A
+#                                    published artifact's claude.ai URL, the
+#                                    local file it was published from, and its
+#                                    title (125 records); a bare per-session
+#                                    ``artifactCount`` (105); both (4).
+#   agent-color (60)               TRANSIENT: the terminal colour an agent's
+#                                    output is drawn in (cyan 58, red 2). The
+#                                    record carries no agent id -- only
+#                                    ``sessionId`` -- so the colour cannot be
+#                                    joined to the agent it decorates; a
+#                                    presentation attribute of the operator's
+#                                    product experience, the class the
+#                                    ``context_tip`` attachment subtype is
+#                                    dropped under.
+#   artifact-comment-monitor (9)   EVIDENCE -> claude_artifact_comment_monitor
+#                                    event: the artifacts this session
+#                                    published, by id, title and armed state.
+#   artifact-autoreact-ledger (5)  EVIDENCE -> claude_artifact_autoreact_ledger
+#                                    event: the same artifacts' save time and
+#                                    comment-thread history. Per-artifact
+#                                    ``threads``/``turnTimestamps`` are
+#                                    unbounded activity logs and are bounded to
+#                                    counts, the rule
+#                                    ``_bounded_diagnostics_payload`` applies.
+#
+# A record type in none of these tables reaches ordinary message parsing,
+# produces no blocks, and would vanish at the empty-content drop; it persists
+# as ``_UNCLASSIFIED_RECORD_EVENT_TYPE`` instead (see below).
 _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
@@ -270,8 +307,24 @@ _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
         "relocated",
         "worktree-state",
         "cost-state",
+        "atis-latch",
+        "frame-link",
+        "agent-color",
+        "artifact-comment-monitor",
+        "artifact-autoreact-ledger",
     }
 )
+
+# Record types that legitimately carry chat content and so belong on the
+# ordinary message path. A type in neither this set nor
+# ``_NON_MESSAGE_SIDECAR_RECORD_TYPES`` is one no disposition has been decided
+# for -- a future CLI version's new record kind. It persists as one
+# ``claude_unclassified_record`` event carrying its bounded shape (the raw
+# bytes stay in source.db regardless), so the type is visible in the index
+# instead of needing another corpus walk to notice. Same fail-loud rule as
+# ``_ATTACHMENT_UNCLASSIFIED_EVENT_TYPE``.
+_MESSAGE_RECORD_TYPES = frozenset({"user", "assistant", "system", "summary"})
+_UNCLASSIFIED_RECORD_EVENT_TYPE = "claude_unclassified_record"
 
 # record_type -> session_events.event_type for the sidecar types persisted
 # generically via ``_sidecar_evidence_payload``. ``progress``, ``ai-title``,
@@ -279,8 +332,8 @@ _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
 # ``_parse_code_records`` (progress needs whole-session deduplication;
 # ai-title/custom-title feed title resolution as well as an audit-trail
 # event; attachment needs subtype-dependent dispatch -- see
-# ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` below). ``init``/``mode`` map to nothing
-# (transient, see above).
+# ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` below). ``init``/``mode``/``atis-latch``/
+# ``agent-color`` map to nothing (transient, see above).
 _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "agent-name": "claude_agent_name",
     "pr-link": "claude_pr_link",
@@ -297,6 +350,9 @@ _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "relocated": "claude_session_relocated",
     "worktree-state": "claude_worktree_state",
     "cost-state": "claude_cost_state",
+    "frame-link": "claude_frame_link",
+    "artifact-comment-monitor": "claude_artifact_comment_monitor",
+    "artifact-autoreact-ledger": "claude_artifact_autoreact_ledger",
 }
 
 # ``attachment.type`` subtype -> session_events.event_type (polylogue lane,
@@ -670,7 +726,152 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
             "start_time": item.get("startTime"),
             "summary": f"${total_cost}" if total_cost is not None else "cost-state",
         }
+    if record_type == "frame-link":
+        frame_url = _string_field(item, "frameUrl")
+        path = _string_field(item, "path")
+        title = _string_field(item, "title")
+        raw_artifact_count = item.get("artifactCount")
+        artifact_count = (
+            raw_artifact_count
+            if isinstance(raw_artifact_count, int) and not isinstance(raw_artifact_count, bool)
+            else None
+        )
+        if not (frame_url or path or title) and artifact_count is None:
+            return None
+        return {
+            "frame_url": frame_url,
+            "path": path,
+            "title": title,
+            "artifact_count": artifact_count,
+            "summary": title or frame_url or path or f"{artifact_count} artifact(s)",
+        }
+    if record_type == "artifact-comment-monitor":
+        monitored = _artifact_comment_monitor_entries(item.get("artifacts"))
+        if not monitored:
+            return None
+        return {
+            "version": item.get("v"),
+            "artifacts": monitored,
+            "summary": f"{len(monitored)} monitored artifact(s)",
+        }
+    if record_type == "artifact-autoreact-ledger":
+        ledger = _artifact_autoreact_entries(item.get("artifacts"))
+        if not ledger:
+            return None
+        return {
+            "version": item.get("v"),
+            "account_uuid": _string_field(item, "accountUuid"),
+            "artifacts": ledger,
+            "summary": f"{len(ledger)} artifact(s) in ledger",
+        }
     return None
+
+
+def _artifact_comment_monitor_entries(artifacts: object) -> list[dict[str, object]]:
+    """Project one ``artifact-comment-monitor`` record's per-artifact map."""
+    if not isinstance(artifacts, dict):
+        return []
+    entries: list[dict[str, object]] = []
+    for artifact_id, value in sorted(artifacts.items()):
+        entry: dict[str, object] = {"artifact_id": str(artifact_id)}
+        if isinstance(value, dict):
+            entry["state"] = value.get("state")
+            entry["title"] = value.get("title")
+            entry["written_at_ms"] = value.get("writtenAtMs")
+        entries.append(entry)
+    return entries
+
+
+def _artifact_autoreact_entries(artifacts: object) -> list[dict[str, object]]:
+    """Project one ``artifact-autoreact-ledger`` record's per-artifact map.
+
+    ``threads`` and ``turnTimestamps`` are unbounded per-artifact activity
+    logs (every comment thread, every turn the artifact was live for); their
+    length is the queryable fact, matching the bounding rule
+    ``_bounded_diagnostics_payload`` applies to diagnostic messages.
+    """
+    if not isinstance(artifacts, dict):
+        return []
+    entries: list[dict[str, object]] = []
+    for artifact_id, value in sorted(artifacts.items()):
+        entry: dict[str, object] = {"artifact_id": str(artifact_id)}
+        if isinstance(value, dict):
+            entry["saved_at_ms"] = value.get("savedAt")
+            entry["stamp_high_water"] = value.get("stampHighWater")
+            entry["ever_baselined"] = bool(value.get("everBaselined"))
+            entry["ever_had_threads"] = bool(value.get("everHadThreads"))
+            threads = value.get("threads")
+            entry["thread_count"] = len(threads) if isinstance(threads, list) else 0
+            turn_timestamps = value.get("turnTimestamps")
+            entry["turn_count"] = len(turn_timestamps) if isinstance(turn_timestamps, list) else 0
+        entries.append(entry)
+    return entries
+
+
+def _unclassified_record_payload(record_type: str, item: Mapping[str, object]) -> dict[str, object]:
+    """Bound one unclassified record to its shape.
+
+    The purpose is that the record TYPE and the fields it carries are visible
+    in the index so a disposition can be decided; the record's own bytes are
+    already durable in source.db, so containers collapse to their size and
+    long strings truncate rather than copying an unknown payload wholesale.
+    """
+    fields: dict[str, object] = {}
+    for key, value in sorted(item.items()):
+        if key in ("type", "sessionId", "uuid", "timestamp"):
+            continue
+        if isinstance(value, (list, dict)):
+            fields[key] = {"size": len(value)}
+        elif isinstance(value, str) and len(value) > 200:
+            fields[key] = value[:200]
+        else:
+            fields[key] = value
+    return {"record_type": record_type, "fields": fields, "summary": record_type}
+
+
+def _thinking_budget_payload(item: Mapping[str, object]) -> dict[str, object] | None:
+    """Project ``thinkingMetadata`` -- the turn's extended-thinking configuration.
+
+    The field rides ``user`` records (3,620 occurrences over 14,536 session
+    files, none of them on an ``assistant`` record and none carrying
+    ``message.usage``), so it is read here on the record itself rather than
+    inside the usage-gated ``message_usage`` payload. Two shapes occur:
+    ``maxThinkingTokens`` alone (2,118 records, 31,999 in every one measured)
+    and ``level``/``disabled``/``triggers`` (1,502), where ``triggers`` names
+    the span of the user's own prompt that raised the effort ("ultrathink").
+    ``disabled`` is recorded only when true -- false is the absence of a fact,
+    and it is false in every record measured.
+    """
+    thinking_metadata = item.get("thinkingMetadata")
+    if not isinstance(thinking_metadata, dict):
+        return None
+    payload: dict[str, object] = {}
+    max_thinking_tokens = thinking_metadata.get("maxThinkingTokens")
+    if isinstance(max_thinking_tokens, int) and not isinstance(max_thinking_tokens, bool) and max_thinking_tokens >= 0:
+        payload["max_thinking_tokens"] = max_thinking_tokens
+    level = thinking_metadata.get("level")
+    if isinstance(level, str) and level:
+        payload["level"] = level
+    if thinking_metadata.get("disabled") is True:
+        payload["disabled"] = True
+    triggers = thinking_metadata.get("triggers")
+    if isinstance(triggers, list):
+        trigger_spans = [
+            {"start": trigger.get("start"), "end": trigger.get("end"), "text": trigger.get("text")}
+            for trigger in triggers
+            if isinstance(trigger, dict)
+        ]
+        if trigger_spans:
+            payload["triggers"] = trigger_spans
+    if not payload:
+        return None
+    if "level" in payload:
+        payload["summary"] = str(payload["level"])
+    elif "max_thinking_tokens" in payload:
+        payload["summary"] = f"{payload['max_thinking_tokens']} max thinking tokens"
+    else:
+        payload["summary"] = "extended thinking disabled"
+    return payload
 
 
 @dataclass
@@ -925,20 +1126,6 @@ def _message_usage_event_payload(
         request_id = record.get("requestId")
         if isinstance(request_id, str) and request_id:
             payload["request_id"] = request_id
-        # thinkingMetadata.maxThinkingTokens is the extended-thinking token
-        # budget Claude Code configured for this turn -- a real reasoning-
-        # effort signal distinct from the actual token counts already in
-        # last_token_usage. Low corpus frequency (34 in the cgfy sample) but
-        # unambiguous and cheap to carry once this payload is already built.
-        thinking_metadata = record.get("thinkingMetadata")
-        if isinstance(thinking_metadata, dict):
-            max_thinking_tokens = thinking_metadata.get("maxThinkingTokens")
-            if (
-                isinstance(max_thinking_tokens, int)
-                and not isinstance(max_thinking_tokens, bool)
-                and max_thinking_tokens >= 0
-            ):
-                payload["max_thinking_tokens"] = max_thinking_tokens
     return payload
 
 
@@ -1534,6 +1721,15 @@ class _SessionAccumulator:
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
     session_refs: list[ParsedSessionRef] = field(default_factory=list)
+    # polylogue-esvzb: ``forkedFrom`` = {"sessionId", "messageUuid"} names the
+    # session this one was forked from and the message it diverged at. Claude
+    # Code stamps it on nearly every record of a forked session -- 10,561
+    # records across 9 forked sessions in the 2026-09-06 corpus walk, on
+    # user/assistant/system records and on the ``progress``/``attachment``
+    # sidecar records that return before ordinary message parsing -- so it is
+    # read at the top of the fold, before any early return, and collapsed to
+    # one edge per (parent, branch point) with the repeat count.
+    forked_from: dict[tuple[str, str | None], int] = field(default_factory=dict)
     # polylogue-pbuh AC5: per-record-type seen/persisted counts for the
     # sidecar types this parser used to drop wholesale, plus a bounded
     # sample of record types that fell all the way through ordinary message
@@ -1573,6 +1769,12 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         raw_slug = item.get("slug")
         if isinstance(raw_slug, str) and raw_slug:
             acc.session_slug_value = raw_slug
+    forked_from = item.get("forkedFrom")
+    if isinstance(forked_from, dict):
+        fork_parent_provider_id = _string_field(forked_from, "sessionId")
+        if fork_parent_provider_id:
+            fork_edge = (fork_parent_provider_id, _string_field(forked_from, "messageUuid"))
+            acc.forked_from[fork_edge] = acc.forked_from.get(fork_edge, 0) + 1
 
     compaction = detect_context_compaction(item)
     if compaction:
@@ -1758,6 +1960,20 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         acc.created_at = timestamp if acc.created_at is None or timestamp < acc.created_at else acc.created_at
         acc.updated_at = timestamp if acc.updated_at is None or timestamp > acc.updated_at else acc.updated_at
 
+    # Emitted before the empty-content drop below: the turn's thinking
+    # configuration is a fact about the record, not about whether its message
+    # survived parsing.
+    thinking_budget = _thinking_budget_payload(item)
+    if thinking_budget is not None:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_thinking_budget",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload=thinking_budget,
+            )
+        )
+
     raw_content = message.get("content") if isinstance(message, dict) else item.get("content")
     text = extract_message_text(raw_content)
     envelope_role = _record_role(item, message)
@@ -1822,6 +2038,15 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         )
         if not keep_empty_human_turn:
             acc.empty_drop_counts[record_type] = acc.empty_drop_counts.get(record_type, 0) + 1
+            if record_type not in _MESSAGE_RECORD_TYPES:
+                acc.session_events.append(
+                    ParsedSessionEvent(
+                        event_type=_UNCLASSIFIED_RECORD_EVENT_TYPE,
+                        timestamp=timestamp,
+                        source_message_provider_id=record_uuid or None,
+                        payload=_unclassified_record_payload(record_type, item),
+                    )
+                )
             return
     # Paste markers only appear in user prompts; restricting detection to the
     # user role avoids false positives from assistant text that quotes a marker.
@@ -1981,16 +2206,48 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     else:
         composed_session_id = acc.session_id or acc.fallback_id
 
+    # polylogue-esvzb: the fork parent the provider names on the child's own
+    # records. Adopted only when no stronger route above resolved a parent --
+    # those know this file's identity, while ``forkedFrom`` is a claim carried
+    # in the content. The branch point rides the event payload; the writer
+    # derives ``session_links.branch_point_message_id`` from the resolved
+    # parent's own content.
+    fork_parent_provider_id: str | None = None
+    for candidate_parent, _branch_point in sorted(acc.forked_from, key=lambda edge: (edge[0], edge[1] or "")):
+        if candidate_parent != str(composed_session_id):
+            fork_parent_provider_id = candidate_parent
+            break
+    if parent_session_id is None and fork_parent_provider_id is not None:
+        parent_session_id = fork_parent_provider_id
+
     if acc.is_acompact and acc.fresh_task_prompt_head:
         branch_type: BranchType | None = BranchType.SIDECHAIN
     elif acc.is_acompact:
         branch_type = BranchType.CONTINUATION
     elif acc.is_agent:
         branch_type = BranchType.SUBAGENT
+    elif fork_parent_provider_id is not None and parent_session_id == fork_parent_provider_id:
+        branch_type = BranchType.FORK
     elif acc.has_sidechain:
         branch_type = BranchType.SIDECHAIN
     else:
         branch_type = None
+
+    for (edge_parent, branch_point), record_count in sorted(
+        acc.forked_from.items(), key=lambda entry: (entry[0][0], entry[0][1] or "")
+    ):
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_forked_from",
+                timestamp=acc.updated_at,
+                payload={
+                    "parent_session_provider_id": edge_parent,
+                    "branch_point_message_provider_id": branch_point,
+                    "record_count": record_count,
+                    "summary": edge_parent,
+                },
+            )
+        )
 
     # polylogue-slshy: flag the active leaf by POSITION (the true last
     # message), never by comparing provider_message_id -- with positional

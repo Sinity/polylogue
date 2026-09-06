@@ -11,7 +11,7 @@ reproduces exactly that silent-loss bug.
 
 from __future__ import annotations
 
-from polylogue.core.enums import SessionKind, TitleSource
+from polylogue.core.enums import BranchType, SessionKind, TitleSource
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import parse_code
 
@@ -998,4 +998,364 @@ def test_cost_state_record_keeps_the_producers_own_incompleteness_flag() -> None
                 "summary": "$1.25",
             },
         )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Record types admitted 2026-09-06 (polylogue-chemh), completing the inventory
+# of what the live corpus carries. Each fixture uses the exact key-set the
+# exhaustive 14,536-file walk found for that type.
+# ---------------------------------------------------------------------------
+
+
+def test_frame_link_persists_the_published_artifact_reference() -> None:
+    """``frame-link`` names an artifact published from a local file.
+
+    Dropping ``frame-link`` from the disposition tables returns it to an
+    empty-content drop, losing the URL, the local path and the title.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "frame-link",
+                "sessionId": "sess-frame",
+                "path": "/realm/tmp/report.html",
+                "frameUrl": "https://claude.ai/code/artifact/1a899ee9",
+                "title": "One Wakeup Short",
+                "timestamp": "2026-08-01T15:02:48.175Z",
+            }
+        ],
+        "sess-frame",
+    )
+    assert [(e.event_type, e.payload) for e in _typed_events(parsed)] == [
+        (
+            "claude_frame_link",
+            {
+                "frame_url": "https://claude.ai/code/artifact/1a899ee9",
+                "path": "/realm/tmp/report.html",
+                "title": "One Wakeup Short",
+                "artifact_count": None,
+                "summary": "One Wakeup Short",
+            },
+        )
+    ]
+
+
+def test_frame_link_count_only_shape_still_persists() -> None:
+    """The second live ``frame-link`` shape carries only ``artifactCount``.
+
+    105 of 234 corpus records take this shape; requiring a URL would drop
+    them all.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "frame-link",
+                "sessionId": "sess-frame-count",
+                "artifactCount": 3,
+                "timestamp": "2026-08-01T15:02:48.175Z",
+            }
+        ],
+        "sess-frame-count",
+    )
+    payloads = [e.payload for e in _typed_events(parsed)]
+    assert payloads == [
+        {
+            "frame_url": None,
+            "path": None,
+            "title": None,
+            "artifact_count": 3,
+            "summary": "3 artifact(s)",
+        }
+    ]
+
+
+def test_artifact_comment_monitor_persists_artifact_identity() -> None:
+    """``artifact-comment-monitor`` names the artifacts a session published."""
+    parsed = parse_code(
+        [
+            {
+                "type": "artifact-comment-monitor",
+                "v": 1,
+                "sessionId": "sess-artifacts",
+                "artifacts": {
+                    "2b084816-93f9-486b-91a5-ac70d69fb235": {
+                        "state": "armed",
+                        "writtenAtMs": 1788139487957,
+                        "title": "Pairwise Ranking Redesign",
+                    }
+                },
+            }
+        ],
+        "sess-artifacts",
+    )
+    assert [(e.event_type, e.payload) for e in _typed_events(parsed)] == [
+        (
+            "claude_artifact_comment_monitor",
+            {
+                "version": 1,
+                "artifacts": [
+                    {
+                        "artifact_id": "2b084816-93f9-486b-91a5-ac70d69fb235",
+                        "state": "armed",
+                        "title": "Pairwise Ranking Redesign",
+                        "written_at_ms": 1788139487957,
+                    }
+                ],
+                "summary": "1 monitored artifact(s)",
+            },
+        )
+    ]
+
+
+def test_artifact_autoreact_ledger_bounds_threads_to_counts() -> None:
+    """Per-artifact ``threads``/``turnTimestamps`` are unbounded activity logs.
+
+    Their length is the queryable fact; persisting the raw lists would copy
+    every comment thread's body into the index. Reverting the bounding makes
+    this assert the raw lists instead of the counts.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "artifact-autoreact-ledger",
+                "v": 1,
+                "sessionId": "sess-ledger",
+                "accountUuid": "e1f27e58-33e5-4a5d-836b-40a2b78055aa",
+                "artifacts": {
+                    "2b084816-93f9-486b-91a5-ac70d69fb235": {
+                        "savedAt": 1788139493629,
+                        "stampHighWater": None,
+                        "everBaselined": True,
+                        "everHadThreads": True,
+                        "turnTimestamps": [1788139493629, 1788139494000],
+                        "threads": [{"id": "t1", "comments": ["long comment body"]}],
+                    }
+                },
+            }
+        ],
+        "sess-ledger",
+    )
+    assert [(e.event_type, e.payload) for e in _typed_events(parsed)] == [
+        (
+            "claude_artifact_autoreact_ledger",
+            {
+                "version": 1,
+                "account_uuid": "e1f27e58-33e5-4a5d-836b-40a2b78055aa",
+                "artifacts": [
+                    {
+                        "artifact_id": "2b084816-93f9-486b-91a5-ac70d69fb235",
+                        "saved_at_ms": 1788139493629,
+                        "stamp_high_water": None,
+                        "ever_baselined": True,
+                        "ever_had_threads": True,
+                        "thread_count": 1,
+                        "turn_count": 2,
+                    }
+                ],
+                "summary": "1 artifact(s) in ledger",
+            },
+        )
+    ]
+
+
+def test_atis_latch_and_agent_color_stay_transient() -> None:
+    """Both are declared transient on measured evidence, and stay counted.
+
+    ``atis`` is the empty string in every corpus occurrence and
+    ``agentColor`` is a presentation attribute with no agent id to attach it
+    to. They must produce no typed event, yet still appear in the coverage
+    event's seen counts -- a transient classification is a decision on
+    record, not a silent drop.
+    """
+    parsed = parse_code(
+        [
+            {"type": "atis-latch", "atis": "", "sessionId": "sess-transient"},
+            {"type": "agent-color", "agentColor": "cyan", "sessionId": "sess-transient"},
+        ],
+        "sess-transient",
+    )
+    assert _typed_events(parsed) == []
+    assert parsed.messages == []
+    coverage = [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE]
+    assert coverage[0].payload["sidecar_seen"] == {"agent-color": 1, "atis-latch": 1}
+    assert coverage[0].payload["sidecar_persisted"] == {}
+
+
+def test_unknown_record_type_persists_its_shape_instead_of_vanishing() -> None:
+    """A record type with no disposition must fail loud, not fall through.
+
+    Every type the 2026-09-06 corpus walk found is classified; this pins what
+    happens to the next one a CLI version introduces. Deleting the
+    ``_UNCLASSIFIED_RECORD_EVENT_TYPE`` branch returns it to a silent
+    empty-content drop, which is the defect polylogue-chemh measured across
+    ten record types. Long strings and containers are bounded here because
+    the record's own bytes stay durable in source.db.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "record-type-from-a-newer-cli",
+                "sessionId": "sess-unknown",
+                "uuid": "r1",
+                "someField": "x" * 500,
+                "someList": [1, 2, 3],
+                "someCount": 7,
+            }
+        ],
+        "sess-unknown",
+    )
+    events = _typed_events(parsed)
+    assert [e.event_type for e in events] == ["claude_unclassified_record"]
+    assert events[0].source_message_provider_id == "r1"
+    assert events[0].payload == {
+        "record_type": "record-type-from-a-newer-cli",
+        "fields": {"someCount": 7, "someField": "x" * 200, "someList": {"size": 3}},
+        "summary": "record-type-from-a-newer-cli",
+    }
+    coverage = [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE]
+    assert coverage[0].payload["empty_dropped_by_record_type"] == {"record-type-from-a-newer-cli": 1}
+
+
+def test_every_live_record_type_has_a_disposition() -> None:
+    """Every record type the corpus carries is classified, none falls through.
+
+    The list is the exhaustive 2026-09-06 walk of 14,536 Claude Code session
+    files. A type reaching ``claude_unclassified_record`` here is one whose
+    disposition was never decided -- the shape polylogue-chemh measured on ten
+    types at once.
+    """
+    live_record_types = [
+        "assistant",
+        "user",
+        "progress",
+        "attachment",
+        "queue-operation",
+        "last-prompt",
+        "permission-mode",
+        "mode",
+        "file-history-snapshot",
+        "ai-title",
+        "system",
+        "pr-link",
+        "bridge-session",
+        "atis-latch",
+        "custom-title",
+        "agent-name",
+        "summary",
+        "file-history-delta",
+        "relocated",
+        "worktree-state",
+        "frame-link",
+        "started",
+        "result",
+        "agent-color",
+        "cost-state",
+        "artifact-comment-monitor",
+        "artifact-autoreact-ledger",
+        "init",
+    ]
+    parsed = parse_code(
+        [{"type": record_type, "sessionId": "sess-inventory"} for record_type in live_record_types],
+        "sess-inventory",
+    )
+    assert [e for e in parsed.session_events if e.event_type == "claude_unclassified_record"] == []
+
+
+# ---------------------------------------------------------------------------
+# polylogue-esvzb: forkedFrom is the session's own fork parent.
+# ---------------------------------------------------------------------------
+
+
+def test_forked_from_resolves_the_session_parent_edge() -> None:
+    """``forkedFrom`` must become the session's parent, deduplicated.
+
+    The provider stamps it on nearly every record of a forked session
+    (10,561 records across 9 forked sessions in the corpus walk), including
+    ``progress``/``attachment`` records that never reach message parsing.
+    Deleting the ``acc.forked_from`` read leaves the session parentless,
+    which is what the archive stored before: a fork whose lineage is not
+    recoverable from its own bytes afterwards.
+    """
+    fork_edge = {"sessionId": "parent-sess", "messageUuid": "parent-msg-9"}
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "child-sess",
+                "forkedFrom": fork_edge,
+                "message": {"role": "user", "content": "continue from the fork"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "child-sess",
+                "forkedFrom": fork_edge,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            },
+            {
+                "type": "attachment",
+                "uuid": "at1",
+                "sessionId": "child-sess",
+                "forkedFrom": fork_edge,
+                "attachment": {"type": "output_style", "outputStyle": "default"},
+            },
+        ],
+        "child-sess",
+    )
+    assert parsed.parent_session_provider_id == "parent-sess"
+    assert parsed.branch_type is BranchType.FORK
+    fork_events = [e for e in parsed.session_events if e.event_type == "claude_forked_from"]
+    assert [e.payload for e in fork_events] == [
+        {
+            "parent_session_provider_id": "parent-sess",
+            "branch_point_message_provider_id": "parent-msg-9",
+            "record_count": 3,
+            "summary": "parent-sess",
+        }
+    ]
+
+
+def test_forked_from_absent_leaves_the_session_parentless() -> None:
+    """Anti-vacuity: no ``forkedFrom`` must not fabricate a parent edge."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "lone-sess",
+                "message": {"role": "user", "content": "no fork here"},
+            }
+        ],
+        "lone-sess",
+    )
+    assert parsed.parent_session_provider_id is None
+    assert parsed.branch_type is None
+    assert [e for e in parsed.session_events if e.event_type == "claude_forked_from"] == []
+
+
+def test_forked_from_does_not_displace_a_subagent_parent() -> None:
+    """A route that knows this file's identity outranks a content claim.
+
+    A subagent transcript (an ``agent-`` fallback id) resolves its parent from
+    its own composed identity; ``forkedFrom`` is a claim carried in replayed
+    content and must not overwrite it, but is still persisted as its own event.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "main-sess",
+                "forkedFrom": {"sessionId": "other-sess", "messageUuid": "m1"},
+                "message": {"role": "user", "content": "subagent work"},
+            }
+        ],
+        "agent-abc123",
+    )
+    assert parsed.parent_session_provider_id == "main-sess"
+    assert parsed.branch_type is BranchType.SUBAGENT
+    assert [e.event_type for e in parsed.session_events if e.event_type == "claude_forked_from"] == [
+        "claude_forked_from"
     ]
