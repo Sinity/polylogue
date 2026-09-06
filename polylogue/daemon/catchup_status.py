@@ -48,6 +48,16 @@ class CatchupStageEvent(BaseModel):
     error: str | None = None
 
 
+class HaltedSourceStatus(BaseModel):
+    """One source whose ingest is stopped until the daemon restarts."""
+
+    source_name: str
+    code: str
+    message: str
+    derived_only: bool = False
+    observed_at: str
+
+
 class CatchupStatus(BaseModel):
     mode: str = "idle"
     current_phase: str | None = None
@@ -77,6 +87,10 @@ class CatchupStatus(BaseModel):
     convergence_time_s: float = 0.0
     total_time_s: float = 0.0
     latest_event_age_s: float | None = None
+    #: Sources the running daemon refuses to ingest until restart. Empty is
+    #: the healthy answer; a non-empty list means catch-up is skipping that
+    #: source's backlog on purpose, not idling.
+    halted_sources: list[HaltedSourceStatus] = Field(default_factory=list)
     recent_events: list[CatchupStageEvent] = Field(default_factory=list)
 
 
@@ -92,6 +106,7 @@ def catchup_status_info(
     latest = events[0] if events else None
     now = datetime.now(UTC)
     mode = _catchup_mode(latest, latest_attempt, convergence)
+    halted = _halted_sources(ops_db if ops_db is not None else dbf.with_name("ops.db"))
     if latest is not None:
         total_time_s = latest.total_time_s or latest.parse_time_s + latest.convergence_time_s
         return CatchupStatus(
@@ -120,10 +135,11 @@ def catchup_status_info(
             convergence_time_s=latest.convergence_time_s,
             total_time_s=total_time_s,
             latest_event_age_s=_iso_age_s(latest.observed_at, now=now),
+            halted_sources=halted,
             recent_events=events,
         )
     if latest_attempt is None:
-        return CatchupStatus(mode=mode)
+        return CatchupStatus(mode=mode, halted_sources=halted)
     total_time_s = _float_attr(latest_attempt, "parse_time_s") + _float_attr(latest_attempt, "convergence_time_s")
     return CatchupStatus(
         mode=mode,
@@ -150,6 +166,7 @@ def catchup_status_info(
         convergence_time_s=_float_attr(latest_attempt, "convergence_time_s"),
         total_time_s=total_time_s,
         latest_event_age_s=_optional_float_attr(latest_attempt, "updated_age_s"),
+        halted_sources=halted,
     )
 
 
@@ -170,6 +187,14 @@ def format_catchup_status_lines(payload: object) -> list[str]:
             f"{payload.get('input_bytes', 0)} offered: "
             + ", ".join(f"{reason}={count}" for reason, count in sorted(refused_by_reason.items()))
         )
+    halted = payload.get("halted_sources")
+    if isinstance(halted, list) and halted:
+        for entry in halted:
+            if isinstance(entry, dict):
+                lines.append(
+                    f"  HALTED {entry.get('source_name', '?')} ({entry.get('code', 'unknown')}): "
+                    f"{entry.get('message', '')}"
+                )
     if phase := payload.get("current_phase"):
         lines.append(
             "  "
@@ -178,6 +203,62 @@ def format_catchup_status_lines(payload: object) -> list[str]:
             f"cursor_read={payload.get('cursor_fingerprint_read_bytes', 0)} bytes"
         )
     return lines
+
+
+HALT_EVENT_KIND = "source_ingest_halted"
+
+
+def _halted_sources(ops_db: Path) -> list[HaltedSourceStatus]:
+    """Sources halted by the daemon run that is currently recorded.
+
+    Bounded to the latest ``daemon_lifecycle`` start: a halt is process-local
+    and does not survive a restart, so replaying an older run's halt would
+    report a source as stopped when it is ingesting.
+    """
+    if not ops_db.exists():
+        return []
+    try:
+        conn = open_readonly_connection(ops_db, validate_schema=False)
+        try:
+            if not _has_table(conn, "daemon_events"):
+                return []
+            floor_ms = 0
+            if _has_table(conn, "daemon_lifecycle"):
+                row = conn.execute("SELECT MAX(started_at_ms) FROM daemon_lifecycle").fetchone()
+                floor_ms = _row_int(row[0]) if row is not None and row[0] is not None else 0
+            rows = conn.execute(
+                """
+                SELECT ts_ms, payload_json
+                FROM daemon_events
+                WHERE kind = ? AND ts_ms >= ?
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                (HALT_EVENT_KIND, floor_ms),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("halted-source query failed for %s: %s", ops_db, exc, exc_info=True)
+        return []
+    latest_by_source: dict[str, HaltedSourceStatus] = {}
+    for row in rows:
+        payload = _payload(row[1])
+        source_name = _payload_optional_str(payload, "source_name")
+        if source_name is None or source_name in latest_by_source:
+            continue
+        latest_by_source[source_name] = HaltedSourceStatus(
+            source_name=source_name,
+            code=_payload_str(payload, "code", default="unknown"),
+            message=_payload_str(payload, "message", default=""),
+            derived_only=payload.get("derived_only") is True,
+            observed_at=cast(str, _iso_from_epoch_ms(max(_row_int(row[0]), 0))),
+        )
+    return [latest_by_source[name] for name in sorted(latest_by_source)]
+
+
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    return conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)).fetchone() is not None
 
 
 def _recent_stage_events(dbf: Path, *, ops_db: Path | None = None) -> list[CatchupStageEvent]:

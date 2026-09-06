@@ -23,6 +23,7 @@ content is recorded.
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -353,3 +354,74 @@ def test_catch_up_cycle_evidence_payload_is_bounded(tmp_path: Path) -> None:
     assert len(encoded.encode("utf-8")) < 2048
     assert "role" not in encoded
     assert "user" not in encoded
+
+
+def test_halted_source_is_readable_from_status_not_only_the_log(tmp_path: Path) -> None:
+    """A stopped source is durable state a status reader can see.
+
+    A rate-limited warning is the whole record of a terminal refusal today:
+    one line, tens of thousands of lines back, while the source stays stopped
+    for the rest of the run. The status projection reads the halt from the
+    durable event stream instead.
+
+    Anti-vacuity: stop emitting ``source_ingest_halted`` from the watcher, or
+    read the events without the ``daemon_lifecycle`` floor, and one of the two
+    assertions below goes red -- the second is the one that keeps a halt from
+    a finished run being reported against a daemon that has since restarted.
+    """
+    from polylogue.daemon.catchup_status import HALT_EVENT_KIND, catchup_status_info
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    initialize_archive_database(archive_root)
+    ops_db = archive_root / "ops.db"
+
+    def insert_halt(ts_ms: int, source_name: str, code: str) -> None:
+        with sqlite3.connect(ops_db) as conn:
+            conn.execute(
+                "INSERT INTO daemon_events (ts_ms, kind, operation_id, payload_json) VALUES (?, ?, NULL, ?)",
+                (
+                    ts_ms,
+                    HALT_EVENT_KIND,
+                    json.dumps(
+                        {
+                            "source_name": source_name,
+                            "code": code,
+                            "message": "index derived schema identity mismatch",
+                            "derived_only": True,
+                        }
+                    ),
+                ),
+            )
+
+    def start_daemon_run(run_id: str, started_at_ms: int) -> None:
+        with sqlite3.connect(ops_db) as conn:
+            conn.execute(
+                "INSERT INTO daemon_lifecycle (run_id, started_at_ms, last_heartbeat_at_ms) VALUES (?, ?, ?)",
+                (run_id, started_at_ms, started_at_ms),
+            )
+
+    start_daemon_run("run-1", 1_000)
+    insert_halt(2_000, "claude-code", "schema_version_mismatch")
+
+    status = catchup_status_info(
+        archive_root / "index.db",
+        latest_attempt=None,
+        convergence=type("StubConvergence", (), {})(),
+        ops_db=ops_db,
+    )
+    assert [entry.source_name for entry in status.halted_sources] == ["claude-code"]
+    assert status.halted_sources[0].code == "schema_version_mismatch"
+    assert status.halted_sources[0].derived_only is True
+
+    # A restart clears the process-local halt, so the prior run's event must
+    # not keep reporting the source as stopped.
+    start_daemon_run("run-2", 3_000)
+    after_restart = catchup_status_info(
+        archive_root / "index.db",
+        latest_attempt=None,
+        convergence=type("StubConvergence", (), {})(),
+        ops_db=ops_db,
+    )
+    assert after_restart.halted_sources == []

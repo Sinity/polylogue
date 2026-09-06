@@ -1363,8 +1363,7 @@ class LiveBatchProcessor:
         handed files and admitted none of them is not an idle one, and
         reporting zero offered bytes hides the refusal from every receipt.
         """
-        offered_by_path = {path: _path_size(path) for path in paths}
-        offered_bytes = sum(offered_by_path.values())
+        offered_bytes = sum(_path_size(path) for path in paths)
         return LiveBatchMetrics(
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             needed_file_count=len(paths),
