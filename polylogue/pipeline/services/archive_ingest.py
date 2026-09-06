@@ -42,6 +42,7 @@ from polylogue.sources.source_parsing import (
     iter_source_sessions_with_raw,
     parse_one_source_path,
 )
+from polylogue.sources.source_root_admission import refuse_non_capture_source_root
 from polylogue.sources.source_walk import _setup_source_walk
 from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
@@ -166,6 +167,9 @@ async def parse_sources_archive(
     ``POLYLOGUE_INGEST_PARSE_WORKERS``/cpu-count resolution.
     """
     result = ParseResult()
+    for source in sources:
+        if source.path:
+            refuse_non_capture_source_root(source.path, destination=archive_root)
     acquired_at_ms = int(datetime.now(UTC).timestamp() * 1000)
     threshold = _commit_batch_message_threshold()
     batched = threshold > 0
