@@ -1597,7 +1597,7 @@ def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[s
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    if not _column_exists(conn, "session_profiles", "input_content_hash"):
+    if not _column_exists(conn, "session_profiles", "input_content_hash") or not _table_exists(conn, "messages"):
         return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="c")
     return session_profile_candidates(
         conn,
@@ -2337,7 +2337,7 @@ def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Se
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    if not _column_exists(conn, "session_profiles", "input_content_hash"):
+    if not _column_exists(conn, "session_profiles", "input_content_hash") or not _table_exists(conn, "messages"):
         return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="s")
     return session_profile_candidates(
         conn,
