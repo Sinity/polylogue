@@ -2178,3 +2178,170 @@ def test_contention_during_cache_validation_reuses_published_artifact(
     assert attempts >= 2
     assert reused.root == published.root
     assert reused.manifest.manifest_id == published.manifest.manifest_id
+
+
+def _acquire_domain_with_deadline(cache_root: Path, *, timeout: float = 30.0) -> object:
+    """Open a cache domain on a worker thread so a serializing hold fails, not hangs."""
+    import tests.infra.workload_artifacts as artifacts
+
+    outcome: list[object] = []
+
+    def acquire() -> None:
+        try:
+            outcome.append(artifacts._open_lock_domain(cache_root))
+        except BaseException as exc:  # reported to the assertion below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=acquire, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+    assert not worker.is_alive(), "cache domain serialized a second holder"
+    assert outcome
+    return outcome[0]
+
+
+def test_cache_domain_admits_concurrent_holders_but_still_refuses_gc(tmp_path: Path) -> None:
+    """Independent artifacts must not queue behind each other's cache capability.
+
+    Anti-vacuity: taking the domain exclusively (as an earlier revision did)
+    makes the second acquisition block until the first releases, so the worker
+    thread is still alive at the deadline. Restoring the exclusive mode also
+    turns the GC probe green for the wrong reason, which the shared probe
+    immediately below pins.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    first = artifacts._open_lock_domain(cache_root)
+    try:
+        second = _acquire_domain_with_deadline(cache_root)
+        assert isinstance(second, artifacts._LockDomain)
+        artifacts._release_lock_domain(second)
+
+        # The exclusion that matters is against cache GC, which takes this
+        # exact descriptor exclusively and non-blocking before it deletes.
+        probe = os.open(cache_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_UN)
+        finally:
+            os.close(probe)
+    finally:
+        artifacts._release_lock_domain(first)
+
+
+def test_cache_domain_leaves_the_shared_scratch_ancestor_writable(tmp_path: Path) -> None:
+    """A cache capability must not take the scratch root away from its co-tenants.
+
+    ``default_cache_root()`` lives directly under a scratch directory shared
+    with unrelated processes. Anti-vacuity: removing the ancestor's write bit
+    for the hold's duration (as an earlier revision did) makes the co-tenant
+    write below raise ``PermissionError``.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    before = (stat.S_IMODE(tmp_path.stat().st_mode), stat.S_IMODE(cache_root.stat().st_mode))
+
+    domain = artifacts._open_lock_domain(cache_root)
+    try:
+        (tmp_path / "unrelated-co-tenant.txt").write_text("independent", encoding="utf-8")
+        (cache_root / "artifacts" / "unrelated-sibling").mkdir()
+    finally:
+        artifacts._release_lock_domain(domain)
+
+    assert (stat.S_IMODE(tmp_path.stat().st_mode), stat.S_IMODE(cache_root.stat().st_mode)) == before
+
+
+def test_reuse_validates_under_a_shared_key_lock(tmp_path: Path) -> None:
+    """Two processes validating one published artifact must not serialize.
+
+    Anti-vacuity: validating under the builder's exclusive per-key lock makes
+    the reuse below wait for the externally held shared lock, and the worker
+    thread is still alive at the deadline.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    lock_path = cache_root / ".locks" / f"{published.root.name}.lock"
+
+    reused: list[object] = []
+
+    def reuse() -> None:
+        try:
+            reused.append(build_seeded_archive(_SMALL_SPECS, cache_root=cache_root))
+        except BaseException as exc:  # reported to the assertion below
+            reused.append(exc)
+
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        worker = threading.Thread(target=reuse, daemon=True)
+        worker.start()
+        worker.join(timeout=60)
+        alive = worker.is_alive()
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert not alive, "artifact reuse serialized behind a concurrent reader"
+    assert isinstance(reused[0], type(published))
+    assert cast(Any, reused[0]).root == published.root
+
+
+def test_cache_hit_runs_no_cache_wide_cleanup_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reclamation belongs to the caller about to consume space, not to a reader.
+
+    Anti-vacuity: running the sweeps before validation (as an earlier revision
+    did) makes every consumer of an already-published artifact take the
+    cache-wide cleanup lock, and ``during_build`` below no longer bounds the
+    reuse path.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    calls: list[str] = []
+
+    for name in ("_recover_stale_staging", "_recover_obsolete_staging", "_recover_stale_handoffs"):
+        real = getattr(artifacts, name)
+
+        def counted(*args: Any, _name: str = name, _real: Any = real, **kwargs: Any) -> Any:
+            calls.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(artifacts, name, counted)
+
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    during_build = len(calls)
+    assert during_build > 0, "a build must still reclaim space abandoned by killed builds"
+
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    reused = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    assert reused.root == published.root
+    assert len(calls) == during_build
+
+
+def test_memoized_reuse_takes_no_filesystem_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A process that already validated an artifact needs no lock at all.
+
+    Anti-vacuity: checking the memo inside the domain (as an earlier revision
+    did) makes every test in a module sharing one workload re-enter the cache
+    capability, and ``_open_lock_domain`` below raises.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    def forbid_domain(root: Path) -> None:
+        raise AssertionError(f"memoized reuse opened a cache capability: {root}")
+
+    monkeypatch.setattr(artifacts, "_open_lock_domain", forbid_domain)
+    assert build_seeded_archive(_SMALL_SPECS, cache_root=cache_root).root == published.root

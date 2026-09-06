@@ -461,6 +461,13 @@ def build_immutable_tree(
     # tree lock, including for generic fixture trees.
     domain = _open_lock_domain(cache_root)
     try:
+        # Reuse is a read; only the builder that would replace the tree needs
+        # to exclude other callers. See ``_build_seeded_archive_inner``.
+        with lock_path.open("a+") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            cached = load()
+        if cached is not None:
+            return cached
         with lock_path.open("a+") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             cached = load()
@@ -1867,11 +1874,13 @@ def _recover_obsolete_staging(
         return ()
     removed: list[str] = []
     try:
-        lock_fd = _open_authenticated_lock(cleanup_lock)
+        # Opportunistic reclamation: another process already sweeping this
+        # cache is doing the same work, so yield the pass instead of queueing
+        # a builder behind it. BlockingIOError is an OSError.
+        lock_fd = _open_authenticated_lock(cleanup_lock, nonblocking=True)
     except OSError:
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
-        fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         seen_path = cache_root / ".cleanup.seen"
@@ -1937,11 +1946,13 @@ def _recover_stale_handoffs(
         return ()
     removed: list[str] = []
     try:
-        lock_fd = _open_authenticated_lock(cleanup_lock)
+        # Opportunistic reclamation: another process already sweeping this
+        # cache is doing the same work, so yield the pass instead of queueing
+        # a builder behind it. BlockingIOError is an OSError.
+        lock_fd = _open_authenticated_lock(cleanup_lock, nonblocking=True)
     except OSError:
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
-        fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_EX)
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
         cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
         seen_path = cache_root / ".handoff.seen"
@@ -2743,9 +2754,7 @@ def _publish_sealed_staging(staging: Path, final_root: Path) -> None:
 @dataclass(frozen=True)
 class _LockDomain:
     ancestor_fd: int
-    ancestor_mode: int
     root_fd: int
-    root_mode: int
     locks_fd: int
 
 
@@ -2757,50 +2766,39 @@ def _assert_named_directory(fd: int, name: str, opened_fd: int) -> None:
 
 
 def _open_lock_domain(cache_root: Path) -> _LockDomain:
-    """Pin and protect a stable ancestor, cache root, and ``.locks``."""
+    """Pin a stable ancestor, cache root, and ``.locks`` for one caller's interval.
+
+    The hold is SHARED. Independent artifacts have disjoint per-key locks and
+    publication is a rename out of a uuid-unique staging name, so two builders
+    never need to exclude each other; an exclusive domain made every consumer
+    of any artifact wait for every other, whatever it was building. Cache GC
+    takes this same cache-root descriptor exclusively and non-blocking, so it
+    still refuses while any builder, validator, or lease holds the domain.
+
+    Pinned pathnames are authenticated by device/inode comparison. Modes are
+    left alone: ``cache_root``'s parent is a scratch root shared with unrelated
+    processes, and concurrent shared holders cannot agree on when to restore a
+    mode one of them removed.
+    """
     locks = cache_root / ".locks"
     _mkdir_pinned(cache_root / "artifacts")
     _mkdir_pinned(locks)
     _mkdir_pinned(cache_root / ".staging")
-    for control_file in (
-        cache_root / ".cleanup.lock",
-        cache_root / ".cleanup.cursor",
-        cache_root / ".handoff.cursor",
-        cache_root / ".cleanup.seen",
-        cache_root / ".handoff.seen",
-    ):
-        fd = _open_no_follow(control_file, os.O_RDWR | os.O_CREAT, 0o600)
-        os.close(fd)
 
     ancestor_fd, root_name = _open_pinned_parent(cache_root)
     root_fd = -1
     locks_fd = -1
-    ancestor_mode = 0
-    root_mode = 0
     try:
-        ancestor_mode = os.fstat(ancestor_fd).st_mode
-        fcntl.flock(ancestor_fd, fcntl.LOCK_EX)
+        fcntl.flock(ancestor_fd, fcntl.LOCK_SH)
         root_fd = os.open(root_name, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=ancestor_fd)
         _assert_named_directory(ancestor_fd, root_name, root_fd)
-        fcntl.flock(root_fd, fcntl.LOCK_EX)
+        fcntl.flock(root_fd, fcntl.LOCK_SH)
         _assert_named_directory(ancestor_fd, root_name, root_fd)
         locks_fd = os.open(".locks", os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW, dir_fd=root_fd)
         _assert_named_directory(root_fd, ".locks", locks_fd)
-        fcntl.flock(locks_fd, fcntl.LOCK_EX)
-        root_mode = os.fstat(root_fd).st_mode
-        # Prevent replacement of cache_root or cache_root/.locks while the
-        # descriptor capabilities are live. Child directories remain writable.
-        os.fchmod(ancestor_fd, ancestor_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        os.fchmod(root_fd, root_mode & ~stat.S_IWUSR & ~stat.S_IWGRP & ~stat.S_IWOTH)
-        _assert_named_directory(ancestor_fd, root_name, root_fd)
+        fcntl.flock(locks_fd, fcntl.LOCK_SH)
         _assert_named_directory(root_fd, ".locks", locks_fd)
-        return _LockDomain(
-            ancestor_fd=ancestor_fd,
-            ancestor_mode=ancestor_mode,
-            root_fd=root_fd,
-            root_mode=root_mode,
-            locks_fd=locks_fd,
-        )
+        return _LockDomain(ancestor_fd=ancestor_fd, root_fd=root_fd, locks_fd=locks_fd)
     except BaseException:
         if locks_fd >= 0:
             with contextlib.suppress(OSError):
@@ -2820,32 +2818,26 @@ def _open_lock_domain(cache_root: Path) -> _LockDomain:
 
 
 def _release_lock_domain(domain: _LockDomain) -> None:
-    """Restore modes while capabilities remain locked, then close independently."""
+    """Release every capability, closing each descriptor even if one release fails."""
     try:
         with contextlib.suppress(OSError):
-            os.fchmod(domain.root_fd, domain.root_mode)
-        with contextlib.suppress(OSError):
-            os.fchmod(domain.ancestor_fd, domain.ancestor_mode)
+            fcntl.flock(domain.locks_fd, fcntl.LOCK_UN)
     finally:
         try:
             with contextlib.suppress(OSError):
-                fcntl.flock(domain.locks_fd, fcntl.LOCK_UN)
+                fcntl.flock(domain.root_fd, fcntl.LOCK_UN)
         finally:
             try:
                 with contextlib.suppress(OSError):
-                    fcntl.flock(domain.root_fd, fcntl.LOCK_UN)
+                    fcntl.flock(domain.ancestor_fd, fcntl.LOCK_UN)
             finally:
                 try:
-                    with contextlib.suppress(OSError):
-                        fcntl.flock(domain.ancestor_fd, fcntl.LOCK_UN)
+                    os.close(domain.locks_fd)
                 finally:
                     try:
-                        os.close(domain.locks_fd)
+                        os.close(domain.root_fd)
                     finally:
-                        try:
-                            os.close(domain.root_fd)
-                        finally:
-                            os.close(domain.ancestor_fd)
+                        os.close(domain.ancestor_fd)
 
 
 def build_seeded_archive(
@@ -2854,9 +2846,21 @@ def build_seeded_archive(
     cache_root: Path | None = None,
 ) -> SeededArchiveArtifact:
     selected_root = (cache_root or default_cache_root()).expanduser()
+    selected_specs = tuple(specs) if specs is not None else (c03_semantic_corpus_spec(),)
+    if not selected_specs:
+        raise ValueError("seeded archive requires at least one named corpus specification")
+    # Identity is computed once and handed down: the recipe fingerprint reads
+    # and hashes the whole generation/materialization closure.
+    key = seeded_archive_key(selected_specs)
+    # Before any filesystem capability: a process that already validated this
+    # artifact needs neither the cache domain nor the per-key lock. Every
+    # consumer of a session-shared artifact hits this after the first test.
+    memoized = _memoized_artifact((str(selected_root), key.value))
+    if memoized is not None:
+        return memoized
     domain = _open_lock_domain(selected_root)
     try:
-        return _build_seeded_archive_inner(specs, cache_root=selected_root)
+        return _build_seeded_archive_inner(selected_specs, key=key, cache_root=selected_root)
     finally:
         _release_lock_domain(domain)
 
@@ -2864,13 +2868,14 @@ def build_seeded_archive(
 def _build_seeded_archive_inner(
     specs: Iterable[CorpusSpec] | None = None,
     *,
+    key: SeededArchiveKey | None = None,
     cache_root: Path | None = None,
 ) -> SeededArchiveArtifact:
     """Build-or-reuse one atomic immutable real-pipeline archive artifact."""
     selected_specs = tuple(specs) if specs is not None else (c03_semantic_corpus_spec(),)
     if not selected_specs:
         raise ValueError("seeded archive requires at least one named corpus specification")
-    key = seeded_archive_key(selected_specs)
+    key = key if key is not None else seeded_archive_key(selected_specs)
     cache_root = (cache_root or default_cache_root()).expanduser()
     memo_key = (str(cache_root), key.value)
     # Validate-once-per-process: after this process has fully validated an
@@ -2898,19 +2903,37 @@ def _build_seeded_archive_inner(
     final_root = artifacts / key.value.rsplit(":", 1)[-1]
     lock_path = locks / f"{final_root.name}.lock"
 
+    # Reuse is a read: validating a published artifact needs only exclusion
+    # against the builder that would replace it, and a builder holds this same
+    # lock exclusively. Taking it shared lets every process that wants an
+    # already-published artifact validate concurrently instead of queueing.
+    read_fd = _open_authenticated_lock(lock_path, shared=True)
+    try:
+        cached = _validate_artifact_with_retry(final_root, key)
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(read_fd, fcntl.LOCK_UN)
+        os.close(read_fd)
+    if cached is not None:
+        _VALIDATED_ARTIFACTS[memo_key] = cached
+        return cached
+
     lock_fd = _open_authenticated_lock(lock_path)
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock_handle:
         _assert_lock_identity(lock_handle.fileno(), lock_path)
+        cached = _validate_artifact_with_retry(final_root, key)
+        if cached is not None:
+            # Published while this caller waited for the exclusive lock.
+            _VALIDATED_ARTIFACTS[memo_key] = cached
+            return cached
+        # Reclamation of space abandoned by killed builds belongs to the
+        # caller that is about to consume space, never to a cache hit.
         _recover_stale_staging(staging_root=staging_root, artifact_name=final_root.name)
         _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root)
         _assert_lock_identity(lock_handle.fileno(), lock_path)
         _recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts)
         _assert_lock_identity(lock_handle.fileno(), lock_path)
-        cached = _validate_artifact_with_retry(final_root, key)
-        if cached is not None:
-            _VALIDATED_ARTIFACTS[memo_key] = cached
-            return cached
         if _safe_exists(final_root):
             _assert_lock_identity(lock_handle.fileno(), lock_path)
             _remove_tree(final_root)
