@@ -3,69 +3,157 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+from polylogue.archive.message.roles import Role
+from polylogue.archive.session.branch_type import BranchType
 from polylogue.cli.read_views.streaming_markdown import _row_to_renderable_block, stream_exact_session_markdown
+from polylogue.core.enums import BlockType, Provider
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.identity import archive_block_id, archive_message_id
+
+_SESSION_ID = "codex-session:abc"
+_CHILD_SESSION_ID = "codex-session:child"
+
+# The clock runs backwards against content position, so a read keyed on
+# `occurred_at_ms` returns the exact reverse of the transcript. This is the
+# ordinary shape, not a pathology: non-monotonic timestamps occur on every
+# origin.
+_STAMPS = ("2026-01-01T00:00:03Z", "2026-01-01T00:00:02Z", "2026-01-01T00:00:01Z")
 
 
-def _seed_minimal_index(root: Path) -> None:
+def _connect(root: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(root / "index.db")
-    conn.executescript(
-        """
-        CREATE TABLE sessions (
-            session_id TEXT PRIMARY KEY,
-            native_id TEXT,
-            origin TEXT,
-            title TEXT,
-            updated_at_ms INTEGER
-        );
-        CREATE TABLE session_links (
-            src_session_id TEXT,
-            dst_origin TEXT,
-            dst_native_id TEXT,
-            link_type TEXT,
-            resolved_dst_session_id TEXT,
-            branch_point_message_id TEXT,
-            inheritance TEXT
-        );
-        CREATE TABLE messages (
-            message_id TEXT PRIMARY KEY,
-            session_id TEXT,
-            role TEXT,
-            occurred_at_ms INTEGER,
-            position INTEGER NOT NULL,
-            variant_index INTEGER NOT NULL
-        );
-        CREATE TABLE blocks (
-            block_id TEXT PRIMARY KEY,
-            message_id TEXT,
-            position INTEGER,
-            block_type TEXT,
-            text TEXT,
-            tool_name TEXT,
-            tool_id TEXT,
-            tool_input TEXT,
-            language TEXT,
-            semantic_type TEXT,
-            tool_result_is_error INTEGER,
-            tool_result_exit_code INTEGER
-        );
-        INSERT INTO sessions VALUES ('codex-session:abc', 'abc', 'codex-session', 'Large export', 2);
-        INSERT INTO messages VALUES ('m1', 'codex-session:abc', 'user', 3000, 0, 0);
-        INSERT INTO messages VALUES ('m2', 'codex-session:abc', 'assistant', 2000, 1, 0);
-        INSERT INTO messages VALUES ('m3', 'codex-session:abc', 'assistant', 1000, 2, 0);
-        INSERT INTO blocks VALUES ('b1', 'm1', 1, 'text', 'hello', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
-        INSERT INTO blocks VALUES ('b2', 'm2', 1, 'tool_use', NULL, 'shell', 'call-1', '{"command":"pytest"}', NULL, NULL, NULL, NULL);
-        INSERT INTO blocks VALUES ('b3', 'm3', 1, 'tool_result', '1 passed', NULL, 'call-1', NULL, NULL, NULL, 0, 0);
-        """
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+def _message(
+    native_id: str,
+    role: Role,
+    position: int,
+    blocks: list[ParsedContentBlock],
+    *,
+    text: str | None = None,
+) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=native_id,
+        role=role,
+        text=text,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        is_active_leaf=False,
+        timestamp=_STAMPS[position],
+        blocks=blocks,
     )
-    conn.commit()
-    conn.close()
+
+
+def _seed_index(root: Path) -> str:
+    """Write the fixture session through the production index writer.
+
+    The view under test reads `messages`/`blocks`/`session_links` from a real
+    archive tier, so the fixture is built by the writer that produces them
+    rather than by hand-rolled DDL that can drift from it.
+    """
+    conn = _connect(root)
+    try:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="abc",
+                title="Large export",
+                messages=[
+                    _message("m1", Role.USER, 0, [ParsedContentBlock(type=BlockType.TEXT, text="hello")], text="hello"),
+                    _message(
+                        "m2",
+                        Role.ASSISTANT,
+                        1,
+                        [
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="shell",
+                                tool_id="call-1",
+                                tool_input={"command": "pytest"},
+                            )
+                        ],
+                    ),
+                    _message(
+                        "m3",
+                        Role.ASSISTANT,
+                        2,
+                        [
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                text="1 passed",
+                                tool_id="call-1",
+                                is_error=False,
+                                exit_code=0,
+                            )
+                        ],
+                    ),
+                ],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert session_id == _SESSION_ID
+    return session_id
+
+
+def _seed_prefix_sharing_child(root: Path) -> str:
+    """Add a real fork of the fixture session, carrying a `prefix-sharing` edge."""
+    conn = _connect(root)
+    try:
+        child_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="child",
+                title="Child",
+                parent_session_provider_id="abc",
+                branch_type=BranchType.FORK,
+                messages=[
+                    _message("m1", Role.USER, 0, [ParsedContentBlock(type=BlockType.TEXT, text="hello")], text="hello"),
+                    _message(
+                        "m2",
+                        Role.ASSISTANT,
+                        1,
+                        [ParsedContentBlock(type=BlockType.TEXT, text="parent reply")],
+                        text="parent reply",
+                    ),
+                    _message(
+                        "c1",
+                        Role.USER,
+                        2,
+                        [ParsedContentBlock(type=BlockType.TEXT, text="child tail")],
+                        text="child tail",
+                    ),
+                ],
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    assert child_id == _CHILD_SESSION_ID
+    return child_id
 
 
 def test_stream_exact_session_markdown_writes_full_file(tmp_path: Path) -> None:
-    _seed_minimal_index(tmp_path)
+    """The export follows content position, which this fixture's clock reverses.
+
+    Anti-vacuity: ordering the stream by `occurred_at_ms` emits the three
+    messages backwards and the final assertion fails.
+    """
+    _seed_index(tmp_path)
     out = tmp_path / "out.md"
 
-    assert stream_exact_session_markdown(tmp_path, "codex-session:abc", out, prose_only=False)
+    assert stream_exact_session_markdown(tmp_path, _SESSION_ID, out, prose_only=False)
 
     text = out.read_text(encoding="utf-8")
     assert "# Large export" in text
@@ -77,7 +165,7 @@ def test_stream_exact_session_markdown_writes_full_file(tmp_path: Path) -> None:
 
 
 def test_stream_exact_session_markdown_prose_only_omits_tools(tmp_path: Path) -> None:
-    _seed_minimal_index(tmp_path)
+    _seed_index(tmp_path)
     out = tmp_path / "dialogue.md"
 
     assert stream_exact_session_markdown(tmp_path, "abc", out, prose_only=True)
@@ -89,49 +177,33 @@ def test_stream_exact_session_markdown_prose_only_omits_tools(tmp_path: Path) ->
 
 
 def test_stream_exact_session_markdown_defers_lineage_composition(tmp_path: Path) -> None:
-    _seed_minimal_index(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
-    conn.execute(
-        """
-        INSERT INTO session_links VALUES (
-            'codex-session:abc',
-            'codex-session',
-            'parent',
-            'branch',
-            'codex-session:parent',
-            'parent-message',
-            'prefix-sharing'
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+    _seed_index(tmp_path)
+    child_id = _seed_prefix_sharing_child(tmp_path)
 
-    assert not stream_exact_session_markdown(tmp_path, "abc", tmp_path / "out.md", prose_only=False)
+    assert not stream_exact_session_markdown(tmp_path, child_id, tmp_path / "out.md", prose_only=False)
 
 
 def test_stream_exact_session_markdown_without_session_links_streams(tmp_path: Path) -> None:
-    _seed_minimal_index(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
+    _seed_index(tmp_path)
+    child_id = _seed_prefix_sharing_child(tmp_path)
+    conn = _connect(tmp_path)
     conn.execute("DROP TABLE session_links")
     conn.commit()
     conn.close()
 
-    out = tmp_path / "out.md"
-
-    assert stream_exact_session_markdown(tmp_path, "abc", out, prose_only=False)
+    assert stream_exact_session_markdown(tmp_path, child_id, tmp_path / "out.md", prose_only=False)
 
 
 def test_streaming_adapter_preserves_structural_outcome_and_exact_block_id(tmp_path: Path) -> None:
-    _seed_minimal_index(tmp_path)
-    conn = sqlite3.connect(tmp_path / "index.db")
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM blocks WHERE block_id = 'b3'").fetchone()
+    _seed_index(tmp_path)
+    expected_block_id = archive_block_id(archive_message_id(_SESSION_ID, "m3", position=2), position=0)
+    conn = _connect(tmp_path)
+    row = conn.execute("SELECT * FROM blocks WHERE block_id = ?", (expected_block_id,)).fetchone()
     assert row is not None
 
     block = _row_to_renderable_block(row)
 
-    assert block.block_id == "b3"
+    assert block.block_id == expected_block_id
     assert block.tool_result_is_error is False
     assert block.tool_result_exit_code == 0
     conn.close()

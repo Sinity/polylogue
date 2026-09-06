@@ -71,9 +71,33 @@ def block_id(parent_message_id: str, *, position: int) -> str:
     return f"{message}:{_required_non_negative('position', position)}"
 
 
+#: The coordinate a session's transcript order is stated in. Content position,
+#: never the observed clock: ``occurred_at_ms`` is non-monotonic against
+#: position on every origin, so it cannot decide a conversation's order. This
+#: pair is the ``messages`` primary key under ``session_id``, so it is a total
+#: order within one session and admits no tiebreaker.
+TRANSCRIPT_ORDER_COLUMNS: tuple[str, ...] = ("position", "variant_index")
+
+
+def transcript_order_sql(alias: str | None = None, *, descending: bool = False) -> str:
+    """Return the ``ORDER BY`` fragment stating a session's transcript order.
+
+    Every read that states a session's message order -- lineage composition,
+    pagination, the keyset stream, batched reads, edge windows, the query
+    surface and the streaming markdown export -- orders by this fragment, so
+    a caller may take a total from one route and slice another.
+    ``idx_messages_session_position`` serves it without a temp sort.
+    """
+    prefix = f"{alias}." if alias else ""
+    direction = " DESC" if descending else ""
+    return ", ".join(f"{prefix}{column}{direction}" for column in TRANSCRIPT_ORDER_COLUMNS)
+
+
 __all__ = [
+    "TRANSCRIPT_ORDER_COLUMNS",
     "block_id",
     "message_id",
     "message_local_id",
     "session_id",
+    "transcript_order_sql",
 ]
