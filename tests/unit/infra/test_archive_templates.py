@@ -8,15 +8,19 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 
 
-def test_clone_fallback_is_private_writable_and_symlink_safe(tmp_path: Path) -> None:
-    """The portable fallback preserves links and thaws only the private clone."""
+def test_clone_refuses_a_template_holding_a_symlink(tmp_path: Path) -> None:
+    """A symlinked tier would let a clone reach outside its own tree.
+
+    Anti-vacuity: accepting the link makes the clone's contents depend on a
+    path the fixture does not own, so this assertion is red the moment the
+    template route stops going through the shared publication discipline.
+    """
     template = tmp_path / "template"
     template.mkdir()
     source_file = template / "source.db"
@@ -24,17 +28,13 @@ def test_clone_fallback_is_private_writable_and_symlink_safe(tmp_path: Path) -> 
         conn.execute("CREATE TABLE entries (value TEXT)")
         conn.execute("INSERT INTO entries VALUES ('immutable-template')")
     (template / "source-link.db").symlink_to(source_file.name)
-    finalize_archive_template(template)
-    source_bytes = source_file.read_bytes()
 
+    with pytest.raises(ValueError, match="symlink"):
+        finalize_archive_template(template)
     clone = tmp_path / "clone"
-    with patch("tests.infra.archive_templates.subprocess.run", side_effect=OSError("cp unavailable")):
+    with pytest.raises(ValueError, match="symlink"):
         clone_archive_template(template, clone)
-
-    assert clone.joinpath("source-link.db").is_symlink()
-    assert clone.joinpath("source.db").stat().st_mode & stat.S_IWUSR
-    clone.joinpath("source.db").write_bytes(b"private-mutation")
-    assert source_file.read_bytes() == source_bytes
+    assert list(clone.iterdir()) == []
 
 
 def test_clone_rebinds_durable_bootstrap_identity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -139,9 +139,9 @@ def test_clone_requests_reflink_before_copy_fallback(monkeypatch: pytest.MonkeyP
         raise subprocess.CalledProcessError(1, argv)
 
     monkeypatch.setattr(subprocess, "run", no_reflink)
-    clone_archive_template(template, destination)
+    assert clone_archive_template(template, destination) == "copy"
 
-    assert calls == [["cp", "-a", "--reflink=always", f"{template}/.", str(destination)]]
+    assert [argv[:4] for argv in calls] == [["cp", "-a", "--reflink=always", str(template)]]
     assert (destination / "index.db").read_bytes() == b"snapshot"
     assert (destination / "index.db").stat().st_mode & stat.S_IWUSR
 
@@ -160,10 +160,11 @@ def test_clone_fallback_replaces_a_read_only_partial_reflink_copy(
     finalize_archive_template(template)
 
     def partial_reflink(argv: list[str], **_kwargs: object) -> None:
-        partial = destination / "nested" / "partial.db"
+        target = Path(argv[-1])
+        partial = target / "nested" / "partial.db"
         partial.parent.mkdir(parents=True)
         partial.write_bytes(b"incomplete")
-        for path in (partial, partial.parent, destination):
+        for path in (partial, partial.parent, target):
             path.chmod(path.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
         raise subprocess.CalledProcessError(1, argv)
 
@@ -173,3 +174,32 @@ def test_clone_fallback_replaces_a_read_only_partial_reflink_copy(
     with contextlib.closing(sqlite3.connect(destination / "source.db")) as connection:
         assert connection.execute("SELECT value FROM entries").fetchall() == [("complete-template",)]
     assert not destination.joinpath("nested", "partial.db").exists()
+
+
+def test_clone_refuses_a_template_that_changed_after_it_was_read(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A clone is authenticated against the tree it copied, not merely attempted.
+
+    Anti-vacuity: without the file-set check the mutated byte reaches the
+    consumer silently, and the clone reports success.
+    """
+    template = tmp_path / "template"
+    destination = tmp_path / "clone"
+    template.mkdir()
+    (template / "index.db").write_bytes(b"snapshot")
+
+    def divergent_copy(argv: list[str], **_kwargs: object) -> None:
+        raise subprocess.CalledProcessError(1, argv)
+
+    def tampered_copy(source: Path, target: Path) -> None:
+        target.mkdir(parents=True)
+        (target / "index.db").write_bytes(b"tampered")
+
+    monkeypatch.setattr(subprocess, "run", divergent_copy)
+    monkeypatch.setattr("tests.infra.workload_artifacts._copy_tree", tampered_copy)
+
+    with pytest.raises(ValueError, match="authenticated file-set validation"):
+        clone_archive_template(template, destination)
+    assert list(destination.iterdir()) == []
+    assert list(destination.parent.glob(".clone.*")) == []

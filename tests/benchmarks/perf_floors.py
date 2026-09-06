@@ -198,15 +198,15 @@ def measure_replay_throughput(workdir: Path, *, quick: bool = False) -> list[Flo
 def _seed_bench_archive(workdir: Path, *, target_messages: int) -> Path:
     """Materialize a semantic benchmark archive and return its ``index.db`` path.
 
-    Reuses the shared artifact adapter from ``tests/benchmarks/conftest.py``.
+    Reuses the shared artifact seeder from ``tests/infra/benchmark_archives``.
     The archive is generated provider-natively and follows acquisition, parse,
     materialization, and indexing before the measurement receives its clone.
     """
-    from tests.benchmarks.conftest import _seed_realistic_db
+    from tests.infra.benchmark_archives import seed_benchmark_archive
 
     db_path = workdir / "seeded" / "index.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    _seed_realistic_db(db_path, target_messages=target_messages)
+    seed_benchmark_archive(db_path, target_messages=target_messages)
     return db_path
 
 
