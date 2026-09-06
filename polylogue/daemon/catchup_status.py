@@ -33,6 +33,10 @@ class CatchupStageEvent(BaseModel):
     succeeded_file_count: int = 0
     failed_file_count: int = 0
     input_bytes: int = 0
+    ingested_bytes: int = 0
+    failed_bytes: int = 0
+    refused_bytes: int = 0
+    refused_bytes_by_reason: dict[str, int] = Field(default_factory=dict)
     source_payload_read_bytes: int = 0
     cursor_fingerprint_read_bytes: int = 0
     archive_write_bytes_delta: int = 0
@@ -54,13 +58,21 @@ class CatchupStatus(BaseModel):
     skipped_file_count: int = 0
     succeeded_file_count: int = 0
     failed_file_count: int = 0
+    #: ``input_bytes`` is what the batch was OFFERED; the split below is what
+    #: became of it. Throughput is ``ingested_mb_per_second`` -- a rate over
+    #: offered bytes counts every declined file as work done.
     input_bytes: int = 0
+    ingested_bytes: int = 0
+    failed_bytes: int = 0
+    refused_bytes: int = 0
+    refused_bytes_by_reason: dict[str, int] = Field(default_factory=dict)
     source_payload_read_bytes: int = 0
     cursor_fingerprint_read_bytes: int = 0
     archive_write_bytes_delta: int = 0
     read_amplification: float = 0.0
     files_per_second: float = 0.0
     source_mb_per_second: float = 0.0
+    ingested_mb_per_second: float = 0.0
     parse_time_s: float = 0.0
     convergence_time_s: float = 0.0
     total_time_s: float = 0.0
@@ -93,12 +105,17 @@ def catchup_status_info(
             succeeded_file_count=latest.succeeded_file_count,
             failed_file_count=latest.failed_file_count,
             input_bytes=latest.input_bytes,
+            ingested_bytes=latest.ingested_bytes,
+            failed_bytes=latest.failed_bytes,
+            refused_bytes=latest.refused_bytes,
+            refused_bytes_by_reason=dict(latest.refused_bytes_by_reason),
             source_payload_read_bytes=latest.source_payload_read_bytes,
             cursor_fingerprint_read_bytes=latest.cursor_fingerprint_read_bytes,
             archive_write_bytes_delta=latest.archive_write_bytes_delta,
             read_amplification=round(_ratio(latest.source_payload_read_bytes, latest.input_bytes), 4),
             files_per_second=round(_ratio(latest.succeeded_file_count, total_time_s), 3),
             source_mb_per_second=round(_ratio(latest.source_payload_read_bytes / 1_000_000, total_time_s), 3),
+            ingested_mb_per_second=round(_ratio(latest.ingested_bytes / 1_000_000, total_time_s), 3),
             parse_time_s=latest.parse_time_s,
             convergence_time_s=latest.convergence_time_s,
             total_time_s=total_time_s,
@@ -143,8 +160,16 @@ def format_catchup_status_lines(payload: object) -> list[str]:
         "Catch-up: "
         f"{payload.get('mode', 'idle')} "
         f"{payload.get('succeeded_file_count', 0)}/{payload.get('needed_file_count', 0)} files, "
-        f"read amp {payload.get('read_amplification', 0)}x"
+        f"read amp {payload.get('read_amplification', 0)}x, "
+        f"{payload.get('ingested_mb_per_second', 0)} MB/s ingested"
     ]
+    refused_by_reason = payload.get("refused_bytes_by_reason")
+    if isinstance(refused_by_reason, dict) and refused_by_reason:
+        lines.append(
+            f"  refused {payload.get('refused_bytes', 0)} bytes of "
+            f"{payload.get('input_bytes', 0)} offered: "
+            + ", ".join(f"{reason}={count}" for reason, count in sorted(refused_by_reason.items()))
+        )
     if phase := payload.get("current_phase"):
         lines.append(
             "  "
@@ -237,6 +262,10 @@ def _archive_catchup_stage_event_from_row(row: sqlite3.Row | tuple[object, ...])
         succeeded_file_count=_payload_int(payload, "succeeded_file_count"),
         failed_file_count=_payload_int(payload, "failed_file_count"),
         input_bytes=_payload_int(payload, "input_bytes"),
+        ingested_bytes=_payload_int(payload, "ingested_bytes"),
+        failed_bytes=_payload_int(payload, "failed_bytes"),
+        refused_bytes=_payload_int(payload, "refused_bytes"),
+        refused_bytes_by_reason=_payload_int_map(payload, "refused_bytes_by_reason"),
         source_payload_read_bytes=_payload_int(payload, "source_payload_read_bytes"),
         cursor_fingerprint_read_bytes=_payload_int(payload, "cursor_fingerprint_read_bytes"),
         archive_write_bytes_delta=_payload_int(payload, "archive_write_bytes_delta"),
@@ -289,6 +318,13 @@ def _payload_int(payload: dict[str, object], key: str, default: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
         return default
     return _row_int(value)
+
+
+def _payload_int_map(payload: dict[str, object], key: str) -> dict[str, int]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        return {}
+    return {str(name): _row_int(count) for name, count in value.items() if isinstance(count, int | float | str)}
 
 
 def _payload_float(payload: dict[str, object], key: str, default: float = 0.0) -> float:

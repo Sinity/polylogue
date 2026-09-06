@@ -113,6 +113,10 @@ class CatchUpCycleTerminalOutcome(StrEnum):
     FAILURE = "failure"
     CANCELLED = "cancelled"
     STOPPED = "stopped"
+    #: The cycle ended because ingestion cannot make progress until restart,
+    #: not because it ran out of work. Distinct from STOPPED, which is an
+    #: ordinary shutdown.
+    HALTED = "halted"
 
 
 @dataclass(frozen=True)
@@ -440,6 +444,8 @@ def emit_catch_up_cycle(
     duration_ms: float,
     stage_timings_s: Mapping[str, float] | None,
     repair: Mapping[str, object] | None,
+    halted_file_count: int = 0,
+    halted_sources: Sequence[str] = (),
     terminal_outcome: CatchUpCycleTerminalOutcome | str | None = None,
 ) -> None:
     """Emit one catch-up convergence cycle envelope.
@@ -479,6 +485,10 @@ def emit_catch_up_cycle(
             {key: round(float(value), 6) for key, value in stage_timings_s.items()} if stage_timings_s else {}
         ),
         "repair": dict(repair) if repair is not None else None,
+        # Reported apart from ``skipped``: a cursor with nothing to do and a
+        # source that cannot make progress are different facts.
+        "halted_file_count": halted_file_count,
+        "halted_sources": list(halted_sources),
         "terminal_outcome": (resolved_terminal_outcome.value if resolved_terminal_outcome is not None else None),
     }
     emit_daemon_event("catch_up_cycle", operation_id=operation_id, payload=payload)

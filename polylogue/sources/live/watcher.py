@@ -26,7 +26,9 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
 from polylogue.logging import get_logger
@@ -273,6 +275,12 @@ class CatchUpPlan:
     needed: tuple[Path, ...]
     skipped_file_count: int
     needed_bytes: int
+    #: Files excluded because their source is halted. Reported apart from
+    #: ``skipped_file_count`` because "the cursor says there is nothing to do"
+    #: and "this source cannot make progress at all" are different facts, and
+    #: collapsing them hides a stopped source inside ordinary skip counts.
+    halted_file_count: int = 0
+    halted_sources: tuple[str, ...] = ()
 
 
 def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
@@ -316,6 +324,8 @@ class LiveWatcher:
         self._converger = converger
         self._write_coordinator = write_coordinator
         self._catch_up_event_emitter = catch_up_event_emitter
+        self._event_emitter = event_emitter
+        self._published_source_halts: dict[str, str] = {}
         # polylogue-wf8a: always on -- pre-parsing runs entirely BEFORE the
         # write coordinator is ever asked for the writer hold
         # (``LiveBatchProcessor._ingest_full_paths``), so it never contends
@@ -638,6 +648,7 @@ class LiveWatcher:
             logger.warning("live.watcher: catch-up planning refused by cursor authority: %s", exc)
             return
         plan = plan_holder[0]
+        await self._publish_source_halts()
         if not plan.needed:
             return
         operation_id = f"watcher-catch-up:{uuid.uuid4()}"
@@ -658,18 +669,22 @@ class LiveWatcher:
             duration_ms=0.0,
             stage_timings_s={},
             repair=None,
+            halted_file_count=plan.halted_file_count,
+            halted_sources=plan.halted_sources,
         )
         candidate_by_path = {candidate.path: candidate for candidate in plan.candidates}
         chunks = tuple(self._chunk_catch_up_paths(plan.needed, candidate_by_path))
         attempted = 0
         ingested = 0
         failed = 0
+        halted_mid_run = 0
         stage_timings_s: dict[str, float] = {}
         logger.info(
-            "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, chunks=%d",
+            "live.watcher: catch-up ingesting %d file(s) (%.1f MB), skipped=%d, halted=%d, chunks=%d",
             len(plan.needed),
             plan.needed_bytes / 1e6,
             plan.skipped_file_count,
+            plan.halted_file_count,
             len(chunks),
         )
         self._catch_up_active = True
@@ -677,19 +692,61 @@ class LiveWatcher:
             for index, chunk in enumerate(chunks, start=1):
                 if self._stop.is_set():
                     await self._emit_catch_up_terminal(
-                        operation_id, "stopped", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                        operation_id,
+                        "stopped",
+                        plan,
+                        attempted,
+                        ingested,
+                        failed,
+                        stage_timings_s,
+                        cycle_started,
+                        halted_mid_run=halted_mid_run,
                     )
                     return
-                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk)
+                if is_fully_degraded():
+                    # Every remaining chunk would take the writer lease only to
+                    # be refused at the same short-circuit. The condition holds
+                    # until restart, so the loop ends here rather than paying
+                    # one lease per chunk to learn it again.
+                    reason = degraded_reason()
+                    logger.warning(
+                        "live.watcher: catch-up stopped at chunk %d/%d, daemon degraded (%s): %s",
+                        index,
+                        len(chunks),
+                        "unknown" if reason is None else reason.code,
+                        "no reason recorded" if reason is None else reason.message,
+                    )
+                    await self._publish_source_halts()
+                    await self._emit_catch_up_terminal(
+                        operation_id,
+                        "halted",
+                        plan,
+                        attempted,
+                        ingested,
+                        failed,
+                        stage_timings_s,
+                        cycle_started,
+                        halted_mid_run=halted_mid_run,
+                    )
+                    return
+                # A source that halted after planning is dropped here too: the
+                # plan was built before the halt existed, and re-planning only
+                # helps the next pass.
+                chunk_paths = [path for path in chunk if source_halt(candidate_by_path[path].source_name) is None]
+                if len(chunk_paths) != len(chunk):
+                    halted_mid_run += len(chunk) - len(chunk_paths)
+                    await self._publish_source_halts()
+                if not chunk_paths:
+                    continue
+                chunk_bytes = sum(candidate_by_path[path].stat.st_size for path in chunk_paths)
                 logger.info(
                     "live.watcher: catch-up chunk %d/%d ingesting %d file(s) (%.1f MB)",
                     index,
                     len(chunks),
-                    len(chunk),
+                    len(chunk_paths),
                     chunk_bytes / 1e6,
                 )
                 chunk_index = index
-                chunk_paths = list(chunk)
 
                 async def ingest_chunk(
                     chunk_index: int = chunk_index,
@@ -741,7 +798,15 @@ class LiveWatcher:
                     self._defer_unaccounted_failed_retries(chunk_paths)
             if self._stop.is_set():
                 await self._emit_catch_up_terminal(
-                    operation_id, "stopped", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                    operation_id,
+                    "stopped",
+                    plan,
+                    attempted,
+                    ingested,
+                    failed,
+                    stage_timings_s,
+                    cycle_started,
+                    halted_mid_run=halted_mid_run,
                 )
                 return
             backlog_end = max(0, len(plan.candidates) - plan.skipped_file_count - ingested)
@@ -761,14 +826,33 @@ class LiveWatcher:
                 duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
                 stage_timings_s=stage_timings_s,
                 repair={"required": failed, "performed": 0, "remaining": backlog_end},
+                halted_file_count=plan.halted_file_count + halted_mid_run,
+                halted_sources=tuple(sorted(halted_sources())),
             )
             await self._emit_catch_up_terminal(
-                operation_id, "success", plan, attempted, ingested, failed, stage_timings_s, cycle_started, backlog_end
+                operation_id,
+                "success",
+                plan,
+                attempted,
+                ingested,
+                failed,
+                stage_timings_s,
+                cycle_started,
+                backlog_end,
+                halted_mid_run=halted_mid_run,
             )
             self._schedule_failed_retry_scan()
         except asyncio.CancelledError:
             await self._emit_catch_up_terminal(
-                operation_id, "cancelled", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                operation_id,
+                "cancelled",
+                plan,
+                attempted,
+                ingested,
+                failed,
+                stage_timings_s,
+                cycle_started,
+                halted_mid_run=halted_mid_run,
             )
             raise
         except CursorAuthorityBlockedError as exc:
@@ -776,7 +860,15 @@ class LiveWatcher:
             return
         except BaseException:
             await self._emit_catch_up_terminal(
-                operation_id, "failure", plan, attempted, ingested, failed, stage_timings_s, cycle_started
+                operation_id,
+                "failure",
+                plan,
+                attempted,
+                ingested,
+                failed,
+                stage_timings_s,
+                cycle_started,
+                halted_mid_run=halted_mid_run,
             )
             raise
         finally:
@@ -894,10 +986,20 @@ class LiveWatcher:
         rebases: list[CursorObservationRebase] = []
         skipped = 0
         needed_bytes = 0
+        halted = 0
+        halted_names: set[str] = set()
         with self._archived_cursor_reconciliation_scope():
             for candidate in candidates:
                 if self._stop.is_set():
                     break
+                # A halted source is dropped here, where work is selected.
+                # Refusing it later, where work executes, still costs a chunk
+                # and a writer lease per candidate for as long as the halt
+                # lasts -- 926 leases held to ingest nothing in rehearsal-11.
+                if source_halt(candidate.source_name) is not None:
+                    halted += 1
+                    halted_names.add(candidate.source_name)
+                    continue
                 if self._needs_work_from_state(
                     candidate.path,
                     stat=candidate.stat,
@@ -910,12 +1012,25 @@ class LiveWatcher:
                     skipped += 1
         if rebases:
             self._cursor.rebase_authoritative_observations(rebases)
+        if halted_names:
+            logger.warning(
+                "live.watcher: catch-up excluded %d file(s) from halted source(s): %s",
+                halted,
+                ", ".join(f"{name} ({self._halt_reason_code(name)})" for name in sorted(halted_names)),
+            )
         return CatchUpPlan(
             candidates=candidates,
             needed=tuple(needed),
             skipped_file_count=skipped,
             needed_bytes=needed_bytes,
+            halted_file_count=halted,
+            halted_sources=tuple(sorted(halted_names)),
         )
+
+    @staticmethod
+    def _halt_reason_code(source_name: str) -> str:
+        reason = source_halt(source_name)
+        return "halted" if reason is None else reason.code
 
     def _chunk_catch_up_paths(
         self,
@@ -1758,6 +1873,7 @@ class LiveWatcher:
         stage_timings_s: Mapping[str, float],
         cycle_started: float,
         backlog_end: int | None = None,
+        halted_mid_run: int = 0,
     ) -> None:
         resolved_backlog_end = (
             max(0, len(plan.candidates) - plan.skipped_file_count - ingested) if backlog_end is None else backlog_end
@@ -1778,8 +1894,37 @@ class LiveWatcher:
             duration_ms=(time.perf_counter() - cycle_started) * 1000.0,
             stage_timings_s=stage_timings_s,
             repair={"required": failed, "performed": 0, "remaining": resolved_backlog_end},
+            halted_file_count=plan.halted_file_count + halted_mid_run,
+            halted_sources=tuple(sorted(set(plan.halted_sources) | set(halted_sources()))),
             terminal_outcome=outcome,
         )
+
+    async def _publish_source_halts(self) -> None:
+        """Record every newly halted source as a durable event, once each.
+
+        Without this the halt exists only as one rate-limited log line, which
+        scrolls away while the source stays stopped for the rest of the run.
+        """
+        if self._event_emitter is None:
+            return
+        emitter = self._event_emitter
+        for source_name, reason in sorted(halted_sources().items()):
+            if self._published_source_halts.get(source_name) == reason.code:
+                continue
+            self._published_source_halts[source_name] = reason.code
+            payload: dict[str, object] = {
+                "source_name": source_name,
+                "code": reason.code,
+                "message": reason.message,
+                "derived_only": reason.derived_only,
+                "detail": dict(reason.detail) if reason.detail is not None else None,
+            }
+            await self._run_writer_sync(
+                "watcher.source_halt.event",
+                emitter,
+                "source_ingest_halted",
+                payload,
+            )
 
     async def _emit_catch_up_cycle(self, **kwargs: object) -> None:
         """Persist lifecycle facts through the daemon's write coordinator."""
