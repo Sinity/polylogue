@@ -1516,6 +1516,15 @@ def _codex_spec() -> OriginSpec:
             "turn; collaboration_mode.settings itself duplicates model/effort/"
             "developer_instructions already captured from the top-level "
             "turn_context and is not re-stored.",
+            "turn_context.user_instructions/.developer_instructions "
+            "(acquired, polylogue-4r20i): both are re-declared on every turn, "
+            "so the first value fills the session's own slot "
+            "(sessions.instructions_text / the codex_agent_identity event) and "
+            "a value distinct from every one already seen becomes its own "
+            "codex_instructions_changed session_event carrying the message "
+            "position it took effect on. Measured over 596 real rollout files: "
+            "16 of the 120 carrying user_instructions declare more than one "
+            "distinct value.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
