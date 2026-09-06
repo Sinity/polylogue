@@ -669,14 +669,17 @@ def _run_launch(launch_path: Path) -> int:
 
     previous = {number: signal.signal(number, terminate_on_signal) for number in REAPED_SIGNALS}
     # The width is chosen here rather than where the command was built: a run
-    # can sit in this queue for hours, and what matters is the memory present
-    # when its workers start.
+    # can sit in this queue for hours, and what matters is the memory this job
+    # may take when its workers start.
     command, sizing = resize_worker_argument(list(launch["argv"]))
     with open(log_path, "wb") as log:
         if sizing is not None and sizing.get("narrowed"):
+            bound = "the job cgroup" if sizing["basis"] == "cgroup_budget" else "host memory"
             log.write(
-                f"pytest slot: {sizing['available_mib']} MiB available holds {sizing['workers']} workers, "
-                f"not {sizing['requested_workers']}; running narrower rather than being killed.\n".encode()
+                f"pytest slot: {sizing['available_mib']} MiB from {bound} "
+                f"(host {sizing['host_available_mib']} MiB, cgroup {sizing['cgroup_available_mib']} MiB) "
+                f"holds {sizing['workers']} workers, not {sizing['requested_workers']}; "
+                "running narrower rather than being killed.\n".encode()
             )
             log.flush()
         try:
