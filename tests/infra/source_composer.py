@@ -1,24 +1,18 @@
-"""Archive-level pathology composer (polylogue-amrpx, zoo v1 engine).
+"""The shared source-shaped fixture library for corpus-level arrangements.
 
-Pathologies are structures that emerge across a *corpus* -- a chain of
-revisions, a lineage of forked sessions, a raw bundle of several sessions --
-not something a single per-record schema-conformant generator can produce
-(``tests/infra/strategies/schema_driven.py`` generates one record's worth of
-data; nothing there decides how many revisions of a session exist, or
-whether two sessions share a divergent tail).
+A corpus-level arrangement -- a chain of revisions, a lineage of forked
+sessions, a raw bundle carrying several sessions -- cannot come from a
+per-record generator (``tests/infra/strategies/schema_driven.py`` draws one
+record; nothing there decides how many revisions a session has, or whether two
+sessions share a divergent tail). These pure functions compose such
+arrangements from already-generated payloads and builders
+(``tests/infra/builders.py``).
 
-This module is the missing layer: pure functions that take already-generated
-per-record payloads or building blocks (a ``Session``/``Message`` pair from
-``tests/infra/builders.py``, or a batch of ``schema_conformant_payload()``
-draws) and *compose* them into the archive-level arrangements
-``polylogue-yazae``'s zoo enumerates. Nothing here writes to a database --
-callers feed the returned ``Session`` objects into ``SessionBuilder``
-(``tests/infra/storage_records.py``) or ``write_parsed_session_to_archive``
-when a live-archive integration test is wanted; the composed structure
-itself is the deliverable and is fully inspectable without one.
-
-Each function's docstring names the production pathology and bead/issue that
-motivated it, per the bead's requirement that zoo members carry provenance.
+Nothing here writes to a database. Callers feed the returned ``Session``
+objects into ``SessionBuilder`` (``tests/infra/storage_records.py``) or
+``write_parsed_session_to_archive``; the composed structure is inspectable on
+its own. This module carries no expected semantics -- each law owns its own
+oracle.
 """
 
 from __future__ import annotations
@@ -37,25 +31,26 @@ JSONRecord = dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
-class ComposedPathology:
-    """A named archive-level pathological arrangement plus provenance.
+class ComposedSources:
+    """A named corpus-level source arrangement.
 
-    ``sessions`` holds domain-level ``Session`` objects for pathologies that
-    are naturally expressed post-parse (revision chains, lineage, whale
-    components, quarantined heads). ``raw_payloads`` holds wire-level JSON
-    structures for pathologies that are fundamentally about *raw acquisition
-    shape* (multi-session bundles, vintage variant pairs) rather than
-    anything a parsed ``Session`` could represent.
+    ``sessions`` holds domain-level ``Session`` objects for arrangements
+    naturally expressed post-parse (revision chains, lineage, whale
+    components, quarantined heads). ``raw_payloads`` holds wire-level JSON for
+    arrangements that are about *raw acquisition shape* (multi-session
+    bundles, vintage variant pairs) and that no parsed ``Session`` can carry.
+
+    ``shape`` is the obligation identifier a law selects on; it is not a
+    status, a case id, or an expected outcome.
     """
 
     name: str
-    pathology: str
-    motivated_by: str
+    shape: str
     description: str
     sessions: tuple[Session, ...] = ()
     raw_payloads: tuple[object, ...] = ()
     metadata: Mapping[str, object] = field(default_factory=dict)
-    components: tuple[ComposedPathology, ...] = ()
+    components: tuple[ComposedSources, ...] = ()
     raw_ingestion_order: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
@@ -75,30 +70,30 @@ class ComposedPathology:
         assert self.raw_ingestion_order is not None
         return tuple(self.raw_payloads[index] for index in self.raw_ingestion_order)
 
-    def with_raw_ingestion_order(self, raw_ingestion_order: Sequence[int]) -> ComposedPathology:
+    def with_raw_ingestion_order(self, raw_ingestion_order: Sequence[int]) -> ComposedSources:
         """Return this arrangement with a different deterministic raw ingest order."""
         return replace(self, raw_ingestion_order=tuple(raw_ingestion_order))
 
     def compose(
         self,
-        *pathologies: ComposedPathology,
+        *others: ComposedSources,
         name: str | None = None,
         raw_ingestion_order: Sequence[int] | None = None,
-    ) -> ComposedPathology:
+    ) -> ComposedSources:
         """Nest this arrangement with others without introducing a corpus DSL."""
-        return compose_pathologies(
+        return compose_sources(
             self,
-            *pathologies,
+            *others,
             name=name,
             raw_ingestion_order=raw_ingestion_order,
         )
 
 
-def compose_pathologies(
-    *pathologies: ComposedPathology,
+def compose_sources(
+    *arrangements: ComposedSources,
     name: str | None = None,
     raw_ingestion_order: Sequence[int] | None = None,
-) -> ComposedPathology:
+) -> ComposedSources:
     """Combine existing arrangements and optionally permute their raw ingestion.
 
     The result retains each direct component for inspection while exposing its
@@ -106,18 +101,17 @@ def compose_pathologies(
     permutation over that flat raw-payload sequence, so a metamorphic test can
     feed the same artifacts through the real ingestion path under many orders.
     """
-    if not pathologies:
-        raise ValueError("compose_pathologies requires at least one pathology")
+    if not arrangements:
+        raise ValueError("compose_sources requires at least one arrangement")
 
-    component_names = tuple(pathology.name for pathology in pathologies)
-    return ComposedPathology(
+    component_names = tuple(item.name for item in arrangements)
+    return ComposedSources(
         name=name if name is not None else "+".join(component_names),
-        pathology="+".join(pathology.pathology for pathology in pathologies),
-        motivated_by="; ".join(pathology.motivated_by for pathology in pathologies),
-        description=f"Composition of archive pathologies: {', '.join(component_names)}.",
-        sessions=tuple(session for pathology in pathologies for session in pathology.sessions),
-        raw_payloads=tuple(payload for pathology in pathologies for payload in pathology.raw_payloads),
-        components=pathologies,
+        shape="+".join(item.shape for item in arrangements),
+        description=f"Composition of source arrangements: {', '.join(component_names)}.",
+        sessions=tuple(session for item in arrangements for session in item.sessions),
+        raw_payloads=tuple(payload for item in arrangements for payload in item.raw_payloads),
+        components=arrangements,
         raw_ingestion_order=None if raw_ingestion_order is None else tuple(raw_ingestion_order),
     )
 
@@ -133,7 +127,7 @@ def compose_append_revision_chain(
     revision_count: int = 4,
     messages_per_revision: int = 2,
     with_self_describing_identity: bool = True,
-) -> ComposedPathology:
+) -> ComposedSources:
     """N growing revisions of one logical session sharing a single archive id.
 
     Motivated by #2467 (session lineage duplication) and the content-hash
@@ -180,10 +174,9 @@ def compose_append_revision_chain(
             )
         )
 
-    return ComposedPathology(
+    return ComposedSources(
         name=session_id,
-        pathology="append-revision-chain",
-        motivated_by="#2467 (session lineage duplication); content-hash idempotency model",
+        shape="append-revision-chain",
         description=(
             f"{revision_count} growing revisions of session {session_id!r}, "
             f"{'with' if with_self_describing_identity else 'without'} a self-describing "
@@ -206,7 +199,7 @@ def compose_fork_prefix_tail_lineage(
     shared_prefix_len: int = 3,
     child_tail_len: int = 2,
     cycle_candidate: bool = False,
-) -> ComposedPathology:
+) -> ComposedSources:
     """A parent session plus a child that replays the parent's prefix.
 
     Motivated by #2467 / ``docs/design/session-lineage-model.md``: forks,
@@ -266,10 +259,9 @@ def compose_fork_prefix_tail_lineage(
     if cycle_candidate:
         parent = parent.model_copy(update={"parent_id": SessionId(child_id)})
 
-    return ComposedPathology(
+    return ComposedSources(
         name=f"{parent_id}->{child_id}",
-        pathology="fork-prefix-tail-lineage" + ("-cycle-candidate" if cycle_candidate else ""),
-        motivated_by="#2467; docs/design/session-lineage-model.md; TopologyEdgeStatus.QUARANTINED",
+        shape="fork-prefix-tail-lineage" + ("-cycle-candidate" if cycle_candidate else ""),
         description=(
             f"Child {child_id!r} shares its first {shared_prefix_len} message ids/texts with "
             f"parent {parent_id!r}, then diverges for {child_tail_len} messages."
@@ -297,7 +289,7 @@ def compose_multi_session_bundle(
     records: Sequence[JSONRecord],
     *,
     session_count: int = 3,
-) -> ComposedPathology:
+) -> ComposedSources:
     """Interleave generated per-record payloads into one grouped-JSONL raw.
 
     Motivated by the grouped-JSONL raw shape ``sources/dispatch.py``'s
@@ -331,10 +323,9 @@ def compose_multi_session_bundle(
 
     grouped_jsonl = "\n".join(lines) + "\n"
 
-    return ComposedPathology(
+    return ComposedSources(
         name="multi-session-bundle",
-        pathology="multi-session-bundle",
-        motivated_by="sources/dispatch.py _lower_payload_specs grouped-JSONL split by sessionId",
+        shape="multi-session-bundle",
         description=(
             f"{len(records)} records interleaved across {session_count} session ids "
             f"({per_session_counts}) in one grouped-JSONL raw blob."
@@ -355,7 +346,7 @@ def compose_whale_scale_component(
     declared_message_count: int = 50_000,
     declared_size_bytes: int = 2 * 1024**3,
     materialized_message_count: int = 32,
-) -> ComposedPathology:
+) -> ComposedSources:
     """A session structurally describing a whale-scale component without allocating it.
 
     Motivated by t93b (whale-scale component handling). Real whale sessions
@@ -367,7 +358,7 @@ def compose_whale_scale_component(
     and carries the intended full scale as session metadata
     (``declared_message_count`` / ``declared_size_bytes``) so a harness that
     wants to exercise whale-scale *code paths* (streaming parse, chunked
-    materialize) can recognize the pathology and apply its own scale-up
+    materialize) can recognize the shape and apply its own scale-up
     strategy, without this composer ever holding gigabytes in memory.
     """
     if materialized_message_count < 1:
@@ -394,10 +385,9 @@ def compose_whale_scale_component(
         },
     )
 
-    return ComposedPathology(
+    return ComposedSources(
         name=session_id,
-        pathology="whale-scale-component",
-        motivated_by="t93b (whale-scale component handling)",
+        shape="whale-scale-component",
         description=(
             f"Session declares {declared_message_count} messages / {declared_size_bytes} bytes "
             f"but materializes only {materialized_message_count} real messages; the intended "
@@ -421,7 +411,7 @@ def compose_quarantined_head_arrangement(
     *,
     child_id: str = "quarantined-child",
     missing_parent_id: str = "never-ingested-parent",
-) -> ComposedPathology:
+) -> ComposedSources:
     """A child session whose parent reference is deliberately never resolved.
 
     Motivated by ``session_links``'s topology-edge persistence
@@ -444,10 +434,9 @@ def compose_quarantined_head_arrangement(
         branch_type=BranchType.CONTINUATION,
     )
 
-    return ComposedPathology(
+    return ComposedSources(
         name=child_id,
-        pathology="quarantined-head-arrangement",
-        motivated_by="session_links topology-edge persistence; TopologyEdgeStatus.unresolved/quarantined",
+        shape="quarantined-head-arrangement",
         description=(
             f"Session {child_id!r} references parent {missing_parent_id!r}, which is NOT "
             "included in this arrangement -- the harness controls whether/when the parent "
@@ -466,38 +455,27 @@ def compose_quarantined_head_arrangement(
 def compose_vintage_variant_pair(
     *,
     turns: Sequence[tuple[str, str]] | None = None,
-) -> ComposedPathology:
+) -> ComposedSources:
     """Two structurally different wire payloads encoding identical content.
 
-    Motivated by 0qfy/uqwd (export-vintage variant pairs: same logical
-    content, different wire shape across a provider's schema versions --
-    e.g. gemini-cli v1 vs v2, claude-ai v1 vs v2 package schemas in
-    ``polylogue/schemas/providers/*/versions/``). This is a wire-level
-    pathology, not something a parsed ``Session`` can represent (parsing
-    normalizes the shape difference away), so this composer returns two raw
-    JSON documents directly: an "old" flat shape and a "new" nested shape,
-    both encoding the same ``(role, text)`` turns. ``extract_old_shape`` /
-    ``extract_new_shape`` mirror what two different parser versions would
-    do, letting a test prove extracted content is equal despite the wire
-    difference.
+    Export-vintage variant pairs carry the same logical content in different
+    wire shapes across a provider's schema versions (gemini-cli v1 vs v2,
+    claude-ai v1 vs v2 in ``polylogue/schemas/providers/*/versions/``). That
+    difference lives at the wire level -- parsing normalizes it away -- so this
+    returns two raw JSON documents: an "old" flat shape and a "new" nested
+    shape, both encoding the same ``(role, text)`` turns.
+    ``extract_old_shape_turns`` / ``extract_new_shape_turns`` mirror what two
+    parser versions would do, letting a law prove extracted content is equal
+    across the wire difference.
 
-    Scope, deliberately narrow (``polylogue-0qfy`` composer-fidelity note,
-    2026-08-04). This is a GENERIC illustrative shape pair. Its ``old``/``new``
-    documents belong to no real provider schema, and the extractors above are
-    hand-written stand-ins -- no production parser or classifier reads them. It
-    therefore demonstrates the general "same content, different wire vintage"
-    mechanism and nothing more.
-
-    In particular it does NOT exercise the branch the measured claude-ai-export
-    cohort hit (redundant single text ``content_blocks`` presence flipping
-    ``_message_hash_payload``, which read as a real membership conflict). Do not
-    treat this composer as evidence for that bug or for the ``ey4ro`` zoo's
-    ``content-blocks-vintage`` row. The real-route proof for that cohort is
-    ``tests/infra/claude_vintage_live_proof.py`` /
-    ``tests/unit/infra/test_claude_vintage_live_proof.py``, built on
-    ``pathology_zoo._claude_vintage_live_proof_payload``, which drives the
-    production ``parse_ai`` -> ``session_revision_projection`` ->
-    ``classify_membership_revisions`` route and carries its own red mutation.
+    The shape pair is generic: its documents belong to no real provider schema
+    and the extractors are stand-ins that no production parser reads. It
+    demonstrates the mechanism only. The production-route proof for the
+    measured claude-ai-export cohort -- where a redundant single text
+    ``content_blocks`` presence flipped the message hash and read as a
+    membership conflict -- is ``tests/infra/claude_vintage_live_proof.py``,
+    which drives ``parse_ai`` -> ``session_revision_projection`` ->
+    ``classify_membership_revisions``.
     """
     resolved_turns = turns or (("user", "Hello"), ("assistant", "Hi there!"), ("user", "How are you?"))
 
@@ -512,10 +490,9 @@ def compose_vintage_variant_pair(
         },
     }
 
-    return ComposedPathology(
+    return ComposedSources(
         name="vintage-variant-pair",
-        pathology="vintage-variant-pair",
-        motivated_by="0qfy/uqwd (export-vintage variant pairs)",
+        shape="vintage-variant-pair",
         description=(
             f"Old (flat 'messages') and new (nested 'conversation.turns') wire shapes both "
             f"encoding the identical {len(resolved_turns)}-turn content."
@@ -536,8 +513,8 @@ def extract_new_shape_turns(payload: JSONRecord) -> list[tuple[str, str]]:
 
 
 __all__ = [
-    "ComposedPathology",
-    "compose_pathologies",
+    "ComposedSources",
+    "compose_sources",
     "compose_append_revision_chain",
     "compose_fork_prefix_tail_lineage",
     "compose_multi_session_bundle",

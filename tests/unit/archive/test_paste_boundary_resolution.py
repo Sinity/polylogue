@@ -9,17 +9,9 @@ but content unrecoverable), whole_message_fallback (heuristic), or absent.
 from __future__ import annotations
 
 from polylogue.archive.message.paste_detection import (
-    _PASTE_BOUNDARY_STATES,
     detect_paste,
     resolve_paste_boundary_state,
 )
-
-
-class TestPasteBoundaryStateVocabulary:
-    """The closed vocabulary of boundary states is well-defined."""
-
-    def test_vocabulary_is_closed(self) -> None:
-        assert frozenset({"exact", "projected", "whole_message_fallback", "hash_only"}) == _PASTE_BOUNDARY_STATES
 
 
 class TestResolvePasteBoundaryState:

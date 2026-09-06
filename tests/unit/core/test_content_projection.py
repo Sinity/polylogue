@@ -169,9 +169,9 @@ def test_prose_only_drops_claude_code_protocol_artifacts() -> None:
     :func:`polylogue.archive.message.artifacts.classify_text_message_type`
     (wired into ``polylogue/sources/parsers/claude/code_parser.py``).
     The projection therefore drops these rows by stored type, not by
-    re-running text heuristics — the contract from #839. Existing
-    pre-#839 rows are filled in by the ``message_type_backfill``
-    maintenance target.
+    re-running text heuristics — the contract from #839. A row stored
+    before that contract keeps ``MessageType.MESSAGE`` and is not
+    reclassified at read time.
     """
     messages = [
         make_msg(
