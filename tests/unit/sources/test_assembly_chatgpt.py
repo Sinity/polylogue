@@ -411,6 +411,32 @@ class TestEnrichSessionAcquiresBlobs:
         events = [e for e in result.session_events if e.event_type == "chatgpt_asset_resolution"]
         assert events == []  # no library_files/asset_names hit, only the blob join
 
+    def test_screenshot_pointer_attachment_joins_its_blob(self) -> None:
+        """A ``sediment://`` screenshot row binds the blob named by its bare id.
+
+        This is the join the computer-use screenshots exist for: acquired
+        asset bytes are keyed by the bare file id, the attachment carries the
+        full pointer. Red if the pointer's scheme is not stripped on the way
+        into the blob lookup.
+        """
+        attachment = ParsedAttachment(
+            provider_attachment_id="sediment://file_shot1",
+            message_provider_id="m1",
+            attachment_kind="computer_screenshot",
+        )
+        conv = _session([attachment])
+        spec = ChatGPTAssemblySpec()
+
+        result = spec.enrich_session(
+            conv,
+            {
+                "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
+                "chatgpt_dat_blobs": {"file_shot1": ("ab" * 32, 27100)},
+            },
+        )
+
+        assert result.attachments[0].precomputed_blob == ("ab" * 32, 27100)
+
     def test_does_not_overwrite_inline_bytes(self) -> None:
         attachment = ParsedAttachment(
             provider_attachment_id="file-xyz",

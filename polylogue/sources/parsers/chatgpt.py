@@ -31,6 +31,7 @@ from .base import (
     parser_admission,
     typed_unknown_block,
 )
+from .chatgpt_sidecars import strip_asset_pointer_scheme
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
 
@@ -854,6 +855,34 @@ def extract_messages_from_mapping(
                     is_error=computer_is_error,
                 )
             )
+            # The screenshot is this tool result's payload -- an
+            # `image_asset_pointer` record on every measured computer_output
+            # node -- and needs both carriers: the IMAGE block puts it in the
+            # content tree (its `asset_pointer` metadata reaches storage as a
+            # `chatgpt_block_metadata` event), and the attachment row is the
+            # only acquisition identity an asset has. `assembly_chatgpt.py`
+            # binds acquired asset bytes to attachments by this id.
+            screenshot = content.get("screenshot")
+            if isinstance(screenshot, Mapping) and (screenshot_pointer := _string_value(screenshot, "asset_pointer")):
+                content_blocks.append(
+                    ParsedContentBlock(
+                        type=BlockType.IMAGE,
+                        metadata={"asset_pointer": screenshot_pointer},
+                    )
+                )
+                attachments.append(
+                    ParsedAttachment(
+                        provider_attachment_id=screenshot_pointer,
+                        message_provider_id=str(msg_id),
+                        # Read off the URI: the id space the export's asset
+                        # blobs and `library_files.json` keys share.
+                        provider_file_id=strip_asset_pointer_scheme(screenshot_pointer),
+                        size_bytes=_non_negative_int(screenshot.get("size_bytes")),
+                        attachment_kind="computer_screenshot",
+                        direction="model_output",
+                        producer_ref=f"message:{msg_id}",
+                    )
+                )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
             # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
             # tether_quote (1,178 measured) is a quoted document/file excerpt

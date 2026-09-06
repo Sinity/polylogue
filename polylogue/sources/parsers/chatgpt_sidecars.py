@@ -33,11 +33,12 @@ an id join from a name guess (see ``SandboxResolution.tier``/``method``).
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 _DAT_SUFFIX = ".dat"
-_FILE_SERVICE_PREFIX = "file-service://"
+_ASSET_POINTER_SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://")
 
 
 def _optional_str(value: object) -> str | None:
@@ -279,12 +280,23 @@ class ChatGPTAssetIndex:
         return SandboxResolution(tier=6, method="unresolved", file=None, matched_name=None)
 
 
+def strip_asset_pointer_scheme(pointer: str) -> str:
+    """Return the bare file id an asset-pointer URI names.
+
+    ChatGPT writes an asset's identity as a URI whose scheme records which
+    storage backend served it — ``file-service://file-<id>`` for conversation
+    uploads, ``sediment://file_<32hex>`` for the computer-use screenshots and
+    later assets. Only the id joins: it is what the export's ``.dat``
+    basenames and ``library_files.json`` keys are.
+    """
+    return _ASSET_POINTER_SCHEME_RE.sub("", pointer, count=1)
+
+
 def _normalize_file_id(file_id: str) -> str:
-    if file_id.startswith(_FILE_SERVICE_PREFIX):
-        return file_id[len(_FILE_SERVICE_PREFIX) :]
-    if file_id.endswith(_DAT_SUFFIX):
-        return file_id[: -len(_DAT_SUFFIX)]
-    return file_id
+    bare = strip_asset_pointer_scheme(file_id)
+    if bare.endswith(_DAT_SUFFIX):
+        return bare[: -len(_DAT_SUFFIX)]
+    return bare
 
 
 __all__ = [
@@ -294,4 +306,5 @@ __all__ = [
     "SandboxResolution",
     "parse_asset_file_names",
     "parse_library_files",
+    "strip_asset_pointer_scheme",
 ]
