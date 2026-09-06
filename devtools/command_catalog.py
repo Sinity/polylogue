@@ -138,6 +138,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify blob-conservation",
+        "verification",
+        "Report blob/reference conservation in both directions against an archive root.",
+        "polylogue.maintenance.blob_conservation",
+        json_flag=True,
+        use_when=(
+            "Account for every blob file and every durable reference in an offline archive: files with no owning "
+            "row, and references whose bytes are neither present nor provably recoverable. Reports only."
+        ),
+        examples=(
+            "devtools verify blob-conservation --archive-root /realm/state/polylogue",
+            "devtools verify blob-conservation --archive-root ./archive --json",
+        ),
+    ),
+    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",

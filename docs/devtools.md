@@ -72,6 +72,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools scenario` | Run a named archive verification scenario. |
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run the local verification baseline: every quick gate, then the selected or complete test corpus. |
+| `devtools verify blob-conservation` | Report blob/reference conservation in both directions against an archive root. |
 
 ### Generated Surfaces
 
