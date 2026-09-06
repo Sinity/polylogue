@@ -225,7 +225,7 @@ _SESSION_DIR = "/home/user/.claude/projects/proj/"
     ],
 )
 def test_extracted_corpus_and_provider_source_stay_distinct_at_every_path(
-    records: JSONDocumentList,
+    records: list[JSONValue],
     source_path: str | None,
     expected_kind: ArtifactKind,
     expected_session: bool,
