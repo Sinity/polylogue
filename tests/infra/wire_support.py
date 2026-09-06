@@ -20,10 +20,12 @@ live construct handlers; the parse, the artifact evidence and every witness
 verdict are recomputed on every build. A test that mutates ``parse_payload``
 therefore pays the generator once per process instead of once per test.
 
-The memo keys carry schema content and the live handler set, so an injected
-schema and a removed construct handler both miss. What they do not carry is
-any change to the *generator itself*: a test that patches a builder, a runtime
-handler body, a corpus or ``SchemaValidator`` must build outside this.
+The memo keys carry schema content, the live handler set and the entry point
+each memo stands in front of, so an injected schema, a removed construct
+handler and a monkeypatched generator, validator or coverage function all
+miss. What they do not carry is a patch *below* those four entry points: a
+test that replaces a builder or a runtime handler body must build outside
+this.
 
 ``test_support_receipt_is_deterministic`` is the anti-vacuity condition -- it
 compares a shared, memo-built receipt with a fresh build that runs the real
@@ -113,8 +115,9 @@ _VALIDATIONS: dict[tuple[Any, ...], ValidationResult] = {}
 _ACTIVE = 0
 
 
-def _corpus_key(corpus: Any) -> tuple[Any, ...]:
+def _corpus_key(corpus: Any, entry_point: Any) -> tuple[Any, ...]:
     return (
+        entry_point,
         corpus.provider,
         corpus.package_version,
         corpus.element_kind,
@@ -151,7 +154,7 @@ def shared_wire_generation() -> Iterator[None]:
     real_validate = SchemaValidator.validate
 
     def memo_witnesses(corpus: Any, *, seed: int, max_witnesses: int = 128) -> list[bytes]:
-        key = (*_corpus_key(corpus), seed, max_witnesses)
+        key = (*_corpus_key(corpus, real_witnesses), seed, max_witnesses)
         witnesses = _GENERATED_WITNESSES.get(key)
         if witnesses is None:
             witnesses = real_witnesses(corpus, seed=seed, max_witnesses=max_witnesses)
@@ -165,7 +168,10 @@ def shared_wire_generation() -> Iterator[None]:
         # the key does not, so it goes straight through.
         if args or self._coverage_witness_mode:
             return real_batch(self, *args, **kwargs)
-        key = (*_corpus_key(self), tuple(sorted((name, repr(value)) for name, value in kwargs.items())))
+        key = (
+            *_corpus_key(self, real_batch),
+            tuple(sorted((name, repr(value)) for name, value in kwargs.items())),
+        )
         batch = _GENERATED_BATCHES.get(key)
         if batch is None:
             batch = real_batch(self, **kwargs)
@@ -180,6 +186,7 @@ def shared_wire_generation() -> Iterator[None]:
         **kwargs: Any,
     ) -> ConstructCoverage:
         key = (
+            real_coverage,
             _stable_digest(schema),
             _content_digest(list(payloads)),
             _handler_key() if handler_names is None else tuple(sorted(handler_names)),
@@ -192,10 +199,16 @@ def shared_wire_generation() -> Iterator[None]:
         return coverage
 
     def memo_validate(self: Any, data: object, *, include_drift: bool | None = None) -> ValidationResult:
-        key = (_stable_digest(self.schema), self.strict, include_drift, _content_digest(data))
+        key = (real_validate, _stable_digest(self.schema), self.strict, include_drift, _content_digest(data))
         result = _VALIDATIONS.get(key)
         if result is None:
-            result = real_validate(self, data, include_drift=include_drift)
+            # Forward only what arrived: a narrower stand-in for ``validate``
+            # need not accept the keyword this signature declares.
+            result = (
+                real_validate(self, data)
+                if include_drift is None
+                else real_validate(self, data, include_drift=include_drift)
+            )
             _VALIDATIONS[key] = result
         # ValidationResult carries mutable lists; hand every caller its own.
         return ValidationResult(
