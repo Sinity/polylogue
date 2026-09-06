@@ -8,10 +8,10 @@ site-packages on ``sys.path``; the module therefore imports stdlib only, and
 only stdlib that is cheap to load. ``uuid`` and ``re`` each cost more to
 import than they save here, so the event id comes from ``os.urandom`` and the
 id charset is a frozenset. ``pathlib`` and ``tempfile`` are the exception:
-they carry the durable-write shapes the ``patterns`` gate recognizes
-(``mkstemp`` for exclusive creation, ``.parent`` for the post-rename
-directory fsync), and hand-rolling those to save their import is not worth
-owning a second unreviewed durable-write path.
+they carry the atomic-publish shape (``mkstemp`` for exclusive creation,
+``os.replace`` for the rename); hand-rolling those to save their import is not
+worth owning a second unreviewed publish path. The producer does not fsync:
+see :func:`atomic_json_write`.
 
 It is also the single implementation of the pending envelope:
 :mod:`polylogue.sources.hooks` imports this module's validation and atomic
@@ -214,7 +214,13 @@ def enqueue_event(
 
 
 def atomic_json_write(path: Path, payload: dict[str, object]) -> None:
-    """Publish one envelope by rename, with its bytes and directory entry durable."""
+    """Publish one envelope by rename. No fsync: this runs inside the harness's
+    hook budget on every tool call, and a directory fsync under host I/O
+    pressure has measured in seconds. The rename is atomic against every
+    reader; the only loss window is a power failure before the page cache
+    drains, which the drain path tolerates (a missing envelope is a missing
+    event, never a corrupt one). Durability of the retained bytes is the
+    consumer's job, taken under its own fsync when it acknowledges."""
 
     handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
@@ -222,17 +228,16 @@ def atomic_json_write(path: Path, payload: dict[str, object]) -> None:
         with os.fdopen(handle, "w", encoding="utf-8") as output:
             output.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
             output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
+        # ast-grep-ignore: replace-without-parent-fsync
         os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
 
 
 def _fsync_directory(path: Path) -> None:
-    """Persist an atomic rename's directory entry before returning success."""
+    """Persist a rename's directory entry; used by the consumer's acknowledgement,
+    never on the producer path."""
 
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
