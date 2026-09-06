@@ -622,7 +622,9 @@ ORIGIN_FIXTURES: list[OriginFixture] = [
     OriginFixture(
         label="gemini-cli-session",
         provider=Provider.GEMINI_CLI,
-        session_id="gemini-cli-session-reg-1",
+        # gemini-cli identity composes the checkpoint's own wire coordinates:
+        # ``sessionId``, ``kind``, ``startTime``.
+        session_id="gemini-cli-session-reg-1:chat:2026-02-01T08:00:00.000Z",
         min_messages=2,
         expected_origin=Origin.GEMINI_CLI_SESSION,
         looks_like_fn=looks_like_gemini_cli,

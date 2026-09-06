@@ -64,6 +64,36 @@ def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[Parse
 _GEMINI_CLI_KIND_VALUES = frozenset({"chat", "main", "subagent"})
 
 
+def _gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
+    """Compose the identity of one Gemini CLI chat from its wire coordinates.
+
+    ``sessionId`` names the CLI *process*, not a chat. One process writes a
+    separate complete checkpoint for its main chat, for every subagent it
+    spawns, and for every chat opened after a reset -- all under that one
+    ``sessionId``, with disjoint message sets. Keyed on ``sessionId`` alone,
+    those distinct chats full-replace each other.
+
+    ``kind`` and ``startTime`` are the wire's own coordinates for which chat a
+    checkpoint holds, and both are fixed when the chat opens: a checkpoint
+    rewritten days later still carries its opening ``startTime``. Composing
+    them separates sibling chats while keeping every save of one chat on one
+    identity, which ``lastUpdated`` would not.
+
+    Path coordinates stay unused -- ``Provider.GEMINI_CLI`` is declared
+    path-independent for revision dedup
+    (``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS``).
+    """
+    kind = _string(payload.get("kind"))
+    start_time = _string(payload.get("startTime"))
+    return ":".join(
+        (
+            session_id,
+            kind if kind in _GEMINI_CLI_KIND_VALUES else "",
+            start_time or "",
+        )
+    )
+
+
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
     """Detect a Gemini CLI checkpoint document in either of its two shapes.
 
@@ -107,6 +137,7 @@ def parse_gemini_cli(
     source_path: str | Path | None = None,
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
+    chat_id = _gemini_cli_chat_identity(payload, session_id)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     models_used: set[str] = set()
@@ -130,8 +161,8 @@ def parse_gemini_cli(
     session_events.extend(_block_metadata_evidence_events(messages))
     session = ParsedSession(
         source_name=Provider.GEMINI_CLI,
-        provider_session_id=session_id,
-        title=_string(payload.get("summary")) or session_id,
+        provider_session_id=chat_id,
+        title=_string(payload.get("summary")) or chat_id,
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
@@ -144,6 +175,9 @@ def parse_gemini_cli(
             directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
         ],
     )
+    # The sidecar directory on disk is named for the wire ``sessionId``
+    # (``tool-outputs/session-<sessionId>/``), which all of a process's chats
+    # share -- not for the composed chat identity.
     tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
     if tool_outputs_dir is not None:
         session = apply_gemini_tool_output_sidecars(
