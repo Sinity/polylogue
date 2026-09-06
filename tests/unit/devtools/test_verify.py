@@ -738,16 +738,17 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         )
     )
     (step_dir / "summary.json").write_text(json.dumps({"exitstatus": 1}))
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_k: (
+
+    def _rerun_passing_with(returncode: int) -> None:
+        def fake(command: list[str], **_kwargs: Any) -> SimpleNamespace:
             Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1]).write_text(
                 json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
-            ),
-            SimpleNamespace(returncode=0),
-        )[1],
-    )
+            )
+            return SimpleNamespace(returncode=returncode)
+
+        _stub_held_pytest(monkeypatch, fake)
+
+    _rerun_passing_with(0)
     result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
     assert result is not None and result["still_failed"] == []
     assert json.loads((step_dir / "summary.json").read_text())["exitstatus"] == 0
@@ -762,16 +763,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
             }
         )
     )
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda command, **_k: (
-            Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1]).write_text(
-                json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
-            ),
-            SimpleNamespace(returncode=3),
-        )[1],
-    )
+    _rerun_passing_with(3)
     result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
     assert result is not None and result["still_failed"] == ["tests/test_a.py::test_flaky"] and result["flaky"] == []
 

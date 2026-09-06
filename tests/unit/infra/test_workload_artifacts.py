@@ -30,6 +30,7 @@ from tests.infra.workload_artifacts import (
     NAMED_WORKLOAD_PROFILES,
     ArtifactGcDisposition,
     ArtifactGcReport,
+    ArtifactResourceMeasurement,
     BenchmarkWorkloadTier,
     CorpusArtifactManifest,
     ImmutableTreeArtifact,
@@ -40,6 +41,7 @@ from tests.infra.workload_artifacts import (
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _manifest_file_entries,
+    _manifest_from_payload,
     _open_no_follow,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
@@ -58,6 +60,7 @@ from tests.infra.workload_artifacts import (
     gc_seeded_archive_artifacts,
     named_corpus_specs,
     named_workload_profile,
+    seal_fixture_tree,
     seeded_archive_key,
     validate_seeded_archive_reachability,
 )
@@ -408,7 +411,12 @@ def test_clone_from_unpinned_source_authenticates_the_enumerated_file_set(
         key="unpinned-clone",
         builder=builder,
     )
-    unpinned = ImmutableTreeArtifact(root=published.root, key=published.key, files=())
+    unpinned = ImmutableTreeArtifact(
+        root=published.root,
+        key=published.key,
+        files=(),
+        resources=ArtifactResourceMeasurement.unmeasured(),
+    )
     clone = clone_immutable_tree(unpinned, tmp_path / "clone")
     assert (clone.root / "nested" / "payload").read_bytes() == b"payload"
 
@@ -2178,3 +2186,395 @@ def test_contention_during_cache_validation_reuses_published_artifact(
     assert attempts >= 2
     assert reused.root == published.root
     assert reused.manifest.manifest_id == published.manifest.manifest_id
+
+
+def _acquire_domain_with_deadline(cache_root: Path, *, timeout: float = 30.0) -> object:
+    """Open a cache domain on a worker thread so a serializing hold fails, not hangs."""
+    import tests.infra.workload_artifacts as artifacts
+
+    outcome: list[object] = []
+
+    def acquire() -> None:
+        try:
+            outcome.append(artifacts._open_lock_domain(cache_root))
+        except BaseException as exc:  # reported to the assertion below
+            outcome.append(exc)
+
+    worker = threading.Thread(target=acquire, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+    assert not worker.is_alive(), "cache domain serialized a second holder"
+    assert outcome
+    return outcome[0]
+
+
+def test_cache_domain_admits_concurrent_holders_but_still_refuses_gc(tmp_path: Path) -> None:
+    """Independent artifacts must not queue behind each other's cache capability.
+
+    Anti-vacuity: taking the domain exclusively (as an earlier revision did)
+    makes the second acquisition block until the first releases, so the worker
+    thread is still alive at the deadline. Restoring the exclusive mode also
+    turns the GC probe green for the wrong reason, which the shared probe
+    immediately below pins.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    first = artifacts._open_lock_domain(cache_root)
+    try:
+        second = _acquire_domain_with_deadline(cache_root)
+        assert isinstance(second, artifacts._LockDomain)
+        artifacts._release_lock_domain(second)
+
+        # The exclusion that matters is against cache GC, which takes this
+        # exact descriptor exclusively and non-blocking before it deletes.
+        probe = os.open(cache_root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            fcntl.flock(probe, fcntl.LOCK_UN)
+        finally:
+            os.close(probe)
+    finally:
+        artifacts._release_lock_domain(first)
+
+
+def test_cache_domain_leaves_the_shared_scratch_ancestor_writable(tmp_path: Path) -> None:
+    """A cache capability must not take the scratch root away from its co-tenants.
+
+    ``default_cache_root()`` lives directly under a scratch directory shared
+    with unrelated processes. Anti-vacuity: removing the ancestor's write bit
+    for the hold's duration (as an earlier revision did) makes the co-tenant
+    write below raise ``PermissionError``.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    before = (stat.S_IMODE(tmp_path.stat().st_mode), stat.S_IMODE(cache_root.stat().st_mode))
+
+    domain = artifacts._open_lock_domain(cache_root)
+    try:
+        (tmp_path / "unrelated-co-tenant.txt").write_text("independent", encoding="utf-8")
+        (cache_root / "artifacts" / "unrelated-sibling").mkdir()
+    finally:
+        artifacts._release_lock_domain(domain)
+
+    assert (stat.S_IMODE(tmp_path.stat().st_mode), stat.S_IMODE(cache_root.stat().st_mode)) == before
+
+
+def test_reuse_validates_under_a_shared_key_lock(tmp_path: Path) -> None:
+    """Two processes validating one published artifact must not serialize.
+
+    Anti-vacuity: validating under the builder's exclusive per-key lock makes
+    the reuse below wait for the externally held shared lock, and the worker
+    thread is still alive at the deadline.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    lock_path = cache_root / ".locks" / f"{published.root.name}.lock"
+
+    reused: list[object] = []
+
+    def reuse() -> None:
+        try:
+            reused.append(build_seeded_archive(_SMALL_SPECS, cache_root=cache_root))
+        except BaseException as exc:  # reported to the assertion below
+            reused.append(exc)
+
+    with lock_path.open("a+") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        worker = threading.Thread(target=reuse, daemon=True)
+        worker.start()
+        worker.join(timeout=60)
+        alive = worker.is_alive()
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+    assert not alive, "artifact reuse serialized behind a concurrent reader"
+    assert isinstance(reused[0], type(published))
+    assert cast(Any, reused[0]).root == published.root
+
+
+def test_cache_hit_runs_no_cache_wide_cleanup_sweep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reclamation belongs to the caller about to consume space, not to a reader.
+
+    Anti-vacuity: running the sweeps before validation (as an earlier revision
+    did) makes every consumer of an already-published artifact take the
+    cache-wide cleanup lock, and ``during_build`` below no longer bounds the
+    reuse path.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    calls: list[str] = []
+
+    for name in ("_recover_stale_staging", "_recover_obsolete_staging", "_recover_stale_handoffs"):
+        real = getattr(artifacts, name)
+
+        def counted(*args: Any, _name: str = name, _real: Any = real, **kwargs: Any) -> Any:
+            calls.append(_name)
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(artifacts, name, counted)
+
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+    during_build = len(calls)
+    assert during_build > 0, "a build must still reclaim space abandoned by killed builds"
+
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    reused = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    assert reused.root == published.root
+    assert len(calls) == during_build
+
+
+def test_memoized_reuse_takes_no_filesystem_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A process that already validated an artifact needs no lock at all.
+
+    Anti-vacuity: checking the memo inside the domain (as an earlier revision
+    did) makes every test in a module sharing one workload re-enter the cache
+    capability, and ``_open_lock_domain`` below raises.
+    """
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts._VALIDATED_ARTIFACTS.clear()
+    published = build_seeded_archive(_SMALL_SPECS, cache_root=cache_root)
+
+    def forbid_domain(root: Path) -> None:
+        raise AssertionError(f"memoized reuse opened a cache capability: {root}")
+
+    monkeypatch.setattr(artifacts, "_open_lock_domain", forbid_domain)
+    assert build_seeded_archive(_SMALL_SPECS, cache_root=cache_root).root == published.root
+
+
+def test_artifact_manifest_records_its_own_construction_cost(tmp_path: Path) -> None:
+    """Every published artifact carries bytes, files, rows and build seconds."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    resources = artifact.manifest.resources
+
+    assert resources.file_count == len(artifact.manifest.files)
+    assert resources.total_bytes == sum(int(cast(int, entry["size"])) for entry in artifact.manifest.files)
+    assert resources.total_bytes > 0
+    assert resources.build_seconds > 0
+    assert set(resources.row_counts) == {"sessions", "messages", "blocks"}
+    assert all(count > 0 for count in resources.row_counts.values())
+
+    with sqlite3.connect(artifact.root / "index.db") as conn:
+        for table, recorded in resources.row_counts.items():
+            assert int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]) == recorded
+
+
+def test_immutable_tree_artifact_records_its_construction_cost(tmp_path: Path) -> None:
+    """The generic fixture-tree route measures too, with no rows to count."""
+
+    def builder(root: Path) -> None:
+        (root / "payload").write_bytes(b"x" * 128)
+
+    artifact = build_immutable_tree(cache_root=tmp_path / "cache", key="measured-tree", builder=builder)
+
+    assert artifact.resources.total_bytes == 128
+    assert artifact.resources.file_count == 1
+    assert artifact.resources.row_counts == {}
+    assert ArtifactResourceMeasurement.unmeasured().total_bytes == 0
+
+
+def test_artifact_resources_are_authenticated_and_outside_artifact_identity(tmp_path: Path) -> None:
+    """Measurement binds to the manifest digest but never to the cache key.
+
+    Both directions matter: a rewritten measurement must not be readable as a
+    valid manifest, and a differing measurement must not fork the cache -- an
+    observation of a build is not an input to it.
+    """
+    import dataclasses
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    key = seeded_archive_key((c03_semantic_corpus_spec(),))
+
+    assert "build_seconds" not in json.dumps(dataclasses.asdict(key))
+    assert "row_counts" not in json.dumps(dataclasses.asdict(key))
+
+    payload = artifact.manifest.to_payload()
+    assert payload["resources"] == artifact.manifest.resources.to_payload()
+    tampered = json.loads(json.dumps(payload))
+    tampered["resources"]["total_bytes"] += 1
+    with pytest.raises(ValueError, match="identity mismatch"):
+        _manifest_from_payload(tampered)
+
+    missing = json.loads(json.dumps(payload))
+    del missing["resources"]
+    with pytest.raises(ValueError, match="malformed resources"):
+        _manifest_from_payload(missing)
+
+    assert build_seeded_archive(cache_root=tmp_path / "cache").manifest.key == key.value
+
+
+def test_artifact_resource_measurement_refuses_semantic_metadata() -> None:
+    """The anti-catalogue rule reaches the measurement, not only the receipt."""
+    with pytest.raises(ValueError, match="semantic metadata"):
+        ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={"expected_rows": 1})
+
+    with pytest.raises(ValueError, match="malformed"):
+        ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={"messages": -1})
+
+    with pytest.raises(ValueError, match="negative"):
+        ArtifactResourceMeasurement(total_bytes=-1, file_count=1, build_seconds=0.0, row_counts={})
+
+
+def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Substituting the recorded measurement changes what the seeder reports.
+
+    If the seeder reopened its clone to count rows, the planted numbers below
+    would be overwritten by the archive's real populations and this is red.
+    """
+    import dataclasses
+
+    from tests.infra import benchmark_archives
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    planted = dataclasses.replace(
+        artifact,
+        manifest=dataclasses.replace(
+            artifact.manifest,
+            resources=dataclasses.replace(
+                artifact.manifest.resources,
+                total_bytes=4242,
+                row_counts={"sessions": 7, "messages": 1_000, "blocks": 11},
+            ),
+        ),
+    )
+    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: planted)
+    monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
+
+    stats = benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+
+    assert stats == {"sessions": 7, "messages": 1_000, "content_blocks": 11, "bytes": 4242}
+
+
+def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tier that did not construct its declared message population is not usable."""
+    import dataclasses
+
+    from tests.infra import benchmark_archives
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    undersized = dataclasses.replace(
+        artifact,
+        manifest=dataclasses.replace(
+            artifact.manifest,
+            resources=dataclasses.replace(
+                artifact.manifest.resources,
+                row_counts={"sessions": 7, "messages": 999, "blocks": 11},
+            ),
+        ),
+    )
+    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: undersized)
+    monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
+
+    with pytest.raises(RuntimeError, match="produced 999 messages, expected 1000"):
+        benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+
+
+def test_construction_measurement_carries_io_and_memory_denominators(tmp_path: Path) -> None:
+    """Bytes written and peak resident set are recorded beside time and size.
+
+    Anti-vacuity: a builder that writes a megabyte must report more written
+    bytes than one that writes nothing, so dropping the ``/proc/self/io``
+    delta (or freezing it at zero) makes the comparison below red. Peak RSS
+    is a process high-water mark, so only its presence is asserted.
+    """
+
+    def empty(root: Path) -> None:
+        (root / "payload").write_bytes(b"")
+
+    def bulky(root: Path) -> None:
+        (root / "payload").write_bytes(b"x" * (4 * 1024 * 1024))
+        os.sync()
+
+    cache_root = tmp_path / "cache"
+    small = build_immutable_tree(cache_root=cache_root, key="io-small", builder=empty)
+    large = build_immutable_tree(cache_root=cache_root, key="io-large", builder=bulky)
+
+    assert large.resources.write_bytes > small.resources.write_bytes
+    assert large.resources.peak_rss_bytes > 0
+    assert small.resources.peak_rss_bytes > 0
+
+
+def test_unreadable_io_counter_measures_as_no_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A denied or absent ``/proc/self/io`` reports zero rather than failing a build."""
+    import builtins
+
+    real_open = builtins.open
+
+    def refuse_proc_io(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if path == "/proc/self/io":
+            raise PermissionError(path)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", refuse_proc_io)
+    artifact = build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="io-denied",
+        builder=lambda root: (root / "payload").write_bytes(b"y" * 64),
+    )
+
+    assert artifact.resources.write_bytes == 0
+    assert artifact.resources.total_bytes == 64
+
+
+def test_measurement_rejects_negative_io_and_memory() -> None:
+    """Every recorded denominator is validated, not only the first two."""
+    for field in ("write_bytes", "peak_rss_bytes"):
+        with pytest.raises(ValueError, match="negative"):
+            ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={}, **{field: -1})
+
+
+def test_law_built_template_publishes_and_clones_through_the_shared_route(tmp_path: Path) -> None:
+    """A tree a law seals in place is adopted, not rebuilt, by the clone route.
+
+    Anti-vacuity: an adopted handle that carried a borrowed measurement, or a
+    clone that skipped the shared file-set authentication, makes these
+    assertions red.
+    """
+    from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "index.db").write_bytes(b"template-bytes")
+    finalize_archive_template(template)
+
+    adopted = ImmutableTreeArtifact.adopt(template, key="adopted")
+    assert adopted.files == ()
+    assert adopted.resources == ArtifactResourceMeasurement.unmeasured()
+
+    destination = tmp_path / "clone"
+    assert clone_archive_template(template, destination) in {"reflink", "copy"}
+    assert (destination / "index.db").read_bytes() == b"template-bytes"
+    assert destination.joinpath("index.db").stat().st_mode & stat.S_IWUSR
+    assert not template.joinpath("index.db").stat().st_mode & stat.S_IWUSR
+
+
+def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path) -> None:
+    """Sealing validates every tier; a corrupt one is refused, not published."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("CREATE TABLE entries (value TEXT)")
+    gc.collect()
+    with open(root / "source.db", "r+b") as handle:
+        handle.seek(4096)
+        handle.write(b"\x00" * 512)
+
+    with pytest.raises(RuntimeError, match="invalid seeded archive tier"):
+        seal_fixture_tree(root)

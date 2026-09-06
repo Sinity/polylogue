@@ -6,6 +6,12 @@ The daemon drains those envelopes into ``source.db`` and only moves a file to
 ``acknowledged`` after its ``raw_hook_events`` row has committed.  A crash in
 between is safe: replay uses the stable event id as the source-tier key.
 
+The write side -- envelope validation and the atomic publish -- lives in
+:mod:`polylogue.sources.hook_producer`, which stays runnable without this
+package so the installed hook command pays no package import. This module
+imports it rather than keeping a second copy the drain could read differently
+than the producer wrote.
+
 Both ``pending`` and ``acknowledged`` are sharded into UTC day-of-arrival
 subdirectories (``pending/2026-07-31/<event_id>.json``) so a stalled consumer
 cannot silently accumulate six figures of dentries in one directory again
@@ -31,7 +37,7 @@ parallel spool: Hermes lifecycle hooks are best-effort in the same way Claude
 Code/Codex hooks are (a synchronous call can be lost during an outage), so the
 same atomic-enqueue/idempotent-drain contract applies unchanged. The one
 Hermes-specific addition is a payload hygiene guard
-(``_reject_duplicated_transcript``) enforcing that lifecycle events carry
+(``reject_duplicated_transcript``) enforcing that lifecycle events carry
 ids/hashes/timings/outcomes, never a second copy of message text. See
 ``polylogue.sources.parsers.hermes_lifecycle`` for the event-type taxonomy and
 snapshot reconciliation, and ``docs/design/hermes-archival-export-contract.md``
@@ -45,14 +51,25 @@ import json
 import os
 import re
 import sqlite3
-import tempfile
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
-from uuid import uuid4
 
 from polylogue.logging import get_logger
+from polylogue.sources.hook_producer import (
+    PENDING_DIRNAME as _PENDING_DIRNAME,
+)
+from polylogue.sources.hook_producer import (
+    HookSpoolRecordError,
+    _fsync_directory,
+    enqueue_event,
+)
+from polylogue.sources.hook_producer import (
+    day_shard as _day_shard,
+)
+from polylogue.sources.hook_producer import (
+    validated_record as _validated_record,
+)
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -62,29 +79,12 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_SUPPORTED_PROVIDERS = frozenset({"claude-code", "codex", "hermes"})
 _ORIGIN_TOKEN_BY_PROVIDER: dict[str, str] = {
     "claude-code": "claude-code-session",
     "codex": "codex-session",
     "hermes": "hermes-session",
 }
-_PENDING_DIRNAME = "pending"
 _ACKNOWLEDGED_DIRNAME = "acknowledged"
-_SAFE_EVENT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-
-# Event bodies carry ids/hashes/timings/outcomes, never a duplicate transcript
-# (fs1.7 AC: "event bodies contain no duplicated transcript"). Enforced at the
-# validation boundary so a violation fails loudly at enqueue/drain time
-# instead of silently bloating source.db with a second copy of conversation
-# content. The threshold is generous (short tool argument previews, error
-# messages, and ids are all well under it) but catches an accidental full
-# message/turn body.
-_TRANSCRIPT_LIKE_KEYS = ("text", "content", "transcript", "messages", "message_body", "reasoning")
-_MAX_TRANSCRIPT_LIKE_FIELD_CHARS = 2000
-
-
-class HookSpoolRecordError(ValueError):
-    """A pending spool file is not a valid Claude Code/Codex/Hermes hook envelope."""
 
 
 class HookSpoolTopologyError(ValueError):
@@ -223,12 +223,6 @@ def hook_spool_root() -> Path:
     return hooks_sidecar_dir()
 
 
-def _day_shard(moment: datetime | None = None) -> str:
-    """UTC ``YYYY-MM-DD`` bucket name a pending/acknowledged file lands under."""
-
-    return (moment or datetime.now(UTC)).strftime("%Y-%m-%d")
-
-
 _DAY_SHARD_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -332,24 +326,17 @@ def enqueue_hook_event(
 ) -> Path:
     """Atomically enqueue one hook event before the daemon receives it."""
 
-    record: dict[str, object] = {
-        "event_id": event_id or uuid4().hex,
-        "event_type": event_type,
-        "session_id": session_id,
-        "timestamp": timestamp,
-        "provider": provider,
-        "payload": payload,
-    }
-    normalized = _validated_record(record)
-    if not _SAFE_EVENT_ID.fullmatch(str(normalized["event_id"])):
-        raise HookSpoolRecordError("hook spool event_id must contain only letters, digits, '_' or '-'")
-    pending = pending_hook_spool_dir(root) / _day_shard()
-    pending.mkdir(parents=True, exist_ok=True)
-    target = pending / f"{normalized['event_id']}.json"
-    if target.exists():
-        return target
-    _atomic_json_write(target, normalized)
-    return target
+    return Path(
+        enqueue_event(
+            event_type=event_type,
+            session_id=session_id,
+            provider=provider,
+            timestamp=timestamp,
+            payload=payload,
+            root=str(hook_spool_root() if root is None else root),
+            event_id=event_id,
+        )
+    )
 
 
 def drain_hook_event_spool(
@@ -476,54 +463,6 @@ def _read_record(path: Path) -> dict[str, object]:
     return _validated_record(value)
 
 
-def _validated_record(value: dict[str, object]) -> dict[str, object]:
-    required_text = ("event_id", "event_type", "session_id", "timestamp", "provider")
-    for key in required_text:
-        item = value.get(key)
-        if not isinstance(item, str) or not item.strip():
-            raise HookSpoolRecordError(f"hook spool envelope has no {key}")
-    provider = str(value["provider"])
-    if provider not in _SUPPORTED_PROVIDERS:
-        raise HookSpoolRecordError(f"unsupported hook provider: {provider}")
-    payload = value.get("payload")
-    if not isinstance(payload, dict):
-        raise HookSpoolRecordError("hook spool envelope payload must be an object")
-    _reject_duplicated_transcript(payload)
-    observed_at_ms = _timestamp_ms(str(value["timestamp"]))
-    return {
-        "event_id": str(value["event_id"]),
-        "event_type": str(value["event_type"]),
-        "session_id": str(value["session_id"]),
-        "timestamp": str(value["timestamp"]),
-        "provider": provider,
-        "payload": dict(payload),
-        "observed_at_ms": observed_at_ms,
-    }
-
-
-def _reject_duplicated_transcript(payload: dict[str, object]) -> None:
-    """Reject a hook payload that looks like it duplicates transcript content.
-
-    Applies to every provider, not only Hermes: hook events are evidence
-    records, not a second copy of the conversation the archive already
-    retains in full through session parsing.
-    """
-    for key in _TRANSCRIPT_LIKE_KEYS:
-        value = payload.get(key)
-        if isinstance(value, str) and len(value) > _MAX_TRANSCRIPT_LIKE_FIELD_CHARS:
-            raise HookSpoolRecordError(
-                f"hook spool payload field {key!r} looks like a duplicated transcript "
-                f"({len(value)} chars > {_MAX_TRANSCRIPT_LIKE_FIELD_CHARS})"
-            )
-
-
-def _timestamp_ms(value: str) -> int:
-    try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC).timestamp() * 1000)
-    except ValueError as exc:
-        raise HookSpoolRecordError(f"invalid hook timestamp: {value!r}") from exc
-
-
 def _persist_record(
     archive: ArchiveStore,
     path: Path,
@@ -542,7 +481,7 @@ def _persist_record(
         origin_token = _ORIGIN_TOKEN_BY_PROVIDER[provider_token]
     except KeyError as exc:
         # ``_validated_record`` already rejects any provider outside
-        # ``_SUPPORTED_PROVIDERS`` before a record reaches this point, so this
+        # ``SUPPORTED_PROVIDERS`` before a record reaches this point, so this
         # should be unreachable in the current call path -- but silently
         # defaulting an unrecognized provider to "codex-session" would
         # misclassify genuinely-unknown providers as Codex if that upstream
@@ -599,32 +538,6 @@ def _acknowledge(path: Path, *, root: Path | None) -> None:
     _fsync_directory(path.parent)
     os.replace(path, acknowledged / path.name)
     _fsync_directory(acknowledged)
-
-
-def _atomic_json_write(path: Path, payload: dict[str, object]) -> None:
-    handle, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as output:
-            output.write(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-            output.write("\n")
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary_path, path)
-        _fsync_directory(path.parent)
-    except BaseException:
-        temporary_path.unlink(missing_ok=True)
-        raise
-
-
-def _fsync_directory(path: Path) -> None:
-    """Persist an atomic rename's directory entry before returning success."""
-
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 __all__ = [

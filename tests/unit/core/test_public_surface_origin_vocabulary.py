@@ -35,10 +35,9 @@ def test_source_name_to_origin_maps_source_family_tokens_not_just_providers() ->
 
 
 def test_archive_query_origin_resolution_is_origin_only() -> None:
-    from polylogue.cli.archive_query import _resolve_excluded_origins, _resolve_origins
+    from polylogue.archive.query.spec import SessionQuerySpec
 
-    assert _resolve_origins({"origin": "codex-session,claude-code-session"}) == (
-        "codex-session",
-        "claude-code-session",
-    )
-    assert _resolve_excluded_origins({"exclude_origin": "chatgpt-export"}) == ("chatgpt-export",)
+    included = SessionQuerySpec.from_params({"origin": "codex-session,claude-code-session"})
+    assert included.origins == ("codex-session", "claude-code-session")
+    excluded = SessionQuerySpec.from_params({"exclude_origin": "chatgpt-export"})
+    assert excluded.excluded_origins == ("chatgpt-export",)

@@ -12,9 +12,12 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.scenarios import CorpusProfile, CorpusSpec
 from polylogue.schemas.synthetic import SyntheticCorpus
 from tests.infra.source_builders import PROVIDER_SOURCE_CLASS
-from tests.infra.workload_artifacts import SeededArchiveArtifact, build_seeded_archive
+from tests.infra.workload_artifacts import (
+    SEMANTIC_METADATA_PREFIXES,
+    SeededArchiveArtifact,
+    build_seeded_archive,
+)
 
-_SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "case_", "pathology_")
 _SCALE_MINIMUM_MESSAGES = {
     "smoke": 1,
     "representative": 4,
@@ -24,8 +27,9 @@ _SCALE_MINIMUM_MESSAGES = {
 
 
 def _reject_semantic_metadata(value: object) -> None:
+    """Refuse the shared semantic-metadata vocabulary, and empty tokens with it."""
     if isinstance(value, str):
-        if not value or value.startswith(_SEMANTIC_METADATA_PREFIXES):
+        if not value or value.startswith(SEMANTIC_METADATA_PREFIXES):
             raise ValueError("integration witness cannot carry semantic case metadata")
     elif isinstance(value, dict):
         for key, item in value.items():

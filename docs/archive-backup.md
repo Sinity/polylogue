@@ -131,6 +131,72 @@ Active index pointer targets must resolve inside the configured archive root, wi
 
 For a deployed archive, run these commands only from the Nix package built from the post-merge commit selected for deployment. Record that merge SHA and the resulting Nix store path in the operator receipt, verify the daemon executable resolves to that exact package, and keep `POLYLOGUE_ARCHIVE_ROOT` set to the configured deployed root. Do not resume a stopped daemon with an older deployed package or a branch checkout: its durable-train vocabulary may predate the relocation transition.
 
+## Runtime Pin for a Restored Archive
+
+A restored file set is not readable on its own. Durable tiers carry a
+`PRAGMA user_version` and derived tiers carry a stamped schema identity; a
+runtime that matches neither refuses to open the archive instead of patching
+it. The complete rollback artifact is therefore the archive files plus the
+commit that can read them. Pinning that commit costs no write to the archive,
+while migrating the tiers forward mutates the copy being kept as the fallback.
+
+Read the versions the commit has to match out of the archive itself:
+
+```bash
+for tier in source user audit; do
+  printf '%s ' "$tier"
+  sqlite3 "file:$POLYLOGUE_ARCHIVE_ROOT/$tier.db?mode=ro" 'PRAGMA user_version;'
+done
+sqlite3 "file:$(readlink -f "$POLYLOGUE_ARCHIVE_ROOT/index.db")?mode=ro" 'PRAGMA user_version;'
+```
+
+The candidate is the newest first-parent `master` commit whose
+`SOURCE_SCHEMA_VERSION`, `USER_SCHEMA_VERSION`, `INDEX_SCHEMA_VERSION`,
+`EMBEDDINGS_SCHEMA_VERSION` and `AUDIT_SCHEMA_VERSION` in
+`polylogue/storage/sqlite/archive_tiers/` all equal those numbers. Tiers
+migrate on independent schedules, so an archive whose durable tiers were
+migrated at different times may have no commit that matches every tier. Pin on
+the tiers the restore has to read, and record which tier is left unopenable and
+what that costs.
+
+Build the candidate in its own checkout and confirm the executable names it:
+
+```bash
+uv sync --frozen
+./.venv/bin/polylogue --version   # 0.3.0+<short sha>
+```
+
+The build hook requires git metadata. A tree exported without `.git` builds
+only when `polylogue/_build_info.py` is present, carrying `BUILD_COMMIT` and
+`BUILD_DIRTY`.
+
+Verify through the production read route. Opening the tier files with `sqlite3`
+proves the bytes are intact and says nothing about whether the runtime accepts
+the archive:
+
+```bash
+export POLYLOGUE_ARCHIVE_ROOT=/restored/archive/root
+polylogue ops maintenance archive-plan --output-format json  # expected vs found user_version, per tier
+polylogue status                                             # each tier reports vN/N ok
+polylogue --origin ORIGIN find 'FIELD:VALUE' then select --format json
+```
+
+Expect text search to be unavailable. An archive stopped before its search
+index converged refuses FTS queries with `Search index is incomplete` while
+field, origin and date filters answer normally, and the index returns only
+after `polylogued run` converges it. Report field-query readiness and search
+availability separately rather than as one readiness claim.
+
+Reading through the pinned runtime writes nothing durable; only `ops.db`, the
+disposable tier, is touched. When the archive is the only copy, capture a
+size/mtime/ctime/sha256 manifest of the durable tiers before and after the read
+and compare the two, rather than assuming the read was clean.
+
+Restore in place. An archive root can be a symlink farm whose `index.db` and
+active-generation tier links are absolute, so a file set copied to a different
+root resolves back into the old one and `ArchiveLocation` refuses it. Changing
+the root goes through the relocation route above.
+
 ## Restore Rules
 
 Restore into an isolated archive root first:

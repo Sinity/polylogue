@@ -15,6 +15,7 @@ from typing import Literal
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider, ValidationMode, ValidationStatus
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_EVIDENCE_KINDS,
     terminal_carrier_overwrite_predicate,
@@ -295,31 +296,58 @@ def record_raw_container_coordinate(
     coordinate_format: Literal["zip-v2"],
     entry_ordinal: int,
     split_index: int,
+    addressing_mode: MemberAddressingMode | str | None,
     manage_transaction: bool = True,
 ) -> None:
-    """Persist one content-independent container coordinate for a raw row."""
+    """Persist one content-independent container coordinate for a raw row.
+
+    The coordinate is a hint for reacquisition; ``addressing_mode`` is the
+    part that carries meaning on its own, because ``split_index`` 0 is both
+    the first element of a split member and the only slot a whole-member
+    document can occupy. ``None`` re-asserts a coordinate without claiming a
+    reading, which is what a caller that did not acquire the member knows.
+    """
     if entry_ordinal < 0 or split_index < 0:
         raise ValueError("container entry ordinal and split index must be non-negative")
+    mode = (
+        require_vocabulary(addressing_mode, MemberAddressingMode, field="addressing_mode")
+        if addressing_mode is not None
+        else None
+    )
     with conn if manage_transaction else nullcontext():
         conn.execute(
             """
             INSERT OR IGNORE INTO raw_container_coordinates (
-                raw_id, coordinate_format, entry_ordinal, split_index
-            ) VALUES (?, ?, ?, ?)
+                raw_id, coordinate_format, entry_ordinal, split_index, addressing_mode
+            ) VALUES (?, ?, ?, ?, ?)
             """,
-            (raw_id, coordinate_format, entry_ordinal, split_index),
+            (raw_id, coordinate_format, entry_ordinal, split_index, mode),
         )
+        if mode is not None:
+            # A row written before the mode existed carries the same
+            # coordinate and an unknown reading; adopt the observed mode
+            # rather than rejecting the row as changed.
+            conn.execute(
+                """
+                UPDATE raw_container_coordinates SET addressing_mode = ?
+                WHERE raw_id = ? AND addressing_mode IS NULL
+                """,
+                (mode, raw_id),
+            )
         stored = conn.execute(
             """
-            SELECT coordinate_format, entry_ordinal, split_index
+            SELECT coordinate_format, entry_ordinal, split_index, addressing_mode
             FROM raw_container_coordinates
             WHERE raw_id = ?
             """,
             (raw_id,),
         ).fetchone()
+        stored_tuple = tuple(stored) if stored is not None else None
         expected = (coordinate_format, entry_ordinal, split_index)
-        if stored is None or tuple(stored) != expected:
+        if stored_tuple is None or stored_tuple[:3] != expected:
             raise ValueError(f"raw container coordinate changed for {raw_id}")
+        if mode is not None and stored_tuple[3] != mode:
+            raise ValueError(f"raw container addressing mode changed for {raw_id}")
 
 
 def read_capture_mode_resolution(conn: sqlite3.Connection, raw_id: str) -> CaptureModeResolution:

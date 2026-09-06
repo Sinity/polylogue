@@ -817,3 +817,273 @@ def test_catch_up_index_lacks_all_corroboration_detects_empty_index_with_parsed_
             live_watcher.LiveWatcher._index_lacks_all_corroboration(source_conn=source_conn, index_conn=index_conn)
             is False
         ), "index now shows at least one materialized session -- corroborated again"
+
+
+# ---------------------------------------------------------------------------
+# Halted sources: excluded where work is SELECTED, and published as state
+# ---------------------------------------------------------------------------
+
+
+class _RecordingCoordinator:
+    """Write coordinator double that records every lease it hands out."""
+
+    def __init__(self) -> None:
+        self.actors: list[str] = []
+
+    async def run(self, actor: str, operation: Any) -> None:
+        self.actors.append(actor)
+        await operation()
+
+    async def run_sync(self, actor: str, function: Any, /, *args: Any, **kwargs: Any) -> Any:
+        self.actors.append(actor)
+        return function(*args, **kwargs)
+
+
+def _stub_metrics(succeeded: int, paths: list[Path]) -> Any:
+    from polylogue.sources.live.metrics import LiveBatchMetrics
+
+    offered = sum(path.stat().st_size for path in paths)
+    return LiveBatchMetrics(
+        queued_file_count=len(paths),
+        needed_file_count=len(paths),
+        skipped_file_count=0,
+        succeeded_file_count=succeeded,
+        failed_file_count=0,
+        source_group_count=1,
+        input_bytes=offered,
+        ingested_bytes=offered if succeeded else 0,
+        source_payload_read_bytes=offered if succeeded else 0,
+        cursor_fingerprint_read_bytes=0,
+        ingest_worker_count_max=1,
+        append_file_count=0,
+        full_file_count=len(paths),
+        archive_bytes_before=0,
+        archive_bytes_after=0,
+        archive_write_bytes_delta=0,
+        parse_time_s=0.0,
+        convergence_time_s=0.0,
+        total_time_s=0.01,
+    )
+
+
+def _two_source_watcher(
+    tmp_path: Path,
+    *,
+    files_per_source: int = 3,
+    write_coordinator: object | None = None,
+    event_emitter: Any | None = None,
+) -> tuple[Any, list[Path], list[Path]]:
+    root = tmp_path / "sources"
+    (root / "alpha").mkdir(parents=True)
+    (root / "beta").mkdir(parents=True)
+    alpha_files = []
+    beta_files = []
+    for index in range(files_per_source):
+        alpha = root / "alpha" / f"a{index}.jsonl"
+        beta = root / "beta" / f"b{index}.jsonl"
+        alpha.write_text('{"type":"user"}\n', encoding="utf-8")
+        beta.write_text('{"type":"user"}\n', encoding="utf-8")
+        alpha_files.append(alpha)
+        beta_files.append(beta)
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    watcher = LiveWatcher(
+        cast(Any, polylogue),
+        (
+            WatchSource(name="alpha", root=root / "alpha"),
+            WatchSource(name="beta", root=root / "beta"),
+        ),
+        cursor=CursorStore(tmp_path / "cursor.sqlite"),
+        write_coordinator=write_coordinator,
+        event_emitter=event_emitter,
+    )
+    return watcher, alpha_files, beta_files
+
+
+def test_halted_source_is_excluded_where_catch_up_work_is_selected(tmp_path: Path) -> None:
+    """A halted source contributes no planned work; its siblings still do.
+
+    Anti-vacuity: delete the ``source_halt`` check in ``_plan_catch_up`` and
+    the halted files reappear in ``plan.needed``, which is the rehearsal-11
+    shape -- chunks planned for a source that could not ingest anything.
+    """
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
+
+    watcher, alpha_files, beta_files = _two_source_watcher(tmp_path, files_per_source=2)
+    roots = [alpha_files[0].parent, beta_files[0].parent]
+    clear_all_source_halts()
+    try:
+        before = watcher._plan_catch_up(watcher._scan_catch_up_candidates(roots))
+        assert set(before.needed) == set(alpha_files) | set(beta_files)
+        assert before.halted_file_count == 0
+
+        set_source_halt(
+            "alpha",
+            DegradedReason(code="schema_version_mismatch", message="stale derived tier", derived_only=True),
+        )
+        after = watcher._plan_catch_up(watcher._scan_catch_up_candidates(roots))
+    finally:
+        clear_all_source_halts()
+        watcher.stop()
+
+    assert set(after.needed) == set(beta_files)
+    assert after.halted_file_count == len(alpha_files)
+    assert after.halted_sources == ("alpha",)
+
+
+def test_halted_file_count_is_not_folded_into_the_ordinary_skip_count(tmp_path: Path) -> None:
+    """A stopped source must not hide inside "nothing to do" bookkeeping.
+
+    Anti-vacuity: count halted files as ``skipped_file_count`` instead and
+    this goes red. That collapse is what let a dead source read as an idle
+    one across the whole run.
+    """
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
+
+    watcher, alpha_files, beta_files = _two_source_watcher(tmp_path, files_per_source=2)
+    clear_all_source_halts()
+    try:
+        set_source_halt("alpha", DegradedReason(code="database_layout_mismatch", message="unreadable"))
+        plan = watcher._plan_catch_up(watcher._scan_catch_up_candidates([alpha_files[0].parent, beta_files[0].parent]))
+    finally:
+        clear_all_source_halts()
+        watcher.stop()
+
+    assert plan.skipped_file_count == 0
+    assert plan.halted_file_count == len(alpha_files)
+
+
+def test_structural_database_error_halts_only_its_own_source() -> None:
+    """The production handler records a per-source halt, not just a global flag.
+
+    Anti-vacuity: drop the ``set_source_halt`` call in
+    ``handle_structural_database_error`` and this goes red while the
+    process-wide flag still passes -- the exact state that existed before,
+    which no planner could act on.
+    """
+    from polylogue.core.degraded import clear_degraded, is_degraded
+    from polylogue.core.errors import SchemaVersionMismatchError
+    from polylogue.core.source_halts import clear_all_source_halts, source_halt
+    from polylogue.sources.live.dedup import handle_structural_database_error, schema_warning_limiter
+
+    clear_all_source_halts()
+    clear_degraded()
+    schema_warning_limiter.reset()
+    try:
+        handle_structural_database_error(
+            "alpha",
+            SchemaVersionMismatchError("index derived schema identity mismatch", current_version=1, expected_version=2),
+        )
+        halted = source_halt("alpha")
+        healthy = source_halt("beta")
+        process_wide = is_degraded()
+    finally:
+        clear_all_source_halts()
+        clear_degraded()
+        schema_warning_limiter.reset()
+
+    assert halted is not None
+    assert halted.code == "schema_version_mismatch"
+    assert healthy is None
+    assert process_wide is True
+
+
+@pytest.mark.asyncio
+async def test_source_halted_mid_run_takes_no_further_writer_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once a source halts, no later chunk of it acquires the writer lease.
+
+    The plan is built before the halt exists, so the planning exclusion alone
+    cannot help the run in flight -- rehearsal-11 halted at chunk 571 of
+    12,150 and the remaining 926 claude-code chunks each still took the lease
+    for 1.0-3.1 s to ingest nothing.
+
+    Anti-vacuity: delete the ``source_halt`` filter in the chunk loop and the
+    halted source's remaining chunks reappear as ``watcher.catch_up.chunk``
+    leases, which is what this counts.
+    """
+    from polylogue.core.degraded import DegradedReason
+    from polylogue.core.source_halts import clear_all_source_halts, set_source_halt
+
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
+    coordinator = _RecordingCoordinator()
+    events: list[tuple[str, dict[str, object]]] = []
+    watcher, alpha_files, beta_files = _two_source_watcher(
+        tmp_path,
+        files_per_source=4,
+        write_coordinator=coordinator,
+        event_emitter=lambda kind, payload: events.append((kind, payload)),
+    )
+    ingested_paths: list[Path] = []
+
+    async def fake_ingest(paths: list[Path], **_kwargs: Any) -> Any:
+        ingested_paths.extend(paths)
+        if any(path in alpha_files for path in paths):
+            set_source_halt(
+                "alpha",
+                DegradedReason(code="schema_version_mismatch", message="stale derived tier", derived_only=True),
+            )
+        return _stub_metrics(len(paths), paths)
+
+    monkeypatch.setattr(watcher, "_ingest_files", fake_ingest)
+    clear_all_source_halts()
+    try:
+        candidates = watcher._scan_catch_up_candidates([alpha_files[0].parent, beta_files[0].parent])
+        await watcher._catch_up_candidates(candidates)
+    finally:
+        clear_all_source_halts()
+        watcher.stop()
+
+    chunk_leases = [actor for actor in coordinator.actors if actor == "watcher.catch_up.chunk"]
+    alpha_ingested = [path for path in ingested_paths if path in alpha_files]
+    beta_ingested = [path for path in ingested_paths if path in beta_files]
+    # Exactly one alpha chunk ran -- the one that discovered the halt.
+    assert len(alpha_ingested) == 1
+    # The healthy source is untouched by its sibling's halt.
+    assert sorted(beta_ingested) == sorted(beta_files)
+    assert len(chunk_leases) == 1 + len(beta_files)
+    # The halt is durable state, not one log line.
+    halt_events = [payload for kind, payload in events if kind == "source_ingest_halted"]
+    assert [payload["source_name"] for payload in halt_events] == ["alpha"]
+    assert halt_events[0]["code"] == "schema_version_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_process_wide_degrade_mid_run_ends_the_catch_up_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully degraded daemon stops chunking instead of leasing per chunk.
+
+    Anti-vacuity: remove the ``is_fully_degraded`` check from the chunk loop
+    and every remaining chunk acquires the lease again, each one reaching the
+    degraded short-circuit that already refuses it.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
+    coordinator = _RecordingCoordinator()
+    watcher, alpha_files, beta_files = _two_source_watcher(
+        tmp_path,
+        files_per_source=4,
+        write_coordinator=coordinator,
+    )
+
+    async def fake_ingest(paths: list[Path], **_kwargs: Any) -> Any:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="index tier unreadable"))
+        return _stub_metrics(len(paths), paths)
+
+    monkeypatch.setattr(watcher, "_ingest_files", fake_ingest)
+    clear_degraded()
+    try:
+        candidates = watcher._scan_catch_up_candidates([alpha_files[0].parent, beta_files[0].parent])
+        await watcher._catch_up_candidates(candidates)
+    finally:
+        clear_degraded()
+        watcher.stop()
+
+    chunk_leases = [actor for actor in coordinator.actors if actor == "watcher.catch_up.chunk"]
+    assert len(chunk_leases) == 1

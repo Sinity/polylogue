@@ -18,16 +18,22 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, ToolResultUnknownReason
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
-from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
+from .local_agent import (
+    _codex_output_text_blocks,
+    _codex_reasoning_blocks,
+    _content_blocks_from_content,
+    _content_text,
+    _tool_use_block,
+)
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"
-_CONTENT_JSON_PREFIX = "\x00json:"
 _COMPACTION_END_REASONS = frozenset({"compression", "compaction"})
 _REQUIRED_SESSION_COLUMNS = frozenset(
     {
@@ -721,10 +727,15 @@ def _parse_message_row(
     content = _decode_content(row["content"])
     text = _content_text(content)
     blocks = _content_blocks_from_content(content)
+    output_text_blocks = _codex_output_text_blocks(_row_value(row, "codex_message_items"), covered_text=text)
+    blocks.extend(output_text_blocks)
+    if text is None and output_text_blocks:
+        text = "\n".join(block.text for block in output_text_blocks if block.text)
     reasoning = _optional_text(_row_value(row, "reasoning_content")) or _optional_text(_row_value(row, "reasoning"))
     if reasoning:
         metadata = _reasoning_metadata(row)
         blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=reasoning, metadata=metadata or None))
+    blocks.extend(_codex_reasoning_blocks(_row_value(row, "codex_reasoning_items"), covered_text=reasoning))
     for tool_index, tool_call in enumerate(_json_list(_row_value(row, "tool_calls")), start=1):
         tool_record = json_document(tool_call)
         if tool_record:
@@ -732,7 +743,7 @@ def _parse_message_row(
     role = Role.normalize(_optional_text(row["role"]) or "unknown")
     tool_call_id = _optional_text(_row_value(row, "tool_call_id"))
     if role is Role.TOOL and text:
-        is_error, exit_code = _tool_result_outcome(row["content"])
+        is_error, exit_code, outcome_reason = tool_result_outcome(row["content"])
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -741,9 +752,7 @@ def _parse_message_row(
                 text=text,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=(
-                    ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
-                ),
+                outcome_unknown_reason=outcome_reason,
             )
         )
     token_count = _non_negative_int(_row_value(row, "token_count")) or 0
@@ -888,20 +897,21 @@ def _reasoning_metadata(row: sqlite3.Row) -> dict[str, object]:
     return metadata
 
 
-# `_reasoning_metadata` above merges its fields into the THINKING block's
-# `ParsedContentBlock.metadata` as an in-process carrier (same shape as
-# `claude/common.py`'s `_claude_ai_web_tool_evidence`), but the `blocks`
-# table has no metadata column and the write path
+# reasoning_details/codex_reasoning_items/codex_message_items are Hermes's
+# captured Codex-native response items. `_reasoning_metadata` merges them into
+# the THINKING block's `ParsedContentBlock.metadata` as an in-process carrier
+# only: `blocks` has no metadata column and the write path
 # (`storage/sqlite/archive_tiers/write.py:_block_language`) reads exactly one
-# key back out of it -- `language`. Without this projection step,
-# reasoning_details/codex_reasoning_items/codex_message_items -- Hermes's
-# captured Codex-native reasoning-trace evidence for reasoning-backed
-# messages -- was silently dropped at write time despite parsing correctly
-# (bd polylogue-9x22). Route it through `session_events` instead, keyed to
-# the message via `source_message_provider_id`, following the same
-# `session_events`-not-a-blob-column precedent as `hermes_spans.py`'s
-# `hermes_tool_availability_span` (polylogue-5o05) and `claude/common.py`'s
-# `claude_ai_web_tool_evidence`.
+# key back out of it -- `language` -- so metadata alone reaches nothing
+# durable. `session_events`, keyed to the message via
+# `source_message_provider_id`, is where the structured item belongs, the same
+# precedent as `hermes_spans.py`'s `hermes_tool_availability_span` and
+# `claude/common.py`'s `claude_ai_web_tool_evidence`.
+#
+# The prose inside `codex_message_items` is assistant output rather than
+# evidence about it, so `_codex_output_text_blocks` also projects it into a
+# TEXT block on the owning message; the event keeps what a block cannot hold
+# (item ids, `phase`, `status`, `encrypted_content`).
 def _reasoning_evidence_events(row: sqlite3.Row, message: ParsedMessage) -> list[ParsedSessionEvent]:
     evidence = _reasoning_metadata(row)
     if not evidence:
@@ -917,36 +927,12 @@ def _reasoning_evidence_events(row: sqlite3.Row, message: ParsedMessage) -> list
 
 
 def _decode_content(value: object) -> object:
-    if isinstance(value, str) and value.startswith(_CONTENT_JSON_PREFIX):
+    if isinstance(value, str) and value.startswith(JSON_ENVELOPE_PREFIX):
         try:
-            return json.loads(value[len(_CONTENT_JSON_PREFIX) :])
+            return json.loads(value[len(JSON_ENVELOPE_PREFIX) :])
         except json.JSONDecodeError:
             return value
     return value
-
-
-def _tool_result_outcome(raw_content: object) -> tuple[bool | None, int | None]:
-    """Extract the structured outcome Hermes already embeds in its tool content.
-
-    Hermes stores tool results as a JSON envelope (``{"output": ...}``) with
-    one of ``exit_code`` (shell/command-style tools), ``success``
-    (boolean-style tools, paired with an ``error`` message when false), or a
-    bare ``error`` message (status-only tools) layered on top -- never all
-    three. Absence of every signal means the source tool genuinely reported
-    no outcome, which stays unknown rather than guessed from prose.
-    """
-    payload = _json_mapping(raw_content)
-    if not payload:
-        return None, None
-    raw_exit_code = payload.get("exit_code")
-    exit_code = raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
-    if payload.get("error") is not None:
-        return True, exit_code
-    if "success" in payload:
-        return not bool(payload["success"]), exit_code
-    if exit_code is not None:
-        return exit_code != 0, exit_code
-    return None, None
 
 
 def _json_mapping(value: object) -> dict[str, object]:

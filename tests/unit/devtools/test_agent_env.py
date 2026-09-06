@@ -143,9 +143,18 @@ def test_every_declared_pytest_pool_operation_is_owned_by_its_slice() -> None:
         (Path(__file__).resolve().parents[3] / ".agentctl" / "project.toml").read_text(encoding="utf-8")
     )
     declared = {
-        name for name, operation in declarations["operations"].items() if operation.get("pool") == agent_env.PYTEST_POOL
+        name
+        for name, operation in declarations["operations"].items()
+        if operation.get("pool") in agent_env.PYTEST_POOLS
     }
 
     assert {"pytest_focused", "verify_affected", "verify_all"} <= declared
+    assert declarations["operations"]["pytest_focused"]["pool"] == agent_env.PYTEST_QUICK_POOL
     for cgroup in PYTEST_CGROUPS:
         assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(cgroup))
+    quick_cgroup = (
+        "0::/user.slice/user-1000.slice/user@1000.service/agentctl.slice/"
+        "agentctl-pytest-quick.slice/agentctl-pytest-quick-pytest_focused-0a1b2c3d4e5f.service\n"
+    )
+    assert agent_env.inside_pytest_pool({}, cgroup_reader=reader(quick_cgroup))
+    assert agent_env.inside_pytest_pool({"AGENTCTL_POOL": agent_env.PYTEST_QUICK_POOL}, cgroup_reader=outside_cgroup)

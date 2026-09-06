@@ -1,26 +1,6 @@
 #!/usr/bin/env bash
-# Pre-push gate: exact-head quick verification. Full testmon verification is
-# expected before product pushes (see CONTRIBUTING.md).
-#
-# When `devtools verify --quick` completed successfully for the exact current
-# checkout state, its receipt is reused and this hook is a no-op.
-
-set -euo pipefail
-
-WORKTREE_ROOT=$(git rev-parse --show-toplevel)
-VENV_PYTHON="$WORKTREE_ROOT/.venv/bin/python"
-if [[ ! -x "$VENV_PYTHON" ]]; then
-    echo "pre-push: incomplete worktree venv: missing executable $VENV_PYTHON" >&2
-    exit 2
-fi
-
-cat >/dev/null
-
-# A lane gates against its own environment: a missing venv is a failure,
-# not a reason to fall back to another interpreter on PATH.
-if ! "$VENV_PYTHON" -m devtools --help >/dev/null 2>&1; then
-    echo "pre-push: incomplete worktree venv: checkout-local devtools is not importable from $VENV_PYTHON" >&2
-    exit 2
-fi
-
-"$VENV_PYTHON" -m devtools verify --quick
+# No local push gate. The hosted quick gate on the pull request is the static
+# check, the corpus runs on master per landing wave, and a local gate here ran
+# against whichever working tree happened to be checked out, not the commit
+# being pushed.
+exit 0

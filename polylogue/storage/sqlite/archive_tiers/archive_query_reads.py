@@ -2730,7 +2730,7 @@ def query_session_messages(
     message_type: str | None = None,
     material_origins: Sequence[str] = (),
 ) -> list[ArchiveMessageQueryRow]:
-    """Return message rows for known sessions using the session sort-key index."""
+    """Return message rows for known sessions in transcript order."""
 
     normalized_session_ids = tuple(
         dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip())
@@ -2787,7 +2787,7 @@ def query_session_messages(
                     ORDER BY b.position, b.block_id
                 ) AS ordered
             ), '') AS text
-        FROM messages m INDEXED BY idx_messages_session_sortkey
+        FROM messages m INDEXED BY idx_messages_session_position
         JOIN sessions s ON s.session_id = m.session_id
         WHERE {" AND ".join(predicates)}
         ORDER BY m.position {order_direction}, m.variant_index {order_direction}, m.message_id {order_direction}

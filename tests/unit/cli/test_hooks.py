@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.hooks import CLAUDE_CODE_EVENTS, CODEX_EVENTS, hook_main, resolve_events, settings_path
+from polylogue.hooks import (
+    CLAUDE_CODE_EVENTS,
+    CODEX_EVENTS,
+    PRODUCER_SCRIPT_NAME,
+    producer_script_path,
+    resolve_events,
+    settings_path,
+)
+from polylogue.sources.hook_producer import main as hook_producer_main
 from polylogue.sources.hooks import pending_hook_spool_dir
 
 
@@ -41,7 +50,7 @@ def _polylogue_commands(document: dict[str, object]) -> list[str]:
                 if (
                     isinstance(handler, dict)
                     and isinstance(handler.get("command"), str)
-                    and "polylogue-hook" in handler["command"]
+                    and PRODUCER_SCRIPT_NAME in handler["command"]
                 ):
                     commands.append(handler["command"])
     return commands
@@ -85,7 +94,8 @@ def test_install_recommended_is_idempotent_and_preserves_unrelated_hooks(isolate
     commands = _polylogue_commands(document)
     assert len(commands) == 5
     assert any(
-        command.startswith("polylogue-hook SessionStart --provider claude-code --sidecar-dir ") for command in commands
+        command.startswith(f"{sys.executable} -I -S {producer_script_path()} SessionStart --provider claude-code ")
+        for command in commands
     )
 
     before_second = target.read_bytes()
@@ -118,7 +128,10 @@ def test_install_bakes_the_current_archive_roots_resolved_spool_path(isolated_ho
 
     document = json.loads(settings_path("claude-code").read_text(encoding="utf-8"))
     commands = _polylogue_commands(document)
-    assert commands == [f"polylogue-hook SessionStart --provider claude-code --sidecar-dir {archive_root / 'hooks'}"]
+    assert commands == [
+        f"{sys.executable} -I -S {producer_script_path()} SessionStart "
+        f"--provider claude-code --sidecar-dir {archive_root / 'hooks'}"
+    ]
 
 
 def test_hook_install_sidecar_drift_flags_a_stale_baked_path_after_archive_root_moves(
@@ -218,8 +231,8 @@ def test_hook_runtime_provider_override_records_codex_event(
     from io import StringIO
 
     monkeypatch.setattr("sys.stdin", StringIO('{"session_id":"session-1","model":"gpt-test"}'))
-    assert hook_main(["SessionStart", "--provider", "codex"]) == 0
-    # hook_main() derives its sidecar dir from the resolved archive root
+    assert hook_producer_main(["SessionStart", "--provider", "codex"]) == 0
+    # The producer derives its sidecar dir from the resolved archive root
     # (polylogue-o7hx), which isolated_hook_home points at tmp_path/"archive",
     # not XDG_DATA_HOME.
     archive_root = Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"])

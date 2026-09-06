@@ -30,6 +30,7 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
     ParsedWebConstruct,
 )
+from polylogue.sources.parsers.claude import parse_code
 from polylogue.storage.hydrators import session_event_from_record
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -2784,6 +2785,52 @@ def test_archive_tiers_writer_records_unresolved_parent_session_link(tmp_path: P
         "confidence": 1.0,
         "evidence_json": '{"parent_session_provider_id":"parent-session","resolution_reason":"target-not-yet-observed"}',
         "observed_at_ms": 1_767_225_603_000,
+    }
+
+
+def test_claude_code_forked_from_becomes_a_fork_session_link(tmp_path: Path) -> None:
+    """polylogue-esvzb: a forked session's ``forkedFrom`` reaches session_links.
+
+    The records are the live wire shape -- ``forkedFrom`` repeated on every
+    record of the child, as Claude Code stamps it. This runs the production
+    route end to end (parser -> ``write_parsed_session_to_archive``): deleting
+    the ``acc.forked_from`` read in ``code_parser`` leaves no row at all, which
+    is the state the archive was in for every forked session.
+    """
+    conn = _connect(tmp_path / "index.db")
+    fork_edge = {"sessionId": "fork-parent", "messageUuid": "parent-msg-9"}
+    session = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "fork-child",
+                "timestamp": "2026-01-01T00:00:03+00:00",
+                "forkedFrom": fork_edge,
+                "message": {"role": "user", "content": "carry on from the fork"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "fork-child",
+                "timestamp": "2026-01-01T00:00:04+00:00",
+                "forkedFrom": fork_edge,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            },
+        ],
+        "fork-child",
+    )
+
+    session_id = write_parsed_session_to_archive(conn, session)
+
+    row = conn.execute(
+        "SELECT dst_native_id, link_type, method FROM session_links WHERE src_session_id = ?",
+        (session_id,),
+    ).fetchone()
+    assert dict(row) == {
+        "dst_native_id": "fork-parent",
+        "link_type": "fork",
+        "method": "parser-parent",
     }
 
 

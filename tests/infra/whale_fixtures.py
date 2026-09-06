@@ -43,7 +43,7 @@ def copy_sqlite_database(source: Path, destination: Path) -> None:
 
 def clone_blob_tree(source: Path, destination: Path) -> str:
     """Clone Codex blob evidence with CoW first and detached-copy fallback."""
-    return clone_archive_template(source, destination, reject_links=True)
+    return clone_archive_template(source, destination)
 
 
 def assert_planner_append_authority(

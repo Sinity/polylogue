@@ -6,6 +6,7 @@ branch tracking, git context, and edge cases.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
@@ -1947,6 +1948,166 @@ class TestUnreadFieldTriage:
         ]
         result = parse(payload, "fallback")
         assert result.instructions_text == "Legacy prompt."
+
+    def test_changed_turn_context_user_instructions_are_conserved(self) -> None:
+        """A mid-session system-prompt edit must survive parsing.
+
+        Anti-vacuity: restoring the first-wins guard
+        (``if not session_instructions``) drops the second prompt entirely and
+        leaves no ``codex_instructions_changed`` event, so the assertions fail.
+        """
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"},
+            },
+            {
+                "type": "turn_context",
+                "payload": {"user_instructions": "First prompt."},
+                "timestamp": "2026-01-01T00:00:01Z",
+            },
+            {
+                "type": "message",
+                "role": "user",
+                "timestamp": "2026-01-01T00:00:02Z",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+            {
+                "type": "turn_context",
+                "payload": {"user_instructions": "Second prompt."},
+                "timestamp": "2026-01-01T00:00:03Z",
+            },
+        ]
+        result = parse(payload, "fallback")
+
+        assert result.instructions_text == "First prompt."
+        changes = [event for event in result.session_events if event.event_type == "codex_instructions_changed"]
+        assert [event.payload["instructions"] for event in changes] == ["Second prompt."]
+        assert changes[0].payload["instructions_kind"] == "user_instructions"
+        assert changes[0].payload["revision"] == 2
+        # Anchored at the next message, which the writer resolves to the first
+        # message the new prompt applied to.
+        assert changes[0].boundary_message_position == 1
+        assert changes[0].timestamp == "2026-01-01T00:00:03Z"
+
+    def test_repeated_turn_context_user_instructions_emit_no_change_event(self) -> None:
+        """The dedup reason still holds: an identical re-declaration is not a change."""
+        payload = [
+            {"type": "turn_context", "payload": {"user_instructions": "Stable prompt."}},
+            {"type": "turn_context", "payload": {"user_instructions": "Stable prompt."}},
+            {"type": "turn_context", "payload": {"user_instructions": "Stable prompt."}},
+        ]
+        result = parse(payload, "fallback")
+
+        assert result.instructions_text == "Stable prompt."
+        assert [event.event_type for event in result.session_events] == ["turn_context"] * 3
+
+    def test_recurring_user_instructions_value_is_recorded_once(self) -> None:
+        """A prompt that alternates back is one distinct value, not a new one."""
+        payload = [
+            {"type": "turn_context", "payload": {"user_instructions": "A"}},
+            {"type": "turn_context", "payload": {"user_instructions": "B"}},
+            {"type": "turn_context", "payload": {"user_instructions": "A"}},
+            {"type": "turn_context", "payload": {"user_instructions": "B"}},
+            {"type": "turn_context", "payload": {"user_instructions": "C"}},
+        ]
+        result = parse(payload, "fallback")
+
+        changes = [event for event in result.session_events if event.event_type == "codex_instructions_changed"]
+        assert [event.payload["instructions"] for event in changes] == ["B", "C"]
+        assert [event.payload["revision"] for event in changes] == [2, 3]
+
+    def test_turn_context_user_instructions_differing_from_legacy_are_conserved(self) -> None:
+        """The legacy field keeps ``instructions_text``; the new value is still kept."""
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {"id": "s1", "timestamp": "2024-01-01", "instructions": "Legacy prompt."},
+            },
+            {"type": "turn_context", "payload": {"user_instructions": "New-format prompt."}},
+        ]
+        result = parse(payload, "fallback")
+
+        assert result.instructions_text == "Legacy prompt."
+        changes = [event for event in result.session_events if event.event_type == "codex_instructions_changed"]
+        assert [event.payload["instructions"] for event in changes] == ["New-format prompt."]
+
+    def test_changed_developer_instructions_are_conserved(self) -> None:
+        """``developer_instructions`` accumulates the same way as the user prompt."""
+        payload = [
+            {"type": "turn_context", "payload": {"developer_instructions": "You are an awaiter."}},
+            {"type": "turn_context", "payload": {"developer_instructions": "You are an awaiter."}},
+            {"type": "turn_context", "payload": {"developer_instructions": "You are a reviewer."}},
+        ]
+        result = parse(payload, "fallback")
+
+        identity = [event for event in result.session_events if event.event_type == "codex_agent_identity"]
+        assert [event.payload["developer_instructions"] for event in identity] == ["You are an awaiter."]
+        changes = [event for event in result.session_events if event.event_type == "codex_instructions_changed"]
+        assert [event.payload["instructions"] for event in changes] == ["You are a reviewer."]
+        assert changes[0].payload["instructions_kind"] == "developer_instructions"
+
+    def test_changed_user_instructions_are_retrievable_from_the_archive(
+        self, workspace_env: Mapping[str, Path]
+    ) -> None:
+        """Both prompts must survive the production write route, not just the parse.
+
+        Anti-vacuity: with the first-wins guard restored the second prompt is
+        absent from both ``sessions.instructions_text`` and ``session_events``,
+        so the union assertion fails.
+        """
+        result = parse(
+            [
+                {
+                    "type": "session_meta",
+                    "payload": {"id": "s-instructions", "timestamp": "2026-01-01T00:00:00Z"},
+                },
+                {
+                    "type": "turn_context",
+                    "payload": {"user_instructions": "First prompt."},
+                    "timestamp": "2026-01-01T00:00:01Z",
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "timestamp": "2026-01-01T00:00:02Z",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                },
+                {
+                    "type": "turn_context",
+                    "payload": {"user_instructions": "Second prompt."},
+                    "timestamp": "2026-01-01T00:00:03Z",
+                },
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "timestamp": "2026-01-01T00:00:04Z",
+                    "content": [{"type": "output_text", "text": "answered under the new prompt"}],
+                },
+            ],
+            "codex-changed-instructions",
+        )
+
+        with open_connection(db_setup(workspace_env)) as conn:
+            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            stored_instructions = conn.execute("SELECT instructions_text FROM sessions").fetchone()[0]
+            event_rows = conn.execute(
+                "SELECT payload_json, boundary_message_id FROM session_events "
+                "WHERE event_type = 'codex_instructions_changed' ORDER BY position"
+            ).fetchall()
+            anchored_text = conn.execute(
+                "SELECT text FROM blocks WHERE message_id = ? ORDER BY position LIMIT 1",
+                (event_rows[0]["boundary_message_id"],),
+            ).fetchone()[0]
+
+        assert stored_instructions == "First prompt."
+        payloads = [json.loads(row["payload_json"]) for row in event_rows]
+        assert [item["instructions"] for item in payloads] == ["Second prompt."]
+        assert {stored_instructions} | {item["instructions"] for item in payloads} == {
+            "First prompt.",
+            "Second prompt.",
+        }
+        assert anchored_text == "answered under the new prompt"
 
     def test_session_meta_base_instructions_text_feeds_instructions_when_no_legacy_field(self) -> None:
         payload = [

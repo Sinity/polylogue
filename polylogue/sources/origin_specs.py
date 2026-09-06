@@ -163,9 +163,9 @@ class _DocstringStripper(ast.NodeTransformer):
         return node
 
 
-def _source_path(path: str) -> Path:
+def _source_path(path: str, root: Path) -> Path:
     candidate = Path(path)
-    return (candidate if candidate.is_absolute() else _SOURCE_ROOT / candidate).resolve()
+    return (candidate if candidate.is_absolute() else root / candidate).resolve()
 
 
 def _source_file_from_reference(reference: str) -> str:
@@ -246,10 +246,9 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in found))
 
 
-def _semantic_source_paths(
-    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
-) -> tuple[Path, ...]:
-    pending = [_source_path(path) for path in paths]
+@lru_cache(maxsize=64)
+def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels: frozenset[str]) -> tuple[Path, ...]:
+    pending = [_source_path(path, root) for path in paths]
     found: set[Path] = set()
     while pending:
         path = pending.pop()
@@ -261,6 +260,24 @@ def _semantic_source_paths(
         for dependency in _local_import_paths(_source_signature(path)):
             pending.append(Path(dependency))
     return tuple(sorted(found))
+
+
+def _semantic_source_paths(
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+) -> tuple[Path, ...]:
+    """Return the parser-semantic import closure of ``paths``.
+
+    Membership is walked once per process per argument set. Only the member
+    *list* is memoized: every caller re-derives :func:`_source_signature` for
+    each member on each call, so an edited source still changes its content
+    digest and the fingerprint that digest keys.
+
+    The memo holds a member's import graph fixed for the life of the process,
+    the same assumption :func:`_local_import_paths` makes by caching edges per
+    signature. ``_SOURCE_ROOT`` belongs in the key because declared paths are
+    relative to it and a substituted root names different files.
+    """
+    return _semantic_source_closure(_SOURCE_ROOT, paths, excluded_labels)
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
@@ -428,6 +445,49 @@ def _no_topology_capabilities(origin: Origin) -> TopologyCapabilities:
     )
 
 
+def _looks_like_extracted_transcript_corpus_path(
+    path: Path,
+    *,
+    payload: object | None = None,
+) -> bool:
+    """Inspect a bounded record prefix for external-transcript provenance.
+
+    Reads at most 32 records and stops at the first record carrying a provider
+    envelope, which disqualifies the stream outright -- so a genuine transcript
+    costs one decoded line.
+    """
+    from polylogue.archive.artifact_taxonomy.support import (
+        looks_like_extracted_transcript_corpus,
+        record_carries_provider_envelope,
+    )
+    from polylogue.core.json import json_document
+
+    if payload is not None:
+        records: list[object] = list(payload) if isinstance(payload, list) else [payload]
+    elif path.suffix.lower() in {".jsonl", ".ndjson"}:
+        records = []
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if record_carries_provider_envelope(record):
+                        return False
+                    records.append(record)
+                    if len(records) >= 32:
+                        break
+        except OSError:
+            return False
+    else:
+        return False
+    dict_items = [item for item in (json_document(item) for item in records) if item]
+    return looks_like_extracted_transcript_corpus(dict_items)
+
+
 def recognize_source_class(
     provider: Provider,
     source_path: str | Path,
@@ -459,6 +519,16 @@ def recognize_source_class(
     rule = artifact_rule_for_path(provider, str(path))
     if rule is not None and rule.parse_policy != "session":
         return SourceClassRecognition("non_session", f"declared {rule.kind} artifact")
+    if rule is not None and rule.parse_policy == "session":
+        # A session path rule states a location, so a generated extract
+        # dropped into a provider's transcript directory matches it exactly
+        # as the transcripts do. Records that name the transcript their
+        # turns were copied out of separate the two by their own provenance,
+        # which is what keeps the derivative and its original apart in the
+        # source manifest instead of both landing in one denominator.
+        if _looks_like_extracted_transcript_corpus_path(path, payload=payload):
+            return SourceClassRecognition("non_session", "extracted transcript corpus")
+        return SourceClassRecognition("session", f"declared {rule.kind} source class")
     if provider is Provider.ANTIGRAVITY:
         classification = antigravity.classify_source_path(path)
         if classification.role.value == "conversation_protobuf":
@@ -769,9 +839,12 @@ class OriginSpec:
     #: ``get_assembly_spec`` registry by :func:`validate_assembly_spec_parity`
     #: rather than replacing that registry with a second one.
     assembly_spec_path: str | None = None
-    #: Provider records for this origin may omit a terminal tool verdict. The
-    #: normalized result is then an explicit unknown, never an inferred one.
-    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None
+    #: The closed set of :class:`ToolResultUnknownReason` members this origin's
+    #: parsers can derive from its own record structures. It owns no producer
+    #: semantics -- a reason is always read off the record -- but it names who
+    #: owns each reason, so a reason no parser here can derive refuses the
+    #: write instead of entering the archive unattributed.
+    tool_outcome_unknown_reasons: frozenset[ToolResultUnknownReason] = frozenset()
     database_capability: DatabaseSourceCapability | None = None
 
     def parser_fingerprint(self) -> str:
@@ -1078,7 +1151,8 @@ def _claude_code_spec() -> OriginSpec:
             "measured against 200 recent subagent (agent-*.jsonl) transcripts, the field occurs on the "
             "DISPATCHING parent's own progress/agent_progress records, never on the child session's own "
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
-            "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
+            "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, UNSUPPORTED_CONSTRUCT when "
+            "it carries an is_error/exit_code the shared mapping cannot read, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
             "polylogue-cgfy AC1: disposition of the 'other unread keys of substance' the bead's corpus "
             "enumeration named beyond the structuredPatch/file_edits cluster (already read, see the note "
@@ -1086,10 +1160,13 @@ def _claude_code_spec() -> OriginSpec:
             "toolUseResult.sandbox/filenames/numFiles (already read, see code_parser.py's "
             "_message_usage_event_payload and toolUseResult structural-fact projection). READ (this batch): "
             "requestId (1,171 sampled occurrences -- the Anthropic API per-call request id, a real "
-            "cross-reference key against provider-side billing/support records) and "
-            "thinkingMetadata.maxThinkingTokens (34 occurrences -- the extended-thinking token budget "
-            "configured for the turn) both now ride the message_usage session-event payload as "
-            "request_id/max_thinking_tokens. MEASURED NEGATIVE: userType is the literal string 'external' "
+            "cross-reference key against provider-side billing/support records) rides the message_usage "
+            "session-event payload as request_id. thinkingMetadata (3,620 occurrences over 14,536 session "
+            "files, 2026-09-06 walk) rides its own claude_thinking_budget event: the field occurs only on "
+            "user records, and none of them carries message.usage, so the usage-gated message_usage payload "
+            "cannot see it. maxThinkingTokens (2,118 records, 31,999 in every one) and the "
+            "level/disabled/triggers shape (1,502) both land there; triggers names the span of the user's "
+            "own prompt that raised the effort. MEASURED NEGATIVE: userType is the literal string 'external' "
             "on every sampled record across two independent corpora (2,789 occurrences in the bead's "
             "sample, reconfirmed against a second live ~/.claude/projects corpus this pass) -- a constant, "
             "acquiring it adds nothing, same class as usage.service_tier. DELIBERATELY DROPPED, duplicate "
@@ -1106,8 +1183,8 @@ def _claude_code_spec() -> OriginSpec:
             "carries: the progress/agent_progress delegation-edge disposition documented in the module "
             "docstring above _parse_code_records (claude_delegation_progress vs. six transient synthetic-"
             "tick subtypes) -- not a bare unread field.",
-            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES (14 sidecar record "
-            "types) already carries a per-type disposition with corpus counts "
+            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES already carries "
+            "a per-type disposition with corpus counts "
             "in a comment block (polylogue-pbuh/parser-diff triage, "
             "2026-07-29) -- not converted to a DroppedValueVocabulary "
             "(polylogue-2qx) because it is a record-TYPE inventory, not a "
@@ -1118,6 +1195,14 @@ def _claude_code_spec() -> OriginSpec:
             "enumerable leaf the way it does a scalar status/outcome field. "
             "Making this checkable needs the schema generator to track "
             "per-branch discriminant values, not a change on this side.",
+            "polylogue-chemh / polylogue-esvzb (exhaustive walk of 14,536 session files, 2026-09-06): every "
+            "record type the corpus carries now has a disposition entry -- atis-latch and agent-color are "
+            "declared transient on measured evidence, frame-link and the two artifact ledgers persist as "
+            "typed events. A record type in no table persists as claude_unclassified_record rather than "
+            "vanishing at the empty-content drop, so the next CLI version's new kind is visible in the "
+            "index. forkedFrom ({sessionId, messageUuid}, 10,561 records across 9 forked sessions) resolves "
+            "to the session's parent edge and rides claude_forked_from with its branch point; it is adopted "
+            "only when no identity-anchored route already resolved a parent.",
             "claude/index.py's _GIT_BRANCH_PREFIXES (title-fallback heuristic: "
             "does a bare index-summary string look like a branch name rather "
             "than a title) is also not a DroppedValueVocabulary candidate: it "
@@ -1245,7 +1330,13 @@ def _claude_code_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(origin),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.DISTRUSTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+            }
+        ),
     )
     topology_capabilities = TopologyCapabilities(
         message_parent=TopologyCapability("carried", ("claude_code.parentUuid",)),
@@ -1256,13 +1347,20 @@ def _claude_code_spec() -> OriginSpec:
         ),
         session_parent_target=TopologyCapability(
             "positive-derived",
-            ("code_parser._finalize_code_session.parent_session_provider_id",),
-            "parent session is derived from the Claude sessionId relationship",
+            (
+                "code_parser._finalize_code_session.parent_session_provider_id",
+                "claude_code.forkedFrom.sessionId",
+            ),
+            "parent session is derived from the Claude sessionId relationship, or carried outright by "
+            "forkedFrom on a forked session's own records",
         ),
         inheritance_branch_point=TopologyCapability(
             "carried",
-            ("claude_code fork-context-ref.parentLastUuid + .parentSessionId",),
-            "a forked subagent transcript names the parent message it diverged at and never replays it",
+            (
+                "claude_code.forkedFrom.messageUuid",
+                "claude_code fork-context-ref.parentLastUuid + .parentSessionId",
+            ),
+            "a forked session's records name the parent message it diverged at; a forked subagent transcript names it in fork-context-ref and never replays it",
         ),
         parent_dispatch=TopologyCapability(
             "positive-derived",
@@ -1341,6 +1439,9 @@ def _chatgpt_spec() -> OriginSpec:
         semantic_reparse="reparse when ChatGPT document parsing fingerprints change",
         display_description="ChatGPT web exports (lab: OpenAI)",
         topology_capabilities=_no_topology_capabilities(origin),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
     return replace(
         spec,
@@ -1394,7 +1495,7 @@ def _executable_spec(
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
     assembly_spec_path: str | None = None,
-    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
+    tool_outcome_unknown_reasons: frozenset[ToolResultUnknownReason] = frozenset(),
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
     database_capability: DatabaseSourceCapability | None = None,
     frontier_kind: SourceFrontierKind = "exact-prefix",
@@ -1416,7 +1517,7 @@ def _executable_spec(
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
-        tool_outcome_unknown_reason=tool_outcome_unknown_reason,
+        tool_outcome_unknown_reasons=tool_outcome_unknown_reasons,
         artifact_rules=artifact_rules,
         display_description=display_description,
         public_filter=public_filter,
@@ -1484,6 +1585,15 @@ def _codex_spec() -> OriginSpec:
             "turn; collaboration_mode.settings itself duplicates model/effort/"
             "developer_instructions already captured from the top-level "
             "turn_context and is not re-stored.",
+            "turn_context.user_instructions/.developer_instructions "
+            "(acquired, polylogue-4r20i): both are re-declared on every turn, "
+            "so the first value fills the session's own slot "
+            "(sessions.instructions_text / the codex_agent_identity event) and "
+            "a value distinct from every one already seen becomes its own "
+            "codex_instructions_changed session_event carrying the message "
+            "position it took effect on. Measured over 596 real rollout files: "
+            "16 of the 120 carrying user_instructions declare more than one "
+            "distinct value.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
@@ -1496,7 +1606,13 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+                ToolResultUnknownReason.SOURCE_TRUNCATED,
+            }
+        ),
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
@@ -1552,6 +1668,9 @@ def _gemini_cli_spec() -> OriginSpec:
         # cohort has no byte revision chain to accept a head from.
         frontier_kind="whole-snapshot",
         topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "
             "registered as a DroppedValueVocabulary (polylogue-2qx) against "
@@ -1599,7 +1718,13 @@ def _hermes_spec() -> OriginSpec:
             "argument to the same function.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+                ToolResultUnknownReason.SOURCE_TRUNCATED,
+            }
+        ),
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
@@ -1728,6 +1853,9 @@ def _claude_ai_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_AI_EXPORT),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
     return replace(
         spec,
@@ -1780,6 +1908,9 @@ def _claude_design_spec() -> OriginSpec:
             "completeness maturity below.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_DESIGN_SESSION),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
 
 
@@ -1844,6 +1975,9 @@ def _aistudio_drive_spec() -> OriginSpec:
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
         display_description="Google AI Studio / Drive exports (lab: Google)",
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
         topology_capabilities=TopologyCapabilities(
             message_parent=TopologyCapability(
                 "carried",
@@ -2493,10 +2627,10 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
-def tool_outcome_unknown_reason_for_origin(origin: Origin) -> ToolResultUnknownReason | None:
-    """Return the declared fallback for a provider-omitted tool verdict."""
+def tool_outcome_unknown_reasons_for_origin(origin: Origin) -> frozenset[ToolResultUnknownReason]:
+    """Return the unknown-outcome reasons this origin's parsers can derive."""
 
-    return _ORIGIN_SPECS_BY_ORIGIN[origin].tool_outcome_unknown_reason
+    return _ORIGIN_SPECS_BY_ORIGIN[origin].tool_outcome_unknown_reasons
 
 
 def topology_capability_census(
@@ -2652,7 +2786,7 @@ __all__ = [
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
-    "tool_outcome_unknown_reason_for_origin",
+    "tool_outcome_unknown_reasons_for_origin",
     "database_capability_for_provider",
     "topology_capability_census",
     "public_origin_descriptions",

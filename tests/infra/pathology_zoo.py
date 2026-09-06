@@ -733,17 +733,13 @@ def make_pathology_zoo_member_red(archive_root: Path, member_id: str) -> None:
 
 
 def clone_pathology_zoo(zoo: PathologyZoo, destination: Path) -> PathologyZoo:
-    """Reflink one already-materialized pathology zoo into a private writable root.
+    """Clone one already-materialized pathology zoo into a private writable root.
 
-    Clones directly from ``zoo.archive_root`` instead of re-resolving (and
-    validating against) the canonical artifact under the default cache root.
-    That earlier design rejected any zoo built with a caller-supplied
-    ``cache_root``, and rejected cloning a zoo that was itself already a
-    clone (as :func:`pathology_zoo_writable` does from the shared session
-    fixture) -- both are legitimate origins for a clone, not just the
-    canonical cache artifact.
+    The clone source is ``zoo.archive_root`` itself, so a zoo built under a
+    caller-supplied ``cache_root`` and a zoo that is already a clone are both
+    legitimate origins.
     """
-    artifact = ImmutableTreeArtifact(root=zoo.archive_root, key=_pathology_cache_key(), files=())
+    artifact = ImmutableTreeArtifact.adopt(zoo.archive_root, key=_pathology_cache_key())
     clone_immutable_tree(artifact, destination)
     return replace(zoo, archive_root=destination)
 
@@ -754,9 +750,6 @@ __all__ = [
     "build_pathology_zoo",
     "build_pathology_zoo_ro",
     "clone_pathology_zoo",
-    "PathologyZooMutation",
-    "build_pathology_zoo",
-    "build_pathology_zoo_ro",
     "make_pathology_zoo_member_red",
     "pathology_zoo_member_ids",
 ]

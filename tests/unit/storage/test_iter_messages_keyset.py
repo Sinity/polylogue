@@ -1,15 +1,20 @@
 """Equivalence checks for keyset-paginated ``iter_messages`` (#1750 F1).
 
-``iter_messages`` was converted from ``LIMIT ? OFFSET ?`` chunking to keyset
-pagination seeded by the previous chunk's last ``(sort_key, message_id)``. The
-keyset stream must produce exactly the same rows in exactly the same order as:
+The keyset stream must produce exactly the same rows in exactly the same order
+as:
 
 * the canonical single-query ordering (``get_messages``), and
-* a reference ``LIMIT/OFFSET`` walk reproducing the pre-#1750 behavior,
+* a reference ``LIMIT/OFFSET`` walk over the transcript order,
 
-across every chunk-size boundary, every ``sort_key`` shape (non-NULL, duplicate
-sort_key ties broken by ``message_id``, NULL tail, all-NULL), the role filter,
-and the optional ``limit``.
+across every chunk-size boundary, every ``occurred_at_ms`` shape (non-NULL,
+duplicates, NULL tail, all-NULL), sibling variants at one position, the role
+filter, and the optional ``limit``.
+
+Anti-vacuity: every scenario's clock disagrees with its content positions, so
+re-keying the cursor or the ordering on ``occurred_at_ms`` makes the stream
+diverge from both references. ``sibling_variants`` fails the same way if the
+cursor drops ``variant_index``: at ``chunk_size=1`` the second sibling at a
+position is skipped.
 """
 
 from __future__ import annotations
@@ -27,49 +32,76 @@ from polylogue.storage.sqlite.queries.message_query_reads import get_messages, i
 
 CONV = "codex-session:keyset"
 
-# (message_id, sort_key, role) fixtures covering every ordering edge case.
-_SCENARIOS: dict[str, list[tuple[str, float | None, str]]] = {
-    "all_non_null": [
-        ("m03", 3.0, "user"),
-        ("m01", 1.0, "assistant"),
-        ("m02", 2.0, "user"),
-        ("m04", 4.0, "assistant"),
-        ("m05", 5.0, "user"),
+# (native_id, occurred_at seconds or None, role, position, variant_index),
+# listed in transcript order.
+Row = tuple[str, float | None, str, int, int]
+
+
+def _linear(rows: list[tuple[str, float | None, str]]) -> list[Row]:
+    """Assign one message per position, in list order."""
+    return [(mid, sort_key, role, index, 0) for index, (mid, sort_key, role) in enumerate(rows)]
+
+
+_SCENARIOS: dict[str, list[Row]] = {
+    "all_non_null": _linear(
+        [
+            ("m03", 3.0, "user"),
+            ("m01", 1.0, "assistant"),
+            ("m02", 2.0, "user"),
+            ("m04", 4.0, "assistant"),
+            ("m05", 5.0, "user"),
+        ]
+    ),
+    "duplicate_timestamps": _linear(
+        [
+            ("m_b", 1.0, "user"),
+            ("m_a", 1.0, "assistant"),
+            ("m_d", 2.0, "user"),
+            ("m_c", 2.0, "assistant"),
+            ("m_e", 3.0, "user"),
+        ]
+    ),
+    "null_tail": _linear(
+        [
+            ("m02", 2.0, "user"),
+            ("m01", 1.0, "assistant"),
+            ("nz", None, "user"),
+            ("na", None, "assistant"),
+            ("nm", None, "user"),
+        ]
+    ),
+    "all_null": _linear(
+        [
+            ("z", None, "user"),
+            ("a", None, "assistant"),
+            ("m", None, "user"),
+            ("b", None, "assistant"),
+        ]
+    ),
+    "nulls_interleaved": _linear(
+        [
+            ("s2", 9.0, "user"),
+            ("s1", 8.0, "assistant"),
+            ("n3", None, "user"),
+            ("n1", None, "assistant"),
+            ("n2", None, "user"),
+            ("n4", None, "assistant"),
+        ]
+    ),
+    # Siblings share a position and are separated only by variant_index, which
+    # the keyset cursor must carry.
+    "sibling_variants": [
+        ("v0", 5.0, "user", 0, 0),
+        ("v1a", 4.0, "assistant", 1, 0),
+        ("v1b", 6.0, "assistant", 1, 1),
+        ("v1c", 3.0, "assistant", 1, 2),
+        ("v2", 1.0, "user", 2, 0),
     ],
-    "duplicate_sort_keys": [
-        # ties on sort_key must break by message_id
-        ("m_b", 1.0, "user"),
-        ("m_a", 1.0, "assistant"),
-        ("m_d", 2.0, "user"),
-        ("m_c", 2.0, "assistant"),
-        ("m_e", 3.0, "user"),
-    ],
-    "null_tail": [
-        ("m02", 2.0, "user"),
-        ("m01", 1.0, "assistant"),
-        ("nz", None, "user"),
-        ("na", None, "assistant"),
-        ("nm", None, "user"),
-    ],
-    "all_null": [
-        ("z", None, "user"),
-        ("a", None, "assistant"),
-        ("m", None, "user"),
-        ("b", None, "assistant"),
-    ],
-    "boundary_at_null_transition": [
-        ("s2", 9.0, "user"),
-        ("s1", 8.0, "assistant"),
-        ("n3", None, "user"),
-        ("n1", None, "assistant"),
-        ("n2", None, "user"),
-        ("n4", None, "assistant"),
-    ],
-    "single": [("only", 1.0, "user")],
+    "single": _linear([("only", 1.0, "user")]),
 }
 
 
-def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -> None:
+def _seed(conn: sqlite3.Connection, rows: list[Row]) -> None:
     conn.execute(
         """
         INSERT INTO sessions (
@@ -79,12 +111,12 @@ def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -
     )
     conn.executemany(
         """
-        INSERT INTO messages (session_id, native_id, role, position, occurred_at_ms, content_hash)
-        VALUES (?, ?, ?, ?, ?, zeroblob(32))
+        INSERT INTO messages (session_id, native_id, role, position, variant_index, occurred_at_ms, content_hash)
+        VALUES (?, ?, ?, ?, ?, ?, zeroblob(32))
         """,
         [
-            (CONV, mid, role, idx, None if sort_key is None else int(sort_key * 1000))
-            for idx, (mid, sort_key, role) in enumerate(rows)
+            (CONV, mid, role, position, variant_index, None if sort_key is None else int(sort_key * 1000))
+            for mid, sort_key, role, position, variant_index in rows
         ],
     )
     conn.executemany(
@@ -94,12 +126,12 @@ def _seed(conn: sqlite3.Connection, rows: list[tuple[str, float | None, str]]) -
         FROM messages
         WHERE session_id = ? AND native_id = ?
         """,
-        [(CONV, mid) for mid, _sort_key, _role in rows],
+        [(CONV, mid) for mid, _sort_key, _role, _position, _variant_index in rows],
     )
     conn.commit()
 
 
-def _make_db(tmp_path: object, rows: list[tuple[str, float | None, str]]) -> str:
+def _make_db(tmp_path: object, rows: list[Row]) -> str:
     db_path = str(tmp_path) + "/keyset.db"
     initialize_archive_database(Path(db_path), ArchiveTier.INDEX)
     sync_conn = sqlite3.connect(db_path)
@@ -116,7 +148,8 @@ async def _reference_offset_walk(
     role_values: tuple[str, ...] | list[str],
     limit: int | None,
 ) -> list[str]:
-    """Pre-#1750 LIMIT/OFFSET walk — the contract the keyset rewrite preserves."""
+    """LIMIT/OFFSET walk of the transcript order -- the contract the keyset
+    cursor reproduces without the O(M^2) re-scan."""
     out: list[str] = []
     offset = 0
     yielded = 0
@@ -127,7 +160,7 @@ async def _reference_offset_walk(
             placeholders = ",".join("?" for _ in role_values)
             query += f" AND role IN ({placeholders})"
             params.extend(role_values)
-        query += " ORDER BY (occurred_at_ms IS NULL), occurred_at_ms, message_id"
+        query += " ORDER BY position, variant_index"
         fetch_limit = chunk_size
         if limit is not None:
             remaining = limit - yielded
@@ -162,9 +195,10 @@ async def test_keyset_matches_canonical_and_offset(tmp_path: object, scenario: s
         keyset = [m.message_id async for m in iter_messages(conn, CONV, chunk_size=chunk_size)]
         reference = await _reference_offset_walk(conn, CONV, chunk_size, [], None)
 
+    expected_tail = [mid for mid, _sort_key, _role, _position, _variant_index in rows]
     assert keyset == canonical
     assert keyset == reference
-    assert len(keyset) == len(rows)
+    assert [message_id.rsplit(":", 1)[1] for message_id in keyset] == expected_tail
     assert len(set(keyset)) == len(keyset)
 
 
@@ -212,8 +246,8 @@ async def test_keyset_isolates_sessions(tmp_path: object) -> None:
     sync_conn = sqlite3.connect(db_path)
     sync_conn.row_factory = sqlite3.Row
     for cid, rows in (
-        ("codex-session:convA", [("a1", 1.0, "user"), ("a2", None, "user"), ("a3", 2.0, "user")]),
-        ("codex-session:convB", [("b1", 1.0, "user"), ("b2", None, "user")]),
+        ("codex-session:convA", [("a1", 3.0, "user"), ("a2", None, "user"), ("a3", 1.0, "user")]),
+        ("codex-session:convB", [("b1", 2.0, "user"), ("b2", None, "user")]),
     ):
         sync_conn.execute(
             """
@@ -238,7 +272,7 @@ async def test_keyset_isolates_sessions(tmp_path: object) -> None:
         got = [m.message_id async for m in iter_messages(conn, "codex-session:convA", chunk_size=2)]
         canonical = [m.message_id for m in await get_messages(conn, "codex-session:convA")]
     assert got == canonical
-    assert {message_id.rsplit(":", 1)[1] for message_id in got} == {"a1", "a2", "a3"}
+    assert [message_id.rsplit(":", 1)[1] for message_id in got] == ["a1", "a2", "a3"]
 
 
 __all__: list[str] = []

@@ -47,7 +47,7 @@ from devtools.pytest_slot import (
     remove_temp_tree,
     run_pytest,
 )
-from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, sync_testmon_graph
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
     PytestStepArtifacts,
@@ -71,7 +71,6 @@ PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_EVENTS_DIR = PYTEST_REPORT_DIR / "current-pytest-events"
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
-PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 _PATH_VALUE_OPTIONS = frozenset(
     {
         "-c",
@@ -369,11 +368,10 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         "--json-report-omit=collectors,log,streams,warnings",
         f"--json-report-file={PYTEST_REPORT_PATH}",
         *collection_args,
-        # A focused run traces into the one checkout datafile and writes back,
-        # so the graph is advanced by every managed run. It never selects: the
-        # caller already named what to run. A run spawned from inside another
-        # managed run (a test exercising the harness) must not touch that
-        # datafile: its session would reset the outer run's pending graph.
+        # A focused run never selects: the caller already named what to run.
+        # It traces into the scratch graph `focused_pytest_env` points it at,
+        # and a run spawned from inside another managed run does not trace at
+        # all.
         *_testmon_args(os.environ),
         *selection,
         *worker_args,
@@ -386,6 +384,24 @@ def _testmon_args(env: Mapping[str, str]) -> tuple[str, ...]:
     if env.get(HARNESS_RUN_ENV):
         return ("-p", "no:testmon")
     return ("--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", "--testmon-noselect")
+
+
+def focused_pytest_env(*, run: VerifyRun, artifacts: PytestStepArtifacts) -> dict[str, str]:
+    """The environment a focused run executes under.
+
+    A focused run traces its own scratch graph, never the checkout's. testmon
+    prunes whichever datafile it opens down to that run's own collection:
+    every recorded test the run neither collected nor found stable is deleted.
+    A focused run pointed at the checkout's graph therefore replaced a corpus
+    with its handful of tests, and the next selecting run re-executed
+    everything. Only a run whose collection is the corpus writes that file.
+
+    The scratch graph lives in the run's own step directory, so it is removed
+    with the receipt it belongs to.
+    """
+    env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
+    env["TESTMON_DATAFILE"] = str(artifacts.step_dir / "focused-testmondata")
+    return env
 
 
 def _selection_targets_benchmarks(selection: list[str]) -> bool:
@@ -402,7 +418,6 @@ def _clear_pytest_report(_cmd: list[str]) -> None:
         PYTEST_EVENTS_DIR,
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
-        PYTEST_OUTPUT_PATH,
     ):
         if not path.exists():
             continue
@@ -442,6 +457,9 @@ def _run(
         {
             "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            # Named per client pid: the checkout accumulates one log per run,
+            # and a glob over them reaches an arbitrary one.
+            **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
             **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
         },
     )
@@ -459,10 +477,8 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     env.pop("PYTEST_XDIST_WORKER", None)
     env.pop("PYTEST_CURRENT_TEST", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    # A focused run traces into the same datafile `devtools verify` reads, so
-    # it writes graph edges under whatever profile it ran. Recording them under
-    # a reduced Hypothesis budget would let a later selected green stand for
-    # less property coverage than it claims.
+    # A focused green stands for the same property budget the corpus runs
+    # under; a reduced Hypothesis profile would make it claim more than it ran.
     env["HYPOTHESIS_PROFILE"] = "default"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
 
@@ -503,7 +519,6 @@ def main(argv: list[str] | None = None) -> int:
         return print_outliers(outlier_count)
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
-    sync_testmon_graph(ROOT)
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
@@ -545,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
     try:
-        pytest_env = env_for_pytest_step(dict(os.environ), run=run, artifacts=artifacts)
+        pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
         _normalize_managed_pytest_environment(pytest_env)
         rc, elapsed, metadata = _run(
@@ -617,14 +632,20 @@ def main(argv: list[str] | None = None) -> int:
     prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    # The artifact-path footer is reference material, not a result. Printing six
-    # paths after every green run trains the reader to skip the tail of the
+    # The verdict is the last thing written, on every run. A pipeline exits with
+    # its last command's status, so `devtools test ... | tail` reports tail's 0
+    # whatever the run found; carrying the outcome in the stream keeps it out of
+    # reach of that mistake. The receipt is this run's own file, never a
+    # `current-*` name a concurrent run in the same checkout would overwrite.
+    receipt = run.relative_run_dir / "run.json"
+    sys.stderr.write(
+        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
+    )
+    # The rest of the artifacts are reference material, not a result. Printing
+    # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches the same artifacts on demand.
+    # reaches them on demand.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(
-            f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} "
-            f"output={PYTEST_OUTPUT_PATH}\n"
-        )
+        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
     return rc

@@ -15,6 +15,8 @@ debugging landmarks. For a task-to-owner map, start with
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
+| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not; observed timestamps are metadata and are non-monotonic against position on every origin | `storage/sqlite/queries/message_query_reads.py:_TRANSCRIPT_ORDER` |
+| `raw_sessions.source_index` is a reacquisition hint, never an address; a container member is addressed by `raw_container_coordinates.addressing_mode` plus content identity | `operations/zip_acquisition_replay.py:resolve_member_candidate()`, `core/content_identity.py:structural_content_identity()` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()` and `cli/commands/status.py:_archive_one_tier_status()` |
 
@@ -568,14 +570,13 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
-  (#2475 perf audit). The keyset/paginated message reads order by
-  `(occurred_at_ms IS NULL), occurred_at_ms, message_id` so NULL-timestamp rows
-  sort last; the v14 plain `(session_id, occurred_at_ms, message_id)` index could
-  not satisfy that leading `IS NULL` expression, so the planner fell back to
-  `USE TEMP B-TREE FOR ORDER BY` and sorted the whole session per chunk
-  (expensive on multi-thousand-message sessions). The expression index matches
-  the ORDER BY exactly and plans as a covering-index scan with no temp sort
-  (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
+  (#2475 perf audit). At that version the keyset and paginated message reads
+  ordered by `(occurred_at_ms IS NULL), occurred_at_ms, message_id`, which a
+  plain `(session_id, occurred_at_ms, message_id)` index cannot satisfy — the
+  planner fell back to `USE TEMP B-TREE FOR ORDER BY` and sorted the whole
+  session (expensive on multi-thousand-message sessions). Transcript order is
+  content position now, so the index covers the per-session timestamp filters
+  and the chronological projections instead. Rebuild from source evidence
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
@@ -583,8 +584,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   would otherwise null the child's branch point during the DELETE step and
   permanently break the child's composition. `message_id` is deterministic, so the
   plain-TEXT reference survives the re-create; reads bail to the child's own tail
-  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so the
-  keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
+  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so
+  timestamp-ordered reads stop doing a temp B-tree sort per chunk. Rebuild
   from source evidence.
 - Index schema version 13 makes attachment bytes honest (#2468). `attachments.blob_hash`
   is now nullable and holds the **true SHA-256 of the stored bytes** when acquired
@@ -847,6 +848,38 @@ User corrections live outside the content-hash boundary by construction
   `delete_correction` / `clear_corrections`) and
   `polylogue/storage/derived/feedback/` (async SQL helpers).
 
+## Tool Outcome Contract
+
+`blocks.tool_outcome` is the canonical structural outcome of a recorded tool
+invocation. The tuple law: a known `ok`/`error` carries no unknown reason, an
+`unknown` carries exactly one, and every other block shape carries neither.
+The `blocks` table CHECK enforces it, and `derive_tool_outcomes`
+(`polylogue/sources/tool_outcomes.py`) refuses a session that would break it.
+
+`ToolResultUnknownReason` is a closed partition of why a structural outcome is
+absent, derived from the record and never from result prose:
+
+| Reason | The record says |
+| --- | --- |
+| `not_reported` | The construct family carries outcome fields; this record carried none. |
+| `distrusted` | The provider reported a verdict the parser positively refuses (e.g. a background-task start acknowledgement). |
+| `unsupported_construct` | An outcome-bearing field is present with a value outside the mapping this origin declares. |
+| `source_truncated` | The source declared an outcome-bearing payload it did not retain intact. |
+
+Each parser derives its own reason at construction --
+`polylogue/sources/tool_result_reasons.py:unknown_reason` is the one mapping
+from (verdict, field present, source intact) to a member, so provider-wire
+decoding stays local while the vocabulary does not fork.
+`ParsedContentBlock` refuses a `tool_result` that carries neither a verdict nor
+a reason: a reason invented after the fact is indistinguishable from no reason
+at all. `OriginSpec.tool_outcome_unknown_reasons` names which origin owns each
+reason, and a reason outside its origin's declaration refuses the write.
+
+`devtools archive tool-outcome-census` classifies a whole archive by origin,
+construct, outcome and reason, and counts the four forbidden shapes:
+unknown-without-reason, known-with-reason, reason-without-owner, and a public
+`actions` projection that disagrees with the block.
+
 ## Text Handling Contracts
 
 Polylogue exposes several text-processing boundaries. Each declares one of
@@ -927,6 +960,34 @@ Archive writes are idempotent by content hash:
 - On re-ingest, if the content hash matches, the session is skipped
   (idempotency). If it differs, the session is updated and dependent
   insights are rebuilt.
+
+## Export Member Addressing
+
+An export container member is addressed two ways, and the two are different
+content:
+
+- **element of container** -- one session-bearing value inside a member that
+  holds several. `raw_sessions.source_index` records the acquisition
+  splitter's element position for it.
+- **whole member** -- the member document itself. It has no element position;
+  the coordinate slot it occupies is 0 for want of anything else to put there.
+
+`raw_container_coordinates.addressing_mode` records which reading applies.
+A `NULL` mode is a row acquired before the column existed: unknown, not a
+default reading.
+
+The position is a hint. Providers reorder, insert into, and re-export their
+members, so the value at a recorded position may be a different and equally
+valid conversation. Reacquisition (`operations/zip_acquisition_replay.py`,
+`storage/blob_integrity.py:_member_payload_by_content()`) therefore checks the
+hinted value's content identity first and returns it only when it matches;
+otherwise it resolves across the whole member and reports a typed ambiguity
+when nothing does.
+
+Content identity is structural, not textual: `core/content_identity.py`
+digests the *decoded* value under the provider value contract, so
+re-serialization and `1` versus `1.0` do not change it, while `1` versus
+`"1"`, `true` versus `1`, and array order do.
 
 ## FTS5 Model
 
@@ -1074,7 +1135,13 @@ explicitly skipped and has no matching `index.db.sessions` row is
 `raw-materialization` archive debt; daemon status exposes it through
 `component_readiness.raw_materialization` and
 `raw_materialization_readiness` instead of reporting the archive as simply
-healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+healthy. A row revision governance has declined -- an ambiguous membership
+under a complete census, or a failed byte-authority census on an append
+fragment -- is `revision-authority-quarantined` debt with status `blocked`:
+raw materialization refuses it on every pass, so it is not pending parse work
+and convergence will not move it until that authority is refined.
+
+FTS readiness is likewise a freshness invariant, not a best-effort
 cache: stale or untrusted recorded counts make search readiness non-ready until
 the index is demonstrably current.
 

@@ -8,7 +8,7 @@ root_markers = ["pyproject.toml", "polylogue"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--accept-flake-config", "--command"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "POLYLOGUE_PYTEST_WORKERS"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 require = ["POLYLOGUE_ARCHIVE_ROOT"]
 
@@ -18,15 +18,27 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
-# Focused runs go through the pytest pool; a candidate's tests are the pull
-# request's hosted `verify` check; the corpus is the nightly master-boundary run.
-verify = { focused = "pytest_focused", candidate = "hosted:verify", corpus = "verify_all" }
+# One agent's hard memory ceiling. Heavy work (a live-archive census, a
+# corpus scan) runs through the `scratch` operation in the bulk pool, never
+# inside the agent's own process.
+agent_memory_max = "1500M"
+# Wave policy: a candidate lands on its verification alone; the corpus run on
+# master per wave is the correctness backstop.
+review = "none"
+# Workers and candidates pass on the static gates and merge when the hosted
+# quick gate is green; pytest runs once on master per landing wave (verify_all)
+# and at the nightly boundary. A worker may still run one focused test file
+# through pytest_focused when its bead names one.
+verify = { focused = "verify_quick", candidate = "verify_quick", corpus = "verify_all" }
 publish = "pr"
 
+# Bounded selections run in their own pool so they never queue behind an
+# affected or corpus run; the pool's 3G slice sizes them to about two
+# workers through devtools' cgroup sizing.
 [operations.pytest_focused]
-description = "Run one managed pytest launch file, or a devtools test selection, inside the host's pytest slot"
+description = "Run one managed pytest launch file, or a devtools test selection, in the host's quick pytest pool"
 exec = ["python", "-m", "devtools.pytest_slot"]
-pool = "pytest"
+pool = "pytest-quick"
 result = "pytest"
 cache = "none"
 timeout_seconds = 7200
@@ -39,6 +51,14 @@ pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 7200
+
+[operations.scratch]
+description = "Run one bounded script from /realm/tmp/work in the bulk pool: workers' heavy censuses and probes"
+exec = ["python"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 3600
 
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"
@@ -93,3 +113,10 @@ pool = "interactive"
 result = "json"
 cache = "none"
 timeout_seconds = 180
+
+# Landing reviewer for the wave: fast and cheap; the corpus run on master is
+# the correctness backstop.
+[packets.review]
+backend = "claude"
+model = "claude-sonnet-5"
+effort = "medium"

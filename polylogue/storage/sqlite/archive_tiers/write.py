@@ -2623,11 +2623,7 @@ _TOOL_VERDICT_COLUMNS = (
 
 def _expresses_tool_verdict(row: tuple[object, ...], b_idx: dict[str, int]) -> bool:
     """Report whether a row states a tool outcome at all."""
-    if row[b_idx["tool_outcome"]] is not None:
-        return True
-    # A row written before tool_outcome existed states its verdict only
-    # through the legacy pair.
-    return row[b_idx["tool_result_is_error"]] is not None or row[b_idx["tool_result_exit_code"]] is not None
+    return row[b_idx["tool_outcome"]] is not None
 
 
 def _apply_tool_verdict(
@@ -4698,6 +4694,13 @@ def _resolve_session_graph(
                 link_type,
             ),
         )
+        _canonicalize_session_link_evidence(
+            conn,
+            src_session_id=child_id,
+            dst_origin=origin,
+            dst_native_id=dst_native_id,
+            link_type=link_type,
+        )
         resolved_child_ids.append(child_id)
         # Deferred tail extraction (#2467): a child ingested before its parent was
         # stored whole (the inherited prefix could not be aligned yet). Now that
@@ -4775,6 +4778,13 @@ def _refill_inbound_dispatch_block_ids(
                 dst_native_id,
                 link_type,
             ),
+        )
+        _canonicalize_session_link_evidence(
+            conn,
+            src_session_id=str(src_session_id),
+            dst_origin=str(dst_origin),
+            dst_native_id=str(dst_native_id),
+            link_type=str(link_type),
         )
 
 
@@ -7586,6 +7596,41 @@ _DISPATCH_REASON_EVIDENCE_SQL = """
                   '$.dispatch_reason', ?)
     END
 """
+
+
+def _canonicalize_session_link_evidence(
+    conn: sqlite3.Connection,
+    *,
+    src_session_id: str,
+    dst_origin: str,
+    dst_native_id: str,
+    link_type: str,
+) -> None:
+    """Restore canonical JSON after SQLite JSON mutation changes key order."""
+    row = conn.execute(
+        """SELECT evidence_json FROM session_links
+           WHERE src_session_id = ? AND dst_origin = ?
+             AND dst_native_id = ? AND link_type = ?""",
+        (src_session_id, dst_origin, dst_native_id, link_type),
+    ).fetchone()
+    if row is None:
+        return
+    try:
+        evidence = json.loads(str(row[0]))
+    except (TypeError, json.JSONDecodeError):
+        return
+    conn.execute(
+        """UPDATE session_links SET evidence_json = ?
+           WHERE src_session_id = ? AND dst_origin = ?
+             AND dst_native_id = ? AND link_type = ?""",
+        (
+            _json_dumps(evidence),
+            src_session_id,
+            dst_origin,
+            dst_native_id,
+            link_type,
+        ),
+    )
 
 
 def _write_session_identity_claims(

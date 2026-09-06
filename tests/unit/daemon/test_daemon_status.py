@@ -1222,7 +1222,9 @@ def test_daemon_status_reports_live_ingest_attempts(tmp_path: Path) -> None:
     assert "  latest: running full_parse 0/1 files" in lines
     assert "  workload: read amp 0.00x, 0.00 MiB/s source, 0.00 files/s" in lines
     assert "  memory: cgroup 2048.0 MiB peak 4096.0 MiB" in lines
-    assert "Catch-up: catching_up 0/1 files, read amp 0.0x" in lines
+    # The rate is over ingested bytes: an offered-bytes rate credits the run
+    # with every file it declined.
+    assert "Catch-up: catching_up 0/1 files, read amp 0.0x, 0.0 MB/s ingested" in lines
 
 
 def test_daemon_status_reads_ops_tier_from_archive_tiers(tmp_path: Path) -> None:

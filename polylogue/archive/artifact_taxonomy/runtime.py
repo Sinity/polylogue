@@ -10,6 +10,7 @@ from polylogue.archive.artifact_taxonomy.models import ArtifactClassification, A
 from polylogue.archive.artifact_taxonomy.support import (
     is_subagent_path,
     looks_like_beads_interaction,
+    looks_like_extracted_transcript_corpus,
     looks_like_file_history_snapshot_only_stream,
     looks_like_hook_event,
     looks_like_hook_event_stream,
@@ -291,6 +292,21 @@ def classify_artifact(
     # Antigravity path markers) -- these always win regardless of content,
     # with one deliberate exception checked immediately below.
     explicit = _classify_artifact_path_strong(source_path, provider=provider_token)
+    if explicit is not None and not explicit.parse_as_session:
+        return explicit
+
+    # A path rule that admits a session (``coordinator_session_stream`` and
+    # its siblings) asserts only that the file sits where the provider writes
+    # transcripts. Records that name the transcript their turns were copied
+    # out of are a generated derivative wherever they sit, so that evidence
+    # outranks the location -- otherwise the extract becomes a session keyed
+    # on its own filename stem, republishing the original's turns. Same
+    # direction as ``_file_history_snapshot_override``, generalized: positive
+    # content refusal beats a positive path-only verdict.
+    extracted = _extracted_transcript_corpus_classification(payload, provider=provider_token)
+    if extracted is not None:
+        return extracted
+
     if explicit is not None:
         override = _file_history_snapshot_override(explicit, payload, provider=provider_token)
         return override if override is not None else explicit
@@ -323,6 +339,32 @@ def classify_artifact(
     if weak is not None:
         return weak
     return content_classification
+
+
+def _extracted_transcript_corpus_classification(
+    payload: JSONValue,
+    *,
+    provider: Provider,
+) -> ArtifactClassification | None:
+    """Classify a stream of turns copied out of transcripts it names.
+
+    Provider-agnostic: the evidence is the records' own declared provenance
+    plus the absence of any provider record envelope, never a filename, a
+    directory segment or a producer-specific report schema.
+    """
+    if not isinstance(payload, Sequence) or isinstance(payload, str | bytes | bytearray):
+        return None
+    dict_items = [item for item in (json_document(item) for item in islice(payload, 32)) if item]
+    if not looks_like_extracted_transcript_corpus(dict_items):
+        return None
+    return ArtifactClassification(
+        provider=provider,
+        kind=ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+        parse_as_session=False,
+        schema_eligible=False,
+        default_priority=0,
+        reason="extracted transcript corpus: records carry copied turns and name the transcript they came from",
+    )
 
 
 def _file_history_snapshot_override(

@@ -1,0 +1,71 @@
+{
+  "admission_evidence_ref": null,
+  "admitted_at_ms": null,
+  "apply_evidence": null,
+  "backup_authorization": null,
+  "backup_plan_ref": null,
+  "current_version": 41,
+  "declared_at_ms": 0,
+  "drop_constraints": [],
+  "failure": null,
+  "fresh_ddl_parity": null,
+  "manifest_format": "polylogue.durable-change-train.v1",
+  "manifest_sha256": "a7b8704b0f921a56721652fe93dd7ad003560be3eddf71b794636ab50c58e4f7",
+  "migration": {
+    "owner_ref": "polylogue-wzgpf",
+    "path": "042_raw_container_addressing_mode.sql",
+    "requires_backup": false,
+    "slot": 42,
+    "sql_sha256": "7237eb5f9b66d3ef9344d4f39214457595a7cc0c67d324e5cf45f8ce2d700437",
+    "target_version": 42,
+    "tier": "source"
+  },
+  "ordering_constraints": [],
+  "owner_ref": "polylogue-wzgpf",
+  "pre_apply_evidence": null,
+  "proof": null,
+  "proof_refs": [],
+  "release_evidence_ref": null,
+  "released_at_ms": null,
+  "reservation": null,
+  "revision": 0,
+  "riders": [
+    {
+      "after_rider_ids": [],
+      "behavior_proof_refs": [
+        "proof:source-v42:member-addressing-mode"
+      ],
+      "owner_ref": "polylogue-wzgpf",
+      "rider_id": "rider:raw-container-addressing-mode",
+      "runtime_consumers": [
+        {
+          "behavior_proof_ref": "proof:source-v42:member-addressing-mode",
+          "consumer_id": "container-coordinate-write",
+          "production_ref": "polylogue.storage.sqlite.archive_tiers.source_write:record_raw_container_coordinate",
+          "roles": [
+            "read",
+            "write"
+          ]
+        },
+        {
+          "behavior_proof_ref": "proof:source-v42:member-addressing-mode",
+          "consumer_id": "member-reacquisition-read",
+          "production_ref": "polylogue.storage.blob_integrity:_raw_session_reference_rows",
+          "roles": [
+            "read"
+          ]
+        }
+      ],
+      "schema_objects": [
+        "table:raw_container_coordinates"
+      ],
+      "trust_floor_exception_ref": null
+    }
+  ],
+  "row_change_allowances": [],
+  "slot": 42,
+  "state": "declared",
+  "target_version": 42,
+  "tier": "source",
+  "train_id": "train:source:v42"
+}

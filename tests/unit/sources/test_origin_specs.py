@@ -234,6 +234,10 @@ def test_topology_capability_census_is_complete_and_typed() -> None:
     assert claude["message_branch_state"]["state"] == "positive-derived"
     assert claude["parent_dispatch"]["state"] == "positive-derived"
     assert "parentToolUseID" in str(claude["parent_dispatch"]["evidence"])
+    # polylogue-esvzb: a forked Claude Code session's own records name the
+    # parent message it diverged at, so this dimension is carried, not absent.
+    assert claude["inheritance_branch_point"]["state"] == "carried"
+    assert "forkedFrom.messageUuid" in str(claude["inheritance_branch_point"]["evidence"])
     assert codex["parent_dispatch"]["state"] == "structurally-absent"
     assert chatgpt["message_parent"]["state"] == "carried"
     assert chatgpt["message_branch_state"]["state"] == "carried"
@@ -853,3 +857,110 @@ def test_source_fingerprint_memoizes_on_disk_by_signature(tmp_path: Path, monkey
     emitter.write_text("def emit(payload):\n    return {'session': payload}\n", encoding="utf-8")
     origin_specs_module._fingerprint_sources_cached.cache_clear()
     assert origin_specs_module.lowering_fingerprint() != first
+
+
+class TestSemanticSourceClosureMemo:
+    """Closure membership is walked once per process; content freshness is not memoized.
+
+    ``_fingerprint_sources`` asks for the closure on every session write, and
+    the walk resolves, stats and sorts one path per member. Memoizing the
+    member list is only safe while each fingerprint call still re-derives every
+    member's content signature; these laws hold that line.
+    """
+
+    def test_membership_is_walked_once_per_argument_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: drop the memo and the repeat calls re-stat every member."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        paths = origin_specs_module._LOWERING_FINGERPRINT_PATHS
+        origin_specs_module._semantic_source_closure.cache_clear()
+
+        first = origin_specs_module._semantic_source_paths(paths)
+        assert len(first) > 1
+
+        real_signature = origin_specs_module._source_signature
+        walked: list[Path] = []
+
+        def counting_signature(path: Path) -> tuple[str, str, int]:
+            walked.append(path)
+            return real_signature(path)
+
+        monkeypatch.setattr(origin_specs_module, "_source_signature", counting_signature)
+        for _ in range(20):
+            assert origin_specs_module._semantic_source_paths(paths) is first
+        assert walked == []
+
+    def test_fingerprint_calls_still_re_read_every_member_signature(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: memoize the fingerprint itself and the per-call re-read disappears."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        paths = origin_specs_module._LOWERING_FINGERPRINT_PATHS
+        origin_specs_module._semantic_source_closure.cache_clear()
+        members = origin_specs_module._semantic_source_paths(paths)
+
+        real_signature = origin_specs_module._source_signature
+        walked: list[Path] = []
+
+        def counting_signature(path: Path) -> tuple[str, str, int]:
+            walked.append(path)
+            return real_signature(path)
+
+        monkeypatch.setattr(origin_specs_module, "_source_signature", counting_signature)
+        origin_specs_module._fingerprint_sources(paths, namespace="closure-memo-law")
+        assert sorted(walked) == sorted(members)
+
+    def test_edited_member_changes_the_fingerprint_under_a_warm_memo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A transitively imported source is re-read even though membership is memoized.
+
+        Anti-vacuity: move the memo up to ``_fingerprint_sources`` -- or key it
+        on anything but the members' content signatures -- and the edited
+        helper no longer moves the fingerprint.
+        """
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        source_root = tmp_path / "source-root"
+        source_dir = source_root / "polylogue" / "sources"
+        source_dir.mkdir(parents=True)
+        (source_dir / "emitter.py").write_text(
+            "from polylogue.sources.helper import shape\n\n\ndef emit(payload):\n    return shape(payload)\n",
+            encoding="utf-8",
+        )
+        helper = source_dir / "helper.py"
+        helper.write_text("def shape(payload):\n    return payload\n", encoding="utf-8")
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", source_root)
+        monkeypatch.setattr(origin_specs_module, "_LOWERING_FINGERPRINT_PATHS", ("polylogue/sources/emitter.py",))
+        origin_specs_module._semantic_source_closure.cache_clear()
+        origin_specs_module._fingerprint_sources_cached.cache_clear()
+
+        first = origin_specs_module.lowering_fingerprint()
+        members = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
+        assert helper.resolve() in members
+
+        # Edit a member's body without touching any import: membership is
+        # unchanged and the memo stays warm, so only the re-read can move this.
+        helper.write_text("def shape(payload):\n    return {'session': payload}\n", encoding="utf-8")
+        assert origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",)) == members
+        assert origin_specs_module.lowering_fingerprint() != first
+
+    def test_a_substituted_source_root_does_not_reuse_another_root_membership(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Declared paths are relative, so the root is part of the memo key."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        roots = []
+        for name in ("alpha", "beta"):
+            source_dir = tmp_path / name / "polylogue" / "sources"
+            source_dir.mkdir(parents=True)
+            (source_dir / "emitter.py").write_text("def emit(payload):\n    return payload\n", encoding="utf-8")
+            roots.append(tmp_path / name)
+
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", roots[0])
+        alpha = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", roots[1])
+        beta = origin_specs_module._semantic_source_paths(("polylogue/sources/emitter.py",))
+
+        assert alpha == ((roots[0] / "polylogue" / "sources" / "emitter.py").resolve(),)
+        assert beta == ((roots[1] / "polylogue" / "sources" / "emitter.py").resolve(),)

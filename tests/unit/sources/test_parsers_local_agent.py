@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -24,6 +25,9 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.storage_records import db_setup
 
 
 def _write_hermes_state_db(path: Path) -> None:
@@ -296,6 +300,10 @@ def test_gemini_cli_display_content_is_preserved_alongside_expanded_content() ->
     assert "expanded body" in (message.text or "")
     display_blocks = [block for block in message.blocks if (block.metadata or {}).get("gemini_display_content")]
     assert [block.text for block in display_blocks] == ["@notes/ summarize this"]
+    # The typed prompt is stored once. A second admission path for the same
+    # field doubles the operator's own words in every word count derived from
+    # this message.
+    assert [block.text for block in message.blocks].count("@notes/ summarize this") == 1
 
 
 def test_gemini_cli_display_content_identical_to_content_adds_no_block() -> None:
@@ -317,6 +325,139 @@ def test_gemini_cli_display_content_identical_to_content_adds_no_block() -> None
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     assert all(not (block.metadata or {}).get("gemini_display_content") for block in session.messages[0].blocks)
+
+
+def test_gemini_cli_contentless_turn_keeps_its_token_counts() -> None:
+    """polylogue-auy4z: a turn with no content is still a billed turn.
+
+    Gemini CLI writes ``content: ""`` with an empty ``thoughts`` list and a
+    populated ``tokens`` block for turns that produced no text; the checkpoint
+    file is the only place those counts exist. Anti-vacuity: restore the
+    content-only drop condition in ``_parse_gemini_message`` and the message,
+    its ``message_usage`` event and its share of the session's tokens all
+    disappear.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-5",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-04-08T20:45:01.000Z",
+                "type": "user",
+                "content": "run it",
+                "model": "gemini-test",
+                "tokens": {"input": 10, "output": 0, "cached": 0, "thoughts": 0, "tool": 0, "total": 10},
+            },
+            {
+                "id": "g1",
+                "timestamp": "2026-04-08T20:45:09.000Z",
+                "type": "gemini",
+                "content": "",
+                "thoughts": [],
+                "model": "gemini-test",
+                "tokens": {"input": 19029, "output": 782, "cached": 0, "thoughts": 0, "tool": 0, "total": 19811},
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    contentless = session.messages[1]
+    assert contentless.provider_message_id == "g1"
+    assert contentless.role == "assistant"
+    assert contentless.blocks == []
+    assert (contentless.input_tokens, contentless.output_tokens) == (19029, 782)
+    usage_events = [event for event in session.session_events if event.event_type == "message_usage"]
+    assert [event.source_message_provider_id for event in usage_events] == ["u1", "g1"]
+    assert usage_events[1].payload["last_token_usage"] == {
+        "input_tokens": 19029,
+        "output_tokens": 782,
+        "cached_input_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 19811,
+    }
+
+
+def test_gemini_cli_contentless_turn_tokens_reach_the_cost_rollup(workspace_env: Mapping[str, Path]) -> None:
+    """The counts a contentless turn carries are billed tokens, so they must
+    reach ``session_model_usage`` -- the rollup the cost model reads. A
+    ``message_usage`` session event alone does not: that rollup walks the
+    ``messages`` rows and the provider-usage fold reads ``token_count`` events
+    only. Anti-vacuity: drop the turn again and the rollup reports 10 input
+    tokens for this session instead of 19,039.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-7",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-04-08T20:45:01.000Z",
+                "type": "user",
+                "content": "run it",
+                "model": "gemini-test",
+                "tokens": {"input": 10, "output": 0, "cached": 0, "thoughts": 0, "tool": 0, "total": 10},
+            },
+            {
+                "id": "g1",
+                "timestamp": "2026-04-08T20:45:09.000Z",
+                "type": "gemini",
+                "content": "",
+                "thoughts": [],
+                "model": "gemini-test",
+                "tokens": {"input": 19029, "output": 782, "cached": 0, "thoughts": 0, "tool": 0, "total": 19811},
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    with open_connection(db_setup(workspace_env)) as conn:
+        write_parsed_session_to_archive(conn, session)
+        rollup = conn.execute("SELECT model_name, input_tokens, output_tokens FROM session_model_usage").fetchall()
+        usage_events = conn.execute(
+            "SELECT source_message_id, last_input_tokens, last_output_tokens"
+            " FROM session_provider_usage_events ORDER BY position"
+        ).fetchall()
+
+    assert [tuple(row) for row in rollup] == [("gemini-test", 19039, 782)]
+    assert [row["source_message_id"] for row in usage_events] == [
+        "gemini-cli-session:gemini-session-7:n:u1",
+        "gemini-cli-session:gemini-session-7:n:g1",
+    ]
+    assert [row["last_input_tokens"] for row in usage_events] == [10, 19029]
+
+
+def test_gemini_cli_empty_turn_without_tokens_is_still_dropped() -> None:
+    """Only token evidence earns a blockless message.
+
+    Anti-vacuity: widen the retention condition to every contentless record
+    and this session gains an empty message with nothing to account for.
+    """
+    payload: JSONDocument = {
+        "sessionId": "gemini-session-6",
+        "projectHash": "project-hash",
+        "kind": "chat",
+        "messages": [
+            {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": "run it"},
+            {"id": "g1", "timestamp": "2026-04-08T20:45:09.000Z", "type": "gemini", "content": "", "thoughts": []},
+            {
+                "id": "g2",
+                "timestamp": "2026-04-08T20:45:10.000Z",
+                "type": "gemini",
+                "content": "",
+                "tokens": {"input": 0, "output": 0, "cached": 0, "thoughts": 0, "tool": 0, "total": 0},
+            },
+        ],
+    }
+
+    [session] = parse_payload("gemini-cli", payload, "fallback")
+
+    assert [message.provider_message_id for message in session.messages] == ["u1"]
 
 
 def test_gemini_cli_session_metadata_and_scratchpad_survive_as_session_events() -> None:
@@ -513,6 +654,52 @@ def test_hermes_message_wire_extras_survive_as_session_events() -> None:
             {"tool_id": "call-1", "extra_content": {"google": {"thought_signature": "sig-abc"}}}
         ],
     }
+
+
+def test_hermes_snapshot_codex_message_items_prose_reaches_a_block() -> None:
+    """The JSON-snapshot path projects the same field as the state.db path.
+
+    Goes red if ``_parse_hermes_message`` stops projecting
+    ``codex_message_items``: a turn whose ``content`` is empty carries no
+    block at all and is dropped outright, so neither the block-derived
+    display text nor FTS reaches its prose. The wire-extras event keeps the
+    full structured item either way.
+    """
+    codex_only = "The wrapper stayed untouched while the stale config migrated."
+    already_carried = "Verification passed on both affected suites."
+
+    def item(prose: str) -> JSONDocument:
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": prose}],
+            "id": "msg_0887",
+            "phase": "commentary",
+        }
+
+    payload: JSONDocument = {
+        "session_id": "hermes-session-3",
+        "model": "local-model",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "last_updated": "2026-05-07T08:46:00.000000",
+        "messages": [
+            {"role": "user", "content": "migrate the config"},
+            {"role": "assistant", "content": "", "codex_message_items": [item(codex_only)]},
+            {"role": "assistant", "content": already_carried, "codex_message_items": [item(already_carried)]},
+        ],
+    }
+
+    [session] = parse_payload("hermes", payload, "fallback")
+
+    projected, duplicated = session.messages[1], session.messages[2]
+    assert [block.text for block in projected.blocks if block.type is BlockType.TEXT] == [codex_only]
+    assert projected.text == codex_only
+    # The item repeats what ``content`` already holds: one block, not two.
+    assert [block.text for block in duplicated.blocks if block.type is BlockType.TEXT] == [already_carried]
+
+    extras = [event for event in session.session_events if event.event_type == "hermes_message_wire_extras"]
+    assert len(extras) == 2
 
 
 def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:

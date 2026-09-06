@@ -80,6 +80,35 @@ def _payload(
     return payload
 
 
+def _current_payload(chunks: list[dict[str, Any]]) -> dict[str, Any]:
+    """The bare envelope AI Studio writes today.
+
+    ``_payload`` above builds the wrapped ``{id, displayName, createTime,
+    updateTime}`` export. Current AI Studio documents carry none of those --
+    only ``chunkedPrompt`` beside ``runSettings`` and ``systemInstruction`` --
+    so detection, identity and timestamps all have to come from the chunks or
+    the fallback id. Keeping one catalog case on this shape puts the current
+    wire format through the same parse -> transform -> save -> hydrate
+    roundtrip as the legacy one.
+    """
+    return {
+        "runSettings": {
+            "temperature": 1.0,
+            "model": "models/synthetic-model",
+            "topP": 0.95,
+            "topK": 64,
+            "maxOutputTokens": 8192,
+            "safetySettings": [],
+            "enableCodeExecution": False,
+            "enableSearchAsATool": False,
+            "enableBrowseAsATool": False,
+        },
+        "systemInstruction": {"text": "synthetic system instruction"},
+        "chunkedPrompt": {"chunks": chunks, "pendingInputs": [{"role": "user", "text": ""}]},
+        "citations": [{"uri": "https://example.invalid/synthetic-citation"}],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Catalog
 # ---------------------------------------------------------------------------
@@ -257,6 +286,34 @@ _GEMINI_METADATA_CATALOG: list[CatalogCase] = [
         {
             "title": "Ordering",
             "roles": ["user", "assistant", "user"],
+            "preserves_order": True,
+        },
+    ),
+    (
+        "current bare envelope with a Drive attachment",
+        lambda: _current_payload(
+            [
+                _chunk(
+                    "c1",
+                    "user",
+                    text="",
+                    create_time="2026-01-05T09:00:00Z",
+                    extras={"driveDocument": {"id": "synthetic-drive-document"}},
+                ),
+                _chunk(
+                    "c2",
+                    "model",
+                    text="synthetic answer",
+                    create_time="2026-01-05T09:00:01Z",
+                    extras={"finishReason": "STOP", "tokenCount": 3},
+                ),
+            ]
+        ),
+        {
+            "fallback_title": True,
+            "roles": ["user", "assistant"],
+            "must_contain_block_type": "document",
+            "min_attachments": 1,
             "preserves_order": True,
         },
     ),

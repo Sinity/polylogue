@@ -127,7 +127,7 @@ def _write_message_stream(
         FROM messages m
         LEFT JOIN blocks b ON b.message_id = m.message_id
         WHERE m.session_id = ?
-        ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id, b.position
+        ORDER BY m.position, m.variant_index, b.position
         """,
         (session_id,),
     )

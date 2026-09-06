@@ -347,9 +347,13 @@ class VerifyRun:
                 step_dir = self.run_dir / "steps" / step_id
                 with contextlib.suppress(OSError, ValueError):
                     statistics = aggregate_pytest_statistics(step_dir, command=step.get("cmd", []), step_result=result)
+                # A run that never started leaves no evidence to aggregate, so
+                # the evidence verdict would restate the absence and lose the
+                # reason for it. The reason is what the receipt is read for.
                 explicit_terminal = result.get("diagnosis") in {
                     "focused_test_runner_exception",
                     "pytest_interrupted",
+                    "pytest_slot_unavailable",
                     "verification_interrupted",
                 }
                 if statistics is not None:

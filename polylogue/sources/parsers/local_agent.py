@@ -18,6 +18,8 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     resolve_tool_outputs_dir,
 )
 from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+from polylogue.sources.parsers.hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     ParsedContentBlock,
@@ -287,20 +289,6 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         return None
     text = _content_text(record.get("content"))
     content_blocks = _content_blocks_from_content(record.get("content"))
-    # polylogue-2ow9p: ``displayContent`` is the form the user was actually
-    # shown, and where it is present it diverges from ``content`` every time
-    # (9 of 9 in the measured corpus) -- ``content`` carries the model-facing
-    # expansion. Keeping only ``content`` loses the shown form, so it is
-    # admitted as its own block rather than collapsed into the sibling.
-    display_content = _content_text(record.get("displayContent"))
-    if display_content is not None and display_content != text:
-        content_blocks.append(
-            ParsedContentBlock(
-                type=BlockType.TEXT,
-                text=display_content,
-                metadata={"field": "displayContent"},
-            )
-        )
     thoughts = _list(record.get("thoughts"))
     for thought_index, thought in enumerate(thoughts, start=1):
         thought_record = json_document(thought)
@@ -329,11 +317,15 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         fallback_tool_id = f"tool-{index}-{tool_index}"
         content_blocks.append(_tool_use_block(tool_record, fallback_id=fallback_tool_id))
         content_blocks.extend(_tool_result_blocks(tool_record, fallback_id=fallback_tool_id))
-    if not text and not content_blocks:
+    # polylogue-auy4z: a turn with no content is still billed, and the
+    # checkpoint file is the only place its counts exist -- ``tokens`` is the
+    # evidence that the turn happened, so the message is kept without blocks
+    # and carries the counts into the cost rollup.
+    if not text and not content_blocks and not _reports_wire_tokens(record):
         return None
     token_usage = _token_usage_fields(record)
     gemini_role = _role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"})
-    gemini_blocks = content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    gemini_blocks = content_blocks or ([ParsedContentBlock(type=BlockType.TEXT, text=text)] if text else [])
     # A block-derived type (tool_use/tool_result from toolCalls above) must be
     # resolved BEFORE classify_material_origin runs, or a genuine tool turn
     # gets misclassified against an assumed plain MESSAGE type.
@@ -348,14 +340,28 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     # so a rendered form never reclassifies a tool turn.
     display_text = _content_text(record.get("displayContent"))
     if display_text and display_text != text:
-        gemini_blocks = [
-            *gemini_blocks,
-            ParsedContentBlock(
-                type=BlockType.TEXT,
-                text=display_text,
-                metadata={"gemini_display_content": True},
+        matching_index = next(
+            (
+                block_index
+                for block_index, block in enumerate(gemini_blocks)
+                if block.type is BlockType.TEXT and block.text == display_text
             ),
-        ]
+            None,
+        )
+        if matching_index is None:
+            gemini_blocks = [
+                *gemini_blocks,
+                ParsedContentBlock(
+                    type=BlockType.TEXT,
+                    text=display_text,
+                    metadata={"gemini_display_content": True},
+                ),
+            ]
+        else:
+            matching = gemini_blocks[matching_index]
+            gemini_blocks[matching_index] = matching.model_copy(
+                update={"metadata": {**(matching.metadata or {}), "gemini_display_content": True}},
+            )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
@@ -404,9 +410,14 @@ def _parse_hermes_message(
         return None
     text = _content_text(record.get("content"))
     content_blocks = _content_blocks_from_content(record.get("content"))
+    output_text_blocks = _codex_output_text_blocks(record.get("codex_message_items"), covered_text=text)
+    content_blocks.extend(output_text_blocks)
+    if text is None and output_text_blocks:
+        text = "\n".join(block.text for block in output_text_blocks if block.text)
     reasoning = _string(record.get("reasoning_content")) or _string(record.get("reasoning"))
     if reasoning:
         content_blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=reasoning))
+    content_blocks.extend(_codex_reasoning_blocks(record.get("codex_reasoning_items"), covered_text=reasoning))
     for tool_index, tool_call in enumerate(_list(record.get("tool_calls")), start=1):
         tool_record = json_document(tool_call)
         if not tool_record:
@@ -415,7 +426,17 @@ def _parse_hermes_message(
     tool_call_id = _string(record.get("tool_call_id"))
     role = _role(_string(record.get("role")) or "unknown")
     if role is Role.TOOL and text:
-        content_blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_call_id, text=text))
+        hermes_is_error, hermes_exit_code, hermes_reason = hermes_tool_result_outcome(record.get("content"))
+        content_blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=tool_call_id,
+                text=text,
+                is_error=hermes_is_error,
+                exit_code=hermes_exit_code,
+                outcome_unknown_reason=hermes_reason,
+            )
+        )
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
@@ -532,6 +553,13 @@ def _first_non_negative_int(payload: JSONDocument, *keys: str) -> int | None:
             if value is not None:
                 return value
     return None
+
+
+def _reports_wire_tokens(record: JSONDocument) -> bool:
+    """Whether the record carries token counts of its own."""
+    if not (json_document(record.get("usage")) or json_document(record.get("tokens"))):
+        return False
+    return any(_token_usage_fields(record).values())
 
 
 def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedSessionEvent | None:
@@ -726,6 +754,70 @@ def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
     return []
 
 
+def _codex_output_text_blocks(items: object, *, covered_text: str | None) -> list[ParsedContentBlock]:
+    """Project ``codex_message_items`` assistant prose into TEXT blocks.
+
+    A Codex-compatible Hermes backend emits the assistant turn as a structured
+    response item alongside the plain ``content`` field, and when ``content``
+    is empty the item holds the only copy of the turn's prose. Without a block
+    it reaches neither the block-derived display text nor FTS, both of which
+    read ``blocks`` alone.
+
+    Segments whose text ``covered_text`` already carries are skipped: the two
+    fields usually hold the same prose, and projecting it again would double
+    every such turn in the display text and in the search index.
+    """
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except json.JSONDecodeError:
+            return []
+    covered = covered_text or ""
+    blocks: list[ParsedContentBlock] = []
+    for item in _list(items):
+        record = json_document(item)
+        for segment in _list(record.get("content")):
+            segment_record = json_document(segment)
+            if segment_record.get("type") != "output_text":
+                continue
+            text = _string(segment_record.get("text"))
+            if text is None or text.strip() in covered:
+                continue
+            blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
+            covered = f"{covered}\n{text}"
+    return blocks
+
+
+def _codex_reasoning_blocks(items: object, *, covered_text: str | None) -> list[ParsedContentBlock]:
+    """Project Codex reasoning summaries and text into durable THINKING blocks."""
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except json.JSONDecodeError:
+            return []
+    covered = covered_text or ""
+    blocks: list[ParsedContentBlock] = []
+    for item in _list(items):
+        record = json_document(item)
+        segments = [*_list(record.get("summary")), *_list(record.get("content"))]
+        if not segments and _string(record.get("text")):
+            segments = [record]
+        for segment in segments:
+            segment_record = json_document(segment)
+            if segment_record.get("type") not in {
+                "reasoning_text",
+                "summary_text",
+                "text",
+            }:
+                continue
+            text = _string(segment_record.get("text"))
+            if text is None or text.strip() in covered:
+                continue
+            blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=text))
+            covered = f"{covered}\n{text}"
+    return blocks
+
+
 def _content_text(content: object) -> str | None:
     if isinstance(content, str):
         return content if content else None
@@ -808,13 +900,15 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
         function_name = _string(function_response.get("name"))
         if function_name:
             result_metadata["function_name"] = function_name
+        response_is_error, response_reason = _status_outcome(status, is_error=True if error else status_is_error)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
                 tool_id=_string(function_response.get("id")) or tool_id,
                 text=text or f"[{status}]",
                 metadata=result_metadata or None,
-                is_error=True if error else status_is_error,
+                is_error=response_is_error,
+                outcome_unknown_reason=response_reason,
             )
         )
     if blocks:
@@ -822,13 +916,15 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
     display_text = _content_text(record.get("resultDisplay"))
     if display_text is None and status is None:
         return []
+    display_is_error, display_reason = _status_outcome(status, is_error=status_is_error)
     return [
         ParsedContentBlock(
             type=BlockType.TOOL_RESULT,
             tool_id=tool_id,
             text=display_text or f"[{status or 'error'}]",
             metadata=metadata or None,
-            is_error=status_is_error,
+            is_error=display_is_error,
+            outcome_unknown_reason=display_reason,
         )
     ]
 
@@ -842,15 +938,31 @@ def _tool_metadata(record: JSONDocument) -> dict[str, object]:
     return metadata
 
 
+#: Gemini CLI's failure-status vocabulary. Matched against the ``status``
+#: field only -- never against result text.
+_STATUS_ERROR_MARKERS = ("error", "fail", "timeout", "cancel", "blocked")
+
+
 def _status_is_error(status: str | None) -> bool | None:
     if status is None:
         return None
     normalized = status.strip().lower()
     if normalized in {"success", "succeeded", "ok", "completed"}:
         return False
-    if any(marker in normalized for marker in ("error", "fail", "timeout", "cancel", "blocked")):
+    if any(marker in normalized for marker in _STATUS_ERROR_MARKERS):
         return True
     return None
+
+
+def _status_outcome(status: str | None, *, is_error: bool | None) -> tuple[bool | None, str | None]:
+    """Map a Gemini CLI tool record's ``status`` field to (is_error, unknown reason).
+
+    ``status`` is this origin's only structural verdict -- the record carries
+    no exit code. A token outside the declared success/failure vocabulary is a
+    verdict the mapping does not read, not an absent one.
+    """
+    unmapped_status = is_error is None and status is not None
+    return is_error, unknown_reason(is_error=is_error, outcome_field_present=unmapped_status)
 
 
 def _tool_input(value: object) -> dict[str, object]:

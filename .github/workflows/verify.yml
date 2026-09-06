@@ -4,9 +4,11 @@ name: Verify
 # green PR check there does not mean tests ran; this job runs `devtools verify`
 # on the workstation runner, where pytest goes through the host's single
 # `pytest` pueue slot automatically.
+# On demand only. Candidates land on the quick gate; the corpus runs once per
+# landing wave and nightly through agentctl's verify_all, which owns the host
+# pytest pool. A push trigger queued one host pytest run per merge.
 on:
-  pull_request:
-  merge_group:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -27,16 +29,13 @@ jobs:
     steps:
       # clean: false keeps the runner's gitignored state -- the testmon
       # datafile and the devshell venv -- so a run selects instead of seeding.
+      # `devtools verify` provisions the graph itself: it keeps this checkout's
+      # own datafile, and copies the primary's only when that one would select
+      # where this one would re-execute the corpus.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           clean: false
-
-      - name: Seed the testmon graph
-        run: |
-          mkdir -p .cache/testmon
-          seed=/realm/project/polylogue/.cache/testmon/testmondata
-          nix develop --command python -m devtools.testmon_provision --seed "$seed"
 
       - name: Check that the pull request is still open
         id: pr-state
@@ -65,6 +64,7 @@ jobs:
           echo "run_id=$(jq --raw-output .run_id .cache/verify/current-run.json)" >> "$GITHUB_OUTPUT"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+          POLYLOGUE_PYTEST_WORKERS: "4"
 
       # A zero exit is not the evidence; the run receipt is. The check fails
       # unless this run's receipt succeeded and either a pytest step ran to

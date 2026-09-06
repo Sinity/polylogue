@@ -22,7 +22,11 @@ _data_version = data_version
 _snapshot_identity = snapshot_index_file_set
 _snapshot_report_identity = snapshot_identity
 
-SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session"})
+# The origins whose parsers assert a session-level parent reference, which is
+# what a prefix-sharing edge is extracted from: `parent_session_provider_id=`
+# in claude/code_parser.py, codex.py and the hermes parsers (hermes_state.py,
+# hermes_spans.py, hermes_verification.py).
+SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session", "hermes-session"})
 REQUIRED_SESSION_LINK_COLUMNS = frozenset({"branch_point_message_id", "inheritance"})
 REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
     {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}
@@ -569,17 +573,19 @@ def _lineage_integrity(conn: Connection) -> dict[str, Any]:
           AND branch_point_message_id IS NOT NULL
         """,
     )
+    supported_origins = sorted(SUPPORTED_PREFIX_ORIGINS)
     unsupported_prefix_sharing = _rows(
         conn,
-        """
+        f"""
         SELECT s.origin, COUNT(*) AS links
         FROM session_links l
         JOIN sessions s ON s.session_id = l.src_session_id
         WHERE l.inheritance = 'prefix-sharing'
         GROUP BY s.origin
-        HAVING s.origin NOT IN ('codex-session', 'claude-code-session')
+        HAVING s.origin NOT IN ({", ".join("?" for _ in supported_origins)})
         ORDER BY links DESC, s.origin
         """,
+        supported_origins,
     )
     dangling_samples = _rows(
         conn,

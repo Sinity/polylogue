@@ -20,6 +20,7 @@ from polylogue.archive.zip_admission import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_store import BlobStore
@@ -224,6 +225,7 @@ def process_zip(
                         raw_bytes=b"",
                         source_path=f"{zip_path}:{name}",
                         source_index=None,
+                        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                         file_mtime=file_mtime,
                         provider_hint=entry_provider_hint,
                         blob_hash=blob_hash,

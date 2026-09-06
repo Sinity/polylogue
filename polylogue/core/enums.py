@@ -396,12 +396,12 @@ class LinkType(PolylogueStrEnum):
     polylogue-5dfu: ``REPAIRED`` was deleted -- it duplicated
     ``TopologyEdgeStatus.REPAIRED`` (same string, different column/meaning:
     a link *type* vs. a link's exceptional *status*) and had no producer,
-    fixture, or doc reference anywhere. ``FORK`` and ``RESUME`` look equally
-    unused from a live-archive row count alone (both are 0 rows today) but
-    each has a concrete, named producer: ``FORK`` is emitted by
-    ``sources/parsers/hermes_state.py``'s ``_branch_type`` whenever a Hermes
-    session's ``model_config._branched_from`` is set (real code, just never
-    yet hit by an ingested Hermes session); ``RESUME`` is the "resume
+    fixture, or doc reference anywhere. ``FORK`` and ``RESUME`` each have a
+    concrete, named producer: ``FORK`` is emitted by
+    ``sources/parsers/claude/code_parser.py`` for a Claude Code session whose
+    records carry ``forkedFrom``, and by ``sources/parsers/hermes_state.py``'s
+    ``_branch_type`` whenever a Hermes session's ``model_config._branched_from``
+    is set; ``RESUME`` is the "resume
     lineage edge" cross-repo fixture documented in
     ``docs/material-protocol-v1.md`` -- Sinex (``sinex-4j2.1.1``) is expected
     to emit it over the material-protocol-v1 wire once that side lands.
@@ -485,23 +485,28 @@ class StopReason(PolylogueStrEnum):
 
 
 class ToolResultUnknownReason(PolylogueStrEnum):
-    """Why ``blocks.tool_result_is_error`` is NULL for a tool_result block.
+    """Why a ``tool_result`` block records ``ToolOutcome.UNKNOWN``.
 
-    polylogue-cuxz.8: NULL alone conflates three distinct causes -- keeping
-    them distinguishable is the point (72% of blocks.tool_result_is_error is
-    NULL archive-wide, and "unknown" must not silently mean "known to be
-    fine"). NULL on this column (rather than one of these three) means the
-    outcome IS known (tool_result_is_error is set) -- this column only ever
-    describes an unknown outcome's reason.
+    A closed partition of the ways structural outcome evidence can be absent.
+    Every member is derived from the record's own structure -- never from the
+    result's prose, and never from a per-origin blanket. NULL on
+    ``blocks.tool_result_outcome_unknown_reason`` means the outcome is known.
     """
 
-    # The provider's own record carried no outcome signal at all (no
-    # is_error/exit_code field present in the source structure).
+    # The construct family carries outcome fields, and this record carried
+    # none of them.
     NOT_REPORTED = "not_reported"
-    # The provider reported an outcome signal, but the parser has a positive
-    # reason not to trust it for this record shape (e.g. a known-unreliable
-    # sentinel value for this origin).
+    # The provider reported an outcome signal the parser positively refuses
+    # for this record shape (e.g. a start acknowledgement's is_error=false,
+    # which only confirms that the invocation began).
     DISTRUSTED = "distrusted"
+    # The record carries an outcome-bearing field whose value falls outside
+    # the mapping this origin's parser declares, so the parser did not read a
+    # verdict out of a structure that has one.
+    UNSUPPORTED_CONSTRUCT = "unsupported_construct"
+    # The source declared an outcome-bearing payload that was not retained
+    # intact, so the evidence exists but cannot be read.
+    SOURCE_TRUNCATED = "source_truncated"
 
 
 class ToolOutcome(PolylogueStrEnum):

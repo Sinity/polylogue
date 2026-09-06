@@ -230,10 +230,77 @@ async def test_message_query_reads_cover_type_filters_batches_and_stream_limits(
 
 
 @pytest.mark.asyncio
-async def test_paginated_read_uses_sortkey_index_without_temp_btree(tmp_path: Path) -> None:
-    """idx_messages_session_sortkey (expression index, v15) must satisfy the
-    `(occurred_at_ms IS NULL), occurred_at_ms, message_id` ordering so paginated/
-    keyset reads do not fall back to a per-session temp B-tree sort (#2475)."""
+async def test_transcript_read_routes_agree_on_one_order(tmp_path: Path) -> None:
+    """Every route that states a session's message order returns one sequence.
+
+    The fixture's clock runs backwards against its content positions, which is
+    ordinary: 719 sessions across all seven origins are non-monotonic this way.
+
+    Anti-vacuity: ordering any single route by `(occurred_at_ms IS NULL),
+    occurred_at_ms, message_id` -- what ``iter_messages``,
+    ``get_messages_batch`` and the markdown export each did -- reverses that
+    route alone and turns the comparison red.
+    """
+    initialize_active_archive_root(tmp_path)
+    backend = SQLiteBackend(db_path=tmp_path / "index.db")
+    session_id = "unknown-export:conv-order-parity"
+    conv = make_session("conv-order-parity", title="Order Parity")
+    # position N carries timestamp 00:00:(9-N): content order and clock order are
+    # exact reverses of one another.
+    messages = [
+        make_message(
+            f"msg-{position}",
+            "conv-order-parity",
+            role="user" if position % 2 == 0 else "assistant",
+            text=f"body {position}",
+            timestamp=f"2026-01-01T00:00:{9 - position:02d}Z",
+            blocks=[{"type": "text", "text": f"body {position}"}],
+        )
+        for position in range(6)
+    ]
+    await save_session_to_archive(backend, session=conv, messages=messages)
+
+    expected = [archive_message_id(session_id, f"msg-{position}", position=position) for position in range(6)]
+
+    async with backend.connection() as conn:
+        composed = [message.message_id for message in await get_messages(conn, session_id)]
+        assert composed == expected
+
+        paginated, total, _completeness = await get_messages_paginated(conn, session_id, limit=100, offset=0)
+        assert [message.message_id for message in paginated] == expected
+        assert total == len(expected)
+
+        for chunk_size in (1, 2, 3, 5, 6, 100):
+            streamed = [message.message_id async for message in iter_messages(conn, session_id, chunk_size=chunk_size)]
+            assert streamed == expected, f"chunk_size={chunk_size}"
+
+        batched, _all_messages = await get_messages_batch(conn, [session_id])
+        assert [message.message_id for message in batched[session_id]] == expected
+
+        first, last, edge_total = await get_message_edge_windows(conn, session_id, edge_limit=2)
+        assert [message.message_id for message in first] == expected[:2]
+        assert [message.message_id for message in last] == expected[-2:]
+        assert edge_total == len(expected)
+
+        # `polylogue read --format ndjson` takes its total from
+        # get_messages_paginated and then slices the iter_messages stream by
+        # offset. The two must page the same sequence.
+        for offset in range(len(expected) + 1):
+            page, page_total, _ = await get_messages_paginated(conn, session_id, limit=2, offset=offset)
+            streamed_page = [message.message_id async for message in iter_messages(conn, session_id, limit=offset + 2)][
+                offset : offset + 2
+            ]
+            assert [message.message_id for message in page] == streamed_page, f"offset={offset}"
+            assert page_total == total
+
+    await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_transcript_reads_use_position_index_without_temp_btree(tmp_path: Path) -> None:
+    """`idx_messages_session_position` must satisfy the `position, variant_index`
+    ordering every transcript read uses, so the keyset stream does not fall back
+    to a per-session temp B-tree sort on every chunk (#2475)."""
     import sqlite3
 
     initialize_active_archive_root(tmp_path)
@@ -244,6 +311,7 @@ async def test_paginated_read_uses_sortkey_index_without_temp_btree(tmp_path: Pa
         for i in range(20)
     ]
     await save_session_to_archive(backend, session=conv, messages=messages)
+    await backend.close()
 
     conn = sqlite3.connect(tmp_path / "index.db")
     try:
@@ -251,12 +319,13 @@ async def test_paginated_read_uses_sortkey_index_without_temp_btree(tmp_path: Pa
         query = (
             "SELECT m.message_id FROM messages m JOIN sessions s ON s.session_id = m.session_id "
             "WHERE m.session_id = ? "
-            "ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id LIMIT 50"
+            "AND (m.position > ? OR (m.position = ? AND m.variant_index > ?)) "
+            "ORDER BY m.position, m.variant_index LIMIT 50"
         )
-        plan_rows = conn.execute(f"EXPLAIN QUERY PLAN {query}", (sid,)).fetchall()
+        plan_rows = conn.execute(f"EXPLAIN QUERY PLAN {query}", (sid, 0, 0, 0)).fetchall()
         plan = " | ".join(str(r[3]) for r in plan_rows)
     finally:
         conn.close()
 
     assert "TEMP B-TREE" not in plan.upper(), f"unexpected temp sort in plan: {plan}"
-    assert "idx_messages_session_sortkey" in plan, f"sortkey index not used: {plan}"
+    assert "idx_messages_session_position" in plan, f"position index not used: {plan}"
