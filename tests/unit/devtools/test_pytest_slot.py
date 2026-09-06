@@ -7,7 +7,11 @@ here and the marker file appears. Widening ``INHERITED_ENVIRONMENT_KEYS`` makes
 either half of the temporary-directory containment (the ``--basetemp``
 argument or the exported TMPDIR) makes
 ``test_a_submitted_run_contains_its_temporary_trees`` red. Treating a job id
-as ownership makes ``test_a_job_id_is_never_slot_ownership`` red.
+as ownership makes ``test_a_job_id_is_never_slot_ownership`` red. Publishing the
+result document only on the timeout path makes
+``test_a_queued_run_publishes_its_result_document`` red, and dropping the memory
+sampler makes ``test_a_held_run_records_what_it_took`` red -- a run that is
+killed leaves the receipt as the only account of what it took.
 
 Every submitting test here resolves ``agentctl`` from a fake that is the whole
 PATH, so a green run says nothing about what the workstation has deployed; the
@@ -667,3 +671,56 @@ def test_a_refused_cancellation_leaves_the_launch_file_for_the_job(tmp_path: Pat
     assert _verbs(record)[-1] == "job cancel 11"
     surviving = list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
     assert len(surviving) == 1, surviving
+
+
+@pytest.mark.uses_real_clock("measures a real child process group over sampling intervals")
+def test_a_held_run_records_what_it_took(tmp_path: Path) -> None:
+    """The receipt attributes the run's peak to the processes that took it."""
+    command = [
+        sys.executable,
+        "-c",
+        "import time; block = b'x' * (96 * 1024 * 1024); time.sleep(1.2); del block",
+    ]
+
+    outcome = run_pytest(command, cwd=str(tmp_path), env=_environment(POLYLOGUE_PYTEST_SLOT="held"), root=tmp_path)
+
+    assert outcome.returncode == 0
+    receipt = outcome.receipt
+    assert receipt is not None
+    assert receipt["kind"] == "polylogue.pytest-slot-result"
+    memory = receipt["memory"]
+    assert memory["observed_samples"] >= 1
+    # The child allocated 96 MiB; the peak is at least that, and it is named.
+    assert memory["peak"]["pss_kib"] >= 96 * 1024
+    assert memory["processes"][0]["peak_rss_kib"] >= 96 * 1024
+    assert memory["host_mem_available_mib"]["minimum"] is not None
+
+
+@pytest.mark.uses_real_clock("runs a real child through the slot runner")
+def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A run that ends normally files the same document a timed-out one does.
+
+    The waiting client reads that file: it is how the width a queued run chose,
+    and the peak it then reached, reach the verification receipt at all.
+    """
+    log_path = tmp_path / "slot.log"
+    launch_path = tmp_path / "launch.json"
+    launch_path.write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-c", "import time; time.sleep(0.7)"],
+                "working_directory": str(tmp_path),
+                "environment": {"PATH": os.environ["PATH"]},
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert pytest_slot.main([str(launch_path)]) == 0
+
+    published = json.loads(log_path.with_suffix(".result.json").read_text(encoding="utf-8"))
+    assert published == json.loads(capsys.readouterr().out)
+    assert published["status"] == "success"
+    assert published["memory"]["observed_samples"] >= 1
+    assert published["memory"]["processes"], "the run's own processes are named"
