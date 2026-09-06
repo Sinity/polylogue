@@ -2517,10 +2517,10 @@ def test_unreadable_io_counter_measures_as_no_observation(tmp_path: Path, monkey
 
     real_open = builtins.open
 
-    def refuse_proc_io(path: object, *args: object, **kwargs: object) -> object:
+    def refuse_proc_io(path: Any, *args: Any, **kwargs: Any) -> Any:
         if path == "/proc/self/io":
             raise PermissionError(path)
-        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+        return real_open(path, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "open", refuse_proc_io)
     artifact = build_immutable_tree(
