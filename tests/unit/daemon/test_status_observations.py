@@ -219,9 +219,10 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path) -> 
     assert payload["ok"] is False
     halted = payload["halted_units"]
     assert isinstance(halted, list)
-    assert [record["unit"] for record in halted] == ["source:claude-code"]
-    assert halted[0]["reason"] == "terminal_refusal"
-    assert halted[0]["frame"] == "daemon:1"
+    records = [record for record in halted if isinstance(record, dict)]
+    assert [record["unit"] for record in records] == ["source:claude-code"]
+    assert records[0]["reason"] == "terminal_refusal"
+    assert records[0]["frame"] == "daemon:1"
 
     lines = format_daemon_status_lines(payload)
     assert any("source:claude-code" in line for line in lines)

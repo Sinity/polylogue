@@ -19,14 +19,14 @@ neither derived from nor authority over archive content.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 import threading
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
+
+from polylogue.core.durable_fs import atomic_replace
 
 __all__ = [
     "HALT_STORE_RELATIVE_PATH",
@@ -227,15 +227,8 @@ def _write_records(path: Path, records: Mapping[str, HaltRecord]) -> None:
         "version": _STORE_VERSION,
         "halts": [record.as_dict() for record in sorted(records.values(), key=lambda item: item.unit)],
     }
-    handle, temp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".halts-", suffix=".json")
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(handle, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp_path, path)
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
-        raise
+    atomic_replace(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        mode=0o600,
+    )
