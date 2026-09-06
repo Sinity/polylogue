@@ -34,6 +34,7 @@ from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as parse_codex
+from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.sources.parsers.local_agent import (
     looks_like_gemini_cli,
     looks_like_hermes,
@@ -197,6 +198,23 @@ def _gemini_cli_payload(tool_record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _drive_payload(outcome: str | None) -> dict[str, Any]:
+    execution: dict[str, Any] = {"output": "42"}
+    if outcome is not None:
+        execution["outcome"] = outcome
+    return {
+        "id": "drive-outcome",
+        "title": "outcome",
+        "createTime": "2026-03-01T09:00:00Z",
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "run it"},
+                {"role": "model", "executableCode": {"code": "print(42)"}, "codeExecutionResult": execution},
+            ]
+        },
+    }
+
+
 def _hermes_payload(tool_content: str) -> dict[str, Any]:
     return {
         "session_id": "hermes-outcome",
@@ -218,7 +236,7 @@ def _hermes_payload(tool_content: str) -> dict[str, Any]:
 # Detection -> parser -> writer -> hydration -> actions -> public envelope
 # --------------------------------------------------------------------------
 
-_ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str], ...] = (
+_ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str | None], ...] = (
     (
         "claude-code-success",
         Provider.CLAUDE_CODE,
@@ -384,6 +402,37 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[], ParsedSession], Triple, str], .
         (ToolOutcome.UNKNOWN.value, None, TRUNCATED),
         "outcome_unknown",
     ),
+    # AI Studio / Drive results carry no tool id, so they are never paired into
+    # ``actions`` -- the structural outcome still comes from the record's own
+    # ``outcome`` field rather than the text it is rendered into.
+    (
+        "aistudio-drive-outcome-ok",
+        Provider.DRIVE,
+        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_OK"), "drive-outcome"),
+        (ToolOutcome.OK.value, 0, None),
+        None,
+    ),
+    (
+        "aistudio-drive-outcome-failed",
+        Provider.DRIVE,
+        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_FAILED"), "drive-outcome"),
+        (ToolOutcome.ERROR.value, 1, None),
+        None,
+    ),
+    (
+        "aistudio-drive-unmapped-outcome",
+        Provider.DRIVE,
+        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload("OUTCOME_SOMETHING_NEW"), "drive-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
+        None,
+    ),
+    (
+        "aistudio-drive-absent-outcome",
+        Provider.DRIVE,
+        lambda: parse_chunked_prompt(Provider.DRIVE, _drive_payload(None), "drive-outcome"),
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        None,
+    ),
 )
 
 
@@ -397,7 +446,7 @@ def test_provider_record_reaches_the_public_envelope_with_one_triple(
     provider: Provider,
     build: Callable[[], ParsedSession],
     expected: Triple,
-    expected_state: str,
+    expected_state: str | None,
     tmp_path: Path,
 ) -> None:
     """One provider record, one structural triple, identical at every surface."""
@@ -414,7 +463,8 @@ def test_provider_record_reaches_the_public_envelope_with_one_triple(
         assert stored == [expected], f"{label}: stored {stored}"
         assert _envelope_triples(conn, session_id) == stored, f"{label}: envelope disagrees with the block"
         states = _action_states(conn, session_id)
-        assert states == [(expected_state, expected[2])], f"{label}: actions projected {states}"
+        expected_states = [] if expected_state is None else [(expected_state, expected[2])]
+        assert states == expected_states, f"{label}: actions projected {states}"
     finally:
         conn.close()
 
