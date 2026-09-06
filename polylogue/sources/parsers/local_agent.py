@@ -31,6 +31,11 @@ from .base import (
     mark_last_occurrence_as_active_leaf,
     parser_admission,
 )
+from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
+from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
+from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import profile_root_for_session_snapshot as _profile_root_for_session_snapshot
+from .hermes_identity import qualified_session_id as _qualified_session_id
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
@@ -236,8 +241,23 @@ def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
 
 
 @parser_admission("hermes")
-def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
-    session_id = _string(payload.get("session_id")) or fallback_id
+def parse_hermes(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    source_path: str | Path | None = None,
+) -> ParsedSession:
+    """Parse one ``<hermes_root>/sessions/session_*.json`` snapshot.
+
+    ``source_path`` carries the profile qualifier: this snapshot family and
+    ``state.db`` (``hermes_state.py``) describe the same logical Hermes
+    sessions, and both must build identity from
+    ``hermes_identity.qualified_session_id`` off the same install root or one
+    conversation lands as two archive sessions. Without a path no profile is
+    assertable, so identity stays unqualified rather than inventing a key.
+    """
+    raw_session_id = _string(payload.get("session_id")) or fallback_id
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -274,12 +294,21 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
-        title=session_id,
+        title=raw_session_id,
         created_at=_string(payload.get("session_start")),
         updated_at=_string(payload.get("last_updated")),
         messages=messages,
         session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+    )
+
+
+def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | None) -> str:
+    if source_path is None:
+        return raw_session_id
+    return _qualified_session_id(
+        raw_session_id,
+        _profile_key(_profile_root_for_session_snapshot(Path(source_path))),
     )
 
 
@@ -466,6 +495,8 @@ def _parse_hermes_message(
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
         ),
+        end_turn=_end_turn_from_finish_reason(record.get("finish_reason")),
+        stop_reason=_stop_reason_from_finish_reason(record.get("finish_reason")),
         # polylogue-gzgyl: this JSON-sidecar Hermes wire path has no
         # agent/subagent artifact ambiguity for a plain user turn --
         # positive-evidence override for the shared classify_material_origin
