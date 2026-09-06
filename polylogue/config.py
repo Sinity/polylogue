@@ -2152,6 +2152,23 @@ def _resolved_runtime_path(value: str | Path | None, *, bootstrap: _BootstrapPat
     return _expand_bootstrap_path(value, home=bootstrap.home, cwd=bootstrap.cwd)
 
 
+def _resolved_archive_root(value: str | Path | None, *, bootstrap: _BootstrapPaths, fallback: Path) -> Path:
+    """Project the configured archive root, refusing a cwd-relative value.
+
+    The config-layer twin of
+    :func:`polylogue.paths._roots._require_absolute_archive_root`, which guards
+    the ``POLYLOGUE_ARCHIVE_ROOT`` fast path. Unlike every other runtime path,
+    a relative archive root is never anchored to the process cwd;
+    :func:`config_diagnostics` reports it as ``config_path_not_absolute``.
+    """
+    if value is None or not str(value).strip():
+        return fallback
+    raw = str(value)
+    if raw != "~" and not raw.startswith("~/") and not Path(raw).is_absolute():
+        raise ConfigError(f"archive root must be an absolute path, got {raw!r}")
+    return _expand_bootstrap_path(raw, home=bootstrap.home, cwd=bootstrap.cwd)
+
+
 def resolve_archive_root(
     *,
     environment: Mapping[str, str] | None = None,
@@ -2180,7 +2197,7 @@ def resolve_archive_root(
     """
     bootstrap = _snapshot_bootstrap(environment=environment, cwd=cwd, home=home)
     settings = load_polylogue_config(_bootstrap=bootstrap)
-    return _resolved_runtime_path(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
+    return _resolved_archive_root(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
 
 
 def resolve_runtime_config(
@@ -2200,7 +2217,7 @@ def resolve_runtime_config(
         cli_overrides=cli_overrides,
         _bootstrap=bootstrap,
     )
-    archive = _resolved_runtime_path(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
+    archive = _resolved_archive_root(settings.archive_root, bootstrap=bootstrap, fallback=bootstrap.data_home)
     render = archive / "render"
     browser_spool = _resolved_runtime_path(
         settings.browser_capture_spool_path,
