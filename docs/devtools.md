@@ -107,6 +107,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
+| `devtools archive tool-pairing-census` | Classify every tool call/result pairing gap against declared evidence. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

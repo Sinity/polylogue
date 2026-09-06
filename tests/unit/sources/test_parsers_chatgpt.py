@@ -2330,8 +2330,10 @@ def test_retrieved_source_content_types_become_search_result_constructs(
     content_type: str, content_extra: dict[str, object], expected_title: str | None
 ) -> None:
     """tether_quote/tether_browsing_display/sonic_webpage are retrieved-source
-    evidence, not free text -- they become SEARCH_RESULT web constructs on a
-    DOCUMENT block (polylogue-xofj/polylogue-zocm), not a bare TEXT block.
+    evidence, not free text -- they carry a SEARCH_RESULT web construct
+    (polylogue-xofj/polylogue-zocm), not bare text. On a ``role: tool`` node
+    the block is the browsing tool's answer, so it is a TOOL_RESULT owned by
+    the call and its construct survives that typing.
     """
     content: dict[str, object] = {"content_type": content_type, **content_extra}
     if content_type == "tether_browsing_display":
@@ -2353,9 +2355,9 @@ def test_retrieved_source_content_types_become_search_result_constructs(
 
     messages, _attachments = extract_messages_from_mapping(mapping)
     message = messages[0]
-    document_blocks = [b for b in message.blocks if b.type == BlockType.DOCUMENT]
-    assert document_blocks, f"expected a DOCUMENT block for {content_type}"
-    constructs = document_blocks[0].web_constructs
+    result_blocks = [b for b in message.blocks if b.type == BlockType.TOOL_RESULT]
+    assert result_blocks, f"expected a TOOL_RESULT block for {content_type}"
+    constructs = result_blocks[0].web_constructs
     assert len(constructs) == 1
     construct = constructs[0]
     assert construct.construct_type.value == "search_result"
