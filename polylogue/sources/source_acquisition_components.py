@@ -17,6 +17,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -84,11 +85,17 @@ class DetectedEntryPayload:
 
 @dataclass(frozen=True, slots=True)
 class SerializedSplitPayload:
-    """A serialized split session payload ready for blob persistence."""
+    """A serialized acquisition unit ready for blob persistence.
+
+    ``addressing_mode`` is the unit's address kind, not a summary of
+    ``source_index``: a whole-member document has no element index, and a
+    member that yields exactly one element still yields it as an element.
+    """
 
     provider: Provider
     payload_bytes: bytes
     source_index: int | None
+    addressing_mode: MemberAddressingMode = MemberAddressingMode.ELEMENT_OF_CONTAINER
 
 
 @dataclass(slots=True)
@@ -109,6 +116,7 @@ class SplitPayloadBuffer:
                 provider=provider,
                 payload_bytes=payload_bytes,
                 source_index=self._next_source_index,
+                addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
             )
             self._next_source_index += 1
             return (payload,)
@@ -123,6 +131,7 @@ class SplitPayloadBuffer:
                 provider=pending_provider,
                 payload_bytes=pending_payload_bytes,
                 source_index=index,
+                addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
             )
             for index, (pending_provider, pending_payload_bytes) in enumerate(
                 self._pending,
@@ -250,6 +259,7 @@ def raw_data_record(
     blob_size: int,
     source_index: int | None = None,
     blob_publication_receipt_id: str | None = None,
+    addressing_mode: MemberAddressingMode | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -260,6 +270,7 @@ def raw_data_record(
         blob_hash=blob_hash,
         blob_size=blob_size,
         blob_publication_receipt_id=blob_publication_receipt_id,
+        addressing_mode=addressing_mode,
     )
 
 
@@ -311,6 +322,7 @@ def make_split_entry_raw_data(
         blob_size=blob_size,
         source_index=split_payload.source_index,
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
+        addressing_mode=split_payload.addressing_mode,
     )
 
 
@@ -519,6 +531,7 @@ def stream_preserved_zip_entry_raw_data(
         blob_size=blob_size,
         source_index=source_index,
         blob_publication_receipt_id=publication_id,
+        addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
     )
 
 
@@ -558,6 +571,7 @@ def _iter_zip_entry_split_payloads(
                         provider=detected.provider,
                         payload_bytes=json_dumps_bytes(detected.payload),
                         source_index=split_buffer.pending_index,
+                        addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
                     )
                     continue
                 break
@@ -608,6 +622,7 @@ def replay_zip_entry_acquisition_payloads(
                 provider=entry_provider_hint,
                 payload_bytes=handle.read(),
                 source_index=None,
+                addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
             )
         return
 
@@ -626,6 +641,7 @@ def replay_zip_entry_acquisition_payloads(
             provider=state.detected_provider,
             payload_bytes=handle.read(),
             source_index=None,
+            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
         )
 
 

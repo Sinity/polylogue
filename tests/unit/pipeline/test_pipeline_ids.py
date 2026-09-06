@@ -385,7 +385,9 @@ def _golden_session() -> ParsedSession:
                         tool_id="t1",
                         tool_input={"command": "echo hi", "nested": {"a": 1, "b": [1, 2, 3]}},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="t1", text="hi"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", tool_id="t1", text="hi"
+                    ),
                 ],
             ),
         ],

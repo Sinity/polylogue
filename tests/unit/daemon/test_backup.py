@@ -565,7 +565,8 @@ def test_full_evidence_backup_accepts_proven_recoverable_missing_raw_blob(
         )
         if source_kind == "zip":
             conn.execute(
-                "INSERT INTO raw_container_coordinates VALUES (?, 'zip-v2', ?, ?)",
+                "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
+                " VALUES (?, 'zip-v2', ?, ?)",
                 (raw_id, 0, 0),
             )
 
@@ -658,7 +659,8 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
             (blob_hash, raw_id, "raw_payload", retired_recorded_path, len(payload), 1),
         )
         conn.execute(
-            "INSERT INTO raw_container_coordinates VALUES (?, 'zip-v2', ?, ?)",
+            "INSERT INTO raw_container_coordinates (raw_id, coordinate_format, entry_ordinal, split_index)"
+            " VALUES (?, 'zip-v2', ?, ?)",
             (raw_id, 0, 0),
         )
 

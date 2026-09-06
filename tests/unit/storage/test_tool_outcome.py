@@ -85,7 +85,14 @@ def test_sidecar_execution_evidence_derives_result_outcome(tmp_path: Path) -> No
                     ParsedMessage(
                         provider_message_id="result",
                         role=Role.TOOL,
-                        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="failed")],
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                outcome_unknown_reason="not_reported",
+                                tool_id="call-1",
+                                text="failed",
+                            )
+                        ],
                     ),
                 ],
                 session_events=[
@@ -241,65 +248,6 @@ def test_real_parser_unknown_shape_is_admitted_by_writer(
         conn.close()
 
 
-@pytest.mark.parametrize("provider", [Provider.CLAUDE_CODE, Provider.CODEX, Provider.HERMES])
-def test_declared_origin_without_verdict_is_admitted_as_unknown(provider: Provider, tmp_path: Path) -> None:
-    """Declared origins preserve a missing provider verdict as typed unknown.
-
-    Anti-vacuity: removing the origin declaration makes this normalized
-    no-verdict result refuse at the writer seam.
-    """
-    conn = _connect(tmp_path / f"declared-{provider.value}.db")
-    try:
-        session_id = write_parsed_session_to_archive(
-            conn,
-            _session(
-                provider,
-                ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="provider omitted a verdict"),
-            ),
-        )
-        row = conn.execute(
-            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
-            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
-            (session_id,),
-        ).fetchone()
-        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
-    finally:
-        conn.close()
-
-
-@pytest.mark.parametrize("content_type", ["execution_output", "computer_output", "citable_code_output"])
-def test_chatgpt_declared_unknown_output_is_admitted_without_inventing_success(
-    content_type: str, tmp_path: Path
-) -> None:
-    """Recognized ChatGPT result shapes with no status become explicit unknown.
-
-    Anti-vacuity: removing the writer's content-type normalization makes this
-    supported parser output raise instead of storing ``unknown``.
-    """
-    conn = _connect(tmp_path / f"chatgpt-{content_type}.db")
-    try:
-        session_id = write_parsed_session_to_archive(
-            conn,
-            _session(
-                Provider.CHATGPT,
-                ParsedContentBlock(
-                    type=BlockType.TOOL_RESULT,
-                    tool_id="call-1",
-                    text="provider has not reported a terminal status",
-                    metadata={"content_type": content_type},
-                ),
-            ),
-        )
-        row = conn.execute(
-            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
-            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
-            (session_id,),
-        ).fetchone()
-        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
-    finally:
-        conn.close()
-
-
 def test_unpaired_tool_use_is_no_result(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "no-result.db")
     try:
@@ -382,39 +330,12 @@ def test_merge_known_verdict_clears_conflicting_legacy_exit_code(
         conn.close()
 
 
-def test_result_without_structural_evidence_is_admitted_as_unknown(tmp_path: Path) -> None:
-    """A ChatGPT result with no structural outcome is unknown, never success.
-
-    Anti-vacuity: letting the writer read successful-looking output text as a
-    verdict turns this row into ``ok``/``is_error=0``; dropping the
-    not-reported normalization leaves a flat NULL reason.
-    """
-    conn = _connect(tmp_path / "not-reported.db")
-    try:
-        session_id = write_parsed_session_to_archive(
-            conn,
-            _session(
-                Provider.CHATGPT,
-                ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="looks successful"),
-            ),
-        )
-        row = conn.execute(
-            "SELECT tool_outcome, tool_result_is_error, tool_result_outcome_unknown_reason "
-            "FROM blocks WHERE session_id = ? AND block_type = 'tool_result'",
-            (session_id,),
-        ).fetchone()
-        assert tuple(row) == (ToolOutcome.UNKNOWN.value, None, ToolResultUnknownReason.NOT_REPORTED.value)
-    finally:
-        conn.close()
-
-
 def test_result_without_any_outcome_evidence_refuses_write(tmp_path: Path) -> None:
     """The writer seam refuses a tool_result carrying no outcome evidence at all.
 
-    ``ParsedContentBlock`` normalizes a missing verdict to ``not_reported``,
-    so the reason is cleared after construction here to reproduce the parser
-    defect the seam exists to catch: a result reaching the writer with neither
-    a verdict nor an unknown reason.
+    ``ParsedContentBlock`` refuses this shape at construction, so the reason is
+    cleared afterwards to reproduce a result reaching the writer past the
+    producer boundary -- the hydration-bypass the seam exists to catch.
 
     Anti-vacuity: deleting the ``outcome is None`` refusal in
     ``derive_tool_outcomes`` writes the block with a NULL ``tool_outcome``
@@ -424,7 +345,12 @@ def test_result_without_any_outcome_evidence_refuses_write(tmp_path: Path) -> No
     try:
         session = _session(
             Provider.CHATGPT,
-            ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="call-1", text="looks successful"),
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                outcome_unknown_reason="not_reported",
+                tool_id="call-1",
+                text="looks successful",
+            ),
         )
         block = session.messages[1].blocks[0]
         block.outcome_unknown_reason = None

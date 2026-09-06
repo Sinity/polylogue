@@ -53,6 +53,7 @@ from polylogue.core.metrics import (
 )
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
+    MemberAddressingMode,
     zip_member_identity_coordinate,
     zip_member_raw_id,
     zip_member_source_index,
@@ -440,6 +441,9 @@ def _record_zip_container_coordinate(
         coordinate_format="zip-v2",
         entry_ordinal=entry_ordinal,
         split_index=split_index,
+        # A record that did not come from container-member acquisition has no
+        # reading to assert; the coordinate is still worth keeping.
+        addressing_mode=record.addressing_mode,
     )
 
 
@@ -3840,6 +3844,10 @@ class LiveBatchProcessor:
                             member_provider = raw_data.provider_hint or fallback_provider
                             member_size = raw_data.blob_size or 0
                             total_bytes += member_size
+                            # A whole-member document has no element index.
+                            # ``split_index`` 0 is the coordinate slot it
+                            # occupies, and the acquired addressing mode --
+                            # not the slot -- says which reading applies.
                             split_index = raw_data.source_index if raw_data.source_index is not None else 0
                             source_index = zip_member_source_index(
                                 entry_ordinal=entry_ordinal,
@@ -3862,6 +3870,7 @@ class LiveBatchProcessor:
                                         source_name=member_provider.value,
                                         source_path=raw_data.source_path,
                                         source_index=source_index,
+                                        addressing_mode=raw_data.addressing_mode,
                                         blob_size=member_size,
                                         blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
                                         acquired_at=acquired_at,
@@ -3947,6 +3956,7 @@ class LiveBatchProcessor:
                                 source_name=fallback_provider.value,
                                 source_path=raw_data.source_path,
                                 source_index=source_index,
+                                addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                                 blob_size=raw_data.blob_size or 0,
                                 blob_publication_receipt_id=raw_data.blob_publication_receipt_id,
                                 acquired_at=acquired_at,

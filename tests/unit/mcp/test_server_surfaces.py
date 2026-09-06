@@ -317,6 +317,7 @@ async def test_get_projection_file_edits_surfaces_structured_patch_evidence(
                     blocks=[
                         ParsedContentBlock(
                             type=BlockType.TOOL_RESULT,
+                            outcome_unknown_reason="not_reported",
                             tool_id="edit-tool-1",
                             text="applied",
                             file_edit=ParsedFileEdit(

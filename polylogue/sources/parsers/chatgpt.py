@@ -14,6 +14,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource, WebConstructType
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     AdmissionLedger,
@@ -226,6 +227,31 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             )
         )
     return timings
+
+
+#: The export's terminal states for a completed tool run. Everything else --
+#: including ``in_progress`` -- is a state with no verdict in it.
+_CHATGPT_TERMINAL_NODE_STATES: dict[str, bool] = {
+    "finished_partial_completion": True,
+    "finished_successfully": False,
+}
+#: Non-terminal states the export is known to emit: the run has not concluded,
+#: so no outcome was reported. Distinct from a token outside both sets, which
+#: is a state this mapping does not cover.
+_CHATGPT_UNCONCLUDED_NODE_STATES = frozenset({"in_progress"})
+
+
+def _node_status_outcome(node_status: object) -> tuple[bool | None, str | None]:
+    """Map a tool-result node's own ``status`` to (is_error, unknown reason).
+
+    ChatGPT exports carry no exit code, so the node's terminal state is the
+    only structural verdict a tool result has. Read from the field, never from
+    the result text.
+    """
+    if isinstance(node_status, str) and node_status in _CHATGPT_TERMINAL_NODE_STATES:
+        return _CHATGPT_TERMINAL_NODE_STATES[node_status], None
+    unrecognized = isinstance(node_status, str) and node_status not in _CHATGPT_UNCONCLUDED_NODE_STATES
+    return None, unknown_reason(is_error=None, outcome_field_present=unrecognized)
 
 
 def _string_value(payload: Mapping[str, object], *keys: str) -> str | None:
@@ -815,21 +841,9 @@ def extract_messages_from_mapping(
             # pair carry a shared tool_id and the `actions` view can join
             # them.
             #
-            # is_error reads the node's own `status` (polylogue-grub): the
-            # export's official terminal states for a completed tool run are
-            # "finished_successfully" and "finished_partial_completion" --
-            # exactly the states that determine whether the run failed.
-            # "in_progress" (and anything else) has no concluded outcome yet
-            # and stays honestly unknown; there is no numeric exit code in
-            # this export, so exit_code is never set here.
-            node_status = msg.get("status")
-            execution_is_error = (
-                True
-                if node_status == "finished_partial_completion"
-                else False
-                if node_status == "finished_successfully"
-                else None
-            )
+            # The outcome comes from the node's own `status` -- see
+            # ``_node_status_outcome``; this export carries no exit code.
+            execution_is_error, execution_unknown_reason = _node_status_outcome(msg.get("status"))
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
@@ -837,6 +851,7 @@ def extract_messages_from_mapping(
                     tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
                     is_error=execution_is_error,
+                    outcome_unknown_reason=execution_unknown_reason,
                 )
             )
         elif content_type == "computer_output":
@@ -848,14 +863,7 @@ def extract_messages_from_mapping(
             # 4fm3/polylogue-grub) so the actions view can join the pair.
             # is_error reads the node's own `status`, the same terminal-
             # state vocabulary execution_output reads.
-            node_status = msg.get("status")
-            computer_is_error = (
-                True
-                if node_status == "finished_partial_completion"
-                else False
-                if node_status == "finished_successfully"
-                else None
-            )
+            computer_is_error, computer_unknown_reason = _node_status_outcome(msg.get("status"))
             state = content.get("state")
             state_url = _string_value(state, "url") if isinstance(state, Mapping) else None
             state_title = _string_value(state, "title") if isinstance(state, Mapping) else None
@@ -867,6 +875,7 @@ def extract_messages_from_mapping(
                     tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
                     is_error=computer_is_error,
+                    outcome_unknown_reason=computer_unknown_reason,
                 )
             )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
@@ -937,14 +946,7 @@ def extract_messages_from_mapping(
             # document it was read from -- "a code result with citation
             # anchors". tool_id/is_error follow the same execution_output
             # convention as the branches above.
-            node_status = msg.get("status")
-            citable_is_error = (
-                True
-                if node_status == "finished_partial_completion"
-                else False
-                if node_status == "finished_successfully"
-                else None
-            )
+            citable_is_error, citable_unknown_reason = _node_status_outcome(msg.get("status"))
             cite_metadata = content.get("metadata")
             cite_constructs: list[ParsedWebConstruct] = []
             if isinstance(cite_metadata, Mapping):
@@ -970,6 +972,7 @@ def extract_messages_from_mapping(
                     tool_id=parent_message_provider_id,
                     metadata={"content_type": content_type},
                     is_error=citable_is_error,
+                    outcome_unknown_reason=citable_unknown_reason,
                     web_constructs=cite_constructs,
                 )
             )

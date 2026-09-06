@@ -101,6 +101,7 @@ def _seed_parity_fixture(archive_root: Path) -> tuple[str, str]:
                             ),
                             ParsedContentBlock(
                                 type=BlockType.TOOL_RESULT,
+                                outcome_unknown_reason="not_reported",
                                 tool_id="tool-mystery",
                                 text="unrecognized response",
                             ),

@@ -22,6 +22,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.message_owner import MessageOwnerCoordinate
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 
@@ -198,10 +199,9 @@ class ParsedContentBlock(BaseModel):
     is_error: bool | None = None
     exit_code: int | None = None
     tool_outcome: ToolOutcome | None = None
-    # polylogue-2qx.4 / polylogue-cuxz.8: why `is_error` is None for a
-    # tool_result block -- see ``core.enums.ToolResultUnknownReason``. Set
-    # this whenever `is_error` is left None on a tool_result block so the
-    # unknown has a recorded cause instead of a flat NULL.
+    # Why `is_error` is None on a tool_result block -- see
+    # ``core.enums.ToolResultUnknownReason``. Required whenever a tool_result
+    # carries no structural outcome; construction refuses without it.
     outcome_unknown_reason: str | None = None
     # polylogue-2qx.4 / polylogue-cgfy: file-edit evidence, attached to the
     # TOOL_RESULT block carrying the provider's edit outcome fields.
@@ -221,11 +221,15 @@ class ParsedContentBlock(BaseModel):
             except ValueError as exc:
                 raise ValueError("tool-result unknown reason is outside the normalized vocabulary") from exc
         if self.is_error is None and self.outcome_unknown_reason is None:
-            # A provider result with no structural outcome is an honest
-            # not-reported result. Parsers with stronger evidence assign a
-            # more specific reason before construction.
-            self.outcome_unknown_reason = ToolResultUnknownReason.NOT_REPORTED.value
-        elif self.is_error is not None and self.outcome_unknown_reason is not None:
+            # Fail closed at the producer boundary: a reason assigned here
+            # would be one no parser derived from the record, which is exactly
+            # what the unknown-reason contract exists to exclude. The parser
+            # reads its own construct and states why.
+            raise ValueError(
+                "tool_result without a structural outcome must carry one "
+                "ToolResultUnknownReason derived from its own construct"
+            )
+        if self.is_error is not None and self.outcome_unknown_reason is not None:
             raise ValueError("known tool-result outcomes cannot carry an unknown reason")
         return self
 
@@ -623,6 +627,11 @@ class RawSessionData(BaseModel):
     raw_bytes: bytes = b""
     source_path: str
     source_index: int | None = None
+    # The address kind this payload was acquired under. ``source_index`` is a
+    # position inside a container member and cannot express "the member
+    # document itself"; ``None`` means the acquiring route is not a container
+    # member at all.
+    addressing_mode: MemberAddressingMode | None = None
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None

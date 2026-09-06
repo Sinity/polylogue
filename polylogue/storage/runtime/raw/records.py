@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from polylogue.archive.revision_authority import RawRevisionEnvelope
 from polylogue.core.enums import ArtifactSupportStatus, Provider, ValidationMode, ValidationStatus
+from polylogue.core.raw_coordinates import MemberAddressingMode
 
 
 class RawSessionRecord(BaseModel):
@@ -17,6 +18,10 @@ class RawSessionRecord(BaseModel):
     source_name: str | None = None
     source_path: str
     source_index: int | None = None
+    # Container-member address kind, carried from acquisition so the source
+    # tier records how this payload is addressed rather than inferring it
+    # from a position that cannot express a whole-member document.
+    addressing_mode: MemberAddressingMode | None = Field(default=None, exclude=True)
     blob_size: int
     acquired_at: str
     file_mtime: str | None = None

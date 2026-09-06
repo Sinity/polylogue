@@ -33,6 +33,7 @@ from polylogue.sources.parsers.base_models import (
     ParsedSessionEvent,
 )
 from polylogue.sources.parsers.base_support import derive_attachment_provenance
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 
 def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock]:
@@ -65,6 +66,14 @@ def _parsed_blocks_for_turn(turn: BrowserCaptureTurn) -> list[ParsedContentBlock
             metadata=block.metadata,
             is_error=block.is_error,
             exit_code=block.exit_code,
+            # The capture adapter's ``is_error``/``exit_code`` are already
+            # typed, so a result that reaches here without one is a page the
+            # extension read no outcome from.
+            outcome_unknown_reason=(
+                unknown_reason(is_error=block.is_error, exit_code=block.exit_code)
+                if block.type is BlockType.TOOL_RESULT
+                else None
+            ),
         )
         for block in turn.blocks
     ]
