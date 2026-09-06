@@ -1644,22 +1644,45 @@ def test_periodic_raw_materialization_burst_stops_without_progress(
     assert drains == 1
 
 
-def test_periodic_raw_materialization_yields_to_pending_browser_capture_spool(
+def test_a_pending_browser_capture_spool_narrows_but_never_removes_the_raw_share(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A spool that never drains must not stop unrelated admitted work.
+
+    Anti-vacuity: restore the class-global ``continue`` and ``drains`` is 0,
+    which is the starvation this replaces -- one permanently pending spool
+    class used to skip every raw-materialization pass indefinitely.
+    """
     from polylogue.daemon import cli as daemon_cli
+    from polylogue.maintenance.raw_authority import RawMaterializationCounts
+
+    drains = 0
+    sleeps: list[float] = []
+
+    async def fake_run_sync(_actor: str, func: object, *_args: object, **_kwargs: object) -> object:
+        nonlocal drains
+        drains += 1
+        return RawMaterializationCounts(
+            repaired_sessions=0,
+            executed_plans=1,
+            remaining_candidates=1906,
+        )
 
     async def fake_sleep(seconds: float) -> None:
-        assert seconds == daemon_cli._RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
+        sleeps.append(seconds)
         raise asyncio.CancelledError
 
-    async def fail_run_sync(*_args: object, **_kwargs: object) -> object:
-        pytest.fail("raw maintenance must not acquire the writer ahead of pending browser capture")
-
     monkeypatch.setattr(daemon_cli, "_browser_capture_spool_has_pending_files", lambda: True)
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=fail_run_sync))
+    monkeypatch.setattr(
+        daemon_cli,
+        "daemon_write_coordinator",
+        lambda: SimpleNamespace(run_sync=fake_run_sync),
+    )
     with patch("asyncio.sleep", side_effect=fake_sleep), pytest.raises(asyncio.CancelledError):
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence())
+
+    assert drains == daemon_cli._RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET
+    assert sleeps == [daemon_cli._RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS]
 
 
 def test_periodic_raw_materialization_flag_on_warms_off_writer_lease_before_drain(

@@ -141,6 +141,14 @@ The daemon-owned ingest path acquires source payloads, parses provider records,
 writes archive rows, and refreshes derived read models through explicit
 convergence stages.
 
+Every background task inside that process is declared in
+`polylogue/daemon/services.py` and owned by one supervisor
+(`polylogue/daemon/supervisor.py`): the composition root spawns nothing
+directly, so the running process' shape equals the registry. Selection consults
+one durable halt state, so a unit that has stopped being able to succeed is
+excluded where work is chosen rather than refused where work runs. See
+[daemon.md](daemon.md#service-supervision).
+
 ## Provider Detection
 
 | Provider | Detected by | Parser |

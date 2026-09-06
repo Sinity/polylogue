@@ -172,6 +172,12 @@ _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
 _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
+# Live capture outranks bulk materialization, but not absolutely. While the
+# browser-capture spool holds pending files this loop takes one bounded pass
+# per tick instead of skipping every pass: a spool that never drains -- four
+# undrainable files, or a class large enough that draining takes days -- must
+# not stop unrelated admitted work from progressing at all.
+_RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET = 1
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
@@ -1025,10 +1031,16 @@ async def _periodic_raw_materialization_convergence(
     await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
 
     while True:
-        if _browser_capture_spool_has_pending_files():
-            logger.info("raw materialization: yielding to pending browser-capture spool files")
-            await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
-            continue
+        # A non-empty live spool narrows this loop's share of the writer to one
+        # bounded pass; it never removes it.
+        spool_pending = _browser_capture_spool_has_pending_files()
+        pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET if spool_pending else None
+        if spool_pending:
+            logger.info(
+                "raw materialization: browser-capture spool pending; limiting this tick to %d pass(es)",
+                _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET,
+            )
+        passes = 0
         recover = True
         # polylogue-t93b: set True only at the genuine-quiescence break below
         # (no progress AND no remaining ordinary-envelope candidates this
@@ -1077,11 +1089,16 @@ async def _periodic_raw_materialization_convergence(
                         materialized.executed_plans,
                         materialized.remaining_candidates,
                     )
+                passes += 1
                 if materialized.remaining_candidates <= 0 or not materialized.made_progress:
                     quiescent = True
                     break
-                if _browser_capture_spool_has_pending_files():
+                if pass_budget is not None and passes >= pass_budget:
                     break
+                if _browser_capture_spool_has_pending_files():
+                    pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET
+                    if passes >= pass_budget:
+                        break
                 await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
@@ -1101,7 +1118,11 @@ async def _periodic_raw_materialization_convergence(
                 await _maybe_run_raw_materialization_whale_pass()
             except Exception:
                 logger.warning("raw materialization: whale-pass scheduling failed", exc_info=True)
-        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+        await asyncio.sleep(
+            _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
+            if spool_pending
+            else _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+        )
 
 
 async def _bridge_catch_up_complete(
