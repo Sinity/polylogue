@@ -506,17 +506,24 @@ def _incoming_write_regresses_attachment_coverage(
     return incoming_acquired < existing_acquired
 
 
+#: Session-event families whose payload names a tool-result sidecar this
+#: function must give a durable content-addressed home. Both carry the same
+#: ``{acquisition_status, tool_use_id, content_replaced}`` payload shape.
+_SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar")
+
+
 def _preacquire_sidecar_blobs(
     session_to_write: ParsedSession,
     blob_publisher: ArchiveBlobPublisher,
     publication_receipts: list[tuple[str, bytes]],
 ) -> tuple[ParsedSession, dict[str, int]]:
-    """Content-address + dedup Claude Code tool-result sidecar text (polylogue-rujy AC4).
+    """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
 
-    ``apply_tool_result_sidecars`` (parser-side, side-effect-free) already
+    ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
+    (parser-side, side-effect-free) already
     replaced a matched, truncated ``tool_result`` block's inline preview with
     the sidecar file's full text and recorded a bounded
-    ``claude_tool_result_sidecar`` session event per file. That leaves the
+    sidecar session event per file. That leaves the
     acquired bytes living only as an ordinary SQLite TEXT column: two
     sessions with byte-identical tool output (a repeated build log, the same
     lint run) each store their own full copy, and there is no record of how
@@ -533,13 +540,13 @@ def _preacquire_sidecar_blobs(
     this only adds a deduplicated, content-addressed second home for it.
 
     A no-op (returns ``session_to_write`` unchanged) unless the session
-    actually carries a matched+replaced sidecar event, so non-Claude-Code
-    sessions never pay this cost.
+    actually carries a matched+replaced sidecar event, so a session from an
+    origin without sidecars never pays this cost.
     """
     matched_tool_use_ids = {
         tool_use_id
         for event in session_to_write.session_events
-        if event.event_type == "claude_tool_result_sidecar"
+        if event.event_type in _SIDECAR_EVENT_TYPES
         and event.payload.get("acquisition_status") == "matched"
         and event.payload.get("content_replaced")
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
@@ -578,7 +585,7 @@ def _preacquire_sidecar_blobs(
 
     updated_events = [
         event.model_copy(update={"payload": {**event.payload, "blob_hash": blob_hash_by_tool_use_id[tool_use_id]}})
-        if event.event_type == "claude_tool_result_sidecar"
+        if event.event_type in _SIDECAR_EVENT_TYPES
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
         and tool_use_id in blob_hash_by_tool_use_id
         else event

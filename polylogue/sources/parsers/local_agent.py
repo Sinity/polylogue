@@ -4,12 +4,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from pathlib import Path
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.timestamps import format_timestamp
+from polylogue.sources.live.gemini_tool_output_sidecars import (
+    is_masked_tool_output,
+    join_gemini_tool_output_sidecars,
+    resolve_tool_outputs_dir,
+)
+from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
 
 from .base import (
     ParsedContentBlock,
@@ -92,7 +100,12 @@ def looks_like_hermes(payload: JSONDocument) -> bool:
 
 
 @parser_admission("gemini_cli")
-def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
+def parse_gemini_cli(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    source_path: str | Path | None = None,
+) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
@@ -115,7 +128,7 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     if scratchpad_event := _gemini_cli_memory_scratchpad_event(payload):
         session_events.append(scratchpad_event)
     session_events.extend(_block_metadata_evidence_events(messages))
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.GEMINI_CLI,
         provider_session_id=session_id,
         title=_string(payload.get("summary")) or session_id,
@@ -131,6 +144,93 @@ def parse_gemini_cli(payload: JSONDocument, fallback_id: str) -> ParsedSession:
             directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
         ],
     )
+    tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
+    if tool_outputs_dir is not None:
+        session = apply_gemini_tool_output_sidecars(
+            session,
+            join_gemini_tool_output_sidecars(payload, tool_outputs_dir),
+        )
+    return session
+
+
+def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: SidecarJoinResult) -> ParsedSession:
+    """Attach acquired ``tool-outputs/`` sidecar content to its owning blocks.
+
+    Never adds a message and never touches session identity: a truncated
+    sidecar's full text replaces its ``tool_result`` block's masked text in
+    place (the envelope is a both-ends truncation, so the inline text is not a
+    prefix and nothing is appended to it), and every sidecar -- matched or debt
+    -- is recorded as a bounded ``gemini_cli_tool_output_sidecar`` session
+    event carrying the file's identity and size, never its bytes.
+    """
+    if not join_result.matched and not join_result.debt:
+        return session
+
+    replacements = {match.tool_use_id: match for match in join_result.matched if match.was_truncated}
+    messages = session.messages
+    if replacements:
+        updated_messages: list[ParsedMessage] = []
+        for message in session.messages:
+            if not any(
+                block.type is BlockType.TOOL_RESULT and block.tool_id in replacements for block in message.blocks
+            ):
+                updated_messages.append(message)
+                continue
+            updated_messages.append(
+                message.model_copy(
+                    update={
+                        "blocks": [
+                            block.model_copy(update={"text": replacements[block.tool_id].full_text})
+                            if block.type is BlockType.TOOL_RESULT and block.tool_id in replacements
+                            else block
+                            for block in message.blocks
+                        ]
+                    }
+                )
+            )
+        messages = updated_messages
+
+    events = list(session.session_events)
+    for match in join_result.matched:
+        events.append(
+            ParsedSessionEvent(
+                event_type="gemini_cli_tool_output_sidecar",
+                timestamp=_sidecar_event_timestamp(match.file_mtime_ms),
+                payload={
+                    "acquisition_status": "matched",
+                    "tool_use_id": match.tool_use_id,
+                    "filename": match.filename,
+                    "byte_size": match.byte_size,
+                    "content_hash": match.content_hash,
+                    "content_replaced": match.was_truncated,
+                },
+            )
+        )
+    for debt in join_result.debt:
+        events.append(
+            ParsedSessionEvent(
+                event_type="gemini_cli_tool_output_sidecar",
+                timestamp=_sidecar_event_timestamp(debt.file_mtime_ms),
+                payload={
+                    "acquisition_status": "debt",
+                    "filename": debt.filename,
+                    "byte_size": debt.byte_size,
+                    "reason": debt.reason,
+                },
+            )
+        )
+    return session.model_copy(update={"messages": messages, "session_events": events})
+
+
+def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
+    """A sidecar file's own mtime as the ISO timestamp for its session event.
+
+    The join has no better time source: these files carry no embedded
+    timestamp, and for debt the owning tool call is by definition unresolved.
+    """
+    if file_mtime_ms is None:
+        return None
+    return format_timestamp(file_mtime_ms / 1000.0)
 
 
 @parser_admission("hermes")
@@ -187,6 +287,20 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         return None
     text = _content_text(record.get("content"))
     content_blocks = _content_blocks_from_content(record.get("content"))
+    # polylogue-2ow9p: ``displayContent`` is the form the user was actually
+    # shown, and where it is present it diverges from ``content`` every time
+    # (9 of 9 in the measured corpus) -- ``content`` carries the model-facing
+    # expansion. Keeping only ``content`` loses the shown form, so it is
+    # admitted as its own block rather than collapsed into the sibling.
+    display_content = _content_text(record.get("displayContent"))
+    if display_content is not None and display_content != text:
+        content_blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TEXT,
+                text=display_content,
+                metadata={"field": "displayContent"},
+            )
+        )
     thoughts = _list(record.get("thoughts"))
     for thought_index, thought in enumerate(thoughts, start=1):
         thought_record = json_document(thought)
@@ -635,6 +749,28 @@ def _tool_use_block(record: JSONDocument, *, fallback_id: str) -> ParsedContentB
     )
 
 
+def _fullest_tool_result_text(output: str | None, error: str | None, result_display: object) -> str | None:
+    """Return the tool result text that is not a truncation of the other field.
+
+    Gemini CLI's ``functionResponse.response.output`` is sometimes the
+    provider's masking envelope -- ``<tool_output_masked>`` / ``Output too
+    large. Showing first N and last M characters`` -- announcing content it
+    then discards, while the record's own ``resultDisplay`` sibling still
+    carries the untruncated text. Reading ``output`` unconditionally stores the
+    truncation notice and drops what it was announcing (polylogue-7yji2:
+    66,676,100 characters across the measured corpus).
+
+    Truncation is the only condition that overrides ``output``: the two fields
+    are different renderings, neither a substring of the other, so preferring
+    the longer one wholesale would replace the model-facing text with a
+    display rendering wherever it merely happens to be wordier.
+    """
+    display = _content_text(result_display)
+    if output and is_masked_tool_output(output) and display and len(display) > len(output):
+        return display
+    return output or error or display
+
+
 def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[ParsedContentBlock]:
     tool_id = _string(record.get("id")) or _string(record.get("call_id")) or fallback_id
     status = _string(record.get("status"))
@@ -649,7 +785,7 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
         response = json_document(function_response.get("response"))
         output = _string(response.get("output"))
         error = _string(response.get("error"))
-        text = output or error or _content_text(record.get("resultDisplay"))
+        text = _fullest_tool_result_text(output, error, record.get("resultDisplay"))
         if text is None and status is None:
             continue
         result_metadata = dict(metadata)
@@ -729,6 +865,7 @@ def _list(value: object) -> list[object]:
 
 
 __all__ = [
+    "apply_gemini_tool_output_sidecars",
     "looks_like_gemini_cli",
     "looks_like_hermes",
     "parse_gemini_cli",
