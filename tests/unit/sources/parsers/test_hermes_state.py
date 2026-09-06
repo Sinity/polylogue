@@ -312,12 +312,21 @@ def _write_codex_message_items_state_db(path: Path) -> None:
             """
             INSERT INTO messages (
                 session_id, role, content, reasoning_content, tool_calls,
-                codex_message_items, timestamp
+                codex_reasoning_items, codex_message_items, timestamp
             )
-            VALUES ('s1', 'assistant', '', 'weighing the wrapper', ?, ?, 1775000002.0)
+            VALUES ('s1', 'assistant', '', 'weighing the wrapper', ?, ?, ?, 1775000002.0)
             """,
             (
                 json.dumps([{"id": "call-1", "function": {"name": "shell", "arguments": "{}"}}]),
+                json.dumps(
+                    [
+                        {
+                            "type": "reasoning",
+                            "summary": [{"type": "summary_text", "text": "Inspect the wrapper."}],
+                            "content": [{"type": "reasoning_text", "text": "The stale value is isolated."}],
+                        }
+                    ]
+                ),
                 json.dumps(_codex_message_item(_CODEX_ONLY_PROSE)),
             ),
         )
@@ -362,6 +371,19 @@ def test_codex_message_items_do_not_duplicate_prose_content_already_carries(tmp_
     [session] = parse_state_db(path)
 
     assert _text_block_texts(session.messages[2]) == [_DUPLICATED_PROSE]
+
+
+def test_codex_reasoning_items_project_summary_and_content_to_thinking(tmp_path: Path) -> None:
+    path = tmp_path / "state.db"
+    _write_codex_message_items_state_db(path)
+    [session] = parse_state_db(path)
+
+    thinking = [block.text for block in session.messages[1].blocks if block.type is BlockType.THINKING]
+    assert thinking == [
+        "weighing the wrapper",
+        "Inspect the wrapper.",
+        "The stale value is isolated.",
+    ]
 
 
 def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None:

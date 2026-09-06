@@ -26,6 +26,7 @@ from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import (
     _codex_output_text_blocks,
+    _codex_reasoning_blocks,
     _content_blocks_from_content,
     _content_text,
     _tool_use_block,
@@ -734,6 +735,7 @@ def _parse_message_row(
     if reasoning:
         metadata = _reasoning_metadata(row)
         blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=reasoning, metadata=metadata or None))
+    blocks.extend(_codex_reasoning_blocks(_row_value(row, "codex_reasoning_items"), covered_text=reasoning))
     for tool_index, tool_call in enumerate(_json_list(_row_value(row, "tool_calls")), start=1):
         tool_record = json_document(tool_call)
         if tool_record:
