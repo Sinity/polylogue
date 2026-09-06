@@ -515,6 +515,52 @@ def test_hermes_message_wire_extras_survive_as_session_events() -> None:
     }
 
 
+def test_hermes_snapshot_codex_message_items_prose_reaches_a_block() -> None:
+    """The JSON-snapshot path projects the same field as the state.db path.
+
+    Goes red if ``_parse_hermes_message`` stops projecting
+    ``codex_message_items``: a turn whose ``content`` is empty carries no
+    block at all and is dropped outright, so neither the block-derived
+    display text nor FTS reaches its prose. The wire-extras event keeps the
+    full structured item either way.
+    """
+    codex_only = "The wrapper stayed untouched while the stale config migrated."
+    already_carried = "Verification passed on both affected suites."
+
+    def item(prose: str) -> JSONDocument:
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": prose}],
+            "id": "msg_0887",
+            "phase": "commentary",
+        }
+
+    payload: JSONDocument = {
+        "session_id": "hermes-session-3",
+        "model": "local-model",
+        "session_start": "2026-05-07T08:39:43.000000",
+        "last_updated": "2026-05-07T08:46:00.000000",
+        "messages": [
+            {"role": "user", "content": "migrate the config"},
+            {"role": "assistant", "content": "", "codex_message_items": [item(codex_only)]},
+            {"role": "assistant", "content": already_carried, "codex_message_items": [item(already_carried)]},
+        ],
+    }
+
+    [session] = parse_payload("hermes", payload, "fallback")
+
+    projected, duplicated = session.messages[1], session.messages[2]
+    assert [block.text for block in projected.blocks if block.type is BlockType.TEXT] == [codex_only]
+    assert projected.text == codex_only
+    # The item repeats what ``content`` already holds: one block, not two.
+    assert [block.text for block in duplicated.blocks if block.type is BlockType.TEXT] == [already_carried]
+
+    extras = [event for event in session.session_events if event.event_type == "hermes_message_wire_extras"]
+    assert len(extras) == 2
+
+
 def test_hermes_state_db_parses_authoritative_sessions(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     _write_hermes_state_db(db_path)
