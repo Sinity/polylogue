@@ -8,11 +8,6 @@ from pathlib import Path
 import pytest
 
 from tests.infra.integration_profile import build_integration_archive, default_integration_selection
-from tests.infra.pathology_zoo import (
-    PathologyZoo,
-    build_pathology_zoo,
-    build_pathology_zoo_ro,
-)
 from tests.infra.workload_artifacts import (
     SeededArchiveArtifact,
     SeededArchiveClone,
@@ -20,7 +15,6 @@ from tests.infra.workload_artifacts import (
     acquire_query_only_seeded_archive,
     build_seeded_archive,
     clone_seeded_archive,
-    default_cache_root,
     named_corpus_specs,
     schema_coverage_corpus_specs,
     seeded_archive_key,
@@ -114,15 +108,3 @@ def named_seeded_archive_ro(
         return lease
 
     return seed
-
-
-@pytest.fixture(scope="session")
-def pathology_zoo_artifact() -> PathologyZoo:
-    """Shared read-only aggregate pathology evidence."""
-    return build_pathology_zoo_ro()
-
-
-@pytest.fixture
-def pathology_zoo_writable(pathology_zoo_artifact: PathologyZoo, tmp_path: Path) -> PathologyZoo:
-    """Private writable clone; mutations never touch the aggregate cache."""
-    return build_pathology_zoo(tmp_path / "pathology-zoo", cache_root=default_cache_root())
