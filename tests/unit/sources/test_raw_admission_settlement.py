@@ -153,3 +153,62 @@ async def test_every_planned_path_is_accounted_for(
         )
     finally:
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_offered_bytes_split_puts_a_refused_file_in_the_refused_bucket(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Offered bytes split into ingested, failed and refused with no remainder.
+
+    ``input_bytes`` is what the batch was OFFERED. A file it planned and then
+    declined counts there too, so a throughput figure computed from it credits
+    the run with bytes it never ingested -- 6.83 GB offered against 2.09 GB
+    ingested in one rehearsal, a 3.3x overstatement.
+
+    Anti-vacuity: collapse the buckets -- credit the refused file's bytes to
+    ``ingested_bytes``, or derive ``refused_bytes`` as a residual that a
+    double-counted path can drive to zero -- and the per-reason assertion and
+    the reconciliation below both go red.
+    """
+    archive_root = workspace_env["archive_root"]
+    chats_root = workspace_env["data_root"] / "gemini" / "tmp" / "project" / "chats"
+    chats_root.mkdir(parents=True)
+    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "gemini-account.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="gemini-cli", root=chats_root, suffixes=(".json", ".jsonl")),),
+        cursor=CursorStore(archive_root / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        admissible = chats_root / "session-2026-04-02T12-00-cccccccc.json"
+        _checkpoint(admissible, kind="main", turns=2, started="2026-04-02T12:00:00.000Z")
+        refused = chats_root / "notes.json"
+        # Padded so the refused file is unmistakably the larger of the two:
+        # a residual-derived refused bucket cannot be confused with rounding.
+        refused.write_text(json.dumps({"unrelated": "content", "padding": "x" * 4096}))
+        admissible_bytes = admissible.stat().st_size
+        refused_bytes = refused.stat().st_size
+
+        metrics = await processor.ingest_files([admissible, refused], emit_event=False)
+
+        assert metrics.input_bytes == admissible_bytes + refused_bytes
+        assert metrics.ingested_bytes == admissible_bytes
+        assert metrics.refused_bytes == refused_bytes
+        assert sum(metrics.refused_bytes_by_reason.values()) == refused_bytes
+        # The refusal carries its typed reason, not just a byte count.
+        assert set(metrics.refused_bytes_by_reason) == set(metrics.excluded_reasons)
+        assert metrics.unaccounted_bytes == 0
+
+        payload = metrics.to_payload()
+        assert payload["ingested_bytes"] == admissible_bytes
+        assert payload["refused_bytes"] == refused_bytes
+        assert payload["unaccounted_bytes"] == 0
+        # Throughput is computed from what was ingested, never from what was
+        # offered: the two differ here by the whole refused file.
+        assert payload["ingested_mb_per_second"] != pytest.approx(
+            (metrics.input_bytes / 1_000_000) / metrics.total_time_s
+        )
+    finally:
+        await archive.close()

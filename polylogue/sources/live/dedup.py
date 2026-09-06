@@ -16,6 +16,7 @@ from collections.abc import Callable, Mapping
 
 from polylogue.core.degraded import DegradedReason, is_degraded, set_degraded
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.core.source_halts import set_source_halt
 from polylogue.logging import get_logger
 
 SCHEMA_MISMATCH_DEDUP_WINDOW_S = 60.0
@@ -55,7 +56,7 @@ _logger = get_logger("polylogue.sources.live.batch")
 
 
 def handle_structural_database_error(source_name: str, exc: DatabaseError) -> None:
-    """Log once per dedup window and put the daemon in degraded mode.
+    """Log once per dedup window, halt ``source_name``, and degrade the daemon.
 
     Schema/layout mismatch is a structural condition that does not change
     across consecutive inotify events. Logging at WARNING for every event is
@@ -82,14 +83,14 @@ def handle_structural_database_error(source_name: str, exc: DatabaseError) -> No
             version_suffix,
             exc,
         )
+    reason = DegradedReason(code=code, message=str(exc), detail=detail)
+    # Recorded per source as well as process-wide: the process-wide flag is a
+    # single slot, so the first source to fail owns it and a later source's
+    # own condition is lost. The planner needs a per-source answer to stop
+    # selecting work that cannot succeed.
+    set_source_halt(source_name, reason)
     if not is_degraded():
-        set_degraded(
-            DegradedReason(
-                code=code,
-                message=str(exc),
-                detail=detail,
-            )
-        )
+        set_degraded(reason)
 
 
 def handle_schema_version_mismatch(source_name: str, exc: SchemaVersionMismatchError) -> None:
