@@ -8,6 +8,14 @@ exactly one term, in a fixed precedence, and each term cites the rule that
 explains it. An item no rule explains is an *unexplained* term and turns the
 check red; a typed exclusion never does.
 
+A rule may cite another owner's durable ledger. ``raw_authority_blockers``
+states, per unresolved blocker, that the authority frontier accepted one raw as
+the revision head while the index materialized another raw of the same logical
+source (``authority_blocked_head``); ``raw_session_memberships`` states which
+logical sources a raw belongs to, and a raw whose memberships are all
+quarantined with nothing in the cohort indexed is a whole logical session
+missing from the index (``quarantined_cohort_unmaterialized``, blocking).
+
 Phantom sessions (polylogue-b508) are a reverse-direction term: an index
 session whose only source lineage is a declared non-session artifact
 (sidecar, workflow journal, tool-result fragment, metadata fragment) or whose
@@ -53,6 +61,8 @@ _TERM_DECODE_FAILED = "decode_failed"
 _TERM_CENSUS_NON_SESSION = "census_non_session"
 _TERM_UNCLASSIFIED_SHAPE = "unclassified_shape"
 _TERM_PENDING = "pending"
+_TERM_AUTHORITY_BLOCKED = "authority_blocked_head"
+_TERM_QUARANTINED_COHORT = "quarantined_cohort_unmaterialized"
 _TERM_UNEXPLAINED = "unexplained"
 
 _TERM_HOOK_MATERIALIZED = "hook_session_materialized"
@@ -86,6 +96,16 @@ _RULES: dict[str, str] = {
     _TERM_CENSUS_NON_SESSION: "raw_membership_census recorded a terminal non-session verdict",
     _TERM_UNCLASSIFIED_SHAPE: "artifact taxonomy holds no classification (unknown/unknown); a rule is missing",
     _TERM_PENDING: "acquired; convergence has not parsed it yet",
+    _TERM_AUTHORITY_BLOCKED: (
+        "an unresolved raw_authority_blockers row names this raw as the accepted revision head "
+        "while the index materialized a different raw of the same logical source; the authority "
+        "frontier owns the remedy and records it in that ledger"
+    ),
+    _TERM_QUARANTINED_COHORT: (
+        "every raw_session_memberships row of this raw carries revision_authority 'quarantined' "
+        "and no revision of its logical source materialized, so the whole logical session is "
+        "missing from the index"
+    ),
     _TERM_UNEXPLAINED: "parsed without refusal, yet no index session and no exclusion rule applies",
     _TERM_HOOK_MATERIALIZED: "hook event names a materialized session",
     _TERM_HOOK_ACQUIRED: "hook event names an acquired raw session (typed by that raw's term)",
@@ -104,8 +124,9 @@ _RULES: dict[str, str] = {
         "without the ref-count sweep, so the row is unreachable from every read path"
     ),
     _TERM_ATTACHMENT_UNOWNED: (
-        "attachment was written unreferenced because its owning message is ambiguous "
-        "(ref_count 0, never swept); identity and bytes are retained as evidence"
+        "attachment has no ref and ref_count 0: written unreferenced because its owning message "
+        "was ambiguous, or orphaned before the ref-count sweep covered its write path; identity "
+        "and bytes are retained as evidence, and plan_orphaned_attachment_relink types which"
     ),
 }
 
@@ -113,6 +134,7 @@ _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
         _TERM_UNCLASSIFIED_SHAPE,
+        _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
         _TERM_SESSION_WITHOUT_RAW,
         _TERM_SESSION_ORPHAN,
@@ -125,7 +147,7 @@ _BLOCKING: frozenset[str] = frozenset(
     }
 )
 
-_WARNING: frozenset[str] = frozenset({_TERM_PENDING, _TERM_HOOK_NO_SOURCE})
+_WARNING: frozenset[str] = frozenset({_TERM_PENDING, _TERM_HOOK_NO_SOURCE, _TERM_AUTHORITY_BLOCKED})
 
 
 @dataclass(frozen=True, slots=True)
@@ -239,6 +261,11 @@ def logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str
     native-id/path fallback.  Shared raws can hold several membership keys;
     they have no one raw-level cohort and must keep that fallback instead of
     being arbitrarily assigned to one member.
+
+    A cohort is a partition, so it cannot express the overlap between shared
+    raws whose membership sets intersect without being equal. The
+    ``shares_indexed_key`` column of :func:`_raw_term_case` carries that
+    relation alongside this partition.
     """
     return logical_head_cohort_sql(
         conn,
@@ -310,8 +337,66 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
     )
     supersession_expr = valid_byte_duplicate_supersession_expr(conn, raw_alias="r")
     cohort_expr = logical_head_cohort_expr(conn, raw_alias="r")
+    # The authority frontier records, per unresolved blocker, which raw it
+    # accepted as the head and which raw the index actually materialized. The
+    # blocker's own reason is the rule, so cite it rather than restate it.
+    # Extracted once per blocker into its own CTE: as a correlated subquery
+    # this would re-parse every blocker's JSON for every raw row.
+    has_blockers = table_exists(conn, "raw_authority_blockers")
+    blocked_cte = (
+        """
+        blocked_heads AS (
+            SELECT json_extract(b.expected_json, '$.index_preconditions.head_accepted_raw_id') AS head_raw_id,
+                   MIN(b.reason) AS reason
+            FROM raw_authority_blockers b
+            WHERE b.resolved_at_ms IS NULL
+            GROUP BY 1
+        ),
+        """
+        if has_blockers
+        else ""
+    )
+    blocked_join = "LEFT JOIN blocked_heads ON blocked_heads.head_raw_id = r.raw_id" if has_blockers else ""
+    blocker_reason_expr = "blocked_heads.reason" if has_blockers else "NULL"
+    # A membership row is the durable statement "this raw belongs to that
+    # logical source". When every one of them is quarantined and no revision of
+    # the cohort reached the index, the logical session itself is missing.
+    has_memberships = table_exists(conn, "raw_session_memberships")
+    quarantined_cohort_expr = (
+        """
+        (SELECT COUNT(*) > 0 AND COUNT(*) = SUM(m.revision_authority = 'quarantined')
+         FROM raw_session_memberships m WHERE m.raw_id = r.raw_id)
+        """
+        if has_memberships
+        else "0"
+    )
+    indexed_keys_cte = (
+        """
+        indexed_logical_keys AS (
+            SELECT DISTINCT m.logical_source_key AS logical_source_key
+            FROM raw_session_memberships m
+            JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
+        ),
+        """
+        if has_memberships
+        else ""
+    )
+    # Shares a logical source with a materialized raw. Membership sets overlap
+    # without being equal, so this relation is not a partition and the cohort
+    # window cannot carry it; it widens ``any_indexed``, never narrows it.
+    shares_indexed_key_expr = (
+        """
+        EXISTS(
+            SELECT 1 FROM raw_session_memberships m
+            JOIN indexed_logical_keys k ON k.logical_source_key = m.logical_source_key
+            WHERE m.raw_id = r.raw_id
+        )
+        """
+        if has_memberships
+        else "0"
+    )
     heads_cte = f"""
-        WITH heads AS (
+        WITH {blocked_cte}{indexed_keys_cte}heads AS (
             SELECT
                 r.raw_id,
                 r.origin,
@@ -325,16 +410,20 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
                 {parse_as_session_expr} AS parse_as_session,
                 {supersession_expr} AS valid_supersession,
                 {retained_expr} AS bytes_retained,
+                {blocker_reason_expr} AS blocker_reason,
+                {quarantined_cohort_expr} AS memberships_all_quarantined,
                 EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id) AS self_indexed,
+                ({shares_indexed_key_expr}) AS shares_indexed_key,
                 MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
                     OVER (PARTITION BY r.origin, {cohort_expr}) AS any_indexed
             FROM raw_sessions r
+            {blocked_join}
         )
     """
     term_case = f"""
         CASE
             WHEN self_indexed = 1 THEN '{_TERM_MATERIALIZED}'
-            WHEN any_indexed = 1 THEN '{_TERM_REVISION_SUPERSEDED}'
+            WHEN any_indexed = 1 OR shares_indexed_key = 1 THEN '{_TERM_REVISION_SUPERSEDED}'
             WHEN valid_supersession = 1 THEN '{_TERM_BYTE_DUPLICATE}'
             WHEN parse_error IS NOT NULL THEN '{_TERM_PARSE_FAILURE}'
             WHEN validation_status = 'failed' THEN '{_TERM_VALIDATION_REJECTED}'
@@ -344,6 +433,8 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
             WHEN census_status IN ('non_session', 'failed') THEN '{_TERM_CENSUS_NON_SESSION}'
             WHEN artifact_kind = 'unknown' THEN '{_TERM_UNCLASSIFIED_SHAPE}'
             WHEN parsed_at_ms IS NULL THEN '{_TERM_PENDING}'
+            WHEN blocker_reason IS NOT NULL THEN '{_TERM_AUTHORITY_BLOCKED}'
+            WHEN memberships_all_quarantined = 1 THEN '{_TERM_QUARANTINED_COHORT}'
             ELSE '{_TERM_UNEXPLAINED}'
         END
     """
@@ -372,14 +463,15 @@ def audit_source_conservation(
     forward_total = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
 
     typed_rows = conn.execute(
-        f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, {term_case} AS term FROM heads"
+        f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
+        f"{term_case} AS term FROM heads"
     ).fetchall()
 
     counts: dict[str, int] = {}
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
     missing_paths: dict[str, bool] = {}
-    for raw_id, origin, source_path, artifact_kind, bytes_retained, term in typed_rows:
+    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
         if probe_filesystem:
             present = missing_paths.get(source_path)
             if present is None:
@@ -391,7 +483,12 @@ def audit_source_conservation(
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
             bucket.append(str(raw_id))
-        key = str(origin) if term != _TERM_NON_SESSION_ARTIFACT else f"{origin}:{artifact_kind}"
+        if term == _TERM_NON_SESSION_ARTIFACT:
+            key = f"{origin}:{artifact_kind}"
+        elif term == _TERM_AUTHORITY_BLOCKED:
+            key = f"{origin}:{blocker_reason}"
+        else:
+            key = str(origin)
         by = breakdowns.setdefault(term, {})
         by[key] = by.get(key, 0) + 1
 
@@ -539,10 +636,15 @@ def audit_source_conservation(
         ).fetchall()
         # A ref-less attachment splits on ``ref_count``. The writer inserts an
         # owner-ambiguous row with ref_count 0 and keeps it out of the sweep,
-        # so ref_count 0 means "never had a ref" -- explained, non-blocking.
-        # Any ref-less row whose ref_count is non-zero was refreshed while refs
-        # existed and then lost them without the sweep running: it is
-        # unreachable from every read path and blocks.
+        # so ref_count 0 is explained and non-blocking. A non-zero ref_count is
+        # the witness that refs existed and went away without the sweep
+        # running, leaving the row unreachable from every read path.
+        #
+        # That witness holds only where every write path that drops a ref runs
+        # the sweep. A row orphaned by a path that predates the sweep also
+        # settles at ref_count 0, so on an archive with such history the split
+        # under-reports and ``storage/attachment_relink.py`` is what types an
+        # individual row, by re-parsing the durable raw that produced it.
         unreferenced_predicate = """
             NOT EXISTS (SELECT 1 FROM idx_tier.attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
         """
@@ -604,6 +706,8 @@ def audit_source_conservation(
         _TERM_CENSUS_NON_SESSION,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_PENDING,
+        _TERM_AUTHORITY_BLOCKED,
+        _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
     )
     terms: list[ConservationTerm] = [
