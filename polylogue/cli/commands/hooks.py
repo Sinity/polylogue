@@ -58,7 +58,7 @@ def _render_status(status: HookHarnessStatus, *, coverage: bool) -> list[str]:
         f"{status.harness}: {status.flow_state}",
         f"  settings: {status.settings_path}",
         f"  feature enabled: {str(status.feature_enabled).lower()}",
-        f"  polylogue-hook on PATH: {str(status.executable_available).lower()}",
+        f"  capture command runnable: {str(status.executable_available).lower()}",
         f"  wired: {wired}",
         f"  missing recommended: {missing}",
         f"  observed last 7d: {observed}",
