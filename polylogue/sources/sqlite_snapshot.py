@@ -14,14 +14,17 @@ from typing import Any
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
+from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore, Heartbeat
+
+logger = get_logger(__name__)
 
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _STAGING_METADATA_SUFFIX = ".polylogue-import"
 _STAGING_METADATA_VERSION = 1
-_HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v1\0"
-_CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v1\0"
+_HERMES_RAW_ID_DOMAIN = b"polylogue:hermes-profile-raw:v2\0"
+_CODEX_STATE_RAW_ID_DOMAIN = b"polylogue:codex-state-raw:v2\0"
 # Re-exported for existing call sites; canonical constant now lives on the
 # shared, provider-agnostic detector in ``core.binary_signatures`` so it is
 # never redefined in more than one place (polylogue-hbtj2).
@@ -39,38 +42,47 @@ class SQLiteBlobSnapshot:
     blob_publication_receipt_id: str | None = None
 
 
-def hermes_profile_raw_id(source_path: Path | str, source_index: int, blob_hash: str) -> str:
-    """Identify one Hermes snapshot without conflating it with its blob.
+def hermes_profile_raw_id(source_path: Path | str, source_index: int, logical_revision: str) -> str:
+    """Identify one Hermes snapshot by profile, member, and logical content.
 
-    Hermes session IDs are only unique within a profile.  Raw acquisition
-    identity therefore includes the stable original profile path, while
-    ``blob_hash`` continues to address the exact retained SQLite bytes.
+    Hermes session IDs are only unique within a profile, and the two declared
+    members of a profile can hold identical logical content while empty, so
+    identity carries the profile directory and the member filename alongside
+    :func:`sqlite_logical_revision`.
+
+    ``logical_revision`` -- never the blob hash -- is the content term. A
+    backup of an unchanged database differs in its page image after any
+    commit, checkpoint or vacuum; keying identity on those bytes mints a new
+    raw revision for a source that did not change.
     """
-    normalized_profile = str(Path(source_path).expanduser().resolve(strict=False).parent)
+    normalized = Path(source_path).expanduser().resolve(strict=False)
     digest = hashlib.sha256()
     digest.update(_HERMES_RAW_ID_DOMAIN)
-    digest.update(normalized_profile.encode("utf-8", errors="surrogatepass"))
+    digest.update(str(normalized.parent).encode("utf-8", errors="surrogatepass"))
+    digest.update(b"\0")
+    digest.update(normalized.name.encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0")
     digest.update(str(source_index).encode("utf-8"))
     digest.update(b"\0")
-    digest.update(bytes.fromhex(blob_hash))
+    digest.update(bytes.fromhex(logical_revision))
     return digest.hexdigest()
 
 
-def codex_state_raw_id(source_path: Path | str, blob_hash: str) -> str:
-    """Identify one acquired Codex state-db snapshot without conflating it with its blob.
+def codex_state_raw_id(source_path: Path | str, logical_revision: str) -> str:
+    """Identify one acquired Codex state-db snapshot by path and logical content.
 
-    Unlike Hermes (multiple profiles, session IDs unique only within a
-    profile), Codex keeps exactly one instance of each state database per
-    ``~/.codex`` install, so raw identity only needs the stable absolute
-    source path plus the exact retained bytes -- no profile index.
+    Codex keeps exactly one instance of each declared database per ``~/.codex``
+    install, so the stable absolute source path distinguishes the members and
+    no profile index is needed. The content term is
+    :func:`sqlite_logical_revision`, for the reason given on
+    :func:`hermes_profile_raw_id`.
     """
     normalized_path = str(Path(source_path).expanduser().resolve(strict=False))
     digest = hashlib.sha256()
     digest.update(_CODEX_STATE_RAW_ID_DOMAIN)
     digest.update(normalized_path.encode("utf-8", errors="surrogatepass"))
     digest.update(b"\0")
-    digest.update(bytes.fromhex(blob_hash))
+    digest.update(bytes.fromhex(logical_revision))
     return digest.hexdigest()
 
 
@@ -119,15 +131,20 @@ def sqlite_source_revision(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def sqlite_logical_revision(path: Path) -> str:
+def sqlite_logical_revision(path: Path, *, immutable: bool = False) -> str:
     """Digest SQLite schema and logical rows, independent of page layout.
 
     Filesystem metadata and SQLite page images change for ordinary commits,
     checkpoints, and vacuuming. Source continuity therefore needs a digest of
     the declared database contents. Values are encoded with their SQLite type
     so text, integers, blobs, and NULL remain distinct.
+
+    ``immutable`` reads a retained blob, which no writer can reach and whose
+    directory need not be writable for a WAL-mode page image.
     """
     source_uri = f"{path.resolve().as_uri()}?mode=ro"
+    if immutable:
+        source_uri += "&immutable=1"
     with closing(sqlite3.connect(source_uri, uri=True)) as conn:
         # SQLite permits arbitrary bytes in a TEXT value.  Preserve those
         # bytes so a table outside the parser's scope cannot prevent snapshot
@@ -241,6 +258,37 @@ def sqlite_logical_revision(path: Path) -> str:
                 )
                 digest.update(b"\n")
     return digest.hexdigest()
+
+
+def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
+    """Return the content term identifying one retained acquisition.
+
+    Live acquisition of a mutable database identifies it by
+    :func:`sqlite_logical_revision`, so the import and replay routes must
+    derive the same term from the retained blob or the two routes mint
+    different raw identities for one database state. Material that is not a
+    SQLite database is already identified by its bytes, and its blob hash is
+    that term.
+
+    An unreadable or damaged blob falls back to the blob hash: identity must
+    stay derivable so the raw remains addressable and its parse failure is
+    reported as a parse failure rather than as a missing acquisition.
+    """
+    try:
+        with blob_path.open("rb") as handle:
+            header = handle.read(len(SQLITE_MAGIC_HEADER))
+    except OSError:
+        logger.warning(
+            "sqlite_snapshot: retained blob %s is unreadable; identifying the acquisition by its blob hash",
+            blob_hash,
+        )
+        return blob_hash
+    if header != SQLITE_MAGIC_HEADER:
+        return blob_hash
+    try:
+        return sqlite_logical_revision(blob_path, immutable=True)
+    except (sqlite3.Error, OSError, UnicodeDecodeError):
+        return blob_hash
 
 
 def snapshot_sqlite_database(source: Path, destination: Path) -> None:
@@ -359,6 +407,7 @@ __all__ = [
     "hermes_profile_raw_id",
     "is_sqlite_path",
     "original_sqlite_source_path",
+    "retained_content_revision",
     "snapshot_sqlite_database",
     "snapshot_sqlite_to_blob",
     "sqlite_staging_metadata_path",
