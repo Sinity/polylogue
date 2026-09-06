@@ -71,7 +71,6 @@ PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_EVENTS_DIR = PYTEST_REPORT_DIR / "current-pytest-events"
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
-PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 _PATH_VALUE_OPTIONS = frozenset(
     {
         "-c",
@@ -402,7 +401,6 @@ def _clear_pytest_report(_cmd: list[str]) -> None:
         PYTEST_EVENTS_DIR,
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
-        PYTEST_OUTPUT_PATH,
     ):
         if not path.exists():
             continue
@@ -442,6 +440,9 @@ def _run(
         {
             "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            # Named per client pid: the checkout accumulates one log per run,
+            # and a glob over them reaches an arbitrary one.
+            **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
             **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
         },
     )
@@ -617,14 +618,20 @@ def main(argv: list[str] | None = None) -> int:
     prune_successful_verify_runs(root=ROOT)
     if use_json:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
-    # The artifact-path footer is reference material, not a result. Printing six
-    # paths after every green run trains the reader to skip the tail of the
+    # The verdict is the last thing written, on every run. A pipeline exits with
+    # its last command's status, so `devtools test ... | tail` reports tail's 0
+    # whatever the run found; carrying the outcome in the stream keeps it out of
+    # reach of that mistake. The receipt is this run's own file, never a
+    # `current-*` name a concurrent run in the same checkout would overwrite.
+    receipt = run.relative_run_dir / "run.json"
+    sys.stderr.write(
+        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
+    )
+    # The rest of the artifacts are reference material, not a result. Printing
+    # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches the same artifacts on demand.
+    # reaches them on demand.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(
-            f"\ndevtools test: progress={PYTEST_PROGRESS_PATH} selection={PYTEST_SELECTION_PATH} "
-            f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} "
-            f"output={PYTEST_OUTPUT_PATH}\n"
-        )
+        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
     return rc

@@ -75,7 +75,6 @@ PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
 PYTEST_EVENTS_DIR = CURRENT_EVENTS_DIR
 PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
-PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
@@ -308,7 +307,6 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
         PYTEST_EVENTS_DIR,
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
-        PYTEST_OUTPUT_PATH,
     ]
     paths += [Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")]
     for path in paths:
