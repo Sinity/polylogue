@@ -138,6 +138,21 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         featured=True,
     ),
     CommandSpec(
+        "verify blob-conservation",
+        "verification",
+        "Report blob/reference conservation in both directions against an archive root.",
+        "polylogue.maintenance.blob_conservation",
+        json_flag=True,
+        use_when=(
+            "Account for every blob file and every durable reference in an offline archive: files with no owning "
+            "row, and references whose bytes are neither present nor provably recoverable. Reports only."
+        ),
+        examples=(
+            "devtools verify blob-conservation --archive-root /realm/state/polylogue",
+            "devtools verify blob-conservation --archive-root ./archive --json",
+        ),
+    ),
+    CommandSpec(
         "gate",
         "verification",
         "Run one named invariant check.",
@@ -349,6 +364,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools archive tool-outcome-census",
             "devtools archive tool-outcome-census --json",
+        ),
+    ),
+    CommandSpec(
+        "archive tool-pairing-census",
+        "archive",
+        "Classify every tool call/result pairing gap against declared evidence.",
+        "devtools.tool_pairing_census",
+        json_flag=True,
+        use_when=(
+            "Before claiming what an archive's unpaired tool calls and unmatched tool results mean. "
+            "Reports the exact no-result denominator by origin, provider construct, transcript "
+            "position, source survival and acquisition state, classifies every cohort, and prints "
+            "the query plan and runtime it used."
+        ),
+        examples=(
+            "devtools archive tool-pairing-census",
+            "devtools archive tool-pairing-census --json",
+            "devtools archive tool-pairing-census --archive-root /path/to/archive --no-source-check",
         ),
     ),
     CommandSpec(

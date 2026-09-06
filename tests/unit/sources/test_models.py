@@ -722,12 +722,14 @@ class TestGeminiExtractContentBlocksExtra:
         ),
         ({"text": "", "role": "user", "parts": [{"other": "value"}]}, 0, None, "dict_parts_no_text_no_media"),
         (
+            # A chunk carrying both renders its text once: the chunk-level
+            # block plus the parts' non-text payloads, never the parts' text.
             {
                 "text": "Initial",
                 "role": "model",
                 "parts": [GeminiPart(text="Typed"), {"text": "Dict"}, {"inlineData": {"data": "..."}}],
             },
-            None,
+            2,
             "text",
             "combined",
         ),

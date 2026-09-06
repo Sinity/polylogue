@@ -1,15 +1,34 @@
+"""Both directions of blob/reference conservation.
+
+The stubbed cases below pin one branch of ``check_blob_conservation`` each.
+The two ``seeded_archive`` cases at the end run the real projection and the
+real backup prover against archives the production ingest route built, which
+is the only way to show that the check partitions a genuine archive rather
+than the fixtures handed to it.
+"""
+
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 import sqlite3
 from pathlib import Path
 
 import pytest
 
+import polylogue.sources.live.watcher as live_watcher
+from polylogue import Polylogue
 from polylogue.maintenance import blob_conservation
+from polylogue.maintenance.blob_conservation import check_blob_conservation
+from polylogue.sources.live import WatchSource
+from polylogue.sources.live.batch import LiveBatchProcessor
+from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.blob_liveness import BlobLivenessProjection
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.index_generation import ActiveWriterLease, RebuildLeaseUnavailableError
+
+_SEEDED_SESSION_ID = "11111111-2222-3333-4444-555555555555"
 
 
 def _empty_archive(root: Path) -> None:
@@ -182,3 +201,128 @@ def test_conservation_rejects_a_corrupt_referenced_blob(monkeypatch: pytest.Monk
     assert report.corrupt_sample == (blob_hash,)
     assert report.dangling_references == 1
     assert not report.ok
+
+
+async def _seed_archive(workspace_env: dict[str, Path]) -> Path:
+    """Ingest one synthetic transcript through the production live route."""
+    root = workspace_env["data_root"] / "projects"
+    project = root / "-conservation"
+    project.mkdir(parents=True)
+    transcript = project / f"{_SEEDED_SESSION_ID}.jsonl"
+    transcript.write_text(
+        "\n".join(
+            json.dumps(record)
+            for record in (
+                {
+                    "type": "user",
+                    "uuid": "u1",
+                    "sessionId": _SEEDED_SESSION_ID,
+                    "timestamp": "2026-07-20T10:00:00Z",
+                    "message": {"role": "user", "content": "hello"},
+                },
+                {
+                    "type": "assistant",
+                    "uuid": "a1",
+                    "parentUuid": "u1",
+                    "sessionId": _SEEDED_SESSION_ID,
+                    "timestamp": "2026-07-20T10:00:01Z",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "hi there"}]},
+                },
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=workspace_env["data_root"] / "index.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
+        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        metrics = await processor.ingest_files([transcript], emit_event=False)
+        assert metrics.succeeded_file_count == 1
+    finally:
+        await archive.close()
+    return transcript
+
+
+def _clone(workspace_env: dict[str, Path], name: str) -> Path:
+    clone = workspace_env["data_root"] / name
+    shutil.copytree(workspace_env["archive_root"], clone)
+    return clone
+
+
+def _canonical_blob_files(archive_root: Path) -> list[Path]:
+    store = BlobStore(archive_root / "blob")
+    return [
+        path for path in (archive_root / "blob").rglob("*") if path.is_file() and store.staging_root not in path.parents
+    ]
+
+
+@pytest.mark.asyncio
+async def test_blob_conservation_flags_orphan_blobs_and_dangling_references(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A file with no owning row and a reference with no provable bytes both fail."""
+    transcript = await _seed_archive(workspace_env)
+
+    conserved = check_blob_conservation(_clone(workspace_env, "clone-clean"))
+    assert conserved.ok is True
+    assert (conserved.orphan_blobs, conserved.dangling_references) == (0, 0)
+    assert conserved.referenced_blobs == conserved.present_blobs == 1
+
+    orphaned_root = _clone(workspace_env, "clone-orphan")
+    orphan_hash, _size = BlobStore(orphaned_root / "blob").write_from_bytes(b"no row owns these bytes")
+    orphaned = check_blob_conservation(orphaned_root)
+    assert orphaned.ok is False
+    assert orphaned.orphan_blobs == 1
+    assert orphaned.orphan_sample == (orphan_hash,)
+    assert orphaned.dangling_references == 0
+
+    # Bytes gone from the store and the acquisition source gone from disk:
+    # nothing left to prove the reference with.
+    dangling_root = _clone(workspace_env, "clone-dangling")
+    for blob in _canonical_blob_files(dangling_root):
+        blob.unlink()
+    displaced = transcript.with_suffix(".displaced")
+    transcript.rename(displaced)
+    try:
+        dangling = check_blob_conservation(dangling_root)
+    finally:
+        displaced.rename(transcript)
+    assert dangling.ok is False
+    assert dangling.dangling_references == 1
+    assert dangling.recoverable_references == 0
+    assert dangling.orphan_blobs == 0
+
+
+@pytest.mark.asyncio
+async def test_blob_conservation_excuses_staged_and_recoverable_references(
+    workspace_env: dict[str, Path],
+) -> None:
+    """In-flight staging and prover-recoverable bytes are accounted, not failures."""
+    await _seed_archive(workspace_env)
+
+    staged_root = _clone(workspace_env, "clone-staged")
+    staging = BlobStore(staged_root / "blob").staging_root
+    staging.mkdir(parents=True, exist_ok=True)
+    (staging / "blob-in-flight").write_bytes(b"a publish that has not committed yet")
+    staged = check_blob_conservation(staged_root)
+    assert staged.ok is True
+    assert staged.staged_in_flight == 1
+    assert staged.invalid_namespace_entries == 0
+    assert staged.orphan_blobs == 0
+
+    # Same missing bytes as the dangling case above, with the acquisition
+    # source still on disk: the backup prover replays it and the reference is
+    # accounted rather than reported lost.
+    recoverable_root = _clone(workspace_env, "clone-recoverable")
+    for blob in _canonical_blob_files(recoverable_root):
+        blob.unlink()
+    recoverable = check_blob_conservation(recoverable_root)
+    assert recoverable.ok is True
+    assert recoverable.recoverable_references == 1
+    assert recoverable.dangling_references == 0
+    assert recoverable.present_blobs == 0

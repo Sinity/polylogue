@@ -938,6 +938,56 @@ def _active_path_state(
     return path_values, leaf_values, None
 
 
+#: Identity namespace for a Claude web tool call the provider left unnamed.
+#: ``toolu_``-prefixed provider ids can never collide with it.
+_STRUCTURAL_TOOL_ID_PREFIX = "structural:claude-web"
+
+
+def _pair_idless_tool_blocks(blocks: list[ParsedContentBlock], *, message_key: str) -> list[ParsedContentBlock]:
+    """Give one deterministic id to each id-less tool call and its answer.
+
+    The Claude web transcript emits a tool_use segment followed by its
+    tool_result segment inside one message's ``content`` array and puts no id
+    on either -- the pair is expressed by position and tool name alone. Every
+    downstream relation joins a call to its result by ``tool_id``, so leaving
+    both NULL discards a link the source states unambiguously. The id is
+    derived from the owning message and the call's ordinal within it, so it is
+    stable across re-ingest; an unanswered call keeps its own id and stays
+    ``no_result``, and a result with no preceding unanswered call keeps no id
+    rather than borrowing one.
+    """
+    pending: list[int] = []
+    assigned: dict[int, str] = {}
+    ordinal = 0
+    for index, block in enumerate(blocks):
+        if block.tool_id:
+            continue
+        if block.type is BlockType.TOOL_USE:
+            assigned[index] = f"{_STRUCTURAL_TOOL_ID_PREFIX}:{message_key}:{ordinal}"
+            ordinal += 1
+            pending.append(index)
+        elif block.type is BlockType.TOOL_RESULT:
+            match = next(
+                (
+                    candidate
+                    for candidate in reversed(pending)
+                    if not (block.tool_name and blocks[candidate].tool_name)
+                    or block.tool_name == blocks[candidate].tool_name
+                ),
+                None,
+            )
+            if match is None:
+                continue
+            pending.remove(match)
+            assigned[index] = assigned[match]
+    if not assigned:
+        return blocks
+    return [
+        block.model_copy(update={"tool_id": assigned[index]}) if index in assigned else block
+        for index, block in enumerate(blocks)
+    ]
+
+
 def normalize_chat_messages(
     chat_messages: list[object],
     *,
@@ -1003,6 +1053,7 @@ def normalize_chat_messages(
         occurrence = evidence_key_counts.get(base_evidence_key, 0)
         evidence_key_counts[base_evidence_key] = occurrence + 1
         evidence_key = base_evidence_key if occurrence == 0 else f"{base_evidence_key}:occurrence:{occurrence}"
+        content_blocks = _pair_idless_tool_blocks(content_blocks, message_key=evidence_key)
         attachments = _message_attachments(item, native_message_id, role=role)
         parent_message_provider_id = _message_parent_id(item)
         explicit_position = _first_non_negative_int_field(item, "position")

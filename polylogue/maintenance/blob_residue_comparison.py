@@ -13,7 +13,7 @@ import hashlib
 import json
 import os
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from io import BytesIO
@@ -23,6 +23,8 @@ from typing import Any, cast
 from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
+from polylogue.maintenance.blob_disposition import RestorationDestination
+from polylogue.maintenance.blob_disposition_apply import MemberOutcome
 from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -57,6 +59,61 @@ class AuthorityOutcome(StrEnum):
     RESTORED_AND_REACQUIRED = "restored_and_reacquired"
     POSITIVELY_EXCLUDED = "positively_excluded"
     UNRESOLVED_BLOCKER = "unresolved_blocker"
+
+
+# A restoration counts only once the ordinary spool actually holds the
+# material; every other apply outcome leaves the carrier unproven.
+_COMPLETED_RESTORATION_OUTCOMES = frozenset(
+    {MemberOutcome.RESTORED.value, MemberOutcome.RESTORATION_ALREADY_PRESENT.value}
+)
+
+# Declared non-product kinds, keyed to the reason the taxonomy states. A kind
+# absent here -- including an unrecognized database -- is never excluded.
+_CODEX_OUT_OF_SCOPE_REASONS: dict[str, str] = {
+    classification.kind: classification.reason
+    for classification in codex_state.CODEX_STATE_FIDELITY
+    if classification.disposition == "out-of-scope"
+}
+
+
+@dataclass(frozen=True, slots=True)
+class NonProductExclusion:
+    """Declared-taxonomy evidence that content carries no product material."""
+
+    taxonomy: str
+    reason: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"taxonomy": self.taxonomy, "reason": self.reason}
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedRestoration:
+    """A carrier already published into an ordinary spool by the apply route."""
+
+    destination: str
+    logical_id: str
+    outcome: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"destination": self.destination, "logical_id": self.logical_id, "outcome": self.outcome}
+
+
+def completed_restoration(record: Mapping[str, Any]) -> CompletedRestoration | None:
+    """Read a census record's proof that restoration into a spool completed."""
+    payload = record.get("restoration")
+    if not isinstance(payload, Mapping):
+        return None
+    destination = payload.get("destination")
+    logical_id = payload.get("logical_id")
+    outcome = payload.get("outcome")
+    if not isinstance(destination, str) or not isinstance(logical_id, str) or not isinstance(outcome, str):
+        return None
+    if destination not in {member.value for member in RestorationDestination}:
+        return None
+    if outcome not in _COMPLETED_RESTORATION_OUTCOMES:
+        return None
+    return CompletedRestoration(destination=destination, logical_id=logical_id, outcome=outcome)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +198,7 @@ class RouteResult:
     route: str
     sessions: tuple[ParsedSession, ...] = ()
     error: str | None = None
+    exclusion: NonProductExclusion | None = None
 
     def to_dict(self) -> dict[str, object]:
         result: dict[str, object] = {
@@ -151,6 +209,8 @@ class RouteResult:
         }
         if self.error is not None:
             result["error"] = self.error[:4096]
+        if self.exclusion is not None:
+            result["exclusion"] = self.exclusion.to_dict()
         return result
 
 
@@ -294,9 +354,21 @@ def _parse_sqlite(path: Path, *, provider: Provider, fallback_id: str) -> RouteR
                 )
             ),
         )
-    if provider is Provider.CODEX and codex_state.is_in_scope_codex_sqlite_path(path, immutable=True):
+    if provider is Provider.CODEX:
         kind = codex_state.classify_codex_sqlite_path(path, immutable=True)
-        return RouteResult(provider, f"codex_state.{kind}", f"codex_state.{kind}.non_session", ())
+        out_of_scope_reason = _CODEX_OUT_OF_SCOPE_REASONS.get(kind)
+        if out_of_scope_reason is not None:
+            return RouteResult(
+                provider,
+                f"codex_state.{kind}.required_tables",
+                f"codex_state.{kind}.declared_non_product",
+                exclusion=NonProductExclusion(
+                    taxonomy=f"codex_state.{kind}.out_of_scope",
+                    reason=out_of_scope_reason,
+                ),
+            )
+        if kind in codex_state.IN_SCOPE_KINDS:
+            return RouteResult(provider, f"codex_state.{kind}", f"codex_state.{kind}.non_session", ())
     return None
 
 
@@ -441,8 +513,30 @@ def _normalize_route(route: RouteResult) -> tuple[RouteResult, NormalizedContrib
             route.detector_evidence,
             "normalized-contribution.error",
             error=f"{type(exc).__name__}: {exc}",
+            exclusion=route.exclusion,
         )
         return failed, NormalizedContribution.from_sessions(())
+
+
+def _route_or_error(
+    path: Path, *, provider_hint: Provider, logical_path: Path
+) -> tuple[RouteResult, dict[str, object]]:
+    """Route one carrier, turning a vanished or shifting file into a blocker.
+
+    A census names carriers that may have been removed since it was compiled,
+    and one unreadable carrier must block its own candidate rather than the
+    whole run.
+    """
+    try:
+        return parse_production_route(path, provider_hint=provider_hint, logical_path=logical_path)
+    except (OSError, RuntimeError) as exc:
+        unreadable = RouteResult(
+            provider_hint,
+            "carrier.unreadable",
+            "carrier.unreadable",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return unreadable, {"path": str(path), "status": "unreadable"}
 
 
 def _cached_source_matches(path: Path, observation: dict[str, object]) -> bool:
@@ -457,6 +551,32 @@ def _cached_source_matches(path: Path, observation: dict[str, object]) -> bool:
         and stat.st_mtime_ns == observation.get("mtime_ns")
         and stat.st_ctime_ns == observation.get("ctime_ns")
     )
+
+
+def authority_outcome(
+    comparison: ContributionComparison,
+    *,
+    stored_route: RouteResult,
+    restoration: CompletedRestoration | None,
+) -> AuthorityOutcome:
+    """Assign the one terminal outcome the evidence supports.
+
+    Exclusion is a property of the retained content, so a declared non-product
+    taxonomy answers the blob without any current-source comparison. Otherwise
+    the comparison must place the stored material inside what a source still
+    produces, and a completed restoration is what distinguishes a carrier the
+    census itself put back from one an untouched source always held.
+    """
+    if stored_route.exclusion is not None and stored_route.error is None:
+        return AuthorityOutcome.POSITIVELY_EXCLUDED
+    if comparison.unresolved or comparison.outcome not in {
+        ComparisonOutcome.REPRODUCED_NORMALIZED,
+        ComparisonOutcome.SUPERSEDED_PREFIX,
+    }:
+        return AuthorityOutcome.UNRESOLVED_BLOCKER
+    if restoration is not None:
+        return AuthorityOutcome.RESTORED_AND_REACQUIRED
+    return AuthorityOutcome.CURRENT_SOURCE_REACQUIRABLE
 
 
 def _route_status(comparison: dict[str, Any], key: str) -> str:
@@ -483,7 +603,7 @@ def _candidate_result(
         current_cache.pop(cache_key)
         cached = None
     if cached is None:
-        parsed_current_route, source_observation = parse_production_route(
+        parsed_current_route, source_observation = _route_or_error(
             source_path, provider_hint=provider_hint, logical_path=source_path
         )
         current_route, current_contribution = _normalize_route(parsed_current_route)
@@ -491,7 +611,7 @@ def _candidate_result(
         current_cache[cache_key] = (current_route_data, current_contribution, source_observation)
     else:
         current_route_data, current_contribution, source_observation = cached
-    parsed_stored_route, blob_observation = parse_production_route(
+    parsed_stored_route, blob_observation = _route_or_error(
         blob_path, provider_hint=provider_hint, logical_path=source_path
     )
     stored_route, stored_contribution = _normalize_route(parsed_stored_route)
@@ -512,6 +632,8 @@ def _candidate_result(
             else compare_normalized_contributions(stored_contribution, current_contribution)
         )
     )
+    restoration = completed_restoration(record)
+    outcome = authority_outcome(comparison, stored_route=stored_route, restoration=restoration)
     return {
         **record,
         "normalized_comparison": {
@@ -522,27 +644,38 @@ def _candidate_result(
             "current_contribution": current_contribution.to_dict(),
             "source_observation": source_observation,
             "blob_observation": blob_observation,
+            "completed_restoration": restoration.to_dict() if restoration is not None else None,
         },
         "disposition": comparison.outcome.value,
-        "authority_outcome": (
-            AuthorityOutcome.CURRENT_SOURCE_REACQUIRABLE.value
-            if not comparison.unresolved
-            and comparison.outcome
-            in {
-                ComparisonOutcome.REPRODUCED_NORMALIZED,
-                ComparisonOutcome.SUPERSEDED_PREFIX,
-            }
-            else AuthorityOutcome.UNRESOLVED_BLOCKER.value
-        ),
+        "authority_outcome": outcome.value,
     }
 
 
+def _candidate_size(record: Mapping[str, Any], *, blob_hash: str, blob_store: BlobStore) -> int:
+    """The candidate's byte size, preferring a declared count over the object."""
+    for key in ("size_bytes", "blob_size_bytes"):
+        size = record.get(key)
+        if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
+            return size
+    try:
+        return blob_store.blob_path(blob_hash).stat().st_size
+    except OSError as exc:
+        raise ValueError(f"candidate blob {blob_hash} has no reliable size") from exc
+
+
 def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, object]:
-    """Extend a census, leaving the source-missing cohort byte-for-byte intact."""
+    """Extend a census with one derived authority outcome per candidate.
+
+    A source-missing record carries no source to compare against, so it is
+    carried through unchanged and counted unresolved from its cohort rather
+    than from any outcome the input claims for it.
+    """
     records = census.get("records")
     if not isinstance(records, list):
         raise ValueError("census records must be a list")
-    present = [record for record in records if isinstance(record, dict) and record.get("cohort") != "source_missing"]
+    if not all(isinstance(record, dict) for record in records):
+        raise ValueError("every census record must be an object")
+    present = [record for record in records if record.get("cohort") != "source_missing"]
     if not present:
         raise ValueError("census must contain at least one present-source candidate")
     from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -557,11 +690,8 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
     current_cache: dict[tuple[str, str], tuple[dict[str, object], NormalizedContribution, dict[str, object]]] = {}
     processed = 0
     for record in records:
-        if not isinstance(record, dict) or record.get("cohort") == "source_missing":
-            if isinstance(record, dict):
-                extended_records.append(record)
-            else:
-                extended_records.append(record)
+        if record.get("cohort") == "source_missing":
+            extended_records.append(record)
         else:
             extended_records.append(_candidate_result(record, blob_store=store, current_cache=current_cache))
             processed += 1
@@ -579,63 +709,41 @@ def extend_census(census: dict[str, Any], *, blob_root: Path) -> dict[str, objec
         if _route_status(comparison, "stored_route") == "error" or _route_status(comparison, "current_route") == "error"
     )
     outcome_counts = Counter(
-        str(record["authority_outcome"])
+        AuthorityOutcome.UNRESOLVED_BLOCKER.value
+        if record.get("cohort") == "source_missing"
+        else str(record["authority_outcome"])
         for record in extended_records
-        if record.get("cohort") != "source_missing" and "authority_outcome" in record
     )
-    allowed_outcomes = {outcome.value for outcome in AuthorityOutcome}
-    invalid_outcomes = sorted(set(outcome_counts) - allowed_outcomes)
-    if invalid_outcomes:
-        raise ValueError(f"invalid authority outcomes: {invalid_outcomes}")
-    physical_hashes = {
-        str(record.get("blob_hash"))
-        for record in records
-        if isinstance(record, dict) and isinstance(record.get("blob_hash"), str)
-    }
+    physical_hashes = {str(record["blob_hash"]) for record in records if isinstance(record.get("blob_hash"), str)}
     distinct_bytes = 0
     seen_hashes: set[str] = set()
     for record in records:
-        if not isinstance(record, dict) or not isinstance(record.get("blob_hash"), str):
+        if not isinstance(record.get("blob_hash"), str):
             continue
         blob_hash = str(record["blob_hash"])
         if blob_hash in seen_hashes:
             continue
         seen_hashes.add(blob_hash)
-        size = record.get("size_bytes", record.get("blob_size_bytes"))
-        if not isinstance(size, int) or size < 0:
-            try:
-                size = store.blob_path(blob_hash).stat().st_size
-            except OSError as exc:
-                raise ValueError(f"candidate blob {blob_hash} has no reliable size") from exc
-        distinct_bytes += size
-    source_missing_count = sum(
-        1 for record in records if isinstance(record, dict) and record.get("cohort") == "source_missing"
-    )
-    unresolved_count = outcome_counts[AuthorityOutcome.UNRESOLVED_BLOCKER.value] + source_missing_count
+        distinct_bytes += _candidate_size(record, blob_hash=blob_hash, blob_store=store)
+    source_missing_count = sum(1 for record in records if record.get("cohort") == "source_missing")
+    unresolved_count = outcome_counts[AuthorityOutcome.UNRESOLVED_BLOCKER.value]
     return {
         **census,
         "normalized_comparison": {
             "schema_version": 1,
             "input_candidate_hash_digest": census.get("candidate_hash_digest"),
             "present_source_candidate_count": len(present),
-            "source_missing_candidate_count_untouched": sum(
-                1 for record in records if isinstance(record, dict) and record.get("cohort") == "source_missing"
-            ),
             "source_missing_candidate_count_unresolved": source_missing_count,
             "outcome_counts": dict(sorted(outcomes.items())),
-            "authority_outcome_counts": dict(
-                sorted(
-                    {
-                        **{outcome.value: outcome_counts.get(outcome.value, 0) for outcome in AuthorityOutcome},
-                        AuthorityOutcome.UNRESOLVED_BLOCKER.value: unresolved_count,
-                    }.items()
-                )
-            ),
-            "authority_outcome_values": sorted(allowed_outcomes),
+            "authority_outcome_counts": {
+                outcome.value: outcome_counts.get(outcome.value, 0) for outcome in sorted(AuthorityOutcome)
+            },
+            "authority_outcome_values": sorted(outcome.value for outcome in AuthorityOutcome),
             "candidate_record_count": len(records),
             "candidate_distinct_hash_count": len(physical_hashes),
             "candidate_distinct_bytes": distinct_bytes,
             "unresolved_candidate_count": unresolved_count,
+            "accepted": unresolved_count == 0,
             "route_error_count": route_errors,
             "read_only": True,
             "route": "production_detector_parser_admission_v1",
@@ -658,6 +766,10 @@ def main(argv: list[str] | None = None) -> int:
     comparison = cast(dict[str, object], receipt["normalized_comparison"])
     counts = comparison["outcome_counts"]
     print(f"normalized-comparison present={comparison.get('present_source_candidate_count')} outcomes={counts}")
+    print(f"authority_outcomes={comparison['authority_outcome_counts']}")
+    if not comparison["accepted"]:
+        print(f"unresolved={comparison['unresolved_candidate_count']} blocks acceptance")
+        return 1
     return 0
 
 
@@ -666,12 +778,16 @@ if __name__ == "__main__":
 
 
 __all__ = [
-    "ComparisonOutcome",
     "AuthorityOutcome",
+    "ComparisonOutcome",
+    "CompletedRestoration",
     "ContributionComparison",
+    "NonProductExclusion",
     "NormalizedContribution",
     "NormalizedSessionContribution",
+    "authority_outcome",
     "compare_normalized_contributions",
+    "completed_restoration",
     "extend_census",
     "main",
     "parse_production_route",

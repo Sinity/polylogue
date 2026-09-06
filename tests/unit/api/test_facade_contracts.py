@@ -282,6 +282,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "correlate_hermes_context_deliveries",
         "reconcile_hermes_session_lifecycle",
         "reconcile_codex_spawn_edges",
+        "correlate_claude_agent_dispatches",
         "hermes_integration_health",
         "list_assertion_candidate_reviews",
         "assertion_candidate_queue_health",
@@ -1458,6 +1459,83 @@ async def test_reconcile_codex_spawn_edges_resolves_via_the_facade(tmp_path: Pat
         assert report.backed_by_authoritative_count == 1
         assert report.inferred_only_count == 0
         assert report.authoritative_only_count == 0
+    finally:
+        await archive.close()
+
+
+async def test_correlate_claude_agent_dispatches_resolves_via_the_facade(tmp_path: Path) -> None:
+    """bd polylogue-xo9gq: the facade method reaches the real hook-event spool
+    and the ingested block tree, and returns the agent instance the runtime
+    attributed the call to."""
+    import json
+
+    from polylogue.storage.sqlite.archive_tiers.source_write import (
+        ArchiveHookEvent,
+        write_source_hook_event,
+    )
+
+    archive = _archive(tmp_path)
+    session_id = "claude-code-session:agent-facade-1"
+    with sqlite3.connect(tmp_path / "index.db") as index_conn:
+        index_conn.execute(
+            "INSERT INTO sessions (native_id, origin, title, content_hash, message_count) VALUES (?, ?, ?, ?, ?)",
+            ("agent-facade-1", "claude-code-session", "test", _HASH, 1),
+        )
+        index_conn.execute(
+            "INSERT INTO messages (session_id, native_id, position, role, content_hash) VALUES (?, ?, ?, ?, ?)",
+            (session_id, "msg-1", 0, "assistant", _HASH),
+        )
+        index_conn.execute(
+            "INSERT INTO blocks (message_id, session_id, position, block_type, tool_name, tool_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (f"{session_id}:n:msg-1", session_id, 0, "tool_use", "Bash", "toolu_facade_1"),
+        )
+        index_conn.commit()
+
+    envelope: dict[str, object] = {
+        "event_id": "facade-agent-event",
+        "event_type": "PreToolUse",
+        "session_id": "agent-facade-1",
+        "timestamp": "2026-07-12T10:00:00Z",
+        "provider": "claude-code",
+        "payload": {
+            "session_id": "agent-facade-1",
+            "tool_use_id": "toolu_facade_1",
+            "agent_id": "agent-instance-facade",
+            "agent_type": "reviewer",
+        },
+        "observed_at_ms": 1_000,
+    }
+    with sqlite3.connect(tmp_path / "source.db") as source_conn:
+        write_source_hook_event(
+            source_conn,
+            origin="claude-code-session",
+            source_path="synthetic:hooks/facade-agent-event.json",
+            payload=json.dumps(envelope).encode("utf-8"),
+            acquired_at_ms=1_000,
+            raw_id="raw-facade-agent-event",
+            hook_event=ArchiveHookEvent(
+                hook_event_id="hook:facade-agent-event",
+                origin="claude-code-session",
+                source_path="synthetic:hooks/facade-agent-event.json",
+                event_type="PreToolUse",
+                payload=envelope,
+                observed_at_ms=1_000,
+                native_id="agent-facade-1:PreToolUse:facade-agent-event",
+                session_native_id="agent-facade-1",
+            ),
+        )
+
+    try:
+        report = await archive.correlate_claude_agent_dispatches()
+
+        assert report is not None
+        assert report.total_agent_bearing_events == 1
+        assert report.resolved_count == 1
+        assertion = report.resolved[0]
+        assert assertion.agent_id == "agent-instance-facade"
+        assert assertion.agent_type == "reviewer"
+        assert assertion.tool_use_block_id == f"{session_id}:n:msg-1:0"
     finally:
         await archive.close()
 

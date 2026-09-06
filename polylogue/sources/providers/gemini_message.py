@@ -247,13 +247,33 @@ class GeminiMessage(BaseModel):
             )
         return traces
 
+    def _part_thought_signatures(self) -> list[str | GeminiDictValue]:
+        signatures: list[str | GeminiDictValue] = []
+        for part in self.parts:
+            signature = _part_record(part).get("thoughtSignature")
+            if isinstance(signature, str) and signature:
+                signatures.append(signature)
+            elif isinstance(signature, dict) and signature:
+                signatures.append(_json_object(signature))
+        return signatures
+
     def extract_content_blocks(self) -> list[ContentBlock]:
         blocks = []
+
+        # A chunk's ``text`` is the whole rendering of the content its
+        # ``parts`` carry segment by segment, so a chunk holding both
+        # materializes its characters exactly once: from ``text``, with the
+        # parts contributing only their non-text payloads. Their per-part
+        # ``thoughtSignature`` has no chunk-level counterpart on the wire and
+        # moves onto the thought block so the attestation survives.
+        parts_restate_text = bool(self.text) and bool(self.parts)
 
         if self.isThought:
             sigs: list[str | GeminiDictValue] = []
             for signature in self.thoughtSignatures:
                 sigs.append(signature if isinstance(signature, str) else _normalize_mapping(signature))
+            if parts_restate_text:
+                sigs.extend(signature for signature in self._part_thought_signatures() if signature not in sigs)
             blocks.append(
                 ContentBlock(
                     type=ContentType.THINKING,
@@ -276,7 +296,7 @@ class GeminiMessage(BaseModel):
         for part in self.parts:
             raw_part = _part_record(part)
             part_text = _part_text(part)
-            if part_text:
+            if part_text and not parts_restate_text:
                 blocks.append(
                     ContentBlock(
                         type=ContentType.THINKING if raw_part.get("thought") is True else ContentType.TEXT,

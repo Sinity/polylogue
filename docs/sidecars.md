@@ -16,3 +16,12 @@ verification graphs, and failed backups; each kind below names its contract.
 Hook spool entries (`hooks/pending/<day>/<event_id>.json`) are primary
 acquisition sources, not sidecars; their envelope contract lives in
 `sources/hooks.py`.
+
+A Claude tool-result payload the transcript points at but the filesystem no
+longer holds falls back to the same call's `PostToolUse` hook `tool_response`
+(`sources/live/hook_tool_response.py`), so the recovery order is inline
+preview, then sidecar file, then hook. That third fallback is bounded for
+`Bash`: Claude Code caps the `tool_response.stdout` it hands a hook at 30,000
+characters and repeats the same persisted-output pointer, so a recovered block
+records whether the recovery was complete instead of claiming the whole
+output. Nothing else is derived from a hook payload into `blocks`.

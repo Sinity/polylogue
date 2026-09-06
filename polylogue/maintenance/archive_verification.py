@@ -57,6 +57,10 @@ from polylogue.maintenance.corpus_fidelity import (
     audit_chatgpt_content_conservation,
     audit_revision_fidelity,
 )
+from polylogue.maintenance.reasoning_conservation import (
+    audit_reasoning_conservation,
+    reasoning_populations_present,
+)
 from polylogue.maintenance.source_conservation import (
     audit_source_conservation,
     logical_head_cohort_expr,
@@ -994,6 +998,22 @@ def archive_verification_migrated_owner_adapters(
             ),
         ),
         _declared_owner(
+            name="reasoning-conservation",
+            semantic_owner="reasoning-materialization",
+            # Candidate route only: the universe is every selected blob of the
+            # two largest origins, so this is a candidate proof rather than a
+            # routine health or corpus-fidelity check.
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE}),
+            production_route="coding-origin source admission",
+            population=("source.db.raw_sessions", "blob/", "index.db.blocks"),
+            owned_reference="test_signature_only_thinking_lost_trips_reasoning_conservation",
+            check=lambda: (
+                _check_reasoning_conservation_at_index_path(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_reasoning_conservation(archive_root, sample_limit)
+            ),
+        ),
+        _declared_owner(
             name="corpus-absences",
             semantic_owner="candidate-corpus-fidelity",
             applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_CORPUS_FIDELITY}),
@@ -1091,11 +1111,6 @@ class ArchiveVerificationCoverage:
     missing_production_routes: tuple[str, ...] = ()
     ownerless_checks: tuple[str, ...] = ()
     duplicate_checks: tuple[str, ...] = ()
-    retirement_candidates: tuple[str, ...] = (
-        "pathology-zoo-invariants",
-        "counts-summary",
-        "raw-quarantine-group-dedup",
-    )
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -1117,7 +1132,6 @@ class ArchiveVerificationCoverage:
                 "missing_production_routes": list(self.missing_production_routes),
                 "ownerless_checks": list(self.ownerless_checks),
                 "duplicate_checks": list(self.duplicate_checks),
-                "retirement_candidates": list(self.retirement_candidates),
             }
         )
 
@@ -3258,6 +3272,62 @@ def _check_chatgpt_content_conservation_at_index_path(
             for item in evidence["dropped_sample"]
         ],
         evidence=evidence,
+    )
+
+
+def _check_reasoning_conservation(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
+    return _check_reasoning_conservation_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+
+
+def _check_reasoning_conservation_at_index_path(
+    archive_root: Path, index_path: Path, sample_limit: int
+) -> ArchiveVerificationCheck:
+    """Re-read acquired coding-origin bytes and trace every reasoning witness.
+
+    polylogue-vf9x's class: a text-empty Claude thinking segment and every
+    standalone Codex reasoning record produced no row, no event and no typed
+    refusal, so archived reasoning fell to exactly zero while message volume
+    rose. Nothing indexed counted them on the way in, which is why this
+    check's universe is the durable blob. Denominators are per origin and per
+    structural variant, so a conserved origin cannot stand in for a lost one.
+    """
+    name = "reasoning-conservation"
+    source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
+    blob_root = archive_root / "blob"
+    if not source_path.exists() or not index_path.exists():
+        return _skip_check(name, "source.db or index.db not present")
+    if not blob_root.exists():
+        return _skip_check(name, "blob namespace not present")
+    try:
+        source = _open_ro(source_path)
+        index = _open_ro(index_path)
+    except sqlite3.Error as exc:
+        return _error_check(name, f"could not open source/index tiers: {exc}", exc=exc)
+    try:
+        if not reasoning_populations_present(source):
+            return _skip_check(name, "raw_sessions table not present")
+        report = audit_reasoning_conservation(source, index, BlobStore(blob_root).read_all, sample_limit=sample_limit)
+    except sqlite3.Error as exc:
+        return _error_check(name, f"could not read source/index tiers: {exc}", exc=exc)
+    finally:
+        index.close()
+        source.close()
+
+    if report.blocking_count:
+        status = OutcomeStatus.ERROR
+    elif report.warning_count:
+        status = OutcomeStatus.WARNING
+    else:
+        status = OutcomeStatus.OK
+    return ArchiveVerificationCheck(
+        name=name,
+        status=status,
+        summary=report.summary(),
+        count=report.blocking_count,
+        details=[
+            f"{term.name}:{item}" for term in report.terms if term.blocking and term.count for item in term.sample
+        ],
+        evidence=dict(report.to_json()),
     )
 
 

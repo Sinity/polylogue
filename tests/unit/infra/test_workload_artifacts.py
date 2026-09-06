@@ -392,7 +392,7 @@ def test_clone_from_unpinned_source_authenticates_the_enumerated_file_set(
 ) -> None:
     """A clone whose source carries no pinned manifest is still authenticated.
 
-    ``clone_pathology_zoo`` clones an already-materialized tree by handing
+    A caller cloning an already-materialized tree hands
     :func:`clone_immutable_tree` an artifact with empty ``files``, so the
     expected set is enumerated from the source root instead of a manifest.
 

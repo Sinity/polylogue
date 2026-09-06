@@ -22,6 +22,9 @@ four realistic session shapes:
   ``{id, displayName, createTime, updateTime}`` envelope, which no longer
   appears on the wire, so without this payload every law below is pinned to a
   shape the provider has stopped emitting.
+- ``text_and_parts_prompt.json`` -- chunks that carry both a whole-chunk
+  ``text`` and the ``parts`` array that streamed it, including a thought
+  chunk whose per-part ``thoughtSignature`` has no chunk-level counterpart.
 
 Ref #1297, Ref #1184, Ref #1186.
 """
@@ -37,7 +40,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument
-from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.drive import looks_like as _looks_like_impl
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 
@@ -47,6 +50,7 @@ CATALOG_FIXTURES = (
     "code_execution_prompt.json",
     "multi_turn_prompt.json",
     "current_export.json",
+    "text_and_parts_prompt.json",
 )
 
 
@@ -220,13 +224,112 @@ class TestPerChunkContentBlocks:
         assert isinstance(result_text, str)
         assert result_text.strip() == "4"
 
-    def test_text_chunk_emits_single_text_block(self) -> None:
-        payload = _load_catalog("text_only_prompt.json")
-        session = _parse(payload, "text_only_prompt")
-        for message in session.messages:
+    @pytest.mark.parametrize("fixture", ["text_only_prompt.json", "text_and_parts_prompt.json"])
+    def test_text_chunk_emits_single_text_block(self, fixture: str) -> None:
+        payload = _load_catalog(fixture)
+        chunks = cast("list[JSONDocument]", cast(JSONDocument, payload["chunkedPrompt"])["chunks"])
+        session = _parse(payload, fixture)
+        assert len(session.messages) == len(chunks)
+        for chunk, message in zip(chunks, session.messages, strict=True):
             assert len(message.blocks) == 1
-            assert message.blocks[0].type == BlockType.TEXT
+            expected = BlockType.THINKING if chunk.get("isThought") else BlockType.TEXT
+            assert message.blocks[0].type == expected
             assert message.blocks[0].text == message.text
+
+
+# ---------------------------------------------------------------------------
+# Character conservation -- a chunk's text is materialized exactly once
+# ---------------------------------------------------------------------------
+
+
+def _rendering_blocks(message: ParsedMessage) -> list[ParsedContentBlock]:
+    """Blocks that materialize the chunk's own text rendering.
+
+    A delivery ``errorMessage`` also lowers to a text block but is a
+    provider-side annotation on the turn, not part of what the chunk rendered.
+    """
+
+    return [
+        block
+        for block in message.blocks
+        if block.type in {BlockType.TEXT, BlockType.THINKING} and not (block.metadata or {}).get("errorMessage")
+    ]
+
+
+class TestChunkTextIsMaterializedOnce:
+    """Pin the conserved quantity: block characters equal source characters.
+
+    An AI Studio chunk may carry a whole-chunk ``text``, a ``parts`` array
+    that streamed the same content segment by segment, or both. Whatever the
+    shape, the message's text must reach ``blocks`` exactly once -- emitting
+    both renderings inflates every count derived from blocks (FTS, embeddings,
+    block counts, per-message character totals).
+
+    Anti-vacuity: ``message.text`` comes from ``extract_text_from_chunk`` and
+    the blocks from ``extract_content_blocks``; re-emitting the parts of a
+    chunk that also carries ``text`` doubles the block side alone and turns
+    these red. ``text_and_parts_prompt.json`` is the fixture that exercises
+    the co-occurring shape -- 1,685 of 10,885 chunks in the real Drive corpus.
+    """
+
+    @pytest.mark.parametrize("fixture", sorted(path.name for path in CATALOG_DIR.glob("*.json")))
+    def test_catalog_blocks_render_the_message_text_exactly_once(self, fixture: str) -> None:
+        session = _parse(_load_catalog(fixture), fixture)
+        for index, message in enumerate(session.messages):
+            texts = [block.text or "" for block in _rendering_blocks(message)]
+            assert "\n".join(texts) == (message.text or ""), f"{fixture} message {index} re-renders its text"
+
+    @pytest.mark.parametrize("fixture", sorted(path.name for path in CATALOG_DIR.glob("*.json")))
+    def test_catalog_block_characters_equal_source_characters(self, fixture: str) -> None:
+        payload = _load_catalog(fixture)
+        session = _parse(payload, fixture)
+        source_chars = sum(len(message.text or "") for message in session.messages)
+        block_chars = sum(len(block.text or "") for message in session.messages for block in _rendering_blocks(message))
+        # Multi-part chunks without their own ``text`` render with a newline
+        # between parts, which the blocks do not carry.
+        separators = sum(max(len(_rendering_blocks(message)) - 1, 0) for message in session.messages)
+        assert block_chars + separators == source_chars
+
+    def test_chunk_with_text_and_parts_does_not_repeat_the_parts(self) -> None:
+        session = _parse(_load_catalog("text_and_parts_prompt.json"), "text_and_parts_prompt")
+        answer = session.messages[-1]
+        assert answer.text == "Two changes shipped: a faster parser and a smaller cache."
+        assert [(block.type, block.text) for block in answer.blocks] == [(BlockType.TEXT, answer.text)]
+
+    def test_thought_chunk_with_parts_emits_one_thinking_block(self) -> None:
+        session = _parse(_load_catalog("text_and_parts_prompt.json"), "text_and_parts_prompt")
+        thinking = [
+            block for message in session.messages for block in message.blocks if block.type is BlockType.THINKING
+        ]
+        assert [block.text for block in thinking] == ["The notes list two changes. I will name both."]
+
+    def test_part_thought_signature_survives_on_the_thinking_block(self) -> None:
+        """A per-part ``thoughtSignature`` has no chunk-level ``thoughtSignatures``
+        counterpart on the wire; suppressing the duplicated part block must not
+        drop the attestation Gemini needs replayed for multi-turn thinking."""
+        session = _parse(_load_catalog("text_and_parts_prompt.json"), "text_and_parts_prompt")
+        evidence = [event for event in session.session_events if event.event_type == "gemini_thinking_evidence"]
+        assert len(evidence) == 1
+        assert evidence[0].payload["thoughtSignatures"] == ["signature-fixture-part"]
+
+    def test_parts_only_chunk_still_emits_one_block_per_part(self) -> None:
+        """The suppression is conditional on the chunk carrying its own text --
+        a chunk whose only text lives in ``parts`` must still materialize it."""
+        payload: JSONDocument = {
+            "id": "parts-only",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "role": "model",
+                        "parts": [{"text": "first segment"}, {"text": "second segment"}],
+                    }
+                ]
+            },
+        }
+        session = _parse(payload, "parts-only")
+        [message] = session.messages
+        assert [block.text for block in message.blocks] == ["first segment", "second segment"]
+        assert message.text == "first segment\nsecond segment"
 
 
 # ---------------------------------------------------------------------------

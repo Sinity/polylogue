@@ -25,6 +25,7 @@ from polylogue.maintenance.archive_verification import (
     ArchiveVerificationCheck,
     ArchiveVerificationReport,
     archive_verification_coverage,
+    archive_verification_domain_adapters,
     archive_verification_names_for_route,
     archive_verification_owner_adapters,
     passes_strict_acceptance,
@@ -44,7 +45,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
-from tests.infra.pathology_zoo import (
+from tests.infra.claude_vintage_live_proof import (
     CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
     CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
@@ -417,19 +418,23 @@ def test_domain_owner_adapters_bind_cross_tier_candidate_need(tmp_path: Path) ->
     assert result.status is OutcomeStatus.OK
 
 
-def test_domain_declarations_compile_routes_without_pathology_catalogue(tmp_path: Path) -> None:
+def test_every_compiled_route_check_is_owned_by_a_declaration(tmp_path: Path) -> None:
+    """Route composition is derived from owner declarations alone.
+
+    Anti-vacuity: red if a route names a check with no semantic owner, or if
+    the canary route grows a check outside the declared owner set.
+    """
     _seed_coherent_archive(tmp_path)
 
     coverage = archive_verification_coverage(archive_root=tmp_path)
     assert coverage.candidate_id is None
     assert coverage.missing_production_routes == ()
     assert coverage.ownerless_checks == ()
-    assert "pathology-zoo-invariants" in coverage.retirement_candidates
-    assert {owner.semantic_owner for owner in coverage.declarations}
+    assert all(owner.semantic_owner for owner in coverage.declarations)
 
     canary = archive_verification_names_for_route("reindex-canary-candidate")
     assert canary == ("active-leaf-title-convergence",)
-    assert "pathology-zoo-invariants" not in canary
+    assert set(canary) <= {owner.name for owner in archive_verification_domain_adapters(tmp_path)}
 
 
 def test_candidate_coverage_reports_runner_and_candidate_identity(tmp_path: Path) -> None:

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from polylogue.archive.message.paste_detection import has_paste_indicator
 from polylogue.core.enums import PasteBoundary
+from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
 from polylogue.logging import get_logger
 from polylogue.storage.introspection import table_exists as _table_exists
 
@@ -71,7 +72,7 @@ def _iter_hook_paste_events(hooks_dir: Path, session_ids: Iterable[str] | None =
                         continue
                     if not isinstance(record, dict):
                         continue
-                    if record.get("event_type") != _PASTE_EVENT_TYPE:
+                    if hook_record_field(record, "event_type") != _PASTE_EVENT_TYPE:
                         continue
                     if not has_paste_indicator(record):
                         continue
@@ -81,18 +82,8 @@ def _iter_hook_paste_events(hooks_dir: Path, session_ids: Iterable[str] | None =
     return events
 
 
-def _hook_field(event: dict[str, object], key: str) -> object:
-    value = event.get(key)
-    if value:
-        return value
-    payload = event.get("payload")
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return None
-
-
 def _hook_epoch_ms(event: dict[str, object]) -> float:
-    timestamp = _hook_field(event, "timestamp")
+    timestamp = hook_record_field(event, "timestamp")
     if not timestamp:
         return 0.0
     try:
@@ -119,9 +110,21 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
         if not _table_exists(conn, "sessions") or not _table_exists(conn, "messages"):
             return 0
         for event in events:
-            session_id = _hook_field(event, "session_id")
+            session_id = hook_record_field(event, "session_id")
             hook_epoch_ms = _hook_epoch_ms(event)
             if not session_id or hook_epoch_ms <= 0:
+                # Ground-truth paste evidence that cannot be keyed is dropped
+                # here, and a key-name mismatch reads exactly like a field that
+                # was never sent. Naming the keys that did resolve separates
+                # "this generation is undescribed" from "the field is absent".
+                payload = event.get("payload")
+                logger.warning(
+                    "hook_paste: %s record carries paste evidence but no readable session key; "
+                    "reader keys matched=%s payload keys=%s",
+                    hook_record_field(event, "event_type"),
+                    sorted(matched_reader_keys(event)),
+                    sorted(payload) if isinstance(payload, dict) else [],
+                )
                 continue
             rows = conn.execute(
                 """

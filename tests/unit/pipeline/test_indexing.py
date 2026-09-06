@@ -202,7 +202,7 @@ class TestIndexService:
 
         assert result is True
         descriptions = [desc for _, desc in progress_events if desc is not None]
-        assert not any("actions" in desc or "action events" in desc for desc in descriptions)
+        assert all(desc.startswith("Indexing: full-text search ") for desc in descriptions)
         assert descriptions[0] == "Indexing: full-text search 0/2"
         assert descriptions[-1] == "Indexing: full-text search 2/2"
 

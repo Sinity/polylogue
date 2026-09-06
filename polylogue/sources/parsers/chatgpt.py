@@ -11,7 +11,14 @@ from pydantic import ValidationError
 from polylogue.archive.message.artifacts import classify_material_origin, classify_text_message_type
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.core.enums import BlockType, Provider, SessionKind, TitleSource, WebConstructType
+from polylogue.core.enums import (
+    BlockType,
+    Provider,
+    SessionKind,
+    TitleSource,
+    ToolResultUnknownReason,
+    WebConstructType,
+)
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -623,6 +630,113 @@ def _extract_content_text(content: Mapping[str, object]) -> str:
     return ""
 
 
+#: Block types that can carry a tool-role node's payload. The first one a
+#: tool-role node produced becomes its canonical TOOL_RESULT; a typed-unknown
+#: block is excluded so an unrecognized wire shape keeps its own disposition.
+_TOOL_RESULT_CARRIER_TYPES: frozenset[BlockType] = frozenset(
+    {BlockType.TEXT, BlockType.DOCUMENT, BlockType.CODE, BlockType.TOOL_USE, BlockType.THINKING}
+)
+
+
+def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -> str | None:
+    """Resolve which node a ``role: tool`` result answers.
+
+    A tool episode is a chain: the calling node, then one or more ``role: tool``
+    result nodes. The provider attaches the second and later results to the
+    *previous result*, so the direct mapping parent names another answer rather
+    than the node the episode hangs off. Skipping the tool-role ancestors
+    reaches that node, and every result of one episode names the same owner.
+    """
+    seen: set[str] = set()
+    current = parent_id
+    while isinstance(current, str) and current and current not in seen:
+        seen.add(current)
+        node = mapping.get(current)
+        if not isinstance(node, Mapping):
+            return current
+        message = node.get("message")
+        author = message.get("author") if isinstance(message, Mapping) else None
+        if not (isinstance(author, Mapping) and author.get("role") == "tool"):
+            return current
+        parent = node.get("parent")
+        if not parent:
+            return current
+        current = str(parent)
+    return current
+
+
+def _concluded_tool_status_is_error(status: object) -> bool | None:
+    """Read the export's terminal-state vocabulary for a completed tool run.
+
+    ``finished_successfully`` and ``finished_partial_completion`` are the only
+    states that conclude an outcome; anything else (``in_progress``, absent)
+    stays honestly unknown. This export carries no numeric exit code.
+    """
+    if status == "finished_partial_completion":
+        return True
+    if status == "finished_successfully":
+        return False
+    return None
+
+
+def _tool_role_result_blocks(
+    blocks: list[ParsedContentBlock],
+    *,
+    tool_id: str | None,
+    status: object,
+    content_type: str,
+    text: str,
+) -> list[ParsedContentBlock]:
+    """Lower a ``author.role == "tool"`` node to exactly one TOOL_RESULT block.
+
+    The role is the export's structural statement that this node IS a tool's
+    answer; the content type only says how the answer was carried. Dispatching
+    on content type alone left browsing retrieval (``tether_quote``,
+    ``tether_browsing_display``, ``sonic_webpage``) as DOCUMENT and the plain
+    ``text``/``multimodal_text``/``code`` answers as TEXT/TOOL_USE, so their
+    calling ``tool_use`` stayed permanently ``no_result`` and the node's own
+    status evidence was unreachable from the actions relation.
+
+    The carrier keeps its text, media type and web constructs; only its type,
+    tool linkage and outcome fields change.
+    """
+    if any(block.type is BlockType.TOOL_RESULT for block in blocks):
+        return blocks
+    is_error = _concluded_tool_status_is_error(status)
+    unknown_reason = ToolResultUnknownReason.NOT_REPORTED.value if is_error is None else None
+    metadata: dict[str, object] = {"content_type": content_type}
+    for index, block in enumerate(blocks):
+        if block.type not in _TOOL_RESULT_CARRIER_TYPES:
+            continue
+        if block.metadata and block.metadata.get("admission_disposition"):
+            continue
+        blocks[index] = block.model_copy(
+            update={
+                "type": BlockType.TOOL_RESULT,
+                "tool_id": tool_id,
+                # A result has no invocation input; the ``content_type ==
+                # "code"`` branch synthesizes one for the call side only.
+                "tool_input": None,
+                "is_error": is_error,
+                "outcome_unknown_reason": unknown_reason,
+                "metadata": {**(block.metadata or {}), **metadata},
+            }
+        )
+        return blocks
+    blocks.insert(
+        0,
+        ParsedContentBlock(
+            type=BlockType.TOOL_RESULT,
+            text=text or None,
+            tool_id=tool_id,
+            metadata=metadata,
+            is_error=is_error,
+            outcome_unknown_reason=unknown_reason,
+        ),
+    )
+    return blocks
+
+
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
@@ -682,6 +796,11 @@ def extract_messages_from_mapping(
         # Extract parent message reference and calculate branch index
         parent_id = node.get("parent")
         parent_message_provider_id = str(parent_id) if parent_id else None
+        tool_result_owner_id = (
+            _owning_tool_call_id(mapping, parent_message_provider_id)
+            if role is Role.TOOL
+            else parent_message_provider_id
+        )
         branch_index = 0
 
         # Calculate branch_index from parent's children array position
@@ -849,7 +968,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
-                    tool_id=parent_message_provider_id,
+                    tool_id=tool_result_owner_id,
                     metadata={"content_type": content_type},
                     is_error=execution_is_error,
                     outcome_unknown_reason=execution_unknown_reason,
@@ -873,7 +992,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=summary or None,
-                    tool_id=parent_message_provider_id,
+                    tool_id=tool_result_owner_id,
                     metadata={"content_type": content_type},
                     is_error=computer_is_error,
                     outcome_unknown_reason=computer_unknown_reason,
@@ -919,7 +1038,9 @@ def extract_messages_from_mapping(
             # (polylogue-zocm: SEARCH_RESULT means "retrieved", distinct from
             # CONTENT_REFERENCE's "cited") carried on a DOCUMENT block,
             # mirroring the audio_transcription/audio_asset_pointer DOCUMENT+
-            # web_constructs idiom below.
+            # web_constructs idiom below. On a ``role: tool`` node this block
+            # is the browsing tool's answer, so ``_tool_role_result_blocks``
+            # re-types it to TOOL_RESULT and keeps the construct.
             #
             # The record's own ``url`` is its address and its own ``title`` is
             # its name; ``domain`` is only the label to fall back to when the
@@ -961,7 +1082,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
-                    tool_id=parent_message_provider_id,
+                    tool_id=tool_result_owner_id,
                     metadata={"content_type": content_type, **({"error_name": error_name} if error_name else {})},
                     is_error=True,
                 )
@@ -998,7 +1119,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
                     text=text,
-                    tool_id=parent_message_provider_id,
+                    tool_id=tool_result_owner_id,
                     metadata={"content_type": content_type},
                     is_error=citable_is_error,
                     outcome_unknown_reason=citable_unknown_reason,
@@ -1092,6 +1213,17 @@ def extract_messages_from_mapping(
             "model_editable_context",
         }:
             content_blocks.append(typed_unknown_block(content, wire_type=str(content_type)))
+
+        if role is Role.TOOL and content_blocks:
+            content_blocks = _tool_role_result_blocks(
+                content_blocks,
+                tool_id=tool_result_owner_id,
+                status=msg.get("status"),
+                # Read the node's own content type: the ``parts`` loop above
+                # rebinds ``content_type`` to an audio part's type.
+                content_type=str(content.get("content_type", "text")),
+                text=text,
+            )
 
         web_constructs = _constructs_from_chatgpt_metadata(msg_metadata)
         # Inline citation anchors are stripped from stored text (invisible

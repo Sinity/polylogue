@@ -44,7 +44,7 @@ from polylogue.sources.source_parsing import (
 )
 from polylogue.sources.source_root_admission import refuse_non_capture_source_root
 from polylogue.sources.source_walk import _setup_source_walk
-from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id, retained_content_revision
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
@@ -234,7 +234,13 @@ async def parse_sources_archive(
             blob_hash = getattr(raw_data, "blob_hash", None)
             blob_hash_str = blob_hash if isinstance(blob_hash, str) and blob_hash else None
             if session.source_name is Provider.HERMES and blob_hash_str is not None:
-                raw_id = hermes_profile_raw_id(source_path, source_index, blob_hash_str)
+                from polylogue.storage.blob_store import BlobStore
+
+                raw_id = hermes_profile_raw_id(
+                    source_path,
+                    source_index,
+                    retained_content_revision(BlobStore(blob_root).blob_path(blob_hash_str), blob_hash_str),
+                )
             shared_key: tuple[str, str, int, str] | None = None
             if blob_hash_str is not None:
                 # Keyed by origin (not provider) to match deterministic_raw_session_id

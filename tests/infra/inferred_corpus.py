@@ -1081,13 +1081,18 @@ def _validate_current_wire_support_route(
 
         current = shared_wire_support_receipt(storage_root=cast(SchemaRegistry, registry).storage_root)
     else:
-        current = build_wire_support_receipt(
-            registry=registry,
-            seed=witness_seed,
-            providers=None
-            if catalog_scope == "registry-default"
-            else tuple(cast(str, provider) for provider in raw_providers),
-        )
+        from tests.infra.wire_support import shared_wire_generation
+
+        # The generation is shared; the parse and the wire normalization the
+        # comparison is about are recomputed on every call.
+        with shared_wire_generation():
+            current = build_wire_support_receipt(
+                registry=registry,
+                seed=witness_seed,
+                providers=None
+                if catalog_scope == "registry-default"
+                else tuple(cast(str, provider) for provider in raw_providers),
+            )
     rebuilt = current.to_dict()
     if rebuilt != persisted:
         changed_fields = sorted(key for key in set(rebuilt) | set(persisted) if rebuilt.get(key) != persisted.get(key))

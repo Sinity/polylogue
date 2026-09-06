@@ -308,6 +308,12 @@ def _is_json_stream_decode_error(error: BaseException) -> bool:
     return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
 
 
+def _is_tool_result_sidecar_path(path: Path, *, provider: Provider) -> bool:
+    """Whether ``path`` is a Claude Code ``tool-results/`` sidecar by path rule."""
+    classification = strong_path_classification(path, provider=provider)
+    return classification is not None and classification.kind is ArtifactKind.TOOL_RESULT_SIDECAR
+
+
 LiveBatchEventEmitter = Callable[[str, dict[str, object]], None]
 LiveBatchSyncRunner = Callable[..., Awaitable[Any]]
 P = ParamSpec("P")
@@ -1530,7 +1536,9 @@ class LiveBatchProcessor:
             )
             return 0
         raw_fingerprint = raw_fingerprint or self._latest_raw_fingerprint(path)
-        if raw_fingerprint is None and self._archive_source_db_path().exists():
+        if self._archive_source_db_path().exists() and not self._source_tier_evidence_retained(
+            path, raw_fingerprint=raw_fingerprint
+        ):
             # A cursor commit is a claim that these bytes were consumed and
             # their evidence retained. With the source tier present and no
             # raw row for this path, nothing was retained, so advancing would
@@ -1885,6 +1893,46 @@ class LiveBatchProcessor:
 
     def _latest_raw_fingerprint(self, path: Path) -> str | None:
         return self._latest_archive_tiers_raw_fingerprint(path)
+
+    def _source_tier_evidence_retained(self, path: Path, *, raw_fingerprint: str | None) -> bool:
+        """Whether ``path``'s consumed bytes left evidence the archive still holds.
+
+        An ordinary transcript's raw id comes back from the batch that wrote
+        it and is corroborated afterwards by the index tier, so the id itself
+        is the proof and re-reading source.db per path would only cost time.
+        A Claude Code ``tool-results/`` sidecar has no index-tier trace at
+        all: its one record anywhere is the source-tier row, and a batch that
+        reports a raw id it did not durably retain leaves the bytes reachable
+        by nothing. Confirm that row against source.db before the cursor
+        claims the bytes.
+        """
+        if raw_fingerprint is None:
+            return False
+        if not _is_tool_result_sidecar_path(path, provider=Provider.from_string(self._source_name_for(path))):
+            return True
+        return self._latest_raw_fingerprint(path) is not None or self._history_sidecar_retained(path)
+
+    def _history_sidecar_retained(self, path: Path) -> bool:
+        """Whether ``source.db`` holds a ``history_sidecars`` row for ``path``.
+
+        A read failure here is infrastructure state, not an answer: it
+        propagates so the pass can requeue rather than resolving to "no
+        evidence" and refusing a cursor the archive may well support.
+        """
+        conn = sqlite3.connect(f"file:{self._archive_source_db_path()}?mode=ro", uri=True)
+        try:
+            declared = conn.execute(
+                "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'history_sidecars'"
+            ).fetchone()
+            if declared is None:
+                return False
+            row = conn.execute(
+                "SELECT 1 FROM history_sidecars WHERE source_path = ? LIMIT 1",
+                (str(path),),
+            ).fetchone()
+        finally:
+            conn.close()
+        return row is not None
 
     def _archive_source_db_path(self) -> Path:
         return Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent)) / "source.db"
@@ -2283,7 +2331,7 @@ class LiveBatchProcessor:
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
-                    raw_id = hermes_profile_raw_id(source_path, 0, blob_hash)
+                    raw_id = hermes_profile_raw_id(source_path, 0, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError:
@@ -2329,7 +2377,7 @@ class LiveBatchProcessor:
                     blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
                     blob_publication_receipt_id = snapshot.blob_publication_receipt_id
                     source_path = original_sqlite_source_path(path) or path
-                    raw_id = codex_state_raw_id(source_path, blob_hash)
+                    raw_id = codex_state_raw_id(source_path, snapshot.source_revision)
                     raw_source_revisions[path] = snapshot.source_revision
                     raw_source_fingerprints[path] = snapshot.source_fingerprint
                 except OSError:

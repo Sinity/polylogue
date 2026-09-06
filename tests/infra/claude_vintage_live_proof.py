@@ -26,14 +26,75 @@ from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.pathology_zoo import (
-    CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY,
-    CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN,
-    CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
-    write_claude_vintage_live_proof_pair,
-)
 
 ReceiptVerdict = Literal["equivalent", "conflict", "unresolved"]
+
+CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID = "9ed2056f-b415-4f51-b18e-5265f21a67bf"
+CLAUDE_VINTAGE_LIVE_PROOF_ORIGIN = Origin.CLAUDE_AI_EXPORT.value
+CLAUDE_VINTAGE_LIVE_PROOF_LOGICAL_SOURCE_KEY = f"{Origin.CLAUDE_AI_EXPORT.value}:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}"
+CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS = (
+    "64878c9e-2642-437b-a384-0961184f84ea",
+    "4c341ad3-dbd9-4224-9ab4-dcb4f833b3f9",
+    "49cad03c-d06e-48a8-8f0a-81e40ef234cd",
+)
+
+
+def claude_vintage_live_proof_payload(*, nested_target: bool) -> dict[str, object]:
+    """Return the sanitized old/new wire pair from the parent measurement.
+
+    The parent measurement identified a Claude.ai export-vintage difference:
+    one version carries a message's text at the top level, while another
+    carries the same text in one ``content`` text segment. The IDs and prose
+    here are synthetic because the cited live bytes were not recoverable.
+    """
+    target: dict[str, object] = {
+        "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[2],
+        "sender": "human",
+    }
+    if nested_target:
+        target["content"] = [{"type": "text", "text": "sanitized measured target turn"}]
+    else:
+        target["text"] = "sanitized measured target turn"
+    return {
+        "uuid": CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
+        "title": "sanitized measured Claude vintage cohort",
+        "created_at": "2026-07-31T00:00:00Z",
+        "updated_at": "2026-07-31T00:03:00Z",
+        "chat_messages": [
+            {
+                "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[0],
+                "sender": "human",
+                "text": "sanitized first turn",
+                "created_at": "2026-07-31T00:00:00Z",
+            },
+            {
+                "uuid": CLAUDE_VINTAGE_LIVE_PROOF_MESSAGE_IDS[1],
+                "sender": "assistant",
+                "text": "sanitized assistant turn",
+                "created_at": "2026-07-31T00:01:00Z",
+            },
+            {
+                **target,
+                "created_at": "2026-07-31T00:02:00Z",
+            },
+        ],
+    }
+
+
+def write_claude_vintage_live_proof_pair(root: Path) -> tuple[Path, Path]:
+    """Write the sanitized measured-shape pair as two wire exports."""
+    manual = root / "manual"
+    manual.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    for name, nested in (("claude-live-proof-old.json", False), ("claude-live-proof-new.json", True)):
+        path = manual / name
+        path.write_text(
+            json.dumps(claude_vintage_live_proof_payload(nested_target=nested), sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        written.append(path)
+    return (written[0], written[1])
+
 
 CONFIDENCE_GAP = (
     "The cited live Claude export bytes and cohort member ids were not recoverable "

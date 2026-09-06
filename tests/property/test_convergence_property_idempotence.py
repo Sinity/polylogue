@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 from tests.infra.convergence_harness import (
     build_converged_archive,
     converge_convergence_archive,
-    ingest_convergence_pathology,
+    ingest_composed_sources,
     rotated_session_order,
 )
 from tests.infra.convergence_laws import (
@@ -30,17 +30,17 @@ from tests.infra.convergence_laws import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
 def test_convergence_property_reingest_is_idempotent(tmp_path: Path, shift: int) -> None:
     workload = generated_convergence_workload()
-    pathology = workload.pathology
-    order = rotated_session_order(pathology, shift)
-    archive = build_converged_archive(tmp_path / "archive", pathology, session_order=order)
-    baseline = build_converged_archive(tmp_path / "baseline", pathology, session_order=order)
+    composed = workload.sources
+    order = rotated_session_order(composed, shift)
+    archive = build_converged_archive(tmp_path / "archive", composed, session_order=order)
+    baseline = build_converged_archive(tmp_path / "baseline", composed, session_order=order)
 
-    reingested = ingest_convergence_pathology(
+    reingested = ingest_composed_sources(
         archive.root,
-        pathology,
+        composed,
         session_indexes=order,
         converge_after_each=False,
     )

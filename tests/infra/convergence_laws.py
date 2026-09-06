@@ -1,6 +1,6 @@
 """Independent semantic oracle for the convergence-property corpus.
 
-The generated workload comes from the existing pathology composer. This module
+The generated workload comes from the shared source-composer library. This module
 only reads those authoritative sessions to derive expected search-session
 membership and message-role aggregates. It does not inspect archive tables,
 write receipts, or a route implementation.
@@ -25,7 +25,7 @@ from pathlib import Path
 from polylogue.archive.models import Session
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_id as make_session_id
-from tests.infra.pathology_composer import ComposedPathology
+from tests.infra.source_composer import ComposedSources
 
 
 class ConvergenceLaw(StrEnum):
@@ -78,7 +78,7 @@ class ConvergenceDeclaration:
 
     This is deliberately a declaration, not a universal test registry.  The
     execution layer consumes it without inventing case identities or a
-    pathology catalogue.  ``candidate_applicability`` is explicit because a
+    catalogue.  ``candidate_applicability`` is explicit because a
     partial candidate cannot honestly claim the whole-archive laws.
     """
 
@@ -108,12 +108,12 @@ class ConvergenceRunPlan:
 class GeneratedConvergenceWorkload:
     """The generated authoritative input for the convergence properties."""
 
-    pathology: ComposedPathology
+    sources: ComposedSources
     probe_terms: tuple[str, ...]
 
     @property
     def authoritative_sessions(self) -> tuple[AuthoritativeSession, ...]:
-        return authoritative_sessions(self.pathology)
+        return authoritative_sessions(self.sources)
 
 
 def convergence_declaration() -> ConvergenceDeclaration:
@@ -129,11 +129,11 @@ def convergence_declaration() -> ConvergenceDeclaration:
     )
 
 
-def authoritative_sessions(pathology: ComposedPathology) -> tuple[AuthoritativeSession, ...]:
+def authoritative_sessions(composed: ComposedSources) -> tuple[AuthoritativeSession, ...]:
     """Select the declared highest revision for each logical session."""
     selected: dict[str, Session] = {}
     revisions: dict[str, int] = {}
-    for session in pathology.sessions:
+    for session in composed.sessions:
         native_id = str(session.id)
         revision_value = session.metadata.get("revision_index", 0)
         revision = revision_value if isinstance(revision_value, int) else 0
@@ -311,9 +311,9 @@ def assert_projection_matches_oracle(
 @lru_cache(maxsize=1)
 def generated_convergence_workload() -> GeneratedConvergenceWorkload:
     """Build the deterministic workload used by the convergence properties."""
-    from tests.infra.convergence_harness import rich_convergence_pathology
+    from tests.infra.convergence_harness import rich_convergence_sources
 
-    return GeneratedConvergenceWorkload(pathology=rich_convergence_pathology(), probe_terms=_PROBE_TERMS)
+    return GeneratedConvergenceWorkload(sources=rich_convergence_sources(), probe_terms=_PROBE_TERMS)
 
 
 __all__ = [

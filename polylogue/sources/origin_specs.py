@@ -768,12 +768,22 @@ class OriginCompletenessMode:
 
 @dataclass(frozen=True, slots=True)
 class DatabaseMemberRule:
-    """Admission disposition for one database member of a DB-shaped origin."""
+    """Admission disposition for one database member of a DB-shaped origin.
+
+    A mutable database is admitted for the logical content it carries, so an
+    admitted member names that content (``logical_tables``) and who reads it
+    (``consumer``). ``consumer`` is ``None`` only for ``acquire-partial``: the
+    logical product is declared and retained as durable evidence with no
+    typed reader yet. ``out-of-scope`` members declare neither -- nothing is
+    acquired to have a product or a consumer.
+    """
 
     filename: str
     disposition: DatabaseMemberDisposition
     kind: str
     reason: str
+    logical_tables: tuple[str, ...] = ()
+    consumer: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1035,6 +1045,24 @@ class OriginSpecRegistry:
                     raise ValueError(f"{spec.origin.value}: database member filenames must be unique")
                 if any(not member.filename or "/" in member.filename for member in spec.database_capability.members):
                     raise ValueError(f"{spec.origin.value}: database member filenames must be basenames")
+                for member in spec.database_capability.members:
+                    if member.disposition == "out-of-scope":
+                        if member.logical_tables or member.consumer is not None:
+                            raise ValueError(
+                                f"{spec.origin.value}: out-of-scope database member "
+                                f"{member.filename} cannot declare a logical product"
+                            )
+                        continue
+                    if not member.logical_tables:
+                        raise ValueError(
+                            f"{spec.origin.value}: admitted database member {member.filename} "
+                            "must name the logical tables it is acquired for"
+                        )
+                    if member.disposition == "acquire" and not member.consumer:
+                        raise ValueError(
+                            f"{spec.origin.value}: acquired database member {member.filename} "
+                            "must name the consumer of its logical product"
+                        )
         elif spec.parser_paths or spec.stream_parser_path is not None:
             raise ValueError(f"{spec.origin.value}: non-executable origin cannot declare a parser binding")
         self._kernel.register(spec.declaration)
@@ -1594,6 +1622,26 @@ def _codex_spec() -> OriginSpec:
             "position it took effect on. Measured over 596 real rollout files: "
             "16 of the 120 carrying user_instructions declare more than one "
             "distinct value.",
+            "compacted.replacement_history (acquired, polylogue-6ev92): the "
+            "pre-compaction records Codex re-embeds on the compaction "
+            "record. Measured over the 131 rollout files carrying it in a "
+            "596-file sample (195,851 text values), 97.8% are already stored "
+            "from the same file's live stream and 0.98% from an ancestor "
+            "session whose prefix the file replays; the remaining 1.2% -- "
+            "2,351 occurrences collapsing to 397 distinct values -- exists "
+            "only here (injected environment/skills/AGENTS.md context and "
+            "real user turns). Each text value is resolved against everything "
+            "the parsed session retains and becomes its own "
+            "codex_replacement_context session_event only when it is retained "
+            "nowhere else; per-entry phase/ghost_commit/image annotation "
+            "stays a bounded aggregate on the compaction event.",
+            "event_msg.task_complete.last_agent_message (acquired, "
+            "polylogue-6ev92): the turn's final assistant text repeated on "
+            "the completion marker. Measured over 270 real rollout files, all "
+            "1,565 occurrences were already stored from the same file's live "
+            "stream, so the event records last_agent_message_chars plus "
+            "last_agent_message_retained rather than the text -- and stores "
+            "the text verbatim in the case the duplication does not hold.",
             "event_msg.memory_citation (measured negative, polylogue-cgfy "
             "codex lane): observed null on every sampled record across "
             "~3,200 real session files -- a constant, not an unread signal; "
@@ -1616,20 +1664,30 @@ def _codex_spec() -> OriginSpec:
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
-            revision_identity="dev/inode/size/mtime_ns over the main database and its -wal sidecar",
-            raw_id_strategy="codex state raw-id domain + absolute source path + blob hash",
+            revision_identity="sha256 over declared schema objects and typed logical rows (sqlite_logical_revision)",
+            raw_id_strategy="codex state raw-id domain + absolute source path + logical revision",
             members=(
                 DatabaseMemberRule(
-                    "state_5.sqlite", "acquire", "thread_state", "threads and spawn edges are unique state evidence"
+                    "state_5.sqlite",
+                    "acquire",
+                    "thread_state",
+                    "threads and spawn edges are unique state evidence",
+                    logical_tables=("threads", "thread_spawn_edges"),
+                    consumer="polylogue/sources/codex_state_evidence.py:write_codex_thread_state_evidence",
                 ),
                 DatabaseMemberRule(
-                    "goals_1.sqlite", "acquire-partial", "goals", "goal intent is retained as durable raw evidence"
+                    "goals_1.sqlite",
+                    "acquire-partial",
+                    "goals",
+                    "goal intent is retained as durable raw evidence",
+                    logical_tables=("thread_goals", "thread_goal_continuation_deferrals"),
                 ),
                 DatabaseMemberRule(
                     "memories_1.sqlite",
                     "acquire-partial",
                     "memories",
                     "memory state is retained as durable raw evidence",
+                    logical_tables=("stage1_outputs", "jobs"),
                 ),
                 DatabaseMemberRule("logs_2.sqlite", "out-of-scope", "logs", "runtime tracing is not session evidence"),
                 DatabaseMemberRule(
@@ -1637,7 +1695,7 @@ def _codex_spec() -> OriginSpec:
                 ),
             ),
             full_snapshot_per_revision=True,
-            snapshot_lineage_policy="retain complete snapshot blobs; supersession and dedup receipts govern lineage retention",
+            snapshot_lineage_policy="one snapshot blob per logical revision; supersession and dedup receipts govern lineage retention",
         ),
     )
     carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
@@ -1728,21 +1786,28 @@ def _hermes_spec() -> OriginSpec:
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
-            revision_identity="dev/inode/size/mtime_ns over the main database and its -wal sidecar",
-            raw_id_strategy="Hermes profile raw-id domain + profile path + source index + blob hash",
+            revision_identity="sha256 over declared schema objects and typed logical rows (sqlite_logical_revision)",
+            raw_id_strategy="Hermes profile raw-id domain + profile path + member filename + source index + logical revision",
             members=(
                 DatabaseMemberRule(
-                    "state.db", "acquire", "state", "conversation state is the authoritative Hermes session source"
+                    "state.db",
+                    "acquire",
+                    "state",
+                    "conversation state is the authoritative Hermes session source",
+                    logical_tables=("schema_version", "sessions", "messages"),
+                    consumer="polylogue/sources/parsers/hermes_state.py:parse_state_db",
                 ),
                 DatabaseMemberRule(
                     "verification_evidence.db",
                     "acquire",
                     "verification",
                     "verification evidence is a declared observer source",
+                    logical_tables=("meta", "verification_events", "verification_state"),
+                    consumer="polylogue/sources/parsers/hermes_verification.py:parse_verification_evidence_db",
                 ),
             ),
             full_snapshot_per_revision=True,
-            snapshot_lineage_policy="retain complete snapshot blobs; supersession and dedup receipts govern lineage retention",
+            snapshot_lineage_policy="one snapshot blob per logical revision; supersession and dedup receipts govern lineage retention",
         ),
     )
     carried = TopologyCapability(
