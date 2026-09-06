@@ -19,7 +19,7 @@ import pytest
 import watchfiles
 from watchfiles import Change
 
-from polylogue.hooks import hook_main
+from polylogue.sources.hook_producer import main as hook_producer_main
 from polylogue.sources.hooks import (
     HookSpoolRecordError,
     acknowledged_hook_spool_dir,
@@ -325,6 +325,9 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
         (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
         cursor=CursorStore(archive_root / "ops.db"),
     )
+    # Enqueue shards through the producer and acknowledge through this module,
+    # so pinning the day takes both seams.
+    monkeypatch.setattr("polylogue.sources.hook_producer.day_shard", lambda: "2026-08-12")
     monkeypatch.setattr("polylogue.sources.hooks._day_shard", lambda: "2026-08-12")
     shard = pending / "2026-08-12"
 
@@ -532,7 +535,7 @@ def test_hook_entrypoint_spools_and_materializes_configured_runtime_events(
     archive_root = tmp_path / "archive"
     monkeypatch.setattr("sys.stdin", StringIO(f'{{"session_id":"{session_id}","tool_name":"exec"}}'))
 
-    assert hook_main(["PostToolUse", "--provider", provider, "--sidecar-dir", str(spool_root)]) == 0
+    assert hook_producer_main(["PostToolUse", "--provider", provider, "--sidecar-dir", str(spool_root)]) == 0
 
     pending = list(pending_hook_spool_dir(spool_root).rglob("*.json"))
     assert len(pending) == 1
@@ -678,13 +681,13 @@ def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> 
     script) -- deliberately, since ``packaging/polylogue-hooks`` documents itself as having *no
     dependency on the main polylogue distribution* and ``contrib/polylogue-hook`` is not Python at
     all, so a single importable helper cannot span all three. This test is the drift guard that
-    duplication-without-sharing still needs: if ``polylogue.sources.hooks._TRANSCRIPT_LIKE_KEYS``
+    duplication-without-sharing still needs: if ``polylogue.sources.hook_producer.TRANSCRIPT_LIKE_KEYS``
     (or its threshold) ever changes without updating the two mirrored copies, this fails loudly
     instead of the gap only surfacing if someone happens to craft a payload using exactly the
     added/removed field name.
     """
 
-    from polylogue.sources.hooks import _MAX_TRANSCRIPT_LIKE_FIELD_CHARS, _TRANSCRIPT_LIKE_KEYS
+    from polylogue.sources.hook_producer import MAX_TRANSCRIPT_LIKE_FIELD_CHARS, TRANSCRIPT_LIKE_KEYS
 
     packaging_src = Path("packaging/polylogue-hooks/src").resolve()
     probe = subprocess.run(
@@ -701,8 +704,8 @@ def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> 
         text=True,
     )
     packaging_policy = json.loads(probe.stdout)
-    assert packaging_policy["keys"] == list(_TRANSCRIPT_LIKE_KEYS)
-    assert packaging_policy["threshold"] == _MAX_TRANSCRIPT_LIKE_FIELD_CHARS
+    assert packaging_policy["keys"] == list(TRANSCRIPT_LIKE_KEYS)
+    assert packaging_policy["threshold"] == MAX_TRANSCRIPT_LIKE_FIELD_CHARS
 
     contrib_source = Path("contrib/polylogue-hook").resolve().read_text(encoding="utf-8")
     keys_match = re.search(r"for _key in \(([^)]*)\):", contrib_source)
@@ -710,8 +713,8 @@ def test_transcript_duplication_policy_stays_in_sync_across_hook_producers() -> 
     assert keys_match is not None, "contrib/polylogue-hook: transcript-key loop not found"
     assert threshold_match is not None, "contrib/polylogue-hook: transcript threshold not found"
     contrib_keys = [item.strip().strip('"') for item in keys_match.group(1).split(",") if item.strip()]
-    assert contrib_keys == list(_TRANSCRIPT_LIKE_KEYS)
-    assert int(threshold_match.group(1)) == _MAX_TRANSCRIPT_LIKE_FIELD_CHARS
+    assert contrib_keys == list(TRANSCRIPT_LIKE_KEYS)
+    assert int(threshold_match.group(1)) == MAX_TRANSCRIPT_LIKE_FIELD_CHARS
 
 
 # ── Hermes lifecycle-event spool (fs1.7) ──────────────────────────────────

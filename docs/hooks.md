@@ -8,17 +8,21 @@ post-hoc session JSONL with events that are otherwise unavailable there.
 
 ## How It Works
 
-1. The AI agent invokes `polylogue-hook <event-type>` on each hook event,
-   passing the event payload on stdin as JSON.
-2. `polylogue-hook` validates the event, enriches it with metadata (provider,
+1. The AI agent invokes the capture command on each hook event, passing the
+   event payload on stdin as JSON.
+2. The command validates the event, enriches it with metadata (provider,
    timestamp, session_id), and atomically writes one immutable envelope to the
    hook spool's `pending/` directory.
 3. The daemon watches that directory, persists the envelope in
    `source.db.raw_hook_events`, and moves it to `acknowledged/` only after the
    source-tier transaction commits. Failed writes remain pending for retry.
-4. The bundled main-package command also retains its legacy per-session JSONL
-   journal for local compatibility; all forms use spool envelopes for the
-   daemon's durable capture route.
+
+A harness fires two hooks per tool call, so step 1 runs twice per tool call
+per concurrent agent. `polylogue hooks install` therefore renders the command
+as a direct `python -I -S .../hook_producer.py` invocation: no console-script
+shim, no `site`, no site-packages on `sys.path`. The producer imports stdlib
+only, which is the difference between 473 ms and 39 ms of CPU per invocation
+(ten invocations each, child user+sys time).
 
 ## Supported Events
 
@@ -82,7 +86,7 @@ Each hook event is written as a single JSON line with this structure:
 
 The `payload` field contains the original event data as received from the AI
 agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
-`provider`) are added by `polylogue-hook` for routing and discovery.
+`provider`) are added by the capture command for routing and discovery.
 
 ## Sidecar Directory Layout
 
@@ -105,7 +109,7 @@ captured automatically.
 
 `polylogue hooks install` resolves the current archive root's hooks
 directory once, at install time, and bakes the concrete absolute path into
-each rendered `polylogue-hook ... --sidecar-dir <path>` command (see
+each rendered `--sidecar-dir <path>` argument (see
 Installation below). This is deliberate: a hook subprocess's environment
 cannot be trusted to carry `POLYLOGUE_ARCHIVE_ROOT` (agent harnesses invoke
 hooks with their own, possibly minimal, environment), so re-resolving it
@@ -145,12 +149,12 @@ to live somewhere other than `<archive_root>/hooks`.
 
 ## Installation
 
-`polylogue-hook` is available in three forms:
+The capture command is available in three forms:
 
 | Form | Install | Runtime deps |
 | --- | --- | --- |
 | Standalone PyPI package | `pip install polylogue-hooks` | none (stdlib only) |
-| Bundled in main package | `pip install polylogue` | full archive runtime |
+| Bundled in main package | `pip install polylogue` | none (stdlib only) |
 | Bash script | copy `contrib/polylogue-hook` from the repository | `bash`, `python3` |
 
 The `polylogue-hooks` package is the recommended path for environments where
@@ -160,14 +164,20 @@ pending envelope; the Polylogue daemon performs the source-tier receipt and
 acknowledgement. The version is kept in sync with the main package via
 release-please (#1309).
 
-The main `polylogue` distribution also installs the `polylogue-hook` entry
-point. Once either distribution is installed, wire the recommended starter set
-without editing harness settings by hand:
+The main `polylogue` distribution installs the same producer as the
+`polylogue-hook` entry point, and wires it by script path so a hook invocation
+never imports the archive runtime. Once either distribution is installed, wire
+the recommended starter set without editing harness settings by hand:
 
 ```bash
 polylogue hooks install --harness claude-code --events recommended
 polylogue hooks install --harness codex --events recommended
 ```
+
+Settings that name the `polylogue-hook` console script keep working and
+still get most of the saving, since that entry point runs the same producer.
+Re-run `hooks install` to move them to the script-path form and drop the
+package import entirely.
 
 The command performs a structured, idempotent merge. Existing matcher groups
 and handlers are preserved, and a second identical invocation produces no
@@ -191,8 +201,10 @@ types as a liveness gap when the archive supplies a defensible count of
 opportunities (session start, authored prompt, or tool use). Conditional events
 such as `Stop` remain observational.
 
-Uninstall is symmetric and removes only handlers whose command invokes
-`polylogue-hook`; unrelated hooks in the same event group remain intact:
+Uninstall is symmetric and removes only handlers whose command invokes the
+Polylogue producer -- by script path, or by the `polylogue-hook` console
+script for settings written before the script-path form. Unrelated hooks in
+the same event group remain intact:
 
 ```bash
 polylogue hooks uninstall --harness claude-code
@@ -205,7 +217,10 @@ polylogue hooks uninstall --harness codex
 
 `polylogue hooks install --harness claude-code` updates
 `~/.claude/settings.json` using Claude Code's current three-level hook shape
-(event, matcher group, handler). The managed entries look like:
+(event, matcher group, handler). `<python>` and `<site-packages>` below are
+the concrete absolute paths resolved at install time, and
+`<producer-invocation>` abbreviates the same three leading tokens. The managed
+entries look like:
 
 ```json
 {
@@ -215,35 +230,35 @@ polylogue hooks uninstall --harness codex
         "hooks": [
           {
             "type": "command",
-            "command": "polylogue-hook SessionStart --provider claude-code --sidecar-dir <archive_root>/hooks",
+            "command": "<python> -I -S <site-packages>/polylogue/sources/hook_producer.py SessionStart --provider claude-code --sidecar-dir <archive_root>/hooks",
             "timeout": 5
           }
         ]
       }
     ],
     "UserPromptSubmit": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook UserPromptSubmit --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> UserPromptSubmit --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PreToolUse": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PreToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> PreToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PostToolUse": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> PostToolUse --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PostToolUseFailure": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PostToolUseFailure --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> PostToolUseFailure --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PermissionRequest": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionRequest --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> PermissionRequest --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "PermissionDenied": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook PermissionDenied --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> PermissionDenied --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "Notification": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook Notification --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> Notification --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ],
     "Stop": [
-      {"hooks": [{"type": "command", "command": "polylogue-hook Stop --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
+      {"hooks": [{"type": "command", "command": "<producer-invocation> Stop --provider claude-code --sidecar-dir <archive_root>/hooks", "timeout": 5}]}
     ]
   }
 }
@@ -269,7 +284,7 @@ same event/matcher-group/handler structure:
         "hooks": [
           {
             "type": "command",
-            "command": "polylogue-hook SessionStart --provider codex --sidecar-dir <archive_root>/hooks",
+            "command": "<producer-invocation> SessionStart --provider codex --sidecar-dir <archive_root>/hooks",
             "timeout": 5
           }
         ]
@@ -345,7 +360,7 @@ All directory changes during the session, not just the initial cwd.
 ## Troubleshooting
 
 **Hook script exits with code 2 ("unsupported event type"):** The event name
-passed to `polylogue-hook` must match exactly (case-sensitive). Check the
+passed to the capture command must match exactly (case-sensitive). Check the
 supported event list above.
 
 **Hook script exits with code 1 ("could not extract session_id"):** The stdin

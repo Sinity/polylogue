@@ -24,8 +24,11 @@ from typing import Literal, cast
 
 import tomllib
 
-# ``hook_main`` runs in a fresh interpreter. Keep its imports independent of
-# archive DDL; settings and liveness adapters load their dependencies locally.
+from polylogue.sources.hook_producer import CLAUDE_CODE_EVENTS, CODEX_EVENTS
+
+# Settings and liveness adapters load their archive/config dependencies
+# locally: this module is imported by the daemon health pass, which must not
+# pay archive DDL to answer a wiring question.
 
 HookHarness = Literal["claude-code", "codex"]
 HookChangeAction = Literal["install", "uninstall"]
@@ -35,52 +38,6 @@ RECOMMENDED_EVENTS: tuple[str, ...] = (
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
-    "Stop",
-)
-
-CLAUDE_CODE_EVENTS: tuple[str, ...] = (
-    "SessionStart",
-    "Setup",
-    "InstructionsLoaded",
-    "UserPromptSubmit",
-    "UserPromptExpansion",
-    "MessageDisplay",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "PostToolBatch",
-    "PermissionDenied",
-    "Notification",
-    "SubagentStart",
-    "SubagentStop",
-    "TaskCreated",
-    "TaskCompleted",
-    "Stop",
-    "StopFailure",
-    "TeammateIdle",
-    "ConfigChange",
-    "CwdChanged",
-    "FileChanged",
-    "WorktreeCreate",
-    "WorktreeRemove",
-    "PreCompact",
-    "PostCompact",
-    "Elicitation",
-    "ElicitationResult",
-    "SessionEnd",
-)
-
-CODEX_EVENTS: tuple[str, ...] = (
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PreCompact",
-    "PostCompact",
-    "SubagentStart",
-    "SubagentStop",
     "Stop",
 )
 
@@ -293,13 +250,20 @@ def _hooks_table(document: dict[str, object], *, create: bool) -> dict[str, obje
     return cast(dict[str, object], existing)
 
 
+# The installed command invokes the producer script directly; settings written
+# before that landed still name the ``polylogue-hook`` console script, and both
+# forms must stay recognizable so uninstall and status keep owning them.
+PRODUCER_SCRIPT_NAME = "hook_producer.py"
+HOOK_CONSOLE_SCRIPT = "polylogue-hook"
+
+
 def _polylogue_event_from_command(command: object) -> str | None:
     if not isinstance(command, str):
         return None
     parts = command.replace("=", " ").split()
     for index, part in enumerate(parts):
         executable = Path(part.strip("'\"")).name
-        if executable != "polylogue-hook" or index + 1 >= len(parts):
+        if executable not in (HOOK_CONSOLE_SCRIPT, PRODUCER_SCRIPT_NAME) or index + 1 >= len(parts):
             continue
         candidate = parts[index + 1].strip("'\"")
         if candidate in set(CLAUDE_CODE_EVENTS) | set(CODEX_EVENTS):
@@ -329,22 +293,48 @@ def _wired_events_from_hooks(hooks: dict[str, object]) -> set[str]:
     return wired
 
 
-def _managed_handler(harness: HookHarness, event: str) -> dict[str, object]:
-    """Build the installed handler, baking the concrete resolved spool path.
+def producer_script_path() -> Path:
+    """Absolute path of the producer script the installed command runs."""
 
-    A hook subprocess's environment cannot be trusted to carry
-    ``POLYLOGUE_ARCHIVE_ROOT`` (agent harnesses invoke hooks with their own,
-    possibly minimal, environment), so the path this daemon is actually
-    draining is resolved once here, at install time, and baked into the
-    rendered command rather than re-resolved ambiently at every hook
-    invocation (polylogue-o7hx).
+    from polylogue.sources import hook_producer
+
+    return Path(str(hook_producer.__file__)).resolve()
+
+
+def _managed_handler(harness: HookHarness, event: str) -> dict[str, object]:
+    """Build the installed handler: an exec-cheap producer call with both
+    resolutions baked in.
+
+    A harness fires two hooks per tool call, so this command's cost is
+    multiplied by every concurrent agent on the machine. It therefore runs the
+    producer script directly under ``-I -S`` -- no console-script shim, no
+    ``site``, no site-packages on ``sys.path`` -- which is the difference
+    between importing the polylogue package and importing ``json``
+    (polylogue-jv94g).
+
+    Both the provider and the spool path are resolved here, at install time,
+    rather than ambiently at every invocation: a hook subprocess's environment
+    cannot be trusted to carry ``POLYLOGUE_ARCHIVE_ROOT`` (agent harnesses
+    invoke hooks with their own, possibly minimal, environment), and under
+    ``-S`` the producer cannot reach the config file to resolve either one
+    (polylogue-o7hx).
     """
     from polylogue.paths import hooks_sidecar_dir
 
-    sidecar_dir = shlex.quote(str(hooks_sidecar_dir()))
+    argv = (
+        sys.executable,
+        "-I",
+        "-S",
+        str(producer_script_path()),
+        event,
+        "--provider",
+        harness,
+        "--sidecar-dir",
+        str(hooks_sidecar_dir()),
+    )
     return {
         "type": "command",
-        "command": f"polylogue-hook {event} --provider {harness} --sidecar-dir {sidecar_dir}",
+        "command": " ".join(shlex.quote(part) for part in argv),
         "timeout": 5,
     }
 
@@ -366,10 +356,9 @@ def _installed_hooks_table(harness: HookHarness) -> dict[str, object]:
     return _hooks_table(document, create=False)
 
 
-def installed_hook_sidecar_dirs(harness: HookHarness) -> set[Path]:
-    """Every baked ``--sidecar-dir PATH`` found across this harness's wired hook commands."""
-    found: set[Path] = set()
-    for groups in _installed_hooks_table(harness).values():
+def _hook_commands_in_table(table: dict[str, object]) -> list[str]:
+    commands: list[str] = []
+    for groups in table.values():
         if not isinstance(groups, list):
             continue
         for group in groups:
@@ -382,18 +371,79 @@ def installed_hook_sidecar_dirs(harness: HookHarness) -> set[Path]:
                 if not isinstance(handler, dict):
                     continue
                 command = handler.get("command")
-                if not isinstance(command, str) or "--sidecar-dir" not in command:
-                    continue
-                try:
-                    parts = shlex.split(command)
-                except ValueError:
-                    continue
-                if "--sidecar-dir" not in parts:
-                    continue
-                index = parts.index("--sidecar-dir")
-                if index + 1 < len(parts):
-                    found.add(Path(parts[index + 1]).expanduser())
+                if isinstance(command, str) and _polylogue_event_from_command(command) is not None:
+                    commands.append(command)
+    return commands
+
+
+def installed_hook_commands(harness: HookHarness) -> tuple[str, ...]:
+    """Every wired Polylogue handler command across this harness's settings sources."""
+
+    document, _ = _read_json_document(settings_path(harness))
+    commands = _hook_commands_in_table(_hooks_table(document, create=False))
+    if harness == "codex":
+        commands.extend(_hook_commands_in_table(_installed_hooks_table(harness)))
+    return tuple(dict.fromkeys(commands))
+
+
+def installed_hook_sidecar_dirs(harness: HookHarness) -> set[Path]:
+    """Every baked ``--sidecar-dir PATH`` found across this harness's wired hook commands."""
+    found: set[Path] = set()
+    for command in _hook_commands_in_table(_installed_hooks_table(harness)):
+        if "--sidecar-dir" not in command:
+            continue
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            continue
+        if "--sidecar-dir" not in parts:
+            continue
+        index = parts.index("--sidecar-dir")
+        if index + 1 < len(parts):
+            found.add(Path(parts[index + 1]).expanduser())
     return found
+
+
+def _target_exists(token: str) -> bool:
+    return Path(token).is_file() if os.sep in token else shutil.which(token) is not None
+
+
+def _command_target_available(command: str) -> bool | None:
+    """Whether one wired handler's invocation target still exists.
+
+    ``None`` when the command names neither the producer script nor the
+    console script -- there is nothing this module owns to check.
+    """
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return None
+    for index, part in enumerate(parts):
+        name = Path(part).name
+        if name == PRODUCER_SCRIPT_NAME:
+            return Path(part).is_file() and (index == 0 or _target_exists(parts[0]))
+        if name == HOOK_CONSOLE_SCRIPT:
+            return _target_exists(part)
+    return None
+
+
+def hook_command_available(harness: HookHarness) -> bool:
+    """Can every wired handler for this harness still run what it names?
+
+    An installed command names a concrete interpreter and producer script, so
+    availability is that command's own resolution -- not whether some
+    ``polylogue-hook`` happens to sit on this process's PATH. With nothing
+    wired there is no command to resolve, and the console script stands in.
+    """
+
+    resolved = [
+        available
+        for command in installed_hook_commands(harness)
+        if (available := _command_target_available(command)) is not None
+    ]
+    if not resolved:
+        return shutil.which(HOOK_CONSOLE_SCRIPT) is not None
+    return all(resolved)
 
 
 def hook_install_sidecar_drift(harness: HookHarness) -> tuple[Path, ...]:
@@ -682,7 +732,7 @@ def hook_status(
     wired_ordered = tuple(event for event in supported if event in wired)
     recommended = tuple(event for event in RECOMMENDED_EVENTS if event in supported)
     missing_recommended = tuple(event for event in recommended if event not in wired)
-    executable_available = shutil.which("polylogue-hook") is not None
+    executable_available = hook_command_available(harness)
 
     if not coverage:
         state = (
@@ -831,130 +881,6 @@ def flow_states() -> tuple[str, ...]:
     return _FLOW_STATES
 
 
-def _default_sidecar_dir() -> Path:
-    """Resolve the sidecar dir when the command carries no ``--sidecar-dir``.
-
-    Derives from the resolved archive root (polylogue-o7hx), same as every
-    other hook-spool consumer -- no separate ambient env override lives here.
-    """
-    from polylogue.paths import hooks_sidecar_dir
-
-    return hooks_sidecar_dir()
-
-
-def _detect_hook_provider(payload: dict[str, object]) -> HookHarness | None:
-    from polylogue.config import load_polylogue_config
-
-    forced = load_polylogue_config().hook_provider
-    if forced == "claude-code":
-        return "claude-code"
-    if forced == "codex":
-        return "codex"
-    if "turn_id" in payload:
-        return "codex"
-    if "permission_mode" in payload or "model" in payload:
-        return "claude-code"
-    if "source" in payload:
-        return "codex"
-    return None
-
-
-def _hook_provider_arg(args: list[str]) -> HookHarness | None:
-    if "--provider" not in args:
-        return None
-    index = args.index("--provider")
-    if index + 1 >= len(args):
-        return None
-    value = args[index + 1]
-    if value == "claude-code":
-        return "claude-code"
-    if value == "codex":
-        return "codex"
-    return None
-
-
-def _hook_sidecar_dir_arg(args: list[str]) -> Path | None:
-    """Parse an explicit ``--sidecar-dir PATH`` baked in by ``polylogue hooks install``.
-
-    A hook subprocess's environment cannot be trusted to carry
-    ``POLYLOGUE_ARCHIVE_ROOT`` (agent harnesses run hooks with their own,
-    possibly minimal, environment) -- so the installer bakes the concrete
-    resolved spool path into the rendered command instead of relying on
-    runtime env resolution (polylogue-o7hx).
-    """
-    if "--sidecar-dir" not in args:
-        return None
-    index = args.index("--sidecar-dir")
-    if index + 1 >= len(args):
-        return None
-    return Path(args[index + 1]).expanduser()
-
-
-def hook_main(argv: list[str] | None = None) -> int:
-    """Record one harness hook event without loading the archive runtime."""
-
-    from polylogue.runtime import require_free_threaded_runtime
-
-    require_free_threaded_runtime(consumer="polylogue hook")
-    args = list(sys.argv[1:] if argv is None else argv)
-    if not args:
-        print("Usage: polylogue-hook <event-type> [--provider claude-code|codex] [--sidecar-dir PATH]", file=sys.stderr)
-        return 1
-    event_type = args[0]
-    provider_arg = _hook_provider_arg(args[1:])
-    if "--provider" in args[1:] and provider_arg is None:
-        print("polylogue-hook: --provider must be claude-code or codex", file=sys.stderr)
-        return 2
-    sidecar_dir_arg = _hook_sidecar_dir_arg(args[1:])
-    allowed_events = (
-        EVENTS_BY_HARNESS[provider_arg]
-        if provider_arg is not None
-        else tuple(dict.fromkeys((*CLAUDE_CODE_EVENTS, *CODEX_EVENTS)))
-    )
-    if event_type not in allowed_events:
-        print(f"polylogue-hook: unsupported event type: {event_type}", file=sys.stderr)
-        return 2
-    try:
-        payload = json.loads(sys.stdin.read())
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"polylogue-hook: invalid JSON payload: {exc}", file=sys.stderr)
-        return 1
-    if not isinstance(payload, dict):
-        print("polylogue-hook: payload must be a JSON object", file=sys.stderr)
-        return 1
-    session_id = next(
-        (
-            value.strip()
-            for key in ("session_id", "sessionId", "session")
-            if isinstance((value := payload.get(key)), str) and value.strip()
-        ),
-        None,
-    )
-    if not session_id:
-        print("polylogue-hook: could not extract session_id from payload", file=sys.stderr)
-        return 1
-    provider = provider_arg or _detect_hook_provider(cast(dict[str, object], payload))
-    if provider is None:
-        print(
-            "polylogue-hook: could not detect provider; pass --provider claude-code|codex",
-            file=sys.stderr,
-        )
-        return 1
-    from polylogue.sources.hooks import enqueue_hook_event
-
-    sidecar_dir = sidecar_dir_arg or _default_sidecar_dir()
-    sidecar_dir.mkdir(parents=True, exist_ok=True)
-    enqueue_hook_event(
-        event_type=event_type,
-        session_id=session_id,
-        provider=provider,
-        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        payload=payload,
-        root=sidecar_dir,
-    )
-    return 0
-
-
 __all__ = [
     "CLAUDE_CODE_EVENTS",
     "CODEX_EVENTS",
@@ -966,11 +892,13 @@ __all__ = [
     "HookSettingsError",
     "RECOMMENDED_EVENTS",
     "flow_states",
-    "hook_main",
+    "hook_command_available",
     "hook_status",
     "hook_statuses",
+    "installed_hook_commands",
     "normalize_harness",
     "plan_hook_change",
+    "producer_script_path",
     "resolve_events",
     "settings_path",
 ]

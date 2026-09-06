@@ -36,7 +36,6 @@ def hook_archive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
     settings = home / ".claude" / "settings.json"
     os.utime(settings, ns=((NOW_MS - 10_000) * 1_000_000,) * 2)
-    monkeypatch.setattr("polylogue.hooks.shutil.which", lambda _name: "/usr/bin/polylogue-hook")
     monkeypatch.setattr("polylogue.daemon.health.archive_root", lambda: archive)
     return archive
 
