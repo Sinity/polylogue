@@ -469,7 +469,15 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # from the canonical column instead of the legacy is_error/exit_code pair.
 # The DDL edit moves the derived schema identity, so an existing archive meets
 # it as a typed SchemaSkew and reconverges through the daemon route.
-INDEX_SCHEMA_VERSION = 96
+# polylogue-vtyud: v97 reads Codex's ``item_completed`` executions. The current
+# Codex wire generation states each shell/patch operation the code-mode ``exec``
+# program performed -- argv, cwd, full output, and the exit code -- in a record
+# no reader touched, while the transport ``custom_tool_call_output`` carries
+# only what the model was shown and no outcome at all. Those executions now
+# become the code-mode child's tool_result text and its structural
+# ``tool_outcome``. SEMANTIC_REPARSE: the evidence exists only in the acquired
+# source, so stored rows cannot recover it.
+INDEX_SCHEMA_VERSION = 97
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's

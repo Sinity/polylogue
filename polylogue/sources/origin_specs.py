@@ -1384,8 +1384,11 @@ def _claude_code_spec() -> OriginSpec:
         ),
         inheritance_branch_point=TopologyCapability(
             "carried",
-            ("claude_code.forkedFrom.messageUuid",),
-            "a forked session's records name the parent message it diverged at",
+            (
+                "claude_code.forkedFrom.messageUuid",
+                "claude_code fork-context-ref.parentLastUuid + .parentSessionId",
+            ),
+            "a forked session's records name the parent message it diverged at; a forked subagent transcript names it in fork-context-ref and never replays it",
         ),
         parent_dispatch=TopologyCapability(
             "positive-derived",

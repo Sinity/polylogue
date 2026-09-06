@@ -9,8 +9,8 @@ import re
 import shlex
 import tempfile
 import unicodedata
-from collections import defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections import defaultdict, deque
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import BinaryIO
@@ -81,6 +81,21 @@ _CODE_MODE_RESULT_COLLECTION_KEYS = (
     "outputs",
     "responses",
 )
+# ``event_msg`` -> ``payload.item`` is the producer's own structural record of
+# one operation the code-mode ``exec`` program performed: the argv it ran, the
+# cwd, the full stdout, and -- the part no other record in this wire generation
+# carries -- the exit code. The transport ``custom_tool_call_output`` states
+# only what the model was shown. Each item type maps to the child registry
+# types it can be the execution of; see ``_match_code_mode_items`` for how one
+# is attributed to a child.
+_CODE_MODE_ITEM_CHILD_TYPES: dict[str, frozenset[str]] = {
+    "CommandExecution": frozenset({"exec_command", "write_stdin", "wait"}),
+    "FileChange": frozenset({"apply_patch"}),
+}
+# Preference order for an item's output text. ``aggregated_output`` is stdout
+# and stderr interleaved in emission order; the others are the same bytes split
+# or re-rendered, so exactly one is stored.
+_CODE_MODE_ITEM_TEXT_KEYS = ("aggregated_output", "stdout", "formatted_output", "stderr")
 _STRUCTURAL_PATH_KEYS = frozenset({"path", "file_path", "paths", "file_paths", "image_path"})
 _STRUCTURAL_BYTE_KEYS = frozenset({"bytes", "byte_count", "bytes_written", "size_bytes", "written_bytes"})
 
@@ -174,6 +189,11 @@ class _CodexExecChildCall:
     parse_state: str
     source_start: int | None = None
     source_end: int | None = None
+    # The ``item_completed`` id when this child is the producer's own record of
+    # an execution rather than a call read out of the program source. A program
+    # that loops emits one source call and many executions, so the two lists
+    # differ in length and only the item list is ground truth.
+    item_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,6 +205,19 @@ class _CodexExecChildResult:
     unknown_reason: str | None
     paths: tuple[str, ...]
     byte_count: int | None
+    item_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _CodexExecItemRecord:
+    """One ``item_completed`` execution plus the transport calls around it."""
+
+    item: dict[str, object]
+    # The call whose record span contains this item, and the most recent call
+    # at or before it. They differ when a command outlived the transport output
+    # that yielded on it.
+    open_call_index: int | None
+    last_call_index: int | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,7 +226,9 @@ class _CodexExecEnvelope:
     transport_tool_id: str | None
     transport_provider_message_id: str
     children: tuple[_CodexExecChildCall, ...]
-    results: tuple[_CodexExecChildResult, ...] = ()
+    # Positionally aligned with ``children``; ``None`` where no result evidence
+    # was recovered for that child.
+    results: tuple[_CodexExecChildResult | None, ...] = ()
 
 
 class _JsLiteralError(ValueError):
@@ -655,7 +690,13 @@ def _compact_response_payload(
 # pass for this cluster is out of scope for a classification-only audit
 # (each needs its own bounded field-set decision plus an
 # INDEX_SCHEMA_VERSION SEMANTIC_REPARSE bump) and is tracked as a follow-up
-# (see the bead filed alongside this change):
+# (see the bead filed alongside this change).
+#
+# Rank this list against the SOURCE ROOT, never against live-archive row
+# counts: the archive is a wire generation behind what Codex writes today, and
+# a count taken from it understates a current record kind by orders of
+# magnitude. ``item_completed`` was ranked negligible at 199 archive rows while
+# the source root held roughly 315,000 (polylogue-vtyud).
 #   thread_goal_updated (45,814 live rows) -- `goal.objective` (free text
 #     session objective), `goal.status`/`tokensUsed`/`timeUsedSeconds`.
 #   sub_agent_activity (41,769) -- `agent_thread_id`, `agent_path`, `kind`
@@ -674,7 +715,10 @@ def _compact_response_payload(
 #     evidence (new_thread_id, new_agent_nickname, new_agent_role, prompt,
 #     receiver_thread_id, receiver_agent_nickname/role, status text) beyond
 #     the call_id/status the generic compactor already lifts.
-#   item_completed (199) -- `item.text` (e.g. full plan content).
+#   item_completed -- `item.text` on a `Plan` item (full plan content) and the
+#     `Extension`/`CollabAgentToolCall` item shapes. The `CommandExecution` and
+#     `FileChange` shapes ARE read: they become code-mode child tool_results
+#     with the producer's own exit code (see ``_match_code_mode_items``).
 #   entered_review_mode / exited_review_mode (13 each) --
 #     `target.instructions`/`user_facing_hint` and
 #     `review_output.findings`/`overall_correctness`/`overall_explanation`/
@@ -1775,6 +1819,171 @@ def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object
     return ()
 
 
+def _code_mode_item_text(item: dict[str, object]) -> str | None:
+    for key in _CODE_MODE_ITEM_TEXT_KEYS:
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _code_mode_item_outcome(item: dict[str, object]) -> tuple[bool | None, int | None]:
+    """Read the operation outcome the producer states on an ``item_completed``.
+
+    ``exit_code`` is the process status itself. ``status`` is the producer's own
+    label over it (``completed`` exactly when the exit code is zero), and is the
+    only signal a ``FileChange`` carries.
+    """
+    exit_code = item.get("exit_code")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool):
+        return exit_code != 0, exit_code
+    status = item.get("status")
+    if isinstance(status, str) and status:
+        if status == "completed":
+            return False, None
+        if status == "failed":
+            return True, None
+    return None, None
+
+
+def _code_mode_item_paths(item: dict[str, object]) -> tuple[str, ...]:
+    changes = _dict_record(item.get("changes"))
+    if changes:
+        return _dedupe_strings([str(path) for path in changes])
+    return _structural_paths(item)
+
+
+def _code_mode_item_result(
+    item: dict[str, object],
+    *,
+    existing: _CodexExecChildResult | None,
+) -> _CodexExecChildResult:
+    """Build a child result from the producer's own execution record.
+
+    The item's text wins over the transport rendering: the transport carries
+    what the model was shown, which is truncated, headed, or absent, while the
+    item carries the operation's complete output. Nothing is lost by preferring
+    it -- the transport rendering stays stored verbatim as the outer
+    ``custom_tool_call_output`` tool_result text.
+    """
+    is_error, exit_code = _code_mode_item_outcome(item)
+    text = _code_mode_item_text(item)
+    paths = list(_code_mode_item_paths(item))
+    byte_count: int | None = None
+    if existing is not None:
+        if text is None:
+            text = existing.text
+        paths.extend(existing.paths)
+        byte_count = existing.byte_count
+        if is_error is None and exit_code is None:
+            is_error, exit_code = existing.is_error, existing.exit_code
+    item_id = item.get("id")
+    return _CodexExecChildResult(
+        raw=item,
+        text=text,
+        is_error=is_error,
+        exit_code=exit_code,
+        unknown_reason=unknown_reason(
+            is_error=is_error,
+            exit_code=exit_code,
+            outcome_field_present="status" in item or "exit_code" in item,
+        ),
+        paths=_dedupe_strings(paths),
+        byte_count=byte_count,
+        item_id=str(item_id) if isinstance(item_id, str) and item_id else None,
+    )
+
+
+def _code_mode_item_child(item: dict[str, object]) -> _CodexExecChildCall:
+    """Build a child call for an execution the program source did not name.
+
+    A program that runs commands in a loop emits one ``tools.exec_command``
+    call site and one ``item_completed`` per iteration, so the scan undercounts.
+    The item states the argv, cwd and Codex's own command classification
+    directly, which is stronger evidence than the call site it came from.
+    """
+    item_type = str(item.get("type") or "")
+    registry_type = "apply_patch" if item_type == "FileChange" else "exec_command"
+    argument: dict[str, object] = {}
+    command = _normalized_command(item.get("command"))
+    if command is not None:
+        argument["command"] = command
+    cwd = item.get("cwd")
+    if isinstance(cwd, str) and cwd:
+        argument["cwd"] = cwd
+    parsed_cmd = item.get("parsed_cmd")
+    if isinstance(parsed_cmd, list) and parsed_cmd:
+        argument["parsed_cmd"] = parsed_cmd
+    changes = _dict_record(item.get("changes"))
+    if changes:
+        argument["changes"] = changes
+    item_id = item.get("id")
+    return _CodexExecChildCall(
+        tool_path=("tools", registry_type),
+        tool_name=registry_type,
+        registry_type=registry_type,
+        argument=argument,
+        raw_argument=None,
+        parse_state="parsed",
+        item_id=str(item_id) if isinstance(item_id, str) and item_id else None,
+    )
+
+
+def _code_mode_item_commands(item: dict[str, object]) -> tuple[str, ...]:
+    """Every exact spelling of the command this item records.
+
+    A code-mode program states a command as one shell string; the item records
+    the argv the shell was launched with plus Codex's own re-extraction of it.
+    Matching is exact string equality against one of these spellings, never a
+    similarity test.
+    """
+    candidates: list[str] = []
+    command = item.get("command")
+    if isinstance(command, list) and command and all(isinstance(part, str) for part in command):
+        candidates.append(shlex.join(command))
+        candidates.append(command[-1])
+    elif isinstance(command, str):
+        candidates.append(command)
+    parsed_cmd = item.get("parsed_cmd")
+    if isinstance(parsed_cmd, list):
+        for entry in parsed_cmd:
+            entry_record = _dict_record(entry)
+            if entry_record is None:
+                continue
+            entry_command = entry_record.get("cmd")
+            if isinstance(entry_command, str):
+                candidates.append(entry_command)
+    return _dedupe_strings(candidate.strip() for candidate in candidates if candidate.strip())
+
+
+def _code_mode_child_command(child: _CodexExecChildCall) -> str | None:
+    if isinstance(child.argument, dict):
+        for key in ("cmd", "command"):
+            command = _normalized_command(child.argument.get(key))
+            if command is not None:
+                return command
+    return _normalized_command(child.argument)
+
+
+def _apply_code_mode_item_evidence(
+    envelope: _CodexExecEnvelope,
+    matched: Mapping[int, dict[str, object]],
+    appended: Sequence[dict[str, object]],
+) -> _CodexExecEnvelope:
+    if not matched and not appended:
+        return envelope
+    children = list(envelope.children)
+    results: list[_CodexExecChildResult | None] = [
+        envelope.results[index] if index < len(envelope.results) else None for index in range(len(children))
+    ]
+    for child_index, item in matched.items():
+        results[child_index] = _code_mode_item_result(item, existing=results[child_index])
+    for item in appended:
+        children.append(_code_mode_item_child(item))
+        results.append(_code_mode_item_result(item, existing=None))
+    return replace(envelope, children=tuple(children), results=tuple(results))
+
+
 def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_CodexExecChildResult, ...]:
     results: list[_CodexExecChildResult] = []
     for item in _code_mode_result_items(output, child_count=child_count):
@@ -1804,13 +2013,32 @@ def _response_inner_record(item: object) -> dict[str, object] | None:
 def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExecEnvelope]:
     call_occurrences: dict[str, list[tuple[int, _CodexExecEnvelope]]] = defaultdict(list)
     output_occurrences: dict[str, list[tuple[int, dict[str, object]]]] = defaultdict(list)
-    envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
+    envelopes_by_call: dict[int, _CodexExecEnvelope] = {}
+    output_index_by_call: dict[int, int] = {}
+    # ``event_msg`` -> ``payload.item`` records the operations the code-mode
+    # program actually performed. Nothing links them to the transport call by
+    # id -- an item is keyed ``exec-<uuid>`` and shares no space with
+    # ``call_id`` -- so they are matched below, after every call is known.
+    executed_items: list[_CodexExecItemRecord] = []
+    open_call_index: int | None = None
+    last_call_index: int | None = None
     for index, item in enumerate(records, start=1):
         inner = _response_inner_record(item)
         if inner is None:
             continue
         payload = _record_payload(inner)
         record_type = _record_type(inner)
+        if record_type == "item_completed":
+            executed = _dict_record(payload.get("item"))
+            if executed is not None and str(executed.get("type") or "") in _CODE_MODE_ITEM_CHILD_TYPES:
+                executed_items.append(
+                    _CodexExecItemRecord(
+                        item=executed,
+                        open_call_index=open_call_index,
+                        last_call_index=last_call_index,
+                    )
+                )
+            continue
         if record_type in {
             "function_call",
             "custom_tool_call",
@@ -1844,7 +2072,9 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
                 transport_provider_message_id=provider_message_id,
                 children=children,
             )
-            envelopes_by_record[index] = envelope
+            envelopes_by_call[index] = envelope
+            open_call_index = index
+            last_call_index = index
             if tool_id:
                 call_occurrences[tool_id].append((index, envelope))
         elif record_type in {
@@ -1853,6 +2083,7 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
             "tool_search_output",
             "web_search_output",
         }:
+            open_call_index = None
             raw_tool_id = payload.get("call_id") or payload.get("id")
             if raw_tool_id:
                 output_occurrences[str(raw_tool_id)].append((index, inner))
@@ -1868,13 +2099,105 @@ def _code_mode_exec_envelopes(records: Iterable[object]) -> dict[int, _CodexExec
                 output = output_record.get("tools")
             if output is None:
                 output = output_record.get("result")
-            enriched = replace(
+            envelopes_by_call[call_index] = replace(
                 envelope,
                 results=_code_mode_child_results(output, child_count=len(envelope.children)),
             )
-            envelopes_by_record[call_index] = enriched
-            envelopes_by_record[output_index] = enriched
+            output_index_by_call[call_index] = output_index
+
+    matched, appended = _match_code_mode_items(envelopes_by_call, executed_items)
+    envelopes_by_record: dict[int, _CodexExecEnvelope] = {}
+    for call_index, envelope in envelopes_by_call.items():
+        resolved = _apply_code_mode_item_evidence(
+            envelope,
+            matched.get(call_index, {}),
+            appended.get(call_index, ()),
+        )
+        envelopes_by_record[call_index] = resolved
+        resolved_output_index = output_index_by_call.get(call_index)
+        if resolved_output_index is not None:
+            envelopes_by_record[resolved_output_index] = resolved
     return envelopes_by_record
+
+
+def _match_code_mode_items(
+    envelopes_by_call: Mapping[int, _CodexExecEnvelope],
+    executed_items: Sequence[_CodexExecItemRecord],
+) -> tuple[dict[int, dict[int, dict[str, object]]], dict[int, list[dict[str, object]]]]:
+    """Attribute each recorded execution to the child call it is the execution of.
+
+    Three tiers, each exact:
+
+    1. The command. A child names its command literally, the item records the
+       argv the shell ran; both spellings are compared for equality, earliest
+       unclaimed child first. This survives a long-running command whose item
+       lands after the transport output that yielded on it.
+    2. The record span. An item with no command match (``write_stdin``, a
+       patch) goes to an unclaimed compatible child of the transport call whose
+       span it fell inside.
+    3. Its own child. A program that runs commands in a loop emits one call
+       site and one item per iteration; the surplus items are executions in
+       their own right and are recorded as such, on the most recent transport
+       call. Only an execution recorded before any code-mode call in the
+       session has nowhere to go.
+    """
+    matched: dict[int, dict[int, dict[str, object]]] = defaultdict(dict)
+    appended: dict[int, list[dict[str, object]]] = defaultdict(list)
+    if not executed_items:
+        return matched, appended
+    slots: list[tuple[int, int, str]] = []
+    slots_by_command: dict[str, deque[int]] = defaultdict(deque)
+    slots_by_call: dict[int, list[int]] = defaultdict(list)
+    for call_index in sorted(envelopes_by_call):
+        envelope = envelopes_by_call[call_index]
+        for child_index, child in enumerate(envelope.children):
+            new_slot = len(slots)
+            slots.append((call_index, child_index, child.registry_type))
+            slots_by_call[call_index].append(new_slot)
+            command = _code_mode_child_command(child)
+            if command is not None:
+                slots_by_command[command].append(new_slot)
+    claimed: set[int] = set()
+
+    def first_unclaimed(queue: deque[int]) -> int | None:
+        while queue:
+            head = queue[0]
+            if head in claimed:
+                queue.popleft()
+                continue
+            return head
+        return None
+
+    for record in executed_items:
+        item = record.item
+        compatible = _CODE_MODE_ITEM_CHILD_TYPES[str(item.get("type") or "")]
+        slot: int | None = None
+        for command in _code_mode_item_commands(item):
+            queue = slots_by_command.get(command)
+            if queue is None:
+                continue
+            candidate = first_unclaimed(queue)
+            if candidate is not None and slots[candidate][2] in compatible and (slot is None or candidate < slot):
+                slot = candidate
+        if slot is None and record.open_call_index is not None:
+            slot = next(
+                (
+                    candidate
+                    for candidate in slots_by_call.get(record.open_call_index, ())
+                    if candidate not in claimed and slots[candidate][2] in compatible
+                ),
+                None,
+            )
+        if slot is None:
+            host = record.open_call_index if record.open_call_index is not None else record.last_call_index
+            if host is None:
+                continue
+            appended[host].append(item)
+            continue
+        claimed.add(slot)
+        call_index, child_index, _ = slots[slot]
+        matched[call_index][child_index] = item
+    return matched, appended
 
 
 def _normalized_command(value: object) -> str | None:
@@ -1951,6 +2274,8 @@ def _child_tool_input(
     }
     if child.source_start is not None and child.source_end is not None:
         provenance["source_span"] = [child.source_start, child.source_end]
+    if child.item_id is not None:
+        provenance["item_completed_id"] = child.item_id
     if result is not None and (result.paths or result.byte_count is not None):
         result_fields: dict[str, object] = {}
         if result.paths:
@@ -2006,14 +2331,9 @@ def _code_mode_child_result_evidence_events(
     events: list[ParsedSessionEvent] = []
     for child_index in range(len(envelope.results)):
         result = envelope.results[child_index]
-        metadata: dict[str, object] = {
-            "codex_functions_exec_child_index": child_index,
-            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
-        }
-        if result.paths:
-            metadata["paths"] = list(result.paths)
-        if result.byte_count is not None:
-            metadata["byte_count"] = result.byte_count
+        if result is None:
+            continue
+        metadata = _code_mode_child_result_metadata(envelope, child_index, result)
         events.append(
             ParsedSessionEvent(
                 event_type="codex_functions_exec_child_result_evidence",
@@ -2025,17 +2345,30 @@ def _code_mode_child_result_evidence_events(
     return events
 
 
+def _code_mode_child_result_metadata(
+    envelope: _CodexExecEnvelope,
+    child_index: int,
+    result: _CodexExecChildResult,
+) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "codex_functions_exec_child_index": child_index,
+        "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
+    }
+    if result.paths:
+        metadata["paths"] = list(result.paths)
+    if result.byte_count is not None:
+        metadata["byte_count"] = result.byte_count
+    if result.item_id is not None:
+        metadata["codex_item_completed_id"] = result.item_id
+    return metadata
+
+
 def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedContentBlock]:
     blocks: list[ParsedContentBlock] = []
     for child_index, result in enumerate(envelope.results):
-        metadata: dict[str, object] = {
-            "codex_functions_exec_child_index": child_index,
-            "codex_functions_exec_registry_type": envelope.children[child_index].registry_type,
-        }
-        if result.paths:
-            metadata["paths"] = list(result.paths)
-        if result.byte_count is not None:
-            metadata["byte_count"] = result.byte_count
+        if result is None:
+            continue
+        metadata = _code_mode_child_result_metadata(envelope, child_index, result)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,

@@ -2458,6 +2458,121 @@ def test_computer_output_becomes_paired_tool_result() -> None:
     assert "https://example.test/page" in tool_result.text
 
 
+def test_computer_output_screenshot_becomes_image_block_and_attachment() -> None:
+    """The screenshot asset pointer is a real asset reference, not decoration.
+
+    ``content.screenshot`` is an ``image_asset_pointer`` on every measured
+    computer_output node. Dropping it leaves the acquired asset bytes with no
+    attachment to bind to. Red if the pointer is read for the summary only:
+    no IMAGE block, no attachment row, no ``asset_pointer`` evidence event.
+    """
+    nodes = [
+        _branch_node("u1", "user", "check the site", parent=None, children=["call"]),
+        {
+            "id": "call",
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant", "name": "computer"},
+                "content": {"content_type": "text", "parts": ["let me check"]},
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": ["out"],
+        },
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool", "name": "computer.do"},
+                "content": {
+                    "content_type": "computer_output",
+                    "computer_id": "71",
+                    "screenshot": {
+                        "asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7",
+                        "content_type": "image_asset_pointer",
+                        "size_bytes": 27100,
+                        "width": 1024,
+                        "height": 768,
+                    },
+                    "state": {"type": "browser_state", "url": "https://example.test/page"},
+                    "tether_id": 12345,
+                },
+                "status": "finished_successfully",
+                "create_time": None,
+            },
+            "parent": "call",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Computer use",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+
+    image = next(b for b in out_msg.blocks if b.type == BlockType.IMAGE)
+    assert image.metadata == {"asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7"}
+    # The structural tool result still leads the message.
+    assert out_msg.blocks[0].type == BlockType.TOOL_RESULT
+
+    attachment = next(
+        a for a in conv.attachments if a.provider_attachment_id == "sediment://file_00000000e2f06243a164751a50439fb7"
+    )
+    assert attachment.message_provider_id == "out"
+    # The bare id is the join key the export's asset blobs are named by.
+    assert attachment.provider_file_id == "file_00000000e2f06243a164751a50439fb7"
+    assert attachment.size_bytes == 27100
+    assert attachment.attachment_kind == "computer_screenshot"
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:out"
+
+    events = [
+        e
+        for e in conv.session_events
+        if e.event_type == "chatgpt_block_metadata"
+        and e.payload.get("asset_pointer") == "sediment://file_00000000e2f06243a164751a50439fb7"
+    ]
+    assert len(events) == 1
+
+
+def test_computer_output_without_screenshot_emits_no_attachment() -> None:
+    """No pointer, no asset row -- an attachment is never invented."""
+    nodes = [
+        _branch_node("u1", "user", "check the site", parent=None, children=["out"]),
+        {
+            "id": "out",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool", "name": "computer.initialize"},
+                "content": {
+                    "content_type": "computer_output",
+                    "computer_id": "23",
+                    "screenshot": None,
+                    "state": {"type": "computer_initialize_state", "os_name": "Chromium"},
+                    "tether_id": 223035702712800,
+                },
+                "status": "finished_successfully",
+                "create_time": None,
+            },
+            "parent": "u1",
+            "children": [],
+        },
+    ]
+    payload = {
+        "title": "Computer use",
+        "mapping": {n["id"]: n for n in nodes},
+        "current_node": "out",
+        "create_time": 1700000000.0,
+    }
+    conv = chatgpt_parse(payload, "fallback-id")
+    out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
+    assert [b.type for b in out_msg.blocks] == [BlockType.TOOL_RESULT]
+    assert conv.attachments == []
+
+
 @pytest.mark.parametrize(
     "content_type,content_extra,expected_title",
     [

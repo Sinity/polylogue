@@ -39880,7 +39880,7 @@
   "schema_versions": {
     "audit": 2,
     "embeddings": 5,
-    "index": 96,
+    "index": 97,
     "ops": 1,
     "source": 42,
     "user": 11
