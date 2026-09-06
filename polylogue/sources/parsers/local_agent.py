@@ -340,6 +340,22 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     gemini_message_type = (
         classify_block_message_type(tuple(block.type for block in gemini_blocks)) or MessageType.MESSAGE
     )
+    # ``displayContent`` is the form the user was actually shown: the prompt
+    # as typed, before ``@path`` references were expanded into the referenced
+    # files' contents. ``content`` is the model-facing expansion, so keeping
+    # only it loses the user's own words inside a payload that can be three
+    # orders of magnitude larger. Appended after the message type is resolved
+    # so a rendered form never reclassifies a tool turn.
+    display_text = _content_text(record.get("displayContent"))
+    if display_text and display_text != text:
+        gemini_blocks = [
+            *gemini_blocks,
+            ParsedContentBlock(
+                type=BlockType.TEXT,
+                text=display_text,
+                metadata={"gemini_display_content": True},
+            ),
+        ]
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
