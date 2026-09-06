@@ -15,7 +15,7 @@ debugging landmarks. For a task-to-owner map, start with
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
-| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not; observed timestamps are metadata and are non-monotonic against position on every origin | `storage/sqlite/queries/message_query_reads.py:_TRANSCRIPT_ORDER` |
+| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not, storage query or markdown export; observed timestamps are metadata and are non-monotonic against position on every origin | `core/identity_law.py:transcript_order_sql()`, read by `storage/sqlite/queries/message_query_reads.py` and `cli/read_views/streaming_markdown.py` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()` and `cli/commands/status.py:_archive_one_tier_status()` |
 
