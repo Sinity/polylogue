@@ -411,3 +411,65 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
     assert raw_frontier_source_selection_block_reason(archive_root) is None
     # Idempotent: a second pass finds nothing left to resolve.
     assert resolve_retained_codex_state_receipts(archive_root) == 0
+
+
+@pytest.mark.asyncio
+async def test_fresh_root_catch_up_completes_every_chunk_with_a_codex_state_snapshot(
+    workspace_env: dict[str, Path],
+) -> None:
+    """polylogue-6q16u: a fresh archive root whose scan contains one
+    ``~/.codex/*.sqlite`` finishes the whole catch-up.
+
+    The rehearsal-4 failure was not a single ingest call: the watcher planned
+    45,490 files, ingested three chunks, and then every later chunk, the
+    hook-spool drain and raw materialization were refused with ``1 cursor/head
+    authority row(s) could not be compared``. This drives the real chunked
+    catch-up route (``LiveWatcher._catch_up`` -> ``_plan_catch_up`` ->
+    coordinated chunk ingest) over enough files for five chunks, with the
+    snapshot raw among them.
+
+    Anti-vacuity: drop the terminal source-tier receipt from the codex-state
+    branch of ``LiveBatchProcessor._ingest_full_records_archive`` and the
+    chunk that admits ``goals_1.sqlite`` leaves an uncomparable cursor row, so
+    the following chunks ingest nothing and the session count stops short.
+    """
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+
+    archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-catchup", "codex-catchup.db")
+    archive_root = workspace_env["archive_root"]
+    _write_goals_1_sqlite(codex_state_root / "goals_1.sqlite")
+    template = codex_root / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+    _write_codex_rollout(template)
+    rollout_count = 17
+    thread_ids = [f"{index:08x}-1b42-43a5-977c-870299c489a6" for index in range(rollout_count)]
+    for index, thread_id in enumerate(thread_ids):
+        path = codex_root / f"rollout-2026-07-20T10-00-{index:02d}-{thread_id}.jsonl"
+        path.write_text(template.read_text(encoding="utf-8").replace(_THREAD_ID, thread_id), encoding="utf-8")
+    template.unlink()
+
+    watcher = live_watcher.LiveWatcher(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(archive_root / "ops.db"),
+    )
+    try:
+        candidates = watcher._scan_catch_up_candidates([codex_root, codex_state_root])
+        assert len(candidates) == rollout_count + 1
+        chunks = watcher._chunk_catch_up_paths(
+            tuple(candidate.path for candidate in candidates),
+            {candidate.path: candidate for candidate in candidates},
+        )
+        assert len(chunks) >= 5, "the deadlock only showed after chunk 3"
+
+        await watcher._catch_up([codex_root, codex_state_root])
+
+        assert raw_frontier_source_selection_block_reason(archive_root) is None
+        assert _cursor_authority_gap_states(archive_root) == []
+        assert watcher._batch_processor.cursor_authority_block_reason() is None
+        assert await archive.count_sessions() == rollout_count
+    finally:
+        watcher.stop()
+        await archive.close()
