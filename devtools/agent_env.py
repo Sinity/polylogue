@@ -30,6 +30,10 @@ HARNESS_RUN_ENV = "POLYLOGUE_PYTEST_RUN_ID"
 #: The pool the runtime placed the job in.
 QUEUE_POOL_ENV = "AGENTCTL_POOL"
 PYTEST_POOL = "pytest"
+#: Bounded selections (one file, one worker's focused check) run in a second
+#: pool so they never queue behind the corpus; both pools own the slot.
+PYTEST_QUICK_POOL = "pytest-quick"
+PYTEST_POOLS = frozenset({PYTEST_POOL, PYTEST_QUICK_POOL})
 _CGROUP_PATH = Path("/proc/self/cgroup")
 
 
@@ -39,7 +43,7 @@ def pool_slices(pool: str) -> frozenset[str]:
 
 
 _AGENT_CGROUP_SLICES = frozenset({"agent.slice"}) | pool_slices("agent")
-_PYTEST_CGROUP_SLICES = pool_slices(PYTEST_POOL)
+_PYTEST_CGROUP_SLICES = pool_slices(PYTEST_POOL) | pool_slices(PYTEST_QUICK_POOL)
 
 
 def runtime_env_names(variable: str) -> tuple[str, str]:
@@ -105,7 +109,7 @@ def inside_pytest_pool(env: Mapping[str, str], *, cgroup_reader: Callable[[], st
     operation name is never ownership: a lane inherits all three and still
     has to queue.
     """
-    return declared_pool(env) == PYTEST_POOL or _inside_pytest_cgroup(cgroup_reader)
+    return declared_pool(env) in PYTEST_POOLS or _inside_pytest_cgroup(cgroup_reader)
 
 
 def agent_worker_cap(

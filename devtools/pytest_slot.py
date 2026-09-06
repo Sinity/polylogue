@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, Final
 
-from devtools.agent_env import PYTEST_POOL, inside_pytest_pool
+from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.worker_memory import resize_worker_argument
 
@@ -263,7 +263,7 @@ def holds_pytest_slot(
     """
     if env.get(SLOT_ESCAPE_ENV) == SLOT_HELD or inside_pytest_pool(env, cgroup_reader=cgroup_reader):
         return True
-    return declared_pool_of_enclosing_job(env, proc=proc) == PYTEST_POOL
+    return declared_pool_of_enclosing_job(env, proc=proc) in PYTEST_POOLS
 
 
 def client_environment(env: Mapping[str, str]) -> dict[str, str]:
