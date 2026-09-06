@@ -22,13 +22,13 @@ therefore pays the generator once per process instead of once per test.
 
 The memo keys carry schema content and the live handler set, so an injected
 schema and a removed construct handler both miss. What they do not carry is
-any change to the *generator itself*: a test that patches a builder, a
-runtime handler body or a corpus must build outside this.
+any change to the *generator itself*: a test that patches a builder, a runtime
+handler body, a corpus or ``SchemaValidator`` must build outside this.
 
-``test_support_receipt_is_deterministic`` is the anti-vacuity condition --
-it compares a shared, memo-built receipt with a fresh build that runs the
-real generator, and goes red the moment the memo answers with anything a
-full build would not produce.
+``test_support_receipt_is_deterministic`` is the anti-vacuity condition -- it
+compares a shared, memo-built receipt with a fresh build that runs the real
+generator, and goes red the moment the memo answers with anything a full build
+would not produce.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ import hashlib
 import json
 from collections.abc import Collection, Iterator, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -51,9 +52,9 @@ __all__ = ["shared_wire_generation", "shared_wire_support_receipt"]
 
 #: Digests of the objects a memo key names repeatedly. A selected schema runs
 #: to megabytes and every key in a build carries the same one, so hashing it
-#: per call costs more than the work the memo saves. Each entry holds its own
-#: strong reference, so an id is never reused underneath it, and the bound
-#: keeps the retained schemas to the handful a build has live at once.
+#: per call would cost more than the work the memo saves. Each entry holds its
+#: own strong reference, so an id is never reused underneath it, and the bound
+#: keeps the retained schemas to the handful one build has live at once.
 _IDENTITY_DIGESTS: dict[int, tuple[object, str]] = {}
 _IDENTITY_DIGEST_LIMIT = 16
 
@@ -81,6 +82,29 @@ def _handler_key() -> tuple[str, ...]:
     return tuple(sorted(SCHEMA_CONSTRUCT_HANDLERS))
 
 
+#: One element's schema obligations run to thousands of keyword strings, and
+#: every artifact of that element reports the same ones. Held per artifact the
+#: memo would retain hundreds of megabytes, so the strings and the tuples are
+#: pooled before a coverage result is kept.
+_KEYWORDS: dict[str, str] = {}
+_KEYWORD_TUPLES: dict[tuple[str, ...], tuple[str, ...]] = {}
+
+
+def _pooled(keywords: tuple[str, ...]) -> tuple[str, ...]:
+    pooled = tuple(_KEYWORDS.setdefault(keyword, keyword) for keyword in keywords)
+    return _KEYWORD_TUPLES.setdefault(pooled, pooled)
+
+
+def _pooled_coverage(coverage: ConstructCoverage) -> ConstructCoverage:
+    return replace(
+        coverage,
+        schema_keywords=_pooled(coverage.schema_keywords),
+        exercised_keywords=_pooled(coverage.exercised_keywords),
+        missing_keywords=_pooled(coverage.missing_keywords),
+        nonrepresentable_keywords=_pooled(coverage.nonrepresentable_keywords),
+    )
+
+
 _GENERATED_WITNESSES: dict[tuple[Any, ...], list[bytes]] = {}
 _GENERATED_BATCHES: dict[tuple[Any, ...], SyntheticGenerationBatch] = {}
 _CONSTRUCT_COVERAGE: dict[tuple[Any, ...], ConstructCoverage] = {}
@@ -104,7 +128,7 @@ def _corpus_key(corpus: Any) -> tuple[Any, ...]:
 def shared_wire_generation() -> Iterator[None]:
     """Answer this process's generated wire corpus from a memo while inside.
 
-    Only builds run inside the block read the memo; a build outside it runs
+    Only a build run inside the block reads the memo; a build outside it runs
     the real generator, which is what keeps the determinism comparison a
     comparison. Nesting is a no-op.
     """
@@ -134,12 +158,13 @@ def shared_wire_generation() -> Iterator[None]:
             _GENERATED_WITNESSES[key] = witnesses
         return list(witnesses)
 
-    def memo_batch(self: Any, **kwargs: Any) -> SyntheticGenerationBatch:
+    def memo_batch(self: Any, *args: Any, **kwargs: Any) -> SyntheticGenerationBatch:
         # A witness corpus carries its branch, type and null choices in
-        # instance state the key does not name, and the whole witness run is
-        # already memoized one level up.
-        if self._coverage_witness_mode:
-            return real_batch(self, **kwargs)
+        # instance state no key here names, and the whole witness run is
+        # already memoized one level up. A positional call names arguments
+        # the key does not, so it goes straight through.
+        if args or self._coverage_witness_mode:
+            return real_batch(self, *args, **kwargs)
         key = (*_corpus_key(self), tuple(sorted((name, repr(value)) for name, value in kwargs.items())))
         batch = _GENERATED_BATCHES.get(key)
         if batch is None:
@@ -162,15 +187,15 @@ def shared_wire_generation() -> Iterator[None]:
         )
         coverage = _CONSTRUCT_COVERAGE.get(key)
         if coverage is None:
-            coverage = real_coverage(schema, payloads, handler_names=handler_names, **kwargs)
+            coverage = _pooled_coverage(real_coverage(schema, payloads, handler_names=handler_names, **kwargs))
             _CONSTRUCT_COVERAGE[key] = coverage
         return coverage
 
-    def memo_validate(self: Any, payload: object) -> ValidationResult:
-        key = (_stable_digest(self.schema), self.strict, _content_digest(payload))
+    def memo_validate(self: Any, data: object, *, include_drift: bool | None = None) -> ValidationResult:
+        key = (_stable_digest(self.schema), self.strict, include_drift, _content_digest(data))
         result = _VALIDATIONS.get(key)
         if result is None:
-            result = real_validate(self, payload)
+            result = real_validate(self, data, include_drift=include_drift)
             _VALIDATIONS[key] = result
         # ValidationResult carries mutable lists; hand every caller its own.
         return ValidationResult(
@@ -179,10 +204,10 @@ def shared_wire_generation() -> Iterator[None]:
             drift_warnings=list(result.drift_warnings),
         )
 
-    wire_formats.generate_coverage_witnesses = memo_witnesses  # type: ignore[assignment]
-    wire_formats.construct_coverage = memo_coverage  # type: ignore[assignment]
-    SyntheticCorpus.generate_batch = memo_batch  # type: ignore[method-assign, assignment]
-    SchemaValidator.validate = memo_validate  # type: ignore[method-assign, assignment]
+    wire_formats.generate_coverage_witnesses = memo_witnesses
+    wire_formats.construct_coverage = memo_coverage
+    SyntheticCorpus.generate_batch = memo_batch  # type: ignore[method-assign]
+    SchemaValidator.validate = memo_validate  # type: ignore[method-assign]
     _ACTIVE = 1
     try:
         yield
