@@ -64,7 +64,7 @@ def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[Parse
 _GEMINI_CLI_KIND_VALUES = frozenset({"chat", "main", "subagent"})
 
 
-def _gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
+def gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
     """Compose the identity of one Gemini CLI chat from its wire coordinates.
 
     ``sessionId`` names the CLI *process*, not a chat. One process writes a
@@ -137,7 +137,7 @@ def parse_gemini_cli(
     source_path: str | Path | None = None,
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
-    chat_id = _gemini_cli_chat_identity(payload, session_id)
+    chat_id = gemini_cli_chat_identity(payload, session_id)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     models_used: set[str] = set()

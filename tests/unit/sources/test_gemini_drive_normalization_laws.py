@@ -622,7 +622,7 @@ def test_gemini_cli_main_and_subagent_under_one_session_id_stay_two_sessions() -
     Gemini CLI's ``sessionId`` names the CLI process; a subagent spawned inside
     it writes its own complete checkpoint under that same id, with a disjoint
     message set. Anti-vacuity: drop ``kind`` from
-    ``local_agent._gemini_cli_chat_identity`` while the two checkpoints share a
+    ``local_agent.gemini_cli_chat_identity`` while the two checkpoints share a
     ``startTime`` and both collapse onto one identity, so the archive
     full-replaces one chat with the other.
     """
@@ -656,7 +656,9 @@ def test_gemini_cli_sibling_main_chats_under_one_session_id_stay_two_sessions() 
     second = deepcopy(first)
     second["startTime"] = "2026-06-02T09:30:00Z"
     second["lastUpdated"] = "2026-06-02T09:30:04Z"
-    for index, message in enumerate(second["messages"]):
+    second_messages = second["messages"]
+    assert isinstance(second_messages, list)
+    for index, message in enumerate(second_messages):
         assert isinstance(message, dict)
         message["id"] = f"cli-second-chat-{index}"
 
