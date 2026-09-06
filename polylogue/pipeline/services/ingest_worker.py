@@ -737,6 +737,32 @@ def _with_codex_hook_event_titles(
     return merged
 
 
+def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Path) -> ParsedSession:
+    """Restore a ``tool_result`` the sidecar join could not resolve, from hook evidence.
+
+    Runs before ``session_content_hash``, so the recovered text is what the
+    write payload hashes, what a prepared row set is built from, and what
+    change detection compares -- a hook that arrives after the transcript
+    was first parsed improves the block on the next parse instead of being
+    invisible to it.
+
+    The durable ``raw_hook_events`` capture is archive evidence, not an
+    ambient source file, so resolving it here keeps the worker's
+    no-rediscovery contract. See ``sources/live/hook_tool_response.py`` for
+    what the hook can and cannot restore.
+    """
+    from polylogue.sources.live.hook_tool_response import recover_persisted_tool_results
+
+    try:
+        return recover_persisted_tool_results(convo, archive_root=archive_root)
+    except Exception:
+        # Recovery is a best-effort third fallback over evidence the parse
+        # itself does not depend on; the un-recovered session is still a
+        # correct parse of the transcript.
+        logger.debug("hook tool_response recovery failed", exc_info=True)
+        return convo
+
+
 def _materialize_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
@@ -760,7 +786,7 @@ def _materialize_parsed_sessions(
     session_payloads: list[SessionWritePayload] = []
     for convo in parsed_sessions:
         normalized_convo = _normalized_session(
-            convo,
+            _with_hook_recovered_tool_results(convo, archive_root=context.archive_root),
             fallback_timestamp=context.fallback_timestamp,
         )
         try:

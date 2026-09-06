@@ -241,3 +241,29 @@ def test_producer_refuses_a_payload_that_duplicates_transcript_content(isolated_
     assert "Traceback" not in result.stderr
     sidecar = Path(argv[argv.index("--sidecar-dir") + 1])
     assert list(pending_hook_spool_dir(sidecar).rglob("*.json")) == []
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"permissionMode": "auto", "toolName": "Bash"}, id="camel-permission-mode"),
+        pytest.param({"permission_mode": "auto", "tool_name": "Bash"}, id="snake-permission-mode"),
+    ],
+)
+def test_provider_detection_reads_both_payload_generations(
+    payload: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """bd polylogue-cp806: a camelCase Claude Code payload must not fall through
+    to the Codex branch or to "could not detect provider".
+
+    Anti-vacuity: keyed on ``permission_mode`` alone, the camel case resolves
+    ``None`` and the manually-invoked command refuses the event outright.
+    """
+    from polylogue.sources import hook_producer
+
+    # Detection from payload shape only: an operator-forced provider would
+    # answer before the shape is ever inspected.
+    monkeypatch.setattr(hook_producer, "_configured_provider", lambda: None)
+
+    assert hook_producer.detect_provider(payload) == "claude-code"

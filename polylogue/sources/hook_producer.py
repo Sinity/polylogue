@@ -130,8 +130,9 @@ def reject_duplicated_transcript(payload: dict[str, object]) -> None:
     """Reject a hook payload that looks like it duplicates transcript content.
 
     Applies to every provider: hook events are evidence records, not a second
-    copy of the conversation the archive already retains in full through
-    session parsing.
+    copy of the conversation. The one thing the archive derives out of a hook
+    payload into ``blocks`` is a tool result whose own overflow sidecar is
+    unreachable -- see ``sources/live/hook_tool_response.py``.
     """
     for key in TRANSCRIPT_LIKE_KEYS:
         value = payload.get(key)
@@ -149,28 +150,46 @@ def timestamp_ms(value: str) -> int:
         raise HookSpoolRecordError(f"invalid hook timestamp: {value!r}") from exc
 
 
+# Both generations of every envelope key the drain requires. The harness emits
+# a camelCase generation of its payloads, and an adapter that mirrors that
+# spelling into the envelope must not be read as an envelope missing the field.
+# Spelled out here rather than imported from ``core.hook_payload`` because this
+# module runs under ``python -I -S`` with the package off ``sys.path``.
+_ENVELOPE_KEY_SPELLINGS: dict[str, tuple[str, ...]] = {
+    "event_id": ("event_id", "eventId"),
+    "event_type": ("event_type", "eventType"),
+    "session_id": ("session_id", "sessionId"),
+    "timestamp": ("timestamp",),
+    "provider": ("provider",),
+}
+
+
+def _envelope_text(value: dict[str, object], key: str) -> str:
+    for spelling in _ENVELOPE_KEY_SPELLINGS[key]:
+        item = value.get(spelling)
+        if isinstance(item, str) and item.strip():
+            return item
+    raise HookSpoolRecordError(f"hook spool envelope has no {key}")
+
+
 def validated_record(value: dict[str, object]) -> dict[str, object]:
-    """Normalize one envelope, deriving the observation instant the drain stores."""
-    for key in ("event_id", "event_type", "session_id", "timestamp", "provider"):
-        item = value.get(key)
-        if not isinstance(item, str) or not item.strip():
-            raise HookSpoolRecordError(f"hook spool envelope has no {key}")
-    provider = str(value["provider"])
+    """Normalize one envelope, deriving the observation instant the drain stores.
+
+    The returned envelope is snake_case whichever generation arrived; the
+    payload is passed through verbatim because it is the harness's own evidence.
+    """
+    fields = {key: _envelope_text(value, key) for key in _ENVELOPE_KEY_SPELLINGS}
+    provider = fields["provider"]
     if provider not in SUPPORTED_PROVIDERS:
         raise HookSpoolRecordError(f"unsupported hook provider: {provider}")
     payload = value.get("payload")
     if not isinstance(payload, dict):
         raise HookSpoolRecordError("hook spool envelope payload must be an object")
     reject_duplicated_transcript(payload)
-    observed_at_ms = timestamp_ms(str(value["timestamp"]))
     return {
-        "event_id": str(value["event_id"]),
-        "event_type": str(value["event_type"]),
-        "session_id": str(value["session_id"]),
-        "timestamp": str(value["timestamp"]),
-        "provider": provider,
+        **fields,
         "payload": dict(payload),
-        "observed_at_ms": observed_at_ms,
+        "observed_at_ms": timestamp_ms(fields["timestamp"]),
     }
 
 
@@ -272,9 +291,9 @@ def detect_provider(payload: dict[str, object]) -> str | None:
     forced = _configured_provider()
     if forced in EVENTS_BY_HARNESS:
         return forced
-    if "turn_id" in payload:
+    if "turn_id" in payload or "turnId" in payload:
         return "codex"
-    if "permission_mode" in payload or "model" in payload:
+    if "permission_mode" in payload or "permissionMode" in payload or "model" in payload:
         return "claude-code"
     if "source" in payload:
         return "codex"
