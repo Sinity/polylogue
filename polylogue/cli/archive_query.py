@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
-from urllib.parse import parse_qs, quote, urlencode, urlsplit
+from urllib.parse import quote
 
 import click
 
@@ -1207,7 +1207,8 @@ def _try_emit_daemon_unit_page(
     daemon_params["expression"] = expression
     payload = _fetch_daemon_payload(
         config,
-        "/api/query-units?" + urlencode(tuple(_daemon_query_pairs(daemon_params)), doseq=True),
+        "query.units",
+        daemon_params,
         disabled=bool(params.get("no_daemon")),
     )
     if payload is None:
@@ -1353,80 +1354,64 @@ def _fetch_daemon_sessions_payload(
     *,
     disabled: bool = False,
 ) -> dict[str, object] | None:
-    return _fetch_daemon_payload(config, "/api/cli/query", body={"params": dict(query_params)}, disabled=disabled)
+    return _fetch_daemon_payload(config, "cli.query", query_params, disabled=disabled)
 
 
 def _fetch_daemon_payload(
     config: Config,
-    path: str,
+    operation: str,
+    params: Mapping[str, object],
     *,
-    body: dict[str, object] | None = None,
     disabled: bool = False,
 ) -> dict[str, object] | None:
+    """Run one declared read operation against this archive's daemon over UDS.
+
+    The request is the operation and its parameters. There is no URL to build:
+    the daemon reads ``params`` straight off the operation envelope, coercing
+    each value to the ``list[str]`` its handler expects, so encoding the
+    parameters into a query string only to parse them back would be the one
+    place a read could change shape in transit.
+    """
     if _daemon_disabled(flag=disabled):
         return None
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import (
+        OperationKernel,
+        OperationKernelError,
+        OperationRequest,
+    )
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
     from polylogue.version import POLYLOGUE_VERSION
 
-    socket_path = daemon_socket_path(config.archive_root)
     client = DaemonClient(
-        socket_path,
+        daemon_socket_path(config.archive_root),
         auth_token=resolve_api_auth_token(
             getattr(config, "api_auth_token", None),
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    if path == "/api/cli/query" or path.startswith("/api/query-units?"):
-        from polylogue.cli.operation_kernel import (
-            OperationKernel,
-            OperationKernelError,
-            OperationRequest,
-        )
-
-        operation = "cli.query"
-        operation_body = body or {}
-        if path.startswith("/api/query-units?"):
-            operation = "query.units"
-            operation_body = {"params": parse_qs(urlsplit(path).query, keep_blank_values=True)}
-        lowered = OperationRequest(operation, operation_body)
-        kernel = OperationKernel(
-            lambda request: client.operation(
-                request.operation,
-                dict(request.payload),
-                archive_root=str(config.archive_root),
-                index_schema_version=INDEX_SCHEMA_VERSION,
-                daemon_version=POLYLOGUE_VERSION,
-            )
-        )
-        try:
-            operation_result = kernel.execute(lowered)
-        except OperationKernelError:
-            return None
-        payload_result = operation_result.value
-        if not isinstance(payload_result, dict):
-            return None
-        if client.last_elapsed_ms is not None:
-            payload_result = dict(payload_result)
-            payload_result["_daemon_elapsed_ms"] = client.last_elapsed_ms
-        return payload_result
-    if (
-        client.probe(
+    kernel = OperationKernel(
+        lambda request: client.operation(
+            request.operation,
+            dict(request.payload),
             archive_root=str(config.archive_root),
             index_schema_version=INDEX_SCHEMA_VERSION,
             daemon_version=POLYLOGUE_VERSION,
         )
-        is None
-    ):
+    )
+    try:
+        operation_result = kernel.execute(OperationRequest(operation, {"params": dict(params)}))
+    except OperationKernelError:
         return None
-    payload = client.request_json("POST" if body is not None else "GET", path, body)
-    if payload is not None:
-        if client.last_elapsed_ms is not None:
-            payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
-        return payload
-    return None
+    payload = operation_result.value
+    if not isinstance(payload, dict):
+        return None
+    if client.last_elapsed_ms is not None:
+        payload = dict(payload)
+        payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
+    return payload
 
 
 def _submit_daemon_mutation(
@@ -1461,16 +1446,6 @@ def _submit_daemon_mutation(
     if payload is not None and client.last_elapsed_ms is not None:
         payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
     return payload
-
-
-def _daemon_query_pairs(query_params: Mapping[str, object]) -> Iterable[tuple[str, str]]:
-    for key, value in query_params.items():
-        if isinstance(value, Iterable) and not isinstance(value, str | bytes | Mapping):
-            for item in value:
-                if _has_value(item):
-                    yield key, str(item)
-        elif _has_value(value):
-            yield key, str(value)
 
 
 _DAEMON_LIST_ITEM_KEEP_KEYS = (
