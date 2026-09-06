@@ -1416,12 +1416,18 @@ def _member_payload_by_content(
     *,
     split_index: int,
     blob_hash: str | None,
+    positional_when_content_is_gone: bool,
 ) -> bytes:
     """Return the member value the recorded reference names.
 
     ``split_index`` chooses which value is checked first and never which value
     is returned: an export that reorders or inserts elements leaves a valid but
     unrelated conversation at the recorded position.
+
+    ``positional_when_content_is_gone`` belongs to the one caller whose
+    contract is that the recorded content is stale by construction --
+    recanonicalizing a row onto whatever its source holds now. Every caller
+    that is proving a recorded reference leaves it false.
     """
     if isinstance(decoded_payload, list):
         elements = list(decoded_payload)
@@ -1429,6 +1435,7 @@ def _member_payload_by_content(
         elements = [decoded_payload]
     else:
         raise IndexError("non-array JSON payload only supports source_index 0")
+    hinted: bytes | None = None
     if 0 <= split_index < len(elements):
         hinted = json_dumps_bytes(elements[split_index])
         if blob_hash is None or hashlib.sha256(hinted).hexdigest() == blob_hash:
@@ -1439,6 +1446,8 @@ def _member_payload_by_content(
         encoded = json_dumps_bytes(element)
         if hashlib.sha256(encoded).hexdigest() == blob_hash:
             return encoded
+    if positional_when_content_is_gone and hinted is not None:
+        return hinted
     raise IndexError(f"no member value matches the content identity of {blob_hash}")
 
 
@@ -1452,6 +1461,7 @@ def _current_raw_payload_bytes(
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
     provider_hint: str | None = None,
+    positional_when_content_is_gone: bool = False,
 ) -> tuple[bytes | None, str | None]:
     if _path_is_container_member(source_path):
         split = _split_container_source_path(source_path)
@@ -1540,6 +1550,7 @@ def _current_raw_payload_bytes(
                 decoded_payload,
                 split_index=int(split_index),
                 blob_hash=blob_hash,
+                positional_when_content_is_gone=positional_when_content_is_gone,
             )
         except (IndexError, CoreJSONDecodeError, UnicodeDecodeError) as exc:
             return None, f"source_index:{exc}"
@@ -1879,6 +1890,9 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 source_bytes_cache=source_bytes_cache,
                 decoded_payload_cache=decoded_payload_cache,
                 provider_hint=_optional_str(row.get("detected_provider")),
+                # Recanonicalization exists for rows whose recorded hash is
+                # stale; its whole subject is the value the source holds now.
+                positional_when_content_is_gone=True,
             )
         except OSError as exc:
             payload_bytes, reason = None, f"error:{exc}"
@@ -1975,6 +1989,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
                 source_bytes_cache=apply_source_bytes_cache,
                 decoded_payload_cache=apply_decoded_payload_cache,
                 provider_hint=_optional_str(row.get("detected_provider")),
+                positional_when_content_is_gone=True,
             )
             if payload_bytes is not None:
                 published_hash, _published_size = publisher.write_from_bytes(payload_bytes)

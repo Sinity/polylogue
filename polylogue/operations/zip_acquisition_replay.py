@@ -101,8 +101,6 @@ def resolve_member_candidate(
     # Every match carries identical bytes, so the recovered value is the same
     # whichever occurrence is returned. Several occurrences are duplicate
     # observations of one logical item, not a choice between conversations.
-    if len(matching) > 1 and len({candidate.content_identity for candidate in matching}) != 1:
-        return MemberResolution(None, "ambiguous", "content_identity:ambiguous")
     outcome = "resolved_by_content" if len(matching) == 1 else "duplicate_observations"
     return MemberResolution(matching[0].payload_bytes, outcome, None)
 
