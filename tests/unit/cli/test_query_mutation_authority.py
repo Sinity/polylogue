@@ -52,7 +52,9 @@ def _run(archive_root: Path, *args: str) -> Result:
 
 def _payload(result: Result) -> dict[str, object]:
     assert result.exit_code == 0, result.output or result.exception
-    return json.loads(result.output)
+    payload = json.loads(result.output)
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _operation_runs(archive_root: Path) -> list[tuple[str, str, str, int]]:

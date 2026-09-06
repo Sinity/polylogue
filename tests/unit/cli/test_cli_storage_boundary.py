@@ -55,7 +55,9 @@ def _shipped_manifest_tree(tmp_path: Path, *, extra_modules: dict[str, str]) -> 
     return tmp_path
 
 
-def _violations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> list[dict]:
+def _violations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> list[dict[str, object]]:
     monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
     verify_layering.main(["--json"])
     return list(json.loads(capsys.readouterr().out)["violations"])
