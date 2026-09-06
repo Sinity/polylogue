@@ -57,11 +57,8 @@ from polylogue.logging import get_logger
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-# The producer path -- ``enqueue_hook_event`` and the envelope helpers it uses --
-# runs once per harness tool call in a fresh interpreter, so it must not pay for
-# the archive layer. Importing ``archive_tiers`` alone costs seconds of CPU
-# building DDL, which only the drain path needs. Every archive, manifest and
-# enum import below is therefore deferred into the function that uses it.
+# Hook producers run in fresh interpreters. Keep their imports independent of
+# archive DDL; drain functions load archive dependencies locally.
 
 logger = get_logger(__name__)
 

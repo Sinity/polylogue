@@ -24,10 +24,8 @@ from typing import Literal, cast
 
 import tomllib
 
-# ``hook_main`` runs once per harness tool call in a fresh interpreter. The
-# archive, config and connection-profile imports below belong to the settings
-# adapters and the liveness projections, none of which the hook command
-# touches, so they are deferred into the functions that use them.
+# ``hook_main`` runs in a fresh interpreter. Keep its imports independent of
+# archive DDL; settings and liveness adapters load their dependencies locally.
 
 HookHarness = Literal["claude-code", "codex"]
 HookChangeAction = Literal["install", "uninstall"]
