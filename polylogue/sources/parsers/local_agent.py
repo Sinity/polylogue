@@ -287,20 +287,6 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         return None
     text = _content_text(record.get("content"))
     content_blocks = _content_blocks_from_content(record.get("content"))
-    # polylogue-2ow9p: ``displayContent`` is the form the user was actually
-    # shown, and where it is present it diverges from ``content`` every time
-    # (9 of 9 in the measured corpus) -- ``content`` carries the model-facing
-    # expansion. Keeping only ``content`` loses the shown form, so it is
-    # admitted as its own block rather than collapsed into the sibling.
-    display_content = _content_text(record.get("displayContent"))
-    if display_content is not None and display_content != text:
-        content_blocks.append(
-            ParsedContentBlock(
-                type=BlockType.TEXT,
-                text=display_content,
-                metadata={"field": "displayContent"},
-            )
-        )
     thoughts = _list(record.get("thoughts"))
     for thought_index, thought in enumerate(thoughts, start=1):
         thought_record = json_document(thought)
@@ -329,11 +315,15 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
         fallback_tool_id = f"tool-{index}-{tool_index}"
         content_blocks.append(_tool_use_block(tool_record, fallback_id=fallback_tool_id))
         content_blocks.extend(_tool_result_blocks(tool_record, fallback_id=fallback_tool_id))
-    if not text and not content_blocks:
+    # polylogue-auy4z: a turn with no content is still billed, and the
+    # checkpoint file is the only place its counts exist -- ``tokens`` is the
+    # evidence that the turn happened, so the message is kept without blocks
+    # and carries the counts into the cost rollup.
+    if not text and not content_blocks and not _reports_wire_tokens(record):
         return None
     token_usage = _token_usage_fields(record)
     gemini_role = _role(_string(record.get("type")) or "unknown", assistant_aliases={"gemini", "model"})
-    gemini_blocks = content_blocks or [ParsedContentBlock(type=BlockType.TEXT, text=text)]
+    gemini_blocks = content_blocks or ([ParsedContentBlock(type=BlockType.TEXT, text=text)] if text else [])
     # A block-derived type (tool_use/tool_result from toolCalls above) must be
     # resolved BEFORE classify_material_origin runs, or a genuine tool turn
     # gets misclassified against an assumed plain MESSAGE type.
@@ -348,14 +338,28 @@ def _parse_gemini_message(item: object, *, index: int, position: int) -> ParsedM
     # so a rendered form never reclassifies a tool turn.
     display_text = _content_text(record.get("displayContent"))
     if display_text and display_text != text:
-        gemini_blocks = [
-            *gemini_blocks,
-            ParsedContentBlock(
-                type=BlockType.TEXT,
-                text=display_text,
-                metadata={"gemini_display_content": True},
+        matching_index = next(
+            (
+                block_index
+                for block_index, block in enumerate(gemini_blocks)
+                if block.type is BlockType.TEXT and block.text == display_text
             ),
-        ]
+            None,
+        )
+        if matching_index is None:
+            gemini_blocks = [
+                *gemini_blocks,
+                ParsedContentBlock(
+                    type=BlockType.TEXT,
+                    text=display_text,
+                    metadata={"gemini_display_content": True},
+                ),
+            ]
+        else:
+            matching = gemini_blocks[matching_index]
+            gemini_blocks[matching_index] = matching.model_copy(
+                update={"metadata": {**(matching.metadata or {}), "gemini_display_content": True}},
+            )
     return ParsedMessage(
         # polylogue-slshy: no positional fallback -- empty id lets
         # _message_revision_match_id's content-anchor fallback run instead.
@@ -532,6 +536,13 @@ def _first_non_negative_int(payload: JSONDocument, *keys: str) -> int | None:
             if value is not None:
                 return value
     return None
+
+
+def _reports_wire_tokens(record: JSONDocument) -> bool:
+    """Whether the record carries token counts of its own."""
+    if not (json_document(record.get("usage")) or json_document(record.get("tokens"))):
+        return False
+    return any(_token_usage_fields(record).values())
 
 
 def _gemini_message_usage_event(item: object, message: ParsedMessage) -> ParsedSessionEvent | None:
