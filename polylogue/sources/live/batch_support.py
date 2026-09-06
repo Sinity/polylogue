@@ -859,6 +859,15 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     if is_jsonl_source_path(str(path)):
         if jsonl_session_artifact(path, provider=provider) is not None:
             return True
+        # A path rule may still rescue content the bounded scan could not
+        # inspect, but never content the recognizer positively named a
+        # non-session source: a generated extract sits in the provider's own
+        # transcript directory, so location cannot outrank its provenance.
+        from polylogue.sources.origin_specs import recognize_source_class
+
+        recognition = recognize_source_class(provider, path)
+        if recognition is not None and recognition.source_class != "session":
+            return False
         path_classification = classify_artifact_path(path, provider=provider)
         return path_classification.parse_as_session if path_classification is not None else False
     path_classification = strong_path_classification(path, provider=provider)
