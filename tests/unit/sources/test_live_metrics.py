@@ -85,3 +85,68 @@ def test_live_batch_metrics_defaults_to_empty_session_touches() -> None:
 
     assert payload["new_sessions"] == []
     assert payload["updated_sessions"] == []
+
+
+def test_split_offered_bytes_names_a_path_no_route_reached() -> None:
+    """A file the time budget never attempted is refused, not silently absorbed.
+
+    The 3.5 GB whale in the rehearsal receipts was offered as one chunk, left
+    unattempted when the pass budget expired, and still counted in the bytes
+    the run reported as input. Named as its own refusal reason it stops
+    inflating throughput and says why.
+
+    Anti-vacuity: drop the ``remaining`` bucket at the end of
+    ``split_offered_bytes`` and the whale's bytes vanish from the split while
+    still counting in the offered total -- the reconciliation below goes red.
+    """
+    from pathlib import Path
+
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET, split_offered_bytes
+
+    ingested_path = Path("/src/small.jsonl")
+    failed_path = Path("/src/broken.jsonl")
+    excluded_path = Path("/src/notes.json")
+    whale = Path("/src/whale.jsonl")
+    path_sizes = {ingested_path: 100, failed_path: 20, excluded_path: 30, whale: 3_557_000_000}
+
+    ingested, failed, refused = split_offered_bytes(
+        path_sizes,
+        succeeded=[ingested_path],
+        failed=[failed_path],
+        excluded={excluded_path: "unsupported source class"},
+        deferred=[],
+        unattempted_reason=REFUSED_UNATTEMPTED_TIME_BUDGET,
+    )
+
+    assert ingested == 100
+    assert failed == 20
+    assert refused == {"unsupported source class": 30, REFUSED_UNATTEMPTED_TIME_BUDGET: 3_557_000_000}
+    assert ingested + failed + sum(refused.values()) == sum(path_sizes.values())
+
+
+def test_split_offered_bytes_counts_each_path_once() -> None:
+    """A path reported under two outcomes is credited to the first only.
+
+    Anti-vacuity: sum each bucket independently over the offered sizes instead
+    of consuming from one shared pool, and a path that appears in both
+    ``succeeded`` and ``failed`` is counted twice -- which makes the split
+    exceed the offered total and lets a residual-derived refused bucket read
+    as zero.
+    """
+    from pathlib import Path
+
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED, split_offered_bytes
+
+    contested = Path("/src/contested.jsonl")
+    path_sizes = {contested: 512}
+
+    ingested, failed, refused = split_offered_bytes(
+        path_sizes,
+        succeeded=[contested],
+        failed=[contested],
+        excluded={contested: "archive write skipped this raw"},
+        deferred=[contested],
+        unattempted_reason=REFUSED_UNATTEMPTED,
+    )
+
+    assert (ingested, failed, refused) == (512, 0, {})

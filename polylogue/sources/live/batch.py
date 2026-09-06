@@ -152,7 +152,14 @@ from polylogue.sources.live.convergence_outcome import record_convergence_outcom
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
-from polylogue.sources.live.metrics import LiveBatchMetrics, LiveFullIngestAggregate
+from polylogue.sources.live.metrics import (
+    REFUSED_DAEMON_DEGRADED,
+    REFUSED_UNATTEMPTED,
+    REFUSED_UNATTEMPTED_TIME_BUDGET,
+    LiveBatchMetrics,
+    LiveFullIngestAggregate,
+    split_offered_bytes,
+)
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
@@ -792,7 +799,10 @@ class LiveBatchProcessor:
         # raw-materialization checkpoint and qlae's drive-catchup checkpoint.
         pass_started_monotonic = time.monotonic()
         db_bytes_before = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
-        input_bytes = sum(_path_size(path) for path in paths)
+        # Sizes are captured once so the offered / ingested / failed / refused
+        # split below reconciles exactly, even if a file grows mid-batch.
+        path_sizes = {path: _path_size(path) for path in paths}
+        input_bytes = sum(path_sizes.values())
         attempt_id = self._cursor.begin_ingest_attempt(
             paths=paths,
             input_bytes=input_bytes,
@@ -828,7 +838,7 @@ class LiveBatchProcessor:
         convergence_time_s = 0.0
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
-        excluded_reasons: dict[str, int] = {}
+        excluded_by_path: dict[Path, str] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1202,8 +1212,7 @@ class LiveBatchProcessor:
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
-                for reason in full_result.excluded.values():
-                    excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
+                excluded_by_path.update(full_result.excluded)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -1237,6 +1246,19 @@ class LiveBatchProcessor:
             )
 
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
+        excluded_reasons: dict[str, int] = {}
+        for reason in excluded_by_path.values():
+            excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
+        ingested_bytes, failed_bytes, refused_bytes_by_reason = split_offered_bytes(
+            path_sizes,
+            succeeded=succeeded_paths,
+            failed=(Path(path) for path in failed_paths),
+            excluded=excluded_by_path,
+            deferred=deferred_paths,
+            unattempted_reason=(
+                REFUSED_UNATTEMPTED_TIME_BUDGET if full_ingest_time_budget_exceeded else REFUSED_UNATTEMPTED
+            ),
+        )
         db_bytes_after = _path_size(self._cursor._db_path) + _path_size(self._cursor._db_path.with_suffix(".db-wal"))
         metrics = LiveBatchMetrics(
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
@@ -1248,6 +1270,9 @@ class LiveBatchProcessor:
             excluded_reasons=dict(excluded_reasons),
             source_group_count=len({self._source_name_for(path) for path in paths}),
             input_bytes=input_bytes,
+            ingested_bytes=ingested_bytes,
+            failed_bytes=failed_bytes,
+            refused_bytes_by_reason=refused_bytes_by_reason,
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             ingest_worker_count_max=ingest_worker_count_max,
@@ -1286,6 +1311,10 @@ class LiveBatchProcessor:
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths) + len(deferred_paths),
             input_bytes=input_bytes,
+            ingested_bytes=metrics.ingested_bytes,
+            failed_bytes=metrics.failed_bytes,
+            refused_bytes=metrics.refused_bytes,
+            refused_bytes_by_reason=dict(metrics.refused_bytes_by_reason),
             source_payload_read_bytes=source_payload_read_bytes,
             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
             archive_write_bytes_delta=metrics.archive_write_bytes_delta,
@@ -1328,7 +1357,13 @@ class LiveBatchProcessor:
         queued_file_count: int | None,
         skipped_file_count: int,
     ) -> LiveBatchMetrics:
-        """Empty-ingest metrics for the degraded short-circuit path."""
+        """Empty-ingest metrics for the degraded short-circuit path.
+
+        The offered bytes are reported and refused in full: a batch that was
+        handed files and admitted none of them is not an idle one, and
+        reporting zero offered bytes hides the refusal from every receipt.
+        """
+        offered_bytes = sum(_path_size(path) for path in paths)
         return LiveBatchMetrics(
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             needed_file_count=len(paths),
@@ -1336,7 +1371,8 @@ class LiveBatchProcessor:
             succeeded_file_count=0,
             failed_file_count=0,
             source_group_count=len({self._source_name_for(path) for path in paths}),
-            input_bytes=0,
+            input_bytes=offered_bytes,
+            refused_bytes_by_reason=({REFUSED_DAEMON_DEGRADED: offered_bytes} if offered_bytes else {}),
             source_payload_read_bytes=0,
             cursor_fingerprint_read_bytes=0,
             ingest_worker_count_max=0,
