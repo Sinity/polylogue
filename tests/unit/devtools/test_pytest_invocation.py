@@ -35,19 +35,26 @@ def test_closed_world_collection_args_reach_the_built_command() -> None:
         assert argument in command, f"missing collection arg {argument!r}"
 
 
-def test_the_default_tier_selects_and_the_all_tier_drops_testmon() -> None:
-    """Affected verification selects from testmon; `--all` runs every test.
+def test_the_default_tier_selects_and_the_all_tier_only_traces() -> None:
+    """Affected verification selects from testmon; `--all` traces without selecting.
 
-    Anti-vacuity: adding testmon to the complete route recreates dependency
-    state in every worker without changing the selected corpus.
+    Both tiers load testmon, so every managed run advances the one datafile and
+    the graph is extended rather than recomputed. They differ in whether the
+    graph decides the collection: the affected tier selects from it, the
+    complete tier deselects nothing and records what it executed, which is what
+    makes the next affected run selectable.
+
+    Anti-vacuity: give the complete route ``--testmon-forceselect`` and it stops
+    running every test; drop testmon from it entirely and it stops recording the
+    edges the next affected run selects on, silently narrowing that run.
     """
     affected = _command("affected")
     complete = _command("all")
 
     assert "--testmon" in affected and "--testmon-forceselect" in affected
     assert "--testmon-noselect" not in affected
-    assert "--testmon" not in complete
-    assert "pytest-testmon" not in complete
+    assert "--testmon" in complete and "--testmon-noselect" in complete
+    assert "--testmon-forceselect" not in complete
 
 
 def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:

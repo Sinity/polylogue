@@ -55,6 +55,7 @@ from devtools.verify_runs import (
     env_for_pytest_step,
     git_head,
     prune_successful_verify_runs,
+    write_current_pytest_summary,
 )
 from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
@@ -561,8 +562,19 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
                 "progress_path": PYTEST_PROGRESS_PATH,
                 "events_merged_path": PYTEST_EVENTS_PATH,
                 "selection_path": PYTEST_SELECTION_PATH,
-                "summary_path": PYTEST_SUMMARY_PATH,
             },
+        )
+        # Written from what this process knows, so it exists even when pytest
+        # never got far enough to write its own. The copy above only lands when
+        # the plugin produced a file, which a failing run often does not.
+        write_current_pytest_summary(
+            ROOT,
+            run_id=run.run_id,
+            tier=run.tier,
+            exit_code=int(metadata.get("exit", completed.returncode) or 0),
+            diagnosis=str(metadata.get("diagnosis")) if metadata.get("diagnosis") else None,
+            statistics=metadata.get("statistics") if isinstance(metadata.get("statistics"), Mapping) else None,
+            plugin_summary=artifacts.summary_path,
         )
     else:
         stdout = completed.stdout if isinstance(completed.stdout, str) else ""
@@ -633,6 +645,24 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+    _write_verdict_line(payload, stream=sys.stderr)
+
+
+def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
+    """State the verdict in the output itself, as the last thing said.
+
+    The exit status does not survive a pipeline -- ``verify | tail`` reports
+    tail's status, so a run whose gates failed reads as success -- and every
+    agent here pipes for readable output. Three separate reports of "devtools
+    exits 0 while failing" were this, not a wrong exit code. A verdict the
+    reader can see in the last line of output cannot be lost that way.
+    """
+    exit_code = int(payload.get("exit_code") or 0)
+    run_id = payload.get("run_id")
+    verdict = "PASSED" if exit_code == 0 else "FAILED"
+    diagnosis = payload.get("diagnosis")
+    detail = f" ({diagnosis})" if diagnosis and exit_code else ""
+    stream.write(f"\nverify: {verdict}{detail} — exit {exit_code}; run {run_id}\n")
 
 
 def _verification_workload_receipt(

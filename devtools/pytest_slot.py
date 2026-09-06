@@ -295,7 +295,16 @@ def _cancel_task(task_id: str, *, env: Mapping[str, str]) -> None:
         raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`agentctl job cancel` failed: {detail}"))
 
 
-def _task_result(status_json: str, task_id: str) -> int:
+def _task_result(status_json: str, task_id: str, *, launch_path: Path | None = None) -> int:
+    """The exit status of *this client's* task, refusing any other task's.
+
+    A task id is a queue position, not an identity: reordering the queue can
+    reassign an id to a different worktree's job. A client that trusts the id
+    alone then watches a foreign job reach a terminal state and reports it as
+    its own release -- claiming success for work it never ran, silently, in the
+    direction that launders an unverified change. The launch document path is
+    unique to this client, so the task is identified by the command it carries.
+    """
     try:
         document = json.loads(status_json)
     except json.JSONDecodeError as exc:
@@ -303,6 +312,16 @@ def _task_result(status_json: str, task_id: str) -> int:
     task = (document.get("tasks") or {}).get(task_id) if isinstance(document, Mapping) else None
     if not isinstance(task, Mapping):
         raise PytestSlotUnavailableError(REFUSAL.format(reason=f"pueue no longer knows task {task_id}"))
+    if launch_path is not None and str(launch_path) not in str(task.get("command", "")):
+        raise PytestSlotUnavailableError(
+            REFUSAL.format(
+                reason=(
+                    f"pueue task {task_id} is no longer this run's task: it runs "
+                    f"{task.get('command')!r}, not {launch_path}. The queue was reordered and the id "
+                    "was reassigned; this run's result is unknown and must not be read from another job"
+                )
+            )
+        )
     status = task.get("status")
     detail = status.get("Done") if isinstance(status, Mapping) else None
     if not isinstance(detail, Mapping):
@@ -452,7 +471,7 @@ def _queue(
         status = _pueue(["status", "--json"], env=adder)
         receipt = _read_timeout_receipt(log_path)
         try:
-            returncode = _task_result(status.stdout, task_id)
+            returncode = _task_result(status.stdout, task_id, launch_path=launch_path)
         except PytestSlotUnavailableError:
             if receipt is None or receipt.get("status") != "timed_out":
                 raise

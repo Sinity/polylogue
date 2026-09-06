@@ -247,6 +247,7 @@ class VerifyRun:
     ) -> None:
         self.root = root or Path.cwd()
         self.mirror_current = mirror_current
+        self.tier = tier
         self.run_id = make_run_id(tier=tier)
         self.run_dir = self.root / VERIFY_RUNS_DIR / self.run_id
         self._payload: dict[str, Any] = {
@@ -463,6 +464,56 @@ def copy_current_pytest_artifacts(
         destination = root / CURRENT_EVENTS_DIR
         shutil.rmtree(destination, ignore_errors=True)
         shutil.copytree(artifacts.events_dir, destination)
+
+
+CURRENT_PYTEST_SUMMARY = Path(".cache/verify") / "current-pytest-summary.json"
+
+
+def write_current_pytest_summary(
+    root: Path,
+    *,
+    run_id: str,
+    tier: str,
+    exit_code: int,
+    diagnosis: str | None,
+    statistics: Mapping[str, Any] | None = None,
+    plugin_summary: Path | None = None,
+) -> Path:
+    """Write the summary the runners name in their own output.
+
+    Written by the parent, from what the parent knows, so it exists for every
+    run and not only for one that got far enough for the pytest plugin to write
+    its own. That is the distinction a reader needs: a run that never started
+    and a run that finished and failed both produced a receipt, and they say
+    different things. Before this, a failing run left only differently named
+    statistics, so the promised path existed nowhere and readers fell back to
+    scraping logs.
+
+    ``run_id`` is recorded so a caller can tell whether it read the result it
+    asked for or an older one from the same worktree.
+    """
+    payload: dict[str, Any] = {
+        "schema_version": 1,
+        "kind": "polylogue.pytest-summary",
+        "run_id": run_id,
+        "tier": tier,
+        "exit_code": exit_code,
+        "diagnosis": diagnosis,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    if statistics:
+        payload["statistics"] = dict(statistics)
+    if plugin_summary is not None:
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            observed = json.loads(plugin_summary.read_text(encoding="utf-8"))
+            if isinstance(observed, Mapping):
+                payload["pytest_session"] = dict(observed)
+    destination = root / CURRENT_PYTEST_SUMMARY
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(destination)
+    return destination
 
 
 def merge_worker_events(events_dir: Path, merged_path: Path) -> int:

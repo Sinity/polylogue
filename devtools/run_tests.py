@@ -59,6 +59,7 @@ from devtools.verify_runs import (
     git_head,
     prune_successful_verify_runs,
     pytest_command_worker_request,
+    write_current_pytest_summary,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -618,6 +619,15 @@ def main(argv: list[str] | None = None) -> int:
             "outcomes": statistics.get("outcomes", {}),
         },
     )
+    write_current_pytest_summary(
+        ROOT,
+        run_id=run.run_id,
+        tier="focused-test",
+        exit_code=rc,
+        diagnosis=metadata.get("diagnosis") if isinstance(metadata.get("diagnosis"), str) else None,
+        statistics=statistics,
+        plugin_summary=artifacts.summary_path,
+    )
     append_verify_history(payload)
     append_verification_evidence(payload)
     prune_successful_verify_runs(root=ROOT)
@@ -633,4 +643,11 @@ def main(argv: list[str] | None = None) -> int:
             f"summary={PYTEST_SUMMARY_PATH} events={PYTEST_EVENTS_PATH} "
             f"output={PYTEST_OUTPUT_PATH}\n"
         )
+    # The exit status does not survive a pipeline: `devtools test | tail`
+    # reports tail's status, so a failing run reads as success, and every agent
+    # here pipes for readable output. The verdict is therefore stated in the
+    # output itself, last, where a piped reader still sees it.
+    diagnosis = metadata.get("diagnosis")
+    detail = f" ({diagnosis})" if diagnosis and rc else ""
+    sys.stderr.write(f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'}{detail} — exit {rc}; run {run.run_id}\n")
     return rc
