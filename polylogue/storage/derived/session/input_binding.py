@@ -32,6 +32,7 @@ from collections.abc import Mapping, Sequence
 
 __all__ = [
     "SESSION_INPUT_PROJECTION_COLUMNS",
+    "SessionInputDigest",
     "SESSION_INPUT_RECIPE_VERSION",
     "session_input_bindings",
     "session_input_binding_sql",
@@ -94,6 +95,36 @@ ORDER BY m.session_id, m.position, m.variant_index, m.message_id
 """
 
 
+class SessionInputDigest:
+    """Accumulates one binding per session from projection rows, in order.
+
+    The sync and async writers hold different connection types and cannot share
+    a query loop, so they share this instead: the digest definition — recipe,
+    column list, row encoding — exists once, and each caller only feeds it rows.
+    Two copies of the definition would drift and report false staleness on
+    whichever route fell behind.
+    """
+
+    __slots__ = ("_digests",)
+
+    def __init__(self, session_ids: Sequence[str]) -> None:
+        self._digests = {session_id: hashlib.blake2b(digest_size=16) for session_id in session_ids}
+        for digest in self._digests.values():
+            digest.update(SESSION_INPUT_RECIPE_VERSION.encode("utf-8"))
+            digest.update(b"\x00".join(column.encode("utf-8") for column in SESSION_INPUT_PROJECTION_COLUMNS))
+
+    def add_row(self, row: Sequence[object]) -> None:
+        session_id = str(row[0])
+        digest = self._digests.get(session_id)
+        if digest is None:  # pragma: no cover - IN () cannot return an unasked id
+            return
+        digest.update(b"\x1e")
+        digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
+
+    def result(self) -> dict[str, str]:
+        return {session_id: digest.hexdigest() for session_id, digest in self._digests.items()}
+
+
 def session_input_bindings(
     conn: sqlite3.Connection,
     session_ids: Sequence[str],
@@ -108,20 +139,11 @@ def session_input_bindings(
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
         return {}
-    digests = {session_id: hashlib.blake2b(digest_size=16) for session_id in unique}
-    for digest in digests.values():
-        digest.update(SESSION_INPUT_RECIPE_VERSION.encode("utf-8"))
-        digest.update(b"\x00".join(column.encode("utf-8") for column in SESSION_INPUT_PROJECTION_COLUMNS))
-
+    digest = SessionInputDigest(unique)
     cursor = conn.execute(session_input_binding_sql(len(unique)), unique)
     try:
         for row in cursor:
-            session_id = str(row[0])
-            if session_id not in digests:  # pragma: no cover - IN () cannot return an unasked id
-                continue
-            digest = digests[session_id]
-            digest.update(b"\x1e")
-            digest.update(b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:]))
+            digest.add_row(row)
     finally:
         cursor.close()
-    return {session_id: digest.hexdigest() for session_id, digest in digests.items()}
+    return digest.result()

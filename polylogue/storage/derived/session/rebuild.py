@@ -33,6 +33,7 @@ from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.derived.session.input_binding import (
+    SessionInputDigest,
     session_input_binding_sql,
     session_input_bindings,
 )
@@ -1686,35 +1687,19 @@ async def _async_session_input_bindings(
     conn: aiosqlite.Connection,
     session_ids: Sequence[str],
 ) -> dict[str, str]:
-    """The value-complete binding, over the async connection the async writer holds.
+    """The value-complete binding over the async writer's connection.
 
-    Mirrors :func:`session_input_bindings` rather than wrapping it: the digest
-    definition lives in one module and this only supplies the rows.
+    Feeds the shared :class:`SessionInputDigest`, so the digest definition is
+    not duplicated for the async route.
     """
-    import hashlib
-
-    from polylogue.storage.derived.session.input_binding import (
-        SESSION_INPUT_PROJECTION_COLUMNS,
-        SESSION_INPUT_RECIPE_VERSION,
-    )
-
     unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
     if not unique:
         return {}
-    digests = {session_id: hashlib.blake2b(digest_size=16) for session_id in unique}
-    for digest in digests.values():
-        digest.update(SESSION_INPUT_RECIPE_VERSION.encode("utf-8"))
-        digest.update(b"\x00".join(column.encode("utf-8") for column in SESSION_INPUT_PROJECTION_COLUMNS))
+    digest = SessionInputDigest(unique)
     async with conn.execute(session_input_binding_sql(len(unique)), unique) as cursor:
         async for row in cursor:
-            session_id = str(row[0])
-            if session_id not in digests:  # pragma: no cover - IN () cannot return an unasked id
-                continue
-            digests[session_id].update(b"\x1e")
-            digests[session_id].update(
-                b"\x1f".join(b"" if value is None else str(value).encode("utf-8") for value in row[1:])
-            )
-    return {session_id: digest.hexdigest() for session_id, digest in digests.items()}
+            digest.add_row(row)
+    return digest.result()
 
 
 def rebuild_session_insights_sync(
