@@ -636,3 +636,89 @@ def test_nested_managed_run_never_traces_into_the_checkout_datafile(monkeypatch:
 
     assert "--testmon" in _testmon_args({})
     assert tuple(_testmon_args({HARNESS_RUN_ENV: "run-1"})) == ("-p", "no:testmon")
+
+
+def _focused_run(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    result: tuple[int, float, dict[str, Any]],
+    write_evidence: bool,
+) -> dict[str, Any]:
+    """Drive ``devtools test`` against a throwaway checkout, returning its history payload."""
+    history: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "sync_testmon_graph", lambda _root: None)
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    original_start = VerifyRun.start_step
+
+    def start_step(self: VerifyRun, **kwargs: Any) -> Any:
+        captured["run"] = self
+        return original_start(self, **kwargs)
+
+    def fake_run(*_a: Any, **_k: Any) -> tuple[int, float, dict[str, Any]]:
+        if write_evidence:
+            _write_passing_evidence(tmp_path, cast(VerifyRun, captured["run"]))
+        return result
+
+    monkeypatch.setattr(VerifyRun, "start_step", start_step)
+    monkeypatch.setattr(run_tests, "_run", fake_run)
+    history["exit"] = run_tests.main(["tests/unit/example.py"])
+    return history
+
+
+def test_every_run_names_the_receipt_it_wrote(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The last line carries the verdict and a receipt that exists.
+
+    Anti-vacuity: naming a path the runner never writes fails the existence
+    check, and printing the footer only for failures fails on this green run.
+    """
+    history = _focused_run(monkeypatch, tmp_path, result=(0, 0.01, {"diagnosis": "pytest_passed"}), write_evidence=True)
+    assert history["exit"] == 0
+
+    final = capsys.readouterr().err.strip().splitlines()[-1]
+    assert final.startswith("devtools test: PASSED exit=0 diagnosis=pytest_passed receipt=")
+    receipt = tmp_path / final.split("receipt=", 1)[1].strip()
+    assert receipt.is_file()
+    recorded = json.loads(receipt.read_text(encoding="utf-8"))
+    assert recorded["exit_code"] == 0
+    assert recorded["run_id"] == history["run_id"]
+    assert recorded["pytest_aggregate"]["outcomes"] == {"passed": 1}
+
+
+def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Anti-vacuity: without the terminal-diagnosis carve-out the receipt reports
+    the absence of evidence instead of the refusal that caused it."""
+    history = _focused_run(
+        monkeypatch,
+        tmp_path,
+        result=(
+            125,
+            0.01,
+            {
+                "diagnosis": "pytest_slot_unavailable",
+                "error": "the runtime is unreachable",
+                "termination_reason": "pytest_slot_unavailable",
+            },
+        ),
+        write_evidence=False,
+    )
+    assert history["exit"] == 125
+    assert history["diagnosis"] == "pytest_slot_unavailable"
+    assert history["steps"][0]["diagnosis"] == "pytest_slot_unavailable"
+
+    final = capsys.readouterr().err.strip().splitlines()[-1]
+    assert final.startswith("devtools test: artifacts=")
+    receipt = tmp_path / run_tests.PYTEST_REPORT_DIR / "runs" / history["run_id"] / "run.json"
+    recorded = json.loads(receipt.read_text(encoding="utf-8"))
+    assert recorded["exit_code"] == 125
+    assert recorded["diagnosis"] == "pytest_slot_unavailable"

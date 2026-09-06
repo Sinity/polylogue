@@ -114,19 +114,23 @@ A managed run first snapshots the newer primary checkout datafile into a lane, u
 The corpus runs as ONE collection. testmon drops every recorded test a run did
 not collect, so a partitioned run would keep only its last partition's edges.
 
-A focused `devtools test` step gets a run directory under
-`.cache/verify/runs/<run-id>/` with progress, selection, summary, merged
-worker events, and decoded pytest outcomes. The latest focused result is
-mirrored to
-`.cache/verify/current-run.json`, and the latest pytest step is mirrored to:
+Every run gets a directory under `.cache/verify/runs/<run-id>/` whose
+`run.json` is the receipt: whether the run executed, its exit code, its
+diagnosis, and the decoded pytest outcomes per step. Each pytest step keeps
+progress, selection, summary, merged worker events, and its statistics under
+`steps/<step-id>/`. `devtools test` prints the path of the receipt it just
+wrote as its last line, with the verdict; read that path and nothing else. A
+receipt that is absent is a run that did not happen.
 
-- `.cache/verify/current-pytest-progress.json`
-- `.cache/verify/current-pytest-selection.json`
-- `.cache/verify/current-pytest-summary.json`
-- `.cache/verify/current-pytest-events.jsonl`
-- `.cache/verify/current-pytest-events/`
-- `.cache/verify/current-pytest-statistics.json` for decoded pytest outcomes
-- `.cache/verify/current-pytest-output.log`
+The latest run in the checkout is mirrored to `.cache/verify/current-run.json`
+and its decoded outcomes to `.cache/verify/current-pytest-statistics.json`.
+`devtools verify` additionally mirrors its latest pytest step to
+`.cache/verify/current-pytest-progress.json`,
+`current-pytest-selection.json`, `current-pytest-summary.json`,
+`current-pytest-events.jsonl` and `current-pytest-events/`. Those `current-*`
+names are last-run-wins across a checkout where lanes and batches run
+concurrently, so they answer "what ran here most recently", never "what did
+the run I started find".
 
 Focused and verification runs are foreground semantic commands. Devtools records
 project selection, gate results, decoded pytest outcomes, and the scope it
@@ -150,13 +154,10 @@ pytest outcomes. Setup, call, and teardown timings come only from pytest
 reports in the event stream.
 
 `devtools test` uses the pytest progress plugin for focused selections. During
-or after a run, inspect
-`.cache/verify/current-pytest-progress.json`,
-`.cache/verify/current-pytest-selection.json`,
-`.cache/verify/current-pytest-summary.json`,
-`.cache/verify/current-pytest-events.jsonl`, and
-`.cache/verify/current-pytest-output.log` to see selected/deselected node IDs,
-collection duration, slowest setup/call/teardown phases, and captured output.
+or after a run, inspect its step directory — `progress.json`, `selection.json`,
+`summary.json`, `events.jsonl`, `output.log` — for selected/deselected node
+IDs, collection duration, slowest setup/call/teardown phases, and captured
+output.
 
 Optional lane and benchmark commands remain discoverable
 through `devtools --help`; pytest and the concrete commands are the behavioral
