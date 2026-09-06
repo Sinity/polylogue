@@ -14,6 +14,7 @@ from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import _STREAMING_FULL_INGEST_BYTES, LiveBatchProcessor
@@ -24,6 +25,8 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions, iter_source_sessions_with_raw
 from polylogue.sources.source_walk import _resolve_source_paths
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.schema import _ensure_schema
 
 
 def _write_hermes_state_db(path: Path) -> None:
@@ -1355,3 +1358,111 @@ def test_antigravity_source_walk_leaves_metadata_artifact_only_without_conversat
     sessions = list(iter_source_sessions(Source(name="antigravity", path=tmp_path)))
 
     assert sessions == []
+
+
+def _hermes_snapshot_payload() -> JSONDocument:
+    """The ``sessions/session_*.json`` view of the ``_write_hermes_state_db`` root session."""
+    return {
+        "session_id": "hermes-root",
+        "model": "nous-hermes-test",
+        "platform": "linux",
+        "session_start": "2026-04-01T00:00:00",
+        "last_updated": "2026-04-01T00:05:00",
+        "system_prompt": "be precise",
+        "messages": [
+            {"role": "user", "content": "run pytest"},
+            {
+                "role": "assistant",
+                "content": "running",
+                "finish_reason": "tool_calls",
+                "tool_calls": [{"id": "call-1", "function": {"name": "shell", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "passed"},
+            {"role": "assistant", "content": "done", "finish_reason": "stop"},
+        ],
+    }
+
+
+def test_hermes_snapshot_finish_reason_sets_end_turn_and_stop_reason() -> None:
+    """polylogue-q5xr4: the JSON-snapshot path must conserve the turn-terminal signal.
+
+    Anti-vacuity: deleting the ``finish_reason`` read in
+    ``_parse_hermes_message`` leaves ``end_turn``/``stop_reason`` ``None`` on
+    the tool-call and stop turns, which every assertion below rejects.
+    """
+    [session] = parse_payload("hermes", _hermes_snapshot_payload(), "fallback")
+
+    system, user, tool_call_turn, tool_result, final = session.messages
+    assert (system.end_turn, system.stop_reason) == (None, None)
+    assert (user.end_turn, user.stop_reason) == (None, None)
+    assert (tool_call_turn.end_turn, tool_call_turn.stop_reason) == (False, "tool_use")
+    assert (tool_result.end_turn, tool_result.stop_reason) == (None, None)
+    assert (final.end_turn, final.stop_reason) == (True, "end_turn")
+
+
+def test_hermes_state_db_finish_reason_sets_end_turn_and_stop_reason(tmp_path: Path) -> None:
+    """polylogue-q5xr4: the state.db path agrees with the snapshot path, field for field.
+
+    Anti-vacuity: restoring ``finish_reason != "tool_calls"`` as the whole
+    rule makes the ``None`` assertions red, because absence would again be
+    read as a terminal turn.
+    """
+    db_path = tmp_path / "state.db"
+    _write_hermes_state_db(db_path)
+
+    root = hermes_state.parse_state_db(db_path, fallback_id="fallback")[0]
+
+    signals = [(message.role, message.end_turn, message.stop_reason) for message in root.messages]
+    assert (signals[3][1], signals[3][2]) == (False, "tool_use"), signals
+    assert [(end_turn, stop_reason) for _role, end_turn, stop_reason in signals if end_turn is not None] == [
+        (False, "tool_use")
+    ], signals
+
+
+def test_hermes_snapshot_and_state_db_share_one_session_identity(tmp_path: Path) -> None:
+    """polylogue-xfpa8: one logical Hermes session is one archive session row.
+
+    Anti-vacuity: dropping the profile qualification in ``parse_hermes``
+    makes the snapshot land under the bare raw id, so the archive holds two
+    ``hermes-session`` rows instead of one.
+    """
+    profile_root = tmp_path / ".hermes"
+    snapshot_dir = profile_root / "sessions"
+    snapshot_dir.mkdir(parents=True)
+    db_path = profile_root / "state.db"
+    _write_hermes_state_db(db_path)
+    snapshot_path = snapshot_dir / "session_hermes-root.json"
+    snapshot_path.write_text(json.dumps(_hermes_snapshot_payload()), encoding="utf-8")
+
+    state_root = hermes_state.parse_state_db(db_path, fallback_id="fallback")[0]
+    [snapshot] = parse_payload(
+        "hermes",
+        _hermes_snapshot_payload(),
+        "fallback",
+        source_path=str(snapshot_path),
+    )
+
+    assert snapshot.provider_session_id == state_root.provider_session_id
+    assert snapshot.title == "hermes-root"
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    try:
+        _ensure_schema(conn)
+        for parsed in (state_root, snapshot):
+            write_parsed_session_to_archive(conn, parsed, content_hash=session_content_hash(parsed))
+        rows = [
+            row["native_id"]
+            for row in conn.execute("SELECT native_id FROM sessions WHERE origin = 'hermes-session'").fetchall()
+        ]
+    finally:
+        conn.close()
+
+    assert rows == [state_root.provider_session_id]
+
+
+def test_hermes_snapshot_without_source_path_stays_unqualified() -> None:
+    """polylogue-xfpa8: no asserted profile means no invented profile key."""
+    [session] = parse_payload("hermes", _hermes_snapshot_payload(), "fallback")
+
+    assert session.provider_session_id == "hermes-root"

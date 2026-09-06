@@ -27,7 +27,12 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-__all__ = ["profile_key", "qualified_session_id", "split_qualified_session_id"]
+__all__ = [
+    "profile_key",
+    "profile_root_for_session_snapshot",
+    "qualified_session_id",
+    "split_qualified_session_id",
+]
 
 
 def profile_key(profile_root: Path) -> str:
@@ -38,6 +43,21 @@ def profile_key(profile_root: Path) -> str:
     """
     normalized = str(profile_root.expanduser().resolve(strict=False))
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+
+
+def profile_root_for_session_snapshot(snapshot_path: Path) -> Path:
+    """Return the Hermes install root that owns a session-snapshot JSON file.
+
+    Hermes writes ``state.db`` at its install root and session snapshots one
+    level down under ``<root>/sessions/`` (``sessions/saved/`` for retained
+    ones), so a snapshot's own parent directory is not the root. Both
+    families must hash the *same* root or one logical session gets two
+    profile keys and lands as two archive sessions.
+    """
+    for ancestor in snapshot_path.parents:
+        if ancestor.name == "sessions":
+            return ancestor.parent
+    return snapshot_path.parent
 
 
 def qualified_session_id(raw_session_id: str, key: str) -> str:

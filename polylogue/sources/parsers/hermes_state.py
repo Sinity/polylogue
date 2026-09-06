@@ -22,6 +22,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSourc
 from polylogue.core.json import JSONDocument, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
+from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
+from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
 from .local_agent import (
@@ -773,7 +775,8 @@ def _parse_message_row(
         model_name=fallback_model,
         output_tokens=token_count if role is Role.ASSISTANT else 0,
         input_tokens=token_count if role is Role.USER else 0,
-        end_turn=_optional_bool(_row_value(row, "finish_reason") != "tool_calls"),
+        end_turn=_end_turn_from_finish_reason(_row_value(row, "finish_reason")),
+        stop_reason=_stop_reason_from_finish_reason(_row_value(row, "finish_reason")),
     )
 
 
@@ -1009,10 +1012,6 @@ def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
-
-
-def _optional_bool(value: object) -> bool | None:
-    return value if isinstance(value, bool) else None
 
 
 def _non_negative_int(value: object) -> int | None:
