@@ -61,30 +61,51 @@ _STARTUP_TIMEOUT_S = 60.0
 _ACTIVITY_MESSAGE_KIND = "tool_activity"
 
 #: Closed vocabulary of the tool-activity markers the language server renders
-#: into a transcript, as ``(tool_name, line pattern, argument name)``.
+#: into a transcript, as ``(tool_name, pattern body, argument name)``.
 #:
 #: ``tool_name`` restates the marker's own phrasing rather than a vendor tool
 #: identifier: the export renders activity, and the underlying tool name is not
 #: on the wire. ``argument`` names the single value the marker preserves, or is
 #: ``None`` where the export keeps no argument at all -- an absent argument
-#: stays absent instead of being guessed from surrounding prose. A line no
+#: stays absent instead of being guessed from surrounding prose. A span no
 #: entry matches is prose, which is what keeps the assistant's own italicised
 #: sentences out of this vocabulary.
-_ACTIVITY_MARKERS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
-    ("viewed_file", re.compile(r"^\*Viewed \[[^]]*\]\((?P<value>[^)]*)\)\s*\*$"), "path"),
-    ("listed_directory", re.compile(r"^\*Listed directory \[[^]]*\]\((?P<value>[^)]*)\)\s*\*$"), "path"),
-    ("accepted_command", re.compile(r"^\*User accepted the command `(?P<value>.*)`\s*\*$"), "command"),
-    ("searched_web", re.compile(r"^\*Searched web for (?P<value>.*?)\s*\*$"), "query"),
-    ("read_url_content", re.compile(r"^\*Read URL content from (?P<value>.*?)\s*\*$"), "url"),
-    ("read_resource", re.compile(r"^\*Read resource from (?P<value>.*?)\s*\*$"), "resource"),
-    ("listed_resources", re.compile(r"^\*Listed resources from (?P<value>.*?)\s*\*$"), "server"),
-    ("edited_file", re.compile(r"^\*Edited relevant file\s*\*$"), None),
-    ("checked_command_status", re.compile(r"^\*Checked command status\s*\*$"), None),
-    ("grep_searched_codebase", re.compile(r"^\*Grep searched codebase\s*\*$"), None),
-    ("searched_filesystem", re.compile(r"^\*Searched filesystem\s*\*$"), None),
-    ("viewed_code_item", re.compile(r"^\*Viewed code item\s*\*$"), None),
-    ("viewed_content_chunk", re.compile(r"^\*Viewed content chunk\s*\*$"), None),
+#:
+#: A marker begins at the start of a line and ends at the end of one, but need
+#: not be confined to a single line: an accepted command is rendered verbatim
+#: inside backticks and heredocs run over many lines. Only that entry admits
+#: newlines in its argument; every other argument is line-bounded so a marker
+#: cannot swallow the prose that follows it.
+_ACTIVITY_MARKERS: tuple[tuple[str, str, str | None], ...] = (
+    ("viewed_file", r"\*Viewed \[[^\]\n]*\]\((?P<v>[^)\n]*)\)[ \t]*\*", "path"),
+    ("listed_directory", r"\*Listed directory \[[^\]\n]*\]\((?P<v>[^)\n]*)\)[ \t]*\*", "path"),
+    ("accepted_command", r"\*User accepted the command `(?P<v>.*?)`[ \t]*\*", "command"),
+    ("searched_web", r"\*Searched web for (?P<v>[^\n]*?)[ \t]*\*", "query"),
+    ("read_url_content", r"\*Read URL content from (?P<v>[^\n]*?)[ \t]*\*", "url"),
+    ("read_resource", r"\*Read resource from (?P<v>[^\n]*?)[ \t]*\*", "resource"),
+    ("listed_resources", r"\*Listed resources from (?P<v>[^\n]*?)[ \t]*\*", "server"),
+    ("edited_file", r"\*Edited relevant file[ \t]*\*", None),
+    ("checked_command_status", r"\*Checked command status[ \t]*\*", None),
+    ("grep_searched_codebase", r"\*Grep searched codebase[ \t]*\*", None),
+    ("searched_filesystem", r"\*Searched filesystem[ \t]*\*", None),
+    ("viewed_code_item", r"\*Viewed code item[ \t]*\*", None),
+    ("viewed_content_chunk", r"\*Viewed content chunk[ \t]*\*", None),
 )
+
+#: ``_ACTIVITY_MARKERS`` as one ordered alternation over a whole section body,
+#: so a marker spanning several lines is still one match.
+_ACTIVITY_MARKER_RE = re.compile(
+    "|".join(
+        f"(?P<{tool_name}>^{pattern.replace('(?P<v>', f'(?P<v_{tool_name}>')}$)"
+        for tool_name, pattern, _argument in _ACTIVITY_MARKERS
+    ),
+    re.MULTILINE | re.DOTALL,
+)
+
+#: Argument name per marker, keyed by the alternation's group name.
+_ACTIVITY_ARGUMENTS: dict[str, str | None] = {
+    tool_name: argument for tool_name, _pattern, argument in _ACTIVITY_MARKERS
+}
 
 
 class AntigravityExportError(RuntimeError):
@@ -755,57 +776,44 @@ def _discover_language_server_version(binary: Path) -> str:
     raise AntigravityExportError(f"language server {binary} did not report a compatible version")
 
 
-def _activity_marker(line: str) -> AntigravityActivityMarker | None:
-    """Recognize one vendor activity marker line, or return ``None`` for prose."""
-    for tool_name, pattern, argument in _ACTIVITY_MARKERS:
-        match = pattern.match(line)
-        if match is None:
-            continue
-        tool_input: dict[str, object] | None = None
-        if argument is not None:
-            value = match.group("value").strip()
-            if value:
-                tool_input = {argument: value}
-        return AntigravityActivityMarker(tool_name=tool_name, tool_input=tool_input, rendered=line)
-    return None
+def _activity_marker(match: re.Match[str]) -> AntigravityActivityMarker:
+    """Build the marker one ``_ACTIVITY_MARKER_RE`` match stands for."""
+    tool_name = next(name for name in _ACTIVITY_ARGUMENTS if match.group(name) is not None)
+    argument = _ACTIVITY_ARGUMENTS[tool_name]
+    tool_input: dict[str, object] | None = None
+    if argument is not None:
+        value = (match.group(f"v_{tool_name}") or "").strip()
+        if value:
+            tool_input = {argument: value}
+    return AntigravityActivityMarker(tool_name=tool_name, tool_input=tool_input, rendered=match.group(0))
 
 
 def _section_runs(body: str) -> list[str | tuple[AntigravityActivityMarker, ...]]:
     """Split one transcript section into alternating prose and activity runs.
 
-    The export renders every tool call as a one-line italic marker inside the
-    section that follows the turn it belongs to -- including inside a ``User
-    Input`` section, where the tool activity is the agent's, not the operator's.
-    Runs keep that boundary so authorship stays per message.
+    The export renders every tool call as an italic marker inside the section
+    that follows the turn it belongs to -- including inside a ``User Input``
+    section, where the tool activity is the agent's, not the operator's. Runs
+    keep that boundary so authorship stays per message. Whitespace between two
+    markers does not end their run; any other text does.
     """
     runs: list[str | tuple[AntigravityActivityMarker, ...]] = []
-    prose: list[str] = []
     markers: list[AntigravityActivityMarker] = []
-
-    def flush_prose() -> None:
-        text = "\n".join(prose).strip()
-        prose.clear()
-        if text:
-            runs.append(text)
-
-    def flush_markers() -> None:
-        if markers:
-            runs.append(tuple(markers))
-            markers.clear()
-
-    for line in body.splitlines():
-        stripped = line.strip()
-        if marker := _activity_marker(stripped):
-            flush_prose()
-            markers.append(marker)
-            continue
-        if not stripped and markers:
-            # Markers are separated by blank lines; they do not end the run.
-            continue
-        flush_markers()
-        prose.append(line)
-    flush_prose()
-    flush_markers()
+    cursor = 0
+    for match in _ACTIVITY_MARKER_RE.finditer(body):
+        gap = body[cursor : match.start()].strip()
+        if gap:
+            if markers:
+                runs.append(tuple(markers))
+                markers = []
+            runs.append(gap)
+        markers.append(_activity_marker(match))
+        cursor = match.end()
+    if markers:
+        runs.append(tuple(markers))
+    tail = body[cursor:].strip()
+    if tail:
+        runs.append(tail)
     return runs
 
 

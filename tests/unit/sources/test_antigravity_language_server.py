@@ -735,3 +735,34 @@ def test_repeated_identical_activity_runs_keep_distinct_identities() -> None:
     assert len(activity) == 2
     assert [b.tool_name for m in activity for b in m.blocks] == ["edited_file", "edited_file"]
     assert activity[0].provider_message_id != activity[1].provider_message_id
+
+
+def test_a_multi_line_accepted_command_is_one_marker_not_prose() -> None:
+    """A heredoc command is rendered verbatim, so a marker spans many lines.
+
+    Anti-vacuity: matching markers line by line leaves this command as text in
+    the ``### User Input`` section, where it is counted as operator prose --
+    which is what the whole-section scan exists to prevent.
+    """
+    transcript = (
+        "### User Input\n\n"
+        "regenerate the fixtures\n\n"
+        "*User accepted the command `python3 << 'PYEOF'\n"
+        "for row in rows:\n"
+        "    print(row)\n"
+        "PYEOF`*\n\n"
+        "*Checked command status*\n"
+    )
+
+    session = antigravity.parse_markdown_export(transcript, AntigravitySessionSummary(cascade_id="cascade-4"))
+
+    assert [(m.role.value, m.message_type.value) for m in session.messages] == [
+        ("user", "message"),
+        ("assistant", "tool_use"),
+    ]
+    assert session.messages[0].text == "regenerate the fixtures"
+    command = session.messages[1].blocks[0]
+    assert command.tool_name == "accepted_command"
+    assert command.tool_input is not None
+    assert str(command.tool_input["command"]).splitlines()[-1] == "PYEOF"
+    assert [b.tool_name for b in session.messages[1].blocks] == ["accepted_command", "checked_command_status"]
