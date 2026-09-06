@@ -493,7 +493,7 @@ def _check_hook_flow_fast() -> HealthAlert:
         incomplete = [status for status in statuses if status.flow_state in {"disabled", "incomplete"}]
         if broken_commands:
             severity = HealthSeverity.ERROR
-            message = "polylogue-hook is unavailable for configured harness(es): " + ", ".join(broken_commands)
+            message = "the wired capture command cannot run for harness(es): " + ", ".join(broken_commands)
         elif gaps:
             severity = HealthSeverity.ERROR
             message = "; ".join(

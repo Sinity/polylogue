@@ -354,12 +354,12 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
     ) -> None:
         """Reverted-mutation witness: restore
         ``forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")`` in
-        ``polylogue/hooks/__init__.py::_detect_hook_provider`` -- the test
+        ``polylogue/sources/hook_producer.py::_configured_provider`` -- the test
         then fails because no environment variable is set (TOML-only
         configuration) and detection falls through to the payload-shape
         sniffing branches below, which do not match this ambiguous payload.
         """
-        from polylogue.hooks import _detect_hook_provider
+        from polylogue.sources.hook_producer import detect_provider
 
         _disable_site(monkeypatch)
         monkeypatch.delenv("POLYLOGUE_HOOK_PROVIDER", raising=False)
@@ -370,7 +370,7 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
         # Ambiguous payload: none of the shape-sniffing branches (turn_id,
         # permission_mode/model, source) match, so an unforced detection
         # would return None.
-        result = _detect_hook_provider({})
+        result = detect_provider({})
 
         assert result == "codex"
 
