@@ -436,7 +436,6 @@ def test_async_execute_query_archive_lists_archive(
             offset: int,
             sort: str | None,
             reverse: bool,
-            origin: str | None,
             origins: tuple[str, ...],
             excluded_origins: tuple[str, ...],
             tags: tuple[str, ...],
@@ -466,6 +465,7 @@ def test_async_execute_query_archive_lists_archive(
             until_ms: int | None,
             since_session_id: str | None,
             sample: bool,
+            boolean_predicate: object = None,
             root: bool | None = None,
         ) -> list[ArchiveSessionSummary]:
             assert limit == 3
@@ -473,7 +473,6 @@ def test_async_execute_query_archive_lists_archive(
             assert sample is False
             assert sort is None
             assert reverse is False
-            assert origin is None
             assert origins == ()
             assert excluded_origins == ()
             assert tags == ()
@@ -1278,7 +1277,7 @@ def test_async_execute_query_archive_outputs_stats(
             return None
 
         def stats(self, **kwargs: object) -> ArchiveStats:
-            assert kwargs["origin"] == "codex-session"
+            assert kwargs["origins"] == ("codex-session",)
             assert kwargs["tags"] == ("archive",)
             assert kwargs["session_ids"] == ()
             return ArchiveStats(
@@ -1334,7 +1333,7 @@ def test_async_execute_query_archive_count_uses_query_match_scope(
 
         def count_search_sessions(self, query: str, **kwargs: object) -> int:
             assert query == "needle"
-            assert kwargs["origin"] == "codex-session"
+            assert kwargs["origins"] == ("codex-session",)
             assert kwargs["tags"] == ("archive",)
             return 2
 
@@ -1597,7 +1596,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             sort: str | None,
             reverse: bool,
             session_id: str | None,
-            origin: str | None,
             origins: tuple[str, ...],
             excluded_origins: tuple[str, ...],
             tags: tuple[str, ...],
@@ -1626,6 +1624,7 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             since_ms: int | None,
             until_ms: int | None,
             since_session_id: str | None,
+            boolean_predicate: object = None,
             root: bool | None = None,
         ) -> list[ArchiveSessionSearchHit]:
             assert query == "needle"
@@ -1634,7 +1633,6 @@ def test_async_execute_query_archive_search_maps_provider_to_origin(
             assert sort is None
             assert reverse is False
             assert session_id is None
-            assert origin == "codex-session"
             assert origins == ("codex-session",)
             assert excluded_origins == ("chatgpt-export",)
             assert tags == ("review", "archive")
@@ -1755,7 +1753,6 @@ def test_async_execute_query_archive_filters_multiple_providers(
             return None
 
         def list_summaries(self, **kwargs: object) -> list[ArchiveSessionSummary]:
-            assert kwargs["origin"] is None
             assert kwargs["origins"] == ("codex-session", "chatgpt-export")
             return []
 
@@ -2811,28 +2808,41 @@ def test_async_execute_query_archive_adds_tags_to_session(
         def resolve_session_id(self, token: str) -> str:
             return token
 
-        def add_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
-            assert session_ids == ("codex-session:native-1",)
-            assert tags == ("review", "ready")
-            return 2
+        def end_read_snapshot(self) -> None:
+            return None
 
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "conv_id": "codex-session:native-1",
-                "add_tag": ("review", "ready"),
-                "output_format": "json",
-            },
-        )
-    )
+    # The tag write runs through the mutation authority on its own writable
+    # handle, so this case's claim -- that the resolved session id and the
+    # requested tags are the ones carried into the write -- is asserted at the
+    # actuator argument boundary, which is where the write is now decided.
+    captured: list[tuple[str, object]] = []
 
+    def _capture(_env: object, actuator: object, build_args: object, *, capability: str) -> int:
+        captured.append((capability, build_args(FakeArchiveStore())))  # type: ignore[operator]
+        return 2
+
+    with patch("polylogue.cli.archive_query._execute_matched_session_mutation", side_effect=_capture):
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "conv_id": "codex-session:native-1",
+                    "add_tag": ("review", "ready"),
+                    "output_format": "json",
+                },
+            )
+        )
+
+    assert [capability for capability, _args in captured] == ["archive.bulk_tag_sessions"]
+    args = captured[0][1]
+    assert args.session_ids == ("codex-session:native-1",)  # type: ignore[attr-defined]
+    assert args.tags == ("review", "ready")  # type: ignore[attr-defined]
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "add_tag",
@@ -2928,28 +2938,39 @@ def test_async_execute_query_archive_sets_session_metadata(
         def resolve_session_id(self, token: str) -> str:
             return token
 
-        def set_user_metadata(self, session_ids: tuple[str, ...], pairs: tuple[tuple[str, str], ...]) -> int:
-            assert session_ids == ("codex-session:native-1",)
-            assert pairs == (("priority", "high"),)
-            return 1
+        def end_read_snapshot(self) -> None:
+            return None
 
     monkeypatch.setattr(
         "polylogue.cli.archive_query.ArchiveStore.open_existing",
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    asyncio.run(
-        _execute_query_params(
-            env,
-            {
-                "archive": True,
-                "conv_id": "codex-session:native-1",
-                "set_meta": (("priority", "high"),),
-                "output_format": "json",
-            },
-        )
-    )
+    # Asserted at the actuator argument boundary for the same reason as the
+    # tag case above: the write itself happens on the authority's own handle.
+    captured: list[tuple[str, object]] = []
 
+    def _capture(_env: object, actuator: object, build_args: object, *, capability: str) -> int:
+        captured.append((capability, build_args(FakeArchiveStore())))  # type: ignore[operator]
+        return 1
+
+    with patch("polylogue.cli.archive_query._execute_matched_session_mutation", side_effect=_capture):
+        asyncio.run(
+            _execute_query_params(
+                env,
+                {
+                    "archive": True,
+                    "conv_id": "codex-session:native-1",
+                    "set_meta": (("priority", "high"),),
+                    "output_format": "json",
+                },
+            )
+        )
+
+    assert [capability for capability, _args in captured] == ["archive.set_metadata"]
+    args = captured[0][1]
+    assert args.session_ids == ("codex-session:native-1",)  # type: ignore[attr-defined]
+    assert args.pairs == (("priority", "high"),)  # type: ignore[attr-defined]
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "set_meta",

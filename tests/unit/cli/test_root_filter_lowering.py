@@ -70,7 +70,6 @@ _NOT_A_SQL_FILTER: dict[str, str] = {
     "similar_text": "vector seed, not a SQL predicate",
     "add_tag": "mutation, not selection",
     "set_meta": "mutation, not selection",
-    "delete_matched": "mutation, not selection",
     "diagnose": "explains routing",
     "explain_query": "explains the compiled query",
     "why": "explains an empty result",

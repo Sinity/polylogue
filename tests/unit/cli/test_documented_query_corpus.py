@@ -157,6 +157,18 @@ def _resolve_placeholders(command: str) -> list[str]:
     return shlex.split(resolved)[1:]
 
 
+#: Click prints its usage banner for typed domain refusals too ("No sessions
+#: matched", "matched multiple sessions. Use --all"), so the banner does not
+#: separate a refusal from a parse failure.  These fragments do.
+_PARSE_FAILURES: tuple[str, ...] = (
+    "No such option",
+    "unexpected extra argument",
+    "Missing argument",
+    "Invalid value for",
+    "does not take a value",
+)
+
+
 def _assert_typed_outcome(command: str, result: Result) -> None:
     if result.exception is not None and not isinstance(result.exception, SystemExit):
         raise AssertionError(f"{command!r} raised {result.exception!r}")
@@ -164,8 +176,8 @@ def _assert_typed_outcome(command: str, result: Result) -> None:
         return
     output = result.output or ""
     assert result.exit_code == 2, f"{command!r} exited {result.exit_code}: {output}"
-    assert "Usage:" not in output, f"{command!r} no longer parses: {output}"
-    assert "No such option" not in output, f"{command!r} names an option that no longer exists: {output}"
+    for fragment in _PARSE_FAILURES:
+        assert fragment not in output, f"{command!r} no longer parses: {output}"
 
 
 def test_every_documented_invocation_is_classified() -> None:

@@ -133,5 +133,5 @@ def test_combined_tag_and_metadata_reports_both_halves(tagged_archive: Path) -> 
 
 def test_single_session_tag_route_uses_the_same_authority(tagged_archive: Path) -> None:
     """Tagging one resolved session is journaled like the matched-page route."""
-    _payload(_run(tagged_archive, "--add-tag", "triage", "find", "claude-ai-export:ext-conv-1"))
+    _payload(_run(tagged_archive, "--add-tag", "triage", "find", "id:claude-ai-export:ext-conv-1"))
     assert _operation_runs(tagged_archive) == [("mutate-bulk-tag-sessions", "cli", "completed", 1)]
