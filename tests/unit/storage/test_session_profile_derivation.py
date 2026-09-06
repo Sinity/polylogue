@@ -46,7 +46,9 @@ _OUTPUT_AFFECTING_MUTATIONS = (
     ("output_tokens", "output_tokens + 77"),
     ("word_count", "word_count + 13"),
     ("has_tool_use", "1 - has_tool_use"),
-    ("material_origin", "'synthetic'"),
+    # A member of the durable vocabulary: material_origin carries a CHECK, so a
+    # made-up token tests the constraint rather than the binding.
+    ("material_origin", "'generated_analysis_pack'"),
 )
 
 
@@ -336,7 +338,9 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
     ("column", "expression"),
     [
         ("title", "'a different title'"),
-        ("sort_key_ms", "COALESCE(sort_key_ms, 0) + 5000"),
+        # sort_key_ms is GENERATED ALWAYS AS COALESCE(updated_at_ms,
+        # created_at_ms), so the sort key moves only through its source column.
+        ("updated_at_ms", "COALESCE(updated_at_ms, 0) + 5000"),
         ("git_branch", "'other-branch'"),
         ("message_count", "message_count + 1"),
     ],
