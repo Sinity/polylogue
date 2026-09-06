@@ -507,7 +507,7 @@ def content_blocks_from_segments(
             outcome_unknown_reason = unknown_reason(
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_field_present=("is_error" in seg or "exit_code" in seg),
+                outcome_field_present=any(seg.get(key) is not None for key in ("is_error", "exit_code")),
             )
             blocks.append(
                 ParsedContentBlock(

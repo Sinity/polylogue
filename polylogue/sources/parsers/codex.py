@@ -1470,16 +1470,13 @@ def _declares_undecoded_structure(raw: object, decoded: object) -> bool:
 def _carries_unread_outcome_field(value: object) -> bool:
     """True when an outcome key is present with a value ``_structural_outcome`` cannot read."""
     for wrapper in _outcome_wrappers(value):
-        raw_exit = wrapper.get("exit_code", _ABSENT)
-        if raw_exit is not _ABSENT and not (isinstance(raw_exit, int) and not isinstance(raw_exit, bool)):
+        raw_exit = wrapper.get("exit_code")
+        if raw_exit is not None and not (isinstance(raw_exit, int) and not isinstance(raw_exit, bool)):
             return True
-        raw_error = wrapper.get("is_error", _ABSENT)
-        if raw_error is not _ABSENT and not isinstance(raw_error, bool):
+        raw_error = wrapper.get("is_error")
+        if raw_error is not None and not isinstance(raw_error, bool):
             return True
     return False
-
-
-_ABSENT = object()
 
 
 def _outcome_wrappers(value: object) -> list[dict[str, object]]:

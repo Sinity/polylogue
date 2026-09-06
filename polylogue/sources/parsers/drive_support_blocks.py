@@ -53,7 +53,8 @@ def _tool_result_outcome(metadata: JSONDocument, exit_code: int | None) -> tuple
     if exit_code is not None:
         return exit_code != 0, None
     unread = any(
-        key in metadata for key in ("is_error", "isError", "error", "outcome", "status", "exitCode", "exit_code")
+        metadata.get(key) is not None
+        for key in ("is_error", "isError", "error", "outcome", "status", "exitCode", "exit_code")
     )
     return None, unknown_reason(is_error=None, outcome_field_present=unread)
 
