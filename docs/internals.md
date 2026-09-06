@@ -1074,7 +1074,13 @@ explicitly skipped and has no matching `index.db.sessions` row is
 `raw-materialization` archive debt; daemon status exposes it through
 `component_readiness.raw_materialization` and
 `raw_materialization_readiness` instead of reporting the archive as simply
-healthy. FTS readiness is likewise a freshness invariant, not a best-effort
+healthy. A row revision governance has declined -- an ambiguous membership
+under a complete census, or a failed byte-authority census on an append
+fragment -- is `revision-authority-quarantined` debt with status `blocked`:
+raw materialization refuses it on every pass, so it is not pending parse work
+and convergence will not move it until that authority is refined.
+
+FTS readiness is likewise a freshness invariant, not a best-effort
 cache: stale or untrusted recorded counts make search readiness non-ready until
 the index is demonstrably current.
 

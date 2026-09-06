@@ -15,6 +15,7 @@ from polylogue.archive.raw_materialization import (
     raw_jsonl_leading_objects,
     source_path_native_id_candidates,
 )
+from polylogue.archive.revision_authority import BYTE_AUTHORITY_CENSUS_DETAIL, RawRevisionAuthority
 from polylogue.core.enums import Origin
 from polylogue.core.sources import provider_from_origin
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
@@ -224,9 +225,10 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
     conn.row_factory = sqlite3.Row
     conn.execute("ATTACH DATABASE ? AS index_tier", (str(index_db),))
     try:
+        quarantine_expr, quarantine_params = _revision_quarantine_sql(conn)
         candidate_rows = list(
             conn.execute(
-                """
+                f"""
                 SELECT
                     r.origin,
                     r.raw_id,
@@ -237,7 +239,8 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                     r.parsed_at_ms,
                     r.parse_error,
                     r.validation_status,
-                    r.validation_error
+                    r.validation_error,
+                    {quarantine_expr} AS revision_quarantined
                 FROM raw_sessions AS r
                 LEFT JOIN index_tier.sessions AS s_by_raw ON s_by_raw.raw_id = r.raw_id
                 LEFT JOIN index_tier.sessions AS s_by_native
@@ -251,7 +254,8 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
                     AND r.parse_error IS NULL
                   )
                 ORDER BY r.origin, r.blob_size DESC, r.raw_id
-                """
+                """,
+                quarantine_params,
             )
         )
         embedded_coverage: dict[str, tuple[int, int]] = {}
@@ -291,6 +295,52 @@ def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]
             )
         )
     return rows
+
+
+def _revision_quarantine_sql(conn: sqlite3.Connection) -> tuple[str, tuple[object, ...]]:
+    """Return the SQL the materialization pass itself uses to decline a raw.
+
+    Mirrors the ``membership_authority_quarantined`` and
+    ``byte_authority_quarantined`` branches of
+    ``polylogue.storage.raw_convergence._raw_materialization_candidate_ids``.
+    A raw matching either one is refused by every convergence pass, so it is
+    not pending parse work and must not be reported as such.
+
+    ``raw_sessions.revision_authority`` defaults to ``quarantined`` at
+    acquisition, so that column alone cannot distinguish a governed refusal
+    from a raw that reconciliation has not reached yet; the census/membership
+    evidence below is what proves governance ran and declined.
+    """
+    if not _table_exists(conn, "raw_membership_census"):
+        return "0", ()
+    byte_quarantined = f"""
+        (r.source_index = -1
+         AND r.revision_authority != '{RawRevisionAuthority.BYTE_PROVEN.value}'
+         AND EXISTS (
+           SELECT 1 FROM raw_membership_census AS byte_census
+           WHERE byte_census.raw_id = r.raw_id
+             AND byte_census.status = 'failed'
+             AND byte_census.detail = ?
+         ))
+    """
+    if not _table_exists(conn, "raw_session_memberships"):
+        return f"({byte_quarantined})", (BYTE_AUTHORITY_CENSUS_DETAIL,)
+    membership_quarantined = """
+        EXISTS (
+          SELECT 1
+          FROM raw_membership_census AS member_census
+          JOIN raw_session_memberships AS member
+            ON member.raw_id = member_census.raw_id
+          WHERE member_census.raw_id = r.raw_id
+            AND member_census.status = 'complete'
+            AND member.decision = 'ambiguous'
+        )
+    """
+    return f"({membership_quarantined} OR {byte_quarantined})", (BYTE_AUTHORITY_CENSUS_DETAIL,)
+
+
+def _revision_quarantined(row: sqlite3.Row) -> bool:
+    return bool(row["revision_quarantined"])
 
 
 def _raw_materialized_by_native_id(conn: sqlite3.Connection, row: sqlite3.Row) -> bool:
@@ -359,9 +409,13 @@ def _raw_materialization_category(conn: sqlite3.Connection, row: sqlite3.Row, ar
             total, materialized = _embedded_session_materialization_counts(conn, str(row["origin"] or ""), embedded_ids)
             if materialized and materialized < total:
                 return "aggregate-partial-materialization"
+        if _revision_quarantined(row):
+            return "revision-authority-quarantined"
         if _parsed_session_shape_reason(archive_root, row) is not None:
             return "parsed-session-unmaterialized"
         return "parsed-without-session"
+    if _revision_quarantined(row):
+        return "revision-authority-quarantined"
     return "parse-pending"
 
 
@@ -675,6 +729,32 @@ def _raw_materialization_debt_row(
                 label="Run daemon convergence",
                 command=("polylogued", "run"),
                 description="Let daemon convergence drain acquired raw sessions into the index tier.",
+            ),
+        )
+    elif category == "revision-authority-quarantined":
+        severity = "warning"
+        status = "blocked"
+        stage = "raw-authority"
+        parsed_count = sum(1 for row in rows if row["parsed_at_ms"] is not None)
+        total_blob_size = sum(_int_value(row["blob_size"]) or 0 for row in rows)
+        summary = f"{count} {origin} raw artifact(s) are quarantined by revision authority and will not be replayed"
+        details = (
+            f"Validation states: {_format_counts(validation_counts)}; "
+            f"{parsed_count:,} of {count:,} already parsed; "
+            f"max raw payload size: {max_blob_size_text}; retained bytes: {_format_bytes(total_blob_size)}. "
+            "Revision governance recorded an ambiguous membership or a failed byte-authority census for these "
+            "rows, so raw materialization declines them on every pass and no session will appear until that "
+            "authority is refined. Running daemon convergence again does not move them."
+        )
+        actions = (
+            ArchiveDebtActionPayload(
+                label="Inspect the raw-authority frontier",
+                command=("polylogue", "maintenance", "raw-authority-frontier"),
+                description="Read the durable authority census for these raws; refinement is what unblocks replay.",
+            ),
+            ArchiveDebtActionPayload(
+                label="List unresolved raw-authority blockers",
+                command=("polylogue", "maintenance", "raw-authority-blockers"),
             ),
         )
     elif category == "materialized-alias":
