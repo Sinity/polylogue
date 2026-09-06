@@ -11,6 +11,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.hooks import CLAUDE_CODE_EVENTS, CODEX_EVENTS, hook_main, resolve_events, settings_path
+from polylogue.sources.hooks import pending_hook_spool_dir
 
 
 @pytest.fixture
@@ -222,8 +223,9 @@ def test_hook_runtime_provider_override_records_codex_event(
     # (polylogue-o7hx), which isolated_hook_home points at tmp_path/"archive",
     # not XDG_DATA_HOME.
     archive_root = Path(os.environ["POLYLOGUE_ARCHIVE_ROOT"])
-    sidecar = archive_root / "hooks" / "codex-session-1.jsonl"
-    record = json.loads(sidecar.read_text(encoding="utf-8"))
+    pending = list(pending_hook_spool_dir(archive_root / "hooks").rglob("*.json"))
+    assert len(pending) == 1
+    record = json.loads(pending[0].read_text(encoding="utf-8"))
     assert record["provider"] == "codex"
     assert record["event_type"] == "SessionStart"
 
