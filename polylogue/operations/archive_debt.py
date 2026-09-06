@@ -22,6 +22,7 @@ from polylogue.daemon.convergence_debt_status import convergence_debt_summary_in
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
 from polylogue.daemon.fts_status import fts_readiness_info
 from polylogue.sources.dispatch import is_stream_record_provider
+from polylogue.sources.parsers.local_agent import gemini_cli_chat_identity
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.raw_convergence import RAW_MATERIALIZATION_EXECUTE_BLOB_LIMIT_BYTES
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
@@ -483,8 +484,12 @@ def _parsed_session_native_ids(archive_root: Path, row: sqlite3.Row) -> tuple[st
     elif origin == "gemini-cli-session":
         payload = _raw_json_document(blob_path)
         if isinstance(payload, dict):
-            add(payload.get("id"))
-            add(payload.get("sessionId"))
+            # The parser composes the chat identity from sessionId, kind and
+            # startTime; the sample must name the identity the parser mints.
+            for key in ("id", "sessionId"):
+                value = payload.get(key)
+                if isinstance(value, str) and value:
+                    add(gemini_cli_chat_identity(payload, value))
     elif origin == "chatgpt-export":
         payload = _raw_json_document(blob_path)
         if isinstance(payload, dict):

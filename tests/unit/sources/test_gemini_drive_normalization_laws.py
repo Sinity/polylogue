@@ -545,7 +545,7 @@ def test_gemini_cli_schema_fields_survive_dispatch_with_human_authored_override(
     assert detect_provider([payload]) is Provider.GEMINI_CLI
 
     [session] = parse_payload(Provider.GEMINI_CLI, [payload], "unused-fallback")
-    assert session.provider_session_id == "cli-session-safe"
+    assert session.provider_session_id == "cli-session-safe:main:2026-06-02T09:00:00Z"
     assert session.title == "CLI normalization proof"
     assert session.created_at == "2026-06-02T09:00:00Z"
     assert session.updated_at == "2026-06-02T09:00:03Z"
@@ -611,6 +611,93 @@ def test_gemini_cli_subagent_kind_survives_as_typed_branch_semantics() -> None:
 
     [session] = parse_payload(Provider.GEMINI_CLI, payload, "unused-fallback")
 
-    assert session.provider_session_id == "cli-subagent-safe"
+    assert session.provider_session_id == "cli-subagent-safe:subagent:2026-06-02T09:00:00Z"
     assert session.provider_project_ref == "project-safe"
     assert session.branch_type is BranchType.SUBAGENT
+
+
+def test_gemini_cli_main_and_subagent_under_one_session_id_stay_two_sessions() -> None:
+    """A main chat and a subagent run sharing one ``sessionId`` are two sessions.
+
+    Gemini CLI's ``sessionId`` names the CLI process; a subagent spawned inside
+    it writes its own complete checkpoint under that same id, with a disjoint
+    message set. Anti-vacuity: drop ``kind`` from
+    ``local_agent.gemini_cli_chat_identity`` while the two checkpoints share a
+    ``startTime`` and both collapse onto one identity, so the archive
+    full-replaces one chat with the other.
+    """
+    main_payload = _gemini_cli_payload()
+    main_payload["sessionId"] = "cli-process-safe"
+    main_payload["kind"] = "main"
+    subagent_payload = deepcopy(main_payload)
+    subagent_payload["kind"] = "subagent"
+
+    [main] = parse_payload(Provider.GEMINI_CLI, main_payload, "unused-fallback")
+    [subagent] = parse_payload(Provider.GEMINI_CLI, subagent_payload, "unused-fallback")
+
+    assert main.provider_session_id == "cli-process-safe:main:2026-06-02T09:00:00Z"
+    assert subagent.provider_session_id == "cli-process-safe:subagent:2026-06-02T09:00:00Z"
+    assert main.provider_session_id != subagent.provider_session_id
+    assert main.branch_type is None
+    assert subagent.branch_type is BranchType.SUBAGENT
+
+
+def test_gemini_cli_sibling_main_chats_under_one_session_id_stay_two_sessions() -> None:
+    """Two main chats opened in one CLI process are two sessions, not revisions.
+
+    Opening a fresh chat without restarting the CLI keeps the ``sessionId`` and
+    advances ``startTime``; the two checkpoints share no message. Anti-vacuity:
+    drop ``startTime`` from the composed identity and these two collapse onto
+    one identity even though ``kind`` cannot tell them apart.
+    """
+    first = _gemini_cli_payload()
+    first["sessionId"] = "cli-process-safe"
+    first["kind"] = "main"
+    second = deepcopy(first)
+    second["startTime"] = "2026-06-02T09:30:00Z"
+    second["lastUpdated"] = "2026-06-02T09:30:04Z"
+    second_messages = second["messages"]
+    assert isinstance(second_messages, list)
+    for index, message in enumerate(second_messages):
+        assert isinstance(message, dict)
+        message["id"] = f"cli-second-chat-{index}"
+
+    [first_session] = parse_payload(Provider.GEMINI_CLI, first, "unused-fallback")
+    [second_session] = parse_payload(Provider.GEMINI_CLI, second, "unused-fallback")
+
+    assert first_session.provider_session_id == "cli-process-safe:main:2026-06-02T09:00:00Z"
+    assert second_session.provider_session_id == "cli-process-safe:main:2026-06-02T09:30:00Z"
+    first_ids = {message.provider_message_id for message in first_session.messages}
+    second_ids = {message.provider_message_id for message in second_session.messages}
+    assert first_ids and not first_ids & second_ids
+
+
+def test_gemini_cli_chat_identity_survives_a_checkpoint_rewrite() -> None:
+    """Rewriting one chat's checkpoint must not mint a second session.
+
+    Gemini CLI rewrites a chat's checkpoint whole on every save: ``messages``
+    grows and ``lastUpdated`` advances while ``startTime`` and ``kind`` stay
+    fixed. Anti-vacuity: compose the identity from ``lastUpdated`` instead and
+    every save of one chat becomes its own session.
+    """
+    opening = _gemini_cli_payload()
+    opening["sessionId"] = "cli-process-safe"
+    opening["kind"] = "main"
+    later = deepcopy(opening)
+    later["lastUpdated"] = "2026-06-10T11:00:00Z"
+    messages = later["messages"]
+    assert isinstance(messages, list)
+    messages.append(
+        {
+            "id": "cli-user-followup",
+            "timestamp": "2026-06-10T10:59:00Z",
+            "type": "user",
+            "content": [{"text": "One more question."}],
+        }
+    )
+
+    [opening_session] = parse_payload(Provider.GEMINI_CLI, opening, "unused-fallback")
+    [later_session] = parse_payload(Provider.GEMINI_CLI, later, "unused-fallback")
+
+    assert opening_session.provider_session_id == later_session.provider_session_id
+    assert len(later_session.messages) == len(opening_session.messages) + 1

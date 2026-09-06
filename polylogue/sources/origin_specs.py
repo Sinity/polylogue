@@ -1698,9 +1698,10 @@ def _gemini_cli_spec() -> OriginSpec:
         parser_paths=("polylogue/sources/parsers/local_agent.py",),
         fixture_paths=("tests/unit/sources/test_parsers_local_agent.py",),
         display_description="Gemini CLI local sessions (lab: Google)",
-        # Gemini CLI writes one session as several complete checkpoint
-        # files that share a ``sessionId`` and no byte prefix, so the
-        # cohort has no byte revision chain to accept a head from.
+        # Gemini CLI rewrites a chat's checkpoint whole on every save: the
+        # later payload is not a byte-prefix extension of the earlier one
+        # (``lastUpdated`` sits mid-object), so the cohort has no byte
+        # revision chain to accept a head from.
         frontier_kind="whole-snapshot",
         topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
         tool_outcome_unknown_reasons=frozenset(

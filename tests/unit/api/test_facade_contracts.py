@@ -4541,10 +4541,12 @@ async def test_archive_tiers_parse_file_writes_source_and_index_tiers(tmp_path: 
         assert observation["archive_write_targets"] == ["source.db", "index.db"]
         assert observation["archive_source_rows"] == 1
         assert observation["archive_index_rows"] == 1
-        assert [str(row.id) for row in rows] == ["gemini-cli-session:gemini-v1-parse"]
-        assert [hit.session_id for hit in search.hits] == ["gemini-cli-session:gemini-v1-parse"]
+        # gemini-cli identity composes sessionId, kind and startTime.
+        expected_session_id = "gemini-cli-session:gemini-v1-parse:chat:2026-04-08T20:45:00.000Z"
+        assert [str(row.id) for row in rows] == [expected_session_id]
+        assert [hit.session_id for hit in search.hits] == [expected_session_id]
         with ArchiveStore.open_existing(archive.config.archive_root) as archive_db:
-            artifacts, total = archive_db.raw_artifacts_for_session("gemini-cli-session:gemini-v1-parse")
+            artifacts, total = archive_db.raw_artifacts_for_session(expected_session_id)
         assert total == 1
         assert artifacts[0]["source_path"] == str(source_path)
     finally:
