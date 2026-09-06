@@ -38,7 +38,7 @@ from tests.infra.inferred_corpus import (
     read_inferred_corpus_manifest,
     write_inferred_corpus_manifest,
 )
-from tests.infra.wire_support import shared_wire_support_receipt
+from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
 from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 
@@ -158,7 +158,8 @@ def test_wire_support_receipt_is_canonical_across_catalog_reordering() -> None:
 
 def test_wire_support_receipt_rejects_conflicting_duplicate_identity_at_all_boundaries() -> None:
     registry = _registry()
-    receipt = build_wire_support_receipt(registry=registry, providers=("codex",))
+    with shared_wire_generation():
+        receipt = build_wire_support_receipt(registry=registry, providers=("codex",))
     original = receipt.entries[0]
     conflicting = replace(original, reason="conflicting duplicate")
 
@@ -243,7 +244,8 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
     package_receipt = package_receipts[0]
     for other in package_receipts[1:]:
         package_receipt = package_receipt.merged_with(other)
-    wire_support = build_wire_support_receipt(registry=registry)
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry)
     assert wire_support.catalog_scope == "registry-default"
     manifest = compile_inferred_corpus_manifest(
         registry=cast(Any, registry),
@@ -275,7 +277,8 @@ def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path
     package_receipt = build_schema_inference_receipt(
         cast(Any, registry), provider="codex", gate_receipt_digest=gate_digest
     )
-    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
     assert wire_support.catalog_scope == "explicit"
     manifest = compile_inferred_corpus_manifest(
         registry=cast(Any, registry),
@@ -322,7 +325,8 @@ def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
         )
     )
     monkeypatch.delitem(PROVIDER_WIRE_ROUTES, "codex")
-    wire_support = build_wire_support_receipt(registry=registry, providers=providers)
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry, providers=providers)
 
     assert wire_support.missing_routes == ("codex",)
     assert any(entry.status == "supported" for entry in wire_support.entries)
@@ -349,7 +353,8 @@ def test_campaign_indexes_persisted_wire_support_entries_once(
         provider="codex",
         gate_receipt_digest=gate_digest,
     )
-    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
     index_calls = 0
     payload_calls = 0
     original_index = inferred_corpus_module._wire_support_entry_index
@@ -392,7 +397,8 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
         provider="codex",
         gate_receipt_digest=gate_digest,
     )
-    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         package_receipt=package_receipt.to_payload(),
@@ -436,7 +442,8 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
         provider="codex",
         gate_receipt_digest=gate_digest,
     )
-    wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
+    with shared_wire_generation():
+        wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         package_receipt=package_receipt.to_payload(),

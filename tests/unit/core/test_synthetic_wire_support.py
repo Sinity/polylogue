@@ -26,7 +26,7 @@ from polylogue.schemas.validator import SchemaValidator
 from polylogue.sources import dispatch as dispatch_module
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.source_parsing import iter_antigravity_language_server_sessions
-from tests.infra.wire_support import shared_wire_support_receipt
+from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
 
 
 def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> None:
@@ -66,7 +66,8 @@ def test_every_catalog_provider_has_an_explicit_route_and_receipt_counts() -> No
 
 def test_support_receipt_does_not_substitute_a_default_selection() -> None:
     registry = SchemaRegistry()
-    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=registry)
 
     assert all(entry.package_version is not None and entry.element_kind is not None for entry in receipt.entries)
     assert len(receipt.entries) > len(receipt.catalog_providers)
@@ -85,7 +86,8 @@ def test_support_receipt_deduplicates_sorted_provider_selection() -> None:
     available = registry.list_providers()
     providers = (available[1], available[0], available[1])
 
-    receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=providers)
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=registry, providers=providers)
 
     assert receipt.catalog_providers == tuple(sorted(set(providers)))
     assert len({(entry.provider, entry.package_version, entry.element_kind) for entry in receipt.entries}) == len(
@@ -168,7 +170,8 @@ def test_parser_witness_loss_is_not_masked_by_aggregate_parsed_counts(monkeypatc
         )
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_first_coverage_witness)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     dropped = next(witness for witness in entry.parser_witnesses if witness.index == 0)
@@ -205,7 +208,8 @@ def test_parser_witness_partial_output_is_not_accepted_as_complete(monkeypatch: 
         return sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", return_only_first_message)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.package_version == "v1")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -261,7 +265,8 @@ def test_parser_witness_content_loss_is_not_accepted_with_preserved_ids_for_ever
         return sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", replace_all_but_one_message_body)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
     supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
     assert supported_entries
@@ -330,7 +335,8 @@ def test_parser_witness_segment_loss_is_not_accepted_with_preserved_message_iden
         return corrupted_sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_one_text_segment)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("codex",))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("codex",))
 
     assert inserted_segment
     assert dropped_segment
@@ -394,7 +400,8 @@ def test_parser_witness_authoredness_loss_is_not_accepted_for_every_supported_ro
         return corrupted_sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_authoredness)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
     assert mutated_messages > 0
     supported_entries = [entry for entry in receipt.entries if entry.status == "supported"]
@@ -454,7 +461,8 @@ def test_parser_witness_tool_identity_loss_is_not_accepted(
         return corrupted_sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", drop_tool_identity)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
     assert mutated_blocks > 0
     assert not receipt.complete
@@ -566,7 +574,8 @@ def test_parser_witness_structured_tool_outcome_loss_is_not_accepted(
         return corrupted_sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", corrupt_structured_tool_outcome)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
     assert mutated_outcomes > 0
     assert not receipt.complete
@@ -623,7 +632,8 @@ def test_parser_witness_rejects_messages_rehomed_to_another_raw_identity(
         return corrupted_sessions
 
     monkeypatch.setattr(dispatch_module, "parse_payload", rehome_to_message_id)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=(provider,))
 
     assert rehomed_sessions > 0
     assert not receipt.complete
@@ -717,7 +727,8 @@ def test_parser_witness_requires_meaningful_evidence_from_its_own_artifact(
         )
 
     monkeypatch.setattr(dispatch_module, "parse_payload", return_non_evidence_for_first_coverage_witness)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry())
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     witness = next(item for item in entry.parser_witnesses if item.artifact_kind == "coverage" and item.index == 0)
@@ -752,7 +763,8 @@ def test_baseline_parser_failure_reaches_support_receipt(monkeypatch: pytest.Mon
         )
 
     monkeypatch.setattr(dispatch_module, "parse_payload", fail_baseline)
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("chatgpt",))
 
     entry = next(item for item in receipt.entries if item.provider == "chatgpt")
     baseline = next(item for item in entry.parser_witnesses if item.artifact_kind == "baseline")
@@ -791,8 +803,11 @@ def test_baseline_schema_failure_reaches_support_receipt(monkeypatch: pytest.Mon
 
 @pytest.mark.timeout(600)  # subject is a full-catalog build (~20s quiet, more under corpus contention)
 def test_support_receipt_is_deterministic() -> None:
-    # One side is the shared build, the other is fresh: two builds of the same
-    # catalog must agree, and only one of them has to be paid for here.
+    # One side is the shared build, whose generation, validation and coverage
+    # come from this process's memo; the other runs the real generator over
+    # the same catalog. Two builds must agree, only one is paid for here, and
+    # a memo that answered with anything a full build would not produce is
+    # red right here.
     first = shared_wire_support_receipt().to_dict()
     second = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(storage_root=SCHEMA_DIR)).to_dict()
 
@@ -905,10 +920,12 @@ _COVERAGE_PROVIDERS = ("chatgpt", "codex")
 
 
 def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
-    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+    with shared_wire_generation():
+        before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
-    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+    with shared_wire_generation():
+        after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     assert before.to_dict() != after.to_dict()
     assert not after.complete
@@ -1057,7 +1074,8 @@ def test_receipt_generation_and_validation_use_injected_registry_schema(
 
 
 def test_claude_code_route_only_waives_unrepresentable_nested_content() -> None:
-    receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("claude-code",))
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=("claude-code",))
     entry = next(item for item in receipt.entries if item.provider == "claude-code")
 
     assert entry.construct_coverage is not None
@@ -1106,7 +1124,8 @@ def test_chatgpt_v1_media_waiver_does_not_hide_parser_relevant_omissions() -> No
     assert parser_relevant in final.missing_keywords
     assert not final.complete
 
-    receipt = wire_formats.build_wire_support_receipt(registry=registry)
+    with shared_wire_generation():
+        receipt = wire_formats.build_wire_support_receipt(registry=registry)
     receipt_entry = next(
         entry
         for entry in receipt.entries
@@ -1159,10 +1178,12 @@ def test_missing_required_and_additional_property_evidence_makes_receipt_incompl
 
 
 def test_removed_provider_route_changes_explicit_support_receipt(monkeypatch: pytest.MonkeyPatch) -> None:
-    before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+    with shared_wire_generation():
+        before = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     monkeypatch.delitem(wire_formats.PROVIDER_WIRE_ROUTES, "codex")
-    after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
+    with shared_wire_generation():
+        after = wire_formats.build_wire_support_receipt(registry=SchemaRegistry(), providers=_COVERAGE_PROVIDERS)
 
     assert before.to_dict() != after.to_dict()
     assert after.missing_routes == ("codex",)
