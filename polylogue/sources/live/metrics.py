@@ -60,6 +60,11 @@ class LiveBatchMetrics:
     cgroup_memory_swap_current_mb: float | None = None
     stale_cursor_write_count: int = 0
     stage_timings_s: dict[str, float] = field(default_factory=dict)
+    #: Planned paths this batch deliberately admitted nothing for, mapped
+    #: to the typed reason. Counted separately from succeeded/failed so a
+    #: pass that admits nothing is never reported as an idle one.
+    excluded_file_count: int = 0
+    excluded_reasons: dict[str, int] = field(default_factory=dict)
     failed_paths: list[str] = field(default_factory=list)
     # Identity-scoped session touches for this batch (polylogue-20d.13):
     # ``new_sessions`` are session ids materialized for the first time via
