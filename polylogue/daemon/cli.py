@@ -13,7 +13,7 @@ import sqlite3
 import sys
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Coroutine, Mapping
 from contextlib import redirect_stdout
 from datetime import UTC, datetime
 from http.server import ThreadingHTTPServer
@@ -47,7 +47,15 @@ from polylogue.daemon.health import (
 from polylogue.daemon.lineage_startup import (
     ensure_lineage_startup_readiness_sync as _ensure_lineage_startup_readiness_sync,
 )
+from polylogue.daemon.service_halt import HaltRegistry
+from polylogue.daemon.services import (
+    PRODUCTION_PROFILE,
+    DaemonServiceSpec,
+    ServiceCapability,
+    ServiceProfile,
+)
 from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
+from polylogue.daemon.supervisor import DaemonSupervisor
 from polylogue.daemon.write_coordinator import (
     DaemonWriteCoordinator,
     DaemonWriteThreadBridge,
@@ -164,6 +172,12 @@ _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
 # ``raw_authority_whale_payload_bytes`` / POLYLOGUE_RAW_AUTHORITY_WHALE_PAYLOAD_BYTES.
 _RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES: Final = RAW_MATERIALIZATION_WHALE_BLOB_LIMIT_BYTES
 _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS = 60
+# Live capture outranks bulk materialization, but not absolutely. While the
+# browser-capture spool holds pending files this loop takes one bounded pass
+# per tick instead of skipping every pass: a spool that never drains -- four
+# undrainable files, or a class large enough that draining takes days -- must
+# not stop unrelated admitted work from progressing at all.
+_RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET = 1
 # A spool file younger than this is in the live route's normal debounce/
 # batch flow, not stalled; only older cursor-less files park the conveyor.
 _SPOOL_PENDING_GRACE_SECONDS = 300
@@ -406,6 +420,32 @@ async def _periodic_schema_preflight_recheck() -> None:
 # Track the pidfile path for atexit cleanup.
 _pidfile_path: Path | None = None
 _daemon_lifecycle: DaemonLifecycle | None = None
+_daemon_supervisor: DaemonSupervisor | None = None
+
+
+def _set_active_supervisor(supervisor: DaemonSupervisor | None) -> None:
+    global _daemon_supervisor
+    _daemon_supervisor = supervisor
+
+
+def active_supervisor() -> DaemonSupervisor | None:
+    """Return this process' service supervisor, if a daemon is composed here.
+
+    Status reads service state from the supervisor rather than inferring it
+    from whichever loops happen to be alive.
+    """
+    return _daemon_supervisor
+
+
+def _degrade_for_failed_service(spec: DaemonServiceSpec, exc: BaseException) -> None:
+    """Mark the daemon degraded when a ``DEGRADE`` service fails."""
+    set_degraded(
+        DegradedReason(
+            code="service_failed",
+            message=f"{spec.name}: {type(exc).__name__}: {exc}",
+            detail={"service": spec.name, "owner": spec.owner},
+        )
+    )
 
 
 def _cleanup_pidfile() -> None:
@@ -991,10 +1031,16 @@ async def _periodic_raw_materialization_convergence(
     await _await_catch_up_gate(catch_up_complete, loop_name="raw materialization convergence")
 
     while True:
-        if _browser_capture_spool_has_pending_files():
-            logger.info("raw materialization: yielding to pending browser-capture spool files")
-            await asyncio.sleep(_RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS)
-            continue
+        # A non-empty live spool narrows this loop's share of the writer to one
+        # bounded pass; it never removes it.
+        spool_pending = _browser_capture_spool_has_pending_files()
+        pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET if spool_pending else None
+        if spool_pending:
+            logger.info(
+                "raw materialization: browser-capture spool pending; limiting this tick to %d pass(es)",
+                _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET,
+            )
+        passes = 0
         recover = True
         # polylogue-t93b: set True only at the genuine-quiescence break below
         # (no progress AND no remaining ordinary-envelope candidates this
@@ -1043,11 +1089,16 @@ async def _periodic_raw_materialization_convergence(
                         materialized.executed_plans,
                         materialized.remaining_candidates,
                     )
+                passes += 1
                 if materialized.remaining_candidates <= 0 or not materialized.made_progress:
                     quiescent = True
                     break
-                if _browser_capture_spool_has_pending_files():
+                if pass_budget is not None and passes >= pass_budget:
                     break
+                if _browser_capture_spool_has_pending_files():
+                    pass_budget = _RAW_MATERIALIZATION_SHARED_WRITER_PASS_BUDGET
+                    if passes >= pass_budget:
+                        break
                 await asyncio.sleep(_RAW_MATERIALIZATION_BACKLOG_BURST_PAUSE_SECONDS)
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
@@ -1067,7 +1118,11 @@ async def _periodic_raw_materialization_convergence(
                 await _maybe_run_raw_materialization_whale_pass()
             except Exception:
                 logger.warning("raw materialization: whale-pass scheduling failed", exc_info=True)
-        await asyncio.sleep(_RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS)
+        await asyncio.sleep(
+            _RAW_MATERIALIZATION_LIVE_SPOOL_BACKOFF_SECONDS
+            if spool_pending
+            else _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS
+        )
 
 
 async def _bridge_catch_up_complete(
@@ -2479,6 +2534,7 @@ async def run_daemon_services(
     api_port: int = 8766,
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
+    service_profile: ServiceProfile = PRODUCTION_PROFILE,
 ) -> None:
     """Run the daemon while excluding every offline index rebuild.
 
@@ -2514,6 +2570,7 @@ async def run_daemon_services(
             api_port=api_port,
             api_auth_token=api_auth_token,
             api_allow_no_auth=api_allow_no_auth,
+            service_profile=service_profile,
         )
 
 
@@ -2537,8 +2594,14 @@ async def _run_daemon_services_under_active_writer_lease(
     api_port: int = 8766,
     api_auth_token: str | None = None,
     api_allow_no_auth: bool = False,
+    service_profile: ServiceProfile = PRODUCTION_PROFILE,
 ) -> None:
-    """Run configured daemon components until interrupted."""
+    """Run configured daemon components until interrupted.
+
+    *service_profile* selects which declared services run. A focused test
+    narrows it; nothing else may, and no caller can start a service the
+    registry does not declare.
+    """
     from polylogue.daemon import process_start as _process_start
     from polylogue.daemon.status_snapshot import configure_runtime_components
     from polylogue.paths import archive_root
@@ -2865,12 +2928,40 @@ async def _run_daemon_services_under_active_writer_lease(
     # to keep surfacing rather than going silent (polylogue-7eo7 #4: the
     # daemon used to be blind for the entire blocked duration because this
     # loop only started inside the `if not watcher_blocked:` branch below).
-    maintenance_tasks: list[asyncio.Task[None]] = [
-        asyncio.create_task(_periodic_lifecycle_heartbeat()),
-        asyncio.create_task(_periodic_health_check()),
-    ]
+    capabilities: set[ServiceCapability] = set()
+    if enable_watch and not watcher_creation_blocked:
+        capabilities.add(ServiceCapability.WATCH)
+    if enable_source_catchup:
+        capabilities.add(ServiceCapability.SOURCE_CATCHUP)
+    if enable_browser_capture:
+        capabilities.add(ServiceCapability.BROWSER_CAPTURE)
+    if enable_api:
+        capabilities.add(ServiceCapability.API)
     if watcher_blocked:
-        maintenance_tasks.append(asyncio.create_task(_periodic_schema_preflight_recheck()))
+        capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
+    else:
+        capabilities.add(ServiceCapability.DERIVED_WRITES)
+
+    halts = HaltRegistry(archive_root_path)
+    supervisor = DaemonSupervisor(
+        profile=service_profile,
+        capabilities=capabilities,
+        halts=halts,
+        frame=f"daemon:{os.getpid()}",
+        on_degraded=_degrade_for_failed_service,
+    )
+    _set_active_supervisor(supervisor)
+    for halted in supervisor.halted_records():
+        logger.error(
+            "daemon: %s is halted (%s): %s -- it will not be scheduled",
+            halted.unit,
+            halted.reason.value,
+            halted.message,
+        )
+
+    supervisor.start("lifecycle_heartbeat", _periodic_lifecycle_heartbeat)
+    supervisor.start("health_check", _periodic_health_check)
+    supervisor.start("schema_preflight_recheck", _periodic_schema_preflight_recheck)
 
     api_server: ThreadingHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
@@ -2879,10 +2970,8 @@ async def _run_daemon_services_under_active_writer_lease(
     server: BrowserCaptureHTTPServer | None = None
     server_task: asyncio.Task[None] | None = None
     watcher: LiveWatcher | None = None
-    watcher_task: asyncio.Task[None] | None = None
     converger: DaemonConverger | None = None
     catch_up_complete_gate: asyncio.Event | None = None
-    tasks: list[asyncio.Task[None]] = []
     cleanup_task: asyncio.Task[object] | None = None
     cleanup_cancel_requests = 0
     termination: BaseException | None = None
@@ -2900,8 +2989,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_browser_capture_auth_token,
                 extra_origins=browser_capture_extra_origins,
             )
-            server_task = _start_server_task(server, label="browser-capture")
-            tasks.append(server_task)
+            server_task = supervisor.start(
+                "browser_capture_server",
+                lambda: _serve_until_complete(server, label="browser-capture"),
+            )
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -2946,8 +3037,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_host=api_host,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
-            api_server_task = _start_server_task(api_server, label="api")
-            tasks.append(api_server_task)
+            api_server_task = supervisor.start(
+                "api_server",
+                lambda: _serve_until_complete(api_server, label="api"),
+            )
             from polylogue.daemon.uds import DaemonAPIUnixHTTPServer, daemon_socket_path
 
             uds_server = DaemonAPIUnixHTTPServer(
@@ -2956,8 +3049,10 @@ async def _run_daemon_services_under_active_writer_lease(
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
-            uds_server_task = _start_server_task(uds_server, label="uds")
-            tasks.append(uds_server_task)
+            uds_server_task = supervisor.start(
+                "uds_server",
+                lambda: _serve_until_complete(uds_server, label="uds"),
+            )
             if lifecycle_events_enabled:
                 await _emit_daemon_lifecycle_event(
                     "component_started",
@@ -3006,31 +3101,47 @@ async def _run_daemon_services_under_active_writer_lease(
             if not enable_source_catchup:
                 logger.info("daemon: configured source catch-up disabled for this run")
             catch_up_complete_gate = asyncio.Event() if enable_watch else None
-            periodic_loops = [
-                _periodic_raw_materialization_convergence(catch_up_complete=catch_up_complete_gate),
-                _periodic_convergence_check(
-                    sources,
-                    catch_up_complete=catch_up_complete_gate,
-                    catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
+            gate = catch_up_complete_gate
+            periodic_services: tuple[tuple[str, Callable[[], Coroutine[Any, Any, None]]], ...] = (
+                (
+                    "raw_materialization_convergence",
+                    lambda: _periodic_raw_materialization_convergence(catch_up_complete=gate),
                 ),
-                _periodic_wal_checkpoint(),
-                _periodic_fts_merge(),
-                _periodic_heartbeat(),
-                periodic_embedding_backlog_check(catch_up_complete=catch_up_complete_gate),
-                periodic_embedding_orphan_reconcile_check(catch_up_complete=catch_up_complete_gate),
-                _periodic_db_optimize(),
-                _periodic_status_snapshot_refresh(),
-                periodic_judgment_automation_sweep(
-                    catch_up_complete=catch_up_complete_gate,
-                    archive_root_path=archive_root_path,
+                (
+                    "convergence_check",
+                    lambda: _periodic_convergence_check(
+                        sources,
+                        catch_up_complete=gate,
+                        catch_up_active=lambda: bool(watcher_holder and watcher_holder[0].catch_up_active),
+                    ),
                 ),
-                periodic_blob_gc_check(catch_up_complete=catch_up_complete_gate),
-                periodic_blob_publication_reconciliation_check(catch_up_complete=catch_up_complete_gate),
-                periodic_secret_scan_sweep(catch_up_complete=catch_up_complete_gate),
-            ]
-            if enable_source_catchup:
-                periodic_loops.append(_periodic_drive_source_catchup(catch_up_complete=catch_up_complete_gate))
-            maintenance_tasks.extend(asyncio.create_task(loop) for loop in periodic_loops)
+                ("wal_checkpoint", _periodic_wal_checkpoint),
+                ("fts_merge", _periodic_fts_merge),
+                ("heartbeat", _periodic_heartbeat),
+                ("embedding_backlog", lambda: periodic_embedding_backlog_check(catch_up_complete=gate)),
+                (
+                    "embedding_orphan_reconcile",
+                    lambda: periodic_embedding_orphan_reconcile_check(catch_up_complete=gate),
+                ),
+                ("db_optimize", _periodic_db_optimize),
+                ("status_snapshot_refresh", _periodic_status_snapshot_refresh),
+                (
+                    "judgment_automation",
+                    lambda: periodic_judgment_automation_sweep(
+                        catch_up_complete=gate,
+                        archive_root_path=archive_root_path,
+                    ),
+                ),
+                ("blob_gc", lambda: periodic_blob_gc_check(catch_up_complete=gate)),
+                (
+                    "blob_publication_reconciliation",
+                    lambda: periodic_blob_publication_reconciliation_check(catch_up_complete=gate),
+                ),
+                ("secret_scan_sweep", lambda: periodic_secret_scan_sweep(catch_up_complete=gate)),
+                ("drive_source_catchup", lambda: _periodic_drive_source_catchup(catch_up_complete=gate)),
+            )
+            for service_name, service_factory in periodic_services:
+                supervisor.start(service_name, service_factory)
             _db = _active_index_db_path()
             # While the watcher's initial source catch-up is still running,
             # per-chunk embedding (serial network I/O) is deferred into
@@ -3074,17 +3185,15 @@ async def _run_daemon_services_under_active_writer_lease(
                     )
                     watcher_holder.append(watcher)
                     watcher_catch_up_complete = getattr(watcher, "catch_up_complete", None)
+                    supervisor.start("watcher", watcher.run)
                     if catch_up_complete_gate is not None and watcher_catch_up_complete is not None:
-                        maintenance_tasks.append(
-                            asyncio.create_task(
-                                _bridge_catch_up_complete(
-                                    watcher_catch_up_complete,
-                                    catch_up_complete_gate,
-                                )
-                            )
+                        supervisor.start(
+                            "catch_up_complete_bridge",
+                            lambda: _bridge_catch_up_complete(
+                                watcher_catch_up_complete,
+                                catch_up_complete_gate,
+                            ),
                         )
-                    watcher_task = asyncio.create_task(watcher.run())
-                    tasks.append(watcher_task)
                     if lifecycle_events_enabled:
                         await _emit_daemon_lifecycle_event(
                             "component_started",
@@ -3092,9 +3201,8 @@ async def _run_daemon_services_under_active_writer_lease(
                             component="watcher",
                             payload={"source_count": len(sources), "debounce_s": debounce_s},
                         )
-                    all_tasks = tasks + maintenance_tasks
-                    await asyncio.gather(*all_tasks)
-            elif tasks:
+                    await supervisor.wait()
+            else:
                 # Watcher disabled or preflight-blocked: keep HTTP/health and
                 # other components serving so operators see the degraded state.
                 if lifecycle_events_enabled:
@@ -3107,24 +3215,11 @@ async def _run_daemon_services_under_active_writer_lease(
                             "watch_enabled": enable_watch,
                         },
                     )
-                all_tasks = tasks + maintenance_tasks
-                await asyncio.gather(*all_tasks)
-            else:
-                if lifecycle_events_enabled:
-                    await _emit_daemon_lifecycle_event(
-                        "component_skipped",
-                        archive_root_path=archive_root_path,
-                        component="watcher",
-                        payload={
-                            "reason": "schema_blocked" if watcher_creation_blocked else "disabled",
-                            "watch_enabled": enable_watch,
-                        },
-                    )
-                await asyncio.gather(*maintenance_tasks)
+                await supervisor.wait()
         except BaseException as exc:
             termination = exc
             if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
-                _log_completed_daemon_tasks(tasks + maintenance_tasks)
+                _log_completed_daemon_tasks(list(supervisor.tasks))
             raise
     finally:
         cleanup_task = asyncio.current_task()
@@ -3158,26 +3253,28 @@ async def _run_daemon_services_under_active_writer_lease(
             if uds_server is not None:
                 await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
 
-            # Cancel all component tasks.
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-
             # Cancel orphaned debounced watcher child tasks.
             if watcher is not None:
                 cancel_pending = getattr(watcher, "cancel_pending", None)
                 if callable(cancel_pending):
                     cancel_pending()
 
-            # Drain component tasks with a timeout.
-            drained_results = await _drain_tasks(tasks, timeout=5.0)
-            _report_drain_exceptions(drained_results)
-
-            # Cancel and drain maintenance tasks.
-            for mt in maintenance_tasks:
-                if not mt.done():
-                    mt.cancel()
-            await _drain_tasks(maintenance_tasks, timeout=5.0)
+            # One owner cancels and awaits every child inside its declared
+            # deadline. Anything still running afterwards is named here
+            # rather than abandoned unrecorded.
+            shutdown_report = await supervisor.shutdown()
+            if shutdown_report.orphaned:
+                logger.warning(
+                    "daemon: %d service(s) outlived their shutdown deadline: %s",
+                    len(shutdown_report.orphaned),
+                    ", ".join(shutdown_report.orphaned),
+                )
+            if shutdown_report.failed:
+                logger.warning(
+                    "daemon: %d service(s) ended in failure: %s",
+                    len(shutdown_report.failed),
+                    ", ".join(shutdown_report.failed),
+                )
 
             if signal_termination:
                 # CursorStore initialization re-applies OPS-tier DDL before it
@@ -3248,34 +3345,9 @@ async def _run_daemon_services_under_active_writer_lease(
             if writer_drained:
                 archive_owner.release()
             _daemon_lifecycle = None
+            _set_active_supervisor(None)
 
     logger.info("daemon stopped")
-
-
-async def _drain_tasks(tasks: list[asyncio.Task[None]], *, timeout: float = 5.0) -> list[BaseException | None]:
-    """Drain tasks, returning collected exceptions.
-
-    Returns a list parallel to *tasks*, where each element is the
-    exception from that task (or None if it completed cleanly).
-    """
-    if not tasks:
-        return []
-    try:
-        results = await asyncio.wait_for(
-            asyncio.gather(*tasks, return_exceptions=True),
-            timeout=timeout,
-        )
-    except TimeoutError as exc:
-        logger.warning("daemon: timed out draining %d task(s) during shutdown", len(tasks))
-        return [exc]
-    return [r if isinstance(r, BaseException) else None for r in results]
-
-
-def _report_drain_exceptions(results: list[BaseException | None]) -> None:
-    """Log any exceptions found during task draining."""
-    for exc in results:
-        if exc is not None and not isinstance(exc, asyncio.CancelledError):
-            logger.warning("daemon: task raised during shutdown: %s", exc)
 
 
 def _log_completed_daemon_tasks(tasks: list[asyncio.Task[None]]) -> None:
@@ -3355,12 +3427,12 @@ async def _shutdown_server_if_serving(
         )
 
 
-def _start_server_task(
+async def _serve_until_complete(
     server: Any,
     *,
     label: str,
-) -> asyncio.Task[None]:
-    """Start a long-lived socket server without occupying asyncio's executor.
+) -> None:
+    """Serve a long-lived socket server without occupying asyncio's executor.
 
     ``asyncio.run()`` always joins every default-executor worker during loop
     teardown. A cancelled ``to_thread(serve_forever)`` future does not stop its
@@ -3387,12 +3459,9 @@ def _start_server_task(
 
     threading.Thread(target=_serve, name=f"{label}-server", daemon=True).start()
 
-    async def _wait() -> None:
-        await completed.wait()
-        if failure:
-            raise failure[0]
-
-    return asyncio.create_task(_wait(), name=f"{label}-server-completion")
+    await completed.wait()
+    if failure:
+        raise failure[0]
 
 
 @click.group(help="Run long-lived Polylogue local services.")

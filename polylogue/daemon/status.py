@@ -2695,6 +2695,46 @@ def build_daemon_status(
     )
 
 
+def halted_unit_status() -> list[dict[str, str]]:
+    """Return every durably halted unit under the active archive root.
+
+    Cheap by construction: one small JSON document, never an archive scan.
+    A halt that cannot be read is reported as a halt of the halt store
+    itself, because "no halts" is exactly the answer an unreadable store
+    must not be allowed to give.
+    """
+    from polylogue.daemon.service_halt import HaltRegistry
+    from polylogue.paths import archive_root
+
+    try:
+        registry = HaltRegistry(Path(archive_root()))
+    except OSError as exc:
+        return [
+            {
+                "unit": "halt_store",
+                "reason": "unreadable",
+                "message": f"{type(exc).__name__}: {exc}",
+                "frame": "",
+                "halted_at": "",
+            }
+        ]
+    return [record.as_dict() for record in registry.halted_units()]
+
+
+def supervised_service_states() -> dict[str, str] | None:
+    """Return this process' service states, or ``None`` outside a daemon.
+
+    ``None`` is not "everything is fine": it means no supervisor is composed
+    here, which is the honest answer from a one-shot CLI process.
+    """
+    from polylogue.daemon.cli import active_supervisor
+
+    supervisor = active_supervisor()
+    if supervisor is None:
+        return None
+    return {name: state.value for name, state in supervisor.states().items()}
+
+
 def daemon_status_payload(
     *,
     config: Config | None = None,
@@ -2799,13 +2839,21 @@ def daemon_status_payload(
         }
     )
 
+    halted_units = halted_unit_status()
+
     return json_document(
         {
+            # A daemon holding a halted unit is not ok, whatever the rest of
+            # its components report: something it was asked to do has stopped
+            # being schedulable and will not resume on its own.
             "ok": (
                 status.raw_frontier_integrity.overall_status == "healthy"
                 and status.raw_failure_lifecycle_available
                 and status.raw_failure_lifecycle_state == "healthy"
+                and not halted_units
             ),
+            "halted_units": halted_units,
+            "services": supervised_service_states(),
             "daemon": "polylogued",
             "daemon_liveness": status.daemon_liveness,
             "daemon_lifecycle": status.daemon_lifecycle,
@@ -2936,6 +2984,13 @@ def _excluded_archive_debt_status_summary() -> dict[str, object]:
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
+    halted = payload.get("halted_units")
+    if isinstance(halted, list) and halted:
+        lines.append(f"  HALTED: {len(halted)} unit(s) excluded from scheduling")
+        for record in halted:
+            if not isinstance(record, dict):
+                continue
+            lines.append(f"    {record.get('unit', '?')}: {record.get('reason', '?')} - {record.get('message', '')}")
     lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
         age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None

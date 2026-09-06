@@ -516,6 +516,53 @@ loops below cover the high-frequency, low-cost tasks; anything that
 exceeds those bounded windows is operator-driven and documented
 there.
 
+### Service supervision
+
+Every task the daemon spawns is declared in `polylogue/daemon/services.py` and
+owned by the supervisor in `polylogue/daemon/supervisor.py`. The composition
+root creates no task of its own; it hands the supervisor a factory per declared
+name.
+
+A `DaemonServiceSpec` carries the service's owner, trigger (periodic cadence,
+event plus reconciliation, socket server, continuous driver, one-shot),
+required capabilities, sibling dependencies, readiness, failure policy,
+shutdown deadline, status component, and the execution profiles that include
+it.
+
+- **Capabilities** are resolved once from the run's own arguments and preflight
+  results: `watch`, `source_catchup`, `browser_capture`, `api`,
+  `derived_writes`, `schema_blocked`. A service whose required capability is
+  absent resolves to `skipped` with the missing name; it does not start a
+  background loop that retries something that cannot succeed.
+- **Failure policy** is `isolate` (record and continue), `degrade` (record,
+  mark the daemon degraded, continue), or `fail_daemon`. Socket servers and the
+  watcher are `fail_daemon`; the maintenance loops are `isolate`, so a failing
+  sweep no longer takes the process with it.
+- **Shutdown** cancels children in reverse start order and awaits each one
+  inside its declared deadline. A child still running when its deadline expires
+  is reported by name as an orphan.
+- **Profiles** narrow the one registry: `production` runs everything;
+  `resident_core` runs process liveness and health only; `surfaces` adds the
+  sockets; `intake` adds acquisition. `polylogued run` uses `production`.
+  Focused tests select a narrower profile through `service_profile`, which is
+  why a daemon test cannot start a convergence pass it never asked for.
+
+#### Halted work
+
+A unit of work — a service, a source, an intake class, a derivation domain —
+has exactly one halt state, recorded durably in `<archive root>/daemon/halts.json`
+with its typed reason and the frame that produced it.
+
+A halt has two inseparable consequences. It is **unschedulable**: selection
+excludes the unit, so nothing downstream of it acquires the write lease, forms
+a batch, or consumes a budget. And it is **reported**: the halt is published as
+that unit's status observation, compact status names every halted unit, and a
+daemon holding one is not `ok`. Halts survive restart; clearing one is explicit
+(`HaltRegistry.clear`).
+
+Refusing at execution time is the defect this replaces. Work that cannot
+succeed must never have been planned.
+
 ### Daemon-Owned Tasks
 
 These run automatically inside the daemon process:
