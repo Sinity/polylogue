@@ -1279,21 +1279,37 @@ describe("background receiver diagnostics", () => {
       const started = await sendRuntimeMessage({ type: "polylogue.backfill.start", provider: "chatgpt", cutoff: "2026-01-01T00:00:00Z" });
       expect(started, `backfill start refused: ${started.error || "unknown"}`).toMatchObject({ ok: true });
       await vi.waitFor(() => expect(globalThis.chrome.scripting.executeScript).toHaveBeenCalled());
-      // Each wake waits for the capture to land rather than for a fixed
-      // interval: under CPU contention the coordinator can need longer than
-      // any constant, and the wakes are what drive it forward.
       const capturePosted = () =>
         fetchCalls.some((call) => new URL(call.url).pathname === "/v1/browser-captures" && call.options.method === "POST");
-      for (let wake = 0; wake < 8 && !capturePosted(); wake += 1) {
-        simulatedNowMs += 20000;
-        alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
-        try {
-          await vi.waitFor(() => expect(capturePosted()).toBe(true), { timeout: 2000, interval: 25 });
-        } catch {
-          // This wake did not produce the capture; the next one drives it.
+      // The coordinator advances one step per wake, so wakes -- not elapsed
+      // real time -- are what drive it forward. Wake it again as soon as the
+      // previous wake has released the job's execution lease, and never while
+      // that lease is held: a wake arriving mid-execution acquires nothing,
+      // and the simulated clock it advances can outrun the lease of the work
+      // still in flight. Progress, not a wake count, ends the loop, so a host
+      // slow enough to need longer per wake gets longer and one that needs
+      // more wakes gets more; this test's own timeout is the only bound.
+      const jobSnapshot = async () => {
+        const status = await new Promise((resolve) => {
+          messageListener({ type: "polylogue.backfill.status" }, {}, resolve);
+        });
+        return status.jobs.find((entry) => entry.id === started.job.id) || null;
+      };
+      let job = await jobSnapshot();
+      let wokenGeneration = -1;
+      while (!capturePosted() && job?.status === "running") {
+        if (!job.execution_owner && job.execution_generation !== wokenGeneration) {
+          wokenGeneration = job.execution_generation;
+          simulatedNowMs += 20000;
+          alarmListener({ name: `polylogueBackfillWake:${started.job.id}` });
         }
+        await new Promise((resolve) => globalThis.setTimeout(resolve, 100));
+        job = await jobSnapshot();
       }
-      await vi.waitFor(() => expect(capturePosted()).toBe(true), { timeout: 4000 });
+      expect(
+        capturePosted(),
+        `capture never posted; job ${job?.status || "gone"}: ${job?.last_error || job?.cooldown_reason || "no error"}`,
+      ).toBe(true);
     } finally {
       clockSpy.mockRestore();
     }
