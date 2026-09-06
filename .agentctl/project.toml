@@ -18,6 +18,13 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
+# One agent's hard memory ceiling. Heavy work (a live-archive census, a
+# corpus scan) runs through the `scratch` operation in the bulk pool, never
+# inside the agent's own process.
+agent_memory_max = "1500M"
+# Wave policy: a candidate lands on its verification alone; the corpus run on
+# master per wave is the correctness backstop.
+review = "none"
 # Workers and candidates pass on the static gates and merge when the hosted
 # quick gate is green; pytest runs once on master per landing wave (verify_all)
 # and at the nightly boundary. A worker may still run one focused test file
@@ -41,6 +48,14 @@ pool = "pytest"
 result = "pytest"
 cache = "tree+environment"
 timeout_seconds = 7200
+
+[operations.scratch]
+description = "Run one bounded script from /realm/tmp/work in the bulk pool: workers' heavy censuses and probes"
+exec = ["python"]
+pool = "bulk"
+result = "exit"
+cache = "none"
+timeout_seconds = 3600
 
 [operations.verify_quick]
 description = "Run Polylogue's static fast verification gates"
