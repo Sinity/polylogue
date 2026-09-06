@@ -151,6 +151,13 @@ class IntakePass:
                 return report
         return None
 
+    def require_report(self, name: str) -> IntakeClassReport:
+        """Return *name*'s report, or raise naming the class that is missing."""
+        report = self.report_for(name)
+        if report is None:
+            raise KeyError(f"no intake class named {name!r} in this pass")
+        return report
+
 
 @dataclass
 class _ClassRuntime:

@@ -11,9 +11,11 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
+from polylogue import paths as polylogue_paths
 from polylogue.daemon.observation import (
     Observation,
     ObservationBoard,
@@ -189,3 +191,53 @@ def test_a_detail_operation_is_named_rather_than_executed() -> None:
 
     assert observation.detail_operation == "daemon.fts.exact_backlog"
     assert observation.as_dict()["detail_operation"] == "daemon.fts.exact_backlog"
+
+
+# -- the daemon status payload names halted units ---------------------------
+
+
+def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path) -> None:
+    """The third leg of the halt property, on the production status route.
+
+    Mutation: drop ``and not halted_units`` from the payload's ``ok`` and a
+    daemon with a dead source reports healthy again.
+    """
+    from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
+    from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
+
+    archive_root = Path(polylogue_paths.archive_root())
+    halts = HaltRegistry(archive_root)
+    halts.halt(
+        unit_id(UnitKind.SOURCE, "claude-code"),
+        reason=HaltReason.TERMINAL_REFUSAL,
+        message="refusing further ingest until restart",
+        frame="daemon:1",
+    )
+
+    payload = daemon_status_payload(sources=(), include_archive_debt=False)
+
+    assert payload["ok"] is False
+    halted = payload["halted_units"]
+    assert isinstance(halted, list)
+    assert [record["unit"] for record in halted] == ["source:claude-code"]
+    assert halted[0]["reason"] == "terminal_refusal"
+    assert halted[0]["frame"] == "daemon:1"
+
+    lines = format_daemon_status_lines(payload)
+    assert any("source:claude-code" in line for line in lines)
+    assert any("HALTED" in line for line in lines)
+
+
+def test_daemon_status_with_no_halt_reports_an_empty_list(tmp_path: Path) -> None:
+    from polylogue.daemon.status import daemon_status_payload
+
+    payload = daemon_status_payload(sources=(), include_archive_debt=False)
+
+    assert payload["halted_units"] == []
+
+
+def test_service_states_are_absent_outside_a_composed_daemon() -> None:
+    """Mutation: default to ``{}`` and a one-shot CLI looks like a live daemon."""
+    from polylogue.daemon.status import supervised_service_states
+
+    assert supervised_service_states() is None

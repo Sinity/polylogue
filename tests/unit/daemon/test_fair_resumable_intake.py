@@ -10,7 +10,7 @@ one of them red.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import pytest
@@ -29,7 +29,13 @@ from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, un
 class FakeAdapter:
     """A spool whose queue authority is its own pending list."""
 
-    def __init__(self, class_name: str, pending: Sequence[str], *, outcome_for=None) -> None:
+    def __init__(
+        self,
+        class_name: str,
+        pending: Sequence[str],
+        *,
+        outcome_for: Callable[[IntakeItem], AdmissionResult] | None = None,
+    ) -> None:
         self.class_name = class_name
         self.pending = list(pending)
         self.acknowledged: list[str] = []
@@ -67,8 +73,8 @@ def test_a_huge_class_cannot_starve_its_siblings() -> None:
 
     result = dispatcher.run_once(budget=16)
 
-    assert result.report_for("small").admitted == 2
-    assert result.report_for("huge").admitted > 0
+    assert result.require_report("small").admitted == 2
+    assert result.require_report("huge").admitted > 0
     assert small.pending == []
 
 
@@ -95,7 +101,7 @@ def test_weight_decides_the_share_of_one_pass() -> None:
 
     result = dispatcher.run_once(budget=40)
 
-    assert result.report_for("heavy").admitted > result.report_for("light").admitted
+    assert result.require_report("heavy").admitted > result.require_report("light").admitted
 
 
 def test_a_poison_item_is_isolated_and_its_siblings_continue() -> None:
@@ -128,7 +134,7 @@ def test_an_adapter_that_raises_is_one_item_retried_not_a_dead_class() -> None:
 
     result = dispatcher.run_once(budget=8)
 
-    assert result.report_for("hooks").admitted == 1
+    assert result.require_report("hooks").admitted == 1
     assert dispatcher.isolated_items("hooks") == frozenset({"boom"})
 
 
@@ -158,8 +164,8 @@ def test_duplicate_delivery_is_acknowledged_without_double_admission() -> None:
 
     result = dispatcher.run_once(budget=8)
 
-    assert result.report_for("hooks").duplicates == 1
-    assert result.report_for("hooks").admitted == 0
+    assert result.require_report("hooks").duplicates == 1
+    assert result.require_report("hooks").admitted == 0
     assert adapter.acknowledged == ["already"]
     assert adapter.admitted == []
 
@@ -275,8 +281,8 @@ def test_a_discovery_failure_reports_rather_than_raising() -> None:
 
     result = dispatcher.run_once(budget=8)
 
-    assert "spool directory vanished" in (result.report_for("broken").reason or "")
-    assert result.report_for("codex").admitted == 1
+    assert "spool directory vanished" in (result.require_report("broken").reason or "")
+    assert result.require_report("codex").admitted == 1
 
 
 def test_duplicate_class_names_are_refused() -> None:

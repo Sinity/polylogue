@@ -113,6 +113,7 @@ def test_socket_servers_fail_the_daemon_and_maintenance_loops_do_not() -> None:
     assert service_spec("browser_capture_server").failure_policy is FailurePolicy.FAIL_DAEMON
     assert service_spec("watcher").failure_policy is FailurePolicy.FAIL_DAEMON
     assert service_spec("secret_scan_sweep").failure_policy is FailurePolicy.ISOLATE
+    assert service_spec("health_check").failure_policy is FailurePolicy.DEGRADE
 
 
 def test_selected_for_is_the_only_selection_rule() -> None:

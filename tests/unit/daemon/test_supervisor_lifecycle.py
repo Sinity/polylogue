@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable, Coroutine
 from pathlib import Path
 
 import pytest
@@ -151,27 +152,44 @@ def test_a_fail_daemon_failure_propagates() -> None:
     asyncio.run(scenario())
 
 
-def test_a_degrading_failure_calls_back_once() -> None:
+def test_a_degrading_failure_marks_the_daemon_and_keeps_its_siblings() -> None:
+    """Mutation: declare ``health_check`` ISOLATE and the callback never fires."""
     degradations: list[str] = []
 
     async def failing() -> None:
-        raise RuntimeError("nope")
+        raise RuntimeError("health probe exploded")
 
     async def scenario() -> None:
         supervisor = DaemonSupervisor(
             capabilities=ALL_CAPABILITIES,
             on_degraded=lambda spec, _exc: degradations.append(spec.name),
         )
-        # No service currently declares DEGRADE; assert the wiring through a
-        # spec that does, so adding one cannot silently skip the callback.
-        from polylogue.daemon.services import FailurePolicy
+        supervisor.start("health_check", failing)
+        supervisor.start("secret_scan_sweep", _immediately)
 
-        assert {spec.failure_policy for spec in supervisor.selected} <= {
-            FailurePolicy.ISOLATE,
-            FailurePolicy.FAIL_DAEMON,
-        }
+        await supervisor.wait()
+
+        assert degradations == ["health_check"]
+        assert supervisor.state("health_check") is ServiceState.FAILED
+        assert supervisor.state("secret_scan_sweep") is ServiceState.STOPPED
+
+    asyncio.run(scenario())
+
+
+def test_an_isolated_failure_does_not_mark_the_daemon_degraded() -> None:
+    degradations: list[str] = []
+
+    async def failing() -> None:
+        raise RuntimeError("sweep exploded")
+
+    async def scenario() -> None:
+        supervisor = DaemonSupervisor(
+            capabilities=ALL_CAPABILITIES,
+            on_degraded=lambda spec, _exc: degradations.append(spec.name),
+        )
         supervisor.start("secret_scan_sweep", failing)
         await supervisor.wait()
+
         assert degradations == []
 
     asyncio.run(scenario())
@@ -229,7 +247,7 @@ def test_a_child_that_ignores_cancellation_is_named_as_an_orphan() -> None:
 def test_shutdown_stops_children_in_reverse_start_order() -> None:
     order: list[str] = []
 
-    def _recording(name: str):
+    def _recording(name: str) -> Callable[[], Coroutine[object, object, None]]:
         async def _run() -> None:
             try:
                 await asyncio.Event().wait()

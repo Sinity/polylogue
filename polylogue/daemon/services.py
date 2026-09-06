@@ -249,6 +249,9 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         "health_check",
         owner="daemon.health",
         trigger=ServiceTrigger.PERIODIC,
+        # A daemon that stopped checking its own health is not healthy; it is
+        # a daemon with nothing left to report a problem with.
+        failure_policy=FailurePolicy.DEGRADE,
         profiles=_RESIDENT,
         status_component="health",
         cadence_s=60.0,
@@ -370,6 +373,9 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         "status_snapshot_refresh",
         owner="daemon.status",
         trigger=ServiceTrigger.PERIODIC,
+        # Every surface reads the snapshot this publishes. Losing it silently
+        # would leave stale numbers looking current.
+        failure_policy=FailurePolicy.DEGRADE,
         requires=(ServiceCapability.DERIVED_WRITES,),
         profiles=(ServiceProfile.PRODUCTION,),
         readiness=ServiceReadiness.ON_FIRST_PASS,
