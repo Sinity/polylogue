@@ -24,10 +24,10 @@ from typing import Literal, cast
 
 import tomllib
 
-from polylogue.core.durable_fs import atomic_replace
-from polylogue.core.errors import SchemaSkewError
-from polylogue.storage.introspection import table_exists as _table_exists
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+# ``hook_main`` runs once per harness tool call in a fresh interpreter. The
+# archive, config and connection-profile imports below belong to the settings
+# adapters and the liveness projections, none of which the hook command
+# touches, so they are deferred into the functions that use them.
 
 HookHarness = Literal["claude-code", "codex"]
 HookChangeAction = Literal["install", "uninstall"]
@@ -463,6 +463,8 @@ def _render_json(document: dict[str, object]) -> str:
 
 
 def _atomic_write(path: Path, body: str) -> None:
+    from polylogue.core.durable_fs import atomic_replace
+
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     atomic_replace(path, body.encode("utf-8"), mode=mode)
 
@@ -586,6 +588,10 @@ def _recent_session_opportunities(
     origin: str,
     cutoff_ms: int,
 ) -> tuple[_SessionOpportunity, ...] | None:
+    from polylogue.core.errors import SchemaSkewError
+    from polylogue.storage.introspection import table_exists as _table_exists
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     if not index_db.exists():
         return None
     try:
@@ -623,6 +629,10 @@ def _recent_hook_events(
     origin: str,
     cutoff_ms: int,
 ) -> dict[str, set[str]] | None:
+    from polylogue.core.errors import SchemaSkewError
+    from polylogue.storage.introspection import table_exists as _table_exists
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
     if not source_db.exists():
         return None
     try:
@@ -932,13 +942,6 @@ def hook_main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    record = {
-        "event_type": event_type,
-        "session_id": session_id,
-        "timestamp": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "provider": provider,
-        "payload": payload,
-    }
     from polylogue.sources.hooks import enqueue_hook_event
 
     sidecar_dir = sidecar_dir_arg or _default_sidecar_dir()
@@ -947,15 +950,10 @@ def hook_main(argv: list[str] | None = None) -> int:
         event_type=event_type,
         session_id=session_id,
         provider=provider,
-        timestamp=str(record["timestamp"]),
+        timestamp=datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         payload=payload,
         root=sidecar_dir,
     )
-    # Keep the established session journal available to older local tooling.
-    # The daemon's durable path consumes only immutable pending envelopes.
-    outfile = sidecar_dir / f"{provider}-{session_id}.jsonl"
-    with outfile.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     return 0
 
 
