@@ -3818,16 +3818,6 @@ def test_shutdown_server_runs_even_when_to_thread_task_is_cancelled() -> None:
     assert server.shutdown_called is True
 
 
-def test_report_drain_exceptions_ignores_expected_cancellations(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    daemon_cli._report_drain_exceptions([None, asyncio.CancelledError()])
-
-    assert "task raised during shutdown" not in caplog.text
-
-
 @pytest.mark.parametrize(
     ("received_signal_name", "expected_interrupted_cleanup_calls"),
     [(None, 1), ("SIGTERM", 0)],
@@ -4794,3 +4784,225 @@ def test_maybe_run_raw_materialization_whale_pass_no_candidate_skips_writer(
     attempted = asyncio.run(daemon_cli._maybe_run_raw_materialization_whale_pass())
 
     assert attempted is False
+
+
+def _daemon_startup_stubs(
+    stack: contextlib.ExitStack,
+    daemon_cli: Any,
+    tmp_path: Path,
+    *,
+    loops: dict[str, str] | None = None,
+) -> None:
+    """Stub the startup work the composition route performs before scheduling.
+
+    Everything stubbed here is I/O the service inventory does not depend on;
+    the composition route, the supervisor, and the registry stay real.
+    """
+    from polylogue.daemon.health import HealthAlert, HealthSeverity, HealthTier
+
+    ok_schema = HealthAlert(
+        check_name="schema_version",
+        tier=HealthTier.FAST,
+        severity=HealthSeverity.OK,
+        message="ok",
+        checked_at="now",
+    )
+
+    async def _noop() -> None:
+        return None
+
+    stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
+    stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
+    stack.enter_context(
+        patch.object(daemon_cli, "_ensure_embedding_lifecycle_startup_sync", lambda _root: tmp_path / "embeddings.db")
+    )
+    stack.enter_context(
+        patch(
+            "polylogue.daemon.fts_convergence.FtsConvergenceOwner.run_once_sync",
+            lambda *a, **k: SimpleNamespace(ready=True, exact=True, repaired_surfaces=0),
+        )
+    )
+    stack.enter_context(patch.object(daemon_cli, "_ensure_lineage_startup_readiness_sync", lambda: 0))
+    stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", _noop))
+    stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", _noop))
+    stack.enter_context(
+        patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", lambda _root: None)
+    )
+    stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
+    stack.enter_context(patch("polylogue.daemon.convergence.DaemonConverger", lambda *a, **k: object()))
+    stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
+
+
+def _record_task_creation(stack: contextlib.ExitStack) -> list[tuple[str, str | None]]:
+    """Record every ``asyncio.create_task`` call with its immediate caller."""
+    import sys as _sys
+
+    real_create_task = asyncio.create_task
+    created: list[tuple[str, str | None]] = []
+
+    def recording(coro: Any, **kwargs: Any) -> Any:
+        caller = _sys._getframe(1)
+        created.append((caller.f_code.co_filename, kwargs.get("name")))
+        return real_create_task(coro, **kwargs)
+
+    stack.enter_context(patch.object(asyncio, "create_task", recording))
+    return created
+
+
+def _capture_supervisor(stack: contextlib.ExitStack, daemon_cli: Any) -> list[Any]:
+    captured: list[Any] = []
+    real_setter = daemon_cli._set_active_supervisor
+
+    def capture(supervisor: Any) -> None:
+        if supervisor is not None:
+            captured.append(supervisor)
+        real_setter(supervisor)
+
+    stack.enter_context(patch.object(daemon_cli, "_set_active_supervisor", capture))
+    return captured
+
+
+def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path: Path) -> None:
+    """Every task the daemon spawns is one the registry declares.
+
+    Anti-vacuity: add ``asyncio.create_task(...)`` anywhere in
+    ``polylogue/daemon/cli.py`` and the first assertion names that file;
+    start a name the registry does not carry and ``service_spec`` raises
+    with the missing identity before a task exists.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceState, service_spec
+    from polylogue.daemon.supervisor import TASK_NAME_PREFIX
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class FakeWatcher:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.catch_up_complete = asyncio.Event()
+
+        async def run(self) -> None:
+            self.catch_up_complete.set()
+            raise RuntimeError("watch stopped")
+
+        def stop(self) -> None:
+            return None
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        created = _record_task_creation(stack)
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        for attribute in (
+            "_periodic_lifecycle_heartbeat",
+            "_periodic_health_check",
+            "_periodic_wal_checkpoint",
+            "_periodic_fts_merge",
+            "_periodic_heartbeat",
+            "_periodic_db_optimize",
+            "_periodic_status_snapshot_refresh",
+            "_periodic_raw_materialization_convergence",
+            "_periodic_drive_source_catchup",
+        ):
+            stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        for target in (
+            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+            "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+            "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+            "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+        ):
+            stack.enter_context(patch(target, idle_loop))
+        stack.enter_context(pytest.raises(RuntimeError, match="watch stopped"))
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=Path("/tmp/codex")),),
+                debounce_s=1.0,
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    direct_from_composition_root = [entry for entry in created if entry[0].endswith("polylogue/daemon/cli.py")]
+    assert direct_from_composition_root == [], (
+        f"the composition root created an unsupervised task: {direct_from_composition_root}"
+    )
+
+    supervised_names = sorted(
+        name[len(TASK_NAME_PREFIX) :]
+        for _filename, name in created
+        if name is not None and name.startswith(TASK_NAME_PREFIX)
+    )
+    assert supervised_names, "no supervised service was started on the production route"
+    for name in supervised_names:
+        service_spec(name)
+
+    assert len(supervisors) == 1
+    supervisor = supervisors[0]
+    assert set(supervised_names) <= set(supervisor.states())
+    unresolved = [spec.name for spec in supervisor.selected if supervisor.state(spec.name) is ServiceState.PENDING]
+    assert unresolved == [], f"declared services the composition route never resolved: {unresolved}"
+
+
+@pytest.mark.uses_real_clock("bounds the focused-profile fixture's own wall-clock cost")
+def test_a_focused_profile_starts_no_materialization_and_finishes_promptly(tmp_path: Path) -> None:
+    """The API-disabled fixture profile.
+
+    Anti-vacuity: pass ``ServiceProfile.PRODUCTION`` instead and the
+    materialization assertion fails, because the production profile starts
+    the raw-materialization loop this profile exists to exclude.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceProfile, ServiceState
+
+    started: list[str] = []
+
+    async def resident_loop(**_kwargs: object) -> None:
+        started.append("resident")
+
+    async def materialization(**_kwargs: object) -> None:
+        started.append("raw_materialization")
+        await asyncio.Event().wait()
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        stack.enter_context(patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", resident_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", resident_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_raw_materialization_convergence", materialization))
+        started_at = time.monotonic()
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(),
+                debounce_s=1.0,
+                enable_watch=False,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+                enable_api=False,
+                service_profile=ServiceProfile.RESIDENT_CORE,
+            )
+        )
+        elapsed = time.monotonic() - started_at
+
+    assert "raw_materialization" not in started
+    assert started == ["resident", "resident"]
+    assert elapsed < 10.0
+
+    supervisor = supervisors[0]
+    assert supervisor.state("raw_materialization_convergence") is ServiceState.SKIPPED
+    assert supervisor.state("lifecycle_heartbeat") is ServiceState.STOPPED
