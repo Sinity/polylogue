@@ -8,7 +8,7 @@ tokens, or per-chunk role/timestamp semantics, these tests should fail with a
 precise reason naming the broken field.
 
 Catalog payloads live under ``tests/data/gemini_chunked_prompt/`` and cover
-three realistic session shapes:
+four realistic session shapes:
 
 - ``text_only_prompt.json`` -- alternating user/model text turns with token
   counts and finish reasons.
@@ -16,6 +16,12 @@ three realistic session shapes:
   codeExecutionResult, and a final summarising message.
 - ``multi_turn_prompt.json`` -- driveDocument attachment, model thought,
   safety ratings, and a follow-up turn pair.
+- ``current_export.json`` -- the bare ``{chunkedPrompt, citations,
+  runSettings, systemInstruction}`` envelope AI Studio writes today, with no
+  document-level id, title, or timestamps. The other three carry the wrapped
+  ``{id, displayName, createTime, updateTime}`` envelope, which no longer
+  appears on the wire, so without this payload every law below is pinned to a
+  shape the provider has stopped emitting.
 
 Ref #1297, Ref #1184, Ref #1186.
 """
@@ -40,6 +46,7 @@ CATALOG_FIXTURES = (
     "text_only_prompt.json",
     "code_execution_prompt.json",
     "multi_turn_prompt.json",
+    "current_export.json",
 )
 
 
@@ -308,6 +315,26 @@ class TestMetadataRoundtrip:
 
 class TestSessionLevelMetadata:
     """Pin the session envelope contract built around ``chunkedPrompt``."""
+
+    def test_current_export_carries_no_document_level_identity(self) -> None:
+        """The shape AI Studio writes today has no envelope to read identity from.
+
+        ``current_export.json`` is a bare ``{chunkedPrompt, citations,
+        runSettings, systemInstruction}`` document: every session id, title and
+        timestamp below has to come from the caller-supplied fallback or from
+        the chunks themselves. Pinning that here keeps the fallback path
+        covered by a real catalog payload rather than only by hand-built
+        dictionaries.
+        """
+        payload = _load_catalog("current_export.json")
+        assert not {"id", "title", "displayName", "createTime", "updateTime"} & set(payload)
+
+        session = _parse(payload, "the-fallback-id")
+
+        assert session.provider_session_id == "the-fallback-id"
+        assert session.title == "the-fallback-id"
+        assert session.title_source is None
+        assert session.created_at == "2026-01-05T09:00:00Z"
 
     def test_title_prefers_title_field_with_origin_source(self) -> None:
         payload = _load_catalog("text_only_prompt.json")
