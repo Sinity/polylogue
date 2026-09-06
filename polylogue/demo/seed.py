@@ -24,7 +24,7 @@ from polylogue.scenarios import (
     DEMO_CODEX_RECEIPTS_SESSION_ID,
     DEMO_CODEX_TERMINAL_ERROR_SESSION_ID,
     DEMO_EMBEDDING_PROSE_SESSION_ID,
-    DEMO_GEMINI_CLI_SESSION_ID,
+    DEMO_GEMINI_CLI_WIRE,
     DEMO_HERMES_SESSION_ID,
     build_demo_corpus_specs,
     seed_demo_user_overlays,
@@ -1123,13 +1123,13 @@ def _write_demo_gemini_cli_sources(source_root: Path) -> None:
     tool call, a recorded thought, and per-message usage (#polylogue-b036).
     """
 
-    native_id = DEMO_GEMINI_CLI_SESSION_ID.removeprefix("gemini-cli-session:")
+    native_id, kind, start_time = DEMO_GEMINI_CLI_WIRE
     _write_json(
         source_root / "gemini-cli" / "demo-00.json",
         {
             "sessionId": native_id,
-            "kind": "chat",
-            "startTime": "2026-07-04T09:58:00Z",
+            "kind": kind,
+            "startTime": start_time,
             "lastUpdated": "2026-07-04T09:58:04Z",
             "summary": "Trace the demo fixture through parse_gemini_cli",
             "projectHash": "demo-gemini-cli-project",

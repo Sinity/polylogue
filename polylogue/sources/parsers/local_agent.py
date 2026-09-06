@@ -31,6 +31,11 @@ from .base import (
     mark_last_occurrence_as_active_leaf,
     parser_admission,
 )
+from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
+from .hermes_finish_reason import stop_reason_from_finish_reason as _stop_reason_from_finish_reason
+from .hermes_identity import profile_key as _profile_key
+from .hermes_identity import profile_root_for_session_snapshot as _profile_root_for_session_snapshot
+from .hermes_identity import qualified_session_id as _qualified_session_id
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
@@ -64,6 +69,36 @@ def _block_metadata_evidence_events(messages: list[ParsedMessage]) -> list[Parse
 #: Gemini CLI's own "kind" enum for a chat/session checkpoint (present on
 #: both wire shapes below).
 _GEMINI_CLI_KIND_VALUES = frozenset({"chat", "main", "subagent"})
+
+
+def gemini_cli_chat_identity(payload: JSONDocument, session_id: str) -> str:
+    """Compose the identity of one Gemini CLI chat from its wire coordinates.
+
+    ``sessionId`` names the CLI *process*, not a chat. One process writes a
+    separate complete checkpoint for its main chat, for every subagent it
+    spawns, and for every chat opened after a reset -- all under that one
+    ``sessionId``, with disjoint message sets. Keyed on ``sessionId`` alone,
+    those distinct chats full-replace each other.
+
+    ``kind`` and ``startTime`` are the wire's own coordinates for which chat a
+    checkpoint holds, and both are fixed when the chat opens: a checkpoint
+    rewritten days later still carries its opening ``startTime``. Composing
+    them separates sibling chats while keeping every save of one chat on one
+    identity, which ``lastUpdated`` would not.
+
+    Path coordinates stay unused -- ``Provider.GEMINI_CLI`` is declared
+    path-independent for revision dedup
+    (``revision_backfill._PATH_INDEPENDENT_PARSE_PROVIDERS``).
+    """
+    kind = _string(payload.get("kind"))
+    start_time = _string(payload.get("startTime"))
+    return ":".join(
+        (
+            session_id,
+            kind if kind in _GEMINI_CLI_KIND_VALUES else "",
+            start_time or "",
+        )
+    )
 
 
 def looks_like_gemini_cli(payload: JSONDocument) -> bool:
@@ -109,6 +144,7 @@ def parse_gemini_cli(
     source_path: str | Path | None = None,
 ) -> ParsedSession:
     session_id = _string(payload.get("sessionId")) or fallback_id
+    chat_id = gemini_cli_chat_identity(payload, session_id)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     models_used: set[str] = set()
@@ -132,8 +168,8 @@ def parse_gemini_cli(
     session_events.extend(_block_metadata_evidence_events(messages))
     session = ParsedSession(
         source_name=Provider.GEMINI_CLI,
-        provider_session_id=session_id,
-        title=_string(payload.get("summary")) or session_id,
+        provider_session_id=chat_id,
+        title=_string(payload.get("summary")) or chat_id,
         created_at=_string(payload.get("startTime")),
         updated_at=_string(payload.get("lastUpdated")),
         messages=messages,
@@ -146,6 +182,9 @@ def parse_gemini_cli(
             directory for directory in _list(payload.get("directories")) if isinstance(directory, str) and directory
         ],
     )
+    # The sidecar directory on disk is named for the wire ``sessionId``
+    # (``tool-outputs/session-<sessionId>/``), which all of a process's chats
+    # share -- not for the composed chat identity.
     tool_outputs_dir = resolve_tool_outputs_dir(source_path, session_id)
     if tool_outputs_dir is not None:
         session = apply_gemini_tool_output_sidecars(
@@ -236,8 +275,23 @@ def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
 
 
 @parser_admission("hermes")
-def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
-    session_id = _string(payload.get("session_id")) or fallback_id
+def parse_hermes(
+    payload: JSONDocument,
+    fallback_id: str,
+    *,
+    source_path: str | Path | None = None,
+) -> ParsedSession:
+    """Parse one ``<hermes_root>/sessions/session_*.json`` snapshot.
+
+    ``source_path`` carries the profile qualifier: this snapshot family and
+    ``state.db`` (``hermes_state.py``) describe the same logical Hermes
+    sessions, and both must build identity from
+    ``hermes_identity.qualified_session_id`` off the same install root or one
+    conversation lands as two archive sessions. Without a path no profile is
+    assertable, so identity stays unqualified rather than inventing a key.
+    """
+    raw_session_id = _string(payload.get("session_id")) or fallback_id
+    session_id = _hermes_qualified_session_id(raw_session_id, source_path)
     messages: list[ParsedMessage] = []
     session_events: list[ParsedSessionEvent] = []
     system_prompt = _string(payload.get("system_prompt"))
@@ -274,12 +328,21 @@ def parse_hermes(payload: JSONDocument, fallback_id: str) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=session_id,
-        title=session_id,
+        title=raw_session_id,
         created_at=_string(payload.get("session_start")),
         updated_at=_string(payload.get("last_updated")),
         messages=messages,
         session_events=session_events,
         active_leaf_message_provider_id=messages[-1].provider_message_id if messages else None,
+    )
+
+
+def _hermes_qualified_session_id(raw_session_id: str, source_path: str | Path | None) -> str:
+    if source_path is None:
+        return raw_session_id
+    return _qualified_session_id(
+        raw_session_id,
+        _profile_key(_profile_root_for_session_snapshot(Path(source_path))),
     )
 
 
@@ -466,6 +529,8 @@ def _parse_hermes_message(
         duration_ms=_non_negative_int(
             record.get("durationMs") or record.get("duration_ms") or record.get("elapsed_ms")
         ),
+        end_turn=_end_turn_from_finish_reason(record.get("finish_reason")),
+        stop_reason=_stop_reason_from_finish_reason(record.get("finish_reason")),
         # polylogue-gzgyl: this JSON-sidecar Hermes wire path has no
         # agent/subagent artifact ambiguity for a plain user turn --
         # positive-evidence override for the shared classify_material_origin

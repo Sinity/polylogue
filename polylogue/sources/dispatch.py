@@ -1510,7 +1510,7 @@ def _lower_payload_specs(
         if record is not None and hermes_spans.looks_like_atif_payload(record):
             return [_local_artifact_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
         if record is not None and local_agent.looks_like_hermes(record):
-            return [_local_agent_document_spec(runtime_provider, record, fallback_id)]
+            return [_local_agent_document_spec(runtime_provider, record, fallback_id, source_path=source_path)]
         return []
     if runtime_provider is Provider.ANTIGRAVITY:
         record = _single_document_record(shaped_payload)
@@ -1652,7 +1652,7 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec) -> list[ParsedSession]:
         if spec.provider is Provider.GEMINI_CLI:
             return [local_agent.parse_gemini_cli(record, spec.fallback_id, source_path=spec.source_path)]
         if spec.provider is Provider.HERMES:
-            return [local_agent.parse_hermes(record, spec.fallback_id)]
+            return [local_agent.parse_hermes(record, spec.fallback_id, source_path=spec.source_path)]
         return []
 
     if spec.mode == "local_artifact_document":

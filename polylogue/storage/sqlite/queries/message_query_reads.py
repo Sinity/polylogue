@@ -11,6 +11,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, message_role_sql_
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import MaterialOrigin
+from polylogue.core.identity_law import transcript_order_sql
 from polylogue.logging import get_logger
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
@@ -29,14 +30,8 @@ MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] |
 
 _MESSAGE_RECORD_SELECT = MESSAGES_SPEC.record_select_column_names("m")
 
-# A session's transcript order is content position. Observed timestamps are
-# metadata: they are non-monotonic against position on every origin, so they
-# cannot decide the order of a conversation. ``(session_id, position,
-# variant_index)`` is the messages primary key, so this is a total order within
-# a session -- no tiebreaker is needed and the keyset cursor below cannot skip
-# or repeat a row. ``idx_messages_session_position`` serves it without a sort.
-_TRANSCRIPT_ORDER = "m.position, m.variant_index"
-_TRANSCRIPT_ORDER_DESC = "m.position DESC, m.variant_index DESC"
+_TRANSCRIPT_ORDER = transcript_order_sql("m")
+_TRANSCRIPT_ORDER_DESC = transcript_order_sql("m", descending=True)
 
 
 async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> str:

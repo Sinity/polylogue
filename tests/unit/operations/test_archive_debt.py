@@ -439,7 +439,8 @@ def _init_raw_materialization_fixture(root: Path) -> tuple[Path, Path, Path]:
     )
     (blob_root / "12").mkdir()
     (blob_root / "12" / ("12" * 31)).write_text(
-        '{"sessionId":"gemini-session-shaped","messages":[{"type":"user"},{"type":"gemini"}],"kind":"main"}',
+        '{"sessionId":"gemini-session-shaped","messages":[{"type":"user"},{"type":"gemini"}],'
+        '"kind":"main","startTime":"2026-06-30T00:00:00Z"}',
         encoding="utf-8",
     )
     (blob_root / "13").mkdir()
@@ -520,8 +521,13 @@ def test_archive_debt_reports_raw_materialization_debt(tmp_path: Path) -> None:
     assert gemini_session.status == "actionable"
     assert gemini_session.category == "parsed-session-unmaterialized"
     assert "Gemini CLI chat session" in (gemini_session.details or "")
-    assert "Sample parsed session native id(s): gemini-session-shaped" in (gemini_session.details or "")
-    assert "parsed-session-native-id:gemini-cli-session:gemini-session-shaped" in gemini_session.evidence_refs
+    assert "Sample parsed session native id(s): gemini-session-shaped:main:2026-06-30T00:00:00Z" in (
+        gemini_session.details or ""
+    )
+    assert (
+        "parsed-session-native-id:gemini-cli-session:gemini-session-shaped:main:2026-06-30T00:00:00Z"
+        in gemini_session.evidence_refs
+    )
     assert gemini_session.actions[0].label == "Explain parser output"
     assert gemini_session.actions[1].label == "Run daemon convergence"
 

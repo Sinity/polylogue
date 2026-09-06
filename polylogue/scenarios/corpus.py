@@ -76,7 +76,11 @@ DEMO_CHATGPT_DUPLICATE_EXPORT_SESSION_ID = "chatgpt-export:cross-material-duplic
 DEMO_CHATGPT_DUPLICATE_CAPTURE_SESSION_ID = "chatgpt-export:cross-material-duplicate-02"
 # The three local-agent origins whose parsers were previously verified only by
 # unit fixtures, not by the public demo archive (polylogue-b036).
-DEMO_GEMINI_CLI_SESSION_ID = "gemini-cli-session:demo-00"
+# gemini-cli identity composes the checkpoint's own sessionId, kind and
+# startTime (local_agent.gemini_cli_chat_identity), so the demo document and
+# its expected session id are both built from this one tuple.
+DEMO_GEMINI_CLI_WIRE = ("demo-00", "chat", "2026-07-04T09:58:00Z")
+DEMO_GEMINI_CLI_SESSION_ID = "gemini-cli-session:" + ":".join(DEMO_GEMINI_CLI_WIRE)
 DEMO_ANTIGRAVITY_SESSION_ID = "antigravity-session:demo-00"
 DEMO_HERMES_SESSION_ID = "hermes-session:demo-00"
 DEMO_EMBEDDING_PROSE_SESSION_ID = DEMO_CLAUDE_CODE_SESSION_ID
