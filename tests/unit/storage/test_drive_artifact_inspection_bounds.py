@@ -7,20 +7,23 @@ error was re-raised and stored as ``decode_failed`` / ``ArtifactKind.UNKNOWN``,
 leaving 15 live conversations with no declared parser route.
 
 Anti-vacuity: restoring a ceiling below the document's size turns
-``test_large_valid_drive_export_classifies_as_a_session_document`` red, and
-dropping the applet path rule from the AI Studio ``OriginSpec`` turns
-``test_applet_access_log_is_a_declared_non_session_document`` red.
+``test_large_valid_drive_export_classifies_as_a_session_document`` red.
+``test_applet_access_log_is_a_declared_non_session_document`` carries its own
+controlled mutation: with the AI Studio artifact rules stripped, the same
+payload falls through to ``ArtifactKind.UNKNOWN``.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import ArtifactSupportStatus, Provider
+from polylogue.core.enums import ArtifactSupportStatus, Origin, Provider
+from polylogue.sources import origin_specs
 from polylogue.storage.artifacts import inspection
 from polylogue.storage.artifacts.inspection import inspect_raw_artifact
 from polylogue.storage.blob_store import BlobStore, reset_blob_store
@@ -114,18 +117,55 @@ def test_a_ceiling_below_the_document_reports_it_undecodable(
     assert observation.support_status is ArtifactSupportStatus.DECODE_FAILED
 
 
-def test_applet_access_log_is_a_declared_non_session_document(
-    blob_store: BlobStore,
-    tmp_path: Path,
-) -> None:
-    """AI Studio's applet log shares the export folder and carries no turn."""
-    log = tmp_path / "applet_access_history.json"
-    log.write_text(
-        json.dumps({"applets": [{"id": "synthetic-applet", "lastAccessed": "2026-09-05T00:00:00Z"}]}),
+def _applet_access_log(path: Path) -> None:
+    """Write an applet access log in AI Studio's own wire shape.
+
+    The nested ``source.drive`` reference is load-bearing: it is the only
+    field that puts an entry past ``is_scalarish``'s depth bound, and so the
+    only reason the real document misses ``looks_metadataish_dict`` and needs
+    the path rule. A fixture that flattens it classifies ``metadata_document``
+    on the heuristic alone, with or without the rule.
+    """
+    path.write_text(
+        json.dumps(
+            {
+                "applets": [
+                    {
+                        "lastAccessTime": "2026-09-05T00:00:00.000000Z",
+                        "firstAccessTime": "2026-09-01T00:00:00.000000Z",
+                        "source": {"drive": {"resourceId": "synthetic-resource", "revisionId": "synthetic-revision"}},
+                        "name": "Synthetic Applet",
+                        "description": "A synthetic applet entry standing in for the real access log.",
+                    }
+                ]
+            }
+        ),
         encoding="utf-8",
     )
 
-    observation = inspect_raw_artifact(_record(blob_store, log, source_path=f"/drive-cache/gemini/{log.name}"))
+
+def test_applet_access_log_is_a_declared_non_session_document(
+    blob_store: BlobStore,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AI Studio's applet log shares the export folder and carries no turn."""
+    log = tmp_path / "applet_access_history.json"
+    _applet_access_log(log)
+    record = _record(blob_store, log, source_path=f"/drive-cache/gemini/{log.name}")
+
+    observation = inspect_raw_artifact(record)
 
     assert observation.artifact_kind == "metadata_document"
     assert observation.support_status is ArtifactSupportStatus.RECOGNIZED_UNPARSED
+
+    monkeypatch.setattr(
+        origin_specs,
+        "ORIGIN_SPECS",
+        tuple(
+            replace(spec, artifact_rules=()) if spec.origin is Origin.AISTUDIO_DRIVE else spec
+            for spec in origin_specs.ORIGIN_SPECS
+        ),
+    )
+
+    assert inspect_raw_artifact(record).artifact_kind == "unknown"
