@@ -511,3 +511,187 @@ def test_refless_attachment_with_stale_ref_count_still_blocks(tmp_path: Path) ->
     assert _terms(check)["attachment_unreferenced"]["sample"] == ["orphan-1"]
     assert _count(check, "attachment_unowned") == 0
     assert check.evidence["blocking_count"] == 1
+
+
+def _insert_membership(
+    conn: sqlite3.Connection, *, raw_id: str, logical_source_key: str, authority: str = "quarantined"
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO raw_session_memberships(
+            raw_id, logical_source_key, provider_session_id, source_revision,
+            normalized_content_hash, message_count, revision_authority
+        ) VALUES (?, ?, ?, ?, ?, 1, ?)
+        """,
+        (raw_id, logical_source_key, logical_source_key.partition(":")[2], raw_id, b"n" * 32, authority),
+    )
+
+
+def _insert_authority_blocker(
+    conn: sqlite3.Connection, *, blocker_id: str, head_raw_id: str, reason: str, resolved: bool = False
+) -> None:
+    import json as _json
+
+    expected = _json.dumps({"index_preconditions": {"head_accepted_raw_id": head_raw_id}})
+    conn.execute(
+        """
+        INSERT INTO raw_authority_blockers(
+            blocker_id, plan_id, census_id, reason, expected_json, observed_json,
+            created_at_ms, resolved_at_ms, resolution
+        ) VALUES (?, 'plan-1', 'census-1', ?, ?, '{}', 100, ?, ?)
+        """,
+        (blocker_id, reason, expected, 200 if resolved else None, "done" if resolved else None),
+    )
+
+
+def _insert_unmaterialized_raw(root: Path, *, raw_id: str, name: str, origin: str = "codex-session") -> None:
+    """A parsed raw with real bytes on disk that no index session names."""
+    source = _write_source(root, name, name.encode())
+    blob_hash = BlobStore(root / "blob").write_from_bytes(name.encode())[0]
+    conn = sqlite3.connect(root / "source.db")
+    try:
+        _insert_raw(
+            conn,
+            raw_id=raw_id,
+            origin=origin,
+            native_id=None,
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_unresolved_authority_blocker_types_the_head_raw_and_only_warns(tmp_path: Path) -> None:
+    """A raw the authority frontier accepted as head, while the index took another, is explained.
+
+    ``raw_authority_blockers`` is the durable ledger that owns the remedy; the
+    conservation check cites it instead of calling the raw unexplained.
+
+    Anti-vacuity: the same raw with the blocker resolved has no rule left and
+    types ``unexplained``, so the term cannot absorb an unexplained raw.
+    """
+    _seed(tmp_path)
+    reason = "accepted revision head and materialized session select different raw authority"
+    _insert_unmaterialized_raw(tmp_path, raw_id="raw-head", name="head.json", origin="aistudio-drive")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_authority_blocker(source_conn, blocker_id="blk-1", head_raw_id="raw-head", reason=reason)
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.WARNING, check.summary
+    assert _count(check, "authority_blocked_head") == 1
+    assert _terms(check)["authority_blocked_head"]["blocking"] is False
+    assert _terms(check)["authority_blocked_head"]["breakdown"] == {f"aistudio-drive:{reason}": 1}
+    assert _count(check, "unexplained") == 0
+    assert check.evidence["blocking_count"] == 0
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_authority_blockers SET resolved_at_ms = 200, resolution = 'done' WHERE blocker_id = 'blk-1'"
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    resolved = _run(tmp_path)
+    assert resolved.status is OutcomeStatus.ERROR, resolved.summary
+    assert _count(resolved, "authority_blocked_head") == 0
+    assert _count(resolved, "unexplained") == 1
+
+
+def test_wholly_quarantined_membership_cohort_without_a_session_blocks(tmp_path: Path) -> None:
+    """A logical source whose every membership is quarantined, with nothing indexed, is missing.
+
+    The term names the defect instead of leaving it in ``unexplained``, and it
+    keeps blocking because the session's content is absent from the index.
+
+    Anti-vacuity: one ``byte_proven`` membership on the same raw removes the
+    rule and the raw types ``unexplained``, so the term cannot absorb every
+    unmaterialized raw that happens to carry a membership.
+    """
+    _seed(tmp_path)
+    _insert_unmaterialized_raw(tmp_path, raw_id="raw-quar", name="quar.jsonl")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_membership(source_conn, raw_id="raw-quar", logical_source_key="codex:lost")
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.ERROR, check.summary
+    assert _count(check, "quarantined_cohort_unmaterialized") == 1
+    assert _terms(check)["quarantined_cohort_unmaterialized"]["blocking"] is True
+    assert _terms(check)["quarantined_cohort_unmaterialized"]["sample"] == ["raw-quar"]
+    assert _count(check, "unexplained") == 0
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_session_memberships SET revision_authority = 'byte_proven' WHERE raw_id = 'raw-quar'"
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    proven = _run(tmp_path)
+    assert _count(proven, "quarantined_cohort_unmaterialized") == 0
+    assert _count(proven, "unexplained") == 1
+
+
+def test_raw_sharing_a_logical_source_with_a_materialized_raw_is_superseded(tmp_path: Path) -> None:
+    """A raw is superseded when any raw it shares a logical source with is materialized.
+
+    ``raw_session_memberships`` states which logical sources a raw belongs to.
+    A shared raw carries several, so membership sets overlap without being
+    equal and the cohort partition alone splits revisions of one logical source
+    apart by native id or path.
+
+    Anti-vacuity: giving the two raws disjoint logical sources removes the
+    relation and the unmaterialized raw stops being superseded, so the rule
+    cannot be a blanket pass for every membership-bearing raw.
+    """
+    _seed(tmp_path)
+    _insert_unmaterialized_raw(tmp_path, raw_id="raw-shared-a", name="shared-a.jsonl")
+    _insert_unmaterialized_raw(tmp_path, raw_id="raw-shared-b", name="shared-b.jsonl")
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_membership(source_conn, raw_id="raw-shared-a", logical_source_key="codex:first")
+        _insert_membership(source_conn, raw_id="raw-shared-a", logical_source_key="codex:only-on-a")
+        _insert_membership(source_conn, raw_id="raw-shared-b", logical_source_key="codex:first")
+        _insert_membership(source_conn, raw_id="raw-shared-b", logical_source_key="codex:only-on-b")
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    index_conn = sqlite3.connect(tmp_path / "index.db")
+    try:
+        _insert_session(index_conn, origin="codex-session", native_id="first", raw_id="raw-shared-a")
+        index_conn.commit()
+    finally:
+        index_conn.close()
+
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert _count(check, "materialized") == 2
+    assert _count(check, "revision_superseded") == 1
+    assert _terms(check)["revision_superseded"]["sample"] == ["raw-shared-b"]
+    assert _count(check, "quarantined_cohort_unmaterialized") == 0
+    assert _count(check, "unexplained") == 0
+
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            "UPDATE raw_session_memberships SET logical_source_key = 'codex:disjoint' "
+            "WHERE raw_id = 'raw-shared-b' AND logical_source_key = 'codex:first'"
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    split = _run(tmp_path)
+    assert _count(split, "revision_superseded") == 0
+    assert _count(split, "quarantined_cohort_unmaterialized") == 1
