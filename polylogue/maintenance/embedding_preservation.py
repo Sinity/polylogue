@@ -203,12 +203,28 @@ class _PreservedMetadata:
     output_contract_hash: bytes
 
 
+def _tier_output_contract_hash(*, model: str, dimension: int) -> bytes:
+    """The output contract every vector at this dimension shares.
+
+    ``EmbeddingRecipe.output_contract`` is a function of dimensions,
+    element type, and the output schema version alone -- never of the input
+    text, the recipe labels, or the writer. A preserved row therefore carries
+    its own output identity in its ``dimension`` column plus the float32
+    element type its vector table declares, so an absent column is a value
+    the older writer did not record, not an output nobody can vouch for.
+    """
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
+    return EmbeddingRecipe.current(model=model, dimensions=dimension).output_contract_hash
+
+
 def _validated_metadata(fields: dict[str, object]) -> _PreservedMetadata | str:
     """The row as the current tier requires it, or the field that disqualifies it.
 
-    ``message_embeddings_meta`` is complete by schema: a preserved row whose
-    model, dimension, or derivation identity is absent describes an output
-    nobody can vouch for, so it cannot stand in for a fresh embedding.
+    A preserved row whose model, dimension, or recipe identity is absent
+    describes an embedding nobody can vouch for and cannot stand in for a
+    fresh one. An absent output contract is reconstructed from the row's own
+    dimension; a present one that is malformed still disqualifies the row.
     """
     model = fields.get("model")
     if not isinstance(model, str) or not model:
@@ -219,6 +235,9 @@ def _validated_metadata(fields: dict[str, object]) -> _PreservedMetadata | str:
     identities: dict[str, bytes] = {}
     for name in ("recipe_hash", "output_contract_hash"):
         value = fields.get(name)
+        if value is None and name == "output_contract_hash":
+            identities[name] = _tier_output_contract_hash(model=model, dimension=dimension)
+            continue
         if not isinstance(value, (bytes, bytearray, memoryview)) or len(value) != 32:
             return name
         identities[name] = bytes(value)

@@ -223,9 +223,15 @@ def test_metadata_without_its_vector_is_a_miss_and_writes_nothing(tmp_path: Path
         )
 
 
-def test_incomplete_legacy_metadata_is_a_typed_miss(tmp_path: Path) -> None:
-    """Red when an incomplete row is inserted: the current tier's NOT NULL identity
-    contract rejects it and aborts every remaining hash in the restore."""
+def test_absent_legacy_output_contract_is_reconstructed(tmp_path: Path) -> None:
+    """Every vector in a pre-v5 archive carries a NULL output_contract_hash, so
+    treating the absence as unknown output identity refuses the whole corpus.
+
+    Red when the reconstruction is dropped (the hash restores as zero) or
+    computes anything but the tier's own contract for the row's dimension.
+    """
+    from polylogue.storage.embeddings.identity import EmbeddingRecipe
+
     source = tmp_path / "legacy.db"
     preserved = tmp_path / "preserved.db"
     fresh = tmp_path / "fresh.db"
@@ -235,10 +241,33 @@ def test_incomplete_legacy_metadata_is_a_typed_miss(tmp_path: Path) -> None:
 
     result = restore_embedding_vectors(fresh, preserved, {_HASH, _MISSING})
 
+    assert result.restored_hashes == 1
+    assert [(miss.input_hash, miss.reason) for miss in result.misses] == [
+        (_MISSING.hex(), RestoreMissReason.METADATA_ABSENT)
+    ]
+    with closing(_open(fresh)) as conn:
+        stored = conn.execute(
+            "SELECT output_contract_hash FROM message_embeddings_meta WHERE vector_derivation_hash = ?",
+            (_HASH,),
+        ).fetchone()[0]
+    assert bytes(stored) == EmbeddingRecipe.current(model="test", dimensions=1024).output_contract_hash
+
+
+def test_malformed_legacy_output_contract_is_a_typed_miss(tmp_path: Path) -> None:
+    """A present but wrong-width identity is corruption, not an older writer's
+    omission. Red when reconstruction is applied to a value that exists."""
+    source = tmp_path / "legacy.db"
+    preserved = tmp_path / "preserved.db"
+    fresh = tmp_path / "fresh.db"
+    _legacy_db(source, vectors=(_HASH,), output_contract_hash=b"truncated")
+    _db(fresh, vectors=(_OTHER,))
+    preserve_embedding_vectors(source, preserved)
+
+    result = restore_embedding_vectors(fresh, preserved, {_HASH})
+
     assert result.restored_hashes == 0
     assert [(miss.input_hash, miss.reason, miss.detail) for miss in result.misses] == [
-        (_HASH.hex(), RestoreMissReason.METADATA_INCOMPLETE, "output_contract_hash"),
-        (_MISSING.hex(), RestoreMissReason.METADATA_ABSENT, ""),
+        (_HASH.hex(), RestoreMissReason.METADATA_INCOMPLETE, "output_contract_hash")
     ]
 
 
