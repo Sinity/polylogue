@@ -20,11 +20,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
-from .hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"

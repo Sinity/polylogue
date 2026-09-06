@@ -18,6 +18,7 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     resolve_tool_outputs_dir,
 )
 from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+from polylogue.sources.parsers.hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
@@ -30,7 +31,6 @@ from .base import (
     mark_last_occurrence_as_active_leaf,
     parser_admission,
 )
-from .hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
 
 
 # polylogue-9x22: ``ParsedContentBlock.metadata`` is never persisted -- the
