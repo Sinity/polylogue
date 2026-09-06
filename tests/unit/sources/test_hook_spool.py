@@ -325,6 +325,9 @@ async def test_live_watcher_retries_added_hook_shard_until_atomic_publish(
         (WatchSource(name="hooks", root=pending, suffixes=(".json",)),),
         cursor=CursorStore(archive_root / "ops.db"),
     )
+    # Enqueue shards through the producer and acknowledge through this module,
+    # so pinning the day takes both seams.
+    monkeypatch.setattr("polylogue.sources.hook_producer.day_shard", lambda: "2026-08-12")
     monkeypatch.setattr("polylogue.sources.hooks._day_shard", lambda: "2026-08-12")
     shard = pending / "2026-08-12"
 
