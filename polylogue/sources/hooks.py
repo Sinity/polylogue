@@ -49,21 +49,16 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from uuid import uuid4
 
-from polylogue.core.enums import Origin, Provider
 from polylogue.logging import get_logger
-from polylogue.maintenance.source_manifest_continuity import (
-    SourceContinuityError,
-    SourceDeclaration,
-    SourceRole,
-    canonical_source_declarations,
-)
-from polylogue.paths import data_home, hooks_sidecar_dir
-from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+
+if TYPE_CHECKING:
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+# Hook producers run in fresh interpreters. Keep their imports independent of
+# archive DDL; drain functions load archive dependencies locally.
 
 logger = get_logger(__name__)
 
@@ -111,6 +106,8 @@ def hook_spool_sources(
     legacy_roots: tuple[Path, ...] | list[Path] | None = None,
 ) -> tuple[HookSpoolSourceSpec, ...]:
     """Return the canonical primary plus finite legacy hook-spool topology."""
+    from polylogue.paths import data_home, hooks_sidecar_dir
+
     primary = (primary_root or hooks_sidecar_dir()).expanduser().resolve()
     configured_legacy = tuple(legacy_roots) if legacy_roots is not None else (data_home() / "hooks",)
     sources = [HookSpoolSourceSpec("primary-hook-spool", "primary-writable", primary)]
@@ -131,6 +128,13 @@ def validate_hook_spool_topology(
     require_existing: bool = False,
 ) -> tuple[HookSpoolSourceSpec, ...]:
     """Validate the finite declared topology before acquisition or sealing."""
+
+    from polylogue.maintenance.source_manifest_continuity import (
+        SourceContinuityError,
+        SourceDeclaration,
+        SourceRole,
+        canonical_source_declarations,
+    )
 
     declared = tuple(sources)
     if not declared or sum(spec.role == "primary-writable" for spec in declared) != 1:
@@ -213,6 +217,8 @@ def hook_spool_root() -> Path:
     hook-specific override was a manual escape hatch operators had to
     remember on top of it -- and repeatedly didn't.
     """
+
+    from polylogue.paths import hooks_sidecar_dir
 
     return hooks_sidecar_dir()
 
@@ -395,6 +401,8 @@ def drain_hook_event_spool(
         )
 
         if not _source_tier_acquisition_required():
+            from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
             initialize_active_archive_root(archive_root)
         store = _open_archive_for_live_write(archive_root)
     except (OSError, sqlite3.Error, ValueError):
@@ -526,6 +534,9 @@ def _persist_record(
     role: Literal["primary-writable", "legacy-read-only"] = "primary-writable",
 ) -> None:
     provider_token = str(record["provider"])
+    from polylogue.core.enums import Origin, Provider
+    from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveHookEvent
+
     provider = Provider.from_string(provider_token)
     try:
         origin_token = _ORIGIN_TOKEN_BY_PROVIDER[provider_token]

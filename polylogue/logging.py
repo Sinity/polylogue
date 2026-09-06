@@ -12,8 +12,6 @@ from collections.abc import Iterable, Iterator
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, BinaryIO, Protocol, TextIO
 
-from polylogue.config import load_polylogue_config
-
 if TYPE_CHECKING:
     from structlog.types import Processor
 
@@ -214,6 +212,8 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
     if json_logs:
         processors.append(structlog.processors.JSONRenderer())
     else:
+        from polylogue.config import load_polylogue_config
+
         env_force = load_polylogue_config().get("force_plain")
         if isinstance(env_force, bool):
             force_plain = env_force

@@ -173,7 +173,7 @@ def test_configure_logging_supports_console_and_json_modes_and_get_logger() -> N
 def test_configure_logging_accepts_typed_force_plain_config() -> None:
 
     with (
-        patch("polylogue.logging.load_polylogue_config", return_value={"force_plain": True}),
+        patch("polylogue.config.load_polylogue_config", return_value={"force_plain": True}),
         patch("structlog.configure"),
         patch("structlog.dev.ConsoleRenderer", return_value="console-renderer") as console_renderer,
         patch("sys.stderr.isatty", return_value=True),
