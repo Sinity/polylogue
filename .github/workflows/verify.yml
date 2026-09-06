@@ -4,11 +4,10 @@ name: Verify
 # green PR check there does not mean tests ran; this job runs `devtools verify`
 # on the workstation runner, where pytest goes through the host's single
 # `pytest` pueue slot automatically.
-# Runs on master after merges, not per PR: candidates land on the quick gate
-# and the corpus is verified once per landing wave.
+# On demand only. Candidates land on the quick gate; the corpus runs once per
+# landing wave and nightly through agentctl's verify_all, which owns the host
+# pytest pool. A push trigger queued one host pytest run per merge.
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
 
 permissions:
