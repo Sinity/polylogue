@@ -289,6 +289,7 @@ Acquired files are classified by `ArtifactKind` before ingestion:
 | `coordinator_session_stream` | The coordinator's own Claude Code session stream (as opposed to a subagent's `agent_transcript`) |
 | `session_index` | Provider-level session index |
 | `bridge_pointer` | Pointer from a parent session to a sub-agent session |
+| `extracted_transcript_corpus` | Turns copied out of transcripts the records themselves name: a generated analytical extract, index or report, refused as a session wherever it sits |
 | `metadata_document` | Supplementary metadata |
 | `hook_event` | Pre/PostToolUse hook event record |
 | `unknown` | Unclassified artifact |

@@ -57,6 +57,15 @@ _BEADS_INTERACTION_KEYS = frozenset({"id", "kind", "created_at", "issue_id", "ex
 #: ``archive/raw_materialization.py``'s ``parsed_non_session_artifact_reason``
 #: already checks post-parse ("Claude Code file-history snapshot").
 _FILE_HISTORY_SNAPSHOT_ONLY_TYPES = frozenset({"file-history-snapshot", "progress"})
+#: Top-level keys whose string value names the transcript a record's content
+#: was copied out of. A generated extract carries this reference because its
+#: rows are not its own content; a provider's wire record never names an
+#: external transcript as the origin of the turn it transmits, because it
+#: carries that turn. This is the positive evidence that separates an
+#: analytical derivative from the session it was derived from, at any path.
+_EXTRACTED_PROVENANCE_KEYS = frozenset({"file", "source_file", "source_path", "transcript", "session_file"})
+_TRANSCRIPT_REFERENCE_SUFFIXES = (".jsonl", ".jsonl.txt", ".ndjson", ".json")
+_COPIED_CONTENT_KEYS = ("content", "text", "message_text", "body")
 
 
 def path_only_sidecar_reason(name: str) -> str | None:
@@ -118,6 +127,55 @@ def looks_like_record_entry(payload: JSONDocument) -> bool:
         return True
     nested_message = json_document(payload.get("message"))
     return bool(nested_message) and any(key in nested_message for key in _MESSAGE_KEYS)
+
+
+def looks_like_extracted_transcript_record(payload: object) -> bool:
+    """Return whether one record is conversation text copied out of a named
+    transcript rather than a turn a provider transmitted.
+
+    Three conditions, all required: no provider-native record envelope (the
+    record is not itself a turn), a declared reference naming the transcript
+    the content came from, and the copied content itself. A pointer/index row
+    carrying provenance but no copied turn is somebody else's shape --
+    ``looks_like_record_entry`` already refuses it -- and is deliberately not
+    claimed here.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if any(key in payload for key in _TYPE_ENVELOPE_MARKERS):
+        return False
+    reference = next(
+        (value for key in _EXTRACTED_PROVENANCE_KEYS if isinstance(value := payload.get(key), str)),
+        None,
+    )
+    if reference is None or not reference.lower().endswith(_TRANSCRIPT_REFERENCE_SUFFIXES):
+        return False
+    return any(isinstance(payload.get(key), str) and payload[key] for key in _COPIED_CONTENT_KEYS)
+
+
+def record_carries_provider_envelope(payload: object) -> bool:
+    """True when a record carries a provider-native envelope marker.
+
+    One such record disqualifies a stream from the extracted-corpus rule, so
+    a bounded scan may stop at the first one it sees.
+    """
+    return isinstance(payload, dict) and any(key in payload for key in _TYPE_ENVELOPE_MARKERS)
+
+
+def looks_like_extracted_transcript_corpus(dict_items: list[JSONDocument]) -> bool:
+    """True when decoded records are an extract of other transcripts.
+
+    At least one record must carry the positive extraction evidence, and no
+    record may carry a provider-native envelope marker: one genuine wire
+    record disqualifies the whole stream, so a real session can never be
+    refused by this rule, and a stream mixing extracted rows with rows this
+    taxonomy cannot name stays refused rather than guessing.
+    """
+    if not dict_items:
+        return False
+    if any(record_carries_provider_envelope(item) for item in dict_items):
+        return False
+    return any(looks_like_extracted_transcript_record(item) for item in dict_items)
 
 
 def looks_like_hook_event(payload: object) -> bool:

@@ -445,6 +445,49 @@ def _no_topology_capabilities(origin: Origin) -> TopologyCapabilities:
     )
 
 
+def _looks_like_extracted_transcript_corpus_path(
+    path: Path,
+    *,
+    payload: object | None = None,
+) -> bool:
+    """Inspect a bounded record prefix for external-transcript provenance.
+
+    Reads at most 32 records and stops at the first record carrying a provider
+    envelope, which disqualifies the stream outright -- so a genuine transcript
+    costs one decoded line.
+    """
+    from polylogue.archive.artifact_taxonomy.support import (
+        looks_like_extracted_transcript_corpus,
+        record_carries_provider_envelope,
+    )
+    from polylogue.core.json import json_document
+
+    if payload is not None:
+        records: list[object] = list(payload) if isinstance(payload, list) else [payload]
+    elif path.suffix.lower() in {".jsonl", ".ndjson"}:
+        records = []
+        try:
+            with path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
+                        continue
+                    if record_carries_provider_envelope(record):
+                        return False
+                    records.append(record)
+                    if len(records) >= 32:
+                        break
+        except OSError:
+            return False
+    else:
+        return False
+    dict_items = [item for item in (json_document(item) for item in records) if item]
+    return looks_like_extracted_transcript_corpus(dict_items)
+
+
 def recognize_source_class(
     provider: Provider,
     source_path: str | Path,
@@ -476,6 +519,16 @@ def recognize_source_class(
     rule = artifact_rule_for_path(provider, str(path))
     if rule is not None and rule.parse_policy != "session":
         return SourceClassRecognition("non_session", f"declared {rule.kind} artifact")
+    if rule is not None and rule.parse_policy == "session":
+        # A session path rule states a location, so a generated extract
+        # dropped into a provider's transcript directory matches it exactly
+        # as the transcripts do. Records that name the transcript their
+        # turns were copied out of separate the two by their own provenance,
+        # which is what keeps the derivative and its original apart in the
+        # source manifest instead of both landing in one denominator.
+        if _looks_like_extracted_transcript_corpus_path(path, payload=payload):
+            return SourceClassRecognition("non_session", "extracted transcript corpus")
+        return SourceClassRecognition("session", f"declared {rule.kind} source class")
     if provider is Provider.ANTIGRAVITY:
         classification = antigravity.classify_source_path(path)
         if classification.role.value == "conversation_protobuf":

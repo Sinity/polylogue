@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import tempfile
 from pathlib import Path
+
+import pytest
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocumentList, JSONValue
 from polylogue.schemas.observation_identity import resolve_provider_config
 from polylogue.schemas.observation_models import ObservationTerminalStatus
 from polylogue.schemas.sampling_db import _iter_schema_units_from_db
 from polylogue.sources.live.batch_support import _parse_path_as_session_artifact
+from polylogue.sources.source_parsing import parse_one_source_path
+from polylogue.sources.source_walk import census_source_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
@@ -113,44 +118,238 @@ def test_relationship_index_jsonl_conversation_field_is_metadata_not_session_str
     assert artifact.parse_as_session is False
 
 
-def test_analysis_signal_duplicate_messages_are_not_a_session() -> None:
-    """bd polylogue-21qj: ``analysis/signal/high_value_messages.jsonl`` is a
-    sinex-generated derivative index of "interesting" turns, copied verbatim
-    out of a real conversation (per-line shape: ``file``/``timestamp``/
-    ``type``/``content``, where ``type`` is the bare role word
-    ``"assistant"``/``"user"``, not a genuine record envelope). Unlike
-    ``conversation_relationships.jsonl``, its rows are real duplicated
-    conversation text rather than structurally empty pointer rows -- but it
-    must still never become its own ``claude-code-session``: the archive's
-    live copy of this file materialized 8,763 duplicate messages (827,894
-    words) that already exist verbatim in the session they were extracted
-    from. This shape has no ``_TYPE_ENVELOPE_MARKERS``/``_RECORDISH_KEYS`` hit
-    (``role`` is absent; the key is ``type``), so it falls through to the
-    ``analysis/`` directory heuristic exactly like ``problems_index.jsonl``.
+_EXTRACTED_TURNS: JSONDocumentList = [
+    {
+        "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+        "timestamp": "2025-06-13T17:40:52.056Z",
+        "type": "assistant",
+        "content": "Let me check the unified collector implementation for more context:",
+    },
+    {
+        "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+        "timestamp": "2025-06-13T17:41:48.140Z",
+        "type": "user",
+        "content": "Search for ad-hoc solutions and pattern violations in the codebase.",
+    },
+]
+_PROVIDER_TURNS: JSONDocumentList = [
+    {
+        "type": "user",
+        "uuid": "u1",
+        "sessionId": "bad69218-73bd-490a-869a-2b3a30bf421b",
+        "timestamp": "2025-06-13T17:40:00.000Z",
+        "cwd": "/home/user/project",
+        "message": {"role": "user", "content": "Search for ad-hoc solutions."},
+    },
+    {
+        "type": "assistant",
+        "uuid": "a1",
+        "parentUuid": "u1",
+        "sessionId": "bad69218-73bd-490a-869a-2b3a30bf421b",
+        "timestamp": "2025-06-13T17:40:52.056Z",
+        "cwd": "/home/user/project",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "Let me check."}]},
+    },
+]
+#: A genuine turn that also carries the provenance-shaped top-level keys the
+#: extraction rule reads. It stays a session because it still carries a
+#: provider record envelope, which is what the rule actually tests.
+_PROVIDER_TURNS_WITH_PROVENANCE_KEYS: JSONDocumentList = [
+    {**record, "file": "notes.jsonl", "content": "tool read"} for record in _PROVIDER_TURNS
+]
+#: Extracted rows mixed with rows this taxonomy cannot name at all.
+_AMBIGUOUS_EXTRACT: JSONDocumentList = [_EXTRACTED_TURNS[0], {"score": 0.91, "cluster": 3}]
+
+_SESSION_DIR = "/home/user/.claude/projects/proj/"
+
+
+@pytest.mark.parametrize(
+    ("records", "source_path", "expected_kind", "expected_session"),
+    [
+        pytest.param(
+            _PROVIDER_TURNS,
+            f"{_SESSION_DIR}bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            ArtifactKind.COORDINATOR_SESSION_STREAM,
+            True,
+            id="genuine-provider-source",
+        ),
+        pytest.param(
+            _EXTRACTED_TURNS,
+            f"{_SESSION_DIR}bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+            False,
+            id="derivative-wearing-a-session-filename",
+        ),
+        pytest.param(
+            _EXTRACTED_TURNS,
+            f"{_SESSION_DIR}analysis/signal/high_value_messages.jsonl",
+            ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+            False,
+            id="derivative-at-its-observed-path",
+        ),
+        pytest.param(
+            _EXTRACTED_TURNS,
+            "/srv/exports/report.jsonl",
+            ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+            False,
+            id="derivative-relocated-with-no-path-cue",
+        ),
+        pytest.param(
+            _EXTRACTED_TURNS,
+            None,
+            ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+            False,
+            id="derivative-with-no-path-at-all",
+        ),
+        pytest.param(
+            _PROVIDER_TURNS_WITH_PROVENANCE_KEYS,
+            f"{_SESSION_DIR}bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            ArtifactKind.COORDINATOR_SESSION_STREAM,
+            True,
+            id="genuine-source-carrying-provenance-like-fields",
+        ),
+        pytest.param(
+            _AMBIGUOUS_EXTRACT,
+            f"{_SESSION_DIR}bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
+            ArtifactKind.EXTRACTED_TRANSCRIPT_CORPUS,
+            False,
+            id="ambiguous-copied-fragment-fails-closed",
+        ),
+        pytest.param(
+            _PROVIDER_TURNS,
+            f"{_SESSION_DIR}analysis/replay/bad69218.jsonl",
+            ArtifactKind.SESSION_RECORD_STREAM,
+            True,
+            id="genuine-source-replayed-through-an-analysis-segment",
+        ),
+    ],
+)
+def test_extracted_corpus_and_provider_source_stay_distinct_at_every_path(
+    records: list[JSONValue],
+    source_path: str | None,
+    expected_kind: ArtifactKind,
+    expected_session: bool,
+) -> None:
+    """Detector tightness: only the records\' own provenance separates a
+    generated extract from the transcript it copied.
+
+    ``analysis/signal/high_value_messages.jsonl`` is a sinex-generated
+    derivative whose rows are turns copied verbatim out of a real Claude Code
+    transcript, each naming that transcript in ``file``. Location is not
+    evidence in either direction, so the matrix pins both polarities: the
+    derivative is refused at a genuine session path and with no path at all,
+    and a real transcript is admitted from under an ``analysis/`` segment.
+
+    Anti-vacuity: making ``looks_like_extracted_transcript_corpus`` return
+    ``False``, or moving the extraction check below the path rule in
+    ``classify_artifact``, classifies the derivative
+    ``COORDINATOR_SESSION_STREAM``/``parse_as_session=True`` again.
     """
-    records: list[JSONValue] = [
-        {
-            "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
-            "timestamp": "2025-06-13T17:40:52.056Z",
-            "type": "assistant",
-            "content": "Let me check the unified collector implementation for more context:",
-        },
-        {
-            "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
-            "timestamp": "2025-06-13T17:41:48.140Z",
-            "type": "user",
-            "content": "Search for ad-hoc solutions and pattern violations in the codebase.",
-        },
-    ]
+    artifact = classify_artifact(records, provider="claude-code", source_path=source_path)
 
-    artifact = classify_artifact(
-        records,
-        provider="claude-code",
-        source_path="/home/user/.claude/projects/x/analysis/signal/high_value_messages.jsonl",
-    )
+    assert artifact.kind is expected_kind
+    assert artifact.parse_as_session is expected_session
 
-    assert artifact.kind is ArtifactKind.METADATA_DOCUMENT
-    assert artifact.parse_as_session is False
+
+def test_extracted_corpus_is_refused_by_the_production_source_route() -> None:
+    """The whole discovery/lowering/admission route, not a helper call.
+
+    A derivative dropped into the provider\'s own transcript directory
+    matches the ``coordinator_session_stream`` path rule exactly as the
+    transcripts do; admitting one materializes a phantom session keyed on the
+    extract\'s filename stem, republishing turns that already exist in the
+    session they were copied from.
+
+    Anti-vacuity: with the extraction evidence removed, both derivative cases
+    below yield one session each.
+    """
+    with tempfile.TemporaryDirectory() as raw_root:
+        project = Path(raw_root) / ".claude" / "projects" / "proj"
+        project.mkdir(parents=True)
+
+        def write(name: str, records: JSONDocumentList) -> Path:
+            path = project / name
+            path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+            return path
+
+        transcript = write("bad69218-73bd-490a-869a-2b3a30bf421b.jsonl", _PROVIDER_TURNS)
+        derivative = write("high_value_messages.jsonl", _EXTRACTED_TURNS)
+        renamed = write("c0ffee00-1111-2222-3333-444455556666.jsonl", _EXTRACTED_TURNS)
+
+        def admitted(path: Path) -> list[str]:
+            return [
+                session.provider_session_id
+                for _raw, session in parse_one_source_path(
+                    str(path),
+                    file_mtime=None,
+                    source_name="claude-code",
+                    sidecar_data={},
+                    capture_raw=False,
+                )
+            ]
+
+        assert admitted(transcript) == ["bad69218-73bd-490a-869a-2b3a30bf421b"]
+        assert admitted(derivative) == []
+        assert admitted(renamed) == []
+
+
+def test_live_ingest_admission_refuses_the_derivative_at_a_session_path() -> None:
+    """The daemon's own admission gate, which reads the path rule separately.
+
+    ``_parse_path_as_session_artifact`` falls back to the path classification
+    when the bounded content scan finds no session, and that fallback admits
+    anything sitting under ``projects/<proj>/``. The recognizer's non-session
+    verdict has to be honoured there too, or the daemon re-admits what the
+    one-shot route already refuses.
+
+    Anti-vacuity: dropping the recognizer check from the JSONL branch admits
+    both derivatives below.
+    """
+    with tempfile.TemporaryDirectory() as raw_root:
+        project = Path(raw_root) / "projects" / "proj"
+        project.mkdir(parents=True)
+
+        def write(name: str, records: JSONDocumentList) -> Path:
+            path = project / name
+            path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+            return path
+
+        transcript = write("bad69218-73bd-490a-869a-2b3a30bf421b.jsonl", _PROVIDER_TURNS)
+        derivative = write("high_value_messages.jsonl", _EXTRACTED_TURNS)
+        renamed = write("c0ffee00-1111-2222-3333-444455556666.jsonl", _EXTRACTED_TURNS)
+
+        assert _parse_path_as_session_artifact(transcript, provider=Provider.CLAUDE_CODE) is True
+        assert _parse_path_as_session_artifact(derivative, provider=Provider.CLAUDE_CODE) is False
+        assert _parse_path_as_session_artifact(renamed, provider=Provider.CLAUDE_CODE) is False
+
+
+def test_source_manifest_counts_the_derivative_apart_from_its_original() -> None:
+    """Full source-root accounting gives the two files distinct dispositions.
+
+    The census is the source manifest\'s denominator: a derivative counted as
+    a session source is a phantom the manifest cannot see. Its original stays
+    a session source in the same pass.
+
+    Anti-vacuity: with the extraction evidence removed the census reports two
+    session candidates and no non-session candidate.
+    """
+    with tempfile.TemporaryDirectory() as raw_root:
+        root = Path(raw_root)
+        project = root / "projects" / "proj"
+        project.mkdir(parents=True)
+        (project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl").write_text(
+            "\n".join(json.dumps(record) for record in _PROVIDER_TURNS) + "\n", encoding="utf-8"
+        )
+        (project / "high_value_messages.jsonl").write_text(
+            "\n".join(json.dumps(record) for record in _EXTRACTED_TURNS) + "\n", encoding="utf-8"
+        )
+
+        census = census_source_root(root, provider=Provider.CLAUDE_CODE)
+
+    assert census.candidate_count == 2
+    assert census.disposition_counts == {"session": 1, "non_session": 1, "unsupported": 0}
+    assert census.unexplained_candidates == ()
+    assert census.is_complete
 
 
 def test_bare_tool_use_id_record_does_not_classify_as_session() -> None:
