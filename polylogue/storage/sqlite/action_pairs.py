@@ -11,12 +11,13 @@ def action_pairs_refresh_sql(session_expr: str, *, session_index_hint: str = "")
         INSERT INTO action_pairs (
             tool_use_block_id, session_id, message_id, tool_id, use_rank,
             tool_name, semantic_type, tool_command, tool_path,
-            tool_result_block_id, is_error, exit_code
+            tool_result_block_id, is_error, exit_code,
+            tool_outcome, outcome_unknown_reason
         )
         WITH ranked_uses AS (
             SELECT u.session_id, u.message_id, u.block_id AS tool_use_block_id,
                    u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-                   u.tool_id,
+                   u.tool_id, u.tool_outcome,
                    ROW_NUMBER() OVER (
                        PARTITION BY u.session_id, u.tool_id
                        ORDER BY um.position, um.variant_index, u.position
@@ -28,6 +29,7 @@ def action_pairs_refresh_sql(session_expr: str, *, session_index_hint: str = "")
             SELECT r.session_id, r.tool_id, r.block_id AS tool_result_block_id,
                    r.tool_result_is_error AS is_error,
                    r.tool_result_exit_code AS exit_code,
+                   r.tool_result_outcome_unknown_reason AS outcome_unknown_reason,
                    ROW_NUMBER() OVER (
                        PARTITION BY r.session_id, r.tool_id
                        ORDER BY rm.position, rm.variant_index, r.position
@@ -38,13 +40,14 @@ def action_pairs_refresh_sql(session_expr: str, *, session_index_hint: str = "")
         )
         SELECT u.tool_use_block_id, u.session_id, u.message_id, u.tool_id, u.use_rank,
                u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-               r.tool_result_block_id, r.is_error, r.exit_code
+               r.tool_result_block_id, r.is_error, r.exit_code,
+               u.tool_outcome, r.outcome_unknown_reason
         FROM ranked_uses u LEFT JOIN ranked_results r
           ON r.session_id = u.session_id AND r.tool_id = u.tool_id AND r.result_rank = u.use_rank
         UNION ALL
         SELECT u.block_id, u.session_id, u.message_id, u.tool_id, NULL,
                u.tool_name, u.semantic_type, u.tool_command, u.tool_path,
-               NULL, NULL, NULL
+               NULL, NULL, NULL, u.tool_outcome, NULL
         FROM blocks u{session_index_hint}
         WHERE u.session_id = {session_expr} AND u.block_type = 'tool_use'
           AND (u.tool_id IS NULL OR u.tool_id = '')
