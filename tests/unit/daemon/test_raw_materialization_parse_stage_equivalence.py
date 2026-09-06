@@ -9,8 +9,8 @@ convergence over the SAME fixture corpus, once with the daemon's
 prefetch cache at all, produces byte-identical durable archive content.
 
 Production dependencies exercised: ``DaemonParseStage.warm`` (the actual
-off-writer-hold pre-parse path) feeding ``polylogue.storage.repair.
-repair_raw_materialization``'s ``prefetch_cache`` parameter (the actual
+off-writer-hold pre-parse path) feeding ``polylogue.storage.raw_convergence.
+converge_raw_materialization``'s ``prefetch_cache`` parameter (the actual
 production plumbing the daemon conveyor uses), not a reimplementation of
 either.
 """
@@ -25,7 +25,7 @@ from typing import Any
 from polylogue.config import Config
 from polylogue.core.enums import Provider
 from polylogue.daemon.parse_prefetch import DaemonParseStage
-from polylogue.storage.repair import repair_raw_materialization
+from polylogue.storage.raw_convergence import converge_raw_materialization
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -119,9 +119,9 @@ def test_flag_on_prefetch_and_flag_off_produce_identical_archive_content(tmp_pat
     _seed_corpus(baseline_root)
     _seed_corpus(prefetch_root)
 
-    # Flag OFF: parse happens entirely inside repair_raw_materialization,
+    # Flag OFF: parse happens entirely inside converge_raw_materialization,
     # exactly as production behaves today.
-    baseline_result = repair_raw_materialization(
+    baseline_result = converge_raw_materialization(
         _config(baseline_root),
         dry_run=False,
         raw_artifact_limit=100,
@@ -136,7 +136,7 @@ def test_flag_on_prefetch_and_flag_off_produce_identical_archive_content(tmp_pat
     try:
         warmed = stage.warm(_config(prefetch_root), limit=100, max_payload_bytes=10_000_000)
         assert warmed == 4
-        prefetch_result = repair_raw_materialization(
+        prefetch_result = converge_raw_materialization(
             _config(prefetch_root),
             dry_run=False,
             raw_artifact_limit=100,

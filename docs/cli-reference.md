@@ -571,22 +571,12 @@ Commands:
 ```text
 Usage: polylogue ops doctor [OPTIONS]
 
-  Health check with optional maintenance and cleanup previews.
+  Read-only health check over the archive, runtime, daemon, blobs, and
+  schemas.
 
 Options:
   -f, --format [json]             Output format
   -v, --verbose                   Show breakdown by origin
-  --repair                        Run safe derived-data maintenance repairs
-  --cleanup                       Run destructive archive cleanup for orphaned
-                                  or empty persisted data
-  --target [session_insights|empty_sessions|superseded_raw_snapshots]
-                                  Limit maintenance to named targets such as
-                                  session_insights, empty_sessions, or
-                                  superseded_raw_snapshots
-  --preview                       Preview maintenance without executing
-                                  (requires --repair or --cleanup)
-  --vacuum                        Reclaim unused space after maintenance
-                                  (requires --repair or --cleanup)
   --deep                          Run SQLite integrity and expensive orphan
                                   scans (slow on large databases)
   --runtime                       Run environment and runtime verification

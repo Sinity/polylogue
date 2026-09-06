@@ -21,7 +21,6 @@ import pytest
 
 from polylogue.daemon.http import (
     _CLI_DELETE_SELECTION_MAX_BYTES,
-    _REBUILD_INDEX_WRITE_TIMEOUT_S,
     DaemonAPIHandler,
     DaemonAPIHTTPServer,
 )
@@ -70,7 +69,6 @@ def _handler(path: list[str], timeline: list[str]) -> DaemonAPIHandler:
     [
         (["api", "reset"], "_handle_reset", "http.reset"),
         (["api", "ingest"], "_handle_ingest", "http.ingest"),
-        (["api", "maintenance", "run"], "_handle_maintenance_run", "http.maintenance.run"),
     ],
 )
 def test_authenticated_write_route_holds_gate_around_handler(path: list[str], handler_name: str, actor: str) -> None:
@@ -619,69 +617,6 @@ def test_user_post_and_delete_hold_named_gates_around_dispatch() -> None:
         "body",
         "exit:http.user.annotations.delete",
     ]
-
-
-class _RecordingRebuildBridge(_RecordingBridge):
-    """Adds ``run_sync_with_timeout`` so real ``_handle_rebuild_index`` can run.
-
-    polylogue-ogn1: rebuild-index uses ``run_sync_with_timeout`` (not
-    ``run_sync``) so a long rebuild pass isn't killed by the bridge's much
-    shorter default request timeout -- see ``DaemonAPIHandler._handle_rebuild_index``
-    and ``DaemonWriteThreadBridge.run_sync_with_timeout``.
-    """
-
-    def run_sync_with_timeout(
-        self, actor: str, timeout: float | None, function: Callable[..., object], *args: object
-    ) -> object:
-        self.timeline.append(f"run_sync_with_timeout:{actor}:{timeout}")
-        return function(*args)
-
-
-def test_rebuild_index_route_uses_the_bridge_run_sync_with_timeout_writer_path(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """Drive the request through the real production dispatch, not a stand-in.
-
-    The previous version of this test replaced ``_handle_rebuild_index``
-    wholesale with a body that itself called ``bridge.run_sync`` -- it only
-    proved the test's own stand-in called ``run_sync``, never that the real
-    production handler does anything of the kind (polylogue-ogn1 finding
-    #10). This exercises the real ``_do_post_impl`` route dispatch and the
-    real ``_handle_rebuild_index`` implementation end to end, with only the
-    typed rebuild service itself stubbed out.
-    """
-    import json
-    from io import BytesIO
-
-    from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
-
-    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
-    timeline: list[str] = []
-    handler = _handler(["api", "maintenance", "rebuild-index"], timeline)
-    handler.server.write_bridge = _RecordingRebuildBridge(timeline)  # type: ignore[assignment]
-    body = json.dumps({"promote": False, "raw_ids": ["raw-1"]}).encode("utf-8")
-    handler.headers = {"Content-Length": str(len(body))}  # type: ignore[assignment]
-    handler.rfile = BytesIO(body)
-
-    receipt = RebuildIndexReceipt(
-        archive_root=str(tmp_path),
-        raw_session_count=1,
-        selected_raw_count=1,
-        skipped_by_blob_limit_count=0,
-        status="replayed",
-        materialized=True,
-        materialization={},
-        generation={"generation_id": "candidate-1", "active": False},
-        readiness={"checked": True, "blocked_surface_count": 0},
-        replay={"classified_full_count": 1, "replayed_logical_source_count": 1, "quarantined_raw_count": 0},
-    )
-    with patch("polylogue.maintenance.rebuild_index.rebuild_index_from_source_sync", return_value=receipt) as rebuild:
-        with patch.object(handler, "_send_json") as send_json:
-            handler._do_post_impl()
-
-    assert timeline == [f"run_sync_with_timeout:http.maintenance.rebuild-index:{_REBUILD_INDEX_WRITE_TIMEOUT_S}"]
-    request = rebuild.call_args.args[0]
-    assert request.raw_ids == ("raw-1",)
-    assert request.promote is False
-    assert send_json.call_args.args == (HTTPStatus.OK, receipt.to_dict())
 
 
 def test_standalone_http_server_owns_and_idempotently_closes_writer_runtime() -> None:

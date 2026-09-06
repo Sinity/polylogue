@@ -9,8 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.config import Config, Source
-from polylogue.maintenance.rebuild_index import freeze_candidate_source_inputs, verify_frozen_candidate_source_inputs
 from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
 from polylogue.sources import source_snapshot
 from polylogue.sources.source_snapshot import (
@@ -133,25 +131,6 @@ def test_completion_marker_fsyncs_its_destination_directory(tmp_path: Path, monk
     )
 
     assert destination in fsyncs_after_marker
-
-
-def test_verify_frozen_candidate_source_inputs_rejects_tampered_candidate(tmp_path: Path) -> None:
-    """Mutation: accepting a changed cut file would let candidate planning read unsealed bytes."""
-    source = tmp_path / "configured-source"
-    source.mkdir()
-    (source / "session.jsonl").write_text("before\n", encoding="utf-8")
-    config = Config(archive_root=tmp_path, render_root=tmp_path / "render", sources=[Source("configured", source)])
-    destination = tmp_path / "cut"
-    frozen = freeze_candidate_source_inputs(
-        config,
-        destination=destination,
-        request_id="tamper-check",
-        fallback_source_path=tmp_path / "source.db",
-    )
-    (frozen.candidate_root / "configured-0" / "session.jsonl").write_text("tampered\n", encoding="utf-8")
-
-    with pytest.raises(SourceMutationError, match="candidate snapshot mutated"):
-        verify_frozen_candidate_source_inputs(destination)
 
 
 def test_repeating_a_published_cut_reuses_its_manifest(tmp_path: Path) -> None:

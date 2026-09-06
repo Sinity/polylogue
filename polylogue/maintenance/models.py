@@ -3,16 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.maintenance.invalidation import InvalidationReason
-
-
-class MaintenanceCategory(str, Enum):
-    DERIVED_REPAIR = "derived_repair"
-    ARCHIVE_CLEANUP = "archive_cleanup"
-    SOURCE_INGEST = "source_ingest"
 
 
 @dataclass(frozen=True)
@@ -55,4 +48,4 @@ class DerivedModelStatus:
         )
 
 
-__all__ = ["DerivedModelStatus", "MaintenanceCategory"]
+__all__ = ["DerivedModelStatus"]

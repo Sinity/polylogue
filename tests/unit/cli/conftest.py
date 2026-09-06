@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.index import rebuild_index
+from tests.infra.fts import rebuild_fts
 from tests.infra.storage_records import DbFactory
 
 
@@ -66,8 +66,6 @@ def search_workspace(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyP
         updated_at=datetime.now() - timedelta(hours=6),
     )
 
-    # Build FTS index using rebuild_index
-
-    rebuild_index()
+    rebuild_fts()
 
     return cli_workspace

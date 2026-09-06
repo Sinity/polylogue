@@ -9,9 +9,7 @@ from pathlib import Path
 import pytest
 from hypothesis import given
 
-from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.index_generation import IndexGenerationStore
 from tests.infra.corpus_program import (
     Acquire,
     Append,
@@ -26,15 +24,12 @@ from tests.infra.corpus_program import (
     Fork,
     HookArtifact,
     ProductionCorpusRuntime,
-    Promote,
     RawArtifact,
-    Rebuild,
     Replace,
     Restart,
     corpus_program_schedule_strategy,
     corpus_program_strategy,
 )
-from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 
 
 class RecordingRunner:
@@ -57,12 +52,6 @@ class RecordingRunner:
 
     def converge(self) -> None:
         self.calls.append("converge")
-
-    def rebuild(self) -> None:
-        self.calls.append("rebuild")
-
-    def promote(self) -> None:
-        self.calls.append("promote")
 
 
 def _artifact(artifact_id: str, payload: bytes = b"payload") -> RawArtifact:
@@ -97,8 +86,6 @@ def test_program_serialization_is_canonical_and_round_trips_all_operation_shapes
         Crash("crash"),
         Restart("restart"),
         Converge("converge"),
-        Rebuild("rebuild"),
-        Promote("promote"),
     )
     program = CorpusProgram(operations, schedule=tuple(operation.operation_id for operation in operations))
 
@@ -280,84 +267,6 @@ def test_production_route_persists_canonical_hook_envelope(workspace_env: dict[s
         "session_id": hook.session_native_id,
         "timestamp": "2025-01-01T00:00:00Z",
     }
-
-
-def _freeze_runtime_source(
-    runtime: ProductionCorpusRuntime,
-    receipt_path: Path,
-    *,
-    expected_raws: int = 1,
-) -> None:
-    runtime.converge()
-    backfill = backfill_historical_revision_evidence(runtime.archive_root)
-    assert backfill.scanned == expected_raws
-    assert backfill.classified_full == expected_raws
-    assert backfill.replayed_logical_sources + backfill.adoption_deferred == 1
-    runtime.bind_schema_inference_receipt(write_valid_rebuild_receipt(runtime.archive_root, receipt_path))
-
-
-def test_production_route_promotes_the_owned_candidate_with_terminal_transaction(
-    workspace_env: dict[str, Path],
-) -> None:
-    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
-    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
-    runtime.acquire(_artifact("session", fixture_path.read_bytes()))
-    _freeze_runtime_source(
-        runtime,
-        workspace_env["archive_root"].parent / "corpus-program-schema-inference-receipt.json",
-    )
-    store = IndexGenerationStore.for_archive_root(runtime.archive_root)
-    active_before = store.active_pointer.resolve(strict=True)
-
-    built = runtime.rebuild()
-
-    assert built.status == "replayed"
-    assert built.generation["state"] == "inactive"
-    assert built.transaction is not None
-    assert built.transaction["status"] == "ready"
-    operation_id = built.transaction["operation_id"]
-    assert store.active_pointer.resolve(strict=True) == active_before
-
-    promoted = runtime.promote()
-
-    assert promoted.status == "replayed"
-    assert promoted.generation["state"] == "active"
-    assert promoted.transaction is not None
-    assert promoted.transaction["operation_id"] == operation_id
-    assert promoted.transaction["status"] == "promoted"
-    assert store.active_pointer.resolve(strict=True) == Path(str(promoted.generation["index_path"])).resolve()
-
-
-def test_production_route_refuses_promotion_after_source_drift(
-    workspace_env: dict[str, Path],
-) -> None:
-    fixture_path = Path(__file__).parents[1] / "data" / "codex_event_stream" / "text_only_stream.jsonl"
-    runtime = ProductionCorpusRuntime(workspace_env["archive_root"])
-    artifact = _artifact("session", fixture_path.read_bytes())
-    runtime.acquire(artifact)
-    _freeze_runtime_source(
-        runtime,
-        workspace_env["archive_root"].parent / "corpus-program-source-drift-receipt.json",
-    )
-    store = IndexGenerationStore.for_archive_root(runtime.archive_root)
-    active_before = store.active_pointer.resolve(strict=True)
-
-    built = runtime.rebuild()
-    assert built.transaction is not None
-    operation_id = str(built.transaction["operation_id"])
-    runtime.acquire(artifact.with_payload(artifact.payload + b"\n"))
-    _freeze_runtime_source(
-        runtime,
-        workspace_env["archive_root"].parent / "corpus-program-post-drift-receipt.json",
-        expected_raws=2,
-    )
-
-    with pytest.raises(RuntimeError, match="source evidence changed"):
-        runtime.promote()
-
-    transaction = store.load_transaction(operation_id)
-    assert transaction.status == "stale"
-    assert store.active_pointer.resolve(strict=True) == active_before
 
 
 def test_emit_hook_refuses_non_object_payload_with_named_reason(tmp_path: Path) -> None:

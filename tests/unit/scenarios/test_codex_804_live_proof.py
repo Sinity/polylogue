@@ -3,19 +3,18 @@
 The witness is structural rather than private: 804 full-snapshot acquisitions
 share one source path, the terminal snapshot is exactly 90,822,451 bytes, and
 the content contains only synthetic identifiers and padding.  The test still
-uses the production acquisition, parser, convergence, resumable rebuild, and
-generation-promotion seams.  It is deliberately a proof harness, not a second
-archive writer.
+uses the production acquisition, parser, and convergence seams.  It is
+deliberately a proof harness, not a second archive writer.
 
 The live archive and the real 2026-07-31 witness are unavailable to this lane.
 The remaining confidence gap is therefore the live-operation receipt tracked
 by ``polylogue-live-operation-receipts`` and the terminal production proof
 ``polylogue-reindex-final-proof``.
 
-Where the three audited defects are enforced. A Codex post-merge audit of
-PR #3855 named three ways this harness could accept a bad run. Each now has a
-named postcondition here plus a red-mutation test at the bottom of the module,
-so a future reader does not have to re-derive them from the audit comments:
+Where the audited defects are enforced. A Codex post-merge audit of PR #3855
+named ways this harness could accept a bad run. Each has a named postcondition
+here plus a red-mutation test at the bottom of the module, so a future reader
+does not have to re-derive them from the audit comments:
 
 ``comment 3728404649`` -- revisions regenerating timestamps for provider IDs
     that already exist, letting a growth chain pass through conflict fallback
@@ -23,11 +22,6 @@ so a future reader does not have to re-derive them from the audit comments:
     (per revision) and, in total form, by ``_WirePrefixPreservationWitness``,
     which requires revision ``N``'s leading bytes to hash to revision ``N-1``'s
     whole-file digest for all 804 revisions.
-``comment 3728830133`` -- a kill that waits until the transaction is already
-    paused, missing the pre-checkpoint crash window. Enforced by the
-    ``precheckpoint_script`` subprocess, which hard-exits *inside*
-    ``checkpoint_transaction`` before the original call can publish durable
-    paused state, and by ``_assert_precheckpoint_state``.
 ``comment 3728830142`` -- a final postcondition accepting zero memberships or
     quarantined authority, admitting unresolved historical revisions. Enforced
     by ``_assert_exact_authority_census``, which requires every raw to be
@@ -45,7 +39,6 @@ import os
 import resource
 import sqlite3
 import subprocess
-import sys
 import time
 from dataclasses import replace
 from datetime import datetime
@@ -72,11 +65,7 @@ from polylogue.scenarios.workload import raw_authority_fixed_point_spec
 from polylogue.schemas.operator.receipt import package_hashes_for_registry
 from polylogue.schemas.registry import SCHEMA_DIR, SchemaRegistry
 from polylogue.sources.revision_backfill import RAW_AUTHORITY_PARSER_FINGERPRINT
-from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
-from polylogue.storage.index_generation import IndexGenerationStore, rebuild_source_evidence_snapshot
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
-from tests.infra.archive_canonical_snapshot import archive_snapshot
-from tests.infra.rebuild_receipt import write_valid_rebuild_receipt
 from tests.infra.whale_fixtures import (
     WHALE_FIXTURE_DIMENSIONS,
     CodexRevisionChainFixture,
@@ -166,22 +155,6 @@ class _WirePrefixPreservationWitness:
             self.verified_revisions.append(revision)
         self.previous_size = path.stat().st_size
         self.previous_sha256 = whole_sha256
-
-
-def _assert_precheckpoint_state(
-    *,
-    status: str,
-    processed_raw_count: int,
-    last_raw_id: str | None,
-    last_blob_hash_hex: str | None,
-    receipt_names: tuple[str, ...],
-) -> None:
-    """Require a kill before the durable paused checkpoint to stay running."""
-    assert status == "running"
-    assert processed_raw_count == 0
-    assert last_raw_id is None
-    assert last_blob_hash_hex is None
-    assert receipt_names == ()
 
 
 def _assert_exact_authority_census(
@@ -325,25 +298,17 @@ def _source_facts(
     return int(row[0]), int(row[1]), int(row[2]), int(row[3]), authorities, raw_rows
 
 
-def _readiness_count(readiness: dict[str, object], key: str) -> int:
-    value = readiness[key]
-    if isinstance(value, bool) or not isinstance(value, (int, str)):
-        raise AssertionError(f"readiness field {key!r} is not count-shaped: {value!r}")
-    return int(value)
-
-
 @pytest.mark.timeout(900)
-@pytest.mark.uses_real_clock("waits for a real subprocess replay checkpoint and kill/resume boundary")
+@pytest.mark.uses_real_clock("measures wall-clock cost of an incident-scale convergence pass")
 def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise acquisition through candidate promotion at incident scale.
+    """Exercise acquisition through raw-authority convergence at incident scale.
 
     Anti-vacuity: deleting the production ``AcquisitionService`` call from
     ``acquire_codex_revision_chain`` leaves the source row count at zero;
     deleting the production ``LiveBatchProcessor.plan_append`` call leaves
     no verified 804..819 append-plan sequence;
-    deleting parser/convergence leaves the terminal index session absent;
-    deleting the resumable candidate path leaves no paused transaction or
-    inactive generation for the recovery assertions below.
+    deleting parser/convergence leaves the terminal index session absent and
+    the byte-authority census below unresolved.
     """
 
     root = tmp_path / "codex-804-proof"
@@ -483,13 +448,10 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         )
     )
 
-    # Source remediation is a phase-2 input to candidate construction. Run
-    # the production remediation route in an isolated archive, then carry its
-    # finalized durable source tier into this fresh-index candidate fixture.
-    # This keeps the rebuild receipt frozen after remediation, so a candidate
-    # replay cannot hide a source mutation behind its own provenance gate.
-    # The replay phase intentionally begins before source remediation and the
-    # crash boundary so its receipt covers the complete recovery envelope.
+    # Convergence runs in an isolated archive holding a copy of the durable
+    # source tier and blob tree, so the index it derives is attributable to
+    # this pass alone; the resolved source tier is then carried back into the
+    # proof root. The replay phase spans the whole convergence envelope.
     replay_before = _resource_sample(tmp_path)
     replay_started = time.perf_counter()
     source_ready_root = tmp_path / "codex-804-source-ready"
@@ -498,7 +460,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     clone_blob_tree(root / "blob", source_ready_root / "blob")
     with sqlite3.connect(source_ready_root / "source.db") as conn:
         assert int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0]) == expected_raw_count
-    whale_repair = raw_authority.repair_materialization(
+    whale_repair = raw_authority.converge_materialization(
         Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
         dry_run=False,
         raw_artifact_id=whale_candidate,
@@ -512,7 +474,7 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
     assert whale_repair.metrics["raw_materialization_selected_count"] == 1.0
     assert whale_repair.plan_outcomes
     assert all(whale_candidate in outcome.input_raw_ids for outcome in whale_repair.plan_outcomes)
-    followup_repair = raw_authority.repair_materialization(
+    followup_repair = raw_authority.converge_materialization(
         Config(archive_root=source_ready_root, render_root=source_ready_root / "render", sources=[]),
         dry_run=False,
         raw_artifact_limit=1,
@@ -529,321 +491,19 @@ def test_sanitized_codex_804_revision_recovery_proof(tmp_path: Path, monkeypatch
         )
         is None
     )
-    schema_inference_receipt_path = write_valid_rebuild_receipt(root, tmp_path / "schema-inference-gate-receipt.json")
-    store = IndexGenerationStore.for_archive_root(root)
-    active_before = store.active_pointer.resolve(strict=True)
-    baseline = archive_snapshot(root)
-
-    transaction = store.create_transaction(
-        source_snapshot=rebuild_source_evidence_snapshot(root),
-        # The proof must spend one bounded restart pass on the complete
-        # synthetic corpus. A small production budget would make every retry
-        # re-enter frozen replay for the same 804-revision cohort, turning a
-        # restart proof into an unbounded terminal-stage stress loop.
-        pass_byte_budget=whale_component_bytes + 1,
-    )
-    operation_id = transaction.operation_id
-    assert transaction.status == "running"
-    transaction_path = store.transactions_root / f"{operation_id}.json"
-    assert transaction_path.is_file()
-    precheckpoint_script = """
-import os
-import sys
-from pathlib import Path
-
-from polylogue.storage.index_generation import IndexGenerationStore
-
-original_checkpoint = IndexGenerationStore.checkpoint_transaction
-
-def terminate_before_page_checkpoint(self, transaction, **kwargs):
-    if kwargs.get("status") == "paused" and kwargs.get("processed_raw_count", 0) > 0:
-        os._exit(97)
-    return original_checkpoint(self, transaction, **kwargs)
-
-IndexGenerationStore.checkpoint_transaction = terminate_before_page_checkpoint
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-
-root = Path(sys.argv[1])
-operation_id = sys.argv[2]
-receipt = Path(sys.argv[3])
-rebuild_index_from_source_sync(
-    RebuildIndexRequest(
-        archive_root=root,
-        operation_id=operation_id,
-        promote=False,
-        schema_inference_receipt_path=receipt,
-        raw_batch_size=8,
-    )
-)
-raise SystemExit("checkpoint seam was not reached")
-"""
-    precheckpoint_process = subprocess.run(
-        [sys.executable, "-c", precheckpoint_script, str(root), operation_id, str(schema_inference_receipt_path)],
-        cwd=Path.cwd(),
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=120,
-    )
-    assert precheckpoint_process.returncode == 97, (
-        f"pre-checkpoint boundary did not terminate at the checkpoint seam: "
-        f"returncode={precheckpoint_process.returncode}; "
-        f"stdout={precheckpoint_process.stdout}; stderr={precheckpoint_process.stderr}"
-    )
-    persisted_before_page = store.load_transaction(operation_id)
-    # Mutation that advances the cursor before checkpoint_transaction returns
-    # fails these pre-checkpoint invariants and the receipt census below.
-    receipt_directory = store.transactions_root / f"{operation_id}.receipts"
-    _assert_precheckpoint_state(
-        status=persisted_before_page.status,
-        processed_raw_count=persisted_before_page.processed_raw_count,
-        last_raw_id=persisted_before_page.last_raw_id,
-        last_blob_hash_hex=persisted_before_page.last_blob_hash_hex,
-        receipt_names=tuple(path.name for path in receipt_directory.glob("pass-*.json")),
-    )
-    precheckpoint_generation = store.load(persisted_before_page.generation_id)
-    with sqlite3.connect(precheckpoint_generation.index_path) as conn:
-        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
-    committed_page = store.next_raw_page(persisted_before_page, limit=8)
-    committed_page_raw_ids = tuple(row[0] for row in committed_page.rows)
-    assert len(committed_page_raw_ids) == 8
-    replay_script = """
-import sys
-from pathlib import Path
-
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-
-root = Path(sys.argv[1])
-operation_id = sys.argv[2]
-receipt = Path(sys.argv[3])
-result = rebuild_index_from_source_sync(
-    RebuildIndexRequest(
-        archive_root=root,
-        operation_id=operation_id,
-        promote=False,
-        schema_inference_receipt_path=receipt,
-        raw_batch_size=8,
-    )
-)
-print(result.status)
-"""
-    replay_process = subprocess.Popen(
-        [sys.executable, "-c", replay_script, str(root), operation_id, str(schema_inference_receipt_path)],
-        cwd=Path.cwd(),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    replay_deadline = time.monotonic() + 120
-    while time.monotonic() < replay_deadline:
-        persisted = store.load_transaction(operation_id)
-        if persisted.processed_raw_count > 0:
-            replay_process.kill()
-            break
-        returncode = replay_process.poll()
-        if returncode is not None:
-            stdout = replay_process.stdout.read() if replay_process.stdout is not None else ""
-            stderr = replay_process.stderr.read() if replay_process.stderr is not None else ""
-            raise AssertionError(
-                f"replay exited before durable progress: {returncode}; stdout={stdout}; stderr={stderr}"
-            )
-        time.sleep(0.1)
-    else:
-        replay_process.kill()
-        raise AssertionError("replay did not checkpoint durable progress before the interruption deadline")
-    replay_returncode = replay_process.wait(timeout=30)
-    assert replay_returncode == -9
-    persisted = store.load_transaction(operation_id)
-    assert persisted.status == "paused"
-    assert persisted.processed_raw_count == len(committed_page_raw_ids)
-    interrupted_generation = store.load(persisted.generation_id)
-    with sqlite3.connect(interrupted_generation.index_path) as conn:
-        assert int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]) > 0
-        # polylogue-b5l.1 (#4285): the generation-local sealed membership is
-        # the resume authority, so what the restart owes is the sealed order
-        # minus every raw already committed -- which includes the page the
-        # pre-checkpoint crash committed before exiting without a checkpoint.
-        committed_before_restart = frozenset(
-            str(row[0])
-            for row in conn.execute("SELECT raw_id FROM candidate_source_membership WHERE status = 'committed'")
-        )
-    assert set(committed_page_raw_ids) <= committed_before_restart
-    assert store.active_pointer.resolve(strict=True) == active_before
     phases.append(
         _phase(
             "replay",
             replay_before,
             _resource_sample(tmp_path),
             replay_started,
-            completed=0,
-            total=expected_raw_count,
-            rss_available=False,
-        )
-    )
-
-    resume_before = _resource_sample(root)
-    resume_started = time.perf_counter()
-    resume_script = f"""
-import json
-import sys
-from pathlib import Path
-
-import polylogue.maintenance.replay as replay_module
-
-trace = Path(sys.argv[4])
-real_replay = replay_module.rebuild_index_from_source
-
-async def recording_replay(*args, **kwargs):
-    with trace.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(list(kwargs["raw_ids"]), sort_keys=True) + "\\n")
-    return await real_replay(*args, **kwargs)
-
-replay_module.rebuild_index_from_source = recording_replay
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-
-root = Path(sys.argv[1])
-operation_id = sys.argv[2]
-receipt = Path(sys.argv[3])
-result = rebuild_index_from_source_sync(
-    RebuildIndexRequest(
-        archive_root=root,
-        operation_id=operation_id,
-        promote=False,
-        schema_inference_receipt_path=receipt,
-        raw_batch_size={expected_raw_count},
-    )
-)
-if result.status != "replayed" or not result.materialized:
-    raise SystemExit(f"bounded restart did not reach replayed: {{result.status!r}}")
-print(result.generation["generation_id"])
-"""
-    replay_trace_path = tmp_path / "rebuild-replay-trace.jsonl"
-    resumed_process = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            resume_script,
-            str(root),
-            operation_id,
-            str(schema_inference_receipt_path),
-            str(replay_trace_path),
-        ],
-        cwd=Path.cwd(),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert resumed_process.returncode == 0, (
-        f"restart subprocess failed: returncode={resumed_process.returncode}; "
-        f"stdout={resumed_process.stdout}; stderr={resumed_process.stderr}"
-    )
-    generation_id = resumed_process.stdout.strip().splitlines()[-1]
-    assert generation_id.startswith("gen-")
-    persisted_after_restart = store.load_transaction(operation_id)
-    assert persisted_after_restart.status == "ready"
-    candidate = store.load(generation_id)
-    assert candidate.state == "inactive"
-    assert Path(candidate.index_path).is_file()
-    assert store.active_pointer.resolve(strict=True) == active_before
-    resumed_raw_pages = tuple(
-        tuple(json.loads(line)) for line in replay_trace_path.read_text(encoding="utf-8").splitlines()
-    )
-    assert resumed_raw_pages, "restart observed no production replay selections for the suffix"
-    resumed_raw_sequence = tuple(raw_id for page in resumed_raw_pages for raw_id in page)
-    with sqlite3.connect(root / "source.db") as conn:
-        all_raw_sequence = tuple(
-            str(row[0]) for row in conn.execute("SELECT raw_id FROM raw_sessions ORDER BY blob_hash, raw_id")
-        )
-    with sqlite3.connect(candidate.index_path) as conn:
-        sealed_raw_sequence = tuple(
-            str(row[0])
-            for row in conn.execute("SELECT raw_id FROM candidate_source_membership ORDER BY blob_hash, raw_id")
-        )
-    assert all(isinstance(raw_id, str) for page in resumed_raw_pages for raw_id in page)
-    assert len(resumed_raw_sequence) == len(set(resumed_raw_sequence)), "restart replayed a raw more than once"
-    assert len(all_raw_sequence) == len(set(all_raw_sequence))
-    # No raw of this fixture carries a resolved-superseded membership row
-    # (``membership_rows == ()`` below), so the seal is the whole source head:
-    # a seal that silently dropped an eligible raw fails here, not merely in
-    # the suffix comparison.
-    assert sealed_raw_sequence == all_raw_sequence
-    assert set(committed_page_raw_ids).isdisjoint(set(resumed_raw_sequence))
-    assert resumed_raw_sequence == tuple(
-        raw_id for raw_id in sealed_raw_sequence if raw_id not in committed_before_restart
-    )
-    assert set(resumed_raw_sequence) | committed_before_restart == set(sealed_raw_sequence)
-
-    idempotence_script = """
-import json
-import sys
-from pathlib import Path
-
-import polylogue.maintenance.replay as replay_module
-
-trace = Path(sys.argv[4])
-real_replay = replay_module.rebuild_index_from_source
-
-async def recording_replay(*args, **kwargs):
-    with trace.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(list(kwargs["raw_ids"]), sort_keys=True) + "\\n")
-    return await real_replay(*args, **kwargs)
-
-replay_module.rebuild_index_from_source = recording_replay
-from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source_sync
-
-root = Path(sys.argv[1])
-operation_id = sys.argv[2]
-receipt = Path(sys.argv[3])
-result = rebuild_index_from_source_sync(
-    RebuildIndexRequest(
-        archive_root=root,
-        operation_id=operation_id,
-        promote=False,
-        schema_inference_receipt_path=receipt,
-        raw_batch_size=804,
-    )
-)
-print(json.dumps({"status": result.status, "generation_id": result.generation["generation_id"]}))
-"""
-    idempotence_trace_path = tmp_path / "rebuild-idempotence-trace.jsonl"
-    idempotent_process = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            idempotence_script,
-            str(root),
-            operation_id,
-            str(schema_inference_receipt_path),
-            str(idempotence_trace_path),
-        ],
-        cwd=Path.cwd(),
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert idempotent_process.returncode == 0, (
-        f"idempotent restart failed: returncode={idempotent_process.returncode}; "
-        f"stdout={idempotent_process.stdout}; stderr={idempotent_process.stderr}"
-    )
-    idempotent_result = json.loads(idempotent_process.stdout.strip().splitlines()[-1])
-    assert idempotent_result == {"status": "replayed", "generation_id": generation_id}
-    idempotent_pages = tuple(
-        tuple(json.loads(line)) for line in idempotence_trace_path.read_text(encoding="utf-8").splitlines()
-    )
-    assert all(not page for page in idempotent_pages), "idempotent restart replayed a raw revision"
-    phases.append(
-        _phase(
-            "postflight",
-            resume_before,
-            _resource_sample(root),
-            resume_started,
             completed=expected_raw_count,
             total=expected_raw_count,
-            rss_available=False,
         )
     )
 
+    postflight_before = _resource_sample(root)
+    postflight_started = time.perf_counter()
     raw_count, max_blob_size, source_path_count, parse_error_count, authorities, raw_rows = _source_facts(root)
     assert raw_count == expected_raw_count
     assert max_blob_size == TERMINAL_WIRE_BYTES
@@ -911,24 +571,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
     assert len(source_keys) == 1
     terminal_logical_source_key = membership_keys[0] if membership_keys else source_keys[0]
 
-    store.promote(candidate)
-    final_snapshot = archive_snapshot(root, search_queries=("sanitized",))
-    baseline_sessions = next(item for item in baseline.canonical_rows if item.relation == "sessions")
-    assert not baseline_sessions.rows
-    sessions_relation = next(item for item in final_snapshot.canonical_rows if item.relation == "sessions")
-    assert sessions_relation.rows
-    public = dict(final_snapshot.public_projections)
-    indexed_session_id = f"codex-session:{SESSION_NATIVE_ID}"
-    assert public[f"summary:{indexed_session_id}"]
-    assert public[f"tree:{indexed_session_id}"]
-    assert public["search:sanitized"]
-    readiness = raw_materialization_readiness_snapshot(root)
-    assert readiness["available"] is True
-    assert _readiness_count(readiness, "raw_artifact_count") == expected_raw_count
-    materialized_raw_count = _readiness_count(readiness, "materialized_raw_artifact_count")
-    assert 0 < materialized_raw_count <= REVISION_COUNT
-    assert _readiness_count(readiness, "join_gap_count") == expected_raw_count - materialized_raw_count
-    with sqlite3.connect(root / "index.db") as conn:
+    with sqlite3.connect(source_ready_root / "index.db") as conn:
         indexed = conn.execute(
             "SELECT session_id, raw_id, message_count FROM sessions WHERE native_id = ?",
             (SESSION_NATIVE_ID,),
@@ -1027,7 +670,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         int(datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp() * 1000)
         for timestamp in _BASELINE_MESSAGE_TIMESTAMPS
     )
-    with sqlite3.connect(candidate.index_path) as conn:
+    with sqlite3.connect(source_ready_root / "index.db") as conn:
         persisted_baseline_timestamps = tuple(
             int(row[0])
             for row in conn.execute(
@@ -1036,6 +679,17 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             )
         )
     assert persisted_baseline_timestamps == expected_baseline_timestamps
+
+    phases.append(
+        _phase(
+            "postflight",
+            postflight_before,
+            _resource_sample(root),
+            postflight_started,
+            completed=expected_raw_count,
+            total=expected_raw_count,
+        )
+    )
 
     quiescent = _resource_sample(root)
     phases.append(
@@ -1072,19 +726,17 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
         build_id=f"git:{_git_head()}",
         runtime_id="production-corpus-runtime",
         archive_id=f"archive:{hashlib.sha256(str(root).encode()).hexdigest()}",
-        generation_id=generation_id,
+        generation_id=None,
         frame_id=None,
         phases=tuple(phases),
         evidence_refs=(
             "fixture:codex-804-sanitized",
             f"schema-registry:{profile_id}",
-            f"candidate-generation:{generation_id}",
             f"fixture-manifest-sha256:{fixture_manifest_digest}",
             f"source-raw-count:{raw_count}",
             f"source-parse-error-count:{parse_error_count}",
-            f"recovery-unresolved-before-crash:{pre_recovery_unresolved_count}",
-            f"recovery-memberships-after-restart:{post_recovery_membership_count}",
-            "restart-boundary:subprocess-persisted-transaction",
+            f"recovery-unresolved-before-convergence:{pre_recovery_unresolved_count}",
+            f"recovery-memberships-after-convergence:{post_recovery_membership_count}",
             "successor:polylogue-live-operation-receipts",
             "successor:polylogue-reindex-final-proof",
         ),
@@ -1093,8 +745,7 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
             "Sanitized structural witness only; no live /realm/state/polylogue access.",
             "Fixture setup includes 804 on-disk payload revisions, schema hashing, and a canonical fixture manifest.",
             f"Serialized fixture manifest digest is sha256:{fixture_manifest_digest} and is bound into the receipt input identity.",
-            "Replay and postflight subprocess RSS is unavailable because statm samples only the pytest parent; storage growth is not reported as write I/O.",
-            "The crash boundary hard-exits after durable transaction creation with the full-and-append authority cohort unresolved; a fresh process resumes and materializes it into an inactive candidate.",
+            "Peak RSS and write I/O are unreported; storage growth is sampled as directory tree size.",
             "Live confidence remains open until the named successor receipts bind the active archive.",
         ),
     )
@@ -1117,7 +768,6 @@ print(json.dumps({"status": result.status, "generation_id": result.generation["g
                 "terminal_raw_id": selected_raw_id,
                 "indexed_session": indexed[0][0],
                 "message_count": indexed[0][2],
-                "candidate_generation": generation_id,
                 "resource_phases": [phase.to_payload() for phase in phases],
                 "live_confidence_gap": ["polylogue-live-operation-receipts", "polylogue-reindex-final-proof"],
             },
@@ -1130,17 +780,6 @@ def test_codex_804_timestamp_red_mutation_is_rejected() -> None:
     mutated = (_BASELINE_MESSAGE_TIMESTAMPS[0], "2026-07-31T04:25:21Z")
     with pytest.raises(AssertionError):
         _assert_baseline_timestamps_are_stable(mutated)
-
-
-def test_codex_804_false_paused_state_red_mutation_is_rejected() -> None:
-    with pytest.raises(AssertionError):
-        _assert_precheckpoint_state(
-            status="paused",
-            processed_raw_count=8,
-            last_raw_id="raw-008",
-            last_blob_hash_hex="deadbeef",
-            receipt_names=("pass-001.json",),
-        )
 
 
 def test_codex_804_incomplete_authority_red_mutation_is_rejected() -> None:

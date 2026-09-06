@@ -1,7 +1,7 @@
 """Canonical archive operations shared across facade, CLI, and MCP surfaces.
 
 Re-exports are lazy (PEP 562 module ``__getattr__``): ``.archive`` alone pulls
-in the whole insights registry (``insights.archive`` -> ``storage.repair`` and
+in the whole insights registry (``insights.archive`` -> ``storage.raw_convergence`` and
 friends), so a caller that only needs e.g. ``OperationStatus`` from
 ``.operation_contract`` -- reached simply by importing a *submodule* of this
 package, which Python resolves by running this ``__init__`` first -- used to
@@ -18,22 +18,6 @@ if TYPE_CHECKING:
         ArchiveDebtInsight,
         ArchiveStats,
         CompletionAggregate,
-    )
-    from .candidate_build import (
-        CandidateBuildBudget,
-        CandidateBuildError,
-        CandidateBuildGeneration,
-        CandidateBuildObligation,
-        CandidateBuildPlan,
-        CandidateBuildPlanningContext,
-        CandidateBuildProgress,
-        CandidateBuildReceipt,
-        CandidateBuildRequest,
-        CandidateBuildResult,
-        CandidateBuildWireRequest,
-        SourceSeal,
-        lower_candidate_build_wire,
-        plan_candidate_build,
     )
     from .import_contracts import (
         ImportOperation,
@@ -67,20 +51,6 @@ def __getattr__(name: str) -> object:
         "ImportAck": (".import_operations", "ImportAck"),
         "ImportRequest": (".import_operations", "ImportRequest"),
         "OperationFollowUp": (".operation_contract", "OperationFollowUp"),
-        "CandidateBuildBudget": (".candidate_build", "CandidateBuildBudget"),
-        "CandidateBuildError": (".candidate_build", "CandidateBuildError"),
-        "CandidateBuildGeneration": (".candidate_build", "CandidateBuildGeneration"),
-        "CandidateBuildObligation": (".candidate_build", "CandidateBuildObligation"),
-        "CandidateBuildPlan": (".candidate_build", "CandidateBuildPlan"),
-        "CandidateBuildPlanningContext": (".candidate_build", "CandidateBuildPlanningContext"),
-        "CandidateBuildProgress": (".candidate_build", "CandidateBuildProgress"),
-        "CandidateBuildReceipt": (".candidate_build", "CandidateBuildReceipt"),
-        "CandidateBuildRequest": (".candidate_build", "CandidateBuildRequest"),
-        "CandidateBuildResult": (".candidate_build", "CandidateBuildResult"),
-        "CandidateBuildWireRequest": (".candidate_build", "CandidateBuildWireRequest"),
-        "SourceSeal": (".candidate_build", "SourceSeal"),
-        "lower_candidate_build_wire": (".candidate_build", "lower_candidate_build_wire"),
-        "plan_candidate_build": (".candidate_build", "plan_candidate_build"),
         "OperationStatus": (".operation_status", "OperationStatus"),
         "OperationCatalog": (".specs", "OperationCatalog"),
         "OperationKind": (".specs", "OperationKind"),
@@ -100,17 +70,6 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ArchiveDebtInsight",
     "ArchiveStats",
-    "CandidateBuildBudget",
-    "CandidateBuildError",
-    "CandidateBuildGeneration",
-    "CandidateBuildObligation",
-    "CandidateBuildPlan",
-    "CandidateBuildPlanningContext",
-    "CandidateBuildProgress",
-    "CandidateBuildReceipt",
-    "CandidateBuildRequest",
-    "CandidateBuildResult",
-    "CandidateBuildWireRequest",
     "CompletionAggregate",
     "ImportAck",
     "ImportOperation",
@@ -122,10 +81,7 @@ __all__ = [
     "OperationStatus",
     "RawFailureSample",
     "SafetyGuard",
-    "SourceSeal",
     "bounded_failure_samples",
     "build_declared_operation_catalog",
     "build_runtime_operation_catalog",
-    "lower_candidate_build_wire",
-    "plan_candidate_build",
 ]

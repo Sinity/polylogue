@@ -25,26 +25,13 @@ won't hurt."
 | - | --- | --- | --- | --- | --- |
 | 1 | Storage read tier | `storage/sqlite/archive_tiers/archive.py` | 11,382 → **11,324** lines (raw-revision/membership governance extracted to `archive_tiers/revision_governance.py`, 2,841 lines, polylogue-1r9c) | `ArchiveStore` — every SELECT-shaped query surface (sessions, messages, blocks, insights reads, search) | `storage/` |
 | 2 | API facade | `api/archive.py` | 5,881 lines | `Polylogue.repository`/`.backend` verb surface consumed by CLI/MCP/daemon | `api/` (surface) |
-| 3 | Storage repair | `storage/repair.py` | 5,558 lines | `repair_*`/`preview_*`/`run_safe_repairs`/`collect_archive_debt_statuses_sync` — every integrity-repair entrypoint the CLI `check`/`repair` commands and daemon convergence call | `storage/` (maintenance-adjacent, see note below) |
+| 3 | Raw convergence | `storage/raw_convergence.py` | 5,558 lines at census time | `converge_raw_materialization` and the raw-authority frontier strategies the daemon's raw drain executes | `storage/` |
 | 4 | Daemon HTTP | `daemon/http.py` | 4,609 lines | the daemon's REST/web-shell route table | `daemon/` (surface) |
 | 5 | Storage write tier | `storage/sqlite/archive_tiers/write.py` | 4,595 → **4,210** lines (this bead's slice 1 landed) | `write_parsed_session_to_archive` + session/message/block/tag/work-event/phase writers | `storage/` |
 | 6 | CLI query dispatch | `cli/archive_query.py`, fn `_execute_archive_query_stdout` | 2,488 lines file / 632-line function (174-805) | the `find`/`read`/`analyze` query-mode stdout path | `cli/` (surface) |
 | 7 | Daemon service loop | `daemon/cli.py`, fn `run_daemon_services` | 1,936 lines file / 475-line function (1007-1481) | `polylogued run` — daemon startup and the ~10 concurrent maintenance loops (see `polylogue-9e5.7`'s lock/starvation map) | `daemon/` |
 | 8a | ~~MCP read tools~~ **resolved** | ~~`mcp/server_tools.py`, fn `register_read_tools`~~ | 1,286 lines file / 490-line function → **0** (function and its file's other per-tool registrars deleted; `server_tools.py` is now a 19-line passthrough into `mcp/server_cutover.py`, polylogue-t46.8) | was every read-only MCP tool registration; replaced by the six-tool `query`/`read`/`get`/`explain`/`context`/`status` algebra | `mcp/` (surface) |
 | 8b | ~~MCP mutation tools~~ **resolved** | ~~`mcp/server_mutation_tools.py`, fn `register_mutation_tools`~~ | 497 lines → **0** (file deleted; logic re-hosted as `_dispatch_write` in `mcp/server_cutover.py`, polylogue-t46.8.3) | was every write MCP tool registration; replaced by the single capability-gated `write(operation=, ...)` transaction | `mcp/` (surface) |
-
-Note on #3: `storage/repair.py`'s placement is itself a case study for the
-polylogue-c9y placement doctrine — under the new rule-5 test ("integrity
-repair — detecting and fixing rows that violate an invariant the write path
-should have prevented") this is squarely `maintenance/` territory by
-function, but it lives under `storage/` today because it also owns
-low-level SQL the `maintenance/` package doesn't otherwise touch (receipt
-files, WAL journal-mode manipulation, quarantine census staging). A future
-slice should decide: either `maintenance/` absorbs the orchestration layer
-and calls into `storage/` for the SQL primitives (matches the doctrine), or
-the doctrine gets a documented exception for repair modules that are
-SQL-heavy enough to need `storage/`'s proximity. Not decided in this pass —
-flagged as an open question for whichever child bead executes #3's slice.
 
 ## Call boundaries and ownership seams
 

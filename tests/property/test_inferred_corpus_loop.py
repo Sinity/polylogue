@@ -35,7 +35,7 @@ from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_canonical_snapshot import archive_snapshot, assert_archives_equivalent
-from tests.infra.convergence_harness import rebuild_retained_raw_index, set_debt_retry_at
+from tests.infra.convergence_harness import set_debt_retry_at
 from tests.infra.inferred_corpus import (
     assert_inferred_corpus_convergence_handoff_complete,
     build_inferred_corpus_convergence_handoff,
@@ -146,18 +146,6 @@ def _ingest_and_converge_sources(
     with sqlite3.connect(archive_root / "index.db") as conn:
         record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
     return session_ids
-
-
-def _converge_existing_archive(archive_root: Path) -> None:
-    """Run post-reindex convergence over the promoted generation."""
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        session_ids = tuple(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions ORDER BY session_id"))
-    states, _timings = DaemonConverger(
-        (make_fts_stage(archive_root / "index.db"), make_derived_stage(archive_root / "index.db"))
-    ).converge_sessions(session_ids)
-    assert states and all(state.converged and state.last_error is None for state in states.values())
-    with sqlite3.connect(archive_root / "index.db") as conn:
-        record_fts_invariant_snapshot_sync(conn, fts_invariant_snapshot_sync(conn))
 
 
 def _lineage_material() -> tuple[bytes, bytes, str, str]:
@@ -410,28 +398,6 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     assert check.status is OutcomeStatus.ERROR
 
 
-@pytest.mark.frozen_clock_modules("polylogue.storage.sqlite.archive_tiers.revision_governance")
-def test_inferred_selection_retained_raw_reindex_matches_canonical_snapshot(
-    tmp_path: Path,
-    frozen_clock: object,
-) -> None:
-    spec, selection = _inferred_selection()
-    source_root = tmp_path / "retained-source"
-    written = SyntheticCorpus.write_selection_artifacts(selection, spec, source_root, prefix="retained")
-    archive_root = tmp_path / "archive"
-    session_ids = _ingest_and_converge_sources(
-        archive_root,
-        (Source(name=spec.provider, path=written.files[0]),),
-    )
-    before = archive_snapshot(archive_root, session_ids=session_ids)
-
-    receipt = rebuild_retained_raw_index(archive_root)
-    _converge_existing_archive(archive_root)
-
-    assert receipt.raw_session_count == receipt.selected_raw_count > 0
-    assert archive_snapshot(archive_root, session_ids=session_ids) == before
-
-
 @pytest.mark.uses_real_clock("fresh-process debt recovery crosses a subprocess wall-clock retry boundary")
 def test_inferred_selection_debt_recovers_in_a_fresh_process(tmp_path: Path) -> None:
     spec, selection = _inferred_selection()
@@ -502,12 +468,6 @@ def test_inferred_lineage_reindex_preserves_composition_and_detects_tail_mutatio
         composed = archive.read_session(child_id)
     assert len(composed.messages) > int(parent[1])
     assert any(message.message_id.startswith(parent_id + ":") for message in composed.messages)
-
-    rebuilt_root = tmp_path / "rebuilt"
-    _build_lineage_archive(rebuilt_root, parent_raw, child_raw)
-    rebuild_retained_raw_index(rebuilt_root)
-    _converge_existing_archive(rebuilt_root)
-    assert archive_snapshot(rebuilt_root) == archive_snapshot(canonical_root)
 
     mutated_records = [json.loads(line) for line in child_raw.decode().splitlines() if line]
     mutated_message = mutated_records[-1].get("payload", mutated_records[-1])

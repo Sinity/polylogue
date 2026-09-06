@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from polylogue.storage.repair import (
+from polylogue.storage.raw_convergence import (
     _QUARANTINED_ACCEPTED_RAW_REPAIR_BLOB_LIMIT_BYTES,
     _QUARANTINED_ACCEPTED_RAW_REPAIR_TOTAL_BLOB_LIMIT_BYTES,
     _partition_quarantined_raw_repair_blob_budget,

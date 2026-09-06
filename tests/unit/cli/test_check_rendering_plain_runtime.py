@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 from polylogue.cli.shared.check_models import CheckCommandResult
 from polylogue.cli.shared.check_rendering_plain import (
     build_report_lines,
-    emit_maintenance_output,
     render_plain_output,
     status_icon,
 )
@@ -31,10 +30,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
     values = {
         "json_output": False,
         "verbose": False,
-        "repair": False,
-        "cleanup": False,
-        "preview": False,
-        "vacuum": False,
         "deep": False,
         "runtime": False,
         "check_daemon": False,
@@ -54,7 +49,6 @@ def _options(**overrides: object) -> CheckCommandOptions:
         "schema_record_limit": None,
         "schema_record_offset": 0,
         "schema_quarantine_malformed": False,
-        "maintenance_targets": (),
     }
     values.update(overrides)
     return CheckCommandOptions(**values)
@@ -203,63 +197,13 @@ def test_build_report_lines_renders_all_sections_and_breakdowns() -> None:
     assert "Browser capture spool: ready" in rendered
 
 
-def test_emit_maintenance_output_handles_preview_empty_selection_and_vacuum_modes() -> None:
-    env = _env(plain=True)
-    result = CheckCommandResult(
-        report=ReadinessReport(),
-        maintenance_results=[
-            SimpleNamespace(
-                repaired_count=2,
-                success=True,
-                category=SimpleNamespace(value="repair"),
-                destructive=False,
-                name="fts",
-                detail="rebuilt",
-            ),
-            SimpleNamespace(
-                repaired_count=0,
-                success=False,
-                category=SimpleNamespace(value="cleanup"),
-                destructive=True,
-                name="orphans",
-                detail="failed",
-            ),
-        ],
-        maintenance_targets=("session_insights",),
-    )
-    with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
-        emit_maintenance_output(env, result, _options(repair=True, preview=True, vacuum=True))
-        run_vacuum.assert_not_called()
-
-    printed = "\n".join(call.args[0] for call in env.ui.console.print.call_args_list)
-    assert "OK fts [repair]: rebuilt" in printed
-    assert "FAIL orphans [cleanup destructive]: failed" in printed
-    assert "Preview mode: VACUUM skipped." in printed
-
-    env_no_selection = _env(plain=False)
-    with patch("polylogue.cli.shared.check_rendering_plain.run_vacuum") as run_vacuum:
-        emit_maintenance_output(
-            env_no_selection,
-            CheckCommandResult(report=ReadinessReport(), maintenance_results=None),
-            _options(cleanup=True, vacuum=True),
-        )
-        run_vacuum.assert_called_once_with(env_no_selection)
-
-    assert any(
-        "No maintenance operations were selected." in call.args[0]
-        for call in env_no_selection.ui.console.print.call_args_list
-    )
-
-
-def test_render_plain_output_delegates_to_summary_and_maintenance() -> None:
+def test_render_plain_output_delegates_to_summary() -> None:
     env = _env(plain=True)
     result = CheckCommandResult(report=ReadinessReport())
     options = _options()
 
     with patch("polylogue.cli.shared.check_rendering_plain.build_report_lines", return_value=["alpha"]) as build_lines:
-        with patch("polylogue.cli.shared.check_rendering_plain.emit_maintenance_output") as emit_maintenance:
-            render_plain_output(env, result, options)
+        render_plain_output(env, result, options)
 
     build_lines.assert_called_once_with(env, result, options)
     env.ui.summary.assert_called_once_with("Health Check", ["alpha"])
-    emit_maintenance.assert_called_once_with(env, result, options)

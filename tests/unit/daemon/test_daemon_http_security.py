@@ -281,8 +281,6 @@ class TestPostEndpointAuthAndOriginGate:
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
-            patch.object(handler, "_handle_maintenance_plan"),
-            patch.object(handler, "_handle_maintenance_run"),
             patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
         ):
             handler.do_POST()
@@ -305,8 +303,6 @@ class TestPostEndpointAuthAndOriginGate:
         with (
             patch.object(handler, "_handle_reset"),
             patch.object(handler, "_handle_ingest"),
-            patch.object(handler, "_handle_maintenance_plan"),
-            patch.object(handler, "_handle_maintenance_run"),
             patch("polylogue.daemon.user_state_http.dispatch_post", return_value=True),
         ):
             handler.do_POST()

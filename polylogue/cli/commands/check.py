@@ -18,11 +18,6 @@ def check_command(
     env: AppEnv,
     output_format: str | None,
     verbose: bool,
-    repair: bool,
-    cleanup: bool,
-    maintenance_targets: tuple[str, ...],
-    preview: bool,
-    vacuum: bool,
     deep: bool,
     runtime: bool,
     check_daemon: bool,
@@ -43,15 +38,10 @@ def check_command(
     schema_record_offset: int,
     schema_quarantine_malformed: bool,
 ) -> None:
-    """Health check with optional maintenance and cleanup previews."""
+    """Read-only health check over the archive, runtime, daemon, blobs, and schemas."""
     options = CheckCommandOptions(
         json_output=output_format == "json",
         verbose=verbose,
-        repair=repair,
-        cleanup=cleanup,
-        maintenance_targets=maintenance_targets,
-        preview=preview,
-        vacuum=vacuum,
         deep=deep,
         runtime=runtime,
         check_daemon=check_daemon,

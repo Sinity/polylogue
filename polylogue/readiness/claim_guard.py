@@ -177,7 +177,7 @@ def derive_claim_guard(
         claim="perf_measurable",
         value=not active_writer,
         reason=perf_reason,
-        signal="live_ingest_attempts.running_count / active_rebuild_index_attempts",
+        signal="live_ingest_attempts.running_count",
     )
 
     return ClaimGuard(openable=openable, converged=converged, search_ready=search, perf_measurable=perf)

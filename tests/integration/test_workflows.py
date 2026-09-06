@@ -126,11 +126,11 @@ async def test_full_workflow_per_provider(
     parse_result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
-    from polylogue.storage.index import update_index_for_sessions
     from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.fts import repair_fts_for_sessions
 
     with open_connection(db_path) as conn:
-        update_index_for_sessions(list(parse_result.processed_ids), conn)
+        repair_fts_for_sessions(list(parse_result.processed_ids), conn)
 
     # Verify import
     assert parse_result.counts["sessions"] > 0, f"No sessions imported from {provider}"
@@ -592,11 +592,11 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo: WorkflowRepos, 
     await service.parse_sources([chatgpt_sample_source])
 
     # Build search index
-    from polylogue.storage.index import rebuild_index
     from polylogue.storage.sqlite.connection import open_connection
+    from tests.infra.fts import rebuild_fts
 
     with open_connection(db_path) as conn:
-        rebuild_index(conn)
+        rebuild_fts(conn)
 
     # Get all sessions
     all_convs = await conv_repo.list()
@@ -662,11 +662,11 @@ async def test_search_with_special_characters(temp_config_and_repo: WorkflowRepo
         await service.parse_sources([Source(name="test", path=path)])
 
         # Build search index
-        from polylogue.storage.index import rebuild_index
         from polylogue.storage.sqlite.connection import open_connection
+        from tests.infra.fts import rebuild_fts
 
         with open_connection(db_path) as conn:
-            rebuild_index(conn)
+            rebuild_fts(conn)
 
         from polylogue.storage.search import search_messages
 

@@ -100,7 +100,7 @@ async def periodic_embedding_orphan_reconcile_check(
 ) -> None:
     """Periodically reconcile one bounded batch of orphan embedding rows.
 
-    An index rebuild (full re-ingest, ``ops maintenance rebuild-index``, a provider
+    An index rebuild (full re-ingest, an index reset followed by convergence, a provider
     full-replace parse) can leave ``embeddings.db`` rows pointing at
     message/session identities that no longer exist in the rebuilt
     ``index.db`` (polylogue-1dk1). This drains that debt in the background,

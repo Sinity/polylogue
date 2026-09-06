@@ -30,7 +30,7 @@ from polylogue.storage.archive_identity import ArchiveLocation
 #: later, deliberately-corrected version of ``classify_membership_revisions``
 #: (polylogue-9dxn). A persisted ``ambiguous`` verdict recorded under one of
 #: these fingerprints is stale, not authoritative -- the terminal-decision
-#: check in ``storage/repair.py`` treats it as replayable instead of durable
+#: check in ``storage/raw_convergence.py`` treats it as replayable instead of durable
 #: debt. A verdict recorded under the CURRENT fingerprint, or with no census
 #: row at all (never independently confirmed which parser produced it),
 #: stays terminal -- absent evidence must default to conservative, not to
@@ -838,7 +838,7 @@ RAW_REPLAY_NO_PROGRESS_REASON = (
 def raw_replay_plan_no_progress_plan_ids(archive_root: Path) -> set[str]:
     """Return plan ids whose most recent selected execution made zero typed progress.
 
-    hjpx's core execution-completeness gap: ``repair_raw_materialization`` can
+    hjpx's core execution-completeness gap: ``converge_raw_materialization`` can
     classify a raw as a replayable/selected authority component, hand it to
     ``backfill_historical_revision_evidence``, and get back
     ``replayed_logical_sources=0`` with no quarantine or adoption-deferral
@@ -2190,13 +2190,13 @@ def auto_resolve_stale_plan_blockers(archive_root: Path) -> int:
     crash-recovery path (:func:`recover_interrupted_raw_authority_censuses`).
 
     This closes the actual harm a stale-plan blocker causes today:
-    ``unresolved_raw_replay_blockers`` (the gate ``repair_materialization``
+    ``unresolved_raw_replay_blockers`` (the gate ``converge_materialization``
     checks every pass) counts ANY unresolved stale-plan blocker archive-wide
     and, if nonzero, skips repair for every other raw too -- so one stale
     plan on one component halted ordinary materialization for the whole
     archive until someone ran the manual CLI with a throwaway
     acknowledgment string. Called from the daemon's own periodic
-    materialization loop before ``repair_materialization``, so this replaces
+    materialization loop before ``converge_materialization``, so this replaces
     "wait indefinitely for an operator" with "clear automatically on the
     very next pass" -- the write is a plain tombstone-and-resolve, not a
     re-materialization, so a component whose recomputed plan is still not

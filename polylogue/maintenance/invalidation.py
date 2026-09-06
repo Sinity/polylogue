@@ -1,12 +1,8 @@
-"""Typed invalidation reasons for maintenance planning.
+"""Typed invalidation reasons for derived read-model status.
 
-A derived read model can be stale for many distinct reasons; the
-maintenance planner needs to surface *why* it scheduled work so that
-operators and downstream tooling can reason about the resulting
-:class:`~polylogue.maintenance.planner.BackfillOperation`. Until this
-module landed, the planner only carried a free-form ``detail`` string
-inherited from :class:`~polylogue.maintenance.models.DerivedModelStatus`,
-which lost the structured reason at the surface boundary.
+:class:`~polylogue.maintenance.models.DerivedModelStatus` carries one of
+these so status surfaces report *why* a derived read model is stale, not
+only a free-form detail string.
 
 The enum here is intentionally small and closed. New reasons must be
 added explicitly: callers persisting the value (logs, JSON envelopes,

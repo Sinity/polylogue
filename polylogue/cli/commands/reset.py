@@ -85,7 +85,7 @@ def _archive_database_targets(
     if (root / ".index-active-pointer").exists() and any(filename == "index.db" for _name, filename in databases):
         raise click.ClickException(
             "reset --database is unsafe for a managed active generation; "
-            "use `polylogue ops maintenance rebuild-index` to create and promote a replacement"
+            "the pointer-managed index.db must not be deleted in place"
         )
     targets: list[tuple[str, Path]] = []
     for name, filename in databases:
@@ -112,7 +112,7 @@ def _archive_index_targets() -> list[tuple[str, Path]]:
     if (root / ".index-active-pointer").exists():
         raise click.ClickException(
             "reset --index is unsafe for a managed active generation; "
-            "use `polylogue ops maintenance rebuild-index` to create and promote a replacement"
+            "the pointer-managed index.db must not be deleted in place"
         )
     path = _index_db_path()
     targets: list[tuple[str, Path]] = []
@@ -483,14 +483,13 @@ def reset_command(
         targets.extend(_archive_database_targets(include_source_db=include_source_db, include_user_db=include_user_db))
         if not include_source_db and _source_db_present():
             env.ui.console.print(
-                "Preserving source.db (durable acquired evidence). Rebuild index.db from preserved source evidence "
-                "with `polylogue ops maintenance rebuild-index`. Pass --include-source-db to delete source.db too."
+                "Preserving source.db (durable acquired evidence). Rebuild index.db from it with `polylogued run`; "
+                "ordinary convergence replays source.db into index.db. Pass --include-source-db to delete source.db too."
             )
         if not include_user_db and _user_db_present():
             env.ui.console.print(
                 "Preserving user.db (irreplaceable: tags, annotations, marks, saved views, "
-                "notes). Rebuild index.db from preserved source evidence with "
-                "`polylogue ops maintenance rebuild-index`. "
+                "notes). Rebuild index.db from preserved source evidence with `polylogued run`. "
                 "Pass --include-user-db to delete user.db too."
             )
     if blob:
@@ -552,7 +551,7 @@ def reset_command(
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
     if index or database:
-        env.ui.console.print("Next: run `polylogue ops maintenance rebuild-index` to replay source.db into index.db.")
+        env.ui.console.print("Next: run `polylogued run`; ordinary convergence replays source.db into index.db.")
 
 
 def _dedupe_targets(targets: list[tuple[str, Path]]) -> list[tuple[str, Path]]:

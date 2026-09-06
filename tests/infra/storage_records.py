@@ -1451,20 +1451,12 @@ class DbFactory:
         """Attach an ``agent-*.meta.json``-shaped phantom raw artifact to an
         already-created session and link it via ``sessions.raw_id``.
 
-        ``count_empty_sessions_sync``/``repair_empty_sessions``
-        (``polylogue/storage/repair.py``) only ever count a message-less (or
-        all-zero-word) session as debris when its raw artifact *positively
-        fails* the current record-shape classifier
-        (``_raw_artifact_positively_fails_classification``) -- a session
-        created via :meth:`create_session` with no raw content at all has
-        ``raw_id IS NULL``, which the classifier treats as "no evidence
-        either way" and therefore always retains (never counted as debt).
-        This seeds the same phantom shape
-        ``tests/unit/storage/test_empty_session_repair_provenance.py``'s
-        ``_seed`` helper uses (an ``agent-*.meta.json`` sidecar path, a
-        genuinely-debris shape the classifier positively refuses), so a
-        caller that wants an "empty" session to actually register as
-        maintenance debt must call this after :meth:`create_session`.
+        A session created via :meth:`create_session` with no raw content at
+        all has ``raw_id IS NULL``; this attaches the phantom
+        ``agent-*.meta.json`` sidecar shape a record-shape classifier
+        positively refuses, so a caller that wants an "empty" session to
+        carry positively-failing raw evidence must call this after
+        :meth:`create_session`.
 
         Resolves the blob store from ``self.db_path``'s own parent directory
         (this factory's archive root), never the ambient

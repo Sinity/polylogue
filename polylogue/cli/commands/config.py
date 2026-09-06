@@ -35,7 +35,7 @@ def config_command(ctx: click.Context, output_format: str, show_layers: bool) ->
 
 # Deferred: `completions.py` transitively imports the whole insights/storage
 # stack (polylogue.operations.action_contracts -> operations.archive ->
-# insights.archive -> storage.repair), ~650ms alone. `config --help` only
+# insights.archive -> storage.raw_convergence), ~650ms alone. `config --help` only
 # needs each subcommand's name + short help, not its implementation, so these
 # register as lazy proxies (matches the root-level pattern in
 # click_command_registration.py) instead of importing eagerly at module scope.

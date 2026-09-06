@@ -104,7 +104,7 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
         except RuntimeError as exc:
             raise SchemaVersionMismatchError(
                 f"Archive index schema does not match runtime version {SCHEMA_VERSION}.{suffix} "
-                f"{exc} Rebuild the derived index from source with `polylogue ops maintenance rebuild-index`.",
+                f"{exc} Reset the derived index and let `polylogued run` rebuild it from source.",
                 current_version=snapshot.current_version,
                 expected_version=SCHEMA_VERSION,
                 generation_id=generation_id,

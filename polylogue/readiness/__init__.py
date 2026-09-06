@@ -18,12 +18,10 @@ from polylogue.config import Config, load_polylogue_config
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.core.outcomes import OutcomeCheck, OutcomeReport, OutcomeStatus
 from polylogue.maintenance.models import DerivedModelStatus
-from polylogue.maintenance.targets import build_maintenance_target_catalog
 from polylogue.readiness.capability import (
     LEGACY_READINESS_SOURCE_TYPES,
     CapabilityReadinessState,
     ComponentReadiness,
-    component_from_archive_debt,
     component_from_archive_surface,
     component_from_assertion_substrate,
     component_from_catchup_status,
@@ -36,10 +34,9 @@ from polylogue.readiness.capability import (
     component_from_raw_materialization_readiness,
     component_from_transform_registry,
 )
-from polylogue.storage.archive_identity import archive_file_set_root, resolve_active_index_path
+from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.archive_readiness import claude_workflow_materialization_status, raw_materialization_ready
 from polylogue.storage.raw_retention import RawFrontierIntegrityProjection, raw_frontier_integrity_projection
-from polylogue.storage.repair import ArchiveDebtStatus
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 
 # Re-export canonical types for downstream consumers.
@@ -47,7 +44,6 @@ ReadinessCheck = OutcomeCheck
 VerifyStatus = OutcomeStatus
 
 READINESS_TTL_SECONDS = 600
-_MAINTENANCE_TARGET_CATALOG = build_maintenance_target_catalog()
 
 _DERIVED_MODEL_READINESS_CHECKS: tuple[tuple[str, str], ...] = (
     ("fts_sync", "messages_fts"),
@@ -83,8 +79,6 @@ class ReadinessReport(OutcomeReport):
 
     timestamp: int = field(default_factory=lambda: int(time.time()))
     derived_models: dict[str, DerivedModelStatus] = field(default_factory=dict)
-    archive_debt: dict[str, ArchiveDebtStatus] = field(default_factory=dict)
-    active_rebuild_index_attempts: list[dict[str, object]] = field(default_factory=list)
     raw_materialization_readiness: dict[str, object] = field(default_factory=dict)
     raw_frontier_integrity: dict[str, object] = field(default_factory=dict)
 
@@ -101,9 +95,7 @@ class ReadinessReport(OutcomeReport):
 
     @property
     def archive_convergence(self) -> dict[str, object]:
-        archive_state_checked = bool(
-            self.raw_materialization_readiness or self.raw_frontier_integrity or self.active_rebuild_index_attempts
-        )
+        archive_state_checked = bool(self.raw_materialization_readiness or self.raw_frontier_integrity)
         materialization_ready = raw_materialization_ready(self.raw_materialization_readiness)
         frontier_ready = (
             not self.raw_frontier_integrity or self.raw_frontier_integrity.get("overall_status") == "healthy"
@@ -118,11 +110,9 @@ class ReadinessReport(OutcomeReport):
         }
         return {
             "checked": archive_state_checked,
-            "converging": archive_state_checked
-            and (bool(self.active_rebuild_index_attempts) or not materialization_ready or not frontier_ready),
+            "converging": archive_state_checked and (not materialization_ready or not frontier_ready),
             "materialization_ready": materialization_ready,
             "materialization_progress": materialization_progress,
-            "active_rebuild_index_attempts": self.active_rebuild_index_attempts,
             "raw_materialization_readiness": self.raw_materialization_readiness,
             "raw_frontier_integrity": self.raw_frontier_integrity,
         }
@@ -144,7 +134,6 @@ class ReadinessReport(OutcomeReport):
                     for check in self.checks
                 ],
                 "derived_models": {name: status.to_dict() for name, status in sorted(self.derived_models.items())},
-                "archive_debt": {name: status.to_dict() for name, status in sorted(self.archive_debt.items())},
                 "raw_frontier_integrity": self.raw_frontier_integrity,
                 "summary": self.summary,
             }
@@ -339,34 +328,6 @@ def _message_index_check(conn: sqlite3.Connection, *, exact_counts: bool) -> Rea
     )
 
 
-def _archive_debt_checks(archive_debt: dict[str, ArchiveDebtStatus], *, deep: bool) -> list[ReadinessCheck]:
-    checks: list[ReadinessCheck] = []
-    for spec in _MAINTENANCE_TARGET_CATALOG.archive_readiness_specs(deep=deep):
-        debt = archive_debt.get(spec.name)
-        if debt is None:
-            continue
-        if debt.skipped:
-            checks.append(
-                ReadinessCheck(
-                    debt.name,
-                    VerifyStatus.SKIP,
-                    count=debt.issue_count,
-                    summary=debt.detail,
-                )
-            )
-            continue
-        unready_status = spec.archive_readiness_unready_status or VerifyStatus.WARNING
-        checks.append(
-            ReadinessCheck(
-                debt.name,
-                VerifyStatus.OK if debt.healthy else unready_status,
-                count=debt.issue_count,
-                summary=debt.detail,
-            )
-        )
-    return checks
-
-
 def _duplicate_sessions_check(conn: sqlite3.Connection) -> ReadinessCheck:
     # Archive invariant: the ``sessions`` table keys each session by
     # ``(origin, native_id)`` with a generated UNIQUE ``session_id``, so the
@@ -543,40 +504,24 @@ def _transcript_embedding_checks(derived_statuses: dict[str, DerivedModelStatus]
 def _collect_table_status_best_effort(
     conn: sqlite3.Connection,
     *,
-    db_path: Path,
     deep: bool,
     probe_only: bool,
-    configured_root: Path | None = None,
-) -> tuple[dict[str, DerivedModelStatus], dict[str, ArchiveDebtStatus]]:
-    """Collect derived-model and archive-debt statuses without aborting.
+) -> dict[str, DerivedModelStatus]:
+    """Collect derived-model statuses without aborting.
 
-    These collectors still assume table layouts that may not be present in the
-    active archive database. When they raise ``sqlite3.OperationalError``
+    The collector assumes table layouts that may not be present in the
+    active archive database. When it raises ``sqlite3.OperationalError``
     (`no such table: ...`), continue with the integrity checks that can be
     answered from the opened archive.
     """
     from polylogue.storage.derived.derived_status import collect_derived_model_statuses_sync
-    from polylogue.storage.repair import collect_archive_debt_statuses_sync
 
     if probe_only and not deep:
-        return {}, {}
-
+        return {}
     try:
-        derived_statuses = collect_derived_model_statuses_sync(conn, verify_full=deep)
+        return collect_derived_model_statuses_sync(conn, verify_full=deep)
     except sqlite3.OperationalError:
-        return {}, {}
-    try:
-        archive_debt = collect_archive_debt_statuses_sync(
-            conn,
-            db_path=db_path,
-            derived_statuses=derived_statuses,
-            include_expensive=deep,
-            probe_only=probe_only,
-            configured_root=configured_root,
-        )
-    except sqlite3.OperationalError:
-        archive_debt = {}
-    return derived_statuses, archive_debt
+        return {}
 
 
 def _claude_workflow_materialization_check(archive_root: Path) -> ReadinessCheck:
@@ -663,13 +608,9 @@ def _raw_frontier_integrity_check(projection: RawFrontierIntegrityProjection) ->
 
 def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: bool = False) -> ReadinessReport:
     checks: list[ReadinessCheck] = []
-    from polylogue.storage.archive_readiness import (
-        active_rebuild_index_attempts,
-        raw_materialization_readiness_snapshot,
-    )
+    from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
 
     archive_root = _config_archive_root(config)
-    active_rebuild_attempts = active_rebuild_index_attempts(archive_root / "ops.db")
     raw_materialization_readiness = raw_materialization_readiness_snapshot(archive_root)
     raw_frontier_projection = raw_frontier_integrity_projection(archive_root, raw_materialization_readiness)
     raw_frontier_payload = raw_frontier_projection.to_dict()
@@ -687,14 +628,12 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
         checks.append(_skipped_index_check(db_error))
         return ReadinessReport(
             checks=checks,
-            active_rebuild_index_attempts=active_rebuild_attempts,
             raw_materialization_readiness=raw_materialization_readiness,
             raw_frontier_integrity=raw_frontier_payload,
         )
 
     # --- derived models, debt, duplicates, providers ---
     derived_statuses: dict[str, DerivedModelStatus] = {}
-    archive_debt: dict[str, ArchiveDebtStatus] = {}
     db_path = _config_db_path(config)
     with _open_readiness_probe_connection(db_path) as conn:
         exact_index_counts = deep
@@ -727,14 +666,7 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
 
         # Run table-dependent collectors best-effort so archive integrity
         # probes above always register.
-        derived_statuses, archive_debt = _collect_table_status_best_effort(
-            conn,
-            db_path=db_path,
-            deep=deep,
-            probe_only=probe_only or not deep,
-            configured_root=archive_file_set_root(archive_root=archive_root, db_path=db_path),
-        )
-        checks.extend(_archive_debt_checks(archive_debt, deep=deep))
+        derived_statuses = _collect_table_status_best_effort(conn, deep=deep, probe_only=probe_only or not deep)
         checks.extend(_derived_model_checks(derived_statuses))
         checks.extend(_transcript_embedding_checks(derived_statuses))
 
@@ -745,8 +677,6 @@ def run_archive_readiness(config: Config, *, deep: bool = False, probe_only: boo
     return ReadinessReport(
         checks=checks,
         derived_models=derived_statuses,
-        archive_debt=archive_debt,
-        active_rebuild_index_attempts=active_rebuild_attempts,
         raw_materialization_readiness=raw_materialization_readiness,
         raw_frontier_integrity=raw_frontier_payload,
     )
@@ -1031,7 +961,6 @@ __all__ = [
     "ReadinessCheck",
     "ReadinessReport",
     "VerifyStatus",
-    "component_from_archive_debt",
     "component_from_archive_surface",
     "component_from_assertion_substrate",
     "component_from_catchup_status",

@@ -153,8 +153,8 @@ def token_show(rotate: bool, output_format: str | None) -> None:
 
     Use this value for ``Authorization: Bearer <token>`` when calling the
     daemon API from a script, or when configuring ``daemon.api.auth_token`` /
-    ``POLYLOGUE_API_AUTH_TOKEN`` for a client (``polylogue ops rebuild-index``
-    and friends already read this from config automatically).
+    ``POLYLOGUE_API_AUTH_TOKEN`` for a client (the CLI's daemon-backed verbs
+    already read this from config automatically).
     """
     token = load_or_mint_api_auth_token(rotate=rotate)
     if output_format == "json":

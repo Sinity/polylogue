@@ -1,4 +1,4 @@
-"""Fail-closed integrity verification and operator-supervised repair workflows."""
+"""Fail-closed integrity verification and guarded recovery workflows."""
 
 # Public maintenance primitive used by candidate acceptance and offline
 # verification.  Keeping the import here makes the owner visible to callers.

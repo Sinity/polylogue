@@ -1,10 +1,5 @@
 [
   {
-    "target": "polylogue",
-    "file": "polylogue/cli/click_app.py",
-    "import": "devtools.checkout_guard"
-  },
-  {
     "target": "polylogue/api",
     "file": "polylogue/api/__init__.py",
     "import": "polylogue.storage.embeddings.materialization"
@@ -406,11 +401,6 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/maintenance/_rebuild_index.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/commands/paths.py",
     "import": "polylogue.storage"
   },
@@ -467,7 +457,7 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/status.py",
-    "import": "polylogue.storage.repair"
+    "import": "polylogue.storage.raw_convergence"
   },
   {
     "target": "polylogue/cli",
@@ -541,28 +531,13 @@
   },
   {
     "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/check_maintenance.py",
-    "import": "polylogue.storage.repair"
-  },
-  {
-    "target": "polylogue/cli",
     "file": "polylogue/cli/shared/check_models.py",
     "import": "polylogue.storage.artifacts.views"
   },
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/shared/check_models.py",
-    "import": "polylogue.storage.repair"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/check_models.py",
     "import": "polylogue.storage.runtime"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/check_support.py",
-    "import": "polylogue.storage.sqlite.connection"
   },
   {
     "target": "polylogue/cli",
@@ -573,11 +548,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/shared/check_workflow.py",
     "import": "polylogue.storage.blob_integrity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/check_workflow.py",
-    "import": "polylogue.storage.repair"
   },
   {
     "target": "polylogue/cli",
@@ -658,16 +628,6 @@
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/blob_integrity_alerts.py",
     "import": "polylogue.storage.blob_integrity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/bulk_rebuild.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/bulk_rebuild.py",
-    "import": "polylogue.storage.index_generation"
   },
   {
     "target": "polylogue/daemon",
@@ -1297,11 +1257,6 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/metrics.py",
-    "import": "polylogue.storage.archive_readiness"
-  },
-  {
-    "target": "polylogue/daemon",
-    "file": "polylogue/daemon/metrics.py",
     "import": "polylogue.storage.embeddings.materialization"
   },
   {
@@ -1392,7 +1347,7 @@
   {
     "target": "polylogue/daemon",
     "file": "polylogue/daemon/status.py",
-    "import": "polylogue.storage.repair"
+    "import": "polylogue.storage.raw_convergence"
   },
   {
     "target": "polylogue/daemon",

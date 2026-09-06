@@ -119,30 +119,3 @@ def test_index_generation_checkpoint_truncate_closes_connection(
     captured = _capture_connections(monkeypatch, "polylogue.storage.index_generation")
     _checkpoint_truncate(db_path, label="test-checkpoint")
     _assert_all_closed(captured)
-
-
-def test_archive_readiness_active_rebuild_attempts_closes_connection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from polylogue.storage.archive_readiness import active_rebuild_index_attempts
-
-    ops_db = tmp_path / "ops.db"
-    conn = sqlite3.connect(ops_db)
-    try:
-        conn.execute(
-            """
-            CREATE TABLE ingest_attempts (
-                attempt_id TEXT, phase TEXT, status TEXT,
-                started_at_ms INTEGER, heartbeat_at_ms INTEGER,
-                parsed_raw_count INTEGER, materialized_count INTEGER
-            )
-            """
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    captured = _capture_connections(monkeypatch, "polylogue.storage.archive_readiness")
-    result = active_rebuild_index_attempts(ops_db)
-    assert result == []
-    _assert_all_closed(captured)

@@ -39,7 +39,7 @@ def _load_published_schema(name: str) -> dict[str, object]:
 
 def _seed_live_cli_schema_fixture(cli_workspace: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> None:
     """Seed a real archive row for live CLI output-schema checks."""
-    from polylogue.storage.index import rebuild_index
+    from tests.infra.fts import rebuild_fts
     from tests.infra.storage_records import SessionBuilder, db_setup
 
     monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
@@ -55,7 +55,7 @@ def _seed_live_cli_schema_fixture(cli_workspace: dict[str, Path], monkeypatch: p
         .add_message(role="assistant", text="schema fixture response")
         .save()
     )
-    rebuild_index()
+    rebuild_fts()
 
 
 def _invoke_live_cli(args: list[str], cli_workspace: dict[str, Path]) -> str:

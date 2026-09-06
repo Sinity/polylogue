@@ -382,13 +382,13 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
     ) -> None:
         """Reverted-mutation witness: restore
         ``raw = os.environ.get("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE")``
-        in ``polylogue/storage/repair.py::_resolve_raw_authority_commit_batch_size``
+        in ``polylogue/storage/raw_convergence.py::_resolve_raw_authority_commit_batch_size``
         -- the test then fails because no environment variable is set
         (TOML-only configuration) and resolution falls back to the module's
         hardcoded ``RAW_MATERIALIZATION_COMMIT_BATCH_SIZE`` default instead
         of the configured value.
         """
-        from polylogue.storage.repair import _resolve_raw_authority_commit_batch_size
+        from polylogue.storage.raw_convergence import _resolve_raw_authority_commit_batch_size
 
         _disable_site(monkeypatch)
         monkeypatch.delenv("POLYLOGUE_RAW_AUTHORITY_COMMIT_BATCH_SIZE", raising=False)

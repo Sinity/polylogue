@@ -39,12 +39,4 @@ def emit_json_output(result: CheckCommandResult, options: CheckCommandOptions) -
         )
     if result.blob_report is not None:
         out["blob_store"] = json_document(result.blob_report)
-    if result.maintenance_results is not None:
-        maintenance_payload = {
-            "targets": list(result.maintenance_targets),
-            "items": [repair.to_dict() for repair in result.maintenance_results],
-        }
-        out["maintenance"] = json_document(maintenance_payload)
-    if result.vacuum_result is not None:
-        out["vacuum"] = result.vacuum_result.to_dict()
     emit_success(out)

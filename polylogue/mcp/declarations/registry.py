@@ -223,19 +223,19 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "maintenance",
-        "Preview, execute, list, and inspect maintenance operations. execute with "
-        "dry_run=false, rebuild_index, rebuild_insights, and recovery_adjudicate require confirm=true "
+        "Rebuild derived indexes and inspect or adjudicate operation recovery. "
+        "rebuild_index, rebuild_insights, and recovery_adjudicate require confirm=true "
         "and fail closed without it.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "maintenance",
         MCPVerb.MAINTENANCE,
-        ("maintenance-plan", "maintenance-operation"),
+        ("maintenance-operation",),
         MCPResultSemantics.MAINTENANCE,
         "polylogue.mcp.server_cutover.maintenance:inspect.signature",
-        (("operation", "list"),),
+        (("operation", "recovery_status"),),
         "operation_result",
-        "polylogue.maintenance.planner.preview_backfill",
+        "mutate-rebuild-index",
     ),
 )
 

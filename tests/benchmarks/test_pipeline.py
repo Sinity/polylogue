@@ -17,11 +17,11 @@ from polylogue.archive.viewport.viewports import classify_tool
 from polylogue.core.hashing import hash_payload, hash_text
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.semantic_metadata import extract_tool_metadata
-from polylogue.storage.index import rebuild_index, update_index_for_sessions
 from tests.benchmarks.helpers import (
     BenchmarkFixture,
     benchmark_connection_call,
 )
+from tests.infra.fts import rebuild_fts, repair_fts_for_sessions
 
 
 def _make_diverse_tool_inputs(n: int) -> list[tuple[str, JSONDocument]]:
@@ -70,24 +70,24 @@ def test_bench_extract_tool_metadata(benchmark: BenchmarkFixture) -> None:
 @pytest.mark.benchmark
 def test_bench_fts_rebuild_1k(benchmark: BenchmarkFixture, bench_db_1k: Path) -> None:
     """FTS5 full rebuild on 1k messages."""
-    benchmark_connection_call(benchmark, bench_db_1k, rebuild_index)
+    benchmark_connection_call(benchmark, bench_db_1k, rebuild_fts)
 
 
 @pytest.mark.benchmark
 def test_bench_fts_rebuild_5k(benchmark: BenchmarkFixture, bench_db_5k: Path) -> None:
     """FTS5 full rebuild on 5k messages — shows O(N) scaling."""
-    benchmark_connection_call(benchmark, bench_db_5k, rebuild_index)
+    benchmark_connection_call(benchmark, bench_db_5k, rebuild_fts)
 
 
 @pytest.mark.benchmark
 @pytest.mark.parametrize("n", [1, 10, 50])
 def test_bench_fts_incremental_update(benchmark: BenchmarkFixture, bench_db_5k: Path, n: int) -> None:
-    """update_index_for_sessions() for 1, 10, 50 sessions."""
+    """FTS session repair for 1, 10, 50 sessions."""
     ids = [f"bench-conv-{i:05d}" for i in range(n)]
     benchmark_connection_call(
         benchmark,
         bench_db_5k,
-        lambda conn: update_index_for_sessions(ids, conn),
+        lambda conn: repair_fts_for_sessions(ids, conn),
     )
 
 

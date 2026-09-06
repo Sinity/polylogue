@@ -2,9 +2,8 @@
 
 The program layer owns only synthetic evidence and scheduling.  It does not
 know how to write an archive.  :class:`ProductionCorpusRuntime` delegates
-those effects to the existing acquisition, parsing, convergence, hook, and
-rebuild seams, which keeps this harness from becoming a second archive
-engine.
+those effects to the existing acquisition, parsing, convergence, and hook
+seams, which keeps this harness from becoming a second archive engine.
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from polylogue.core.json import JSONDocument, JSONValue, is_json_document
 
 if TYPE_CHECKING:
-    from polylogue.maintenance.rebuild_index import RebuildIndexReceipt
     from polylogue.pipeline.services.parsing_models import ParseResult
 
 
@@ -264,8 +262,6 @@ class OperationKind(StrEnum):
     CRASH = "Crash"
     RESTART = "Restart"
     CONVERGE = "Converge"
-    REBUILD = "Rebuild"
-    PROMOTE = "Promote"
 
 
 class CorpusRunner(Protocol):
@@ -280,10 +276,6 @@ class CorpusRunner(Protocol):
     def restart(self) -> object: ...
 
     def converge(self) -> object: ...
-
-    def rebuild(self) -> object: ...
-
-    def promote(self) -> object: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -507,29 +499,7 @@ class Converge(_Operation):
         return state.mark(self.operation_id)
 
 
-@dataclass(frozen=True, slots=True)
-class Rebuild(_Operation):
-    kind: OperationKind = field(default=OperationKind.REBUILD, init=False)
-
-    def apply(self, state: CorpusState, runner: CorpusRunner | None) -> CorpusState:
-        if runner is not None:
-            runner.rebuild()
-        return state.mark(self.operation_id)
-
-
-@dataclass(frozen=True, slots=True)
-class Promote(_Operation):
-    kind: OperationKind = field(default=OperationKind.PROMOTE, init=False)
-
-    def apply(self, state: CorpusState, runner: CorpusRunner | None) -> CorpusState:
-        if runner is not None:
-            runner.promote()
-        return state.mark(self.operation_id)
-
-
-CorpusOperation = (
-    Acquire | Append | Replace | Duplicate | Fork | Attach | EmitHook | Crash | Restart | Converge | Rebuild | Promote
-)
+CorpusOperation = Acquire | Append | Replace | Duplicate | Fork | Attach | EmitHook | Crash | Restart | Converge
 
 
 @dataclass(frozen=True, slots=True)
@@ -646,8 +616,6 @@ def _operation_from_dict(payload: Mapping[str, object]) -> CorpusOperation:
         OperationKind.CRASH: Crash,
         OperationKind.RESTART: Restart,
         OperationKind.CONVERGE: Converge,
-        OperationKind.REBUILD: Rebuild,
-        OperationKind.PROMOTE: Promote,
     }
     return cast(CorpusOperation, constructors[kind](operation_id))
 
@@ -737,8 +705,6 @@ def operation_strategy(*, artifact_ids: Sequence[str] = ("a", "b")) -> Any:
         st.builds(Crash, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Restart, operation_id=st.text("op", min_size=2, max_size=8)),
         st.builds(Converge, operation_id=st.text("op", min_size=2, max_size=8)),
-        st.builds(Rebuild, operation_id=st.text("op", min_size=2, max_size=8)),
-        st.builds(Promote, operation_id=st.text("op", min_size=2, max_size=8)),
     )
 
 
@@ -754,7 +720,6 @@ def corpus_program_strategy(*, max_operations: int = 8) -> Any:
         state = CorpusState()
         operations_by_id: dict[str, CorpusOperation] = {}
         crashed = False
-        rebuild_ready = False
 
         for step, operation_id in enumerate(schedule):
             operation: CorpusOperation
@@ -772,9 +737,7 @@ def corpus_program_strategy(*, max_operations: int = 8) -> Any:
                 operation = Restart(operation_id)
             else:
                 artifact_ids = tuple(artifact.artifact_id for artifact in state.artifacts)
-                choices = ["append", "replace", "duplicate", "fork", "attach", "hook", "crash", "converge", "rebuild"]
-                if rebuild_ready:
-                    choices.append("promote")
+                choices = ["append", "replace", "duplicate", "fork", "attach", "hook", "crash", "converge"]
                 choice = draw(st.sampled_from(choices))
                 if choice == "append":
                     operation = Append(operation_id, draw(st.sampled_from(artifact_ids)), draw(st.binary(max_size=32)))
@@ -815,25 +778,11 @@ def corpus_program_strategy(*, max_operations: int = 8) -> Any:
                     )
                 elif choice == "crash":
                     operation = Crash(operation_id)
-                elif choice == "converge":
-                    operation = Converge(operation_id)
-                elif choice == "rebuild":
-                    operation = Rebuild(operation_id)
-                    rebuild_ready = True
                 else:
-                    operation = Promote(operation_id)
-                    rebuild_ready = False
+                    operation = Converge(operation_id)
 
             operations_by_id[operation_id] = operation
             state = operation.apply(state, None)
-            if operation.kind is OperationKind.ACQUIRE or operation.kind in {
-                OperationKind.APPEND,
-                OperationKind.REPLACE,
-                OperationKind.DUPLICATE,
-                OperationKind.FORK,
-                OperationKind.ATTACH,
-            }:
-                rebuild_ready = False
             if operation.kind is OperationKind.CRASH:
                 crashed = True
             elif operation.kind is OperationKind.RESTART:
@@ -865,21 +814,12 @@ class ProductionCorpusRuntime:
         self.source_root = self.archive_root / "corpus-program-sources"
         self._raw_ids: dict[str, tuple[str, ...]] = {}
         self._source_paths: dict[str, Path] = {}
-        self._rebuild_receipt: RebuildIndexReceipt | None = None
-        self._schema_inference_receipt_path: Path | None = None
         self._crashed = False
         self.last_results: list[object] = []
 
     def _ensure_running(self) -> None:
         if self._crashed:
             raise CorpusRuntimeCrashedError("runtime is crashed; apply Restart before the next effect")
-
-    def bind_schema_inference_receipt(self, receipt_path: Path) -> None:
-        """Bind external rebuild authority without manufacturing it inside the harness."""
-        resolved = receipt_path.resolve()
-        if not resolved.is_file():
-            raise CorpusProgramError(f"schema-inference receipt does not exist: {resolved}")
-        self._schema_inference_receipt_path = resolved
 
     def acquire(self, artifact: RawArtifact) -> object:
         self._ensure_running()
@@ -984,51 +924,6 @@ class ProductionCorpusRuntime:
         self.last_results.append(result)
         return result
 
-    def rebuild(self) -> RebuildIndexReceipt:
-        self._ensure_running()
-        from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source
-
-        async def run() -> RebuildIndexReceipt:
-            return await rebuild_index_from_source(
-                RebuildIndexRequest(
-                    archive_root=self.archive_root,
-                    promote=False,
-                    schema_inference_receipt_path=self._schema_inference_receipt_path,
-                )
-            )
-
-        result = asyncio.run(run())
-        self._rebuild_receipt = result
-        self.last_results.append(result)
-        return result
-
-    def promote(self) -> RebuildIndexReceipt:
-        self._ensure_running()
-        if self._rebuild_receipt is None:
-            raise CorpusProgramError("Promote requires a preceding Rebuild")
-        transaction = self._rebuild_receipt.transaction
-        if not isinstance(transaction, dict):
-            raise CorpusProgramError("Rebuild did not return a durable rebuild transaction")
-        operation_id = transaction.get("operation_id")
-        if not isinstance(operation_id, str):
-            raise CorpusProgramError("Rebuild transaction has no operation id")
-        from polylogue.maintenance.rebuild_index import RebuildIndexRequest, rebuild_index_from_source
-
-        async def run() -> RebuildIndexReceipt:
-            return await rebuild_index_from_source(
-                RebuildIndexRequest(
-                    archive_root=self.archive_root,
-                    operation_id=operation_id,
-                    promote=True,
-                    schema_inference_receipt_path=self._schema_inference_receipt_path,
-                )
-            )
-
-        result = asyncio.run(run())
-        self._rebuild_receipt = result
-        self.last_results.append(result)
-        return result
-
 
 def _attachment_wire_payload(artifact: RawArtifact) -> bytes:
     """Encode corpus attachments through the existing browser-capture route."""
@@ -1118,9 +1013,7 @@ __all__ = [
     "HookArtifact",
     "OperationKind",
     "ProductionCorpusRuntime",
-    "Promote",
     "RawArtifact",
-    "Rebuild",
     "Replace",
     "Restart",
     "corpus_program_strategy",

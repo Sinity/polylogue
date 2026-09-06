@@ -2583,7 +2583,7 @@ def test_write_session_still_refuses_a_different_raw_than_the_accepted_head(tmp_
 def test_write_session_refuses_when_a_parallel_head_accepts_a_different_raw(tmp_path: Path) -> None:
     """P2 bot finding on PR #3527: with more than one ``raw_revision_heads``
     row for the same ``session_id`` (historical drift or an interrupted
-    repair -- ``storage/repair.py``'s ``parallel_session_heads`` shape), the
+    repair -- ``storage/raw_convergence.py``'s ``parallel_session_heads`` shape), the
     refusal decision must not depend on which row a bare ``LIMIT 1``
     happened to select. Two heads for this session: one already accepts
     the incoming raw, the other accepts a different raw -- the write must
