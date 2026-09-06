@@ -30,7 +30,9 @@ def _seed_minimal_index(root: Path) -> None:
             message_id TEXT PRIMARY KEY,
             session_id TEXT,
             role TEXT,
-            occurred_at_ms INTEGER
+            occurred_at_ms INTEGER,
+            position INTEGER NOT NULL,
+            variant_index INTEGER NOT NULL
         );
         CREATE TABLE blocks (
             block_id TEXT PRIMARY KEY,
@@ -47,9 +49,9 @@ def _seed_minimal_index(root: Path) -> None:
             tool_result_exit_code INTEGER
         );
         INSERT INTO sessions VALUES ('codex-session:abc', 'abc', 'codex-session', 'Large export', 2);
-        INSERT INTO messages VALUES ('m1', 'codex-session:abc', 'user', 1000);
-        INSERT INTO messages VALUES ('m2', 'codex-session:abc', 'assistant', 2000);
-        INSERT INTO messages VALUES ('m3', 'codex-session:abc', 'assistant', 3000);
+        INSERT INTO messages VALUES ('m1', 'codex-session:abc', 'user', 3000, 0, 0);
+        INSERT INTO messages VALUES ('m2', 'codex-session:abc', 'assistant', 2000, 1, 0);
+        INSERT INTO messages VALUES ('m3', 'codex-session:abc', 'assistant', 1000, 2, 0);
         INSERT INTO blocks VALUES ('b1', 'm1', 1, 'text', 'hello', NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         INSERT INTO blocks VALUES ('b2', 'm2', 1, 'tool_use', NULL, 'shell', 'call-1', '{"command":"pytest"}', NULL, NULL, NULL, NULL);
         INSERT INTO blocks VALUES ('b3', 'm3', 1, 'tool_result', '1 passed', NULL, 'call-1', NULL, NULL, NULL, 0, 0);
@@ -71,6 +73,7 @@ def test_stream_exact_session_markdown_writes_full_file(tmp_path: Path) -> None:
     assert "hello" in text
     assert "**Tool: shell**" in text
     assert "1 passed" in text
+    assert text.index("hello") < text.index("**Tool: shell**") < text.index("1 passed")
 
 
 def test_stream_exact_session_markdown_prose_only_omits_tools(tmp_path: Path) -> None:
