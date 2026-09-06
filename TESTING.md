@@ -210,6 +210,13 @@ root straight at the shared immutable artifact for read-only consumers;
 `named_seeded_archive` clones a private writable copy for consumers that
 mutate the archive (ingest, insight rebuild, marks, maintenance).
 
+**Shared session archives** (`infra/shared_session_archives.py`): The archives
+a whole xdist run shares. A cold build takes a per-key exclusive lock, so the
+controller warms all of them before workers start; a build that raises is
+reported and left to its own fixture. Every session-scoped archive fixture
+resolves its artifact through a builder declared here, so an archive reachable
+from a fixture is also warmed.
+
 **Hypothesis strategies** (`infra/strategies/`): Schema-driven payload
 generators. `schema_conformant_payload(provider)` produces payloads that match
 each provider's JSON schema.
