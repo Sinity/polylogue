@@ -572,13 +572,11 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
 
--- Serves per-session time-range filters (`occurred_at_ms >= ?`) and the
--- chronological projections. The leading IS NULL expression must itself be an
--- indexed column or the planner ignores the index and sorts in a temp B-tree --
--- verified via EXPLAIN QUERY PLAN: a plain
--- (session_id, occurred_at_ms, message_id) index still triggers
--- `USE TEMP B-TREE FOR ORDER BY`, while the expression index below plans as a
--- covering-index scan with no sort (#2467 / #2475 perf audit).
+-- Covers the per-session reads of the observed clock: the `occurred_at_ms`
+-- range filters and the chronological projections, which read timestamps
+-- without deciding a transcript's order. No read orders by the leading
+-- `(occurred_at_ms IS NULL)` expression; it stays in the key so the index
+-- covers NULL-timestamp rows for those filters.
 CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
 ON messages(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id);
 

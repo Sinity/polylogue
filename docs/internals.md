@@ -569,11 +569,13 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
-  (#2475 perf audit). It serves per-session time-range filters and the
-  chronological projections: a plain `(session_id, occurred_at_ms, message_id)`
-  index cannot satisfy the leading `IS NULL` expression, so the planner falls
-  back to `USE TEMP B-TREE FOR ORDER BY` and sorts the whole session (expensive
-  on multi-thousand-message sessions). Rebuild from source evidence
+  (#2475 perf audit). At that version the keyset and paginated message reads
+  ordered by `(occurred_at_ms IS NULL), occurred_at_ms, message_id`, which a
+  plain `(session_id, occurred_at_ms, message_id)` index cannot satisfy — the
+  planner fell back to `USE TEMP B-TREE FOR ORDER BY` and sorted the whole
+  session (expensive on multi-thousand-message sessions). Transcript order is
+  content position now, so the index covers the per-session timestamp filters
+  and the chronological projections instead. Rebuild from source evidence
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
