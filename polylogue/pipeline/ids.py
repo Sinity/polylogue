@@ -85,6 +85,7 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "attachments",
             "session_events",
             "parent_session_provider_id",
+            "branch_point_provider_message_id",
             "branch_type",
             "title_source",
             "title_ref",

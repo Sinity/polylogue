@@ -779,6 +779,18 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
         # move together so title_source/title_ref never point at a different
         # chunk's evidence than the title text they describe.
         title_winner = existing if _title_evidence_rank(existing) >= _title_evidence_rank(session) else session
+        # A branch point names a message inside the parent, so it is only
+        # carried forward from a chunk that asserts the parent that wins.
+        parent_winner = existing if existing.parent_session_provider_id else session
+        branch_point_provider_message_id = next(
+            (
+                chunk.branch_point_provider_message_id
+                for chunk in (existing, session)
+                if chunk.branch_point_provider_message_id
+                and chunk.parent_session_provider_id == parent_winner.parent_session_provider_id
+            ),
+            None,
+        )
         session_events = [*existing.session_events, *session.session_events]
         if existing.source_name is Provider.CLAUDE_CODE:
             session_events = merge_claude_coverage_events(
@@ -790,9 +802,8 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "title_source": title_winner.title_source,
                 "title_ref": title_winner.title_ref,
                 "created_at": chronological(created_values, newest=False),
-                "parent_session_provider_id": (
-                    existing.parent_session_provider_id or session.parent_session_provider_id
-                ),
+                "parent_session_provider_id": parent_winner.parent_session_provider_id,
+                "branch_point_provider_message_id": branch_point_provider_message_id,
                 "provider_session_aliases": sorted(
                     {*existing.provider_session_aliases, *session.provider_session_aliases}
                 ),

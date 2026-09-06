@@ -217,7 +217,7 @@ logger = get_logger(__name__)
 #                                    fine-grained sibling of the
 #                                    whole-snapshot file-history-snapshot type)
 #
-# Five further types (cross-origin parser-shape audit, 2026-09-06; counts from
+# Six further types (cross-origin parser-shape audit, 2026-09-06; counts from
 # an exhaustive walk of 14,429 session files) carried no ``message`` key and
 # so fell through ordinary message parsing into ``empty_drop_counts``:
 #   result (148)                   EVIDENCE -> claude_subagent_result event.
@@ -249,6 +249,20 @@ logger = get_logger(__name__)
 #                                    reason this is stored as the producer's
 #                                    claim rather than folded into the
 #                                    derived total.
+#   fork-context-ref (237)         EVIDENCE -> claude_fork_context_ref event,
+#                                    AND the session's lineage assertion:
+#                                    ``parentSessionId`` is the parent and
+#                                    ``parentLastUuid`` the parent message the
+#                                    child diverged at, which becomes
+#                                    ``session_links.branch_point_message_id``.
+#                                    One record per subagent transcript, always
+#                                    the first line. The parent id is also
+#                                    stamped as ``sessionId`` on the file's
+#                                    other records, so the edge itself survived
+#                                    without this type; the branch point did
+#                                    not, and a subagent transcript does not
+#                                    replay the parent prefix, so nothing else
+#                                    in the child's bytes can reconstruct it.
 _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
@@ -270,6 +284,7 @@ _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
         "relocated",
         "worktree-state",
         "cost-state",
+        "fork-context-ref",
     }
 )
 
@@ -297,6 +312,7 @@ _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "relocated": "claude_session_relocated",
     "worktree-state": "claude_worktree_state",
     "cost-state": "claude_cost_state",
+    "fork-context-ref": "claude_fork_context_ref",
 }
 
 # ``attachment.type`` subtype -> session_events.event_type (polylogue lane,
@@ -651,6 +667,18 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
     if record_type == "worktree-state":
         worktree_session = _string_field(item, "worktreeSession")
         return {"worktree_session": worktree_session, "summary": worktree_session} if worktree_session else None
+    if record_type == "fork-context-ref":
+        parent_session_id = _string_field(item, "parentSessionId")
+        parent_last_uuid = _string_field(item, "parentLastUuid")
+        if not parent_session_id and not parent_last_uuid:
+            return None
+        return {
+            "agent_id": _string_field(item, "agentId"),
+            "parent_session_id": parent_session_id,
+            "parent_last_message_id": parent_last_uuid,
+            "context_length": item.get("contextLength"),
+            "summary": f"forked from {parent_session_id} at {parent_last_uuid}",
+        }
     if record_type == "cost-state":
         model_usage = item.get("modelUsage")
         total_cost = item.get("totalCostUSD")
@@ -1534,6 +1562,12 @@ class _SessionAccumulator:
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
     session_refs: list[ParsedSessionRef] = field(default_factory=list)
+    # polylogue-4x38n: the ``fork-context-ref`` lineage assertion. Read like
+    # ``git_branch_value`` above -- first non-empty value wins, since the
+    # corpus carries exactly one such record per transcript, on its first
+    # line.
+    fork_parent_session_id: str | None = None
+    fork_branch_point_uuid: str | None = None
     # polylogue-pbuh AC5: per-record-type seen/persisted counts for the
     # sidecar types this parser used to drop wholesale, plus a bounded
     # sample of record types that fell all the way through ordinary message
@@ -1717,6 +1751,14 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 relocated_cwd = _string_field(item, "relocatedCwd")
                 if relocated_cwd:
                     acc.cwds.add(relocated_cwd)
+            elif record_type == "fork-context-ref":
+                # The generic evidence event below keeps the raw assertion;
+                # these two fields are what lineage actually consumes, and
+                # they reach the archive only through the ParsedSession.
+                if acc.fork_parent_session_id is None:
+                    acc.fork_parent_session_id = _string_field(item, "parentSessionId") or None
+                if acc.fork_branch_point_uuid is None:
+                    acc.fork_branch_point_uuid = _string_field(item, "parentLastUuid") or None
             elif record_type == "attachment":
                 # Subtype-dispatched -- see ``_attachment_sidecar_event``
                 # and ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` above. Handled
@@ -1981,6 +2023,19 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     else:
         composed_session_id = acc.session_id or acc.fallback_id
 
+    # polylogue-4x38n: ``fork-context-ref`` states the parent outright. It
+    # agrees with the ``sessionId`` the branches above read on every corpus
+    # record, so it normally confirms rather than supplies the parent -- but
+    # it is the only evidence when a transcript carries no ``sessionId``, and
+    # its branch point is only coherent against the parent it names.
+    if parent_session_id is None and acc.fork_parent_session_id != composed_session_id:
+        parent_session_id = acc.fork_parent_session_id
+    branch_point_provider_message_id = (
+        acc.fork_branch_point_uuid
+        if parent_session_id is not None and parent_session_id == acc.fork_parent_session_id
+        else None
+    )
+
     if acc.is_acompact and acc.fresh_task_prompt_head:
         branch_type: BranchType | None = BranchType.SIDECHAIN
     elif acc.is_acompact:
@@ -2172,6 +2227,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         active_leaf_message_provider_id=active_leaf_message_provider_id,
         session_events=order_session_events(acc.session_events),
         parent_session_provider_id=parent_session_id,
+        branch_point_provider_message_id=branch_point_provider_message_id,
         branch_type=branch_type,
         reported_cost_usd=acc.total_cost if acc.saw_cost_field else None,
         reported_duration_ms=acc.total_duration if acc.saw_duration_field else None,
