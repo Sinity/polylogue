@@ -12,7 +12,7 @@ from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 from polylogue.sources.parsers.base import RawSessionData
-from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id
+from polylogue.sources.sqlite_snapshot import hermes_profile_raw_id, retained_content_revision
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 from polylogue.storage.runtime import RawSessionRecord
@@ -37,6 +37,24 @@ class ScanResult:
             "errors": 0,
         }
         self.cursors: dict[str, CursorStatePayload] = {}
+
+
+def _hermes_content_revision(
+    blob_hash: str,
+    *,
+    blob_root: Path | None,
+    blob_store: BlobStore | None,
+) -> str:
+    """Resolve the content term for one Hermes acquisition's raw identity.
+
+    Hermes retains both SQLite databases and byte-immutable observer streams
+    under one source name, so the term is resolved from the retained blob
+    rather than assumed per source.
+    """
+    from polylogue.paths import blob_store_root
+
+    store = blob_store or BlobStore(blob_root or blob_store_root())
+    return retained_content_revision(store.blob_path(blob_hash), blob_hash)
 
 
 def make_raw_record(
@@ -83,7 +101,7 @@ def make_raw_record(
         raw_id = hermes_profile_raw_id(
             raw_data.source_path,
             raw_data.source_index or 0,
-            blob_hash,
+            _hermes_content_revision(blob_hash, blob_root=blob_root, blob_store=blob_store),
         )
     else:
         raw_id = deterministic_raw_session_id(

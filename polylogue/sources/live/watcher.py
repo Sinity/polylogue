@@ -62,7 +62,12 @@ from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import LiveBatchMetrics
 from polylogue.sources.live.parse_prefetch import LiveParseStage
 from polylogue.sources.live.source_selection import deepest_source_for_path
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_database_for_sidecar, sqlite_source_revision
+from polylogue.sources.sqlite_snapshot import (
+    is_sqlite_path,
+    sqlite_database_for_sidecar,
+    sqlite_logical_revision,
+    sqlite_source_revision,
+)
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
 
 if TYPE_CHECKING:
@@ -1364,8 +1369,10 @@ class LiveWatcher:
         parser_matches = cursor.parser_fingerprint == _PARSER_FINGERPRINT
         if not parser_matches:
             return True
-        if self._is_hermes_database(path):
-            return cursor.tail_hash != sqlite_source_revision(path)
+        if self._is_hermes_database(path) or self._is_declared_codex_database(path):
+            if cursor.tail_hash == sqlite_source_revision(path):
+                return False
+            return self._database_content_changed(path, cursor)
         if size == cursor.byte_size and cursor.content_fingerprint is not None:
             # Only an exact recorded observation authorizes the hot skip.
             # A bounded tail cannot prove that an earlier same-size prefix was
@@ -2005,6 +2012,49 @@ class LiveWatcher:
             except OSError:
                 continue
         return False
+
+    def _is_declared_codex_database(self, path: Path) -> bool:
+        """Return whether *path* is a Codex database this watcher acquires.
+
+        Codex state lives beside the rollout files under a suffix-filtered
+        watch source, so the declaration in ``origin_specs`` -- not the
+        filesystem -- decides which members are acquired at all.
+        """
+        from polylogue.sources.origin_specs import database_capability_for_provider
+
+        if not is_sqlite_path(path):
+            return False
+        source = deepest_source_for_path(path, self._sources)
+        if source is None or not str(source.name).startswith("codex"):
+            return False
+        capability = database_capability_for_provider(Provider.CODEX)
+        if capability is None:
+            return False
+        member = capability.member(path.name)
+        return member is not None and member.disposition != "out-of-scope"
+
+    def _database_content_changed(self, path: Path, cursor: CursorRecord) -> bool:
+        """Return whether a database's logical content moved past the cursor.
+
+        A database's page image differs after every commit, checkpoint and
+        vacuum, so filesystem state can only prove that nothing happened. Once
+        it has changed, the acquired logical revision is what decides whether
+        there is anything to acquire: re-snapshotting an unchanged database
+        writes a whole second page image for content the archive already holds.
+
+        Only a recorded fingerprint that is itself a logical revision can
+        answer; every other cursor shape falls through to work, which is what
+        the filesystem observation already claimed.
+        """
+        recorded = cursor.content_fingerprint
+        if recorded is None:
+            return True
+        try:
+            return sqlite_logical_revision(path) != recorded
+        except (sqlite3.Error, OSError, UnicodeDecodeError):
+            # Acquisition owns the consistent read and reports its own typed
+            # failure; a locked or damaged database is not silently fresh.
+            return True
 
     def _canonical_watch_path(self, path: Path) -> Path | None:
         if self._source_accepts(path):
