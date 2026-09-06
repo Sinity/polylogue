@@ -1086,10 +1086,13 @@ def _claude_code_spec() -> OriginSpec:
             "toolUseResult.sandbox/filenames/numFiles (already read, see code_parser.py's "
             "_message_usage_event_payload and toolUseResult structural-fact projection). READ (this batch): "
             "requestId (1,171 sampled occurrences -- the Anthropic API per-call request id, a real "
-            "cross-reference key against provider-side billing/support records) and "
-            "thinkingMetadata.maxThinkingTokens (34 occurrences -- the extended-thinking token budget "
-            "configured for the turn) both now ride the message_usage session-event payload as "
-            "request_id/max_thinking_tokens. MEASURED NEGATIVE: userType is the literal string 'external' "
+            "cross-reference key against provider-side billing/support records) rides the message_usage "
+            "session-event payload as request_id. thinkingMetadata (3,620 occurrences over 14,536 session "
+            "files, 2026-09-06 walk) rides its own claude_thinking_budget event: the field occurs only on "
+            "user records, and none of them carries message.usage, so the usage-gated message_usage payload "
+            "cannot see it. maxThinkingTokens (2,118 records, 31,999 in every one) and the "
+            "level/disabled/triggers shape (1,502) both land there; triggers names the span of the user's "
+            "own prompt that raised the effort. MEASURED NEGATIVE: userType is the literal string 'external' "
             "on every sampled record across two independent corpora (2,789 occurrences in the bead's "
             "sample, reconfirmed against a second live ~/.claude/projects corpus this pass) -- a constant, "
             "acquiring it adds nothing, same class as usage.service_tier. DELIBERATELY DROPPED, duplicate "
@@ -1106,8 +1109,8 @@ def _claude_code_spec() -> OriginSpec:
             "carries: the progress/agent_progress delegation-edge disposition documented in the module "
             "docstring above _parse_code_records (claude_delegation_progress vs. six transient synthetic-"
             "tick subtypes) -- not a bare unread field.",
-            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES (14 sidecar record "
-            "types) already carries a per-type disposition with corpus counts "
+            "code_parser.py's _NON_MESSAGE_SIDECAR_RECORD_TYPES already carries "
+            "a per-type disposition with corpus counts "
             "in a comment block (polylogue-pbuh/parser-diff triage, "
             "2026-07-29) -- not converted to a DroppedValueVocabulary "
             "(polylogue-2qx) because it is a record-TYPE inventory, not a "
@@ -1118,6 +1121,14 @@ def _claude_code_spec() -> OriginSpec:
             "enumerable leaf the way it does a scalar status/outcome field. "
             "Making this checkable needs the schema generator to track "
             "per-branch discriminant values, not a change on this side.",
+            "polylogue-chemh / polylogue-esvzb (exhaustive walk of 14,536 session files, 2026-09-06): every "
+            "record type the corpus carries now has a disposition entry -- atis-latch and agent-color are "
+            "declared transient on measured evidence, frame-link and the two artifact ledgers persist as "
+            "typed events. A record type in no table persists as claude_unclassified_record rather than "
+            "vanishing at the empty-content drop, so the next CLI version's new kind is visible in the "
+            "index. forkedFrom ({sessionId, messageUuid}, 10,561 records across 9 forked sessions) resolves "
+            "to the session's parent edge and rides claude_forked_from with its branch point; it is adopted "
+            "only when no identity-anchored route already resolved a parent.",
             "claude/index.py's _GIT_BRANCH_PREFIXES (title-fallback heuristic: "
             "does a bare index-summary string look like a branch name rather "
             "than a title) is also not a DroppedValueVocabulary candidate: it "
@@ -1256,10 +1267,18 @@ def _claude_code_spec() -> OriginSpec:
         ),
         session_parent_target=TopologyCapability(
             "positive-derived",
-            ("code_parser._finalize_code_session.parent_session_provider_id",),
-            "parent session is derived from the Claude sessionId relationship",
+            (
+                "code_parser._finalize_code_session.parent_session_provider_id",
+                "claude_code.forkedFrom.sessionId",
+            ),
+            "parent session is derived from the Claude sessionId relationship, or carried outright by "
+            "forkedFrom on a forked session's own records",
         ),
-        inheritance_branch_point=_absent_topology("Claude Code wire carries no inheritance boundary"),
+        inheritance_branch_point=TopologyCapability(
+            "carried",
+            ("claude_code.forkedFrom.messageUuid",),
+            "a forked session's records name the parent message it diverged at",
+        ),
         parent_dispatch=TopologyCapability(
             "positive-derived",
             (

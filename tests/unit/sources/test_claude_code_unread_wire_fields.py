@@ -301,51 +301,78 @@ def test_request_id_absent_omits_the_key() -> None:
     assert "request_id" not in usage_events[0].payload
 
 
-def test_thinking_metadata_max_tokens_lands_on_message_usage_event() -> None:
-    """``thinkingMetadata.maxThinkingTokens`` (extended-thinking budget) must
-    reach the ``message_usage`` event as ``max_thinking_tokens``.
+def test_thinking_metadata_lands_on_its_own_event_from_a_user_record() -> None:
+    """``thinkingMetadata`` must reach ``claude_thinking_budget``.
+
+    The fixture is the shape the corpus actually carries: a ``user`` record
+    with no ``message.usage`` (3,620 occurrences over 14,536 session files, 0
+    of them on an assistant record and 0 carrying usage). Deleting the
+    ``_thinking_budget_payload`` call in ``_fold_code_record`` leaves no
+    event at all.
     """
     parsed = parse_code(
         [
             {
-                "type": "assistant",
-                "uuid": "a1",
+                "type": "user",
+                "uuid": "u1",
                 "sessionId": "sess-thinking-metadata",
                 "thinkingMetadata": {"maxThinkingTokens": 31999},
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "hi"}],
-                    "usage": {"input_tokens": 3, "output_tokens": 2},
-                },
+                "message": {"role": "user", "content": "go"},
             },
         ],
         "sess-thinking-metadata",
     )
-    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
-    assert len(usage_events) == 1
-    assert usage_events[0].payload["max_thinking_tokens"] == 31999
+    events = [e for e in parsed.session_events if e.event_type == "claude_thinking_budget"]
+    assert len(events) == 1
+    assert events[0].source_message_provider_id == "u1"
+    assert events[0].payload["max_thinking_tokens"] == 31999
 
 
-def test_thinking_metadata_absent_omits_the_key() -> None:
+def test_thinking_metadata_level_and_triggers_land_on_the_event() -> None:
+    """The second live shape: the effort level and the prompt span that raised it.
+
+    ``triggers`` names where in the user's own prompt the escalation token
+    appeared -- dropping it would leave the level with no evidence of why it
+    was set. ``disabled`` is false on every record measured and is recorded
+    only when true, so it must be absent here.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-thinking-level",
+                "thinkingMetadata": {
+                    "level": "high",
+                    "disabled": False,
+                    "triggers": [{"start": 0, "end": 10, "text": "ultrathink"}],
+                },
+                "message": {"role": "user", "content": "ultrathink about the parser"},
+            },
+        ],
+        "sess-thinking-level",
+    )
+    events = [e for e in parsed.session_events if e.event_type == "claude_thinking_budget"]
+    assert len(events) == 1
+    assert events[0].payload["level"] == "high"
+    assert events[0].payload["triggers"] == [{"start": 0, "end": 10, "text": "ultrathink"}]
+    assert "disabled" not in events[0].payload
+
+
+def test_thinking_metadata_absent_emits_no_event() -> None:
     """Anti-vacuity: no ``thinkingMetadata`` on the record must not fabricate one."""
     parsed = parse_code(
         [
             {
-                "type": "assistant",
-                "uuid": "a1",
+                "type": "user",
+                "uuid": "u1",
                 "sessionId": "sess-no-thinking-metadata",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "hi"}],
-                    "usage": {"input_tokens": 3, "output_tokens": 2},
-                },
+                "message": {"role": "user", "content": "go"},
             },
         ],
         "sess-no-thinking-metadata",
     )
-    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
-    assert len(usage_events) == 1
-    assert "max_thinking_tokens" not in usage_events[0].payload
+    assert [e for e in parsed.session_events if e.event_type == "claude_thinking_budget"] == []
 
 
 def test_thinking_metadata_negative_tokens_omits_the_key() -> None:
@@ -354,22 +381,16 @@ def test_thinking_metadata_negative_tokens_omits_the_key() -> None:
     parsed = parse_code(
         [
             {
-                "type": "assistant",
-                "uuid": "a1",
+                "type": "user",
+                "uuid": "u1",
                 "sessionId": "sess-negative-thinking-metadata",
                 "thinkingMetadata": {"maxThinkingTokens": -1},
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "hi"}],
-                    "usage": {"input_tokens": 3, "output_tokens": 2},
-                },
+                "message": {"role": "user", "content": "go"},
             },
         ],
         "sess-negative-thinking-metadata",
     )
-    usage_events = [e for e in parsed.session_events if e.event_type == "message_usage"]
-    assert len(usage_events) == 1
-    assert "max_thinking_tokens" not in usage_events[0].payload
+    assert [e for e in parsed.session_events if e.event_type == "claude_thinking_budget"] == []
 
 
 def test_background_task_start_ack_gets_distrusted_reason() -> None:
