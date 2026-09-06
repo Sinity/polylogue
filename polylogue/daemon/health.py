@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
@@ -604,8 +605,44 @@ def _run_fast_checks() -> list[HealthAlert]:
 # ---------------------------------------------------------------------------
 
 
+def _fts_surface_unmeasured(surface: Mapping[str, object]) -> bool:
+    """Whether the ledger holds no published verdict for this surface."""
+    return bool(surface.get("freshness_known")) and surface.get("freshness_recorded_state") is None
+
+
+def _fts_surface_detail(name: str, surface: Mapping[str, object]) -> str:
+    if not surface.get("source_exists"):
+        return f"{name}: unexpected table without source"
+    if not surface.get("exists"):
+        return f"{name}: missing table"
+    if not surface.get("triggers_present"):
+        return f"{name}: missing triggers"
+    for key, noun in (
+        ("missing_rows", "missing"),
+        ("excess_rows", "stale"),
+        ("duplicate_rows", "duplicate"),
+        ("identity_mismatch_rows", "identity-mismatched"),
+    ):
+        count = surface.get(key)
+        if isinstance(count, int) and count:
+            return f"{name}: {count} {noun} row(s)"
+    return f"{name}: not fresh"
+
+
 def _check_fts_readiness_medium() -> HealthAlert:
-    """Check every active FTS-backed search surface is exactly fresh."""
+    """Report the FTS readiness the convergence ledger published.
+
+    The exact archive-wide audit aggregates every ``blocks`` and
+    ``messages_fts`` row, so it is whole-archive work owned by the
+    ``fts_readiness`` convergence stage. This probe reads that stage's
+    durable verdict instead: it runs on the daemon's sole writer, so
+    recomputing the audit here costs a scan proportional to the archive on
+    every health interval and on every ``/api/status`` request, competing
+    with catch-up chunks for the writer.
+
+    A surface the ledger has never measured is reported as unknown
+    (``WARNING``), never as drift.
+    """
     now = datetime.now(UTC).isoformat()
     dbf = _active_health_db_path()
     if not dbf.exists():
@@ -618,45 +655,41 @@ def _check_fts_readiness_medium() -> HealthAlert:
             consecutive_failures=_record_failure("fts_readiness", False),
         )
     try:
-        conn = sqlite3.connect(str(dbf))
-        try:
-            from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+        from polylogue.daemon.fts_status import fts_readiness_info
 
-            snapshot = fts_invariant_snapshot_sync(conn)
-            broken = [surface for surface in snapshot.surfaces if not surface.ready]
-            if not broken:
-                severity = HealthSeverity.OK
-                message = "FTS up to date"
+        payload = fts_readiness_info(dbf, exact=False)
+        raw_surfaces = payload.get("surfaces")
+        surfaces = raw_surfaces if isinstance(raw_surfaces, Mapping) else {}
+        broken: list[str] = []
+        unmeasured: list[str] = []
+        for name, surface in surfaces.items():
+            if not isinstance(surface, Mapping) or surface.get("ready"):
+                continue
+            if _fts_surface_unmeasured(surface):
+                unmeasured.append(str(name))
             else:
-                severity = HealthSeverity.ERROR
-                details = []
-                for surface in broken:
-                    if not surface.source_exists:
-                        details.append(f"{surface.name}: unexpected table without source")
-                    elif not surface.exists:
-                        details.append(f"{surface.name}: missing table")
-                    elif not surface.triggers_present:
-                        details.append(f"{surface.name}: missing triggers")
-                    elif surface.missing_rows:
-                        details.append(f"{surface.name}: {surface.missing_rows} missing row(s)")
-                    elif surface.excess_rows:
-                        details.append(f"{surface.name}: {surface.excess_rows} stale row(s)")
-                    elif surface.duplicate_rows:
-                        details.append(f"{surface.name}: {surface.duplicate_rows} duplicate row(s)")
-                    else:
-                        details.append(f"{surface.name}: not fresh")
-                message = "FTS invariant failed: " + "; ".join(details)
-            is_ok = severity == HealthSeverity.OK
-            return HealthAlert(
-                check_name="fts_readiness",
-                tier=HealthTier.MEDIUM,
-                severity=severity,
-                message=message,
-                checked_at=now,
-                consecutive_failures=_record_failure("fts_readiness", is_ok),
-            )
-        finally:
-            conn.close()
+                broken.append(_fts_surface_detail(str(name), surface))
+        # The archive payload reports the work-event surface outside
+        # ``surfaces``; its readiness is exact and cheap (derived-table counts).
+        if not payload.get("session_work_events_ready", True) and "session_work_events_fts" not in surfaces:
+            broken.append("session_work_events_fts: not fresh")
+        if broken:
+            severity = HealthSeverity.ERROR
+            message = "FTS invariant failed: " + "; ".join(broken)
+        elif unmeasured:
+            severity = HealthSeverity.WARNING
+            message = "FTS freshness not published yet: " + ", ".join(sorted(unmeasured))
+        else:
+            severity = HealthSeverity.OK
+            message = "FTS up to date"
+        return HealthAlert(
+            check_name="fts_readiness",
+            tier=HealthTier.MEDIUM,
+            severity=severity,
+            message=message,
+            checked_at=now,
+            consecutive_failures=_record_failure("fts_readiness", severity == HealthSeverity.OK),
+        )
     except Exception as exc:
         return HealthAlert(
             check_name="fts_readiness",
