@@ -404,6 +404,10 @@ def _parse_hermes_message(
         return None
     text = _content_text(record.get("content"))
     content_blocks = _content_blocks_from_content(record.get("content"))
+    output_text_blocks = _codex_output_text_blocks(record.get("codex_message_items"), covered_text=text)
+    content_blocks.extend(output_text_blocks)
+    if text is None and output_text_blocks:
+        text = "\n".join(block.text for block in output_text_blocks if block.text)
     reasoning = _string(record.get("reasoning_content")) or _string(record.get("reasoning"))
     if reasoning:
         content_blocks.append(ParsedContentBlock(type=BlockType.THINKING, text=reasoning))
@@ -724,6 +728,40 @@ def _content_blocks_from_content(content: object) -> list[ParsedContentBlock]:
         text = _content_text(content)
         return [ParsedContentBlock(type=BlockType.TEXT, text=text)] if text else []
     return []
+
+
+def _codex_output_text_blocks(items: object, *, covered_text: str | None) -> list[ParsedContentBlock]:
+    """Project ``codex_message_items`` assistant prose into TEXT blocks.
+
+    A Codex-compatible Hermes backend emits the assistant turn as a structured
+    response item alongside the plain ``content`` field, and when ``content``
+    is empty the item holds the only copy of the turn's prose. Without a block
+    it reaches neither the block-derived display text nor FTS, both of which
+    read ``blocks`` alone.
+
+    Segments whose text ``covered_text`` already carries are skipped: the two
+    fields usually hold the same prose, and projecting it again would double
+    every such turn in the display text and in the search index.
+    """
+    if isinstance(items, str):
+        try:
+            items = json.loads(items)
+        except json.JSONDecodeError:
+            return []
+    covered = covered_text or ""
+    blocks: list[ParsedContentBlock] = []
+    for item in _list(items):
+        record = json_document(item)
+        for segment in _list(record.get("content")):
+            segment_record = json_document(segment)
+            if segment_record.get("type") != "output_text":
+                continue
+            text = _string(segment_record.get("text"))
+            if text is None or text.strip() in covered:
+                continue
+            blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=text))
+            covered = f"{covered}\n{text}"
+    return blocks
 
 
 def _content_text(content: object) -> str | None:

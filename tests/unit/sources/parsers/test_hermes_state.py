@@ -15,8 +15,11 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.core.enums import BlockType, TitleSource
-from polylogue.sources.parsers.base import ParsedContentBlock
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage
 from polylogue.sources.parsers.hermes_state import parse_state_db
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import search_archive_blocks, write_parsed_session_to_archive
 
 
 def _write_state_db(path: Path, *, tool_contents: list[str]) -> None:
@@ -236,3 +239,156 @@ def test_reasoning_evidence_routes_to_session_events_not_only_block_metadata(tmp
     }
     assistant_message = next(message for message in session.messages if message.role.value == "assistant")
     assert event.source_message_provider_id == assistant_message.provider_message_id
+
+
+# Prose that exists only inside ``codex_message_items``: no other fixture row
+# carries it, so an FTS hit on it can come from nowhere but the projection.
+_CODEX_ONLY_PROSE = "The wrapper stayed untouched while the stale config migrated."
+# Prose the ``content`` column already carries, which the item then repeats.
+_DUPLICATED_PROSE = "Verification passed on both affected suites."
+
+
+def _codex_message_item(prose: str) -> list[dict[str, object]]:
+    return [
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": prose}],
+            "id": "msg_0887",
+            "phase": "commentary",
+        }
+    ]
+
+
+def _write_codex_message_items_state_db(path: Path) -> None:
+    """A state.db with the two shapes ``codex_message_items`` takes.
+
+    Row 2 is the sharp one: a Codex-compatible backend left ``content`` empty
+    and put the assistant's prose only in the structured response item, beside
+    reasoning and a tool call. Row 3 is the ordinary case, where the item
+    repeats prose ``content`` already carries.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            INSERT INTO schema_version(version) VALUES (16);
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT,
+                model TEXT,
+                model_config TEXT,
+                parent_session_id TEXT,
+                started_at REAL,
+                ended_at REAL,
+                title TEXT
+            );
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_name TEXT,
+                tool_calls TEXT,
+                reasoning_content TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT,
+                codex_message_items TEXT,
+                timestamp REAL NOT NULL,
+                observed INTEGER DEFAULT 0,
+                active INTEGER NOT NULL DEFAULT 1,
+                compacted INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO sessions (id, source, model, model_config, parent_session_id, started_at, ended_at, title)
+            VALUES ('s1', 'hermes', 'test-model', '{}', NULL, 1775000000.0, 1775000010.0, 'Codex items fixture');
+            INSERT INTO messages (session_id, role, content, timestamp)
+            VALUES ('s1', 'user', 'migrate the config', 1775000001.0);
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, role, content, reasoning_content, tool_calls,
+                codex_message_items, timestamp
+            )
+            VALUES ('s1', 'assistant', '', 'weighing the wrapper', ?, ?, 1775000002.0)
+            """,
+            (
+                json.dumps([{"id": "call-1", "function": {"name": "shell", "arguments": "{}"}}]),
+                json.dumps(_codex_message_item(_CODEX_ONLY_PROSE)),
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (session_id, role, content, codex_message_items, timestamp)
+            VALUES ('s1', 'assistant', ?, ?, 1775000003.0)
+            """,
+            (_DUPLICATED_PROSE, json.dumps(_codex_message_item(_DUPLICATED_PROSE))),
+        )
+        conn.commit()
+
+
+def _text_block_texts(message: ParsedMessage) -> list[str | None]:
+    return [block.text for block in message.blocks if block.type is BlockType.TEXT]
+
+
+def test_codex_message_items_prose_reaches_a_block_when_content_is_empty(tmp_path: Path) -> None:
+    """``codex_message_items`` is assistant output, not reasoning evidence.
+
+    Goes red if the projection in ``_parse_message_row`` is removed: the row's
+    only prose would then live solely in the ``hermes_reasoning_evidence``
+    event payload, which no block and therefore no FTS surface reads.
+    """
+    path = tmp_path / "state.db"
+    _write_codex_message_items_state_db(path)
+    [session] = parse_state_db(path)
+
+    content_less_message = session.messages[1]
+    assert _text_block_texts(content_less_message) == [_CODEX_ONLY_PROSE]
+    assert content_less_message.text == _CODEX_ONLY_PROSE
+
+    evidence = [event for event in session.session_events if event.event_type == "hermes_reasoning_evidence"]
+    assert len(evidence) == 2
+
+
+def test_codex_message_items_do_not_duplicate_prose_content_already_carries(tmp_path: Path) -> None:
+    """Goes red if the projection stops skipping segments ``content`` covers,
+    which would double the turn in both the display text and the FTS index."""
+    path = tmp_path / "state.db"
+    _write_codex_message_items_state_db(path)
+    [session] = parse_state_db(path)
+
+    assert _text_block_texts(session.messages[2]) == [_DUPLICATED_PROSE]
+
+
+def test_codex_message_items_prose_is_findable_by_search(tmp_path: Path) -> None:
+    """Production route: state.db -> parse -> archive write -> message FTS.
+
+    Goes red without the projection: no other fixture row carries
+    ``_CODEX_ONLY_PROSE``, so the match count drops to zero.
+    """
+    path = tmp_path / "state.db"
+    _write_codex_message_items_state_db(path)
+    [session] = parse_state_db(path)
+
+    db = tmp_path / "index.db"
+    initialize_archive_database(db, ArchiveTier.INDEX)
+    conn = sqlite3.connect(db)
+    try:
+        write_parsed_session_to_archive(conn, session)
+        conn.commit()
+        matched = search_archive_blocks(conn, "wrapper untouched")
+        block_texts = [
+            row[0]
+            for row in conn.execute(
+                f"SELECT text FROM blocks WHERE block_id IN ({','.join('?' * len(matched))})",
+                matched,
+            )
+        ]
+    finally:
+        conn.close()
+
+    assert block_texts == [_CODEX_ONLY_PROSE]

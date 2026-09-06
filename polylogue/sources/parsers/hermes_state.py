@@ -24,7 +24,12 @@ from polylogue.core.json import JSONDocument, json_document
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
-from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
+from .local_agent import (
+    _codex_output_text_blocks,
+    _content_blocks_from_content,
+    _content_text,
+    _tool_use_block,
+)
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"
 _CONTENT_JSON_PREFIX = "\x00json:"
@@ -721,6 +726,10 @@ def _parse_message_row(
     content = _decode_content(row["content"])
     text = _content_text(content)
     blocks = _content_blocks_from_content(content)
+    output_text_blocks = _codex_output_text_blocks(_row_value(row, "codex_message_items"), covered_text=text)
+    blocks.extend(output_text_blocks)
+    if text is None and output_text_blocks:
+        text = "\n".join(block.text for block in output_text_blocks if block.text)
     reasoning = _optional_text(_row_value(row, "reasoning_content")) or _optional_text(_row_value(row, "reasoning"))
     if reasoning:
         metadata = _reasoning_metadata(row)
@@ -888,20 +897,21 @@ def _reasoning_metadata(row: sqlite3.Row) -> dict[str, object]:
     return metadata
 
 
-# `_reasoning_metadata` above merges its fields into the THINKING block's
-# `ParsedContentBlock.metadata` as an in-process carrier (same shape as
-# `claude/common.py`'s `_claude_ai_web_tool_evidence`), but the `blocks`
-# table has no metadata column and the write path
+# reasoning_details/codex_reasoning_items/codex_message_items are Hermes's
+# captured Codex-native response items. `_reasoning_metadata` merges them into
+# the THINKING block's `ParsedContentBlock.metadata` as an in-process carrier
+# only: `blocks` has no metadata column and the write path
 # (`storage/sqlite/archive_tiers/write.py:_block_language`) reads exactly one
-# key back out of it -- `language`. Without this projection step,
-# reasoning_details/codex_reasoning_items/codex_message_items -- Hermes's
-# captured Codex-native reasoning-trace evidence for reasoning-backed
-# messages -- was silently dropped at write time despite parsing correctly
-# (bd polylogue-9x22). Route it through `session_events` instead, keyed to
-# the message via `source_message_provider_id`, following the same
-# `session_events`-not-a-blob-column precedent as `hermes_spans.py`'s
-# `hermes_tool_availability_span` (polylogue-5o05) and `claude/common.py`'s
-# `claude_ai_web_tool_evidence`.
+# key back out of it -- `language` -- so metadata alone reaches nothing
+# durable. `session_events`, keyed to the message via
+# `source_message_provider_id`, is where the structured item belongs, the same
+# precedent as `hermes_spans.py`'s `hermes_tool_availability_span` and
+# `claude/common.py`'s `claude_ai_web_tool_evidence`.
+#
+# The prose inside `codex_message_items` is assistant output rather than
+# evidence about it, so `_codex_output_text_blocks` also projects it into a
+# TEXT block on the owning message; the event keeps what a block cannot hold
+# (item ids, `phase`, `status`, `encrypted_content`).
 def _reasoning_evidence_events(row: sqlite3.Row, message: ParsedMessage) -> list[ParsedSessionEvent]:
     evidence = _reasoning_metadata(row)
     if not evidence:
