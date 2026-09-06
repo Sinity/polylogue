@@ -72,6 +72,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools scenario` | Run a named archive verification scenario. |
 | `devtools smoke` | Probe deployed Polylogue binaries, daemon/web routes, and browser-capture archive flow. |
 | `devtools verify` | Run the local verification baseline: every quick gate, then the selected or complete test corpus. |
+| `devtools verify blob-conservation` | Report blob/reference conservation in both directions against an archive root. |
 
 ### Generated Surfaces
 
@@ -108,6 +109,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools archive continuity-evidence` | Replay continuity scenarios and verify their query routes are discoverable. |
 | `devtools archive lineage-validation` | Validate lineage-count evidence before citing archive counts externally. |
 | `devtools archive tool-outcome-census` | Classify every archived tool result by origin, construct, outcome and unknown reason. |
+| `devtools archive tool-pairing-census` | Classify every tool call/result pairing gap against declared evidence. |
 
 <!-- END GENERATED: devtools-command-catalog -->
 

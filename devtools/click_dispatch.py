@@ -60,15 +60,20 @@ def _print_inventory(*, json: bool) -> None:
             click.echo(f"    {spec.name:<25} {spec.description}")
 
 
-class _PreservedEpilogCommand(click.Command):
-    """Click command that emits the epilog verbatim, preserving newlines."""
+class _PreservedEpilog:
+    """Emit a Click epilog verbatim, preserving newlines."""
 
     def format_epilog(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
-        if not self.epilog:
+        epilog = getattr(self, "epilog", None)
+        if not epilog:
             return
         formatter.write("\n")
-        for line in self.epilog.splitlines():
+        for line in epilog.splitlines():
             formatter.write(line + "\n")
+
+
+class _PreservedEpilogCommand(_PreservedEpilog, click.Command):
+    """Click command that emits the epilog verbatim, preserving newlines."""
 
 
 def _build_epilog(spec: CommandSpec) -> str | None:
@@ -83,6 +88,24 @@ def _build_epilog(spec: CommandSpec) -> str | None:
     if spec.examples:
         example_lines = "\n".join(f"  {line}" for line in spec.examples)
         sections.append(f"Examples:\n{example_lines}")
+    if not sections:
+        return None
+    return "\n\n".join(sections)
+
+
+def _build_default_action_epilog(spec: CommandSpec) -> str | None:
+    """Help epilog for a group whose bare name runs ``spec``.
+
+    The group cannot declare the command's flags as its own options -- it must
+    forward them untouched -- so they are documented here instead.
+    """
+    sections: list[str] = []
+    if spec.flags:
+        flag_lines = "\n".join(f"  {flag:<10} {help_text}" for flag, help_text in spec.flags)
+        sections.append(f"Options for {spec.invocation}:\n{flag_lines}")
+    remainder = _build_epilog(spec)
+    if remainder:
+        sections.append(remainder)
     if not sections:
         return None
     return "\n\n".join(sections)
@@ -147,13 +170,56 @@ def _make_command(spec: CommandSpec) -> click.Command:
     return cmd
 
 
-def _ensure_group(parent: click.Group, name: str) -> click.Group:
+class _DefaultActionGroup(_PreservedEpilog, click.Group):
+    """A group whose own name may also be a runnable command.
+
+    ``devtools verify`` runs the verification baseline and is the parent of
+    ``devtools verify blob-conservation``. Click models a name as either a
+    command or a group, so the bare command is registered here as the
+    group's default action: anything that is not a declared subcommand --
+    including no arguments at all -- is forwarded to it verbatim.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.default_action: click.Command | None = None
+
+    def set_default_action(self, command: click.Command, spec: CommandSpec) -> None:
+        self.default_action = command
+        # Click would otherwise show only the subcommand list here, hiding the
+        # flags and examples the bare command's own help carries.
+        self.help = spec.description
+        self.epilog = _build_default_action_epilog(spec)
+        self.no_args_is_help = False
+        # Subcommand names are the only tokens this group consumes; every
+        # other argument belongs to the default action's own parser.
+        self.allow_extra_args = True
+        self.ignore_unknown_options = True
+
+    def parse_args(self, ctx: click.Context, args: list[str]) -> list[str]:
+        if self.default_action is not None and not args:
+            args = [self.default_action.name or self.name or ""]
+        return super().parse_args(ctx, args)
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        default = self.default_action
+        if default is None or (args and args[0] in self.commands):
+            return super().resolve_command(ctx, args)
+        forwarded = list(args)
+        if forwarded and forwarded[0] == default.name:
+            forwarded = forwarded[1:]
+        return default.name, default, forwarded
+
+
+def _ensure_group(parent: click.Group, name: str) -> _DefaultActionGroup:
     existing = parent.commands.get(name)
-    if existing is not None:
-        if not isinstance(existing, click.Group):
-            raise ValueError(f"cannot register devtools group {name!r}: command already exists")
+    if isinstance(existing, _DefaultActionGroup):
         return existing
-    group = click.Group(name=name, help=GROUP_HELP.get(name))
+    if existing is not None:
+        raise ValueError(f"cannot register devtools group {name!r}: command already exists")
+    group = _DefaultActionGroup(name=name, help=GROUP_HELP.get(name))
     parent.add_command(group)
     return group
 
@@ -180,8 +246,14 @@ def _make_cli() -> click.Group:
             click.echo(cli.get_help(ctx))
             ctx.exit(0)
 
+    # A name that is both a command and a subcommand parent resolves the same
+    # way whichever order the catalog declares the two specs in.
+    parent_names = {spec.command_path[0] for spec in COMMAND_SPECS if len(spec.command_path) > 1}
     for spec in COMMAND_SPECS:
         cmd = _make_command(spec)
+        if len(spec.command_path) == 1 and spec.command_path[0] in parent_names:
+            _ensure_group(cli, spec.command_path[0]).set_default_action(cmd, spec)
+            continue
         parent = cli
         for group_name in spec.command_path[:-1]:
             parent = _ensure_group(parent, group_name)
