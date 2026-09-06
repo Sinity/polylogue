@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
+from polylogue.storage.sqlite.write_lease import require_write_lease
+
 if TYPE_CHECKING:
     from polylogue.logging import BoundLoggerLike
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -672,6 +674,7 @@ def open_connection(
     """
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
+    require_write_lease(f"open_connection({path})")
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
@@ -703,6 +706,7 @@ def open_daemon_connection(
     mmap profile, because systemd charges their SQLite page cache to the
     service cgroup for the lifetime of the process.
     """
+    require_write_lease(f"open_daemon_connection({path})")
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:

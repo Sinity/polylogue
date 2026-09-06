@@ -15,7 +15,7 @@ import heapq
 import threading
 import time
 import weakref
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from concurrent.futures import CancelledError, InvalidStateError
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
@@ -48,6 +48,39 @@ _MAX_DETACHED_WRITER_FAILURE_ACTORS = 32
 _MAX_DETACHED_WRITER_FAILURE_ACTOR_LENGTH = 128
 _DETACHED_WRITER_FAILURE_OVERFLOW_ACTOR = "<other>"
 _DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
+
+
+#: Declared hold budgets, longest matching actor prefix wins.
+#:
+#: The coordinator cannot abort an operation that is already inside a SQLite
+#: transaction, so a budget does not preempt: it makes an over-long hold
+#: impossible to miss. Bounding a hold for real means restructuring the work
+#: into many short holds, which is what the budget is here to force.
+#:
+#: The numbers come from measurement, not preference. A non-gated writer times
+#: out after the storage layer's busy timeout -- 30 s, DB_TIMEOUT in
+#: storage/sqlite/connection_profile.py, not imported here because the daemon
+#: ring may not reach into storage -- so any hold longer than that can starve
+#: one. A live catch-up chunk held 1.0-3.1 s in rehearsal-11,
+#: and maintenance.drive_catchup was measured at hold_max 18,623 s
+#: (daemon/cli.py), which is the hold this budget exists to surface
+#: (polylogue-8qm4k).
+WRITE_HOLD_BUDGETS_S: Mapping[str, float] = {
+    "watcher.catch_up.chunk": 30.0,
+    "watcher.live_ingest": 30.0,
+    "watcher.": 30.0,
+    "maintenance.": 120.0,
+}
+_DEFAULT_WRITE_HOLD_BUDGET_S = 60.0
+
+
+def write_hold_budget_s(actor: str) -> float:
+    """The declared maximum hold for this actor: longest matching prefix."""
+    best = ""
+    for prefix in WRITE_HOLD_BUDGETS_S:
+        if actor.startswith(prefix) and len(prefix) > len(best):
+            best = prefix
+    return WRITE_HOLD_BUDGETS_S[best] if best else _DEFAULT_WRITE_HOLD_BUDGET_S
 
 
 def _actor_priority(actor: str) -> int:
@@ -132,6 +165,10 @@ class DaemonWriteEvent:
     wait_seconds: float | None = None
     hold_seconds: float | None = None
     outcome: WriteOutcome | None = None
+    #: The declared budget for this actor and whether the hold exceeded it.
+    #: Set on ``released`` events only.
+    hold_budget_s: float | None = None
+    hold_over_budget: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,6 +185,10 @@ class DaemonWriteSnapshot:
     detached_writer_failures: int = 0
     # Retain actor/session attribution alongside the scalar counter.
     detached_writer_failures_by_actor: tuple[tuple[str, int], ...] = ()
+    #: Daemon-lifetime count of holds that ran past their declared budget.
+    #: Nonzero means some writer held the single gate long enough to starve a
+    #: non-gated one (polylogue-8qm4k).
+    over_budget_holds: int = 0
 
 
 @dataclass(slots=True)
@@ -202,6 +243,7 @@ class DaemonWriteCoordinator:
         self._active_actor: str | None = None
         self._queued: list[tuple[int, str]] = []
         self._last_event: DaemonWriteEvent | None = None
+        self._over_budget_holds = 0
         self._accepting = True
         self._executions: set[asyncio.Task[object]] = set()
         self._managed: set[asyncio.Task[object]] = set()
@@ -219,6 +261,7 @@ class DaemonWriteCoordinator:
             accepting=self._accepting,
             detached_writer_failures=self._detached_writer_failures,
             detached_writer_failures_by_actor=tuple(sorted(self._detached_writer_failures_by_actor.items())),
+            over_budget_holds=self._over_budget_holds,
         )
 
     async def run(
@@ -331,6 +374,10 @@ class DaemonWriteCoordinator:
             if request.caller_cancelled and outcome == "success":
                 outcome = "cancelled"
             hold_seconds = time.perf_counter() - acquired_at
+            budget_s = write_hold_budget_s(request.actor)
+            over_budget = hold_seconds > budget_s
+            if over_budget:
+                self._over_budget_holds += 1
             self._active_actor = None
             self._lock.release()
             self._emit(
@@ -342,8 +389,19 @@ class DaemonWriteCoordinator:
                     wait_seconds=wait_seconds,
                     hold_seconds=hold_seconds,
                     outcome=outcome,
+                    hold_budget_s=budget_s,
+                    hold_over_budget=over_budget,
                 )
             )
+            if over_budget:
+                logger.warning(
+                    "daemon writer held the gate past its budget actor=%s hold_s=%.3f budget_s=%.3f queued=%d; "
+                    "a writer that is not on this gate gives up at its busy timeout, so this hold can starve one",
+                    request.actor,
+                    hold_seconds,
+                    budget_s,
+                    len(self._queued),
+                )
             logger.info(
                 "daemon writer released actor=%s wait_s=%.6f hold_s=%.6f outcome=%s queued=%d",
                 request.actor,

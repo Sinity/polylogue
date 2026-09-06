@@ -46,6 +46,7 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorRecord, CursorStore
 from polylogue.sources.live.metrics import LiveBatchMetrics
+from polylogue.sources.live.watcher import WriteCoordinator
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.sqlite_snapshot import sqlite_source_revision
 from polylogue.storage.archive_readiness import raw_materialization_readiness_snapshot
@@ -1142,7 +1143,7 @@ def _make_watcher(
     debounce_s: float = 0.01,
     event_emitter: MagicMock | None = None,
     catch_up_event_emitter: Callable[..., None] | None = None,
-    write_coordinator: object | None = None,
+    write_coordinator: WriteCoordinator | None = None,
     sources: tuple[WatchSource, ...] | None = None,
 ) -> tuple[LiveWatcher, _FullIngestMock]:
     polylogue = MagicMock()
