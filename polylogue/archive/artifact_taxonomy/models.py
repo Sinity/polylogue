@@ -48,6 +48,14 @@ class ArtifactKind(StrEnum):
     # ``parsed_non_session_artifact_reason``, which already performs the
     # equivalent check post-parse for archive-debt/backlog reporting.
     FILE_HISTORY_SNAPSHOT = "file_history_snapshot"
+    # polylogue-6bebe: a record stream whose rows are conversation turns
+    # copied out of transcripts the rows themselves name -- a generated
+    # analytical extract, index or report. Its turns already exist in the
+    # session they were taken from, so admitting one republishes that
+    # session's content under an identity invented from the extract's
+    # filename. The evidence is the records' own external provenance, so it
+    # holds wherever the file sits and survives a rename.
+    EXTRACTED_TRANSCRIPT_CORPUS = "extracted_transcript_corpus"
     METADATA_DOCUMENT = "metadata_document"
     HOOK_EVENT = "hook_event"
     # polylogue-hbtj2: a raw payload whose magic bytes are a recognized
