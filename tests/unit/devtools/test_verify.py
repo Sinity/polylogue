@@ -25,6 +25,7 @@ from devtools import (
     why,
     worker_memory,
 )
+from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
 from devtools.verification_contracts import VerificationScope
 from devtools.verification_result import declared_verification_result
@@ -39,6 +40,9 @@ from devtools.verify_runs import (
 #: executing. These tests drive that code inline through its documented escape
 #: rather than requiring a live pueue queue.
 _SLOT_HELD_ENV = {"POLYLOGUE_PYTEST_SLOT": "held"}
+
+#: The prefix of the argument naming the report a managed step is judged from.
+_REPORT_PREFIX = f"{REPORT_FILE_OPTION}="
 
 
 def _stub_held_pytest(monkeypatch: pytest.MonkeyPatch, fake_run: Any) -> None:
@@ -692,7 +696,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
 
     def fake_run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
         reruns.append(command)
-        rerun_report = Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1])
+        rerun_report = Path(next(a for a in command if a.startswith(_REPORT_PREFIX)).split("=", 1)[1])
         rerun_report.write_text(
             json.dumps(
                 {
@@ -706,7 +710,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
         return SimpleNamespace(returncode=1)
 
     _stub_held_pytest(monkeypatch, fake_run)
-    command = ["python", "-m", "pytest", f"--json-report-file={report_path}"]
+    command = ["python", "-m", "pytest", report_file_argument(report_path)]
 
     result = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=SimpleNamespace(step_dir=step_dir))
 
@@ -741,7 +745,7 @@ def test_failed_tests_are_rerun_once_and_flakes_are_named(monkeypatch: pytest.Mo
 
     def _rerun_passing_with(returncode: int) -> None:
         def fake(command: list[str], **_kwargs: Any) -> SimpleNamespace:
-            Path(next(a for a in command if a.startswith("--json-report-file=")).split("=", 1)[1]).write_text(
+            Path(next(a for a in command if a.startswith(_REPORT_PREFIX)).split("=", 1)[1]).write_text(
                 json.dumps({"tests": [{"nodeid": "tests/test_a.py::test_flaky", "outcome": "passed"}]})
             )
             return SimpleNamespace(returncode=returncode)
@@ -797,7 +801,7 @@ def _flake_rerun_fixture(
     def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
         launched.append(list(command))
         rerun_file = next(
-            Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")
+            Path(argument.split("=", 1)[1]) for argument in command if argument.startswith(_REPORT_PREFIX)
         )
         rerun_file.write_text(
             json.dumps(
@@ -826,7 +830,7 @@ def test_accepted_flake_clears_both_recorded_exit_statuses(
     """
 
     report_path, _ = _flake_rerun_fixture(tmp_path, monkeypatch)
-    command = ["pytest", f"--json-report-file={report_path}"]
+    command = ["pytest", report_file_argument(report_path)]
     artifacts = SimpleNamespace(step_dir=tmp_path / "step")
 
     rerun = verify._rerun_failed_once(command, env=_SLOT_HELD_ENV, artifacts=artifacts)
@@ -1066,8 +1070,8 @@ def _verify_shaped_argv(*, selection: str, target: Path, tmp_path: Path) -> list
     command[command.index("tests")] = str(target)
     command[command.index("-n") + 1] = "2"
     return [
-        argument for argument in command if not argument.startswith(("--junitxml=", "--json-report-file=", "--ignore="))
-    ] + [f"--json-report-file={tmp_path / 'report.json'}"]
+        argument for argument in command if not argument.startswith(("--junitxml=", _REPORT_PREFIX, "--ignore="))
+    ] + [report_file_argument(tmp_path / "report.json")]
 
 
 @pytest.mark.slow
