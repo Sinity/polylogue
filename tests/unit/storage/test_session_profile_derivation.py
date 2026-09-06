@@ -28,12 +28,13 @@ from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_PROJECTION_COLUMNS,
     session_input_bindings,
 )
+from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.write_lease import write_lease
 from tests.infra.storage_records import SessionBuilder
 
-_MATERIALIZER_VERSION = 5
+_MATERIALIZER_VERSION = SESSION_INSIGHT_MATERIALIZER_VERSION
 
 #: Values that change an aggregate's output while leaving every identity,
 #: timestamp, partition key and row count exactly where it was. Each is the
