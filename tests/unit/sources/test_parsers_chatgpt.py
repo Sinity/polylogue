@@ -841,6 +841,158 @@ def test_chatgpt_thoughts_node_produces_nonempty_thinking_text_end_to_end(test_d
         conn.close()
 
 
+def test_chatgpt_reasoning_recap_text_reaches_the_thinking_block(test_db: Path) -> None:
+    """A ``reasoning_recap`` node carries its recap line under ``content``.
+
+    The record shape is exactly ``{content_type, content}`` -- no ``parts``,
+    no top-level ``text`` -- so an extractor that does not try ``content``
+    builds the THINKING block with ``text=""`` and the recap is invisible in
+    the block, in ``blocks.search_text``, and in search. Dropping ``content``
+    from the candidate keys in ``_extract_content_text`` turns this red.
+    """
+    recap_text = "Thought for 7s about the tradeoffs"
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "parent": None,
+            "message": {
+                "id": "recap-msg-1",
+                "author": {"role": "assistant"},
+                "content": {"content_type": "reasoning_recap", "content": recap_text},
+                "create_time": 1700000000.0,
+            },
+        }
+    }
+
+    session = chatgpt_parse({"id": "recap-only", "mapping": mapping}, "fallback-id")
+
+    assert len(session.messages) == 1
+    thinking_blocks = [block for block in session.messages[0].blocks if block.type == BlockType.THINKING]
+    assert len(thinking_blocks) == 1
+    assert thinking_blocks[0].text == recap_text
+
+    session_id = write_session_sync(test_db, session)
+    conn = sqlite3.connect(str(test_db))
+    try:
+        stored = conn.execute(
+            "SELECT search_text FROM blocks WHERE session_id = ? AND block_type = 'thinking'",
+            (session_id,),
+        ).fetchone()
+        assert stored is not None
+        assert recap_text in stored[0]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize(
+    "content_type,content_extra",
+    [
+        (
+            "tether_quote",
+            {
+                "url": "file-1E2Hm9MJaBwH4JAyEs8EBk",
+                "domain": "ledger-2025-06.xml",
+                "title": "Quarterly ledger export",
+                "tether_id": None,
+            },
+        ),
+        (
+            "sonic_webpage",
+            {
+                "url": "https://example.test/articles/pk-study",
+                "domain": "example.test",
+                "title": "Safety and Pharmacokinetics of the Candidate",
+                "snippet": "a short summary",
+                "ref_id": "turn5search0",
+            },
+        ),
+    ],
+)
+def test_retrieved_source_constructs_conserve_url_and_own_title(
+    content_type: str, content_extra: dict[str, object]
+) -> None:
+    """A retrieved source keeps its address and its own name.
+
+    Both shapes carry ``url`` and ``title`` on every record; the construct
+    used to be built with neither, so the address was dropped and ``domain``
+    stood in for the name. Removing ``url=`` or restoring ``title=domain`` in
+    the retrieval branch turns this red.
+    """
+    content: dict[str, object] = {"content_type": content_type, "text": "retrieved excerpt body", **content_extra}
+    mapping = {
+        "node1": {
+            "id": "node1",
+            "message": {
+                "id": "msg1",
+                "author": {"role": "tool", "name": "browser"},
+                "content": content,
+                "create_time": None,
+            },
+        },
+    }
+
+    messages, _attachments = extract_messages_from_mapping(mapping)
+    document_blocks = [b for b in messages[0].blocks if b.type == BlockType.DOCUMENT]
+    construct = document_blocks[0].web_constructs[0]
+    assert construct.url == content_extra["url"]
+    assert construct.title == content_extra["title"]
+
+
+@pytest.mark.parametrize(
+    "code_text",
+    [
+        pytest.param("print(2 + 3)", id="code-branch"),
+        # A recipient-addressed call whose code parses as JSON is claimed by
+        # the tool-call branch instead -- the route most `code` contents in
+        # the export actually take.
+        pytest.param('{"title": "a note", "prompt": "write it"}', id="tool-call-branch"),
+    ],
+)
+def test_chatgpt_code_block_carries_language_to_the_blocks_row(test_db: Path, code_text: str) -> None:
+    """A ``code`` node's language must reach ``blocks.language``.
+
+    ``metadata["language"]`` is the sole input the write path reads for that
+    column (``archive_tiers/write.py:_block_language``); both TOOL_USE branches
+    passed metadata without it, so every chatgpt-export code call wrote NULL.
+    Dropping ``language`` from ``tool_use_metadata`` turns this red.
+    """
+    mapping: dict[str, object] = {
+        "node1": {
+            "id": "node1",
+            "parent": None,
+            "message": {
+                "id": "code-msg-1",
+                "author": {"role": "assistant"},
+                "recipient": "python",
+                "content": {
+                    "content_type": "code",
+                    "language": "python",
+                    "response_format_name": None,
+                    "text": code_text,
+                },
+                "create_time": 1700000000.0,
+            },
+        }
+    }
+
+    session = chatgpt_parse({"id": "code-only", "mapping": mapping}, "fallback-id")
+
+    tool_use_blocks = [block for block in session.messages[0].blocks if block.type == BlockType.TOOL_USE]
+    assert len(tool_use_blocks) == 1
+    assert (tool_use_blocks[0].metadata or {}).get("language") == "python"
+
+    session_id = write_session_sync(test_db, session)
+    conn = sqlite3.connect(str(test_db))
+    try:
+        rows = conn.execute(
+            "SELECT language FROM blocks WHERE session_id = ? AND block_type = 'tool_use'",
+            (session_id,),
+        ).fetchall()
+        assert rows == [("python",)]
+    finally:
+        conn.close()
+
+
 # -----------------------------------------------------------------------------
 # FULL PARSE - PARAMETRIZED (1 test replacing 12)
 # -----------------------------------------------------------------------------
