@@ -17,6 +17,11 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, cast
 
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Role
+from polylogue.schemas.synthetic.conservation import (
+    ConservationResult,
+    check_conservation,
+    excluded_paths_from_pins,
+)
 
 if TYPE_CHECKING:
     from polylogue.schemas.synthetic.models import SchemaRecord, SyntheticGenerationBatch
@@ -25,6 +30,13 @@ if TYPE_CHECKING:
 WireEncoding: TypeAlias = Literal["json", "jsonl"]
 WireCapabilityStatus: TypeAlias = Literal["supported", "unsupported"]
 WireSupportEntryKey: TypeAlias = tuple[str, str | None, str | None]
+
+
+# Providers whose conservation findings decide the receipt's verdict. Every
+# catalogued provider is measured; a provider joins this set once each of its
+# findings is resolved, either fixed in the parser or declared by a reject pin
+# carrying a written reason. No provider has been adjudicated yet.
+CONSERVATION_BLOCKING_PROVIDERS: frozenset[str] = frozenset()
 
 
 class UnsupportedSyntheticWireRouteError(ValueError):
@@ -103,6 +115,8 @@ class WireParserWitness:
     validation_error: str | None = None
     artifact_kind: Literal["baseline", "coverage"] = "coverage"
     artifact_evidence: tuple[str, ...] = ()
+    conservation: ConservationResult | None = None
+    conservation_enforced: bool = False
 
     @property
     def healthy(self) -> bool:
@@ -112,7 +126,21 @@ class WireParserWitness:
             and self.parsed_message_count > 0
             and bool(self.artifact_evidence)
             and self.validation_error is None
+            and self.conservation_conserved
         )
+
+    @property
+    def conservation_conserved(self) -> bool:
+        """Report conservation only where the provider enforces it.
+
+        Every provider is measured; a provider outside
+        ``CONSERVATION_BLOCKING_PROVIDERS`` reports its findings in the
+        receipt without deciding an exit code, so a lane is never stopped to
+        be told about a defect that is already known and already tracked.
+        """
+        if not self.conservation_enforced:
+            return True
+        return self.conservation is not None and self.conservation.conserved
 
 
 @dataclass(frozen=True)
@@ -234,6 +262,10 @@ class WireSupportReceipt:
                             "artifact_kind": witness.artifact_kind,
                             "artifact_evidence": list(witness.artifact_evidence),
                             "healthy": witness.healthy,
+                            "conservation_enforced": witness.conservation_enforced,
+                            "conservation": (
+                                witness.conservation.to_dict() if witness.conservation is not None else None
+                            ),
                         }
                         for witness in entry.parser_witnesses
                     ],
@@ -1648,6 +1680,7 @@ def build_wire_support_receipt(
     missing_routes: list[str] = []
     for provider in catalog_providers:
         route = PROVIDER_WIRE_ROUTES.get(provider)
+        conservation_exclusions = excluded_paths_from_pins(provider)
         if route is None:
             missing_routes.append(provider)
         catalog = registry.load_package_catalog(provider)  # type: ignore[attr-defined]
@@ -1839,6 +1872,12 @@ def build_wire_support_receipt(
                         coverage_error = "artifact message coverage is incomplete"
                     parsed_sessions.extend(artifact_sessions)
                     artifact_kind: Literal["baseline", "coverage"] = "baseline" if index == 0 else "coverage"
+                    conservation = check_conservation(
+                        selection.schema,
+                        payload_items,
+                        artifact_sessions,
+                        excluded_paths=conservation_exclusions,
+                    )
                     parser_witnesses.append(
                         WireParserWitness(
                             index=-1 if index == 0 else index - 1,
@@ -1848,6 +1887,8 @@ def build_wire_support_receipt(
                             validation_error=parse_error or artifact_validation_error or coverage_error,
                             artifact_kind=artifact_kind,
                             artifact_evidence=artifact_evidence,
+                            conservation=conservation,
+                            conservation_enforced=provider in CONSERVATION_BLOCKING_PROVIDERS,
                         )
                     )
                     if (
