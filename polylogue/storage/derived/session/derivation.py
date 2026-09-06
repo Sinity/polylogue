@@ -281,7 +281,14 @@ class SessionProfileDerivation:
             conn.close()
         return SessionProfileReplacement(key=key, input_binding=binding, payload=key)
 
-    def publish(self, frame: object, replacement: SessionProfileReplacement) -> bool:
+    def publish(self, frame: object, replacement: object) -> bool:
+        """Typed ``object`` because the kernel's protocol admits any replacement.
+
+        Narrowing it to this domain's own type would make the adapter fail the
+        contract by contravariance -- a mismatch only a type check catches,
+        since at runtime the kernel hands back exactly what ``compute`` made.
+        """
+        assert isinstance(replacement, SessionProfileReplacement)
         with write_lease(f"derivation.{self.domain}", max_hold_seconds=_PUBLISH_HOLD_BUDGET_S):
             conn = self._write_connection()
             try:

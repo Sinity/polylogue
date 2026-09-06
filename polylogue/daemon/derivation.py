@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from polylogue.logging import get_logger
 
@@ -45,6 +45,7 @@ __all__ = [
     "Outcome",
     "PendingReason",
     "Replacement",
+    "ReplacementLike",
     "converge",
 ]
 
@@ -108,6 +109,26 @@ class DerivationFrame:
 
     def recipe_version(self, domain: str) -> str:
         return self.recipe_versions.get(domain, "")
+
+
+class ReplacementLike(Protocol):
+    """What the kernel needs from a computed replacement, and nothing more.
+
+    Declared structurally so a domain adapter in a package that may not import
+    this ring can produce its own replacement type. The kernel never reads a
+    key off a replacement -- it already knows which key it asked for -- so the
+    protocol does not constrain one, and the two rings cannot disagree about
+    its representation.
+    """
+
+    @property
+    def input_binding(self) -> str: ...
+
+    @property
+    def payload(self) -> object: ...
+
+    @property
+    def empty(self) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,11 +217,11 @@ class DerivationAdapter(Protocol):
         """
         ...
 
-    def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+    def compute(self, frame: DerivationFrame, key: str) -> ReplacementLike:
         """Produce a replacement from a stable read snapshot, lease-free."""
         ...
 
-    def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+    def publish(self, frame: DerivationFrame, replacement: Any) -> bool:
         """Atomically replace one key under the writer lease.
 
         Returns False when the bound inputs moved under the computation; the
@@ -395,7 +416,7 @@ def converge(
                 domain_failed = True
                 continue
 
-            def _publish(adapter: DerivationAdapter = adapter, replacement: Replacement = replacement) -> bool:
+            def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
                 return adapter.publish(frame, replacement)
 
             try:
