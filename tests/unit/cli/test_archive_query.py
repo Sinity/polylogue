@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import click
 import pytest
 
+from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.cli.archive_query import (
     _build_cursor,
     _csv,
@@ -29,17 +30,15 @@ from polylogue.cli.archive_query import (
     _message_type,
     _metadata_pairs,
     _offset,
-    _optional_date_ms,
     _optional_int,
     _optional_str,
     _paginate_rows,
     _project_payload,
-    _resolve_excluded_origins,
-    _resolve_origins,
     _selected_fields,
     _session_summary_text,
     _session_text,
     _sort,
+    _spec_filter_kwargs,
     _stats_by_line,
     _summary_line,
     _summary_payload,
@@ -137,54 +136,40 @@ def test_emit_stats_json_includes_convergence_warning(capsys: pytest.CaptureFixt
     assert payload["total_sessions"] == 3
 
 
-# Tests for _resolve_origins
-class TestResolveOrigins:
-    """Tests for _resolve_origins."""
+# Tests for the origin filter normalization the query spec owns
+class TestOriginFilterNormalization:
+    """``--origin``/``--exclude-origin`` normalization on the canonical spec."""
 
     def test_explicit_origin_single(self) -> None:
         """Single origin returns as tuple."""
-        params: dict[str, object] = {"origin": "claude-code-session"}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session",)
+        spec = SessionQuerySpec.from_params({"origin": "claude-code-session"})
+        assert spec.origins == ("claude-code-session",)
 
     def test_explicit_origin_csv(self) -> None:
-        """CSV origins are parsed and deduplicated."""
-        params: dict[str, object] = {"origin": "claude-code-session,chatgpt-export"}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session", "chatgpt-export")
+        """CSV origins are parsed."""
+        spec = SessionQuerySpec.from_params({"origin": "claude-code-session,chatgpt-export"})
+        assert spec.origins == ("claude-code-session", "chatgpt-export")
 
     def test_explicit_origin_deduped(self) -> None:
-        """Duplicate origins are deduplicated."""
-        params: dict[str, object] = {"origin": "claude-code-session,claude-code-session"}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session",)
+        """Duplicate origins collapse, so the single-origin report label survives."""
+        spec = SessionQuerySpec.from_params({"origin": "claude-code-session,claude-code-session"})
+        assert spec.origins == ("claude-code-session",)
 
     def test_explicit_origin_stripped(self) -> None:
         """Whitespace is stripped."""
-        params: dict[str, object] = {"origin": "  claude-code-session  ,  chatgpt-export  "}
-        result = _resolve_origins(params)
-        assert result == ("claude-code-session", "chatgpt-export")
-
-    def test_empty_params(self) -> None:
-        """Empty params returns empty tuple."""
-        result = _resolve_origins({})
-        assert result == ()
-
-
-# Tests for _resolve_excluded_origins
-class TestResolveExcludedOrigins:
-    """Tests for _resolve_excluded_origins."""
+        spec = SessionQuerySpec.from_params({"origin": "  claude-code-session  ,  chatgpt-export  "})
+        assert spec.origins == ("claude-code-session", "chatgpt-export")
 
     def test_explicit_excluded_origin(self) -> None:
         """Explicit excluded origins are parsed."""
-        params: dict[str, object] = {"exclude_origin": "claude-code-session,chatgpt-export"}
-        result = _resolve_excluded_origins(params)
-        assert result == ("claude-code-session", "chatgpt-export")
+        spec = SessionQuerySpec.from_params({"exclude_origin": "claude-code-session,chatgpt-export"})
+        assert spec.excluded_origins == ("claude-code-session", "chatgpt-export")
 
     def test_empty_params(self) -> None:
-        """Empty params returns empty tuple."""
-        result = _resolve_excluded_origins({})
-        assert result == ()
+        """Empty params select every origin."""
+        spec = SessionQuerySpec.from_params({})
+        assert spec.origins == ()
+        assert spec.excluded_origins == ()
 
 
 # Tests for _csv_tokens
@@ -462,30 +447,27 @@ class TestOffset:
         assert result == 0
 
 
-# Tests for _optional_date_ms
-class TestOptionalDateMs:
-    """Tests for _optional_date_ms."""
-
-    def test_none_value(self) -> None:
-        """None returns None."""
-        result = _optional_date_ms("since", None)
-        assert result is None
-
-    def test_false_value(self) -> None:
-        """False returns None."""
-        result = _optional_date_ms("since", False)
-        assert result is None
+# Tests for the date lowering the plan owns
+class TestSpecFilterKwargsDates:
+    """``--since``/``--until`` lowering through the canonical plan."""
 
     def test_valid_iso_date(self) -> None:
-        """Valid ISO date is parsed to milliseconds."""
-        result = _optional_date_ms("since", "2026-01-15")
-        assert isinstance(result, int)
-        assert result > 0
+        """Valid ISO date is lowered to a millisecond bound."""
+        kwargs = _spec_filter_kwargs(SessionQuerySpec.from_params({"since": "2026-01-15"}))
+        assert isinstance(kwargs["since_ms"], int)
+        assert kwargs["since_ms"] > 0
+
+    def test_absent_date(self) -> None:
+        """An unset bound stays unset."""
+        kwargs = _spec_filter_kwargs(SessionQuerySpec.from_params({}))
+        assert kwargs["since_ms"] is None
+        assert kwargs["until_ms"] is None
 
     def test_invalid_date_raises_exception(self) -> None:
-        """Invalid date raises ClickException."""
+        """An unparseable date reaches the terminal as a Click error."""
+        spec = SessionQuerySpec.from_params({"since": "not-a-date"})
         with pytest.raises(click.ClickException, match="Cannot parse date"):
-            _optional_date_ms("since", "not-a-date")
+            _spec_filter_kwargs(spec)
 
 
 # Tests for _has_value

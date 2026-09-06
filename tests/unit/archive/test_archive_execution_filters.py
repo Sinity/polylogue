@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from polylogue.api.archive import _archive_query_kwargs
-from polylogue.archive.query.archive_execution import _plan_filter_kwargs
 from polylogue.archive.query.expression import compile_expression
+from polylogue.archive.query.filter_kwargs import plan_filter_kwargs
 from polylogue.archive.query.spec import SessionQuerySpec
 
 
 def test_archive_filter_kwargs_include_session_id() -> None:
     plan = compile_expression("id:abc123").to_plan()
 
-    assert _plan_filter_kwargs(plan)["session_id"] == "abc123"
+    assert plan_filter_kwargs(plan)["session_id"] == "abc123"
 
 
 def test_alternate_query_kwargs_preserve_canonical_structural_filters() -> None:

@@ -77,7 +77,7 @@ def apply_common_filters(
             lowered = plan.title.lower()
             results = [item for item in results if item.display_title and lowered in item.display_title.lower()]
 
-    # parent_id is never SQL-pushed (it is absent from _ArchiveFilterKwargs), so
+    # parent_id is never SQL-pushed (it is absent from ArchiveFilterKwargs), so
     # it must be applied as a residual filter on every path — not only when
     # sql_pushed=False. The archive path passes sql_pushed=True, which is why
     # the .parent() filter was previously dropped (#1743 follow-up).
