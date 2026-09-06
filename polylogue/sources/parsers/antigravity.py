@@ -42,6 +42,50 @@ _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversa
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
 _SECTION_RE = re.compile(r"^### (?P<title>User Input|Planner Response)\s*$", re.MULTILINE)
 
+#: Socket budget for one request to the vendor HTTP surface.
+_REQUEST_TIMEOUT_S = 10.0
+
+#: Sleep between readiness probes.
+_READY_RETRY_SLEEP_S = 0.2
+
+#: Readiness probes always run at least this many times. One probe can consume
+#: the whole ``_REQUEST_TIMEOUT_S`` budget, so a deadline shorter than that
+#: admits a single probe and the retry loop can never run.
+_MIN_READY_ATTEMPTS = 3
+
+#: Readiness deadline once the attempt floor is met. The vendor server answers
+#: in ~2s on an idle host and has exceeded ``_REQUEST_TIMEOUT_S`` under load.
+_STARTUP_TIMEOUT_S = 60.0
+
+#: ``kind`` seed distinguishing a tool-activity message from a prose section.
+_ACTIVITY_MESSAGE_KIND = "tool_activity"
+
+#: Closed vocabulary of the tool-activity markers the language server renders
+#: into a transcript, as ``(tool_name, line pattern, argument name)``.
+#:
+#: ``tool_name`` restates the marker's own phrasing rather than a vendor tool
+#: identifier: the export renders activity, and the underlying tool name is not
+#: on the wire. ``argument`` names the single value the marker preserves, or is
+#: ``None`` where the export keeps no argument at all -- an absent argument
+#: stays absent instead of being guessed from surrounding prose. A line no
+#: entry matches is prose, which is what keeps the assistant's own italicised
+#: sentences out of this vocabulary.
+_ACTIVITY_MARKERS: tuple[tuple[str, re.Pattern[str], str | None], ...] = (
+    ("viewed_file", re.compile(r"^\*Viewed \[[^]]*\]\((?P<value>[^)]*)\)\s*\*$"), "path"),
+    ("listed_directory", re.compile(r"^\*Listed directory \[[^]]*\]\((?P<value>[^)]*)\)\s*\*$"), "path"),
+    ("accepted_command", re.compile(r"^\*User accepted the command `(?P<value>.*)`\s*\*$"), "command"),
+    ("searched_web", re.compile(r"^\*Searched web for (?P<value>.*?)\s*\*$"), "query"),
+    ("read_url_content", re.compile(r"^\*Read URL content from (?P<value>.*?)\s*\*$"), "url"),
+    ("read_resource", re.compile(r"^\*Read resource from (?P<value>.*?)\s*\*$"), "resource"),
+    ("listed_resources", re.compile(r"^\*Listed resources from (?P<value>.*?)\s*\*$"), "server"),
+    ("edited_file", re.compile(r"^\*Edited relevant file\s*\*$"), None),
+    ("checked_command_status", re.compile(r"^\*Checked command status\s*\*$"), None),
+    ("grep_searched_codebase", re.compile(r"^\*Grep searched codebase\s*\*$"), None),
+    ("searched_filesystem", re.compile(r"^\*Searched filesystem\s*\*$"), None),
+    ("viewed_code_item", re.compile(r"^\*Viewed code item\s*\*$"), None),
+    ("viewed_content_chunk", re.compile(r"^\*Viewed content chunk\s*\*$"), None),
+)
+
 
 class AntigravityExportError(RuntimeError):
     """Raised when Antigravity's local export surface cannot be queried."""
@@ -89,6 +133,15 @@ class AntigravitySourceInspection(StrEnum):
     REGULAR = "regular"
     NON_REGULAR = "non_regular"
     UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True, slots=True)
+class AntigravityActivityMarker:
+    """One tool call the language server rendered as a transcript marker line."""
+
+    tool_name: str
+    tool_input: dict[str, object] | None
+    rendered: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -331,7 +384,7 @@ class AntigravityLanguageServerClient:
         root: Path,
         *,
         language_server_path: Path | None = None,
-        startup_timeout_s: float = 6.0,
+        startup_timeout_s: float = _STARTUP_TIMEOUT_S,
     ) -> None:
         self.root = root.expanduser()
         self.language_server_path = language_server_path
@@ -416,9 +469,17 @@ class AntigravityLanguageServerClient:
         return markdown
 
     def _wait_until_ready(self) -> None:
+        """Probe the vendor surface until it answers a search call.
+
+        Bounded by an attempt floor as well as a deadline: one probe can spend
+        the entire ``_REQUEST_TIMEOUT_S`` socket budget, so a deadline alone
+        would let a single slow probe end readiness with no retry.
+        """
         deadline = time.monotonic() + self.startup_timeout_s
         last_error: Exception | None = None
-        while time.monotonic() < deadline:
+        attempts = 0
+        while attempts < _MIN_READY_ATTEMPTS or time.monotonic() < deadline:
+            attempts += 1
             process = self._process
             if process is not None and process.poll() is not None:
                 raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
@@ -427,8 +488,10 @@ class AntigravityLanguageServerClient:
                 return
             except AntigravityExportError as exc:
                 last_error = exc
-                time.sleep(0.2)
-        raise AntigravityExportError(f"Antigravity language server did not become ready: {last_error}")
+                time.sleep(_READY_RETRY_SLEEP_S)
+        raise AntigravityExportError(
+            f"Antigravity language server did not become ready after {attempts} probes: {last_error}"
+        )
 
     def _post(self, endpoint: str, payload: JSONDocument) -> JSONDocument:
         request = Request(
@@ -438,7 +501,7 @@ class AntigravityLanguageServerClient:
             method="POST",
         )
         try:
-            with urlopen(request, timeout=10.0) as response:
+            with urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
                 loaded = loads(response.read())
         except (OSError, TimeoutError, ValueError) as exc:
             raise AntigravityExportError(str(exc)) from exc
@@ -692,44 +755,73 @@ def _discover_language_server_version(binary: Path) -> str:
     raise AntigravityExportError(f"language server {binary} did not report a compatible version")
 
 
+def _activity_marker(line: str) -> AntigravityActivityMarker | None:
+    """Recognize one vendor activity marker line, or return ``None`` for prose."""
+    for tool_name, pattern, argument in _ACTIVITY_MARKERS:
+        match = pattern.match(line)
+        if match is None:
+            continue
+        tool_input: dict[str, object] | None = None
+        if argument is not None:
+            value = match.group("value").strip()
+            if value:
+                tool_input = {argument: value}
+        return AntigravityActivityMarker(tool_name=tool_name, tool_input=tool_input, rendered=line)
+    return None
+
+
+def _section_runs(body: str) -> list[str | tuple[AntigravityActivityMarker, ...]]:
+    """Split one transcript section into alternating prose and activity runs.
+
+    The export renders every tool call as a one-line italic marker inside the
+    section that follows the turn it belongs to -- including inside a ``User
+    Input`` section, where the tool activity is the agent's, not the operator's.
+    Runs keep that boundary so authorship stays per message.
+    """
+    runs: list[str | tuple[AntigravityActivityMarker, ...]] = []
+    prose: list[str] = []
+    markers: list[AntigravityActivityMarker] = []
+
+    def flush_prose() -> None:
+        text = "\n".join(prose).strip()
+        prose.clear()
+        if text:
+            runs.append(text)
+
+    def flush_markers() -> None:
+        if markers:
+            runs.append(tuple(markers))
+            markers.clear()
+
+    for line in body.splitlines():
+        stripped = line.strip()
+        if marker := _activity_marker(stripped):
+            flush_prose()
+            markers.append(marker)
+            continue
+        if not stripped and markers:
+            # Markers are separated by blank lines; they do not end the run.
+            continue
+        flush_markers()
+        prose.append(line)
+    flush_prose()
+    flush_markers()
+    return runs
+
+
 def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessage]:
     sections = list(_SECTION_RE.finditer(markdown))
     messages: list[ParsedMessage] = []
     for index, section in enumerate(sections):
         start = section.end()
         end = sections[index + 1].start() if index + 1 < len(sections) else len(markdown)
-        text = markdown[start:end].strip()
-        if not text:
-            continue
         heading = section.group("title")
-        role = Role.USER if heading == "User Input" else Role.ASSISTANT
-        provider_message_id = synthetic_message_id(
-            namespace=cascade_id,
-            role=role,
-            text=text,
-            timestamp=None,
-            kind=_message_kind(heading),
-        )
-        messages.append(
-            ParsedMessage(
-                provider_message_id=provider_message_id,
-                role=role,
-                text=text,
-                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
-                position=len(messages),
-                variant_index=0,
-                is_active_path=True,
-                # polylogue-gzgyl: an antigravity "User Input" section is
-                # unambiguously a real human turn -- positive-evidence
-                # override for the shared classify_material_origin
-                # no-fallthrough (#2502).
-                material_origin=human_authored_override(
-                    role,
-                    MessageType.MESSAGE,
-                    classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
-                ),
-            )
-        )
+        section_role = Role.USER if heading == "User Input" else Role.ASSISTANT
+        for run in _section_runs(markdown[start:end]):
+            if isinstance(run, str):
+                messages.append(_prose_message(run, cascade_id, section_role, heading, len(messages)))
+            else:
+                messages.append(_activity_message(run, cascade_id, len(messages)))
 
     if messages:
         return messages
@@ -754,6 +846,85 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             is_active_path=True,
         )
     ]
+
+
+def _prose_message(
+    text: str,
+    cascade_id: str,
+    role: Role,
+    heading: str,
+    position: int,
+) -> ParsedMessage:
+    return ParsedMessage(
+        provider_message_id=synthetic_message_id(
+            namespace=cascade_id,
+            role=role,
+            text=text,
+            timestamp=None,
+            kind=_message_kind(heading),
+        ),
+        role=role,
+        text=text,
+        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        # polylogue-gzgyl: an antigravity "User Input" section is
+        # unambiguously a real human turn -- positive-evidence
+        # override for the shared classify_material_origin
+        # no-fallthrough (#2502).
+        material_origin=human_authored_override(
+            role,
+            MessageType.MESSAGE,
+            classify_material_origin(role=role, message_type=MessageType.MESSAGE, text=text),
+        ),
+    )
+
+
+def _activity_message(
+    markers: tuple[AntigravityActivityMarker, ...],
+    cascade_id: str,
+    position: int,
+) -> ParsedMessage:
+    """Build the agent tool-activity message for one run of vendor markers.
+
+    The marker phrasing is fully recoverable from ``tool_name`` plus
+    ``tool_input``, so the message carries no prose: retaining the rendered
+    line as text would count agent activity as authored words again.
+    """
+    rendered = "\n".join(marker.rendered for marker in markers)
+    provider_message_id = synthetic_message_id(
+        namespace=cascade_id,
+        role=Role.ASSISTANT,
+        text=rendered,
+        timestamp=None,
+        kind=_ACTIVITY_MESSAGE_KIND,
+    )
+    blocks = [
+        ParsedContentBlock(
+            type=BlockType.TOOL_USE,
+            tool_name=marker.tool_name,
+            tool_id=f"{provider_message_id}.{block_index}",
+            tool_input=marker.tool_input,
+        )
+        for block_index, marker in enumerate(markers)
+    ]
+    return ParsedMessage(
+        provider_message_id=provider_message_id,
+        role=Role.ASSISTANT,
+        text=None,
+        blocks=blocks,
+        message_type=MessageType.TOOL_USE,
+        position=position,
+        variant_index=0,
+        is_active_path=True,
+        material_origin=classify_material_origin(
+            role=Role.ASSISTANT,
+            message_type=MessageType.TOOL_USE,
+            text=None,
+            block_types=tuple(block.type for block in blocks),
+        ),
+    )
 
 
 def _mark_active_leaf(messages: list[ParsedMessage]) -> list[ParsedMessage]:
@@ -786,6 +957,7 @@ def _string(value: object) -> str | None:
 
 
 __all__ = [
+    "AntigravityActivityMarker",
     "AntigravityBinaryUnavailableError",
     "AntigravitySessionSummary",
     "AntigravityExportError",
