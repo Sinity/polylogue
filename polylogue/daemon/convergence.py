@@ -19,7 +19,15 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import cast
 
+from polylogue.daemon.derivation import (
+    DerivationAdapter,
+    DerivationFrame,
+    DerivationRegistry,
+    DerivationReport,
+    converge,
+)
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -169,10 +177,38 @@ class DaemonConverger:
     The main process is the only SQLite writer.
     """
 
-    def __init__(self, stages: Iterable[ConvergenceStage]) -> None:
+    def __init__(
+        self,
+        stages: Iterable[ConvergenceStage],
+        *,
+        derivations: Iterable[object] = (),
+    ) -> None:
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
+        self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
+
+    @property
+    def derivation_domains(self) -> tuple[str, ...]:
+        return tuple(adapter.domain for adapter in self._derivations.ordered())
+
+    def converge_derivations(
+        self,
+        frame: DerivationFrame,
+        *,
+        budget: int | None = None,
+        deadline_s: float | None = None,
+        domains: Sequence[str] | None = None,
+    ) -> DerivationReport:
+        """Converge the migrated domains from their own output relations.
+
+        The pending set is ``required`` minus ``valid``, recomputed here rather
+        than read from stage state, so this pass is identical after a restart
+        that lost every scheduling hint. Adapters own their write acquisition:
+        this facade must not wrap compute or publication in an outer lease, or
+        one long batch would hold the writer across every domain's computation.
+        """
+        return converge(self._derivations, frame, budget=budget, deadline_s=deadline_s, domains=domains)
 
     @property
     def stage_names(self) -> list[str]:
@@ -462,9 +498,14 @@ class DaemonConverger:
                         for path in batch_needs_work:
                             self._file_states[path].stages[stage_name] = StageState.IN_PROGRESS
 
+                        # The batch's own order, not set-iteration order: a set
+                        # of paths iterates by string hash, which is randomized
+                        # per process, so a stage would see its subjects in a
+                        # different order on every run.
+                        ordered_needs_work = tuple(path for path in active_paths if path in batch_needs_work)
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = stage.execute_many(tuple(batch_needs_work))
+                            execute_result = stage.execute_many(ordered_needs_work)
                         except Exception as exc:
                             logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
                             for path in batch_needs_work:
@@ -478,7 +519,7 @@ class DaemonConverger:
                             remaining_needs_work: set[Path] | None = None
                             if not success and stage.false_means_pending:
                                 try:
-                                    remaining_needs_work = set(stage.check_many(tuple(batch_needs_work))).intersection(
+                                    remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
                                     )
                                 except Exception:
@@ -493,7 +534,7 @@ class DaemonConverger:
                                 elapsed,
                                 extra_stage_timings_s,
                             )
-                            for path in batch_needs_work:
+                            for path in ordered_needs_work:
                                 state = self._file_states[path]
                                 state.stage_times[stage_name] = elapsed
                                 state.last_stage_times[stage_name] = elapsed

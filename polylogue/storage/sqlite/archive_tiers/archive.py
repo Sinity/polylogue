@@ -324,6 +324,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
 
 
@@ -818,6 +819,7 @@ class ArchiveStore:
             )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
+            require_write_lease(f"ArchiveStore(index={self.index_db_path})")
             self._conn = (
                 sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only

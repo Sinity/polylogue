@@ -1026,3 +1026,71 @@ async def test_queued_cancellation_never_invokes_admitted_completion_callback() 
     release.set()
     assert await first == "done"
     assert await coordinator.shutdown(timeout=1.0) is True
+
+
+class TestDeclaredHoldBudgets:
+    """A hold that starves other writers is surfaced, not silently absorbed.
+
+    The coordinator cannot abort an operation already inside a SQLite
+    transaction, so the budget does not preempt. What it does is make an
+    over-long hold impossible to miss: rehearsal-11's Drive catch-up was
+    measured at hold_max 18,623 s against a 30 s busy_timeout for every
+    non-gated writer, and nothing counted or reported it (polylogue-8qm4k).
+    """
+
+    def test_longest_matching_actor_prefix_wins(self) -> None:
+        from polylogue.daemon.write_coordinator import write_hold_budget_s
+
+        assert write_hold_budget_s("watcher.catch_up.chunk") == 30.0
+        assert write_hold_budget_s("maintenance.drive_catchup") == 120.0
+        # An undeclared actor still has a budget rather than an exemption.
+        assert write_hold_budget_s("something.undeclared") == 60.0
+
+    def test_an_over_budget_hold_is_flagged_and_counted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Anti-vacuity: drop the ``hold_seconds > budget_s`` comparison and the
+        released event reports ``hold_over_budget`` False while the counter
+        stays at zero -- the state the daemon was in for an 18,623 s hold."""
+        from polylogue.daemon import write_coordinator as wc
+
+        monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
+
+        async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
+            coordinator = wc.DaemonWriteCoordinator()
+
+            async def operation() -> None:
+                await asyncio.sleep(0.01)
+
+            await coordinator.run("slow.actor", operation)
+            snapshot = coordinator.snapshot()
+            assert snapshot.last_event is not None
+            return snapshot.last_event, snapshot.over_budget_holds
+
+        event, count = asyncio.run(scenario())
+
+        assert event.phase == "released"
+        assert event.hold_budget_s == 0.0
+        assert event.hold_over_budget is True
+        assert count == 1
+
+    def test_a_hold_inside_its_budget_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The budget must not fire on ordinary work, or it reports nothing."""
+        from polylogue.daemon import write_coordinator as wc
+
+        monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"quick.": 300.0})
+
+        async def scenario() -> tuple[wc.DaemonWriteEvent, int]:
+            coordinator = wc.DaemonWriteCoordinator()
+
+            async def operation() -> None:
+                return None
+
+            await coordinator.run("quick.actor", operation)
+            snapshot = coordinator.snapshot()
+            assert snapshot.last_event is not None
+            return snapshot.last_event, snapshot.over_budget_holds
+
+        event, count = asyncio.run(scenario())
+
+        assert event.hold_budget_s == 300.0
+        assert event.hold_over_budget is False
+        assert count == 0

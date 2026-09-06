@@ -32,6 +32,12 @@ from polylogue.core.protocols import ProgressCallback
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
+from polylogue.storage.derived.session.input_binding import (
+    SessionInputDigest,
+    session_input_binding_sql,
+    session_input_bindings,
+    session_row_binding_sql,
+)
 from polylogue.storage.derived.session.latency_profiles import (
     build_latency_profile_facts,
     build_session_latency_profile_record,
@@ -1225,6 +1231,7 @@ def _large_session_profile_record_from_row(
     materialized_at: str,
     model_usage: Sequence[ModelUsageTotals] = (),
     terminal_state_result: _TerminalStateResult | None = None,
+    input_binding: str | None = None,
 ) -> SessionProfileRecord:
     created_at = parse_archive_datetime(row["created_at"])
     updated_at = parse_archive_datetime(row["updated_at"])
@@ -1365,7 +1372,7 @@ def _large_session_profile_record_from_row(
         source_sort_key=source_sort_key,
         input_high_water_mark=source_updated_at,
         input_high_water_mark_source="provider_ts" if source_updated_at else "fallback_date",
-        input_content_hash=str(row["content_hash"]).lower() if row["content_hash"] is not None else None,
+        input_content_hash=input_binding,
         input_row_count=message_count,
         source_name=origin,
         title=title or None,
@@ -1432,6 +1439,7 @@ def _large_session_profile_record(
         materialized_at=materialized_at,
         model_usage=model_usage,
         terminal_state_result=terminal_state_result,
+        input_binding=session_input_bindings(conn, (session_id,)).get(session_id),
     )
 
 
@@ -1498,6 +1506,7 @@ async def build_large_session_insight_record_bundle_async(
     row = await _session_count_row_async(conn, session_id)
     model_usage = (await get_model_usage_batch(conn, [session_id])).get(session_id, [])
     terminal_state_result = await _bounded_session_terminal_state_async(conn, session_id, row)
+    bindings = await _async_session_input_bindings(conn, (session_id,))
     profile = _large_session_profile_record_from_row(
         row,
         session_id,
@@ -1505,6 +1514,7 @@ async def build_large_session_insight_record_bundle_async(
         materialized_at=built_at,
         model_usage=model_usage,
         terminal_state_result=terminal_state_result,
+        input_binding=bindings.get(session_id),
     )
     return SessionInsightRecordBundle(
         profile_record=profile,
@@ -1674,6 +1684,26 @@ async def _load_message_counts_async(
     return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
 
 
+async def _async_session_input_bindings(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, str]:
+    """The value-complete binding over the async writer's connection.
+
+    Feeds the shared :class:`SessionInputDigest`, so the digest definition is
+    not duplicated for the async route.
+    """
+    unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+    if not unique:
+        return {}
+    digest = SessionInputDigest(unique)
+    for sql in (session_row_binding_sql(len(unique)), session_input_binding_sql(len(unique))):
+        async with conn.execute(sql, unique) as cursor:
+            async for row in cursor:
+                digest.add_row(row)
+    return digest.result()
+
+
 def rebuild_session_insights_sync(
     conn: sqlite3.Connection,
     *,
@@ -1822,7 +1852,11 @@ def rebuild_session_insights_sync(
             add_timing("thread_root_lookup", t0)
             t0 = time.perf_counter()
             hydrated_sessions = hydrate_sessions(batch)
-            input_content_hashes = {str(record.session_id): str(record.content_hash) for record in batch.sessions}
+            # The binding a profile stores must cover every input value the
+            # profile reads, so it is digested from the message projection --
+            # not copied from the session's own content hash, which excludes
+            # the usage and model measurements these records consume.
+            input_content_hashes = dict(session_input_bindings(conn, chunk_full_ids))
             add_timing("hydrate", t0)
             t0 = time.perf_counter()
             record_bundles.extend(
@@ -2085,9 +2119,7 @@ async def rebuild_session_insights_async(
                     compaction_counts_by_session=batch.compaction_counts_by_session,
                     logical_session_ids_by_session=root_ids_by_session,
                     model_usage_by_session=batch.model_usage_by_session,
-                    input_content_hash_by_session={
-                        str(record.session_id): str(record.content_hash) for record in batch.sessions
-                    },
+                    input_content_hash_by_session=await _async_session_input_bindings(conn, chunk_full_ids),
                 )
             )
 

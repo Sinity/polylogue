@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -10,13 +12,40 @@ from typing_extensions import TypedDict
 ProviderDayGroup: TypeAlias = tuple[str, str]
 
 
+def session_profile_candidates(
+    conn: sqlite3.Connection,
+    session_ids: Sequence[str],
+    *,
+    materializer_version: int,
+) -> list[str]:
+    """Sessions whose profile is not valid, by value-complete inspection.
+
+    Re-exported here because this module is the daemon converger's declared
+    window onto session-insight runtime; the implementation belongs to the
+    domain (:mod:`polylogue.storage.derived.session.derivation`).
+
+    This is authority. :func:`session_profile_stale_predicate` below is a cheap
+    SQL prefilter over identity only, and identity does not move when a role, a
+    model name, or a token count does.
+    """
+    from polylogue.storage.derived.session.derivation import inspect_session_profiles
+
+    statuses = inspect_session_profiles(conn, session_ids, materializer_version=materializer_version)
+    return sorted(session_id for session_id, status in statuses.items() if status != "valid")
+
+
 def session_profile_stale_predicate(
     sessions_alias: str,
     profile_alias: str,
-    *,
-    include_content_hash: bool = False,
 ) -> str:
-    """SQL boolean fragment: true when ``profile_alias``'s cached sort key is
+    """SQL boolean fragment: a cheap identity prefilter, never authority.
+
+    Narrows candidates before the value-complete inspection in
+    :func:`session_profile_candidates` reads them. On its own it cannot see a
+    changed role, model, or token count, which is exactly the defect the
+    value-complete binding exists to close; do not use it to certify freshness.
+
+    True when ``profile_alias``'s cached sort key is
     stale relative to ``sessions_alias``.
 
     Single source of truth for the sort-key staleness comparison, shared by
@@ -41,12 +70,6 @@ def session_profile_stale_predicate(
     converger already considered fresh (repeated churn) or vice versa
     (missed rebuilds).
     """
-    content_binding = (
-        f"\n    OR COALESCE(lower(hex({sessions_alias}.content_hash)), '') != "
-        f"COALESCE(lower({profile_alias}.input_content_hash), '')"
-        if include_content_hash
-        else ""
-    )
     return (
         "(\n"
         f"    ({sessions_alias}.sort_key_ms IS NOT NULL\n"
@@ -57,7 +80,6 @@ def session_profile_stale_predicate(
         f"     AND COALESCE(strftime('%s', {profile_alias}.source_updated_at), "
         f"{profile_alias}.source_updated_at, '') != "
         f"COALESCE(CAST({sessions_alias}.updated_at_ms / 1000 AS TEXT), ''))\n"
-        f"    {content_binding}\n"
         ")"
     )
 
