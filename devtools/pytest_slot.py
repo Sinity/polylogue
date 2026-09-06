@@ -443,6 +443,9 @@ def _submit(
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
     client = client_environment(env)
+    # The paths are per client pid, so a previous run of this pid may have left
+    # a result document; reading that one would report someone else's run.
+    _slot_result_path(log_path).unlink(missing_ok=True)
     _write_launch(launch_path, argv=command, cwd=cwd, env=env, log_path=log_path)
     try:
         started = _agentctl(

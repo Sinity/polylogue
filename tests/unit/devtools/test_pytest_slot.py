@@ -359,6 +359,19 @@ def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: 
     assert outcome.receipt == {"status": "timed_out", "diagnosis": "pytest_deadline"}
 
 
+def test_a_stale_result_document_is_not_reported_as_this_run_s(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client's paths are per pid, and a pid is reused."""
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="succeeded", exit_code=0)
+    stale = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    assert outcome.returncode == 0
+    assert outcome.receipt is None
+
+
 def test_the_slot_runner_executes_the_launch_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     marker = tmp_path / "pytest-ran"
     log_path = tmp_path / "slot.log"
