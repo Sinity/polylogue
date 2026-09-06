@@ -29,6 +29,15 @@ MaterialOriginFilter = MaterialOrigin | str | tuple[MaterialOrigin | str, ...] |
 
 _MESSAGE_RECORD_SELECT = MESSAGES_SPEC.record_select_column_names("m")
 
+# A session's transcript order is content position. Observed timestamps are
+# metadata: they are non-monotonic against position on every origin, so they
+# cannot decide the order of a conversation. ``(session_id, position,
+# variant_index)`` is the messages primary key, so this is a total order within
+# a session -- no tiebreaker is needed and the keyset cursor below cannot skip
+# or repeat a row. ``idx_messages_session_position`` serves it without a sort.
+_TRANSCRIPT_ORDER = "m.position, m.variant_index"
+_TRANSCRIPT_ORDER_DESC = "m.position DESC, m.variant_index DESC"
+
 
 async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> str:
     cursor = await conn.execute(
@@ -93,23 +102,14 @@ async def _branch_point_content_address_matches(
     return row[1] is not None and bytes(row[0]) == bytes(row[1])
 
 
-async def _own_messages(conn: aiosqlite.Connection, session_id: str, *, position_order: bool) -> list[MessageRecord]:
-    # A non-lineage session keeps the historical sort-key ordering, which the
-    # keyset streamer (iter_messages) mirrors. Lineage composition needs strict
-    # position order so the parent prefix is cut at the right message regardless
-    # of timestamp gaps or sort-key ties.
-    order_by = (
-        "m.position, m.variant_index"
-        if position_order
-        else "(m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
-    )
+async def _own_messages(conn: aiosqlite.Connection, session_id: str) -> list[MessageRecord]:
     cursor = await conn.execute(
         f"""
         SELECT {_MESSAGE_RECORD_SELECT}
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         WHERE m.session_id = ?
-        ORDER BY {order_by}
+        ORDER BY {_TRANSCRIPT_ORDER}
         """,
         (session_id,),
     )
@@ -117,21 +117,14 @@ async def _own_messages(conn: aiosqlite.Connection, session_id: str, *, position
     return [_row_to_message(row) for row in rows]
 
 
-async def get_messages(
-    conn: aiosqlite.Connection,
-    session_id: str,
-    *,
-    _compose_in_position_order: bool = False,
-) -> list[MessageRecord]:
+async def get_messages(conn: aiosqlite.Connection, session_id: str) -> list[MessageRecord]:
     """Compose a session's full message transcript, holding one read snapshot.
 
     Thin wrapper over ``get_messages_with_lineage_completeness`` that drops
     the completeness signal for callers that don't need it (single source of
     truth for the composition logic -- see that function's docstring).
     """
-    messages, _completeness = await get_messages_with_lineage_completeness(
-        conn, session_id, _compose_in_position_order=_compose_in_position_order
-    )
+    messages, _completeness = await get_messages_with_lineage_completeness(conn, session_id)
     return messages
 
 
@@ -147,7 +140,7 @@ async def get_effective_context(
     full lineage-composed prefix used by ordinary transcript reads.
     """
     resolved = await _resolve_session_id(conn, session_id)
-    messages = await _own_messages(conn, resolved, position_order=True)
+    messages = await _own_messages(conn, resolved)
     if at_position is None:
         at_position = max((message.position for message in messages), default=-1)
     boundary = await (
@@ -178,8 +171,6 @@ async def get_effective_context(
 async def get_messages_with_lineage_completeness(
     conn: aiosqlite.Connection,
     session_id: str,
-    *,
-    _compose_in_position_order: bool = False,
 ) -> tuple[list[MessageRecord], LineageCompleteness]:
     """Compose a session's full message transcript, holding one read snapshot,
     and report whether the composed transcript is complete (4ts.6).
@@ -202,9 +193,7 @@ async def get_messages_with_lineage_completeness(
     if not conn.in_transaction:
         await conn.execute("BEGIN DEFERRED")
         try:
-            return await get_messages_with_lineage_completeness(
-                conn, session_id, _compose_in_position_order=_compose_in_position_order
-            )
+            return await get_messages_with_lineage_completeness(conn, session_id)
         finally:
             await conn.execute("ROLLBACK")
     session_id = await _resolve_session_id(conn, session_id)
@@ -212,10 +201,9 @@ async def get_messages_with_lineage_completeness(
     # Lineage composition (#2467): a prefix-sharing child stores only its own
     # divergent tail. Walk UP the parent chain collecting (child, branch_point)
     # links to the root, then compose DOWN. This is ITERATIVE (not recursive) so
-    # deep acompact/fork chains cannot hit Python's recursion limit; the composed
-    # view is position-ordered end to end, while a plain session keeps the
-    # sort-key order the keyset streamer relies on. A `visited` set stops a cyclic
-    # session_link; _MAX_LINEAGE_DEPTH is only a runaway backstop.
+    # deep acompact/fork chains cannot hit Python's recursion limit. A `visited`
+    # set stops a cyclic session_link; _MAX_LINEAGE_DEPTH is only a runaway
+    # backstop.
     chain: list[tuple[str, str]] = []  # (child_session_id, branch_point_message_id), leaf-first
     visited: set[str] = {session_id}
     cursor_session = session_id
@@ -246,14 +234,14 @@ async def get_messages_with_lineage_completeness(
         # depth_limited can only be set inside the for-else branch below,
         # which only runs after _MAX_LINEAGE_DEPTH non-empty chain entries --
         # an empty chain means the very first edge check returned None.
-        return await _own_messages(conn, session_id, position_order=_compose_in_position_order), LineageCompleteness()
+        return await _own_messages(conn, session_id), LineageCompleteness()
 
     # Compose from the root down: root's full transcript, then splice each
     # descendant's own tail at its branch point in the running composed view.
-    composed = await _own_messages(conn, cursor_session, position_order=True)
+    composed = await _own_messages(conn, cursor_session)
     dangling = False
     for child_session_id, branch_point_message_id in reversed(chain):
-        own = await _own_messages(conn, child_session_id, position_order=True)
+        own = await _own_messages(conn, child_session_id)
         prefix: list[MessageRecord] = []
         edge = await _prefix_sharing_edge(conn, child_session_id)
         witness_matches = edge is None or await _branch_point_content_address_matches(
@@ -376,7 +364,7 @@ async def get_messages_batch(
             query += " AND m.occurred_at_ms <= ?"
             params.append(sort_key_until * 1000.0)
 
-        query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
+        query += f" ORDER BY m.session_id, {_TRANSCRIPT_ORDER}"
         cursor = await conn.execute(
             query,
             tuple(params),
@@ -475,7 +463,7 @@ async def get_messages_paginated(
     count_row = await count_cursor.fetchone()
     total = count_row[0] if count_row else 0
 
-    query += " ORDER BY m.position, m.variant_index, m.message_id"
+    query += f" ORDER BY {_TRANSCRIPT_ORDER}"
     query += " LIMIT ? OFFSET ?"
     params.extend([limit, offset])
 
@@ -571,7 +559,7 @@ async def get_message_edge_windows(
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         {where}
-        ORDER BY m.position, m.variant_index, m.message_id
+        ORDER BY {_TRANSCRIPT_ORDER}
         LIMIT ?
         """,
         (*params, edge_limit),
@@ -585,7 +573,7 @@ async def get_message_edge_windows(
         FROM messages m
         JOIN sessions s ON s.session_id = m.session_id
         {where}
-        ORDER BY m.position DESC, m.variant_index DESC, m.message_id DESC
+        ORDER BY {_TRANSCRIPT_ORDER_DESC}
         LIMIT ?
         """,
         (*params, edge_limit),
@@ -603,17 +591,17 @@ async def iter_messages(
     message_roles: MessageRoleFilter = (),
     limit: int | None = None,
 ) -> AsyncIterator[MessageRecord]:
-    """Stream a session's messages in deterministic order, chunked.
+    """Stream a session's messages in transcript order, chunked.
 
     Pagination is keyset, not ``LIMIT/OFFSET``: each chunk is seeded by the
-    previous chunk's last ``(sort_key, message_id)`` so a single session's
+    previous chunk's last ``(position, variant_index)`` so a single session's
     stream stays linear instead of re-scanning and discarding all prior rows
-    (O(M^2)) on every chunk. The ordering
-    ``(sort_key IS NULL), sort_key, message_id`` is unchanged and served by
-    ``idx_messages_session_sortkey``. ``message_id`` is the table primary
-    key (globally unique), so the keyset cursor is a total order with no skipped
-    or duplicated rows across chunk boundaries. NULL-``sort_key`` rows form the
-    ordering tail and are advanced by a distinct cursor branch.
+    (O(M^2)) on every chunk. That pair is the messages primary key under
+    ``session_id``, so the cursor is a total order with no skipped or duplicated
+    rows across chunk boundaries, and ``idx_messages_session_position`` serves
+    the ordering without a temp sort. The stream and the batch read
+    (``get_messages_paginated``) share ``_TRANSCRIPT_ORDER``: a caller may take
+    a total from one and slice the other.
     """
     session_id = await _resolve_session_id(conn, session_id)
     yielded = 0
@@ -635,11 +623,9 @@ async def iter_messages(
 
     role_values = message_role_sql_values(effective_roles)
 
-    # Keyset cursor of the previous chunk's final row. ``have_cursor``
-    # distinguishes the first chunk from a genuine NULL-sort_key boundary
-    # (``last_sort`` is None in both cases).
-    last_sort: float | None = None
-    last_id: str = ""
+    # Keyset cursor of the previous chunk's final row.
+    last_position: int = -1
+    last_variant: int = -1
     have_cursor = False
 
     while True:
@@ -649,7 +635,7 @@ async def iter_messages(
             JOIN sessions s ON s.session_id = m.session_id
             WHERE m.session_id = ?
         """
-        params: list[str | float] = [session_id]
+        params: list[str | int] = [session_id]
 
         if role_values:
             placeholders = ",".join("?" for _ in role_values)
@@ -657,25 +643,10 @@ async def iter_messages(
             params.extend(role_values)
 
         if have_cursor:
-            if last_sort is not None:
-                # Cursor in the non-NULL sort_key group: advance within it and
-                # always include the NULL group that follows in the ordering.
-                query += (
-                    " AND ("
-                    "(m.occurred_at_ms IS NOT NULL"
-                    " AND (m.occurred_at_ms > ? OR (m.occurred_at_ms = ? AND m.message_id > ?)))"
-                    " OR m.occurred_at_ms IS NULL"
-                    ")"
-                )
-                last_sort_ms = last_sort * 1000.0
-                params.extend([last_sort_ms, last_sort_ms, last_id])
-            else:
-                # Cursor in the NULL sort_key group (ordering tail): only
-                # NULL-sort_key rows with a greater message_id remain.
-                query += " AND m.occurred_at_ms IS NULL AND m.message_id > ?"
-                params.append(last_id)
+            query += " AND (m.position > ? OR (m.position = ? AND m.variant_index > ?))"
+            params.extend([last_position, last_position, last_variant])
 
-        query += " ORDER BY (m.occurred_at_ms IS NULL), m.occurred_at_ms, m.message_id"
+        query += f" ORDER BY {_TRANSCRIPT_ORDER}"
 
         fetch_limit = chunk_size
         if limit is not None:
@@ -694,8 +665,8 @@ async def iter_messages(
             break
 
         last_row = rows[-1]
-        last_sort = last_row["sort_key"]
-        last_id = str(last_row["message_id"])
+        last_position = int(last_row["position"])
+        last_variant = int(last_row["branch_index"])
         have_cursor = True
 
         for row in rows:

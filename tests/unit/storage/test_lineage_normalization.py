@@ -452,13 +452,13 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
     The edge, the stored tail, and the composed transcript must all follow
     content position and ignore the wall clock.
 
-    Anti-vacuity: two mutations turn this red. Ordering composition by
-    ``occurred_at_ms`` (``position_order=False`` in
-    ``get_messages_with_lineage_completeness``) swaps the tail's two messages,
-    because the tail is deliberately recorded out of clock order. Adding any
-    timestamp lower bound against the branch point drops the tail entirely and
-    leaves a two-message transcript. The spawned-fresh control keeps the
-    negative case distinct: no shared prefix, so nothing may be suppressed.
+    Anti-vacuity: two mutations turn this red. Ordering the read by
+    ``occurred_at_ms`` swaps each session's two trailing messages, because both
+    the child's tail and the spawned-fresh control are deliberately recorded out
+    of clock order. Adding any timestamp lower bound against the branch point
+    drops the tail entirely and leaves a two-message transcript. The
+    spawned-fresh control keeps the negative case distinct: no shared prefix, so
+    nothing may be suppressed.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -518,10 +518,9 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
     assert [row["text"] for row in child_blocks] == ["child diverges here", "child reply"]
 
     # A spawned-fresh sibling shares no prefix, so it keeps every message and
-    # records the other inheritance mode. Its clock stays monotonic on purpose:
-    # a session with no lineage edge is read in sort-key order rather than
-    # position order, so inverting its clock here would assert
-    # polylogue-exwho's defect instead of this test's subject.
+    # records the other inheritance mode. Its clock runs backwards too: a session
+    # with no lineage edge is read in the same content-position order as a
+    # composed one.
     fresh = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="fresh",
@@ -529,8 +528,8 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
         parent_session_provider_id="parent",
         branch_type=BranchType.FORK,
         messages=[
-            _msg("f0", Role.USER, "unrelated opening", 0, timestamp="2026-01-01T00:02:00+00:00"),
-            _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:04:00+00:00"),
+            _msg("f0", Role.USER, "unrelated opening", 0, timestamp="2026-01-01T00:04:00+00:00"),
+            _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:02:00+00:00"),
         ],
     )
     fresh_id = write_parsed_session_to_archive(conn, fresh)
@@ -552,6 +551,177 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
         "child reply",
     ]
     assert asyncio.run(_read_texts(db, fresh_id)) == ["unrelated opening", "unrelated reply"]
+
+
+# The parent's three messages then the child's two-message tail, at content
+# positions 0,1,2 and 2,3. Every shape carries the same content, so composition
+# must return the same transcript from all of them.
+_TIMESTAMP_SHAPES: dict[str, tuple[str | None, ...]] = {
+    "reversed": (
+        "2026-01-01T00:09:00+00:00",
+        "2026-01-01T00:05:00+00:00",
+        "2026-01-01T00:01:00+00:00",
+        "2026-01-01T00:04:00+00:00",
+        "2026-01-01T00:02:00+00:00",
+    ),
+    "equal": (("2026-01-01T00:03:00+00:00",) * 5),
+    "missing": (None, None, None, None, None),
+    # Only the tail's clock is absent, so a timestamp-ordered read would sink it
+    # to the end or float it to the front depending on the NULL convention.
+    "tail_missing": (
+        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:05:00+00:00",
+        "2026-01-01T00:09:00+00:00",
+        None,
+        None,
+    ),
+    "misleading": (
+        "2026-01-01T00:07:00+00:00",
+        "2026-01-01T00:02:00+00:00",
+        "2026-01-01T00:08:00+00:00",
+        "2026-01-01T00:00:30+00:00",
+        "2026-01-01T00:00:10+00:00",
+    ),
+}
+
+_COMPOSED_TEXTS = ["hello", "hi there", "child diverges here", "child reply"]
+
+
+def _write_prefix_sharing_pair(conn: sqlite3.Connection, stamps: tuple[str | None, ...]) -> tuple[str, str]:
+    """Write a parent and a prefix-sharing child carrying ``stamps``."""
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0, timestamp=stamps[0]),
+            _msg("p1", Role.ASSISTANT, "hi there", 1, timestamp=stamps[1]),
+            _msg("p2", Role.USER, "parent continues alone", 2, timestamp=stamps[2]),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0, timestamp=stamps[0]),
+            _msg("c1", Role.ASSISTANT, "hi there", 1, timestamp=stamps[1]),
+            _msg("cz", Role.USER, "child diverges here", 2, timestamp=stamps[3]),
+            _msg("ca", Role.ASSISTANT, "child reply", 3, timestamp=stamps[4]),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+    return parent_id, child_id
+
+
+@pytest.mark.parametrize("shape", sorted(_TIMESTAMP_SHAPES))
+def test_prefix_inheritance_is_identical_under_every_timestamp_shape(tmp_path: Path, shape: str) -> None:
+    """Equal, missing, reversed and misleading clocks produce one lineage.
+
+    The five shapes carry identical content at identical positions and differ
+    only in ``occurred_at_ms``. Extraction, the stored tail, the branch point and
+    the composed transcript must not vary across them -- which is what makes the
+    branch point positional content ancestry rather than a timestamp bound.
+
+    Anti-vacuity: every shape turns red if the read keys on ``occurred_at_ms``.
+    ``reversed`` and ``misleading`` invert on the clock itself; ``equal``,
+    ``missing`` and ``tail_missing`` invert on the ``message_id`` tiebreaker a
+    clock-keyed read needs, because the tail's provider ids (``cz`` then ``ca``)
+    sort backwards against their content positions. Adding any timestamp lower
+    bound against the branch point empties the tail on ``reversed`` and
+    ``misleading``.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent_id, child_id = _write_prefix_sharing_pair(conn, _TIMESTAMP_SHAPES[shape])
+
+    links = conn.execute(
+        "SELECT inheritance, branch_point_message_id, resolved_dst_session_id FROM session_links"
+        " WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchall()
+    assert len(links) == 1
+    assert links[0]["inheritance"] == "prefix-sharing"
+    assert links[0]["resolved_dst_session_id"] == parent_id
+    assert links[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1", position=1)
+
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
+        ).fetchall()
+    ] == [2, 3]
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT b.text FROM blocks b JOIN messages m ON m.message_id = b.message_id"
+            " WHERE b.session_id = ? ORDER BY m.position, b.position",
+            (child_id,),
+        ).fetchall()
+    ] == ["child diverges here", "child reply"]
+
+    conn.close()
+    assert asyncio.run(_read_texts(db, child_id)) == _COMPOSED_TEXTS
+
+
+def test_transcript_reads_are_invariant_under_timestamp_mutation(tmp_path: Path) -> None:
+    """Rewriting every stored clock cannot move a single message.
+
+    A consumer whose answer changes when only ``occurred_at_ms`` changes is
+    reading the wall clock as content order. Inverting the column against
+    content position is the strongest form of that probe: it is exactly the
+    sequence a timestamp-keyed read would return. Both sessions are checked --
+    the child exercises lineage composition, the parent has no edge and so
+    exercises the ``iter_messages`` keyset cursor, which is the route that used
+    to key on the clock.
+
+    Anti-vacuity: every route here keys on content position, and restoring
+    ``occurred_at_ms`` to any one of them reverses that route alone -- on the
+    pre-mutation read, whose fixture clock already disagrees with position, and
+    on the post-mutation comparison, which no clock-keyed read can hold.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+    parent_id, child_id = _write_prefix_sharing_pair(conn, _TIMESTAMP_SHAPES["reversed"])
+    conn.close()
+
+    parent_texts = ["hello", "hi there", "parent continues alone"]
+    before_child = asyncio.run(_read_all_routes(db, child_id))
+    before_parent = asyncio.run(_read_all_routes(db, parent_id))
+    assert before_child == dict.fromkeys(before_child, _COMPOSED_TEXTS)
+    assert before_parent == dict.fromkeys(before_parent, parent_texts)
+
+    conn = sqlite3.connect(db)
+    # Invert the clock against content position across BOTH sessions, so the
+    # parent prefix and the child tail each read backwards on a timestamp key.
+    conn.execute("UPDATE messages SET occurred_at_ms = 1000000 - position * 1000")
+    conn.commit()
+    conn.close()
+
+    assert asyncio.run(_read_all_routes(db, child_id)) == before_child
+    assert asyncio.run(_read_all_routes(db, parent_id)) == before_parent
+
+
+async def _read_all_routes(path: Path, session_id: str) -> dict[str, list[str | None]]:
+    """Read one session's transcript through every route that states its order."""
+    conn = await aiosqlite.connect(path)
+    try:
+        conn.row_factory = aiosqlite.Row
+        paginated, total, _completeness = await get_messages_paginated(conn, session_id, limit=100, offset=0)
+        batched, _all_messages = await get_messages_batch(conn, [session_id])
+        routes = {
+            "get_messages": [record.text for record in await get_messages(conn, session_id)],
+            "get_messages_paginated": [record.text for record in paginated],
+            "get_messages_batch": [record.text for record in batched[session_id]],
+            "iter_messages": [record.text async for record in iter_messages(conn, session_id, chunk_size=2)],
+        }
+        assert total == len(routes["get_messages_paginated"])
+        return routes
+    finally:
+        await conn.close()
 
 
 def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Path) -> None:

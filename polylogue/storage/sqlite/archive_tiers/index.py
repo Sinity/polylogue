@@ -564,18 +564,19 @@ CREATE TABLE IF NOT EXISTS messages (
     {TABLE_SPECS["messages"].ddl_body}
 ) STRICT;
 
+-- Serves transcript order: every read that states a session's message order
+-- (composition, get_messages_paginated, the iter_messages keyset cursor,
+-- get_messages_batch, query_session_messages) orders by
+-- `position, variant_index`, which this index satisfies as a covering scan with
+-- no temp B-tree sort.
 CREATE INDEX IF NOT EXISTS idx_messages_session_position
 ON messages(session_id, position, variant_index);
 
--- Serves the sort-key ordering used by iter_messages keyset pagination,
--- get_messages_batch, and get_messages_paginated. Those reads order by
--- `(occurred_at_ms IS NULL), occurred_at_ms, message_id` (NULL-timestamp rows
--- sort last). The leading IS NULL expression must itself be an indexed column or
--- the planner ignores the index and sorts the whole session in a temp B-tree on
--- every chunk — verified via EXPLAIN QUERY PLAN: a plain
--- (session_id, occurred_at_ms, message_id) index still triggers
--- `USE TEMP B-TREE FOR ORDER BY`, while the expression index below plans as a
--- covering-index scan with no sort (#2467 / #2475 perf audit).
+-- Covers the per-session reads of the observed clock: the `occurred_at_ms`
+-- range filters and the chronological projections, which read timestamps
+-- without deciding a transcript's order. No read orders by the leading
+-- `(occurred_at_ms IS NULL)` expression; it stays in the key so the index
+-- covers NULL-timestamp rows for those filters.
 CREATE INDEX IF NOT EXISTS idx_messages_session_sortkey
 ON messages(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id);
 
