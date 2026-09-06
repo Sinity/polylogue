@@ -5385,6 +5385,11 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
         with ArchiveStore(archive.config.archive_root) as archive_db:
             priced_id = archive_db.write_parsed(priced_session)
             archive_db.write_parsed(unpriced_session)
+        # Materialize the profile rows so the provenance assertion below reads
+        # the version the materializer stamped. Without a row the read path
+        # falls back to the declared constant and the assertion compares that
+        # constant to itself, staying green under any materializer drift.
+        await archive.rebuild_insights()
         with sqlite3.connect(tmp_path / "index.db") as conn:
             upsert_session_profile_costs(
                 conn,
@@ -5499,6 +5504,9 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             session_id = archive_db.write_parsed(session)
+        # See the cost test above: the provenance assertion is only a contract
+        # check once a materialized row carries the stamped version.
+        await archive.rebuild_insights()
         profile = await archive.get_session_latency_profile_insight(session_id)
         listed = await archive.list_session_latency_profile_insights(
             SessionLatencyProfileInsightQuery(origin=Origin.CODEX_SESSION.value, limit=10)
