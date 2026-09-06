@@ -28,13 +28,13 @@ from tests.infra.convergence_laws import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
 def test_convergence_property_incremental_equals_bulk(tmp_path: Path, shift: int) -> None:
     workload = generated_convergence_workload()
-    pathology = workload.pathology
-    order = rotated_session_order(pathology, shift)
-    bulk = build_converged_archive(tmp_path / "bulk", pathology, session_order=order)
-    incremental = build_converged_archive(tmp_path / "incremental", pathology, session_order=order, incremental=True)
+    composed = workload.sources
+    order = rotated_session_order(composed, shift)
+    bulk = build_converged_archive(tmp_path / "bulk", composed, session_order=order)
+    incremental = build_converged_archive(tmp_path / "incremental", composed, session_order=order, incremental=True)
     execute_convergence_plan(
         build_convergence_run_plan(workload),
         (bulk.root, incremental.root),

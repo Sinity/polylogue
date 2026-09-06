@@ -24,11 +24,11 @@ from tests.infra.archive_canonical_snapshot import (
 from tests.infra.convergence_harness import (
     ConvergenceArchive,
     converge_convergence_archive,
-    ingest_convergence_pathology,
+    ingest_composed_sources,
     initialize_active_archive,
-    rich_convergence_pathology,
+    rich_convergence_sources,
 )
-from tests.infra.pathology_composer import ComposedPathology
+from tests.infra.source_composer import ComposedSources
 
 
 def _relation_keys(section: tuple[RelationSnapshot, ...]) -> set[tuple[str, str]]:
@@ -72,14 +72,14 @@ def _add_real_action_result(archive_root: Path) -> None:
         write_parsed_session_to_archive(conn, session, content_hash=session_content_hash(session))
 
 
-def _build_archive(root: Path, pathology: ComposedPathology | None = None) -> ConvergenceArchive:
+def _build_archive(root: Path, composed: ComposedSources | None = None) -> ConvergenceArchive:
     """Use production ingest and convergence without the unrelated blob audit."""
-    selected_pathology = rich_convergence_pathology() if pathology is None else pathology
+    selected = rich_convergence_sources() if composed is None else composed
     initialize_active_archive(root)
-    archive = ingest_convergence_pathology(
+    archive = ingest_composed_sources(
         root,
-        selected_pathology,
-        session_indexes=tuple(range(len(selected_pathology.sessions))),
+        selected,
+        session_indexes=tuple(range(len(selected.sessions))),
         converge_after_each=False,
     )
     converge_convergence_archive(archive)
@@ -124,8 +124,8 @@ def _add_revision_head(archive_root: Path) -> None:
 
 
 def test_equivalent_archives_under_different_roots_compare_equal(tmp_path: Path) -> None:
-    canonical = _build_archive(tmp_path / "root-a", rich_convergence_pathology())
-    relocated = _build_archive(tmp_path / "root-b", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "root-a", rich_convergence_sources())
+    relocated = _build_archive(tmp_path / "root-b", rich_convergence_sources())
 
     assert_canonical_snapshots_equal(
         capture_canonical_snapshot(canonical.root), capture_canonical_snapshot(relocated.root)
@@ -134,8 +134,8 @@ def test_equivalent_archives_under_different_roots_compare_equal(tmp_path: Path)
 
 @pytest.mark.parametrize("column", ("blob_hash", "native_id"))
 def test_raw_identity_mutations_are_red(tmp_path: Path, column: str) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     with sqlite3.connect(mutated.root / "source.db") as conn:
         if column == "blob_hash":
             conn.execute(
@@ -154,8 +154,8 @@ def test_raw_identity_mutations_are_red(tmp_path: Path, column: str) -> None:
 
 
 def test_default_fts_projection_detects_real_posting_deletion(tmp_path: Path) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     before = capture_canonical_snapshot(mutated.root)
     before_searches = {name for name, _value in before.public_projections if name.startswith("search:")}
     assert before_searches
@@ -206,8 +206,8 @@ def test_default_fts_queries_are_empty_without_public_relation() -> None:
 
 @pytest.mark.parametrize("table", ("assertions", "context_deliveries"))
 def test_user_state_mutations_are_red(tmp_path: Path, table: str) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     with sqlite3.connect(mutated.root / "user.db") as conn:
         if table == "assertions":
             conn.execute(
@@ -233,8 +233,8 @@ def test_user_state_mutations_are_red(tmp_path: Path, table: str) -> None:
 
 
 def test_web_construct_mutation_is_red(tmp_path: Path) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     _add_web_construct(canonical.root)
     _add_web_construct(mutated.root)
     with sqlite3.connect(mutated.root / "index.db") as conn:
@@ -248,8 +248,8 @@ def test_web_construct_mutation_is_red(tmp_path: Path) -> None:
 
 
 def test_excision_tombstone_mutation_is_red(tmp_path: Path) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     with sqlite3.connect(mutated.root / "source.db") as conn:
         blob_hash = conn.execute("SELECT blob_hash FROM raw_sessions LIMIT 1").fetchone()[0]
         conn.execute(
@@ -265,8 +265,8 @@ def test_excision_tombstone_mutation_is_red(tmp_path: Path) -> None:
 
 
 def test_index_raw_revision_head_mutation_is_red(tmp_path: Path) -> None:
-    canonical = _build_archive(tmp_path / "canonical", rich_convergence_pathology())
-    mutated = _build_archive(tmp_path / "mutated", rich_convergence_pathology())
+    canonical = _build_archive(tmp_path / "canonical", rich_convergence_sources())
+    mutated = _build_archive(tmp_path / "mutated", rich_convergence_sources())
     _add_revision_head(mutated.root)
 
     with pytest.raises(AssertionError, match="authority/.*raw_revision_heads"):
@@ -276,7 +276,7 @@ def test_index_raw_revision_head_mutation_is_red(tmp_path: Path) -> None:
 
 
 def test_snapshot_covers_semantic_archive_and_public_read_surfaces(tmp_path: Path) -> None:
-    archive = _build_archive(tmp_path / "archive", rich_convergence_pathology())
+    archive = _build_archive(tmp_path / "archive", rich_convergence_sources())
     snapshot = capture_canonical_snapshot(archive.root, search_queries=("fixture",))
 
     assert ("index", "sessions") in _relation_keys(snapshot.canonical_rows)
@@ -306,7 +306,7 @@ def test_snapshot_covers_semantic_archive_and_public_read_surfaces(tmp_path: Pat
 
 
 def test_only_allowlisted_session_profile_stamps_are_ignored(tmp_path: Path) -> None:
-    archive = _build_archive(tmp_path / "archive", rich_convergence_pathology())
+    archive = _build_archive(tmp_path / "archive", rich_convergence_sources())
     before = capture_canonical_snapshot(archive.root)
 
     with sqlite3.connect(archive.root / "index.db") as conn:
@@ -360,9 +360,9 @@ def test_semantic_mutations_are_red(
     tmp_path: Path, name: str, mutate: Callable[[sqlite3.Connection], sqlite3.Cursor]
 ) -> None:
     """The comparator must fail on semantic fields, not normalize them away."""
-    pathology = rich_convergence_pathology()
-    canonical = _build_archive(tmp_path / "canonical", pathology)
-    mutated = _build_archive(tmp_path / "mutated", pathology)
+    composed = rich_convergence_sources()
+    canonical = _build_archive(tmp_path / "canonical", composed)
+    mutated = _build_archive(tmp_path / "mutated", composed)
     if name == "action result state":
         _add_real_action_result(canonical.root)
         _add_real_action_result(mutated.root)

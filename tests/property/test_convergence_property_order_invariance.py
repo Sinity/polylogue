@@ -13,10 +13,10 @@ from tests.infra.convergence_harness import (
     assert_archive_verification_green,
     build_converged_archive,
     converge_convergence_archive,
-    ingest_convergence_pathology,
+    ingest_composed_sources,
     initialize_active_archive,
     replay_convergence_archive,
-    rich_convergence_pathology,
+    rich_convergence_sources,
     rotated_session_order,
 )
 from tests.infra.convergence_laws import (
@@ -36,13 +36,13 @@ from tests.infra.convergence_laws import (
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1))
+@given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
 def test_convergence_property_ingestion_order_invariance(tmp_path: Path, shift: int) -> None:
     workload = generated_convergence_workload()
-    pathology = workload.pathology
-    order = rotated_session_order(pathology, shift)
-    canonical = build_converged_archive(tmp_path / "canonical", pathology)
-    permuted = build_converged_archive(tmp_path / "permuted", pathology, session_order=order)
+    composed = workload.sources
+    order = rotated_session_order(composed, shift)
+    canonical = build_converged_archive(tmp_path / "canonical", composed)
+    permuted = build_converged_archive(tmp_path / "permuted", composed, session_order=order)
     plan = build_convergence_run_plan(workload)
     execute_convergence_plan(plan, (canonical.root, permuted.root), law=ConvergenceLaw.PERMUTATION)
     expected = semantic_oracle(workload.authoritative_sessions, probe_terms=workload.probe_terms)
@@ -61,24 +61,24 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
         super().__init__()
         self._tmpdir = tempfile.TemporaryDirectory(prefix="polylogue-convergence-property-", dir="/dev/shm")
         self._root = Path(self._tmpdir.name)
-        self._pathology = rich_convergence_pathology()
+        self._composed = rich_convergence_sources()
         initialize_active_archive(self._root)
         self._dirty = True
         self._ingest_indexes = [0]
         self._resume_count = 0
-        self._archive = ingest_convergence_pathology(
+        self._archive = ingest_composed_sources(
             self._root,
-            self._pathology,
+            self._composed,
             session_indexes=(0,),
             converge_after_each=False,
         )
 
     @rule(data=st.data())
     def reingest_one_corpus_member(self, data: st.DataObject) -> None:
-        index = data.draw(st.integers(min_value=0, max_value=len(self._pathology.sessions) - 1))
-        self._archive = ingest_convergence_pathology(
+        index = data.draw(st.integers(min_value=0, max_value=len(self._composed.sessions) - 1))
+        self._archive = ingest_composed_sources(
             self._root,
-            self._pathology,
+            self._composed,
             session_indexes=(index,),
             converge_after_each=False,
         )
@@ -92,7 +92,7 @@ class ConvergencePropertyInterruptionMachine(RuleBasedStateMachine):
         self._resume_count += 1
         canonical = replay_convergence_archive(
             self._root / f"canonical-resume-{self._resume_count}",
-            self._pathology,
+            self._composed,
             session_indexes=tuple(self._ingest_indexes),
         )
         # The state machine may stop at a prefix with repeated writes; compare
@@ -118,10 +118,10 @@ def test_reingest_child_then_parent_keeps_attachment_closure_green(tmp_path: Pat
     before its lineage parent (2) prunes the child's replayed prefix, and the
     child's prefix-anchored attachment row must be swept with its refs — not
     left acquired-but-unreachable for archive verification to report."""
-    pathology = rich_convergence_pathology()
+    composed = rich_convergence_sources()
     initialize_active_archive(tmp_path)
-    archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(0,), converge_after_each=False)
+    archive = ingest_composed_sources(tmp_path, composed, session_indexes=(0,), converge_after_each=False)
     for index in (3, 2):
-        archive = ingest_convergence_pathology(tmp_path, pathology, session_indexes=(index,), converge_after_each=False)
+        archive = ingest_composed_sources(tmp_path, composed, session_indexes=(index,), converge_after_each=False)
     converge_convergence_archive(archive)
     assert_archive_verification_green(tmp_path)

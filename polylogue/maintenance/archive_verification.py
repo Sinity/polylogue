@@ -1087,11 +1087,6 @@ class ArchiveVerificationCoverage:
     missing_production_routes: tuple[str, ...] = ()
     ownerless_checks: tuple[str, ...] = ()
     duplicate_checks: tuple[str, ...] = ()
-    retirement_candidates: tuple[str, ...] = (
-        "pathology-zoo-invariants",
-        "counts-summary",
-        "raw-quarantine-group-dedup",
-    )
 
     def to_json(self) -> JSONDocument:
         return json_document(
@@ -1113,7 +1108,6 @@ class ArchiveVerificationCoverage:
                 "missing_production_routes": list(self.missing_production_routes),
                 "ownerless_checks": list(self.ownerless_checks),
                 "duplicate_checks": list(self.duplicate_checks),
-                "retirement_candidates": list(self.retirement_candidates),
             }
         )
 
