@@ -289,8 +289,8 @@ source, destination = Path(sys.argv[1]), Path(sys.argv[2])
 original = ep._connect
 
 
-def interrupted(path, *, readonly):
-    conn = original(path, readonly=readonly)
+def interrupted(path, *, readonly, immutable=False):
+    conn = original(path, readonly=readonly, immutable=immutable)
     if Path(path) != source:
         return conn
 
