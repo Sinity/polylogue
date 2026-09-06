@@ -469,36 +469,27 @@ re-measured on the same slice with MB/s recorded on polylogue-623q. Rehearsals
 run from a pinned worktree; a benchmark against a moving checkout is not a
 benchmark.
 
-1. **Measure.** LANDED — §9.
-2. **Memoize the fingerprint closure.** LANDED. §9 finding 1: −45 % writer CPU,
-   byte-identical output.
-3. **Write lease.** PARTLY LANDED. The typed `WriteCoordinator` protocol
-   (no `getattr` bypass) and declared per-actor hold budgets are in. Still open:
-   the structural lease itself — a writable tier connection obtainable only
-   from a lease token, §3 — and backup on the lease
-   (`daemon/backup.py:467-491` takes `BEGIN IMMEDIATE` on the live tier with no
-   guard), and the two remaining fail-open sites at `daemon/cli.py:1662,1708`.
-4. **Empty chunks and honest bytes.** LANDED. polylogue-kqrbw and
-   polylogue-bsv8j.
-5. **Read once, parse ahead.** OPEN. §5 stages A and B, bytes-in-flight bound.
-   Removes the read amplification and the unoverlapped parse residual — the
-   largest remaining throughput item.
-6. **Batch policy.** OPEN. §5 decision point. Re-homes
+1. **Measure.** Done — §9.
+2. **Memoize the fingerprint closure.** §9 finding 1. One-line-shaped change,
+   −45 % writer CPU, byte-identical output. Lands first because it is the
+   cheapest large win in the file.
+3. **Write lease.** §3. Closes polylogue-8qm4k structurally: bounded holds, no
+   `getattr` bypass, backup on the lease.
+4. **Empty chunks and honest bytes.** polylogue-kqrbw (a terminally refused
+   source stops being planned; a chunk that will ingest nothing never takes the
+   lease) and polylogue-bsv8j (offered / ingested / refused bytes reconcile).
+   Without these the benchmark cannot be trusted.
+5. **Read once, parse ahead.** §5 stages A and B, bytes-in-flight bound.
+   Removes the read amplification and the unoverlapped parse residual.
+6. **Batch policy.** §5 decision point. Re-homes
    `BULK_BUILD_WRITE_CONNECTION_PROFILE` onto the policy — §9 finding 2 makes
-   this the largest single wall-time lever, and PR #4698 removed its only
-   previous selection site.
-7. **Convergence scope split.** OPEN. §6 quiescence boundary; closes the three
+   this the largest single wall-time lever.
+7. **Convergence scope split.** §6 quiescence boundary; closes the three
    `whole_archive` leaks. Removes the quadratic term.
-8. **Fair intake.** OPEN. §5 dispatcher. Closes polylogue-gmw2.
-9. **Supervisor and status.** OPEN. §7, §8. Closes polylogue-avmq,
-   polylogue-20d.17. Carries the halt property and the startup-identity report.
-10. **Operation table.** OPEN. §4 write/control/long-running declarations;
-    unblocks polylogue-5vps8.1/.2, 9hgth, vbsc0.
+8. **Fair intake.** §5 dispatcher. Closes polylogue-gmw2.
+9. **Supervisor and status.** §7, §8. Closes polylogue-avmq, polylogue-20d.17.
+10. **Operation table.** §4 write/control/long-running declarations; unblocks
+    the CLI program.
 
 Stages 2 and 5–7 carry the throughput. Stages 3, 4 and 8–10 carry the contract.
 Index deferral is not a stage: §9 finding 3 measured it as noise.
-
-Stages 5–10 are unbuilt. Their measured justification is §1 and §9; a successor
-should not re-derive those numbers, and should re-measure only after a healthy
-rehearsal exists, because the rehearsal-11 receipts are from a wedged run
-(§1 note).
