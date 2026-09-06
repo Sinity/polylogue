@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from click.testing import CliRunner
 
 from polylogue.maintenance import embedding_preservation
 from polylogue.maintenance.embedding_preservation import (
     RestoreMissReason,
     _receipt_path,
+    ac2_receipt_path,
     delete_preserved_copy,
     preserve_embedding_vectors,
     restore_embedding_vectors,
@@ -28,6 +30,7 @@ _MISSING = b"m" * 32
 _VECTOR = b"\x00" * (1024 * 4)
 _RECIPE = b"a" * 32
 _CONTRACT = b"b" * 32
+_MODEL = "test"
 
 
 def _open(path: Path) -> sqlite3.Connection:
@@ -388,3 +391,123 @@ def test_preserved_copy_is_self_contained(tmp_path: Path) -> None:
         "preserved.db.receipt.json",
     ]
     assert restore_embedding_vectors(fresh, preserved, {_HASH}).restored_hashes == 1
+
+
+_PROSE = (
+    "the preserved corpus prose belonging to the first message",
+    "the preserved corpus prose belonging to the second message",
+)
+
+
+def _index_db(path: Path) -> None:
+    """Minimal index tier carrying embeddable authored prose, one message per entry."""
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE messages (
+                message_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                material_origin TEXT NOT NULL,
+                word_count INTEGER NOT NULL,
+                content_hash TEXT,
+                text TEXT
+            )
+            """
+        )
+        conn.executemany(
+            "INSERT INTO messages VALUES (?, 'conv-1', 'user', 'message', 'human_authored', 8, NULL, ?)",
+            [(f"msg-{index}", value) for index, value in enumerate(_PROSE)],
+        )
+        conn.commit()
+
+
+def _outgoing_archive(tmp_path: Path) -> Path:
+    """An archive root whose embeddings tier holds the vectors its index will ask for."""
+    from polylogue.maintenance.embedding_preservation import recomputed_vector_hashes
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    _index_db(root / "index.db")
+    wanted = tuple(sorted(recomputed_vector_hashes(root / "index.db", model=_MODEL).values()))
+    assert len(wanted) == len(_PROSE)
+    _db(root / "embeddings.db", vectors=wanted)
+    return root
+
+
+def _wipe_embeddings_tier(root: Path) -> None:
+    """Replace the tier with an empty one, as a fresh start does."""
+    for suffix in ("", "-wal", "-shm"):
+        Path(str(root / "embeddings.db") + suffix).unlink(missing_ok=True)
+    _db(root / "embeddings.db", vectors=())
+
+
+def _maintenance_group() -> Any:
+    from polylogue.cli.click_command_registration import OPS_COMMANDS
+
+    for command in OPS_COMMANDS:
+        if command.name == "maintenance":
+            return command
+    raise AssertionError("maintenance is not registered under polylogue ops")
+
+
+def _run(*args: str) -> Any:
+    return CliRunner().invoke(_maintenance_group(), ["embedding-preservation", *args])
+
+
+def _phase(root: Path, *args: str) -> Any:
+    return _run(*args, "--archive-root", str(root))
+
+
+def test_the_production_route_carries_vectors_across_a_wipe_and_proves_the_reuse(tmp_path: Path) -> None:
+    """The four phases run as an operator runs them, against one archive root.
+
+    Red when ``embedding-preservation`` is not reachable under ``ops maintenance``
+    -- the state in which this module has no production caller at all -- and red
+    when ``verify`` stops writing its proof where ``discard`` reads it, which
+    leaves the deletion path gated on a receipt nothing produces.
+    """
+    root = _outgoing_archive(tmp_path)
+    copy = tmp_path / "preserved.db"
+
+    preserve = _phase(root, "preserve", str(copy), "--output-format", "json")
+    assert preserve.exit_code == 0, preserve.output
+    assert json.loads(preserve.output)["vector_rows"] == len(_PROSE)
+
+    _wipe_embeddings_tier(root)
+
+    restore = _phase(root, "restore", str(copy), "--model", _MODEL, "--output-format", "json")
+    assert restore.exit_code == 0, restore.output
+    imported = json.loads(restore.output)
+    assert (imported["restored_hashes"], imported["misses"]) == (len(_PROSE), [])
+
+    verify = _phase(root, "verify", str(copy), "--model", _MODEL, "--output-format", "json")
+    assert verify.exit_code == 0, verify.output
+    proof = json.loads(verify.output)
+    assert (proof["hit_hashes"], proof["ac2_passed"]) == (len(_PROSE), True)
+
+    assert json.loads(ac2_receipt_path(copy).read_text(encoding="utf-8")) == proof
+
+    discard = _run("discard", str(copy))
+    assert discard.exit_code == 0, discard.output
+    assert not copy.exists()
+
+
+def test_the_route_refuses_to_discard_a_copy_whose_reuse_it_could_not_prove(tmp_path: Path) -> None:
+    """Red when ``verify`` exits zero below its threshold, or when the proof it wrote
+    for a failed measurement still authorizes deletion."""
+    root = _outgoing_archive(tmp_path)
+    copy = tmp_path / "preserved.db"
+    assert _phase(root, "preserve", str(copy), "--output-format", "json").exit_code == 0
+
+    _wipe_embeddings_tier(root)
+
+    verify = _phase(root, "verify", str(copy), "--model", _MODEL, "--output-format", "json")
+    assert verify.exit_code == 1, verify.output
+    assert json.loads(verify.output)["ac2_passed"] is False
+
+    discard = _run("discard", str(copy))
+    assert discard.exit_code != 0
+    assert isinstance(discard.exception, ValueError)
+    assert copy.exists()
