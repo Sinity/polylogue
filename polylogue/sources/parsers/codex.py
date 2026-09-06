@@ -2546,15 +2546,24 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 "summary": str(payload.get("message", "") or ""),
                 "replacement_history_count": len(history_list),
             }
-            # replacement_history re-embeds the exact pre-compaction records
-            # (message/reasoning/ghost_snapshot) already parsed once from the
-            # live stream earlier in this file -- storing them again here
-            # would duplicate full message content. What it adds beyond the
-            # count is per-entry annotation Codex doesn't emit on the live
-            # stream: an internal generation `phase` tag on the entry, a
-            # `ghost_commit` on some entries, and inline images on content
-            # items. Those are
-            # captured as bounded aggregates, not raw duplication.
+            # replacement_history re-embeds pre-compaction records
+            # (message/reasoning/ghost_snapshot); storing them again here would
+            # duplicate full message content. Measured over the 131 rollout
+            # files carrying it in a 596-file sample (195,851 text values):
+            # 97.8% are already stored from the same file's live stream, and
+            # 0.98% from an ancestor session whose prefix this file replays and
+            # which is ingested separately. The remaining 1.2% -- 2,351 values,
+            # 47.4 MB -- is stored nowhere. It is mostly turn-construction
+            # context Codex writes down only here (`<environment_context>`,
+            # `<skills_instructions>`, injected AGENTS.md text), and it also
+            # includes real user turns, so capturing it is a content decision
+            # this branch does not make.
+            #
+            # What replacement_history adds beyond the count is per-entry
+            # annotation Codex doesn't emit on the live stream: an internal
+            # generation `phase` tag on the entry, a `ghost_commit` on some
+            # entries, and inline images on content items. Those are captured
+            # as bounded aggregates, not raw duplication.
             phase_counts: dict[str, int] = {}
             ghost_commit_count = 0
             image_count = 0
