@@ -206,23 +206,6 @@ def primary_worktree() -> Path:
     return Path(os.environ.get(PRIMARY_WORKTREE_ENV, DEFAULT_PRIMARY_WORKTREE)).expanduser()
 
 
-def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:
-    """Refresh a checkout from the primary graph when its local copy is stale."""
-    source = source or testmon_datafile(primary_worktree())
-    destination = testmon_datafile(root)
-    if source.absolute() == destination.absolute() or not source.is_file():
-        return False
-    local_state = inspect_testmon_graph(root)
-    try:
-        source_mtime = source.stat().st_mtime_ns
-        local_mtime = destination.stat().st_mtime_ns if destination.exists() else -1
-    except OSError:
-        return False
-    if local_state.status is TestmonGraphStatus.USABLE and local_mtime >= source_mtime:
-        return False
-    return snapshot_testmon_graph(source, destination)
-
-
 def should_seed(root: Path, seed: Path) -> bool:
     """Whether the seed would back a better run than the checkout's own graph.
 
@@ -231,6 +214,14 @@ def should_seed(root: Path, seed: Path) -> bool:
     seed that would select the same or re-execute more. The seed wins only
     when the local graph is absent or unusable, or when the local graph would
     force a full re-execution and the seed would not.
+
+    Age is not the comparison. The primary graph is rewritten by every run
+    made there, so it is almost always the newer file; copying it over a
+    checkout that runs repeatedly discards that checkout's own fingerprints
+    and imports the primary's package set, which is how a checkout whose graph
+    matched its own environment ends up re-executing the corpus. A graph the
+    running checkout wrote can only over-select, never under-select: an
+    unrecorded test is unknown and runs.
     """
     local = inspect_testmon_graph(root)
     if not local.usable:
@@ -243,6 +234,17 @@ def should_seed(root: Path, seed: Path) -> bool:
             return False
         candidate = inspect_testmon_graph(probe_root)
     return candidate.usable and candidate.full_rerun_cause is None
+
+
+def sync_testmon_graph(root: Path, *, source: Path | None = None) -> bool:
+    """Refresh a checkout from the primary graph when the primary would select better."""
+    source = source or testmon_datafile(primary_worktree())
+    destination = testmon_datafile(root)
+    if source.absolute() == destination.absolute() or not source.is_file():
+        return False
+    if not should_seed(root, source):
+        return False
+    return snapshot_testmon_graph(source, destination)
 
 
 def main(argv: list[str] | None = None) -> int:

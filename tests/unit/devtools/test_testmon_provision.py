@@ -9,6 +9,7 @@ it and re-execute everything under the name of selection.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -257,3 +258,51 @@ def test_seeding_keeps_a_local_graph_when_the_seed_is_no_fresher(
     tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     connection.close()
     assert "local_marker" in tables
+
+
+def test_a_newer_primary_graph_does_not_replace_a_working_local_graph(tmp_path: Path) -> None:
+    """A checkout that runs repeatedly keeps its own graph; age is not the test.
+
+    Anti-vacuity: comparing modification times instead (refresh whenever the
+    primary is newer) drops the marker table below. That is what emptied the
+    CI runner's accumulated graph on every run and imported the primary's
+    package set with it.
+    """
+    primary_root = tmp_path / "primary"
+    primary = _seed_with_testmon(primary_root)
+    local_root = tmp_path / "runner"
+    local = _seed_with_testmon(local_root)
+    connection = sqlite3.connect(local)
+    connection.execute("CREATE TABLE local_marker (id INTEGER PRIMARY KEY)")
+    connection.commit()
+    connection.close()
+    os.utime(primary, ns=(local.stat().st_mtime_ns + 10**9, local.stat().st_mtime_ns + 10**9))
+
+    assert testmon_provision.sync_testmon_graph(local_root, source=primary) is False
+
+    connection = sqlite3.connect(local)
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    connection.close()
+    assert "local_marker" in tables
+
+
+def test_an_absent_local_graph_is_taken_from_the_primary(tmp_path: Path) -> None:
+    primary_root = tmp_path / "primary"
+    primary = _seed_with_testmon(primary_root)
+    local_root = tmp_path / "worktree"
+    local_root.mkdir()
+
+    assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
+    assert inspect_testmon_graph(local_root).usable
+
+
+def test_a_local_graph_that_would_rerun_everything_takes_the_primary(tmp_path: Path) -> None:
+    """The one case where the primary wins: its environment matches, the local
+    one does not, so keeping the local graph costs a full re-execution."""
+    primary_root = tmp_path / "primary"
+    primary = _seed_with_testmon(primary_root)
+    local_root = tmp_path / "runner"
+    _seed_with_testmon(local_root, packages="stale 0.1")
+
+    assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
+    assert inspect_testmon_graph(local_root).full_rerun_cause is None
