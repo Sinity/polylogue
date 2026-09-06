@@ -163,9 +163,9 @@ class _DocstringStripper(ast.NodeTransformer):
         return node
 
 
-def _source_path(path: str) -> Path:
+def _source_path(path: str, root: Path) -> Path:
     candidate = Path(path)
-    return (candidate if candidate.is_absolute() else _SOURCE_ROOT / candidate).resolve()
+    return (candidate if candidate.is_absolute() else root / candidate).resolve()
 
 
 def _source_file_from_reference(reference: str) -> str:
@@ -246,10 +246,9 @@ def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     return tuple(sorted(str(item) for item in found))
 
 
-def _semantic_source_paths(
-    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
-) -> tuple[Path, ...]:
-    pending = [_source_path(path) for path in paths]
+@lru_cache(maxsize=64)
+def _semantic_source_closure(root: Path, paths: tuple[str, ...], excluded_labels: frozenset[str]) -> tuple[Path, ...]:
+    pending = [_source_path(path, root) for path in paths]
     found: set[Path] = set()
     while pending:
         path = pending.pop()
@@ -261,6 +260,24 @@ def _semantic_source_paths(
         for dependency in _local_import_paths(_source_signature(path)):
             pending.append(Path(dependency))
     return tuple(sorted(found))
+
+
+def _semantic_source_paths(
+    paths: tuple[str, ...], *, excluded_labels: frozenset[str] = frozenset()
+) -> tuple[Path, ...]:
+    """Return the parser-semantic import closure of ``paths``.
+
+    Membership is walked once per process per argument set. Only the member
+    *list* is memoized: every caller re-derives :func:`_source_signature` for
+    each member on each call, so an edited source still changes its content
+    digest and the fingerprint that digest keys.
+
+    The memo holds a member's import graph fixed for the life of the process,
+    the same assumption :func:`_local_import_paths` makes by caching edges per
+    signature. ``_SOURCE_ROOT`` belongs in the key because declared paths are
+    relative to it and a substituted root names different files.
+    """
+    return _semantic_source_closure(_SOURCE_ROOT, paths, excluded_labels)
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
