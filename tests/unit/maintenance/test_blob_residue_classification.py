@@ -422,3 +422,41 @@ def test_null_declared_size_falls_back_to_the_other_declared_count(tmp_path: Pat
 
     comparison = cast(dict[str, object], receipt["normalized_comparison"])
     assert comparison["candidate_distinct_bytes"] == size + 11
+
+
+def test_source_disappearance_blocks_its_candidate_without_aborting_the_census(tmp_path: Path) -> None:
+    """One removed carrier blocks itself; the surviving candidate still resolves."""
+    survivor = tmp_path / "survivor.jsonl"
+    survivor.write_bytes(_FIXTURE.read_bytes())
+    vanished = tmp_path / "vanished.jsonl"
+    vanished.write_bytes(_FIXTURE.read_bytes())
+    store = BlobStore(tmp_path / "blob")
+    survivor_hash, survivor_size = store.write_from_path(survivor)
+    vanished_hash, vanished_size = store.write_from_path(vanished)
+    vanished.unlink()
+
+    def record(blob_hash: str, size: int, source: Path) -> dict[str, object]:
+        return {
+            "cohort": "source_missing_carrier",
+            "origin": "claude-code-session",
+            "capture_mode": None,
+            "blob_hash": blob_hash,
+            "size_bytes": size,
+            "recorded_source": str(source),
+        }
+
+    receipt = extend_census(
+        _blob_census(record(survivor_hash, survivor_size, survivor), record(vanished_hash, vanished_size, vanished)),
+        blob_root=store.root,
+    )
+
+    records = cast(list[object], receipt["records"])
+    comparison = cast(dict[str, object], receipt["normalized_comparison"])
+    assert (
+        cast(dict[str, object], records[0])["authority_outcome"] == AuthorityOutcome.CURRENT_SOURCE_REACQUIRABLE.value
+    )
+    blocked = cast(dict[str, object], records[1])
+    assert blocked["authority_outcome"] == AuthorityOutcome.UNRESOLVED_BLOCKER.value
+    blocked_route = cast(dict[str, object], cast(dict[str, object], blocked["normalized_comparison"])["current_route"])
+    assert blocked_route["route"] == "carrier.unreadable"
+    assert comparison["unresolved_candidate_count"] == 1

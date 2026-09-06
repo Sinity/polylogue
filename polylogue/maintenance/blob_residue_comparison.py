@@ -518,6 +518,27 @@ def _normalize_route(route: RouteResult) -> tuple[RouteResult, NormalizedContrib
         return failed, NormalizedContribution.from_sessions(())
 
 
+def _route_or_error(
+    path: Path, *, provider_hint: Provider, logical_path: Path
+) -> tuple[RouteResult, dict[str, object]]:
+    """Route one carrier, turning a vanished or shifting file into a blocker.
+
+    A census names carriers that may have been removed since it was compiled,
+    and one unreadable carrier must block its own candidate rather than the
+    whole run.
+    """
+    try:
+        return parse_production_route(path, provider_hint=provider_hint, logical_path=logical_path)
+    except (OSError, RuntimeError) as exc:
+        unreadable = RouteResult(
+            provider_hint,
+            "carrier.unreadable",
+            "carrier.unreadable",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return unreadable, {"path": str(path), "status": "unreadable"}
+
+
 def _cached_source_matches(path: Path, observation: dict[str, object]) -> bool:
     try:
         stat = path.stat()
@@ -582,7 +603,7 @@ def _candidate_result(
         current_cache.pop(cache_key)
         cached = None
     if cached is None:
-        parsed_current_route, source_observation = parse_production_route(
+        parsed_current_route, source_observation = _route_or_error(
             source_path, provider_hint=provider_hint, logical_path=source_path
         )
         current_route, current_contribution = _normalize_route(parsed_current_route)
@@ -590,7 +611,7 @@ def _candidate_result(
         current_cache[cache_key] = (current_route_data, current_contribution, source_observation)
     else:
         current_route_data, current_contribution, source_observation = cached
-    parsed_stored_route, blob_observation = parse_production_route(
+    parsed_stored_route, blob_observation = _route_or_error(
         blob_path, provider_hint=provider_hint, logical_path=source_path
     )
     stored_route, stored_contribution = _normalize_route(parsed_stored_route)
