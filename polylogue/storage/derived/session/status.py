@@ -16,8 +16,6 @@ from polylogue.storage.derived.session.runtime import (
     SessionInsightStatusSnapshot,
     session_profile_stale_predicate,
 )
-from polylogue.storage.introspection import column_exists as _column_exists
-from polylogue.storage.introspection import column_exists_async as _column_exists_async
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
@@ -360,7 +358,6 @@ def _stale_session_profile_count_sql(conn: sqlite3.Connection) -> str:
     predicate = session_profile_stale_predicate(
         "c",
         "sp",
-        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
     )
     return f"""
         SELECT COUNT(*)
@@ -375,7 +372,6 @@ async def _stale_session_profile_count_sql_async(conn: aiosqlite.Connection) -> 
     predicate = session_profile_stale_predicate(
         "c",
         "sp",
-        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
     )
     return f"""
         SELECT COUNT(*)
@@ -739,7 +735,6 @@ def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[
     predicate = session_profile_stale_predicate(
         "c",
         "sp",
-        include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash"),
     )
     sql = f"""
         SELECT c.session_id
@@ -760,7 +755,6 @@ async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection)
     predicate = session_profile_stale_predicate(
         "c",
         "sp",
-        include_content_hash=await _column_exists_async(conn, "session_profiles", "input_content_hash"),
     )
     sql = f"""
         SELECT c.session_id

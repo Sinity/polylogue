@@ -2352,9 +2352,7 @@ def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, li
     # An archive-wide identity prefilter: unbounded, so it narrows candidates
     # rather than certifying them. The value-complete inspection that decides
     # each candidate runs per batch in _stale_session_profile_ids.
-    stale_predicate = session_profile_stale_predicate(
-        "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
-    )
+    stale_predicate = session_profile_stale_predicate("s", "sp")
     sql = f"""
         SELECT s.session_id
         FROM sessions AS s

@@ -37,8 +37,6 @@ def session_profile_candidates(
 def session_profile_stale_predicate(
     sessions_alias: str,
     profile_alias: str,
-    *,
-    include_content_hash: bool = False,
 ) -> str:
     """SQL boolean fragment: a cheap identity prefilter, never authority.
 
@@ -72,12 +70,6 @@ def session_profile_stale_predicate(
     converger already considered fresh (repeated churn) or vice versa
     (missed rebuilds).
     """
-    content_binding = (
-        f"\n    OR COALESCE(lower(hex({sessions_alias}.content_hash)), '') != "
-        f"COALESCE(lower({profile_alias}.input_content_hash), '')"
-        if include_content_hash
-        else ""
-    )
     return (
         "(\n"
         f"    ({sessions_alias}.sort_key_ms IS NOT NULL\n"
@@ -88,7 +80,6 @@ def session_profile_stale_predicate(
         f"     AND COALESCE(strftime('%s', {profile_alias}.source_updated_at), "
         f"{profile_alias}.source_updated_at, '') != "
         f"COALESCE(CAST({sessions_alias}.updated_at_ms / 1000 AS TEXT), ''))\n"
-        f"    {content_binding}\n"
         ")"
     )
 
