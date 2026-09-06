@@ -1,0 +1,52 @@
+{
+  "id": "gem-text-and-parts",
+  "title": "Streamed parts alongside chunk text",
+  "createTime": "2026-01-05T10:00:00Z",
+  "updateTime": "2026-01-05T10:00:04Z",
+  "runSettings": {
+    "model": "models/gemini-fixture-pro",
+    "temperature": 0.2
+  },
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "createTime": "2026-01-05T10:00:00Z",
+        "text": "Name the two changes in the release notes."
+      },
+      {
+        "role": "model",
+        "createTime": "2026-01-05T10:00:02Z",
+        "isThought": true,
+        "thinkingBudget": 128,
+        "text": "The notes list two changes. I will name both.",
+        "parts": [
+          {
+            "text": "The notes list two changes. ",
+            "thought": true
+          },
+          {
+            "text": "I will name both.",
+            "thought": true,
+            "thoughtSignature": "signature-fixture-part"
+          }
+        ]
+      },
+      {
+        "role": "model",
+        "createTime": "2026-01-05T10:00:04Z",
+        "finishReason": "STOP",
+        "tokenCount": 24,
+        "text": "Two changes shipped: a faster parser and a smaller cache.",
+        "parts": [
+          {
+            "text": "Two changes shipped: "
+          },
+          {
+            "text": "a faster parser and a smaller cache."
+          }
+        ]
+      }
+    ]
+  }
+}
