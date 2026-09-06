@@ -18,6 +18,7 @@ __all__ = [
     "managed_plugin_args",
     "MANAGED_PLUGIN_NAMES",
     "PROGRESS_PLUGIN_NAME",
+    "SUITE_COST_PLUGIN_NAME",
 ]
 
 #: Neutralize any addopts configured in pyproject so the invocation is closed.
@@ -25,6 +26,10 @@ CLEAR_CONFIGURED_ADDOPTS: Final = "--override-ini=addopts="
 
 #: The progress plugin is loaded by module path rather than entry-point name.
 PROGRESS_PLUGIN_NAME: Final = "devtools.pytest_progress_plugin"
+
+#: Archive-construction and write-cost receipt. Collects nothing and hooks no
+#: collection stage; it is inert unless ``POLYLOGUE_SUITE_COST_DIR`` is set.
+SUITE_COST_PLUGIN_NAME: Final = "devtools.pytest_suite_cost_plugin"
 
 #: Plugins loaded explicitly, because autoload is disabled for reproducibility.
 #: Adding or removing one changes which hooks run during collection.

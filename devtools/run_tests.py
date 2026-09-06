@@ -40,6 +40,7 @@ from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
+    SUITE_COST_PLUGIN_NAME,
 )
 from devtools.pytest_slot import (
     PytestSlotUnavailableError,
@@ -47,6 +48,7 @@ from devtools.pytest_slot import (
     remove_temp_tree,
     run_pytest,
 )
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
@@ -362,6 +364,8 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         "pytest",
         "-p",
         "devtools.pytest_progress_plugin",
+        "-p",
+        SUITE_COST_PLUGIN_NAME,
         *MANAGED_PLUGIN_ARGS,
         CLEAR_CONFIGURED_ADDOPTS,
         "--json-report",
@@ -451,12 +455,14 @@ def _run(
                 "termination_reason": "pytest_slot_unavailable",
             },
         )
+    suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
     return (
         outcome.returncode,
         time.monotonic() - started,
         {
             "diagnosis": "pytest_passed" if outcome.returncode == 0 else "pytest_failed",
             "pytest_slot": outcome.slot,
+            **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
             # Named per client pid: the checkout accumulates one log per run,
             # and a glob over them reaches an arbitrary one.
             **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),

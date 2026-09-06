@@ -38,7 +38,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 
 _CHATGPT_CONVERSATION = {
     "id": "conv-stuck",
@@ -130,7 +130,7 @@ def test_interrupted_attempt_without_source_paths_json_falls_back_to_source_path
 
 
 def test_raw_parse_recovery_stage_drains_a_stuck_raw_row(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "stuck.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -154,7 +154,7 @@ def test_raw_parse_recovery_stage_blocks_unproven_cursor_authority(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "stuck.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
     refusal = (
@@ -180,7 +180,7 @@ def test_raw_parse_recovery_stage_proceeds_when_another_path_is_refused(
     Anti-vacuity: treating any attributed refusal as a global block (the
     pre-split gate) returns ``False`` here and leaves the raw unmaterialized.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "stuck.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
     monkeypatch.setattr(
@@ -212,7 +212,7 @@ def test_raw_parse_recovery_missing_source_is_no_backlog(tmp_path: Path) -> None
 
 
 def test_raw_parse_recovery_missing_source_tier_is_retryable(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     (tmp_path / "source.db").rename(tmp_path / "source.db.unavailable")
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
     converger = DaemonConverger(stages=(stage,))
@@ -226,7 +226,7 @@ def test_raw_parse_recovery_missing_source_tier_is_retryable(tmp_path: Path) -> 
 
 
 def test_raw_parse_recovery_no_qualifying_rows_is_done(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
     converger = DaemonConverger(stages=(stage,))
 
@@ -239,7 +239,7 @@ def test_raw_parse_recovery_no_qualifying_rows_is_done(tmp_path: Path) -> None:
 
 
 def test_raw_parse_recovery_uses_active_index_pointer(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "pointer.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -266,7 +266,7 @@ def test_raw_parse_recovery_uses_active_index_pointer(tmp_path: Path) -> None:
 
 
 def test_raw_parse_recovery_retries_authorized_parse_failure(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "retryable.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -292,7 +292,7 @@ def test_raw_parse_recovery_stage_drains_typed_cas_frontier_failure(
     tmp_path: Path, evidence_kind: RawFailureEvidenceKind
 ) -> None:
     """A stopped daemon requeues canonical and historical CAS retry authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "cas-frontier.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -329,7 +329,7 @@ def test_raw_parse_recovery_stage_drains_typed_cas_frontier_failure(
 
 def test_raw_parse_recovery_skips_validation_failed_cas_frontier_failure(tmp_path: Path) -> None:
     """A failed validation cannot keep CAS recovery debt pending forever."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "validation-failed-cas-frontier.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -349,7 +349,7 @@ def test_raw_parse_recovery_skips_validation_failed_cas_frontier_failure(tmp_pat
 
 def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_path: Path) -> None:
     """A stale validation failure does not suppress newer parse authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "previously-parsed-cas-frontier.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -381,7 +381,7 @@ def test_raw_parse_recovery_drains_previously_parsed_cas_frontier_failure(tmp_pa
 
 def test_raw_parse_recovery_uses_monotonic_parse_state_after_failed_validation(tmp_path: Path) -> None:
     """The probe and repair route agree when a later parse supersedes validation."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "monotonic-validation-recovery.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -410,7 +410,7 @@ def test_raw_parse_recovery_uses_monotonic_parse_state_after_failed_validation(t
 
 def test_raw_parse_recovery_skips_current_validation_failure_after_prior_parse(tmp_path: Path) -> None:
     """A current validation failure cannot leave CAS recovery permanently pending."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "current-validation-failed-cas-frontier.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
 
@@ -437,7 +437,7 @@ def test_raw_parse_recovery_skips_current_validation_failure_after_prior_parse(t
 def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = tmp_path / "unavailable.json"
     calls = 0
 
@@ -466,7 +466,7 @@ def test_raw_parse_recovery_source_open_failure_is_failed_and_retryable(
 def test_raw_parse_recovery_sqlite_probe_failure_is_failed_and_closes_connection(
     failure: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = tmp_path / f"{failure}-failed.json"
 
     class FailingConnection:
@@ -506,7 +506,7 @@ def test_daemon_restart_resumes_parsing_of_an_interrupted_batch(tmp_path: Path) 
     ``raw_parse_recovery`` stage) drains that debt and the session is
     materialized, without any operator-triggered manual reprocess.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = tmp_path / "batch.json"
     source_path.write_text("placeholder")
     raw_id = _write_stuck_raw(tmp_path, source_path=str(source_path))
