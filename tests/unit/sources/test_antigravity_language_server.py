@@ -17,7 +17,8 @@ from urllib.error import URLError
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.json import JSONDocument
 from polylogue.sources.parsers import antigravity
 from polylogue.sources.parsers.antigravity import (
     AntigravityExportError,
@@ -578,3 +579,190 @@ def test_language_server_version_handshake_rejects_incompatible_vendor_version(
 
     with pytest.raises(AntigravityExportError, match="incompatible"):
         antigravity._discover_language_server_version(tmp_path / "language_server_linux_x64")
+
+
+# One transcript in the shape the language server actually emits: tool activity
+# is rendered as one-line italic markers, and the markers that follow a user
+# turn sit inside that turn's own ``### User Input`` section.
+_ACTIVITY_TRANSCRIPT = """# Chat Conversation
+
+Note: _This is purely the output of the chat conversation._
+
+### User Input
+
+add a health endpoint
+
+*Listed directory [service](file:///w/service) *
+
+*Viewed [server.py](file:///w/service/server.py) *
+
+*Edited relevant file*
+
+*User accepted the command `pytest -q`*
+
+*Checked command status*
+
+### Planner Response
+
+The endpoint is in place.
+
+*Grep searched codebase*
+
+Tests pass.
+"""
+
+
+def test_tool_activity_markers_become_typed_tool_use_blocks() -> None:
+    """Rendered tool activity is lifted out of prose into typed blocks.
+
+    Anti-vacuity: leaving the markers in their section's text makes this red
+    twice over -- ``tool_use`` blocks disappear, and the operator's word count
+    reabsorbs the five agent actions rendered under ``### User Input``.
+    """
+    session = antigravity.parse_markdown_export(_ACTIVITY_TRANSCRIPT, AntigravitySessionSummary(cascade_id="cascade-1"))
+
+    assert [(m.role.value, m.message_type.value) for m in session.messages] == [
+        ("user", "message"),
+        ("assistant", "tool_use"),
+        ("assistant", "message"),
+        ("assistant", "tool_use"),
+        ("assistant", "message"),
+    ]
+    assert session.messages[0].text == "add a health endpoint"
+    assert session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+
+    activity = session.messages[1]
+    assert activity.text is None
+    assert activity.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    assert [(b.tool_name, b.tool_input) for b in activity.blocks] == [
+        ("listed_directory", {"path": "file:///w/service"}),
+        ("viewed_file", {"path": "file:///w/service/server.py"}),
+        ("edited_file", None),
+        ("accepted_command", {"command": "pytest -q"}),
+        ("checked_command_status", None),
+    ]
+    assert all(b.type is BlockType.TOOL_USE for b in activity.blocks)
+    # Every tool_use block carries its own id so the actions view can key on it.
+    assert len({b.tool_id for b in activity.blocks}) == len(activity.blocks)
+
+    assert session.messages[2].text == "The endpoint is in place."
+    assert [b.tool_name for b in session.messages[3].blocks] == ["grep_searched_codebase"]
+    assert session.messages[4].text == "Tests pass."
+
+    # No agent action is left counted as authored prose.
+    human_text = " ".join(m.text or "" for m in session.messages if m.material_origin is MaterialOrigin.HUMAN_AUTHORED)
+    assert "Edited relevant file" not in human_text
+    assert "pytest -q" not in human_text
+
+
+def test_assistant_italic_prose_is_not_read_as_tool_activity() -> None:
+    """The vocabulary is closed, so italicised prose stays one text block.
+
+    Anti-vacuity: matching any single-line italic as a marker turns both
+    sentences below into ``tool_use`` blocks with an invented tool name.
+    """
+    transcript = (
+        "### Planner Response\n\n"
+        "*What does the retry path actually guarantee?*\n\n"
+        "*(Note: the second table is derived, not measured.)*\n"
+    )
+
+    session = antigravity.parse_markdown_export(transcript, AntigravitySessionSummary(cascade_id="cascade-2"))
+
+    assert len(session.messages) == 1
+    assert [b.type for b in session.messages[0].blocks] == [BlockType.TEXT]
+    assert "retry path" in (session.messages[0].text or "")
+
+
+def test_readiness_retries_past_a_probe_that_spends_the_whole_request_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single slow probe must not end readiness.
+
+    One probe can consume the entire ``_REQUEST_TIMEOUT_S`` socket budget, so
+    readiness is bounded by an attempt floor as well as a deadline. Anti-vacuity:
+    with the floor removed, ``startup_timeout_s=0.0`` runs no probe at all and
+    the first (here: zeroth) failure is terminal.
+    """
+    monkeypatch.setattr(antigravity, "_READY_RETRY_SLEEP_S", 0.0)
+    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.0)
+    attempts: list[int] = []
+
+    def flaky_post(endpoint: str, payload: JSONDocument) -> JSONDocument:
+        attempts.append(len(attempts))
+        if len(attempts) < 3:
+            raise AntigravityExportError("timed out")
+        return {"results": []}
+
+    client._post = flaky_post  # type: ignore[method-assign]
+    client._wait_until_ready()
+
+    assert len(attempts) == 3
+
+
+def test_readiness_failure_reports_how_many_probes_ran(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(antigravity, "_READY_RETRY_SLEEP_S", 0.0)
+    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.0)
+
+    def always_failing(endpoint: str, payload: JSONDocument) -> JSONDocument:
+        raise AntigravityExportError("connection refused")
+
+    client._post = always_failing  # type: ignore[method-assign]
+    with pytest.raises(AntigravityExportError, match=r"did not become ready after 3 probes"):
+        client._wait_until_ready()
+
+
+def test_readiness_budget_admits_more_than_one_request_timeout() -> None:
+    """The declared deadline must be able to outlast a single slow probe."""
+    assert antigravity._STARTUP_TIMEOUT_S > antigravity._REQUEST_TIMEOUT_S
+    assert antigravity._MIN_READY_ATTEMPTS >= 2
+
+
+def test_repeated_identical_activity_runs_keep_distinct_identities() -> None:
+    """Two runs rendering the same markers are distinct events, not one.
+
+    Anti-vacuity: seeding activity identity from the rendered markers alone
+    gives both edits the same ``provider_message_id``, and the writer then
+    drops both to positional identity as an ambiguous native id.
+    """
+    transcript = (
+        "### Planner Response\n\n*Edited relevant file*\n\nFirst pass.\n\n*Edited relevant file*\n\nSecond pass.\n"
+    )
+
+    session = antigravity.parse_markdown_export(transcript, AntigravitySessionSummary(cascade_id="cascade-3"))
+
+    activity = [m for m in session.messages if m.message_type.value == "tool_use"]
+    assert len(activity) == 2
+    assert [b.tool_name for m in activity for b in m.blocks] == ["edited_file", "edited_file"]
+    assert activity[0].provider_message_id != activity[1].provider_message_id
+
+
+def test_a_multi_line_accepted_command_is_one_marker_not_prose() -> None:
+    """A heredoc command is rendered verbatim, so a marker spans many lines.
+
+    Anti-vacuity: matching markers line by line leaves this command as text in
+    the ``### User Input`` section, where it is counted as operator prose --
+    which is what the whole-section scan exists to prevent.
+    """
+    transcript = (
+        "### User Input\n\n"
+        "regenerate the fixtures\n\n"
+        "*User accepted the command `python3 << 'PYEOF'\n"
+        "for row in rows:\n"
+        "    print(row)\n"
+        "PYEOF`*\n\n"
+        "*Checked command status*\n"
+    )
+
+    session = antigravity.parse_markdown_export(transcript, AntigravitySessionSummary(cascade_id="cascade-4"))
+
+    assert [(m.role.value, m.message_type.value) for m in session.messages] == [
+        ("user", "message"),
+        ("assistant", "tool_use"),
+    ]
+    assert session.messages[0].text == "regenerate the fixtures"
+    command = session.messages[1].blocks[0]
+    assert command.tool_name == "accepted_command"
+    assert command.tool_input is not None
+    assert str(command.tool_input["command"]).splitlines()[-1] == "PYEOF"
+    assert [b.tool_name for b in session.messages[1].blocks] == ["accepted_command", "checked_command_status"]
