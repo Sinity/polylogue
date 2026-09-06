@@ -15,6 +15,7 @@ debugging landmarks. For a task-to-owner map, start with
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
+| A session's transcript order is `(position, variant_index)` for every read -- lineage-composed or not; observed timestamps are metadata and are non-monotonic against position on every origin | `storage/sqlite/queries/message_query_reads.py:_TRANSCRIPT_ORDER` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()` and `cli/commands/status.py:_archive_one_tier_status()` |
 
@@ -568,14 +569,11 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 15 makes `idx_messages_session_sortkey` an expression
   index — `(session_id, (occurred_at_ms IS NULL), occurred_at_ms, message_id)`
-  (#2475 perf audit). The keyset/paginated message reads order by
-  `(occurred_at_ms IS NULL), occurred_at_ms, message_id` so NULL-timestamp rows
-  sort last; the v14 plain `(session_id, occurred_at_ms, message_id)` index could
-  not satisfy that leading `IS NULL` expression, so the planner fell back to
-  `USE TEMP B-TREE FOR ORDER BY` and sorted the whole session per chunk
-  (expensive on multi-thousand-message sessions). The expression index matches
-  the ORDER BY exactly and plans as a covering-index scan with no temp sort
-  (verified via EXPLAIN QUERY PLAN). Rebuild from source evidence
+  (#2475 perf audit). It serves per-session time-range filters and the
+  chronological projections: a plain `(session_id, occurred_at_ms, message_id)`
+  index cannot satisfy the leading `IS NULL` expression, so the planner falls
+  back to `USE TEMP B-TREE FOR ORDER BY` and sorts the whole session (expensive
+  on multi-thousand-message sessions). Rebuild from source evidence
   (`polylogue ops reset --index && polylogued run`).
 - Index schema version 14 hardens lineage normalization (#2467 audit).
   `session_links.branch_point_message_id` is no longer a FK with `ON DELETE SET
@@ -583,8 +581,8 @@ Polylogue has two schema-evolution regimes, keyed by tier durability.
   would otherwise null the child's branch point during the DELETE step and
   permanently break the child's composition. `message_id` is deterministic, so the
   plain-TEXT reference survives the re-create; reads bail to the child's own tail
-  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so the
-  keyset/paginated message reads stop doing a temp B-tree sort per chunk. Rebuild
+  if a branch point ever dangles. Also adds `idx_messages_session_sortkey` so
+  timestamp-ordered reads stop doing a temp B-tree sort per chunk. Rebuild
   from source evidence.
 - Index schema version 13 makes attachment bytes honest (#2468). `attachments.blob_hash`
   is now nullable and holds the **true SHA-256 of the stored bytes** when acquired

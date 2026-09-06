@@ -22,7 +22,11 @@ _data_version = data_version
 _snapshot_identity = snapshot_index_file_set
 _snapshot_report_identity = snapshot_identity
 
-SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session"})
+# The origins whose parsers assert a session-level parent reference, which is
+# what a prefix-sharing edge is extracted from: `parent_session_provider_id=`
+# in claude/code_parser.py, codex.py and the hermes parsers (hermes_state.py,
+# hermes_spans.py, hermes_verification.py).
+SUPPORTED_PREFIX_ORIGINS = frozenset({"codex-session", "claude-code-session", "hermes-session"})
 REQUIRED_SESSION_LINK_COLUMNS = frozenset({"branch_point_message_id", "inheritance"})
 REQUIRED_TOPOLOGY_LINK_COLUMNS = frozenset(
     {"dst_native_id", "evidence_json", "link_type", "method", "resolved_dst_session_id", "status"}

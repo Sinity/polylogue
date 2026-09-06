@@ -452,13 +452,13 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
     The edge, the stored tail, and the composed transcript must all follow
     content position and ignore the wall clock.
 
-    Anti-vacuity: two mutations turn this red. Ordering composition by
-    ``occurred_at_ms`` (``position_order=False`` in
-    ``get_messages_with_lineage_completeness``) swaps the tail's two messages,
-    because the tail is deliberately recorded out of clock order. Adding any
-    timestamp lower bound against the branch point drops the tail entirely and
-    leaves a two-message transcript. The spawned-fresh control keeps the
-    negative case distinct: no shared prefix, so nothing may be suppressed.
+    Anti-vacuity: two mutations turn this red. Ordering the read by
+    ``occurred_at_ms`` swaps each session's two trailing messages, because both
+    the child's tail and the spawned-fresh control are deliberately recorded out
+    of clock order. Adding any timestamp lower bound against the branch point
+    drops the tail entirely and leaves a two-message transcript. The
+    spawned-fresh control keeps the negative case distinct: no shared prefix, so
+    nothing may be suppressed.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -518,10 +518,9 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
     assert [row["text"] for row in child_blocks] == ["child diverges here", "child reply"]
 
     # A spawned-fresh sibling shares no prefix, so it keeps every message and
-    # records the other inheritance mode. Its clock stays monotonic on purpose:
-    # a session with no lineage edge is read in sort-key order rather than
-    # position order, so inverting its clock here would assert
-    # polylogue-exwho's defect instead of this test's subject.
+    # records the other inheritance mode. Its clock runs backwards too: a session
+    # with no lineage edge is read in the same content-position order as a
+    # composed one.
     fresh = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="fresh",
@@ -529,8 +528,8 @@ def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(t
         parent_session_provider_id="parent",
         branch_type=BranchType.FORK,
         messages=[
-            _msg("f0", Role.USER, "unrelated opening", 0, timestamp="2026-01-01T00:02:00+00:00"),
-            _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:04:00+00:00"),
+            _msg("f0", Role.USER, "unrelated opening", 0, timestamp="2026-01-01T00:04:00+00:00"),
+            _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:02:00+00:00"),
         ],
     )
     fresh_id = write_parsed_session_to_archive(conn, fresh)
