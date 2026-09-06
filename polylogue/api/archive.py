@@ -126,6 +126,7 @@ if TYPE_CHECKING:
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats as StorageArchiveStats
     from polylogue.config import Config
+    from polylogue.context.claude_agent_dispatch_correlation import ClaudeAgentDispatchCorrelation
     from polylogue.context.codex_spawn_edge_correlation import CodexSpawnEdgeReconciliation
     from polylogue.context.compiler import ContextImage, ContextOmission, ContextSpec
     from polylogue.context.hermes_delivery_correlation import HermesContextDeliveryCorrelation
@@ -192,6 +193,7 @@ _FACET_DEFERRED_FAMILIES = (
 _FACET_COMPLETE_FAMILIES = _FACET_CORE_FAMILIES + _FACET_DEFERRED_FAMILIES
 
 _MutationArgsT = TypeVar("_MutationArgsT")
+_ReadResultT = TypeVar("_ReadResultT")
 
 _CANDIDATE_CAPTURE_KIND_MAP: dict[str, AssertionKind] = {
     "note": AssertionKind.NOTE,
@@ -1505,6 +1507,49 @@ def _archive_set_setting(
         raise RuntimeError(f"failed to set user setting {setting_key!r}: {exc}") from exc
 
 
+def _read_source_and_index(
+    config: Config,
+    work: Callable[[sqlite3.Connection, sqlite3.Connection], _ReadResultT],
+    *,
+    seam: str,
+) -> _ReadResultT | None:
+    """Run one read-only join across source.db and index.db, or return ``None``.
+
+    The shared shape of the archive's read-only audit seams: both tiers are
+    opened read-only, neither is mutated, and ``None`` covers two distinct
+    cases the facade contract does not separate -- the archive is not
+    initialized yet (no tier file), or it is present and unreadable. Only the
+    second logs, so the two stay distinguishable in the record.
+    """
+
+    archive_root = _active_archive_root(config)
+    source_db = archive_root / "source.db"
+    index_db = archive_root / "index.db"
+    if not source_db.exists() or not index_db.exists():
+        return None
+    try:
+        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
+        source_conn.row_factory = sqlite3.Row
+        try:
+            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
+            index_conn.row_factory = sqlite3.Row
+            try:
+                return work(source_conn, index_conn)
+            finally:
+                index_conn.close()
+        finally:
+            source_conn.close()
+    except sqlite3.Error:
+        logger.warning(
+            "%s read failed (archive present but unreadable): source_db=%s index_db=%s",
+            seam,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
+
+
 def _archive_reconcile_hermes_session_lifecycle(
     config: Config,
     *,
@@ -1514,51 +1559,37 @@ def _archive_reconcile_hermes_session_lifecycle(
 
     Read-only audit seam over two durable tiers (source.db lifecycle spool +
     index.db ingested snapshot); see
-    ``context.hermes_lifecycle_reconciliation`` for the join semantics.
-    Returns ``None``, never raises, when either tier is unavailable -- the
-    caller distinguishes "not available yet" from "reconciled, zero events
-    observed" (``total_events == 0``). "Archive not yet initialized" (no
-    source.db/index.db file at all) and "archive present but the read
-    failed" (corrupt file, missing table) both still return ``None`` to the
-    caller -- this facade method's contract predates this fix and changing
-    its return type is a separate, larger decision -- but the two cases are
-    distinguished in the logs: only the second case logs a warning (mirrors
-    ``_archive_correlate_hermes_context_deliveries``'s same review fix).
+    ``context.hermes_lifecycle_reconciliation`` for the join semantics and
+    ``_read_source_and_index`` for the ``None`` contract. A caller
+    distinguishes "not available yet" (``None``) from "reconciled, zero events
+    observed" (``total_events == 0``).
     """
 
     from polylogue.context.hermes_lifecycle_reconciliation import reconcile_hermes_session_lifecycle
 
-    archive_root = _active_archive_root(config)
-    source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
-    if not source_db.exists() or not index_db.exists():
-        return None
-    try:
-        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
-        source_conn.row_factory = sqlite3.Row
-        try:
-            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
-            index_conn.row_factory = sqlite3.Row
-            try:
-                return reconcile_hermes_session_lifecycle(
-                    source_conn,
-                    index_conn,
-                    hermes_session_native_id=hermes_session_native_id,
-                )
-            finally:
-                index_conn.close()
-        finally:
-            source_conn.close()
-    except sqlite3.Error:
-        logger.warning(
-            "hermes_session_lifecycle reconciliation read failed (archive present but unreadable): "
-            "hermes_session_native_id=%s source_db=%s index_db=%s",
-            hermes_session_native_id,
-            source_db,
-            index_db,
-            exc_info=True,
-        )
-        return None
+    return _read_source_and_index(
+        config,
+        lambda source_conn, index_conn: reconcile_hermes_session_lifecycle(
+            source_conn,
+            index_conn,
+            hermes_session_native_id=hermes_session_native_id,
+        ),
+        seam=f"hermes_session_lifecycle reconciliation (hermes_session_native_id={hermes_session_native_id})",
+    )
+
+
+def _archive_correlate_claude_agent_dispatches(config: Config) -> ClaudeAgentDispatchCorrelation | None:
+    """Resolve Claude Code hook ``agent_id``/``agent_type`` onto archived tool calls
+    (bd polylogue-xo9gq).
+
+    Read-only audit seam over ``source.db``'s hook-event spool and ``index.db``'s
+    block tree; see ``context.claude_agent_dispatch_correlation`` for the join
+    semantics and ``_read_source_and_index`` for the ``None`` contract.
+    """
+
+    from polylogue.context.claude_agent_dispatch_correlation import correlate_claude_agent_dispatches
+
+    return _read_source_and_index(config, correlate_claude_agent_dispatches, seam="claude agent-dispatch correlation")
 
 
 def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
@@ -1567,41 +1598,13 @@ def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconc
 
     Read-only audit seam over ``source.db``'s hook-event spool and
     ``index.db``'s ``session_links``; see
-    ``context.codex_spawn_edge_correlation`` for the join semantics.
-    Returns ``None``, never raises, when either tier is unavailable --
-    "archive not yet initialized" and "archive present but the read failed"
-    both return ``None`` here, matching
-    ``_archive_reconcile_hermes_session_lifecycle``'s contract, but only the
-    second case logs a warning.
+    ``context.codex_spawn_edge_correlation`` for the join semantics and
+    ``_read_source_and_index`` for the ``None`` contract.
     """
 
     from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
 
-    archive_root = _active_archive_root(config)
-    source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
-    if not source_db.exists() or not index_db.exists():
-        return None
-    try:
-        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
-        source_conn.row_factory = sqlite3.Row
-        try:
-            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
-            index_conn.row_factory = sqlite3.Row
-            try:
-                return reconcile_codex_spawn_edges(source_conn, index_conn)
-            finally:
-                index_conn.close()
-        finally:
-            source_conn.close()
-    except sqlite3.Error:
-        logger.warning(
-            "codex_spawn_edge reconciliation read failed (archive present but unreadable): source_db=%s index_db=%s",
-            source_db,
-            index_db,
-            exc_info=True,
-        )
-        return None
+    return _read_source_and_index(config, reconcile_codex_spawn_edges, seam="codex_spawn_edge reconciliation")
 
 
 def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
@@ -3396,6 +3399,21 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             self.config,
             hermes_session_native_id=hermes_session_native_id,
         )
+
+    async def correlate_claude_agent_dispatches(self) -> ClaudeAgentDispatchCorrelation | None:
+        """Resolve Claude Code hook-asserted agent identity onto archived tool calls (bd polylogue-xo9gq).
+
+        Read-only audit seam over the durable spool (source.db
+        ``raw_hook_events``: ``PreToolUse``/``PostToolUse`` payloads carrying
+        ``agent_id``/``agent_type``) and the ingested block tree (index.db
+        ``blocks`` of type ``tool_use``, joined on ``tool_id``). Reports which
+        calls a dispatched agent instance is attributed to, which asserted
+        calls are not archived yet, and which ``tool_use_id`` values two
+        different agent instances both claim. Returns ``None`` only when the archive
+        itself is not yet initialized.
+        """
+
+        return _archive_correlate_claude_agent_dispatches(self.config)
 
     async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
         """Reconcile acquired Codex spawn-edge evidence against inferred topology (bd polylogue-foee AC#2).
