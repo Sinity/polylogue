@@ -117,6 +117,21 @@ class TestChatGPTAssetIndexResolveDat:
         assert resolved is not None
         assert resolved.name == "image.png"
 
+    def test_strips_sediment_prefix(self) -> None:
+        """``sediment://`` names the same id space ``file-service://`` does.
+
+        Red if only the ``file-service://`` scheme is stripped: the
+        computer-use screenshots (every one a ``sediment://`` pointer) miss
+        the sidecar and the acquired blob keyed by their bare id.
+        """
+        index = ChatGPTAssetIndex.build(
+            library_files_payload=[_library_entry("file_shot1", file_name="screenshot.png")],
+            asset_file_names_payload={},
+        )
+        resolved = index.resolve_dat("sediment://file_shot1")
+        assert resolved is not None
+        assert resolved.name == "screenshot.png"
+
     def test_empty_index_reports_is_empty(self) -> None:
         assert ChatGPTAssetIndex.empty().is_empty is True
         assert ChatGPTAssetIndex.build(library_files_payload=[], asset_file_names_payload={}).is_empty is True
