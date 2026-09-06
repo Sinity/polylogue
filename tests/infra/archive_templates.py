@@ -1,131 +1,65 @@
-"""Immutable archive templates for SQLite-heavy real-route tests."""
+"""Archive templates a law builds in place, sealed and cloned by the shared route.
+
+A template is an :class:`~tests.infra.workload_artifacts.ImmutableTreeArtifact`
+whose builder ran outside the artifact cache: the consuming law owns the tree's
+location and lifetime, and everything after construction -- tier validation,
+sealing, authenticated detached cloning, durable-identity rebinding -- is the
+one publication route in :mod:`tests.infra.workload_artifacts`.
+"""
 
 from __future__ import annotations
 
-import contextlib
-import gc
 import shutil
-import sqlite3
-import stat
-import subprocess
-import time
+from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
-
-def _journal_mode_delete_with_retry(conn: sqlite3.Connection, *, path: Path) -> None:
-    """Finish a SQLite snapshot despite a deferred same-process close."""
-    deadline = time.monotonic() + 5.0
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            mode = conn.execute("PRAGMA journal_mode=DELETE").fetchone()
-        except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
-                raise
-            gc.collect()
-            time.sleep(min(0.05 * attempt, 0.5))
-            continue
-        if mode != ("delete",):
-            raise RuntimeError(f"could not normalize template database {path} to DELETE journal mode")
-        return
-
-
-def quiesce_archive_template(root: Path) -> None:
-    """Validate every physical SQLite tier and collapse it into one snapshot."""
-    databases = tuple(path for path in sorted(root.rglob("*.db")) if path.is_file() and not path.is_symlink())
-    for path in databases:
-        with contextlib.closing(sqlite3.connect(path)) as conn, conn:
-            quick = conn.execute("PRAGMA quick_check").fetchone()
-            foreign = conn.execute("PRAGMA foreign_key_check").fetchall()
-            if quick != ("ok",) or foreign:
-                raise RuntimeError(f"invalid template database {path}")
-            checkpoint = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            if checkpoint is None or checkpoint[0] != 0:
-                raise RuntimeError(f"could not checkpoint template database {path}: {checkpoint!r}")
-            _journal_mode_delete_with_retry(conn, path=path)
-        for suffix in ("-wal", "-shm"):
-            sidecar = path.with_name(f"{path.name}{suffix}")
-            if sidecar.exists():
-                sidecar.unlink()
-
-
-def _freeze_archive_template(root: Path) -> None:
-    """Make a completed fixture archive immutable before test-local cloning."""
-    for path in sorted(root.rglob("*"), reverse=True):
-        if path.is_symlink():
-            continue
-        path.chmod(path.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
-    root.chmod(root.stat().st_mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+from tests.infra.workload_artifacts import (
+    ImmutableTreeArtifact,
+    clone_immutable_tree,
+    seal_fixture_tree,
+)
 
 
 def finalize_archive_template(root: Path) -> None:
     """Publish a reusable archive template only after a verified SQLite snapshot."""
-    quiesce_archive_template(root)
-    _freeze_archive_template(root)
+    seal_fixture_tree(root)
 
 
-def _remove_partial_clone(destination: Path) -> None:
-    """Thaw a failed reflink attempt before replacing it with a full copy."""
-    for path in sorted(destination.rglob("*"), reverse=True):
-        if not path.is_symlink():
-            path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    shutil.rmtree(destination)
+def _template_key(template: Path) -> str:
+    """Bind a clone to the exact tree it came from.
+
+    A law-built template has no content-addressed cache identity; its location
+    is what distinguishes it, and the resulting clone's ``source_manifest_id``
+    must not read as a claim about a cached artifact.
+    """
+    return "archive-template:" + sha256(str(template.resolve()).encode()).hexdigest()
 
 
-def _assert_detached_tree(template: Path, destination: Path) -> None:
-    """Reject links and shared inodes after either clone implementation."""
-    for source in template.rglob("*"):
-        relative = source.relative_to(template)
-        target = destination / relative
-        if source.is_symlink() or target.is_symlink():
-            raise RuntimeError(f"archive template clone contains a symlink: {relative}")
-        if (
-            source.is_file()
-            and target.is_file()
-            and (source.stat().st_dev, source.stat().st_ino) == (target.stat().st_dev, target.stat().st_ino)
-        ):
-            raise RuntimeError(f"archive template clone contains a hardlink: {relative}")
+def clone_archive_template(template: Path, destination: Path) -> str:
+    """Clone a sealed template into a private writable archive; report the method.
 
-
-def clone_archive_template(template: Path, destination: Path, *, reject_links: bool = False) -> str:
-    """Clone an immutable archive into a private writable destination."""
+    Workspace fixtures create sibling directories (a render root, an inbox)
+    under the archive root before seeding it, so the clone lands beside the
+    destination and its entries are moved in: names the template supplies are
+    replaced, names it does not are left alone. The move preserves inodes,
+    which is what the durable identity recorded during the clone names.
+    """
+    artifact = ImmutableTreeArtifact.adopt(template, key=_template_key(template))
     destination.mkdir(parents=True, exist_ok=True)
-    method = "reflink"
+    staged = destination.parent / f".{destination.name}.clone.{uuid4().hex}"
     try:
-        subprocess.run(
-            # ``auto`` silently falls back to a byte-for-byte copy when the
-            # filesystem cannot reflink.  That makes a full test run look
-            # healthy while writing every template page for every fixture.
-            # Require the cheap path explicitly; the exception handler below
-            # keeps correctness on filesystems without CoW support.
-            ["cp", "-a", "--reflink=always", f"{template}/.", str(destination)],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=10,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        # A failed ``cp`` can have already copied immutable directories. Thaw
-        # that partial tree before replacing it on a filesystem without CoW.
-        _remove_partial_clone(destination)
-        shutil.copytree(template, destination, symlinks=True)
-        method = "copy"
-    if reject_links:
-        _assert_detached_tree(template, destination)
-    for path in destination.rglob("*"):
-        if path.is_symlink():
-            continue
-        path.chmod(path.stat().st_mode | stat.S_IWUSR)
-    destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-    if bootstrap_marker.is_file():
-        from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-        bootstrap_marker.unlink()
-        _record_fresh_durable_bootstrap(destination)
+        method = clone_immutable_tree(artifact, staged).clone_method
+        for entry in sorted(staged.iterdir()):
+            target = destination / entry.name
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.is_dir():
+                shutil.rmtree(target)
+            entry.replace(target)
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
     return method
 
 
-__all__ = ["clone_archive_template", "finalize_archive_template", "quiesce_archive_template"]
+__all__ = ["clone_archive_template", "finalize_archive_template"]

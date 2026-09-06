@@ -60,6 +60,7 @@ from tests.infra.workload_artifacts import (
     gc_seeded_archive_artifacts,
     named_corpus_specs,
     named_workload_profile,
+    seal_fixture_tree,
     seeded_archive_key,
     validate_seeded_archive_reachability,
 )
@@ -2483,3 +2484,97 @@ def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
 
     with pytest.raises(RuntimeError, match="produced 999 messages, expected 1000"):
         benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+
+
+def test_construction_measurement_carries_io_and_memory_denominators(tmp_path: Path) -> None:
+    """Bytes written and peak resident set are recorded beside time and size.
+
+    Anti-vacuity: a builder that writes a megabyte must report more written
+    bytes than one that writes nothing, so dropping the ``/proc/self/io``
+    delta (or freezing it at zero) makes the comparison below red. Peak RSS
+    is a process high-water mark, so only its presence is asserted.
+    """
+
+    def empty(root: Path) -> None:
+        (root / "payload").write_bytes(b"")
+
+    def bulky(root: Path) -> None:
+        (root / "payload").write_bytes(b"x" * (4 * 1024 * 1024))
+        os.sync()
+
+    cache_root = tmp_path / "cache"
+    small = build_immutable_tree(cache_root=cache_root, key="io-small", builder=empty)
+    large = build_immutable_tree(cache_root=cache_root, key="io-large", builder=bulky)
+
+    assert large.resources.write_bytes > small.resources.write_bytes
+    assert large.resources.peak_rss_bytes > 0
+    assert small.resources.peak_rss_bytes > 0
+
+
+def test_unreadable_io_counter_measures_as_no_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A denied or absent ``/proc/self/io`` reports zero rather than failing a build."""
+    import builtins
+
+    real_open = builtins.open
+
+    def refuse_proc_io(path: object, *args: object, **kwargs: object) -> object:
+        if path == "/proc/self/io":
+            raise PermissionError(path)
+        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(builtins, "open", refuse_proc_io)
+    artifact = build_immutable_tree(
+        cache_root=tmp_path / "cache",
+        key="io-denied",
+        builder=lambda root: (root / "payload").write_bytes(b"y" * 64),
+    )
+
+    assert artifact.resources.write_bytes == 0
+    assert artifact.resources.total_bytes == 64
+
+
+def test_measurement_rejects_negative_io_and_memory() -> None:
+    """Every recorded denominator is validated, not only the first two."""
+    for field in ("write_bytes", "peak_rss_bytes"):
+        with pytest.raises(ValueError, match="negative"):
+            ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={}, **{field: -1})
+
+
+def test_law_built_template_publishes_and_clones_through_the_shared_route(tmp_path: Path) -> None:
+    """A tree a law seals in place is adopted, not rebuilt, by the clone route.
+
+    Anti-vacuity: an adopted handle that carried a borrowed measurement, or a
+    clone that skipped the shared file-set authentication, makes these
+    assertions red.
+    """
+    from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
+
+    template = tmp_path / "template"
+    template.mkdir()
+    (template / "index.db").write_bytes(b"template-bytes")
+    finalize_archive_template(template)
+
+    adopted = ImmutableTreeArtifact.adopt(template, key="adopted")
+    assert adopted.files == ()
+    assert adopted.resources == ArtifactResourceMeasurement.unmeasured()
+
+    destination = tmp_path / "clone"
+    assert clone_archive_template(template, destination) in {"reflink", "copy"}
+    assert (destination / "index.db").read_bytes() == b"template-bytes"
+    assert destination.joinpath("index.db").stat().st_mode & stat.S_IWUSR
+    assert not template.joinpath("index.db").stat().st_mode & stat.S_IWUSR
+
+
+def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path) -> None:
+    """Sealing validates every tier; a corrupt one is refused, not published."""
+    root = tmp_path / "tree"
+    root.mkdir()
+    with sqlite3.connect(root / "source.db") as conn:
+        conn.execute("CREATE TABLE entries (value TEXT)")
+    gc.collect()
+    with open(root / "source.db", "r+b") as handle:
+        handle.seek(4096)
+        handle.write(b"\x00" * 512)
+
+    with pytest.raises(RuntimeError, match="invalid seeded archive tier"):
+        seal_fixture_tree(root)

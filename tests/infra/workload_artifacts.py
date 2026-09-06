@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import resource
 import sqlite3
 import stat
 import subprocess
@@ -64,7 +65,7 @@ if TYPE_CHECKING:
 # Part of the artifact key, so a change to the manifest's shape or to what
 # sealing guarantees gives published artifacts a distinct identity instead of
 # leaving two code versions to overwrite each other's tree at one key.
-_ARTIFACT_PROTOCOL_VERSION = 4
+_ARTIFACT_PROTOCOL_VERSION = 5
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -120,16 +121,19 @@ _ARCHIVE_DB_NAMES = ("source.db", "index.db", "embeddings.db", "user.db", "audit
 _OBSOLETE_STAGING_SCAN_BUDGET = 32
 _KNOWN_PROVIDERS = frozenset(SyntheticCorpus.available_providers())
 _PROVIDER_COMPONENT = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*\Z")
-_SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "pathology_", "case_")
+#: A workload profile or publication record naming one of these declares an
+#: expectation, which belongs to the law that owns the assertion. One
+#: vocabulary, so a profile and a witness cannot disagree about what is refused.
+SEMANTIC_METADATA_PREFIXES = ("expected_", "oracle_", "pathology_", "case_")
 
 
 def _reject_semantic_metadata(value: object, *, location: str) -> None:
     """Keep workload identity and publication records free of semantic oracles."""
-    if isinstance(value, str) and value.startswith(_SEMANTIC_METADATA_PREFIXES):
+    if isinstance(value, str) and value.startswith(SEMANTIC_METADATA_PREFIXES):
         raise ValueError(f"{location} cannot carry semantic metadata: {value}")
     if isinstance(value, dict):
         for key, child in value.items():
-            if isinstance(key, str) and key.startswith(_SEMANTIC_METADATA_PREFIXES):
+            if isinstance(key, str) and key.startswith(SEMANTIC_METADATA_PREFIXES):
                 raise ValueError(f"{location} cannot carry semantic metadata: {key}")
             _reject_semantic_metadata(child, location=location)
     elif isinstance(value, (list, tuple)):
@@ -187,10 +191,19 @@ class ArtifactResourceMeasurement:
     file_count: int
     build_seconds: float
     row_counts: dict[str, int]
+    #: Bytes this process sent to the block layer across the construction
+    #: interval, and its peak resident set at the end of it. Both are
+    #: process-wide: a builder that runs concurrently with other work in the
+    #: same process attributes that work to itself, and peak RSS is a
+    #: high-water mark that a later, smaller build cannot lower. They are
+    #: denominators for comparing one build against another under the same
+    #: conditions, not an isolated per-artifact cost.
+    write_bytes: int = 0
+    peak_rss_bytes: int = 0
 
     def __post_init__(self) -> None:
         _reject_semantic_metadata(self.row_counts, location="artifact resource measurement")
-        if self.total_bytes < 0 or self.file_count < 0 or self.build_seconds < 0:
+        if min(self.total_bytes, self.file_count, self.build_seconds, self.write_bytes, self.peak_rss_bytes) < 0:
             raise ValueError("artifact resource measurement cannot be negative")
         for table, count in self.row_counts.items():
             # Deserialized manifests reach this constructor untyped, so the
@@ -450,6 +463,30 @@ class ImmutableTreeArtifact:
         ).encode()
         return f"immutable-tree:sha256:{hashlib.sha256(payload).hexdigest()}"
 
+    @classmethod
+    def adopt(cls, root: Path, *, key: str) -> ImmutableTreeArtifact:
+        """Take an already-materialized tree as a clone source.
+
+        A tree a caller sealed itself, or a clone of one, is a legitimate
+        clone origin. Adoption carries the tree's location and key only: the
+        file set is enumerated at clone time, and construction cost belongs to
+        whoever built it, so an adopted handle reports no measurement of its
+        own.
+        """
+        return cls(root=root, key=key, files=(), resources=ArtifactResourceMeasurement.unmeasured())
+
+
+def seal_fixture_tree(root: Path) -> None:
+    """Validate every SQLite tier, collapse its journal, and make the tree read-only.
+
+    The publication step a caller performs when it builds a fixture tree in
+    place rather than through :func:`build_immutable_tree`. Sealing is what
+    makes a tree safe to clone: a WAL sidecar or an open journal would let a
+    clone observe a torn snapshot.
+    """
+    _sqlite_integrity(root)
+    _make_read_only(root)
+
 
 def build_immutable_tree(
     *,
@@ -527,7 +564,7 @@ def build_immutable_tree(
                 _remove_tree(final_root)
             staging = staging_root / f"{name}.{uuid.uuid4().hex}"
             staging.mkdir()
-            build_started = time.monotonic()
+            probe = _ConstructionProbe.start()
             try:
                 builder(staging)
                 files = _archive_files(staging)
@@ -535,9 +572,7 @@ def build_immutable_tree(
                     "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
                     "key": key,
                     "files": files,
-                    "resources": _measure_resources(
-                        staging, files, build_seconds=time.monotonic() - build_started
-                    ).to_payload(),
+                    "resources": _measure_resources(staging, files, probe=probe).to_payload(),
                 }
                 (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
                 _publish_sealed_staging(staging, final_root)
@@ -567,6 +602,25 @@ def _describe_file_set_mismatch(
     extra = sorted(set(actual) - set(expected))
     changed = sorted(path for path in set(expected) & set(actual) if expected[path] != actual[path])
     return " ".join((summarize("missing", missing), summarize("extra", extra), summarize("changed", changed)))
+
+
+_DURABLE_BOOTSTRAP_RELATIVE = ".maintenance-state/durable-change-trains/.bootstrap"
+
+
+def _rebind_durable_bootstrap(destination: Path) -> None:
+    """Give a clone its own durable-change-train identity.
+
+    Two archives that share a bootstrap marker are the same durable store as
+    far as the change train is concerned, so a clone that kept the source's
+    marker could not be reopened alongside it.
+    """
+    marker = destination / _DURABLE_BOOTSTRAP_RELATIVE
+    if not _is_regular(marker):
+        return
+    from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
+
+    _safe_unlink(marker)
+    _record_fresh_durable_bootstrap(destination)
 
 
 def clone_immutable_tree(artifact: ImmutableTreeArtifact, destination: Path) -> SeededArchiveClone:
@@ -616,6 +670,7 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
+    _rebind_durable_bootstrap(destination)
     if _safe_exists(destination / "manifest.json"):
         _safe_unlink(destination / "manifest.json")
     return SeededArchiveClone(destination, artifact.manifest_id, method)
@@ -1549,19 +1604,63 @@ def _measure_rows(root: Path) -> dict[str, int]:
     return counts
 
 
+def _process_write_bytes() -> int:
+    """Bytes this process has sent to the block layer, or 0 where unreadable.
+
+    ``/proc/self/io`` is Linux-only and can be denied by kernel hardening, so a
+    missing counter reports as an unmeasured 0 rather than failing a build.
+    """
+    try:
+        with open("/proc/self/io", encoding="utf-8") as handle:
+            for line in handle:
+                field, _, value = line.partition(":")
+                if field == "write_bytes":
+                    return max(int(value.strip()), 0)
+    except (OSError, ValueError):
+        return 0
+    return 0
+
+
+def _peak_rss_bytes() -> int:
+    """This process's high-water resident set. ``ru_maxrss`` is KiB on Linux."""
+    return max(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, 0) * 1024
+
+
+@dataclass(frozen=True)
+class _ConstructionProbe:
+    """Open interval over one artifact construction's process-wide cost."""
+
+    started: float
+    write_bytes: int
+
+    @classmethod
+    def start(cls) -> _ConstructionProbe:
+        return cls(started=time.monotonic(), write_bytes=_process_write_bytes())
+
+    def elapsed_seconds(self) -> float:
+        return time.monotonic() - self.started
+
+    def written_bytes(self) -> int:
+        # A counter that appeared or reset mid-interval would read as negative;
+        # report no observation rather than a fabricated one.
+        return max(_process_write_bytes() - self.write_bytes, 0)
+
+
 def _measure_resources(
     root: Path,
     files: tuple[dict[str, object], ...],
     *,
-    build_seconds: float,
+    probe: _ConstructionProbe,
     measure_rows: bool = False,
 ) -> ArtifactResourceMeasurement:
     """Observe one published tree's storage, population, and construction cost."""
     return ArtifactResourceMeasurement(
         total_bytes=sum(int(cast(int, entry["size"])) for entry in files),
         file_count=len(files),
-        build_seconds=round(max(build_seconds, 0.0), 6),
+        build_seconds=round(max(probe.elapsed_seconds(), 0.0), 6),
         row_counts=_measure_rows(root) if measure_rows else {},
+        write_bytes=probe.written_bytes(),
+        peak_rss_bytes=_peak_rss_bytes(),
     )
 
 
@@ -3046,7 +3145,7 @@ def _build_seeded_archive_inner(
         for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
             staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
             _mkdir_pinned(staging)
-            build_started = time.monotonic()
+            probe = _ConstructionProbe.start()
             try:
                 corpus_root = staging / "wire"
                 written_batches = tuple(
@@ -3138,12 +3237,7 @@ def _build_seeded_archive_inner(
                     facts=facts,
                     files=files,
                     receipt=dict(receipt.to_payload()),
-                    resources=_measure_resources(
-                        staging,
-                        files,
-                        build_seconds=time.monotonic() - build_started,
-                        measure_rows=True,
-                    ),
+                    resources=_measure_resources(staging, files, probe=probe, measure_rows=True),
                 )
                 _write_private_text(
                     staging / "manifest.json",
@@ -3440,24 +3534,19 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
                 artifact,
                 destination,
                 disk_manifest,
-                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
             )
             for path in _pinned_paths(destination):
                 _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
             _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-            bootstrap_marker = destination / ".maintenance-state" / "durable-change-trains" / ".bootstrap"
-            if stat.S_ISREG(_safe_stat(bootstrap_marker).st_mode):
-                from polylogue.storage.sqlite.durable_change_train import _record_fresh_durable_bootstrap
-
-                _safe_unlink(bootstrap_marker)
-                _record_fresh_durable_bootstrap(destination)
+            _rebind_durable_bootstrap(destination)
             integrity_fd = _open_pinned_dir(destination)
             fcntl.flock(integrity_fd, fcntl.LOCK_SH)
             _authenticate_clone_copy(
                 artifact,
                 destination,
                 disk_manifest,
-                ignored_relatives=frozenset({".maintenance-state/durable-change-trains/.bootstrap"}),
+                ignored_relatives=frozenset({_DURABLE_BOOTSTRAP_RELATIVE}),
             )
         except BaseException:
             if integrity_fd >= 0:
@@ -3494,8 +3583,10 @@ __all__ = [
     "WorkloadProfile",
     "WorkloadSessionShape",
     "acquire_query_only_seeded_archive",
+    "SEMANTIC_METADATA_PREFIXES",
     "build_immutable_tree",
     "clone_immutable_tree",
+    "seal_fixture_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",
     "SeededArchiveReachabilityEntry",
