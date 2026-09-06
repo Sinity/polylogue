@@ -8,6 +8,7 @@ import pickle
 import re
 import shlex
 import tempfile
+import unicodedata
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -788,6 +789,149 @@ def _codex_instructions_changed_event(
             "revision": revision,
         },
         boundary_message_position=effective_from_message_position,
+    )
+
+
+# Text a compaction's ``replacement_history`` or a ``task_complete`` record
+# carries that the parsed session holds nowhere else. Codex re-embeds the
+# pre-compaction records in ``replacement_history``; measured over the 131
+# rollout files carrying it in a 596-file sample (195,851 text values), 97.8%
+# are already stored from the same file's live stream and 0.98% from an
+# ancestor session whose prefix this file replays and which is ingested
+# separately. The remaining 1.2% -- 2,351 occurrences collapsing to 397
+# distinct values -- exists only here: turn-construction context Codex writes
+# down nowhere else (``<environment_context>``, ``<skills_instructions>``,
+# injected AGENTS.md text) and real user turns. Only those land as their own
+# event. The payload key is ``content`` because the writer copies ``text`` and
+# ``summary`` into the event's ``summary`` column.
+_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE = "codex_replacement_context"
+
+
+@dataclass
+class _CodexTextCandidate:
+    """One text value awaiting proof the session already retains it."""
+
+    text: str
+    occurrences: int = 1
+    retained: bool = False
+    stored: bool = False
+
+
+class _CodexTextConservation:
+    """Decides which candidate texts a parsed session does not already hold.
+
+    Candidates are registered while parsing and resolved in one pass at the
+    end, against every text the parser emits -- message text, block text, tool
+    inputs, session-event payloads, the session's instructions. Only the
+    candidates are indexed, so resolution costs one walk over the retained
+    content and memory proportional to the candidates, not to the session.
+
+    Resolution must run after the last event is appended: ``replacement_history``
+    re-embeds records that may be parsed either before or after the compaction
+    that carries them.
+    """
+
+    def __init__(self) -> None:
+        self._by_text: dict[str, _CodexTextCandidate] = {}
+        self._unresolved = 0
+
+    def add(self, text: str) -> tuple[_CodexTextCandidate, bool]:
+        """Register ``text``; the flag reports whether this value is new."""
+        existing = self._by_text.get(text)
+        if existing is not None:
+            existing.occurrences += 1
+            return existing, False
+        candidate = _CodexTextCandidate(text=text)
+        self._by_text[text] = candidate
+        # A value normalized differently on the two sides would otherwise read
+        # as absent and be stored a second time. Only the candidates are
+        # normalized; retained text is looked up as written, then normalized
+        # only when it is not pure ASCII.
+        normalized = unicodedata.normalize("NFC", text)
+        if normalized != text:
+            self._by_text.setdefault(normalized, candidate)
+        self._unresolved += 1
+        return candidate, True
+
+    def _mark(self, text: str) -> None:
+        if not text or not self._unresolved:
+            return
+        candidate = self._by_text.get(text)
+        if candidate is None and not text.isascii():
+            candidate = self._by_text.get(unicodedata.normalize("NFC", text))
+        if candidate is not None and not candidate.retained:
+            candidate.retained = True
+            self._unresolved -= 1
+
+    def _mark_nested(self, value: object) -> None:
+        if isinstance(value, str):
+            self._mark(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                self._mark_nested(item)
+        elif isinstance(value, list | tuple):
+            for item in value:
+                self._mark_nested(item)
+
+    def resolve(
+        self,
+        *,
+        messages: Iterable[ParsedMessage],
+        events: Iterable[ParsedSessionEvent],
+        instructions_text: str | None,
+    ) -> None:
+        if not self._unresolved:
+            return
+        if instructions_text:
+            self._mark(instructions_text)
+        for message in messages:
+            if message.text:
+                self._mark(message.text)
+            for block in message.blocks:
+                if block.text:
+                    self._mark(block.text)
+                if block.tool_input:
+                    self._mark_nested(dict(block.tool_input))
+            if not self._unresolved:
+                return
+        for event in events:
+            self._mark_nested(event.payload)
+            if not self._unresolved:
+                return
+
+
+@dataclass
+class _CodexReplacementContext:
+    """A replacement_history text value pending the conservation verdict."""
+
+    insert_at: int
+    compaction_event: ParsedSessionEvent
+    timestamp: str | None
+    source_index: int
+    entry_type: str | None
+    role: str | None
+    phase: str | None
+    candidate: _CodexTextCandidate
+
+
+def _codex_replacement_context_event(context: _CodexReplacementContext) -> ParsedSessionEvent:
+    payload: dict[str, object] = {
+        "source_index": context.source_index,
+        "context_kind": "replacement_history",
+        "content": context.candidate.text,
+        "content_chars": len(context.candidate.text),
+        "occurrences": context.candidate.occurrences,
+    }
+    if context.entry_type:
+        payload["entry_type"] = context.entry_type
+    if context.role:
+        payload["role"] = context.role
+    if context.phase:
+        payload["phase"] = context.phase
+    return ParsedSessionEvent(
+        event_type=_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE,
+        timestamp=context.timestamp,
+        payload=payload,
     )
 
 
@@ -2528,6 +2672,12 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # prompt it started with.
     changed_user_instructions: list[str] = []
     changed_developer_instructions: list[str] = []
+    # Text values Codex re-embeds rather than emits on the live stream. Each is
+    # registered here as it is met and resolved once, after the last event, so
+    # only a value the session retains nowhere else is stored again.
+    conservation = _CodexTextConservation()
+    pending_replacement_context: list[_CodexReplacementContext] = []
+    pending_task_complete: list[tuple[ParsedSessionEvent, _CodexTextCandidate]] = []
     admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
@@ -2546,26 +2696,33 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 "summary": str(payload.get("message", "") or ""),
                 "replacement_history_count": len(history_list),
             }
-            # replacement_history re-embeds the exact pre-compaction records
-            # (message/reasoning/ghost_snapshot) already parsed once from the
-            # live stream earlier in this file -- storing them again here
-            # would duplicate full message content. What it adds beyond the
-            # count is per-entry annotation Codex doesn't emit on the live
-            # stream: an internal generation `phase` tag on the entry, a
-            # `ghost_commit` on some entries, and inline images on content
-            # items. Those are
-            # captured as bounded aggregates, not raw duplication.
+            # replacement_history re-embeds the pre-compaction records
+            # (message/reasoning/ghost_snapshot); storing them again in full
+            # would duplicate content the session already holds. What it adds
+            # beyond the count is per-entry annotation Codex doesn't emit on
+            # the live stream: an internal generation `phase` tag on the entry,
+            # a `ghost_commit` on some entries, and inline images on content
+            # items. Those are captured as bounded aggregates. Each text value
+            # becomes a candidate resolved once at the end of the parse: it is
+            # dropped when the session retains that value anywhere else, and
+            # kept as its own event otherwise -- see
+            # `_CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE`.
             phase_counts: dict[str, int] = {}
             ghost_commit_count = 0
             image_count = 0
+            history_text_count = 0
+            history_contexts: list[tuple[_CodexTextCandidate, str | None, str | None, str | None]] = []
             for entry in history_list:
                 if not isinstance(entry, dict):
                     continue
                 if isinstance(entry.get("ghost_commit"), dict):
                     ghost_commit_count += 1
                 phase = entry.get("phase")
-                if isinstance(phase, str) and phase:
-                    phase_counts[phase] = phase_counts.get(phase, 0) + 1
+                entry_phase = phase if isinstance(phase, str) and phase else None
+                if entry_phase:
+                    phase_counts[entry_phase] = phase_counts.get(entry_phase, 0) + 1
+                entry_type = _string_value(entry.get("type"))
+                entry_role = _string_value(entry.get("role"))
                 entry_content = entry.get("content")
                 if isinstance(entry_content, list):
                     for content_item in entry_content:
@@ -2573,6 +2730,15 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                             continue
                         if isinstance(content_item.get("image_url"), str | dict):
                             image_count += 1
+                        content_text = content_item.get("text")
+                        if not isinstance(content_text, str) or not content_text:
+                            continue
+                        history_text_count += 1
+                        candidate, is_new = conservation.add(content_text)
+                        if is_new:
+                            history_contexts.append((candidate, entry_type, entry_role, entry_phase))
+            if history_text_count:
+                event_payload["replacement_history_text_count"] = history_text_count
             if phase_counts:
                 event_payload["replacement_history_phase_counts"] = dict(sorted(phase_counts.items()))
             if ghost_commit_count:
@@ -2583,16 +2749,31 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             boundary_end = message_position - 1
             summary_text = str(event_payload["summary"])
             summary_position = message_position if summary_text else None
-            session_events.append(
-                ParsedSessionEvent(
-                    event_type="compaction",
-                    timestamp=timestamp,
-                    payload=event_payload,
-                    boundary_start_position=boundary_start,
-                    boundary_end_position=boundary_end,
-                    boundary_message_position=summary_position,
-                )
+            compaction_event = ParsedSessionEvent(
+                event_type="compaction",
+                timestamp=timestamp,
+                payload=event_payload,
+                boundary_start_position=boundary_start,
+                boundary_end_position=boundary_end,
+                boundary_message_position=summary_position,
             )
+            session_events.append(compaction_event)
+            # Context events are spliced in directly after their own compaction
+            # event, so a reader meets the text where the compaction dropped it.
+            insert_at = len(session_events)
+            for candidate, entry_type, entry_role, entry_phase in history_contexts:
+                pending_replacement_context.append(
+                    _CodexReplacementContext(
+                        insert_at=insert_at,
+                        compaction_event=compaction_event,
+                        timestamp=timestamp,
+                        source_index=idx,
+                        entry_type=entry_type,
+                        role=entry_role,
+                        phase=entry_phase,
+                        candidate=candidate,
+                    )
+                )
             # Materialize the compaction summary as a real message at the
             # boundary, mirroring Claude Code, so both providers present a uniform
             # summary message that replaces the prior context (#2467). The
@@ -2764,13 +2945,24 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 event_type = _codex_response_item_event_type(_record_type(inner), _record_type(record))
                 if event_type == _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE:
                     event_payload["wire_type"] = _record_type(inner) or _record_type(record)
-                session_events.append(
-                    ParsedSessionEvent(
-                        event_type=event_type,
-                        timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
-                        payload=event_payload,
-                    )
+                response_event = ParsedSessionEvent(
+                    event_type=event_type,
+                    timestamp=_iso_or_none(_record_timestamp(inner) or _record_timestamp(record)),
+                    payload=event_payload,
                 )
+                session_events.append(response_event)
+                # `task_complete.last_agent_message` is the turn's final
+                # assistant text repeated on the completion marker. Measured
+                # over 270 real rollout files, all 1,565 occurrences were
+                # already stored from the same file's live stream -- so it is
+                # registered as a candidate and only stored when that does not
+                # hold, rather than trusted to be a duplicate.
+                if _record_type(inner) == "task_complete":
+                    last_agent_message = inner.get("last_agent_message")
+                    if isinstance(last_agent_message, str) and last_agent_message:
+                        candidate, _ = conservation.add(last_agent_message)
+                        response_event.payload["last_agent_message_chars"] = len(last_agent_message)
+                        pending_task_complete.append((response_event, candidate))
                 timestamp_fallback = _record_timestamp(record)
                 tool_message = _codex_tool_message(
                     inner,
@@ -3036,6 +3228,40 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                 payload=identity_payload,
             )
         )
+
+    # Resolve the re-embedded text candidates now that every message and event
+    # this session stores exists. A candidate the session already retains is
+    # dropped -- linking it again would duplicate content; the rest is stored
+    # exactly once, under the compaction or completion record that carried it.
+    conservation.resolve(
+        messages=messages,
+        events=session_events,
+        instructions_text=session_instructions,
+    )
+    for completion_event, completion_candidate in pending_task_complete:
+        if completion_candidate.retained or completion_candidate.stored:
+            completion_event.payload["last_agent_message_retained"] = True
+        else:
+            completion_candidate.stored = True
+            completion_event.payload["last_agent_message"] = completion_candidate.text
+    if pending_replacement_context:
+        context_insertions: dict[int, list[ParsedSessionEvent]] = {}
+        for context in pending_replacement_context:
+            if context.candidate.retained or context.candidate.stored:
+                continue
+            context.candidate.stored = True
+            context_insertions.setdefault(context.insert_at, []).append(_codex_replacement_context_event(context))
+            stored_here = context.compaction_event.payload.get("replacement_history_context_count")
+            context.compaction_event.payload["replacement_history_context_count"] = (
+                stored_here if isinstance(stored_here, int) else 0
+            ) + 1
+        if context_insertions:
+            spliced: list[ParsedSessionEvent] = []
+            for event_index, event in enumerate(session_events):
+                spliced.extend(context_insertions.pop(event_index, ()))
+                spliced.append(event)
+            spliced.extend(context_insertions.pop(len(session_events), ()))
+            session_events = spliced
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
     #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence
