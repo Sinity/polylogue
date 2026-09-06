@@ -367,6 +367,24 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "archive tool-pairing-census",
+        "archive",
+        "Classify every tool call/result pairing gap against declared evidence.",
+        "devtools.tool_pairing_census",
+        json_flag=True,
+        use_when=(
+            "Before claiming what an archive's unpaired tool calls and unmatched tool results mean. "
+            "Reports the exact no-result denominator by origin, provider construct, transcript "
+            "position, source survival and acquisition state, classifies every cohort, and prints "
+            "the query plan and runtime it used."
+        ),
+        examples=(
+            "devtools archive tool-pairing-census",
+            "devtools archive tool-pairing-census --json",
+            "devtools archive tool-pairing-census --archive-root /path/to/archive --no-source-check",
+        ),
+    ),
+    CommandSpec(
         "archive continuity-evidence",
         "archive",
         "Replay continuity scenarios and verify their query routes are discoverable.",
