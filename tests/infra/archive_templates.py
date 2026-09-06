@@ -17,6 +17,7 @@ from uuid import uuid4
 from tests.infra.workload_artifacts import (
     ImmutableTreeArtifact,
     clone_immutable_tree,
+    rebind_durable_identity,
     seal_fixture_tree,
 )
 
@@ -42,8 +43,8 @@ def clone_archive_template(template: Path, destination: Path) -> str:
     Workspace fixtures create sibling directories (a render root, an inbox)
     under the archive root before seeding it, so the clone lands beside the
     destination and its entries are moved in: names the template supplies are
-    replaced, names it does not are left alone. The move preserves inodes,
-    which is what the durable identity recorded during the clone names.
+    replaced, names it does not are left alone. The durable identity names the
+    tree's own path, so it is rebound once the tree reaches that path.
     """
     artifact = ImmutableTreeArtifact.adopt(template, key=_template_key(template))
     destination.mkdir(parents=True, exist_ok=True)
@@ -57,6 +58,7 @@ def clone_archive_template(template: Path, destination: Path) -> str:
             elif target.is_dir():
                 shutil.rmtree(target)
             entry.replace(target)
+        rebind_durable_identity(destination)
     finally:
         shutil.rmtree(staged, ignore_errors=True)
     return method

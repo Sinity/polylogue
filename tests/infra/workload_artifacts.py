@@ -607,12 +607,14 @@ def _describe_file_set_mismatch(
 _DURABLE_BOOTSTRAP_RELATIVE = ".maintenance-state/durable-change-trains/.bootstrap"
 
 
-def _rebind_durable_bootstrap(destination: Path) -> None:
-    """Give a clone its own durable-change-train identity.
+def rebind_durable_identity(destination: Path) -> None:
+    """Give a tree at ``destination`` its own durable-change-train identity.
 
     Two archives that share a bootstrap marker are the same durable store as
     far as the change train is concerned, so a clone that kept the source's
-    marker could not be reopened alongside it.
+    marker could not be reopened alongside it. The recorded identity names the
+    tree's own path, so a caller that relocates a clone must rebind it again at
+    its final location.
     """
     marker = destination / _DURABLE_BOOTSTRAP_RELATIVE
     if not _is_regular(marker):
@@ -670,7 +672,7 @@ def _clone_immutable_tree_unlocked(artifact: ImmutableTreeArtifact, destination:
         if not path.is_symlink():
             path.chmod(path.stat().st_mode | stat.S_IWUSR)
     destination.chmod(destination.stat().st_mode | stat.S_IWUSR)
-    _rebind_durable_bootstrap(destination)
+    rebind_durable_identity(destination)
     if _safe_exists(destination / "manifest.json"):
         _safe_unlink(destination / "manifest.json")
     return SeededArchiveClone(destination, artifact.manifest_id, method)
@@ -3539,7 +3541,7 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
             for path in _pinned_paths(destination):
                 _safe_chmod(path, _safe_stat(path).st_mode | stat.S_IWUSR)
             _safe_chmod(destination, _safe_stat(destination).st_mode | stat.S_IWUSR)
-            _rebind_durable_bootstrap(destination)
+            rebind_durable_identity(destination)
             integrity_fd = _open_pinned_dir(destination)
             fcntl.flock(integrity_fd, fcntl.LOCK_SH)
             _authenticate_clone_copy(
@@ -3586,6 +3588,7 @@ __all__ = [
     "SEMANTIC_METADATA_PREFIXES",
     "build_immutable_tree",
     "clone_immutable_tree",
+    "rebind_durable_identity",
     "seal_fixture_tree",
     "SeededArchiveClone",
     "SeededArchiveKey",
