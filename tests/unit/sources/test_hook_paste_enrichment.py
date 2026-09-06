@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -175,3 +176,85 @@ def test_hook_paste_enrichment_reads_only_the_batch_sessions_sidecars(tmp_path: 
     with sqlite3.connect(index_db) as conn:
         rows = conn.execute("SELECT session_id, has_paste FROM messages ORDER BY session_id").fetchall()
     assert rows == [("codex-session:batch-native", 1), ("codex-session:other-native", 0)]
+
+
+def test_camelcase_hook_payload_sets_has_paste(tmp_path: Path) -> None:
+    """bd polylogue-cp806: the camelCase payload generation carries the same
+    paste ground truth as the snake_case one.
+
+    Anti-vacuity: keyed on ``session_id`` alone, the enrichment resolves no
+    session for this record and updates nothing.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    _seed_paste_candidate(index_db, "camel-native", hook_time_ms)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "claude-code-camel-native.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "UserPromptSubmit",
+                "payload": {
+                    "sessionId": "camel-native",
+                    "promptId": "p-1",
+                    "permissionMode": "auto",
+                    "hookEventName": "UserPromptSubmit",
+                    "timestamp": "2026-05-07T12:00:00Z",
+                    "prompt": "Inspect [Pasted text #1]",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    updated = hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db")
+
+    assert updated == 1
+    with sqlite3.connect(index_db) as conn:
+        assert conn.execute(
+            "SELECT has_paste, paste_boundary FROM messages WHERE session_id = 'codex-session:camel-native'"
+        ).fetchone() == (1, "hash_only")
+
+
+def test_an_unkeyable_paste_record_is_reported_not_dropped_silently(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """bd polylogue-cp806: paste evidence the readers cannot key is a signal.
+
+    A key-name mismatch reads exactly like a field that was never sent, which
+    is how this class survives to the archive silently. The pass still skips
+    the record -- it cannot key it -- but names which reader keys resolved, so
+    an undescribed generation is distinguishable from an absent field.
+
+    Anti-vacuity: the camelCase record in the test above takes this branch
+    when ``session_id`` is read under one spelling only.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
+    _seed_paste_candidate(index_db, "unknown-native", hook_time_ms)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    # The record has to reach the enrichment loop to be reported, so its paste
+    # marker sits in a field the detector reads while its session key does not.
+    (hooks_dir / "claude-code-unknown-native.jsonl").write_text(
+        json.dumps(
+            {
+                "event_type": "UserPromptSubmit",
+                "payload": {"session.id": "unknown-native", "prompt": "Inspect [Pasted text #1]"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="polylogue.sources.live.hook_paste_enrichment"):
+        updated = hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db")
+
+    assert updated == 0
+    message = next(record.getMessage() for record in caplog.records if "no readable session key" in record.getMessage())
+    assert "reader keys matched=['prompt']" in message
+    assert "payload keys=['prompt', 'session.id']" in message

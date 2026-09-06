@@ -16,6 +16,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from polylogue.core.hook_payload import payload_key_spellings
+
 # Messages longer than this are very likely dominated by pasted content.
 _PASTE_LENGTH_THRESHOLD = 4000
 
@@ -52,9 +54,12 @@ _PASTE_MARKER_PATTERN = re.compile(
 _BASE64_RUN_PATTERN = re.compile(r"[A-Za-z0-9+/=]{512,}")
 _BASE64_STRUCTURAL_CHARS = re.compile(r"[+/=0-9]")
 
-# Hook event payload field names that may carry user-visible text. Both
-# Claude Code and Codex use the same field names for these.
-_HOOK_PASTE_TEXT_FIELDS = ("prompt", "text", "content", "message", "tool_output", "tool_input")
+# Canonical hook-payload field names that may carry user-visible text.
+# ``tool_response`` is Claude Code's own name for a PostToolUse output;
+# ``tool_output`` is Codex's. Each is resolved through
+# ``core.hook_payload.payload_key_spellings``, so both the snake_case and the
+# camelCase generation of a payload are read the same way.
+_HOOK_PASTE_TEXT_FIELDS = ("prompt", "text", "content", "message", "tool_output", "tool_response", "tool_input")
 
 
 def _code_fence_ratio(text: str) -> float:
@@ -155,8 +160,9 @@ def _flatten_payload_text(value: Any) -> list[str]:
     if isinstance(value, dict):
         out: list[str] = []
         for field in _HOOK_PASTE_TEXT_FIELDS:
-            if field in value:
-                out.extend(_flatten_payload_text(value[field]))
+            for spelling in payload_key_spellings(field):
+                if spelling in value:
+                    out.extend(_flatten_payload_text(value[spelling]))
         return out
     if isinstance(value, list):
         out = []
@@ -164,6 +170,11 @@ def _flatten_payload_text(value: Any) -> list[str]:
             out.extend(_flatten_payload_text(item))
         return out
     return []
+
+
+def _carries_event_type(record: dict[str, Any]) -> bool:
+    """Whether a mapping is a hook envelope, in either payload generation."""
+    return "event_type" in record or "eventType" in record
 
 
 def has_paste_indicator(hook_payload: Any) -> bool:
@@ -178,7 +189,7 @@ def has_paste_indicator(hook_payload: Any) -> bool:
     """
     if hook_payload is None:
         return False
-    if isinstance(hook_payload, dict) and "payload" in hook_payload and "event_type" in hook_payload:
+    if isinstance(hook_payload, dict) and "payload" in hook_payload and _carries_event_type(hook_payload):
         # Wrapped hook record; unwrap to inner payload.
         hook_payload = hook_payload["payload"]
     return any(detect_paste(text) == 1 for text in _flatten_payload_text(hook_payload))

@@ -1033,3 +1033,45 @@ def test_hermes_hook_payload_allows_short_evidence_fields(tmp_path: Path) -> Non
         root=spool_root,
     )
     assert drain_hook_event_spool(archive_root, root=spool_root).acknowledged == 1
+
+
+def test_drain_accepts_a_camelcase_envelope_and_keeps_its_payload_verbatim(tmp_path: Path) -> None:
+    """bd polylogue-cp806: the camelCase generation is a spelling, not a malformation.
+
+    The stored envelope is canonical snake_case whichever generation arrived,
+    while the payload is retained exactly as the harness sent it -- it is the
+    durable evidence, and normalizing it would destroy the record of which
+    generation was emitted.
+
+    Anti-vacuity: an envelope reader keyed on ``event_id``/``event_type``/
+    ``session_id`` alone rejects this file as malformed and drains nothing.
+    """
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    pending = pending_hook_spool_dir(spool_root) / "2026-07-12"
+    pending.mkdir(parents=True)
+    (pending / "camel-event.json").write_text(
+        json.dumps(
+            {
+                "eventId": "camel-event",
+                "eventType": "PostToolUse",
+                "sessionId": "session-camel",
+                "timestamp": "2026-07-12T10:00:00Z",
+                "provider": "claude-code",
+                "payload": {"toolName": "Bash", "toolUseId": "toolu_1", "toolResultTruncated": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = drain_hook_event_spool(archive_root, root=spool_root)
+
+    assert result.acknowledged == 1
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        row = conn.execute("SELECT event_type, session_native_id, payload_json FROM raw_hook_events").fetchone()
+    assert row[0] == "PostToolUse"
+    assert row[1] == "session-camel"
+    stored = json.loads(row[2])
+    assert stored["event_id"] == "camel-event"
+    assert stored["payload"] == {"toolName": "Bash", "toolUseId": "toolu_1", "toolResultTruncated": True}
