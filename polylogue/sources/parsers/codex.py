@@ -752,6 +752,45 @@ _CODEX_KNOWN_RESPONSE_ITEM_TYPES: frozenset[str] = _CODEX_PRIOR_AUDITED_RESPONSE
 _CODEX_UNCLASSIFIED_RESPONSE_ITEM_TYPE = "codex_unclassified_response_item"
 
 
+# A session-level instruction text that changes mid-session. `user_instructions`
+# and `developer_instructions` are re-declared on every ``turn_context``, so the
+# first value fills the session's own slot (``instructions_text`` /
+# ``codex_agent_identity``) and only a value distinct from every one seen before
+# lands here. The payload key is ``instructions`` rather than ``text``, which the
+# writer would also copy into the event's ``summary`` column.
+_CODEX_INSTRUCTIONS_CHANGED_EVENT_TYPE = "codex_instructions_changed"
+
+
+def _codex_instructions_changed_event(
+    *,
+    kind: str,
+    instructions: str,
+    revision: int,
+    timestamp: str | None,
+    source_index: int,
+    effective_from_message_position: int,
+) -> ParsedSessionEvent:
+    """One newly observed distinct value of a session-level instruction text.
+
+    ``effective_from_message_position`` is the next message's position, so the
+    writer resolves ``boundary_message_id`` to the first message the new
+    instructions applied to -- and applies the lineage position offset a raw
+    position carried in the payload would not get. It stays NULL when no
+    message follows the change.
+    """
+    return ParsedSessionEvent(
+        event_type=_CODEX_INSTRUCTIONS_CHANGED_EVENT_TYPE,
+        timestamp=timestamp,
+        payload={
+            "source_index": source_index,
+            "instructions_kind": kind,
+            "instructions": instructions,
+            "revision": revision,
+        },
+        boundary_message_position=effective_from_message_position,
+    )
+
+
 def _codex_response_item_event_type(inner_type: str | None, record_type: str | None) -> str:
     """Classify a response_item/event_msg inner ``type`` for ``session_events``.
 
@@ -2483,6 +2522,12 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     session_agent_nickname: str | None = None
     session_model_provider: str | None = None
     session_developer_instructions: str | None = None
+    # Every distinct instruction text seen on a ``turn_context`` after the one
+    # that filled the session's own slot. Conserving these is what keeps a
+    # session whose system prompt was edited mid-run from storing only the
+    # prompt it started with.
+    changed_user_instructions: list[str] = []
+    changed_developer_instructions: list[str] = []
     admission = AdmissionLedger()
 
     for idx, item in enumerate(records, start=1):
@@ -2652,19 +2697,52 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     tc_payload["final_output_json_schema"] = dict(final_output_schema)
                 # `user_instructions` is the session-level system prompt
                 # (CLAUDE.md/AGENTS.md-style content), re-declared on every
-                # turn in this record generation. Fold it into the same
-                # dedup slot the legacy per-session `instructions` field
-                # uses instead of duplicating the full text per turn.
-                if not session_instructions:
-                    session_instructions = _string_value(normalized_turn_context.get("user_instructions"))
+                # turn in this record generation. The first value fills the
+                # same slot the legacy per-session `instructions` field uses,
+                # so an unchanged prompt is stored once rather than per turn;
+                # a value distinct from every one already seen is a real edit
+                # and becomes its own event.
+                user_instructions = _string_value(normalized_turn_context.get("user_instructions"))
+                if user_instructions:
+                    if not session_instructions:
+                        session_instructions = user_instructions
+                    elif user_instructions != session_instructions and (
+                        user_instructions not in changed_user_instructions
+                    ):
+                        changed_user_instructions.append(user_instructions)
+                        session_events.append(
+                            _codex_instructions_changed_event(
+                                kind="user_instructions",
+                                instructions=user_instructions,
+                                revision=len(changed_user_instructions) + 1,
+                                timestamp=timestamp,
+                                source_index=idx,
+                                effective_from_message_position=message_position,
+                            )
+                        )
                 # `developer_instructions` is a distinct, usually
                 # subagent-role-specific prompt (e.g. "You are an awaiter.").
-                # Captured once per session via the same one-time identity
-                # event as agent_role/agent_nickname below.
-                if not session_developer_instructions:
-                    session_developer_instructions = _string_value(
-                        normalized_turn_context.get("developer_instructions")
-                    )
+                # Its first value rides the one-time identity event alongside
+                # agent_role/agent_nickname below; later distinct values are
+                # conserved the same way as the user prompt.
+                developer_instructions = _string_value(normalized_turn_context.get("developer_instructions"))
+                if developer_instructions:
+                    if not session_developer_instructions:
+                        session_developer_instructions = developer_instructions
+                    elif developer_instructions != session_developer_instructions and (
+                        developer_instructions not in changed_developer_instructions
+                    ):
+                        changed_developer_instructions.append(developer_instructions)
+                        session_events.append(
+                            _codex_instructions_changed_event(
+                                kind="developer_instructions",
+                                instructions=developer_instructions,
+                                revision=len(changed_developer_instructions) + 1,
+                                timestamp=timestamp,
+                                source_index=idx,
+                                effective_from_message_position=message_position,
+                            )
+                        )
             session_events.append(
                 ParsedSessionEvent(
                     event_type="turn_context",
