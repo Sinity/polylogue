@@ -2487,3 +2487,337 @@ def test_non_patch_tool_arguments_are_left_alone() -> None:
 
     assert "path" not in tool_input
     assert tool_input["arguments"] == "*** Update File: not-a-patch.txt"
+
+
+# =============================================================================
+# Re-embedded context conservation (replacement_history, task_complete)
+# =============================================================================
+
+
+def _replacement_contexts(session: ParsedSession) -> list[dict[str, Any]]:
+    return [dict(event.payload) for event in session.session_events if event.event_type == "codex_replacement_context"]
+
+
+def _re_embedded_source_texts(payload: list[dict[str, Any]]) -> list[str]:
+    """Every text value the raw records re-embed rather than emit live."""
+    texts: list[str] = []
+    for record in payload:
+        inner = record.get("payload") if isinstance(record.get("payload"), dict) else record
+        assert isinstance(inner, dict)
+        if record.get("type") == "compacted":
+            for entry in inner.get("replacement_history") or []:
+                for item in entry.get("content") or []:
+                    if isinstance(item.get("text"), str) and item["text"]:
+                        texts.append(item["text"])
+        if inner.get("type") == "task_complete" and isinstance(inner.get("last_agent_message"), str):
+            texts.append(inner["last_agent_message"])
+    return texts
+
+
+def _retained_texts(session: ParsedSession) -> set[str]:
+    """Every text value the parsed session holds, by any route."""
+
+    def walk(value: object, sink: set[str]) -> None:
+        if isinstance(value, str):
+            if value:
+                sink.add(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item, sink)
+        elif isinstance(value, list | tuple):
+            for item in value:
+                walk(item, sink)
+
+    out: set[str] = set()
+    if session.instructions_text:
+        out.add(session.instructions_text)
+    for message in session.messages:
+        if message.text:
+            out.add(message.text)
+        for block in message.blocks:
+            if block.text:
+                out.add(block.text)
+            if block.tool_input:
+                walk(dict(block.tool_input), out)
+    for event in session.session_events:
+        walk(event.payload, out)
+    return out
+
+
+def _live_user_turn(text: str, timestamp: str) -> dict[str, Any]:
+    return {
+        "type": "message",
+        "role": "user",
+        "timestamp": timestamp,
+        "content": [{"type": "input_text", "text": text}],
+    }
+
+
+def _history_entry(text: str, *, role: str = "user", phase: str | None = None) -> dict[str, Any]:
+    entry: dict[str, Any] = {"type": "message", "role": role, "content": [{"type": "input_text", "text": text}]}
+    if phase is not None:
+        entry["phase"] = phase
+    return entry
+
+
+def _compaction(*entries: dict[str, Any], message: str = "", timestamp: str = "2026-01-01T00:10:00Z") -> dict[str, Any]:
+    return {
+        "type": "compacted",
+        "timestamp": timestamp,
+        "payload": {"message": message, "replacement_history": list(entries)},
+    }
+
+
+ENVIRONMENT_CONTEXT = "<environment_context>\n  <cwd>/realm/project/polylogue</cwd>\n</environment_context>"
+
+
+class TestReplacementHistoryConservation:
+    """`compacted.replacement_history` re-embeds pre-compaction records.
+
+    A value the session already holds must not be stored twice; a value it
+    holds nowhere else must survive. Anti-vacuity for the whole class:
+    dropping the residual entirely (the pre-polylogue-6ev92 behaviour, bounded
+    aggregates only) leaves no ``codex_replacement_context`` event and every
+    "stored once" assertion fails; storing the history verbatim instead makes
+    every suppression assertion fail.
+    """
+
+    def test_replacement_only_user_content_is_stored_once(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            _live_user_turn("what does the parser drop?", "2026-01-01T00:00:01Z"),
+            _compaction(
+                _history_entry("what does the parser drop?"),
+                _history_entry(ENVIRONMENT_CONTEXT, phase="turn_construction"),
+                _history_entry(ENVIRONMENT_CONTEXT),
+                message="earlier turns summarized",
+            ),
+        ]
+        result = parse(payload, "fallback")
+
+        contexts = _replacement_contexts(result)
+        assert [item["content"] for item in contexts] == [ENVIRONMENT_CONTEXT]
+        assert contexts[0]["occurrences"] == 2
+        assert contexts[0]["context_kind"] == "replacement_history"
+        assert contexts[0]["role"] == "user"
+        assert contexts[0]["phase"] == "turn_construction"
+        assert contexts[0]["content_chars"] == len(ENVIRONMENT_CONTEXT)
+
+    def test_live_stream_duplicates_are_suppressed(self) -> None:
+        """The 97.8% the exclusion reason is built on must stay excluded."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            _live_user_turn("first turn", "2026-01-01T00:00:01Z"),
+            _live_user_turn("second turn", "2026-01-01T00:00:02Z"),
+            _compaction(_history_entry("first turn"), _history_entry("second turn")),
+        ]
+        result = parse(payload, "fallback")
+
+        assert _replacement_contexts(result) == []
+        compaction = next(event for event in result.session_events if event.event_type == "compaction")
+        assert compaction.payload["replacement_history_text_count"] == 2
+        assert "replacement_history_context_count" not in compaction.payload
+
+    def test_a_value_the_live_stream_reaches_only_later_is_suppressed(self) -> None:
+        """Resolution is deferred to the end of the parse.
+
+        Anti-vacuity: resolving at the compaction record instead -- against the
+        prefix parsed so far -- stores this value and the assertion fails.
+        """
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            _compaction(
+                _history_entry("a turn replayed before it is re-sent"),
+                _history_entry(ENVIRONMENT_CONTEXT),
+            ),
+            _live_user_turn("a turn replayed before it is re-sent", "2026-01-01T00:20:00Z"),
+        ]
+        result = parse(payload, "fallback")
+
+        # The residual in the same compaction is still stored, so a run that
+        # stores nothing cannot pass this by doing nothing.
+        assert [item["content"] for item in _replacement_contexts(result)] == [ENVIRONMENT_CONTEXT]
+
+    def test_ancestor_prefix_duplicates_are_suppressed(self) -> None:
+        """A fork replays its parent's prefix into its own file.
+
+        The replayed prefix is parsed as this session's own messages, so a
+        replacement_history value repeating it is already retained and must not
+        be stored a second time -- while the fork's own replacement-only
+        context still must be.
+        """
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child",
+                    "timestamp": "2026-01-01T01:00:00Z",
+                    "forked_from_id": "parent",
+                },
+            },
+            _live_user_turn("inherited parent turn", "2026-01-01T00:00:01Z"),
+            _live_user_turn("the fork's own turn", "2026-01-01T01:00:01Z"),
+            _compaction(
+                _history_entry("inherited parent turn"),
+                _history_entry("the fork's own turn"),
+                _history_entry(ENVIRONMENT_CONTEXT),
+            ),
+        ]
+        result = parse(payload, "fallback")
+
+        assert result.parent_session_provider_id == "parent"
+        assert [item["content"] for item in _replacement_contexts(result)] == [ENVIRONMENT_CONTEXT]
+
+    def test_context_events_follow_their_own_compaction_event(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            _compaction(_history_entry("first residual"), message="first", timestamp="2026-01-01T00:10:00Z"),
+            _live_user_turn("a turn between compactions", "2026-01-01T00:11:00Z"),
+            _compaction(_history_entry("second residual"), message="second", timestamp="2026-01-01T00:20:00Z"),
+        ]
+        result = parse(payload, "fallback")
+
+        ordered = [
+            (event.event_type, event.payload.get("summary") or event.payload.get("content"))
+            for event in result.session_events
+        ]
+        assert ordered == [
+            ("compaction", "first"),
+            ("codex_replacement_context", "first residual"),
+            ("compaction", "second"),
+            ("codex_replacement_context", "second residual"),
+        ]
+        for event in result.session_events:
+            if event.event_type == "compaction":
+                assert event.payload["replacement_history_context_count"] == 1
+
+    def test_one_value_repeated_across_compactions_is_stored_once(self) -> None:
+        """Successive compactions re-embed the same text; it is one value."""
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            _compaction(_history_entry(ENVIRONMENT_CONTEXT), timestamp="2026-01-01T00:10:00Z"),
+            _compaction(_history_entry(ENVIRONMENT_CONTEXT), timestamp="2026-01-01T00:20:00Z"),
+        ]
+        result = parse(payload, "fallback")
+
+        contexts = _replacement_contexts(result)
+        assert [item["content"] for item in contexts] == [ENVIRONMENT_CONTEXT]
+        assert contexts[0]["occurrences"] == 2
+
+    def test_replacement_only_content_survives_the_archive_write(self, workspace_env: Mapping[str, Path]) -> None:
+        """The production write route, not just the parse, must keep it."""
+        result = parse(
+            [
+                {"type": "session_meta", "payload": {"id": "s-residual", "timestamp": "2026-01-01T00:00:00Z"}},
+                _live_user_turn("a live turn", "2026-01-01T00:00:01Z"),
+                _compaction(
+                    _history_entry("a live turn"),
+                    _history_entry(ENVIRONMENT_CONTEXT, role="developer"),
+                    message="summarized",
+                ),
+            ],
+            "codex-replacement-residual",
+        )
+
+        with open_connection(db_setup(workspace_env)) as conn:
+            write_parsed_session_to_archive(conn, result, content_hash=session_content_hash(result))
+            rows = conn.execute(
+                "SELECT payload_json FROM session_events "
+                "WHERE event_type = 'codex_replacement_context' ORDER BY position"
+            ).fetchall()
+
+        payloads = [json.loads(row["payload_json"]) for row in rows]
+        assert [item["content"] for item in payloads] == [ENVIRONMENT_CONTEXT]
+        assert payloads[0]["role"] == "developer"
+
+
+class TestTaskCompleteLastAgentMessage:
+    """`task_complete.last_agent_message` repeats the turn's final reply.
+
+    Measured over 270 real rollout files, all 1,565 occurrences were already
+    stored from the same file's live stream. Anti-vacuity: storing the text
+    unconditionally fails the suppression test; dropping the field entirely --
+    the pre-polylogue-6ev92 behaviour -- fails the residual test.
+    """
+
+    def test_duplicate_of_the_live_reply_is_recorded_not_restored(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {
+                "type": "message",
+                "role": "assistant",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "content": [{"type": "output_text", "text": "the final reply"}],
+            },
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "the final reply"}},
+        ]
+        result = parse(payload, "fallback")
+
+        event = next(event for event in result.session_events if event.event_type == "task_complete")
+        assert event.payload["last_agent_message_retained"] is True
+        assert event.payload["last_agent_message_chars"] == len("the final reply")
+        assert "last_agent_message" not in event.payload
+
+    def test_a_reply_the_live_stream_never_carried_is_stored_once(self) -> None:
+        payload = [
+            {"type": "session_meta", "payload": {"id": "s1", "timestamp": "2026-01-01T00:00:00Z"}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "an unmirrored reply"}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "an unmirrored reply"}},
+        ]
+        result = parse(payload, "fallback")
+
+        events = [event for event in result.session_events if event.event_type == "task_complete"]
+        assert events[0].payload["last_agent_message"] == "an unmirrored reply"
+        assert "last_agent_message" not in events[1].payload
+        assert events[1].payload["last_agent_message_retained"] is True
+
+
+class TestReEmbeddedTextConservation:
+    """Source-to-parser conservation: no re-embedded value goes missing.
+
+    The same check the measurement ran over real rollouts, on a fixture that
+    composes every shape at once. Anti-vacuity: dropping either residual route
+    leaves its value unreachable and the assertion names it.
+    """
+
+    def test_every_re_embedded_value_is_reachable_from_the_parsed_session(self) -> None:
+        payload: list[dict[str, Any]] = [
+            {
+                "type": "session_meta",
+                "payload": {"id": "child", "timestamp": "2026-01-01T01:00:00Z", "forked_from_id": "parent"},
+            },
+            {"type": "turn_context", "payload": {"user_instructions": "First prompt."}},
+            _live_user_turn("inherited parent turn", "2026-01-01T00:00:01Z"),
+            _live_user_turn("the fork's own turn", "2026-01-01T01:00:01Z"),
+            {
+                "type": "message",
+                "role": "assistant",
+                "timestamp": "2026-01-01T01:00:02Z",
+                "content": [{"type": "output_text", "text": "the mirrored reply"}],
+            },
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "the mirrored reply"}},
+            {"type": "event_msg", "payload": {"type": "task_complete", "last_agent_message": "an unmirrored reply"}},
+            _compaction(
+                _history_entry("inherited parent turn"),
+                _history_entry("the fork's own turn"),
+                _history_entry(ENVIRONMENT_CONTEXT, phase="turn_construction"),
+                _history_entry("<skills_instructions>use the archive</skills_instructions>", role="developer"),
+                _history_entry("a user turn that only the history kept"),
+                message="summarized",
+            ),
+            {"type": "turn_context", "payload": {"user_instructions": "Second prompt."}},
+        ]
+        result = parse(payload, "fallback")
+
+        retained = _retained_texts(result)
+        missing = [text for text in _re_embedded_source_texts(payload) if text not in retained]
+        assert missing == []
+        assert {"First prompt.", "Second prompt."} <= retained | {result.instructions_text}
+        # Conserved, not duplicated: only the values with no other home.
+        assert sorted(item["content"] for item in _replacement_contexts(result)) == sorted(
+            [
+                ENVIRONMENT_CONTEXT,
+                "<skills_instructions>use the archive</skills_instructions>",
+                "a user turn that only the history kept",
+            ]
+        )
