@@ -1488,6 +1488,32 @@ def date_query_operators(field: str) -> tuple[str, ...]:
     return (*info.operators, info.range_keyword)
 
 
+def expression_registry_drift() -> tuple[str, ...]:
+    """Report DSL tokens whose declared ``spec_field`` no longer exists.
+
+    Completions, syntax help, and the parser's field vocabulary all read this
+    registry, while selection reads :class:`SessionQuerySpec`.  The
+    ``spec_field`` string is the only thing binding the two, so an unchecked
+    rename leaves a token that completes and parses but selects nothing.
+    """
+
+    import dataclasses
+
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    spec_fields = {field.name for field in dataclasses.fields(SessionQuerySpec)}
+    drift: list[str] = []
+    for token, info in sorted(EXPRESSION_FIELD_REGISTRY.items()):
+        declared = info.get("spec_field")
+        if not declared:
+            drift.append(f"{token}: no spec_field declared")
+            continue
+        for name in (part.strip() for part in declared.split("/")):
+            if name not in spec_fields:
+                drift.append(f"{token}: spec_field {name!r} is not a SessionQuerySpec field")
+    return tuple(drift)
+
+
 __all__ = [
     "COUNT_QUERY_FIELD_REGISTRY",
     "CountQueryFieldInfo",
@@ -1520,6 +1546,7 @@ __all__ = [
     "count_query_operators",
     "date_query_fields",
     "date_query_operators",
+    "expression_registry_drift",
     "numeric_query_fields",
     "numeric_query_operators",
     "projection_query_unit_descriptors",

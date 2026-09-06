@@ -402,13 +402,18 @@ def query_spec_has_filters(spec: SessionQuerySpec) -> bool:
 
 
 def _public_origin_values(field: str, value: object) -> tuple[str, ...]:
-    """Normalize explicit query origin filters against public OriginSpec tokens."""
+    """Normalize explicit query origin filters against public OriginSpec tokens.
+
+    Repeats are collapsed in first-seen order: a selection naming one origin
+    twice selects the same rows as naming it once, and the single-origin
+    reporting label read off this tuple must agree with that.
+    """
     valid = frozenset(public_origin_tokens())
     values = split_csv(value)
     for token in values:
         if token not in valid:
             raise QuerySpecError(field, token)
-    return tuple(token for token in values)
+    return tuple(dict.fromkeys(values))
 
 
 def build_query_spec_from_params(

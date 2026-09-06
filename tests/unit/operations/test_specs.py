@@ -66,6 +66,7 @@ def test_runtime_operation_catalog_covers_the_current_runtime_paths() -> None:
         "mutate-clear-corrections",
         "mutate-delete-session",
         "mutate-bulk-tag-sessions",
+        "mutate-bulk-set-metadata",
         "mutate-session-excision",
         "mutate-session-lifecycle-request",
         "mutate-identity-reset",

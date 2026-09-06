@@ -396,12 +396,24 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
             "Apply tags to multiple sessions in one transaction. Returns affected and skipped counts. "
             "Routed through OperationExecutor/BulkTagActuator (reversible class, role_only confirmation)."
         ),
-        surfaces=("mcp", "api"),
+        surfaces=("cli", "mcp", "api"),
         mutates_state=True,
         idempotent=True,
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+        allowed_surfaces=("api", "cli"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="bulk-tag-sessions",
+                target_kinds=("session",),
+                required_capabilities=("archive.bulk_tag_sessions",),
+                destructive_class="reversible",
+                required_confirmation="role_only",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-set-metadata",
@@ -416,6 +428,32 @@ RUNTIME_OPERATION_SPECS: tuple[OperationSpec, ...] = (
         effects=("DbRead", "DbWrite"),
         safety_guards=("write_role_required",),
         executor_status="executor-routed",
+    ),
+    OperationSpec(
+        name="mutate-bulk-set-metadata",
+        kind=OperationKind.MAINTENANCE,
+        description=(
+            "Set metadata keys on multiple sessions in one transaction. Returns affected and skipped counts. "
+            "Routed through OperationExecutor/BulkMetadataSetActuator (reversible class, role_only confirmation)."
+        ),
+        surfaces=("cli", "api"),
+        mutates_state=True,
+        idempotent=True,
+        effects=("DbRead", "DbWrite"),
+        safety_guards=("write_role_required",),
+        executor_status="executor-routed",
+        allowed_surfaces=("api", "cli"),
+        target_authority=(
+            TargetAuthorityPolicy(
+                key="bulk-set-metadata",
+                target_kinds=("session",),
+                required_capabilities=("archive.set_metadata",),
+                destructive_class="reversible",
+                required_confirmation="role_only",
+                allowed_durabilities=("durable",),
+                allowed_recovery=("none",),
+            ),
+        ),
     ),
     OperationSpec(
         name="mutate-delete-metadata",
