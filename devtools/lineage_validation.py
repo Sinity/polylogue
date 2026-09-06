@@ -573,17 +573,19 @@ def _lineage_integrity(conn: Connection) -> dict[str, Any]:
           AND branch_point_message_id IS NOT NULL
         """,
     )
+    supported_origins = sorted(SUPPORTED_PREFIX_ORIGINS)
     unsupported_prefix_sharing = _rows(
         conn,
-        """
+        f"""
         SELECT s.origin, COUNT(*) AS links
         FROM session_links l
         JOIN sessions s ON s.session_id = l.src_session_id
         WHERE l.inheritance = 'prefix-sharing'
         GROUP BY s.origin
-        HAVING s.origin NOT IN ('codex-session', 'claude-code-session')
+        HAVING s.origin NOT IN ({", ".join("?" for _ in supported_origins)})
         ORDER BY links DESC, s.origin
         """,
+        supported_origins,
     )
     dangling_samples = _rows(
         conn,
