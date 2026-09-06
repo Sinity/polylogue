@@ -18,16 +18,16 @@ from typing import Literal, TypeAlias, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource, ToolResultUnknownReason
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
 from .hermes_identity import qualified_session_id as _qualified_session_id
+from .hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
 from .local_agent import _content_blocks_from_content, _content_text, _tool_use_block
 
 HERMES_STATE_DB_MARKER = "hermes_state_db"
-_CONTENT_JSON_PREFIX = "\x00json:"
 _COMPACTION_END_REASONS = frozenset({"compression", "compaction"})
 _REQUIRED_SESSION_COLUMNS = frozenset(
     {
@@ -732,7 +732,7 @@ def _parse_message_row(
     role = Role.normalize(_optional_text(row["role"]) or "unknown")
     tool_call_id = _optional_text(_row_value(row, "tool_call_id"))
     if role is Role.TOOL and text:
-        is_error, exit_code = _tool_result_outcome(row["content"])
+        is_error, exit_code, outcome_reason = tool_result_outcome(row["content"])
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -741,9 +741,7 @@ def _parse_message_row(
                 text=text,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=(
-                    ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
-                ),
+                outcome_unknown_reason=outcome_reason,
             )
         )
     token_count = _non_negative_int(_row_value(row, "token_count")) or 0
@@ -917,36 +915,12 @@ def _reasoning_evidence_events(row: sqlite3.Row, message: ParsedMessage) -> list
 
 
 def _decode_content(value: object) -> object:
-    if isinstance(value, str) and value.startswith(_CONTENT_JSON_PREFIX):
+    if isinstance(value, str) and value.startswith(JSON_ENVELOPE_PREFIX):
         try:
-            return json.loads(value[len(_CONTENT_JSON_PREFIX) :])
+            return json.loads(value[len(JSON_ENVELOPE_PREFIX) :])
         except json.JSONDecodeError:
             return value
     return value
-
-
-def _tool_result_outcome(raw_content: object) -> tuple[bool | None, int | None]:
-    """Extract the structured outcome Hermes already embeds in its tool content.
-
-    Hermes stores tool results as a JSON envelope (``{"output": ...}``) with
-    one of ``exit_code`` (shell/command-style tools), ``success``
-    (boolean-style tools, paired with an ``error`` message when false), or a
-    bare ``error`` message (status-only tools) layered on top -- never all
-    three. Absence of every signal means the source tool genuinely reported
-    no outcome, which stays unknown rather than guessed from prose.
-    """
-    payload = _json_mapping(raw_content)
-    if not payload:
-        return None, None
-    raw_exit_code = payload.get("exit_code")
-    exit_code = raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
-    if payload.get("error") is not None:
-        return True, exit_code
-    if "success" in payload:
-        return not bool(payload["success"]), exit_code
-    if exit_code is not None:
-        return exit_code != 0, exit_code
-    return None, None
 
 
 def _json_mapping(value: object) -> dict[str, object]:

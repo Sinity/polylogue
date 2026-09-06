@@ -181,7 +181,12 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
                             tool_id="tool-2",
                             tool_input={"command": "pwd"},
                         ),
-                        ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-2", text="/realm/project/other"),
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_RESULT,
+                            outcome_unknown_reason="not_reported",
+                            tool_id="tool-2",
+                            text="/realm/project/other",
+                        ),
                     ],
                 )
             ],
@@ -206,6 +211,7 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
                         ),
                         ParsedContentBlock(
                             type=BlockType.TOOL_RESULT,
+                            outcome_unknown_reason="not_reported",
                             tool_id="tool-3",
                             text="/realm/project/polylogue",
                         ),

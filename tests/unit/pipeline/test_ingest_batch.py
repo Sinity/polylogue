@@ -1600,7 +1600,12 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_1", text=full_text),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="toolu_1",
+                        text=full_text,
+                    ),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_1")],
@@ -1659,7 +1664,12 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_a", text=full_text),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="toolu_a",
+                        text=full_text,
+                    ),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_a")],
@@ -1687,7 +1697,12 @@ def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: P
             block_tuples=[
                 (
                     "msg-1",
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="toolu_b", text=full_text),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="toolu_b",
+                        text=full_text,
+                    ),
                 )
             ],
             action_tuples=[_sidecar_matched_event("toolu_b")],

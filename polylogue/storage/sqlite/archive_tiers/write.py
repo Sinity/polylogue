@@ -2623,11 +2623,7 @@ _TOOL_VERDICT_COLUMNS = (
 
 def _expresses_tool_verdict(row: tuple[object, ...], b_idx: dict[str, int]) -> bool:
     """Report whether a row states a tool outcome at all."""
-    if row[b_idx["tool_outcome"]] is not None:
-        return True
-    # A row written before tool_outcome existed states its verdict only
-    # through the legacy pair.
-    return row[b_idx["tool_result_is_error"]] is not None or row[b_idx["tool_result_exit_code"]] is not None
+    return row[b_idx["tool_outcome"]] is not None
 
 
 def _apply_tool_verdict(

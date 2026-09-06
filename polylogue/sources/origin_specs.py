@@ -769,9 +769,12 @@ class OriginSpec:
     #: ``get_assembly_spec`` registry by :func:`validate_assembly_spec_parity`
     #: rather than replacing that registry with a second one.
     assembly_spec_path: str | None = None
-    #: Provider records for this origin may omit a terminal tool verdict. The
-    #: normalized result is then an explicit unknown, never an inferred one.
-    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None
+    #: The closed set of :class:`ToolResultUnknownReason` members this origin's
+    #: parsers can derive from its own record structures. It owns no producer
+    #: semantics -- a reason is always read off the record -- but it names who
+    #: owns each reason, so a reason no parser here can derive refuses the
+    #: write instead of entering the archive unattributed.
+    tool_outcome_unknown_reasons: frozenset[ToolResultUnknownReason] = frozenset()
     database_capability: DatabaseSourceCapability | None = None
 
     def parser_fingerprint(self) -> str:
@@ -1078,7 +1081,8 @@ def _claude_code_spec() -> OriginSpec:
             "measured against 200 recent subagent (agent-*.jsonl) transcripts, the field occurs on the "
             "DISPATCHING parent's own progress/agent_progress records, never on the child session's own "
             "records -- there is no child-side wire evidence to read. tool_result outcome_unknown_reason is "
-            "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, and DISTRUSTED for the "
+            "NOT_REPORTED when the Anthropic-protocol segment carries no is_error, UNSUPPORTED_CONSTRUCT when "
+            "it carries an is_error/exit_code the shared mapping cannot read, and DISTRUSTED for the "
             "background-task start acknowledgement's is_error=false (see _mark_background_task_start).",
             "polylogue-cgfy AC1: disposition of the 'other unread keys of substance' the bead's corpus "
             "enumeration named beyond the structuredPatch/file_edits cluster (already read, see the note "
@@ -1245,7 +1249,13 @@ def _claude_code_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_code.py:ClaudeCodeAssemblySpec",
         display_description="Claude Code local sessions (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(origin),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.DISTRUSTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+            }
+        ),
     )
     topology_capabilities = TopologyCapabilities(
         message_parent=TopologyCapability("carried", ("claude_code.parentUuid",)),
@@ -1337,6 +1347,9 @@ def _chatgpt_spec() -> OriginSpec:
         semantic_reparse="reparse when ChatGPT document parsing fingerprints change",
         display_description="ChatGPT web exports (lab: OpenAI)",
         topology_capabilities=_no_topology_capabilities(origin),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
     return replace(
         spec,
@@ -1390,7 +1403,7 @@ def _executable_spec(
     assembly_paths: tuple[str, ...] = (),
     fidelity_notes: tuple[str, ...] = (),
     assembly_spec_path: str | None = None,
-    tool_outcome_unknown_reason: ToolResultUnknownReason | None = None,
+    tool_outcome_unknown_reasons: frozenset[ToolResultUnknownReason] = frozenset(),
     artifact_rules: tuple[OriginArtifactRule, ...] = (),
     database_capability: DatabaseSourceCapability | None = None,
     frontier_kind: SourceFrontierKind = "exact-prefix",
@@ -1412,7 +1425,7 @@ def _executable_spec(
         fidelity_notes=fidelity_notes,
         semantic_reparse=f"reparse when {origin.value} parser fingerprints change",
         assembly_spec_path=assembly_spec_path,
-        tool_outcome_unknown_reason=tool_outcome_unknown_reason,
+        tool_outcome_unknown_reasons=tool_outcome_unknown_reasons,
         artifact_rules=artifact_rules,
         display_description=display_description,
         public_filter=public_filter,
@@ -1492,7 +1505,13 @@ def _codex_spec() -> OriginSpec:
             "constructor, not an additive per-event change.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CODEX_SESSION),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+                ToolResultUnknownReason.SOURCE_TRUNCATED,
+            }
+        ),
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
@@ -1548,6 +1567,9 @@ def _gemini_cli_spec() -> OriginSpec:
         # cohort has no byte revision chain to accept a head from.
         frontier_kind="whole-snapshot",
         topology_capabilities=_no_topology_capabilities(Origin.GEMINI_CLI_SESSION),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
         fidelity_notes=(
             "local_agent.py's _status_is_error guessed success-outcome set is "
             "registered as a DroppedValueVocabulary (polylogue-2qx) against "
@@ -1595,7 +1617,13 @@ def _hermes_spec() -> OriginSpec:
             "argument to the same function.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.HERMES_SESSION),
-        tool_outcome_unknown_reason=ToolResultUnknownReason.NOT_REPORTED,
+        tool_outcome_unknown_reasons=frozenset(
+            {
+                ToolResultUnknownReason.NOT_REPORTED,
+                ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT,
+                ToolResultUnknownReason.SOURCE_TRUNCATED,
+            }
+        ),
         database_capability=DatabaseSourceCapability(
             snapshot_method="sqlite_backup",
             consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
@@ -1724,6 +1752,9 @@ def _claude_ai_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_AI_EXPORT),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
     return replace(
         spec,
@@ -1776,6 +1807,9 @@ def _claude_design_spec() -> OriginSpec:
             "completeness maturity below.",
         ),
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_DESIGN_SESSION),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
 
 
@@ -1840,6 +1874,9 @@ def _aistudio_drive_spec() -> OriginSpec:
         semantic_reparse="reparse when Drive parser fingerprints change",
         assembly_spec_path="polylogue/sources/assembly_gemini.py:GeminiAssemblySpec",
         display_description="Google AI Studio / Drive exports (lab: Google)",
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
         topology_capabilities=TopologyCapabilities(
             message_parent=TopologyCapability(
                 "carried",
@@ -2489,10 +2526,10 @@ def origin_specs() -> tuple[OriginSpec, ...]:
     return ORIGIN_SPECS
 
 
-def tool_outcome_unknown_reason_for_origin(origin: Origin) -> ToolResultUnknownReason | None:
-    """Return the declared fallback for a provider-omitted tool verdict."""
+def tool_outcome_unknown_reasons_for_origin(origin: Origin) -> frozenset[ToolResultUnknownReason]:
+    """Return the unknown-outcome reasons this origin's parsers can derive."""
 
-    return _ORIGIN_SPECS_BY_ORIGIN[origin].tool_outcome_unknown_reason
+    return _ORIGIN_SPECS_BY_ORIGIN[origin].tool_outcome_unknown_reasons
 
 
 def topology_capability_census(
@@ -2648,7 +2685,7 @@ __all__ = [
     "DetectorBinding",
     "check_dropped_value_vocabularies",
     "origin_specs",
-    "tool_outcome_unknown_reason_for_origin",
+    "tool_outcome_unknown_reasons_for_origin",
     "database_capability_for_provider",
     "topology_capability_census",
     "public_origin_descriptions",

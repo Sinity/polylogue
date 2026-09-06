@@ -13348,7 +13348,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "e201533ea190fdf0f38a2c7eb8cbd3929e8e91bcb55c0af5b72685527d0c23ce",
+      "definition_sha256": "a03d93e87010b6efed8d8a717fd8f8e06f8e8698a8dfec73fc24d8bb0ff20ca1",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -39851,7 +39851,7 @@
   "schema_fingerprints": {
     "audit": "39a2cff1dfbc0d8721f8a29229e6104abbdfa37d6f432d822b412bc580f2b5e9",
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
-    "index": "760aac910a4892385617b9732664f4dd632171b5d1fcc161cafbf1005a951f2b",
+    "index": "f7048be24a303a16435b1a5a0cfe5026ac7cd64a64ec442960d8586709cfcc0b",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
     "source": "b6ea0b8cd6f926106f1de584f5a4c1b114ea6749d7375b256c6f91c85f4d7814",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"

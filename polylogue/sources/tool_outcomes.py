@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 
 from polylogue.core.enums import BlockType, Origin, ToolOutcome, ToolResultUnknownReason
-from polylogue.sources.origin_specs import tool_outcome_unknown_reason_for_origin
+from polylogue.sources.origin_specs import tool_outcome_unknown_reasons_for_origin
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSessionEvent
 
 
@@ -15,7 +15,9 @@ def derive_tool_outcomes(
 ) -> list[ParsedMessage]:
     """Resolve tool outcomes from each origin's structured parser evidence.
 
-    ``is_error`` and exit codes are parser-normalized evidence. Claude Code
+    ``is_error``, exit codes and ``outcome_unknown_reason`` are all
+    parser-normalized evidence; this function adds no meaning of its own and
+    never invents a reason an origin's parser did not derive. Claude Code
     additionally carries outcome fields in its record-level execution event.
     A result without any such evidence is a parser defect and refuses the
     write. A tool-use without a paired result is a recorded interruption and
@@ -59,8 +61,9 @@ def derive_tool_outcomes(
         for block in message.blocks:
             if block.type is not BlockType.TOOL_RESULT or not block.tool_id:
                 continue
-            unknown_reason = _tool_result_unknown_reason(block, origin=origin)
-            result_candidates = _result_candidates(block, sidecar, sidecar_exit_codes, unknown_reason=unknown_reason)
+            result_candidates = _result_candidates(
+                block, sidecar, sidecar_exit_codes, unknown_reason=block.outcome_unknown_reason
+            )
             distinct = set(result_candidates)
             if any(candidate is ToolOutcome.NO_RESULT for candidate in distinct) or len(distinct) > 1:
                 raise ValueError(
@@ -81,7 +84,8 @@ def derive_tool_outcomes(
         blocks: list[ParsedContentBlock] = []
         for block in message.blocks:
             if block.type is BlockType.TOOL_RESULT:
-                unknown_reason = _tool_result_unknown_reason(block, origin=origin)
+                unknown_reason = block.outcome_unknown_reason
+                _require_declared_reason(unknown_reason, origin=origin, tool_id=block.tool_id)
                 resolved_candidates = _result_candidates(
                     block, sidecar, sidecar_exit_codes, unknown_reason=unknown_reason
                 )
@@ -157,21 +161,19 @@ def _result_candidates(
     return candidates
 
 
-def _tool_result_unknown_reason(block: ParsedContentBlock, *, origin: Origin) -> str | None:
-    if block.outcome_unknown_reason is not None:
-        return block.outcome_unknown_reason
-    if (
-        origin is Origin.CHATGPT_EXPORT
-        and isinstance(block.metadata, Mapping)
-        and block.metadata.get("content_type")
-        in {
-            "execution_output",
-            "computer_output",
-            "citable_code_output",
-        }
-    ):
-        return ToolResultUnknownReason.NOT_REPORTED.value
-    if block.file_edit is not None:
-        return ToolResultUnknownReason.NOT_REPORTED.value
-    declared_reason = tool_outcome_unknown_reason_for_origin(origin)
-    return declared_reason.value if declared_reason is not None else None
+def _require_declared_reason(reason: str | None, *, origin: Origin, tool_id: str | None) -> None:
+    """Refuse a reason the origin's parsers are not declared to derive.
+
+    A reason with no owner is one nothing in this origin's record structures
+    can account for -- the shape this contract exists to keep out of the
+    archive. The refusal is per session and clears once the origin declares
+    the construct its parser now reads.
+    """
+    if reason is None:
+        return
+    declared = tool_outcome_unknown_reasons_for_origin(origin)
+    if ToolResultUnknownReason(reason) not in declared:
+        raise ValueError(
+            f"tool outcome derivation refused for origin {origin.value!r}: "
+            f"undeclared unknown reason {reason!r} for tool_id={tool_id!r}"
+        )

@@ -19,7 +19,7 @@ from polylogue.sources.parsers.claude.common import (
 
 
 def _tool_result(idx: int) -> ParsedContentBlock:
-    return ParsedContentBlock(type=BlockType.TOOL_RESULT, text=f"result {idx}")
+    return ParsedContentBlock(type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", text=f"result {idx}")
 
 
 def _text(text: str) -> ParsedContentBlock:

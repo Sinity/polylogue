@@ -847,6 +847,38 @@ User corrections live outside the content-hash boundary by construction
   `delete_correction` / `clear_corrections`) and
   `polylogue/storage/derived/feedback/` (async SQL helpers).
 
+## Tool Outcome Contract
+
+`blocks.tool_outcome` is the canonical structural outcome of a recorded tool
+invocation. The tuple law: a known `ok`/`error` carries no unknown reason, an
+`unknown` carries exactly one, and every other block shape carries neither.
+The `blocks` table CHECK enforces it, and `derive_tool_outcomes`
+(`polylogue/sources/tool_outcomes.py`) refuses a session that would break it.
+
+`ToolResultUnknownReason` is a closed partition of why a structural outcome is
+absent, derived from the record and never from result prose:
+
+| Reason | The record says |
+| --- | --- |
+| `not_reported` | The construct family carries outcome fields; this record carried none. |
+| `distrusted` | The provider reported a verdict the parser positively refuses (e.g. a background-task start acknowledgement). |
+| `unsupported_construct` | An outcome-bearing field is present with a value outside the mapping this origin declares. |
+| `source_truncated` | The source declared an outcome-bearing payload it did not retain intact. |
+
+Each parser derives its own reason at construction --
+`polylogue/sources/tool_result_reasons.py:unknown_reason` is the one mapping
+from (verdict, field present, source intact) to a member, so provider-wire
+decoding stays local while the vocabulary does not fork.
+`ParsedContentBlock` refuses a `tool_result` that carries neither a verdict nor
+a reason: a reason invented after the fact is indistinguishable from no reason
+at all. `OriginSpec.tool_outcome_unknown_reasons` names which origin owns each
+reason, and a reason outside its origin's declaration refuses the write.
+
+`devtools archive tool-outcome-census` classifies a whole archive by origin,
+construct, outcome and reason, and counts the four forbidden shapes:
+unknown-without-reason, known-with-reason, reason-without-owner, and a public
+`actions` projection that disagrees with the block.
+
 ## Text Handling Contracts
 
 Polylogue exposes several text-processing boundaries. Each declares one of
