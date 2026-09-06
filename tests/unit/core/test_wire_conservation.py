@@ -16,11 +16,12 @@ the only test here that fails when the production route stops measuring.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
+from dataclasses import replace
 
 import pytest
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.schemas.pinning import PinDecision, PinSet
 from polylogue.schemas.synthetic.conservation import (
     check_conservation,
@@ -32,6 +33,7 @@ from polylogue.schemas.synthetic.wire_formats import (
     CONSERVATION_BLOCKING_PROVIDERS,
     WireParserWitness,
 )
+from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from tests.infra.wire_support import shared_wire_support_receipt
 
 BODY_SCHEMA = {
@@ -52,24 +54,24 @@ BODY_SCHEMA = {
 }
 
 
-@dataclass
-class _Block:
-    text: str
+def _session(*texts: str, title: str | None = None) -> ParsedSession:
+    """One parsed session whose single message carries ``texts`` as blocks.
 
-
-@dataclass
-class _Message:
-    blocks: list[_Block] = field(default_factory=list)
-
-
-@dataclass
-class _Session:
-    messages: list[_Message] = field(default_factory=list)
-    title: str | None = None
-
-
-def _session(*texts: str) -> _Session:
-    return _Session(messages=[_Message(blocks=[_Block(text) for text in texts])])
+    The production type, not a stub: the check reads the same fields the
+    writer lowers, so a rename there must reach this test.
+    """
+    return ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="conservation-fixture",
+        title=title,
+        messages=[
+            ParsedMessage(
+                provider_message_id="conservation-fixture:0",
+                role=Role.ASSISTANT,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text) for text in texts],
+            )
+        ],
+    )
 
 
 def _payload(*texts: str) -> dict[str, object]:
@@ -98,6 +100,24 @@ def test_body_parsed_into_empty_block_is_loss() -> None:
 
     assert not result.conserved
     assert result.findings[0].verdict == "loss"
+
+
+TITLE_SCHEMA = {
+    "type": "object",
+    "properties": {"name": {"type": "string", "x-polylogue-semantic-role": "session_title"}},
+}
+
+
+def test_title_is_conserved_against_titles_not_blocks() -> None:
+    """A title reaching a block instead of the session title is still loss."""
+    payload: dict[str, object] = {"name": "The Session"}
+
+    conserved = check_conservation(TITLE_SCHEMA, [payload], [_session(title="The Session")])
+    assert conserved.conserved
+
+    misplaced = check_conservation(TITLE_SCHEMA, [payload], [_session("The Session")])
+    assert not misplaced.conserved
+    assert [(f.verdict, f.role) for f in misplaced.findings] == [("loss", "session_title")]
 
 
 def test_value_emitted_twice_is_duplication() -> None:
@@ -289,13 +309,20 @@ def test_receipt_payload_carries_the_findings_it_measured() -> None:
     """A finding no reader can see is not a report."""
     payload = shared_wire_support_receipt().to_dict()
 
-    reported = [
-        (entry["provider"], finding)
-        for entry in payload["entries"]
-        for witness in entry["parser_witnesses"]
-        if witness["conservation"] is not None
-        for finding in witness["conservation"]["findings"]
-    ]
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    reported: list[tuple[object, object]] = []
+    for entry in entries:
+        assert isinstance(entry, Mapping)
+        witnesses = entry["parser_witnesses"]
+        assert isinstance(witnesses, list)
+        for witness in witnesses:
+            assert isinstance(witness, Mapping)
+            conservation = witness["conservation"]
+            assert isinstance(conservation, Mapping)
+            findings = conservation["findings"]
+            assert isinstance(findings, list)
+            reported.extend((entry["provider"], finding) for finding in findings)
 
     assert reported, "receipt payload carries no conservation findings"
     assert all(isinstance(finding, str) and finding for _provider, finding in reported)
