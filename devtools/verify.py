@@ -14,7 +14,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
@@ -56,7 +56,12 @@ from devtools.verify_runs import (
     git_head,
     prune_successful_verify_runs,
 )
-from devtools.worker_memory import CORPUS_MAX_WORKERS
+from devtools.worker_memory import (
+    CONTROLLER_PEAK_MIB,
+    CORPUS_MAX_WORKERS,
+    MEMORY_HEADROOM_FRACTION,
+    WORKER_PEAK_MIB,
+)
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -147,13 +152,34 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
+#: The pytest pool's soft memory ceiling: ``agentctl-pytest.slice`` MemoryHigh,
+#: 6 GiB (MemoryMax 8 GiB, no swap). Above the soft ceiling the kernel does not
+#: kill the run, it throttles every allocation: a corpus run parked there
+#: crawls without reporting while it holds the host's one pytest slot, and the
+#: queue behind it never drains.
+PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 6 * 1024
+
+
+def pytest_worker_ceiling() -> int:
+    """The widest managed run that fits inside the pytest pool by construction.
+
+    Width follows the workload and the slice it is confined to -- the suite is
+    SQLite archive IO, and the slice's ceiling is fixed by the runtime -- never
+    host cores or the memory that happens to be free when the run starts.
+    """
+    budget = PYTEST_SLICE_MEMORY_HIGH_MIB * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
+    return max(1, min(CORPUS_MAX_WORKERS, int(budget // WORKER_PEAK_MIB)))
+
+
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     """xdist arguments for the corpus run.
 
     ``POLYLOGUE_PYTEST_WORKERS`` is an explicit override, ``0`` included (one
     process, no xdist). Unset means the corpus width, so a bare ``devtools
     verify`` and the CI runner (which exports nothing) run at the width the
-    corpus was sized for rather than on a single worker.
+    corpus was sized for rather than on a single worker. ``maximum`` is the
+    ceiling the run must fit whatever was asked for: a request wider than the
+    pool it runs in is reduced here rather than throttled there.
     """
     configured = os.environ.get("POLYLOGUE_PYTEST_WORKERS")
     if configured is None or not configured.strip() or cloud_sentinel_declined("POLYLOGUE_PYTEST_WORKERS", configured):
@@ -215,7 +241,7 @@ def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
+        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=pytest_worker_ceiling()))
     return steps
 
 
