@@ -1739,6 +1739,11 @@ def _code_mode_item_result(
         text=text,
         is_error=is_error,
         exit_code=exit_code,
+        unknown_reason=unknown_reason(
+            is_error=is_error,
+            exit_code=exit_code,
+            outcome_field_present="status" in item or "exit_code" in item,
+        ),
         paths=_dedupe_strings(paths),
         byte_count=byte_count,
         item_id=str(item_id) if isinstance(item_id, str) and item_id else None,
