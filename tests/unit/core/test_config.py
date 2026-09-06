@@ -359,6 +359,50 @@ class TestXDGPaths:
         assert db_path.name == "index.db"
         assert db_path.is_relative_to(tmp_path / "data" / "polylogue")
 
+    def test_relative_archive_root_env_is_refused(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """A relative archive root names a different directory per process cwd.
+
+        Anti-vacuity: without the guard ``archive_root()`` returns
+        ``Path("relative-archive")`` and every path derived from it -- the API
+        bearer token, the capture spool, the blob store -- is created inside
+        whatever directory the caller happened to start in.
+        """
+        import polylogue.paths
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "relative-archive")
+
+        with pytest.raises(ConfigError, match="archive root must be an absolute path"):
+            polylogue.paths.archive_root()
+        with pytest.raises(ConfigError, match="archive root must be an absolute path"):
+            polylogue.paths.api_auth_token_path()
+        assert not (tmp_path / "relative-archive").exists()
+
+    def test_relative_archive_root_in_config_file_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``[archive] root`` is not anchored to the process cwd either."""
+        from polylogue.config import resolve_archive_root
+
+        cfg_path = tmp_path / "polylogue.toml"
+        cfg_path.write_text('[archive]\nroot = "relative-archive"\n', encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cfg_path))
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+
+        with pytest.raises(ConfigError, match="archive root must be an absolute path"):
+            resolve_archive_root()
+
+    def test_home_relative_archive_root_still_expands(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """``~``-prefixed roots expand to an absolute path and stay accepted."""
+        import polylogue.paths
+
+        monkeypatch.setenv("HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "~/archive")
+
+        assert polylogue.paths.archive_root() == tmp_path / "home" / "archive"
+
 
 class TestConfiguredSources:
     def test_get_sources_skips_drive_source_without_cache_or_credentials(
