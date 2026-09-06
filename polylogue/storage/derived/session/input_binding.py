@@ -32,16 +32,54 @@ from collections.abc import Mapping, Sequence
 
 __all__ = [
     "SESSION_INPUT_PROJECTION_COLUMNS",
+    "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
     "SESSION_INPUT_RECIPE_VERSION",
     "session_input_bindings",
     "session_input_binding_sql",
+    "session_row_binding_sql",
 ]
 
 #: Bumped when the meaning of a session-scoped derivation changes without the
 #: projection changing. Every stored binding compares unequal afterwards, which
 #: is the whole invalidation mechanism: there is no separate freshness ledger.
 SESSION_INPUT_RECIPE_VERSION = "1"
+
+#: The exact session-row columns session-scoped aggregates read. The profile
+#: caches several of these directly (``source_sort_key``, ``source_updated_at``,
+#: ``canonical_session_date``, ``title``, ``source_name``, repository paths), so
+#: a binding over messages alone reports valid after a session-row change that
+#: moved the output -- which is the same defect one level up.
+SESSION_ROW_PROJECTION_COLUMNS: tuple[str, ...] = (
+    "origin",
+    "title",
+    "branch_type",
+    "session_kind",
+    "parent_session_id",
+    "root_session_id",
+    "git_branch",
+    "git_repository_url",
+    "provider_project_ref",
+    "reported_duration_ms",
+    "reported_cost_usd",
+    "message_count",
+    "word_count",
+    "tool_use_count",
+    "thinking_count",
+    "paste_count",
+    "user_message_count",
+    "authored_user_message_count",
+    "assistant_message_count",
+    "system_message_count",
+    "tool_message_count",
+    "user_word_count",
+    "authored_user_word_count",
+    "assistant_word_count",
+    "content_hash",
+    "created_at_ms",
+    "updated_at_ms",
+    "sort_key_ms",
+)
 
 #: The exact message columns session-scoped aggregates read. ``content_hash``
 #: carries the semantic payload (text, blocks, structure); the rest are values
@@ -69,6 +107,25 @@ SESSION_INPUT_PROJECTION_COLUMNS: tuple[str, ...] = (
 )
 
 _HASHED_BLOB_COLUMNS = frozenset({"content_hash"})
+
+
+def session_row_binding_sql(session_count: int) -> str:
+    """Session-row projection SQL for ``session_count`` sessions."""
+    if session_count < 1:
+        raise ValueError("session_row_binding_sql requires at least one session")
+    placeholders = ",".join("?" * session_count)
+    projected = ",\n    ".join(
+        f"lower(hex(s.{column}))" if column in _HASHED_BLOB_COLUMNS else f"s.{column}"
+        for column in SESSION_ROW_PROJECTION_COLUMNS
+    )
+    return f"""
+SELECT
+    s.session_id,
+    {projected}
+FROM sessions s
+WHERE s.session_id IN ({placeholders})
+ORDER BY s.session_id
+"""
 
 
 def session_input_binding_sql(session_count: int) -> str:
@@ -111,6 +168,7 @@ class SessionInputDigest:
         self._digests = {session_id: hashlib.blake2b(digest_size=16) for session_id in session_ids}
         for digest in self._digests.values():
             digest.update(SESSION_INPUT_RECIPE_VERSION.encode("utf-8"))
+            digest.update(b"\x00".join(column.encode("utf-8") for column in SESSION_ROW_PROJECTION_COLUMNS))
             digest.update(b"\x00".join(column.encode("utf-8") for column in SESSION_INPUT_PROJECTION_COLUMNS))
 
     def add_row(self, row: Sequence[object]) -> None:
@@ -140,10 +198,11 @@ def session_input_bindings(
     if not unique:
         return {}
     digest = SessionInputDigest(unique)
-    cursor = conn.execute(session_input_binding_sql(len(unique)), unique)
-    try:
-        for row in cursor:
-            digest.add_row(row)
-    finally:
-        cursor.close()
+    for sql in (session_row_binding_sql(len(unique)), session_input_binding_sql(len(unique))):
+        cursor = conn.execute(sql, unique)
+        try:
+            for row in cursor:
+                digest.add_row(row)
+        finally:
+            cursor.close()
     return digest.result()

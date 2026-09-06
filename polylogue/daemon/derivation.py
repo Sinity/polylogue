@@ -252,7 +252,6 @@ class DerivationRegistry:
         if domain in self._adapters:
             raise ValueError(f"derivation domain {domain!r} is already registered")
         self._adapters[domain] = adapter
-        self._resolve_order()
 
     def __contains__(self, domain: object) -> bool:
         return domain in self._adapters
@@ -267,14 +266,16 @@ class DerivationRegistry:
         return self._adapters[domain]
 
     def ordered(self) -> tuple[DerivationAdapter, ...]:
-        return tuple(self._adapters[domain] for domain in self._resolve_order())
+        return tuple(self._adapters[domain] for domain in self.validate())
 
-    def _resolve_order(self) -> tuple[str, ...]:
-        """Topological order over declared prerequisites; cycles are a bug.
+    def validate(self) -> tuple[str, ...]:
+        """Resolve the run order, refusing a graph that cannot run.
 
-        Validated on every registration so an unrunnable graph is a
-        construction error rather than a convergence pass that silently
-        starves one domain forever.
+        Validation is deferred to resolution rather than performed per
+        registration: a domain may legitimately be registered before the
+        prerequisite it declares, and refusing that would make registration
+        order load-bearing. An unrunnable graph is still a construction error,
+        not a convergence pass that silently starves one domain forever.
         """
         order: list[str] = []
         state: dict[str, int] = {}

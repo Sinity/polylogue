@@ -36,6 +36,7 @@ from polylogue.storage.derived.session.input_binding import (
     SessionInputDigest,
     session_input_binding_sql,
     session_input_bindings,
+    session_row_binding_sql,
 )
 from polylogue.storage.derived.session.latency_profiles import (
     build_latency_profile_facts,
@@ -1696,9 +1697,10 @@ async def _async_session_input_bindings(
     if not unique:
         return {}
     digest = SessionInputDigest(unique)
-    async with conn.execute(session_input_binding_sql(len(unique)), unique) as cursor:
-        async for row in cursor:
-            digest.add_row(row)
+    for sql in (session_row_binding_sql(len(unique)), session_input_binding_sql(len(unique))):
+        async with conn.execute(sql, unique) as cursor:
+            async for row in cursor:
+                digest.add_row(row)
     return digest.result()
 
 

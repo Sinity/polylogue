@@ -63,8 +63,20 @@ def archive(tmp_path: Path) -> Iterator[tuple[Path, str]]:
     yield index_db, builder.native_session_id()
 
 
+def _write_connection(index_db: Path) -> sqlite3.Connection:
+    """A write connection shaped like the one production hands the writer.
+
+    The session-insight writer indexes rows by column name, so a connection
+    without ``sqlite3.Row`` fails inside it. Production reaches it through the
+    cached connection factory, which sets one.
+    """
+    conn = open_connection(index_db)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _materialize(index_db: Path, session_id: str) -> bool:
-    with write_lease("test.publish"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
         binding = session_input_bindings(conn, (session_id,))[session_id]
         return publish_session_profile(conn, session_id, input_binding=binding)
 
@@ -76,7 +88,7 @@ def _status(index_db: Path, session_id: str) -> str:
 
 def _mutate(index_db: Path, session_id: str, column: str, expression: str) -> None:
     """Change one output-affecting value in place; touch nothing identifying."""
-    with write_lease("test.mutate"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
         before = conn.execute(
             "SELECT count(*), max(occurred_at_ms), max(position) FROM messages WHERE session_id = ?",
             (session_id,),
@@ -180,7 +192,7 @@ def test_publication_refuses_a_binding_that_moved_under_the_computation(
 
     _mutate(index_db, session_id, "role", "'assistant'")
 
-    with write_lease("test.publish"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.publish"), closing(_write_connection(index_db)) as conn:
         assert publish_session_profile(conn, session_id, input_binding=computed_at) is False
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
@@ -193,7 +205,7 @@ def test_a_profile_with_no_stored_binding_is_stale_not_valid(archive: tuple[Path
     """A row that cannot say what it was computed from cannot certify itself."""
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
         conn.execute("UPDATE session_profiles SET input_content_hash = NULL WHERE session_id = ?", (session_id,))
         conn.commit()
 
@@ -204,7 +216,7 @@ def test_an_orphaned_profile_is_reported_as_excess(archive: tuple[Path, str]) ->
     """Excess is discovered from the output relation, not from an invalidation."""
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -249,7 +261,7 @@ def test_publishing_an_excess_key_removes_the_orphan(archive: tuple[Path, str]) 
     """
     index_db, session_id = archive
     assert _materialize(index_db, session_id) is True
-    with write_lease("test.mutate"), closing(open_connection(index_db)) as conn:
+    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
         conn.commit()
@@ -281,7 +293,7 @@ def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
 
     adapter = SessionProfileDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
-        lambda: open_connection(index_db),
+        lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
     )
@@ -307,7 +319,7 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
     frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
     adapter = SessionProfileDerivation(
         lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
-        lambda: open_connection(index_db),
+        lambda: _write_connection(index_db),
         materializer_version=_MATERIALIZER_VERSION,
         session_scope=lambda _frame: [session_id],
         quiet_keys=lambda _frame: frozenset({session_id}),
@@ -317,3 +329,38 @@ def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path,
     assert report.done == 0
     assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.QUIET
     assert _status(index_db, session_id) == "missing"
+
+
+@pytest.mark.parametrize(
+    ("column", "expression"),
+    [
+        ("title", "'a different title'"),
+        ("sort_key_ms", "COALESCE(sort_key_ms, 0) + 5000"),
+        ("git_branch", "'other-branch'"),
+        ("message_count", "message_count + 1"),
+    ],
+)
+def test_a_session_row_value_change_makes_inspection_stale(
+    archive: tuple[Path, str],
+    column: str,
+    expression: str,
+) -> None:
+    """The profile caches session-row values too, so the binding must cover them.
+
+    Anti-vacuity: drop ``SESSION_ROW_PROJECTION_COLUMNS`` from the digest and a
+    changed sort key, title, or repository leaves the profile reporting valid
+    while ``source_sort_key`` and ``canonical_session_date`` are stale -- the
+    same defect one level up from the message projection.
+    """
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    assert _status(index_db, session_id) == "valid"
+
+    with write_lease("test.mutate"), closing(_write_connection(index_db)) as conn:
+        conn.execute(
+            f"UPDATE sessions SET {column} = {expression} WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.commit()
+
+    assert _status(index_db, session_id) == "stale"

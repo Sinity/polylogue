@@ -498,9 +498,14 @@ class DaemonConverger:
                         for path in batch_needs_work:
                             self._file_states[path].stages[stage_name] = StageState.IN_PROGRESS
 
+                        # The batch's own order, not set-iteration order: a set
+                        # of paths iterates by string hash, which is randomized
+                        # per process, so a stage would see its subjects in a
+                        # different order on every run.
+                        ordered_needs_work = tuple(path for path in active_paths if path in batch_needs_work)
                         t_stage = time.perf_counter()
                         try:
-                            execute_result = stage.execute_many(tuple(batch_needs_work))
+                            execute_result = stage.execute_many(ordered_needs_work)
                         except Exception as exc:
                             logger.warning("converger: batch execute failed stage=%s: %s", stage_name, exc)
                             for path in batch_needs_work:
@@ -514,7 +519,7 @@ class DaemonConverger:
                             remaining_needs_work: set[Path] | None = None
                             if not success and stage.false_means_pending:
                                 try:
-                                    remaining_needs_work = set(stage.check_many(tuple(batch_needs_work))).intersection(
+                                    remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
                                     )
                                 except Exception:
@@ -529,7 +534,7 @@ class DaemonConverger:
                                 elapsed,
                                 extra_stage_timings_s,
                             )
-                            for path in batch_needs_work:
+                            for path in ordered_needs_work:
                                 state = self._file_states[path]
                                 state.stage_times[stage_name] = elapsed
                                 state.last_stage_times[stage_name] = elapsed

@@ -261,20 +261,35 @@ def test_compute_never_runs_for_a_key_inspection_calls_valid() -> None:
     assert adapter.computed == []
 
 
-def test_a_prerequisite_cycle_is_a_construction_error() -> None:
-    """An unrunnable graph fails at registration, not by starving a domain."""
+def test_a_prerequisite_cycle_is_refused_rather_than_starving_a_domain() -> None:
+    """An unrunnable graph fails at resolution, not by silently skipping work."""
     first = RecordingDerivation("a", required=("k",), prerequisites=("b",))
     second = RecordingDerivation("b", required=("k",), prerequisites=("a",))
-    registry = DerivationRegistry()
-    registry.register(first)
+    registry = DerivationRegistry([first, second])
     with pytest.raises(ValueError, match="cycle"):
-        registry.register(second)
+        registry.validate()
 
 
-def test_an_undeclared_prerequisite_is_a_construction_error() -> None:
+def test_an_undeclared_prerequisite_is_refused() -> None:
     adapter = RecordingDerivation("a", required=("k",), prerequisites=("nope",))
     with pytest.raises(ValueError, match="not registered"):
-        DerivationRegistry([adapter])
+        DerivationRegistry([adapter]).validate()
+
+
+def test_registration_order_is_not_load_bearing() -> None:
+    """A domain may be registered before the prerequisite it declares.
+
+    Anti-vacuity: validate eagerly in ``register`` and this fails, because the
+    dependant is registered first -- which would make a composition root's
+    ordering a correctness concern rather than a listing.
+    """
+    downstream = RecordingDerivation("down", required=("x",), prerequisites=("up",))
+    upstream = RecordingDerivation("up", required=("a",))
+    registry = DerivationRegistry()
+    registry.register(downstream)
+    registry.register(upstream)
+
+    assert [adapter.domain for adapter in registry.ordered()] == ["up", "down"]
 
 
 def test_domains_converge_in_declared_prerequisite_order() -> None:
