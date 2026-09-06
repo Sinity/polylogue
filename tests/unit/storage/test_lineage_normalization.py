@@ -442,6 +442,118 @@ def test_child_before_parent_is_reextracted_on_resolution(tmp_path: Path) -> Non
     assert composed == ["hello", "hi there", "child diverges here", "child reply"]
 
 
+def test_prefix_sharing_tail_survives_timestamps_that_precede_its_branch_point(tmp_path: Path) -> None:
+    """Inheritance is positional content ancestry, never a timestamp bound.
+
+    Nineteen prefix-sharing children in the live index begin with a tail
+    message whose ``occurred_at_ms`` predates the parent branch point, and
+    their tails are internally non-monotonic: Claude auto-compaction replays
+    the original timestamps, and Hermes observer branches carry capture skew.
+    The edge, the stored tail, and the composed transcript must all follow
+    content position and ignore the wall clock.
+
+    Anti-vacuity: two mutations turn this red. Ordering composition by
+    ``occurred_at_ms`` (``position_order=False`` in
+    ``get_messages_with_lineage_completeness``) swaps the tail's two messages,
+    because the tail is deliberately recorded out of clock order. Adding any
+    timestamp lower bound against the branch point drops the tail entirely and
+    leaves a two-message transcript. The spawned-fresh control keeps the
+    negative case distinct: no shared prefix, so nothing may be suppressed.
+    """
+    db = tmp_path / "index.db"
+    conn = _connect(db)
+
+    parent = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="parent",
+        title="parent",
+        messages=[
+            _msg("p0", Role.USER, "hello", 0, timestamp="2026-01-01T00:00:00+00:00"),
+            _msg("p1", Role.ASSISTANT, "hi there", 1, timestamp="2026-01-01T00:05:00+00:00"),
+            _msg("p2", Role.USER, "parent continues alone", 2, timestamp="2026-01-01T00:09:00+00:00"),
+        ],
+    )
+    parent_id = write_parsed_session_to_archive(conn, parent)
+
+    # The child replays the parent's two leading messages, then diverges with a
+    # tail whose clock runs BEHIND the branch point (00:05) and backwards within
+    # itself (00:04 then 00:02).
+    child = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="child",
+        title="child",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("c0", Role.USER, "hello", 0, timestamp="2026-01-01T00:00:00+00:00"),
+            _msg("c1", Role.ASSISTANT, "hi there", 1, timestamp="2026-01-01T00:05:00+00:00"),
+            _msg("cx", Role.USER, "child diverges here", 2, timestamp="2026-01-01T00:04:00+00:00"),
+            _msg("cy", Role.ASSISTANT, "child reply", 3, timestamp="2026-01-01T00:02:00+00:00"),
+        ],
+    )
+    child_id = write_parsed_session_to_archive(conn, child)
+
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id, resolved_dst_session_id FROM session_links"
+        " WHERE src_session_id = ?",
+        (child_id,),
+    ).fetchall()
+    assert len(link) == 1
+    assert link[0]["inheritance"] == "prefix-sharing"
+    assert link[0]["resolved_dst_session_id"] == parent_id
+    assert link[0]["branch_point_message_id"] == archive_message_id(parent_id, "p1", position=1)
+
+    # Only the divergent tail is stored, in its own position order.
+    stored = conn.execute(
+        "SELECT position, occurred_at_ms FROM messages WHERE session_id = ? ORDER BY position", (child_id,)
+    ).fetchall()
+    assert [row["position"] for row in stored] == [2, 3]
+    assert stored[0]["occurred_at_ms"] > stored[1]["occurred_at_ms"], "tail must stay clock-inverted"
+    assert stored[0]["occurred_at_ms"] < 1_767_225_900_000, "tail must stay behind the 00:05 branch point"
+
+    # No inherited block is duplicated onto the child.
+    child_blocks = conn.execute(
+        "SELECT text FROM blocks WHERE session_id = ? ORDER BY message_id, position", (child_id,)
+    ).fetchall()
+    assert [row["text"] for row in child_blocks] == ["child diverges here", "child reply"]
+
+    # A spawned-fresh sibling shares no prefix, so it keeps every message and
+    # records the other inheritance mode. Its clock stays monotonic on purpose:
+    # a session with no lineage edge is read in sort-key order rather than
+    # position order, so inverting its clock here would assert
+    # polylogue-exwho's defect instead of this test's subject.
+    fresh = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="fresh",
+        title="fresh",
+        parent_session_provider_id="parent",
+        branch_type=BranchType.FORK,
+        messages=[
+            _msg("f0", Role.USER, "unrelated opening", 0, timestamp="2026-01-01T00:02:00+00:00"),
+            _msg("f1", Role.ASSISTANT, "unrelated reply", 1, timestamp="2026-01-01T00:04:00+00:00"),
+        ],
+    )
+    fresh_id = write_parsed_session_to_archive(conn, fresh)
+    fresh_link = conn.execute("SELECT inheritance FROM session_links WHERE src_session_id = ?", (fresh_id,)).fetchone()
+    assert fresh_link["inheritance"] == "spawned-fresh"
+    assert [
+        row[0]
+        for row in conn.execute(
+            "SELECT position FROM messages WHERE session_id = ? ORDER BY position", (fresh_id,)
+        ).fetchall()
+    ] == [0, 1]
+
+    conn.close()
+
+    assert asyncio.run(_read_texts(db, child_id)) == [
+        "hello",
+        "hi there",
+        "child diverges here",
+        "child reply",
+    ]
+    assert asyncio.run(_read_texts(db, fresh_id)) == ["unrelated opening", "unrelated reply"]
+
+
 def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Path) -> None:
     """Re-extraction drops the child's derived session products.
 
