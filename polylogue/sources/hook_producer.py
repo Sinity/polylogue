@@ -130,8 +130,9 @@ def reject_duplicated_transcript(payload: dict[str, object]) -> None:
     """Reject a hook payload that looks like it duplicates transcript content.
 
     Applies to every provider: hook events are evidence records, not a second
-    copy of the conversation the archive already retains in full through
-    session parsing.
+    copy of the conversation. The one thing the archive derives out of a hook
+    payload into ``blocks`` is a tool result whose own overflow sidecar is
+    unreachable -- see ``sources/live/hook_tool_response.py``.
     """
     for key in TRANSCRIPT_LIKE_KEYS:
         value = payload.get(key)
