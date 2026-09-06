@@ -36,7 +36,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.derived.session.runtime import session_profile_stale_predicate
+from polylogue.storage.derived.session.runtime import session_profile_candidates, session_profile_stale_predicate
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
@@ -1551,30 +1551,59 @@ def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) ->
     return current - stat.st_mtime < _HOT_INSIGHT_QUIET_SECONDS
 
 
-def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
-        return []
+def _identity_prefilter_stale_ids(
+    conn: sqlite3.Connection,
+    unique_ids: tuple[str, ...],
+    *,
+    sessions_alias: str,
+) -> list[str]:
+    """Identity-only staleness, for an archive predating the binding column.
+
+    Such an archive cannot store a value-complete binding, so this is the most
+    it can decide. Reporting every session stale instead would livelock the
+    derived stage; reporting none would hide real work.
+    """
     placeholders = ", ".join("?" for _ in unique_ids)
-    stale_predicate = session_profile_stale_predicate(
-        "c", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
-    )
+    predicate = session_profile_stale_predicate(sessions_alias, "sp")
     rows = conn.execute(
         f"""
-        SELECT c.session_id
-        FROM sessions AS c
-        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
-        WHERE c.session_id IN ({placeholders})
+        SELECT {sessions_alias}.session_id
+        FROM sessions AS {sessions_alias}
+        LEFT JOIN session_profiles AS sp ON sp.session_id = {sessions_alias}.session_id
+        WHERE {sessions_alias}.session_id IN ({placeholders})
           AND (
               sp.session_id IS NULL
               OR sp.materializer_version != ?
-              OR {stale_predicate}
+              OR {predicate}
           )
-        ORDER BY c.session_id
+        ORDER BY {sessions_alias}.session_id
         """,
         unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
     ).fetchall()
     return [str(row[0]) for row in rows]
+
+
+def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
+    """The batch's sessions whose profile is not valid.
+
+    Value-complete: it recomputes each session's input binding from the message
+    projection the profile reads. The identity-only SQL predicate this replaced
+    could not see a changed role, model, or token count, so a mutation that
+    changed the profile's output left it reporting fresh (polylogue-ylh7v).
+
+    Cost is bounded by the batch, which is what makes an authoritative check
+    affordable here; an archive-wide pass belongs at the quiescence boundary.
+    """
+    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
+    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
+        return []
+    if not _column_exists(conn, "session_profiles", "input_content_hash"):
+        return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="c")
+    return session_profile_candidates(
+        conn,
+        unique_ids,
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+    )
 
 
 # ── Archive file-set helpers ─────────────────────────────────────
@@ -2300,36 +2329,29 @@ def _archive_hot_insight_session_ids(
 
 
 def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
+    """The archive route's twin of :func:`_stale_session_profile_ids`.
+
+    Both reach the same value-complete inspection, so the two routes cannot
+    disagree about whether a profile is current.
+    """
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    placeholders = ", ".join("?" for _ in unique_ids)
-    stale_predicate = session_profile_stale_predicate(
-        "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
+    if not _column_exists(conn, "session_profiles", "input_content_hash"):
+        return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="s")
+    return session_profile_candidates(
+        conn,
+        unique_ids,
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
     )
-    rows = conn.execute(
-        f"""
-        SELECT s.session_id
-        FROM sessions AS s
-        LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
-        WHERE s.session_id IN ({placeholders})
-          AND (
-              sp.session_id IS NULL
-              OR sp.materializer_version != ?
-              OR {stale_predicate}
-          )
-        ORDER BY s.session_id
-        """,
-        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
-    ).fetchall()
-    return [str(row[0]) for row in rows]
 
 
 def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
     if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    # The row comparison is the ordinary derived freshness predicate shared by
-    # ingest, retry, and repair paths.
+    # An archive-wide identity prefilter: unbounded, so it narrows candidates
+    # rather than certifying them. The value-complete inspection that decides
+    # each candidate runs per batch in _stale_session_profile_ids.
     stale_predicate = session_profile_stale_predicate(
         "s", "sp", include_content_hash=_column_exists(conn, "session_profiles", "input_content_hash")
     )
