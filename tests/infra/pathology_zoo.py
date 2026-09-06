@@ -34,6 +34,7 @@ from polylogue.sources.hooks import drain_hook_event_spool, enqueue_hook_event
 from polylogue.sources.parsers.antigravity import AntigravitySessionSummary, markdown_export_payload
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from tests.infra.workload_artifacts import (
+    ArtifactResourceMeasurement,
     ImmutableTreeArtifact,
     build_immutable_tree,
     clone_immutable_tree,
@@ -743,7 +744,12 @@ def clone_pathology_zoo(zoo: PathologyZoo, destination: Path) -> PathologyZoo:
     fixture) -- both are legitimate origins for a clone, not just the
     canonical cache artifact.
     """
-    artifact = ImmutableTreeArtifact(root=zoo.archive_root, key=_pathology_cache_key(), files=())
+    artifact = ImmutableTreeArtifact(
+        root=zoo.archive_root,
+        key=_pathology_cache_key(),
+        files=(),
+        resources=ArtifactResourceMeasurement.unmeasured(),
+    )
     clone_immutable_tree(artifact, destination)
     return replace(zoo, archive_root=destination)
 

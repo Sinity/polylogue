@@ -30,6 +30,7 @@ from tests.infra.workload_artifacts import (
     NAMED_WORKLOAD_PROFILES,
     ArtifactGcDisposition,
     ArtifactGcReport,
+    ArtifactResourceMeasurement,
     BenchmarkWorkloadTier,
     CorpusArtifactManifest,
     ImmutableTreeArtifact,
@@ -40,6 +41,7 @@ from tests.infra.workload_artifacts import (
     _assert_lock_identity,
     _journal_mode_delete_with_retry,
     _manifest_file_entries,
+    _manifest_from_payload,
     _open_no_follow,
     _recover_obsolete_staging,
     _recover_stale_handoffs,
@@ -408,7 +410,12 @@ def test_clone_from_unpinned_source_authenticates_the_enumerated_file_set(
         key="unpinned-clone",
         builder=builder,
     )
-    unpinned = ImmutableTreeArtifact(root=published.root, key=published.key, files=())
+    unpinned = ImmutableTreeArtifact(
+        root=published.root,
+        key=published.key,
+        files=(),
+        resources=ArtifactResourceMeasurement.unmeasured(),
+    )
     clone = clone_immutable_tree(unpinned, tmp_path / "clone")
     assert (clone.root / "nested" / "payload").read_bytes() == b"payload"
 
@@ -2345,3 +2352,134 @@ def test_memoized_reuse_takes_no_filesystem_capability(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(artifacts, "_open_lock_domain", forbid_domain)
     assert build_seeded_archive(_SMALL_SPECS, cache_root=cache_root).root == published.root
+
+
+def test_artifact_manifest_records_its_own_construction_cost(tmp_path: Path) -> None:
+    """Every published artifact carries bytes, files, rows and build seconds."""
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    resources = artifact.manifest.resources
+
+    assert resources.file_count == len(artifact.manifest.files)
+    assert resources.total_bytes == sum(int(cast(int, entry["size"])) for entry in artifact.manifest.files)
+    assert resources.total_bytes > 0
+    assert resources.build_seconds > 0
+    assert set(resources.row_counts) == {"sessions", "messages", "blocks"}
+    assert all(count > 0 for count in resources.row_counts.values())
+
+    with sqlite3.connect(artifact.root / "index.db") as conn:
+        for table, recorded in resources.row_counts.items():
+            assert int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0]) == recorded
+
+
+def test_immutable_tree_artifact_records_its_construction_cost(tmp_path: Path) -> None:
+    """The generic fixture-tree route measures too, with no rows to count."""
+
+    def builder(root: Path) -> None:
+        (root / "payload").write_bytes(b"x" * 128)
+
+    artifact = build_immutable_tree(cache_root=tmp_path / "cache", key="measured-tree", builder=builder)
+
+    assert artifact.resources.total_bytes == 128
+    assert artifact.resources.file_count == 1
+    assert artifact.resources.row_counts == {}
+    assert ArtifactResourceMeasurement.unmeasured().total_bytes == 0
+
+
+def test_artifact_resources_are_authenticated_and_outside_artifact_identity(tmp_path: Path) -> None:
+    """Measurement binds to the manifest digest but never to the cache key.
+
+    Both directions matter: a rewritten measurement must not be readable as a
+    valid manifest, and a differing measurement must not fork the cache -- an
+    observation of a build is not an input to it.
+    """
+    import dataclasses
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    key = seeded_archive_key((c03_semantic_corpus_spec(),))
+
+    assert "build_seconds" not in json.dumps(dataclasses.asdict(key))
+    assert "row_counts" not in json.dumps(dataclasses.asdict(key))
+
+    payload = artifact.manifest.to_payload()
+    assert payload["resources"] == artifact.manifest.resources.to_payload()
+    tampered = json.loads(json.dumps(payload))
+    tampered["resources"]["total_bytes"] += 1
+    with pytest.raises(ValueError, match="identity mismatch"):
+        _manifest_from_payload(tampered)
+
+    missing = json.loads(json.dumps(payload))
+    del missing["resources"]
+    with pytest.raises(ValueError, match="malformed resources"):
+        _manifest_from_payload(missing)
+
+    assert build_seeded_archive(cache_root=tmp_path / "cache").manifest.key == key.value
+
+
+def test_artifact_resource_measurement_refuses_semantic_metadata() -> None:
+    """The anti-catalogue rule reaches the measurement, not only the receipt."""
+    with pytest.raises(ValueError, match="semantic metadata"):
+        ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={"expected_rows": 1})
+
+    with pytest.raises(ValueError, match="malformed"):
+        ArtifactResourceMeasurement(total_bytes=1, file_count=1, build_seconds=0.0, row_counts={"messages": -1})
+
+    with pytest.raises(ValueError, match="negative"):
+        ArtifactResourceMeasurement(total_bytes=-1, file_count=1, build_seconds=0.0, row_counts={})
+
+
+def test_benchmark_seeder_reports_the_manifest_measurement_without_recounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Substituting the recorded measurement changes what the seeder reports.
+
+    If the seeder reopened its clone to count rows, the planted numbers below
+    would be overwritten by the archive's real populations and this is red.
+    """
+    import dataclasses
+
+    from tests.infra import benchmark_archives
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    planted = dataclasses.replace(
+        artifact,
+        manifest=dataclasses.replace(
+            artifact.manifest,
+            resources=dataclasses.replace(
+                artifact.manifest.resources,
+                total_bytes=4242,
+                row_counts={"sessions": 7, "messages": 1_000, "blocks": 11},
+            ),
+        ),
+    )
+    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: planted)
+    monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
+
+    stats = benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)
+
+    assert stats == {"sessions": 7, "messages": 1_000, "content_blocks": 11, "bytes": 4242}
+
+
+def test_benchmark_seeder_refuses_a_tier_whose_measured_size_is_wrong(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tier that did not construct its declared message population is not usable."""
+    import dataclasses
+
+    from tests.infra import benchmark_archives
+
+    artifact = build_seeded_archive(cache_root=tmp_path / "cache")
+    undersized = dataclasses.replace(
+        artifact,
+        manifest=dataclasses.replace(
+            artifact.manifest,
+            resources=dataclasses.replace(
+                artifact.manifest.resources,
+                row_counts={"sessions": 7, "messages": 999, "blocks": 11},
+            ),
+        ),
+    )
+    monkeypatch.setattr(benchmark_archives, "build_benchmark_archive", lambda *_a, **_k: undersized)
+    monkeypatch.setattr(benchmark_archives, "clone_seeded_archive", lambda *_a, **_k: None)
+
+    with pytest.raises(RuntimeError, match="produced 999 messages, expected 1000"):
+        benchmark_archives.seed_benchmark_archive(tmp_path / "bench" / "benchmark.db", 1_000)

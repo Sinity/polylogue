@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from tests.benchmarks.conftest import _seed_realistic_db
 from tests.benchmarks.helpers import BenchmarkFixture
+from tests.infra.benchmark_archives import seed_benchmark_archive
 
 pytestmark = pytest.mark.uses_real_clock(
     "polylogue-20d.1 daemon UDS benchmark fixture polls a real background-thread HTTP server's readiness with a bounded wall-clock deadline; frozen_clock cannot substitute for waiting on real socket/thread startup."
@@ -37,7 +37,7 @@ def bench_daemon_uds_archive_root(tmp_path_factory: pytest.TempPathFactory) -> P
     """
     archive_root = tmp_path_factory.mktemp("bench-daemon-uds") / "archive"
     archive_root.mkdir()
-    stats = _seed_realistic_db(archive_root / "index.db", target_messages=1000)
+    stats = seed_benchmark_archive(archive_root / "index.db", target_messages=1000)
     print(f"\nbench_daemon_uds_archive_root: {stats}")
     return archive_root
 

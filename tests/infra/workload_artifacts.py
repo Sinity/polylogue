@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from itertools import chain
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import patch
 
 from polylogue.config import Config, Source
@@ -61,9 +61,10 @@ from tests.infra.source_builders import SyntheticAntigravityLanguageServerClient
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-# v3 includes the explicit disposition of unreferenced publication bytes
-# before a seeded archive is sealed.
-_ARTIFACT_PROTOCOL_VERSION = 3
+# Part of the artifact key, so a change to the manifest's shape or to what
+# sealing guarantees gives published artifacts a distinct identity instead of
+# leaving two code versions to overwrite each other's tree at one key.
+_ARTIFACT_PROTOCOL_VERSION = 4
 _SEEDED_KEY = re.compile(r"seeded-archive:sha256:([0-9a-f]{64})\Z")
 #: Bounded rebuild attempts when a same-process SQLite lock (SQLITE_LOCKED,
 #: not SQLITE_BUSY) aborts an artifact build. See the retry site below.
@@ -172,6 +173,47 @@ class SeededArchiveKey:
 
 
 @dataclass(frozen=True)
+class ArtifactResourceMeasurement:
+    """What constructing and storing one artifact cost.
+
+    An observation of the tree that was published, never a statement about
+    what it ought to contain. Artifact identity does not include it, so two
+    builds of one profile differ here and still share a cache key; the
+    manifest digest does include it, so a recorded measurement cannot be
+    edited under a consumer.
+    """
+
+    total_bytes: int
+    file_count: int
+    build_seconds: float
+    row_counts: dict[str, int]
+
+    def __post_init__(self) -> None:
+        _reject_semantic_metadata(self.row_counts, location="artifact resource measurement")
+        if self.total_bytes < 0 or self.file_count < 0 or self.build_seconds < 0:
+            raise ValueError("artifact resource measurement cannot be negative")
+        for table, count in self.row_counts.items():
+            # Deserialized manifests reach this constructor untyped, so the
+            # annotation is a claim about callers, not about the JSON.
+            measured: object = count
+            if not isinstance(measured, int) or isinstance(measured, bool) or measured < 0:
+                raise ValueError(f"artifact row measurement is malformed: {table!r}")
+
+    def to_payload(self) -> dict[str, object]:
+        return asdict(self)
+
+    @classmethod
+    def unmeasured(cls) -> ArtifactResourceMeasurement:
+        """A handle over an already-published tree, carrying no observation.
+
+        Cloning needs the tree's location and key, not its construction cost;
+        a caller that never built anything must say so rather than report a
+        borrowed number.
+        """
+        return cls(total_bytes=0, file_count=0, build_seconds=0.0, row_counts={})
+
+
+@dataclass(frozen=True)
 class CorpusArtifactManifest:
     """Authenticated publication record for a deterministic corpus artifact.
 
@@ -191,10 +233,12 @@ class CorpusArtifactManifest:
     facts: tuple[SyntheticArtifactFacts, ...]
     files: tuple[dict[str, object], ...]
     receipt: dict[str, object]
+    resources: ArtifactResourceMeasurement
 
     def __post_init__(self) -> None:
         _reject_semantic_metadata(self.receipt, location="corpus artifact manifest receipt")
         _reject_semantic_metadata(self.files, location="corpus artifact manifest files")
+        _reject_semantic_metadata(self.resources.to_payload(), location="corpus artifact manifest resources")
 
     @property
     def manifest_id(self) -> str:
@@ -396,10 +440,14 @@ class ImmutableTreeArtifact:
     root: Path
     key: str
     files: tuple[dict[str, object], ...]
+    resources: ArtifactResourceMeasurement
 
     @property
     def manifest_id(self) -> str:
-        payload = json.dumps({"key": self.key, "files": self.files}, sort_keys=True).encode()
+        payload = json.dumps(
+            {"key": self.key, "files": self.files, "resources": self.resources.to_payload()},
+            sort_keys=True,
+        ).encode()
         return f"immutable-tree:sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
@@ -431,6 +479,7 @@ def build_immutable_tree(
             if payload.get("protocol_version") != _ARTIFACT_PROTOCOL_VERSION or payload.get("key") != key:
                 return None
             files = _manifest_file_entries(tuple(payload["files"]))
+            resources = ArtifactResourceMeasurement(**payload["resources"])
             expected_paths = {path for path, _, _ in files}
             actual_paths = {
                 str(path.relative_to(final_root))
@@ -451,6 +500,7 @@ def build_immutable_tree(
                 root=final_root,
                 key=key,
                 files=tuple({"path": path, "size": size, "sha256": digest} for path, size, digest in files),
+                resources=resources,
             )
         except (OSError, TypeError, ValueError, KeyError, json.JSONDecodeError):
             return None
@@ -477,6 +527,7 @@ def build_immutable_tree(
                 _remove_tree(final_root)
             staging = staging_root / f"{name}.{uuid.uuid4().hex}"
             staging.mkdir()
+            build_started = time.monotonic()
             try:
                 builder(staging)
                 files = _archive_files(staging)
@@ -484,6 +535,9 @@ def build_immutable_tree(
                     "protocol_version": _ARTIFACT_PROTOCOL_VERSION,
                     "key": key,
                     "files": files,
+                    "resources": _measure_resources(
+                        staging, files, build_seconds=time.monotonic() - build_started
+                    ).to_payload(),
                 }
                 (staging / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
                 _publish_sealed_staging(staging, final_root)
@@ -1463,6 +1517,54 @@ def _archive_files(root: Path) -> tuple[dict[str, object], ...]:
     return tuple(entries)
 
 
+_MEASURED_ROW_TABLES: Final = ("sessions", "messages", "blocks")
+
+
+def _measure_rows(root: Path) -> dict[str, int]:
+    """Count the populations that make an archive's construction cost legible.
+
+    Runs only after :func:`_sqlite_integrity` has collapsed every tier to a
+    rollback journal and unlinked its sidecars, so this read adds no file to
+    the tree whose manifest was already enumerated. Absent or unreadable
+    tiers measure as no rows: a measurement never decides whether a published
+    tree is usable.
+    """
+    index_path = root / "index.db"
+    if not _is_regular(index_path):
+        return {}
+    counts: dict[str, int] = {}
+    try:
+        db_fd = _open_no_follow(index_path, os.O_RDONLY)
+    except OSError:
+        return {}
+    try:
+        connection = sqlite3.connect(f"file:/proc/self/fd/{db_fd}?mode=ro", uri=True)
+        with contextlib.closing(connection) as conn:
+            for table in _MEASURED_ROW_TABLES:
+                counts[table] = int(conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0])
+    except sqlite3.Error:
+        return {}
+    finally:
+        os.close(db_fd)
+    return counts
+
+
+def _measure_resources(
+    root: Path,
+    files: tuple[dict[str, object], ...],
+    *,
+    build_seconds: float,
+    measure_rows: bool = False,
+) -> ArtifactResourceMeasurement:
+    """Observe one published tree's storage, population, and construction cost."""
+    return ArtifactResourceMeasurement(
+        total_bytes=sum(int(cast(int, entry["size"])) for entry in files),
+        file_count=len(files),
+        build_seconds=round(max(build_seconds, 0.0), 6),
+        row_counts=_measure_rows(root) if measure_rows else {},
+    )
+
+
 def _manifest_file_entries(files: tuple[dict[str, object], ...]) -> tuple[tuple[str, int, str], ...]:
     """Validate manifest file records before any keyed access or filesystem use."""
     entries: list[tuple[str, int, str]] = []
@@ -2071,9 +2173,13 @@ def _manifest_from_payload(payload: object) -> CorpusArtifactManifest:
         raise ValueError("seeded archive manifest has malformed files")
     if not isinstance(payload.get("receipt"), dict):
         raise ValueError("seeded archive manifest has malformed receipt")
+    raw_resources = payload.pop("resources", None)
+    if not isinstance(raw_resources, dict):
+        raise ValueError("seeded archive manifest has malformed resources")
     try:
         facts = tuple(SyntheticArtifactFacts(**item) for item in raw_facts)
-        manifest = CorpusArtifactManifest(facts=facts, **payload)
+        resources = ArtifactResourceMeasurement(**raw_resources)
+        manifest = CorpusArtifactManifest(facts=facts, resources=resources, **payload)
     except (TypeError, ValueError) as exc:
         raise ValueError("seeded archive manifest has malformed metadata") from exc
     if stored_manifest_id != manifest.manifest_id:
@@ -2940,6 +3046,7 @@ def _build_seeded_archive_inner(
         for attempt in range(1, _BUILD_LOCK_ATTEMPTS + 1):
             staging = staging_root / f"{final_root.name}.{uuid.uuid4().hex}"
             _mkdir_pinned(staging)
+            build_started = time.monotonic()
             try:
                 corpus_root = staging / "wire"
                 written_batches = tuple(
@@ -3018,6 +3125,7 @@ def _build_seeded_archive_inner(
                     profile_id=profile_id,
                     build_id=build_id,
                 )
+                files = _archive_files(staging)
                 manifest = CorpusArtifactManifest(
                     protocol_version=_ARTIFACT_PROTOCOL_VERSION,
                     key=key.value,
@@ -3028,8 +3136,14 @@ def _build_seeded_archive_inner(
                     source_semantics_id=key.source_semantics_id,
                     archive_schema_id=key.archive_schema_id,
                     facts=facts,
-                    files=_archive_files(staging),
+                    files=files,
                     receipt=dict(receipt.to_payload()),
+                    resources=_measure_resources(
+                        staging,
+                        files,
+                        build_seconds=time.monotonic() - build_started,
+                        measure_rows=True,
+                    ),
                 )
                 _write_private_text(
                     staging / "manifest.json",
@@ -3365,6 +3479,7 @@ def clone_seeded_archive(artifact: SeededArchiveArtifact, destination: Path) -> 
 
 __all__ = [
     "ArtifactGcDisposition",
+    "ArtifactResourceMeasurement",
     "ArtifactGcEntry",
     "ArtifactGcReport",
     "ImmutableTreeArtifact",
