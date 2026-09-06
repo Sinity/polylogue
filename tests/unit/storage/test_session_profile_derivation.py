@@ -239,3 +239,25 @@ def test_the_projection_names_every_column_the_binding_digests() -> None:
     assert "content_hash" in SESSION_INPUT_PROJECTION_COLUMNS
     for column, _expression in _OUTPUT_AFFECTING_MUTATIONS:
         assert column in SESSION_INPUT_PROJECTION_COLUMNS
+
+
+def test_publishing_an_excess_key_removes_the_orphan(archive: tuple[Path, str]) -> None:
+    """An excess key converges by deletion, not by another rebuild.
+
+    Anti-vacuity: rebuild the orphan instead of deleting it and inspection
+    reports it excess on every subsequent pass -- a livelock, not convergence.
+    """
+    index_db, session_id = archive
+    assert _materialize(index_db, session_id) is True
+    with write_lease("test.mutate"), closing(open_connection(index_db)) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+        conn.commit()
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert excess_session_profiles(conn) == (session_id,)
+
+    assert _materialize(index_db, session_id) is True
+
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        assert excess_session_profiles(conn) == ()

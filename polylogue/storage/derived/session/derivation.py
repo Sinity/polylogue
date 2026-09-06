@@ -166,6 +166,19 @@ def publish_session_profile(
     """
     from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
 
+    if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is None:
+        # An excess key: the session is gone, so the correct output is no rows.
+        # Rebuilding would leave the orphan in place and inspection would report
+        # it excess on every pass, which is a livelock rather than convergence.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
+        except BaseException:
+            conn.rollback()
+            raise
+        conn.commit()
+        return True
+
     if session_input_bindings(conn, (session_id,)).get(session_id, "") != input_binding:
         return False
 
