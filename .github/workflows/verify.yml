@@ -4,9 +4,12 @@ name: Verify
 # green PR check there does not mean tests ran; this job runs `devtools verify`
 # on the workstation runner, where pytest goes through the host's single
 # `pytest` pueue slot automatically.
+# Runs on master after merges, not per PR: candidates land on the quick gate
+# and the corpus is verified once per landing wave.
 on:
-  pull_request:
-  merge_group:
+  push:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read

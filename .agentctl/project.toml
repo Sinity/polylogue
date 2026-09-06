@@ -18,10 +18,10 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
-# Worker checks derive affected tests from the checkout; a candidate's tests
-# are the pull request's hosted `verify` check; the corpus runs at the nightly
-# master boundary.
-verify = { focused = "verify_affected", candidate = "hosted:verify", corpus = "verify_all" }
+# Worker checks derive affected tests from the checkout; a candidate passes on
+# the static gates and merges when the hosted quick gate is green; the corpus
+# runs once on master after a landing wave and at the nightly boundary.
+verify = { focused = "verify_affected", candidate = "verify_quick", corpus = "verify_all" }
 publish = "pr"
 
 [operations.pytest_focused]
