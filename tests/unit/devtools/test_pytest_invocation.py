@@ -7,13 +7,16 @@ corpus does not describe, and these assertions go red.
 
 from __future__ import annotations
 
+import pytest
+
 from devtools.pytest_invocation import (
     CLOSED_WORLD_COLLECTION_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
     PROGRESS_PLUGIN_NAME,
 )
-from devtools.verify import _pytest_steps
+from devtools.verify import PYTEST_SLICE_MEMORY_HIGH_MIB, _pytest_steps, build_verify_steps, pytest_worker_ceiling
+from devtools.worker_memory import CONTROLLER_PEAK_MIB, MEMORY_HEADROOM_FRACTION, WORKER_PEAK_MIB
 
 
 def _command(selection: str) -> list[str]:
@@ -35,19 +38,23 @@ def test_closed_world_collection_args_reach_the_built_command() -> None:
         assert argument in command, f"missing collection arg {argument!r}"
 
 
-def test_the_default_tier_selects_and_the_all_tier_drops_testmon() -> None:
-    """Affected verification selects from testmon; `--all` runs every test.
+def test_the_default_tier_selects_and_the_complete_tier_only_traces() -> None:
+    """Affected verification selects from testmon; `--all` executes the whole
+    collection and records what it traced, which is what the next affected run
+    selects against.
 
-    Anti-vacuity: adding testmon to the complete route recreates dependency
-    state in every worker without changing the selected corpus.
+    Anti-vacuity: dropping testmon from the complete route leaves the datafile
+    describing whatever the last affected run happened to collect, and giving
+    the complete route ``--testmon-forceselect`` makes it select instead of
+    running the corpus.
     """
     affected = _command("affected")
     complete = _command("all")
 
     assert "--testmon" in affected and "--testmon-forceselect" in affected
     assert "--testmon-noselect" not in affected
-    assert "--testmon" not in complete
-    assert "pytest-testmon" not in complete
+    assert "--testmon" in complete and "--testmon-noselect" in complete
+    assert "--testmon-forceselect" not in complete
 
 
 def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
@@ -58,3 +65,31 @@ def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
     # The first `-m` is `python -m pytest`; a second one would be a marker
     # expression, which partitions the collection.
     assert command[3:].count("-m") == 0
+
+
+def test_the_managed_width_fits_the_pytest_pool_by_construction() -> None:
+    """The corpus command cannot ask for more memory than its slice allows.
+
+    Anti-vacuity: restoring the bare corpus width (eight workers, 6,563 MiB
+    against a 6 GiB soft ceiling) makes this red -- which is the run that
+    parked above `memory.high`, crawled under allocation throttling, and held
+    the host's one pytest slot until it was killed.
+    """
+    command = build_verify_steps(quick=False, selection="all")[-1][1]
+    workers = int(command[command.index("-n") + 1])
+
+    assert workers >= 1
+    assert workers * WORKER_PEAK_MIB + CONTROLLER_PEAK_MIB <= PYTEST_SLICE_MEMORY_HIGH_MIB * (
+        1.0 - MEMORY_HEADROOM_FRACTION
+    )
+
+
+def test_a_wider_configured_width_is_reduced_to_what_the_pool_holds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: honour the override unbounded and a run configured wider
+    than its slice starts anyway and throttles instead of reporting.
+    """
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "32")
+
+    command = build_verify_steps(quick=False, selection="all")[-1][1]
+
+    assert command[command.index("-n") + 1] == str(pytest_worker_ceiling())

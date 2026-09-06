@@ -27,16 +27,13 @@ jobs:
     steps:
       # clean: false keeps the runner's gitignored state -- the testmon
       # datafile and the devshell venv -- so a run selects instead of seeding.
+      # `devtools verify` provisions the graph itself: it keeps this checkout's
+      # own datafile, and copies the primary's only when that one would select
+      # where this one would re-execute the corpus.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           clean: false
-
-      - name: Seed the testmon graph
-        run: |
-          mkdir -p .cache/testmon
-          seed=/realm/project/polylogue/.cache/testmon/testmondata
-          nix develop --command python -m devtools.testmon_provision --seed "$seed"
 
       - name: Check that the pull request is still open
         id: pr-state
