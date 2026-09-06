@@ -868,7 +868,7 @@ def archive_verification_migrated_owner_adapters(
         _declared_owner(
             name="source-conservation",
             semantic_owner="source-materialization",
-            applicable_routes=frozenset({_ROUTE_LIVE}),
+            applicable_routes=frozenset({_ROUTE_CROSS_TIER_CANDIDATE, _ROUTE_LIVE}),
             production_route="source-to-index replay",
             population=(
                 "source.db.raw_sessions",
@@ -880,7 +880,11 @@ def archive_verification_migrated_owner_adapters(
                 "index.db.attachment_refs",
             ),
             owned_reference="test_deleted_source_file_without_retained_bytes_trips_source_conservation",
-            check=lambda: _check_source_conservation(archive_root, sample_limit),
+            check=lambda: (
+                _check_source_conservation_at_index_path(archive_root, index_path_override, sample_limit)
+                if index_path_override is not None
+                else _check_source_conservation(archive_root, sample_limit)
+            ),
         ),
         _declared_owner(
             name="hook-authority-topology-conflict",

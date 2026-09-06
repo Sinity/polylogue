@@ -9,6 +9,7 @@ with real source files under ``tmp_path``; no ambient data is read.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -511,3 +512,29 @@ def test_refless_attachment_with_stale_ref_count_still_blocks(tmp_path: Path) ->
     assert _terms(check)["attachment_unreferenced"]["sample"] == ["orphan-1"]
     assert _count(check, "attachment_unowned") == 0
     assert check.evidence["blocking_count"] == 1
+
+
+def test_candidate_route_conserves_against_the_candidate_index(tmp_path: Path) -> None:
+    """Anti-vacuity: bound to the active index instead, the clean live rows read green.
+
+    The unadmitted session exists only in the candidate copy, so a check that
+    ignores ``index_path_override`` reports OK while the candidate is unsound.
+    """
+    _seed(tmp_path)
+    candidate = tmp_path / "candidate-index.db"
+    shutil.copy2(tmp_path / "index.db", candidate)
+    candidate_conn = sqlite3.connect(candidate)
+    try:
+        _insert_session(candidate_conn, origin="codex-session", native_id="ghost", raw_id="raw-never-acquired")
+        candidate_conn.commit()
+    finally:
+        candidate_conn.close()
+
+    assert CHECK in archive_verification_names_for_route("reindex-cross-tier-candidate")
+    assert _run(tmp_path).status is OutcomeStatus.OK
+
+    check = _check(verify_archive(tmp_path, checks=(CHECK,), index_path_override=candidate))
+
+    assert check.status is OutcomeStatus.ERROR
+    assert _count(check, "session_orphan") == 1
+    assert _terms(check)["session_orphan"]["sample"] == ["codex-session:ghost"]
