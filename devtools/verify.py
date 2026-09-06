@@ -56,6 +56,7 @@ from devtools.verify_runs import (
     git_head,
     prune_successful_verify_runs,
 )
+from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -76,12 +77,6 @@ PYTEST_SELECTION_PATH = PYTEST_REPORT_DIR / "current-pytest-selection.json"
 PYTEST_SUMMARY_PATH = PYTEST_REPORT_DIR / "current-pytest-summary.json"
 PYTEST_OUTPUT_PATH = PYTEST_REPORT_DIR / "current-pytest-output.log"
 PYTEST_JUNIT_REPORT_DIR = PYTEST_REPORT_DIR / "junit"
-#: One fixed width for the corpus and the runner's affected tier, sized to the
-#: pytest pool's 12 GiB cgroup ceiling (eight workers peak near 10 GB) rather
-#: than host cores or free RAM. Measured 2026-09-03 uncontended: 47 minutes for
-#: 20,860 tests at eight workers; at two the same run takes about seven hours
-#: and the required check cannot finish inside its slot timeout.
-CORPUS_MAX_WORKERS = 8
 _AGENTCTL_OPERATION_ARGV = {"verify_affected": (), "verify_quick": ("--quick",), "verify_all": ("--all",)}
 _PROJECT_DESCRIPTOR = ".agentctl/project.toml"
 # These tests read the AgentCTL descriptor directly. They are the bounded
@@ -441,8 +436,20 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
         "attempted": failed,
         "still_failed": still_failed,
         "flaky": flaky,
-        "rerun_report": str(rerun_report.relative_to(ROOT)),
+        # Reported relative to the checkout when it lies inside one, absolute
+        # otherwise. A step directory can sit outside ROOT -- a configured
+        # basetemp root, or a caller that supplies its own artifact directory --
+        # and a rerun that adjudicated flakes correctly must not then die
+        # formatting its own path.
+        "rerun_report": str(_path_for_receipt(rerun_report)),
     }
+
+
+def _path_for_receipt(path: Path) -> Path:
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
 
 
 def _pytest_report_path(command: Sequence[str]) -> Path:
@@ -485,7 +492,9 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
             step_id=artifacts.step_id,
             result=_early_gate_failure_result(started, early_metadata),
         )
-        sys.stderr.write("FAILED (missing executable)\n")
+        sys.stderr.write(f"FAILED ({executable_result.diagnosis})\n")
+        for detail in executable_result.details:
+            sys.stderr.write(f"    {detail}\n")
         return 127, time.monotonic() - started, early_metadata
     slot = None
     metadata_receipt = None

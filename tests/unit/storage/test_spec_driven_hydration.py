@@ -81,9 +81,9 @@ def test_sessions_spec_declares_the_record_projection_the_mapper_consumes() -> N
     assert projection.strip(), "sessions record projection is empty"
 
     declared = {column.record_name for column in SESSIONS_SPEC.record_columns}
-    # The mapper builds these two fields from the raw JSON projections rather
-    # than a same-named column.
-    from_json_projection = {"run_settings": "run_settings_json", "pending_drafts": "pending_drafts_json"}
+    # The mapper builds this field from the raw JSON projection rather than a
+    # same-named column.
+    from_json_projection = {"pending_drafts": "pending_drafts_json"}
     missing = {
         field
         for field in SessionRecord.model_fields

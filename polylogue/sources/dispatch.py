@@ -622,42 +622,56 @@ def _join_claude_code_sidecars(payloads: PayloadSequence, source_path: str | Non
     return join_tool_result_sidecars_session_scoped(payloads, tool_results_dir, source_path)
 
 
-#  bd polylogue-t5lg: rank a chunk's own resolved title the same way
-# ``_parse_code_records`` ranks candidates within a single pass (custom-title
-# > ai-title > agent-name > first-human-message heuristic > raw id), so that
-# merging streamed chunks of one huge session can never *regress* a stronger
-# title found in one chunk in favor of a weaker one that happened to resolve
-# in an earlier chunk. ``title_source``/``title_confidence`` alone collapse
-# custom-title and ai-title into the same (ORIGIN, 1.0) pair, so a small
-# ref-prefix tie-break preserves the exact within-chunk ordering across
-# chunks too.
-_CLAUDE_CODE_TITLE_REF_PRIORITY: dict[str, int] = {
-    "claude-agent-name:": 0,
-    "claude-ai-title:": 1,
-    "claude-custom-title:": 2,
-}
+# Declared precedence over title EVIDENCE, most authoritative tier first.
+# Merging streamed chunks of one session must never regress a stronger title
+# found in a later chunk in favor of a weaker one that resolved earlier, so a
+# chunk's title is chosen by where its ``(title_source, title_ref)`` evidence
+# sits in this order rather than by a score.
+#
+# Entries within one tier are equally authoritative: a tie keeps the chunk
+# already held. A ``None`` prefix matches any ref for that source and applies
+# only when no tier names a prefix the ref actually carries.
+_TITLE_EVIDENCE_PRECEDENCE: tuple[tuple[tuple[TitleSource, str | None], ...], ...] = (
+    # An explicit user rename outranks the provider's own computed title.
+    ((TitleSource.ORIGIN, "claude-custom-title:"),),
+    ((TitleSource.ORIGIN, "claude-ai-title:"),),
+    # Provider-curated titles with no weaker-tier prefix (Claude AI's own
+    # title/name, Codex's thread name).
+    ((TitleSource.ORIGIN, None),),
+    # Provider-assigned labels rather than titles of the content itself.
+    (
+        (TitleSource.ORIGIN, "claude-agent-name:"),
+        (TitleSource.ORIGIN, "codex-history:"),
+    ),
+    ((TitleSource.ORIGIN, "codex-state-db:"),),
+    ((TitleSource.ORIGIN, "codex-thread-title-hook-event:"),),
+    # Parser heuristics (first human message, prompt-echo demotions) rank
+    # below every provider signal and do not order among themselves.
+    ((TitleSource.HEURISTIC, None),),
+)
 
 
-def _claude_code_title_rank(session: ParsedSession) -> tuple[int, float, int]:
-    # polylogue-5dfu: no TitleSource.UNKNOWN entry -- a None title_source
-    # (no title evidence) and a session.title_source that has no listed
-    # entry both fall through to the same rank-0 default via .get().
-    source_rank = (
-        {
-            TitleSource.HEURISTIC: 1,
-            TitleSource.ORIGIN: 2,
-        }.get(session.title_source, 0)
-        if session.title_source is not None
-        else 0
-    )
-    confidence = session.title_confidence or 0.0
-    ref_bonus = 0
-    if session.title_ref:
-        for prefix, bonus in _CLAUDE_CODE_TITLE_REF_PRIORITY.items():
-            if session.title_ref.startswith(prefix):
-                ref_bonus = bonus
-                break
-    return (source_rank, confidence, ref_bonus)
+def _title_evidence_rank(session: ParsedSession) -> int:
+    """Rank a chunk's title evidence; higher wins, 0 means no evidence.
+
+    ``TitleSource.PATH`` and a NULL ``title_source`` both rank 0: neither is
+    produced by any parser today, and a raw-id fallback title carries no
+    evidence to prefer.
+    """
+    source = session.title_source
+    if source is None:
+        return 0
+    ref = session.title_ref or ""
+    tiers = _TITLE_EVIDENCE_PRECEDENCE
+    for index, tier in enumerate(tiers):
+        for tier_source, prefix in tier:
+            if prefix is not None and tier_source is source and ref.startswith(prefix):
+                return len(tiers) - index
+    for index, tier in enumerate(tiers):
+        for tier_source, prefix in tier:
+            if prefix is None and tier_source is source:
+                return len(tiers) - index
+    return 0
 
 
 def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
@@ -744,17 +758,14 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
             return (max if newest else min)(values)
 
         # bd polylogue-t5lg: pick the chunk with the stronger title EVIDENCE
-        # (title_source/title_confidence, ranked identically to the
-        # single-pass parser's own precedence), not merely "whichever chunk
-        # resolved a non-raw-id title first". The old rule froze the first
-        # chunk's title (even a weak heuristic guess) permanently once it was
-        # non-UUID, silently discarding a stronger ai-title/custom-title
-        # sidecar record that only appeared in a later chunk of the same
-        # huge streamed session -- see the chunk-merge regression this bead
-        # measured on the live archive. All four title fields move together
-        # so title_source/title_ref/title_confidence never point at a
-        # different chunk's evidence than the title text they describe.
-        title_winner = existing if _claude_code_title_rank(existing) >= _claude_code_title_rank(session) else session
+        # (_TITLE_EVIDENCE_PRECEDENCE), not merely "whichever chunk resolved a
+        # non-raw-id title first" -- that rule froze the first chunk's title,
+        # even a weak heuristic guess, once it was non-UUID, discarding a
+        # stronger ai-title/custom-title sidecar record that only appeared in
+        # a later chunk of the same streamed session. All three title fields
+        # move together so title_source/title_ref never point at a different
+        # chunk's evidence than the title text they describe.
+        title_winner = existing if _title_evidence_rank(existing) >= _title_evidence_rank(session) else session
         session_events = [*existing.session_events, *session.session_events]
         if existing.source_name is Provider.CLAUDE_CODE:
             session_events = merge_claude_coverage_events(
@@ -765,7 +776,6 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
                 "title": title_winner.title,
                 "title_source": title_winner.title_source,
                 "title_ref": title_winner.title_ref,
-                "title_confidence": title_winner.title_confidence,
                 "created_at": chronological(created_values, newest=False),
                 "parent_session_provider_id": (
                     existing.parent_session_provider_id or session.parent_session_provider_id

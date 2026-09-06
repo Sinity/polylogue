@@ -321,13 +321,12 @@ def test_idless_drive_attachment_owner_changes_hash_and_revision_identity() -> N
     assert first_projection.attachment_identities != second_projection.attachment_identities
 
 
-def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
-    """runSettings (polylogue-2qx.4 / polylogue-cgfy) must reach ``ParsedSession.run_settings``.
+def test_parse_chunked_prompt_lowers_run_settings_into_model_config_event() -> None:
+    """runSettings reaches the ``model_config`` session_event, its only sink.
 
-    Deleting the ``run_settings=dict(run_settings) if run_settings else None``
-    kwarg on the ``ParsedSession`` return in ``parse_chunked_prompt`` makes
-    this assert None even though the value already feeds the ``model_config``
-    session_event.
+    Anti-vacuity: dropping the ``_model_config_event(run_settings, ...)`` call
+    in ``parse_chunked_prompt`` leaves no ``model_config`` event and makes this
+    red. The settings bag is deliberately not projected onto the session row.
     """
     payload: JSONDocument = {
         "id": "gemini-run-settings",
@@ -345,18 +344,18 @@ def test_parse_chunked_prompt_persists_run_settings_verbatim() -> None:
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    assert result.run_settings == {
+    model_config_events = [e for e in result.session_events if e.event_type == "model_config"]
+    assert len(model_config_events) == 1
+    assert model_config_events[0].payload["runSettings"] == {
         "temperature": 0.7,
         "topP": 0.9,
         "topK": 40,
         "maxOutputTokens": 8192,
         "thinkingLevel": "high",
     }
-    model_config_events = [e for e in result.session_events if e.event_type == "model_config"]
-    assert len(model_config_events) == 1
 
 
-def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
+def test_parse_chunked_prompt_without_run_settings_emits_no_model_config_event() -> None:
     payload: JSONDocument = {
         "id": "gemini-no-run-settings",
         "chunkedPrompt": {"chunks": [{"id": "msg-user", "role": "user", "text": "hi"}]},
@@ -364,7 +363,7 @@ def test_parse_chunked_prompt_without_run_settings_leaves_it_none() -> None:
 
     result = parse_chunked_prompt("gemini", payload, "fallback-id")
 
-    assert result.run_settings is None
+    assert [e for e in result.session_events if e.event_type == "model_config"] == []
 
 
 def test_parse_chunked_prompt_records_nonempty_pending_input_as_draft() -> None:

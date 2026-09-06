@@ -67,6 +67,10 @@ class BlobDisposition(StrEnum):
     UNRESOLVED = "unresolved"
 
 
+# Apply's only deletion set: the dispositions that authorize removal at all.
+_REMOVABLE_DISPOSITIONS = (BlobDisposition.SOURCE_PRESENT, BlobDisposition.SUPERSEDED_PREFIX)
+
+
 class SourceProofMode(StrEnum):
     """How a prover established that current source material holds the content."""
 
@@ -186,6 +190,40 @@ class BlobDispositionPlan:
         return totals
 
     @property
+    def reclaimable_bytes(self) -> int:
+        """Bytes apply can actually unlink.
+
+        Apply deletes only an unreferenced member whose disposition
+        authorizes removal, so a member a durable row still names, and a
+        ``restore_required`` member apply only ever restores, are both
+        outside this total.
+        """
+        return sum(
+            member.size_bytes
+            for member in self.members
+            if member.disposition in _REMOVABLE_DISPOSITIONS and not member.referenced
+        )
+
+    @property
+    def reclaimable_count(self) -> int:
+        return sum(
+            1 for member in self.members if member.disposition in _REMOVABLE_DISPOSITIONS and not member.referenced
+        )
+
+    @property
+    def retained_by_reference_bytes(self) -> int:
+        """Bytes proven at a source that a durable reference keeps on disk."""
+        return sum(
+            member.size_bytes
+            for member in self.members
+            if member.disposition in _REMOVABLE_DISPOSITIONS and member.referenced
+        )
+
+    @property
+    def retained_by_reference_count(self) -> int:
+        return sum(1 for member in self.members if member.disposition in _REMOVABLE_DISPOSITIONS and member.referenced)
+
+    @property
     def unresolved_count(self) -> int:
         return self.counts[BlobDisposition.UNRESOLVED.value]
 
@@ -205,6 +243,10 @@ class BlobDispositionPlan:
             "denominator": self.denominator.to_dict(),
             "counts": self.counts,
             "bytes_by_disposition": self.bytes_by_disposition,
+            "reclaimable_bytes": self.reclaimable_bytes,
+            "reclaimable_count": self.reclaimable_count,
+            "retained_by_reference_bytes": self.retained_by_reference_bytes,
+            "retained_by_reference_count": self.retained_by_reference_count,
             "unresolved_count": self.unresolved_count,
             "accepted": self.accepted,
             "read_only": True,

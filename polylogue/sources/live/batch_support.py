@@ -333,6 +333,11 @@ class _FullIngestResult:
     succeeded: list[Path]
     failed: list[Path]
     source_payload_read_bytes: int
+    #: Planned paths this pass deliberately admitted nothing for, each with
+    #: the typed reason. A planned path must land in exactly one of
+    #: succeeded, failed, or here: one that lands in none of them is
+    #: indistinguishable from an idle source (polylogue-6q16u).
+    excluded: dict[Path, str] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -369,6 +374,7 @@ def _full_ingest_result_from_summary(
     succeeded: list[Path],
     failed: list[Path],
     source_payload_read_bytes: int,
+    excluded: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -385,6 +391,7 @@ def _full_ingest_result_from_summary(
         succeeded=succeeded,
         failed=failed,
         source_payload_read_bytes=source_payload_read_bytes,
+        excluded=dict(excluded or {}),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},

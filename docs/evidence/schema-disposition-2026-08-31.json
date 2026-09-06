@@ -3,12 +3,12 @@
   "disposition_counts": {
     "COMPLETE": 67,
     "DERIVE": 7,
-    "KEEP": 1717,
+    "KEEP": 1715,
     "PURGE": 99,
     "TRANSITION": 9
   },
   "format": "polylogue-schema-disposition/v1",
-  "object_count": 1899,
+  "object_count": 1897,
   "objects": [
     {
       "campaign_action": "retain and verify the named producer/consumer",
@@ -12319,7 +12319,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "1a5066faba063db072af37f0f4eb7545dd44fbb5c7f408b45cd9b98c3c5b0ec8",
+      "definition_sha256": "6f188e4694b2f2c4be698450992743f4c58f736644a0ef1edcf2b450282b2274",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -12403,7 +12403,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "c1e0312394e9aab018146406a52609e946f369a9590810dfc176dc80fd533c71",
+      "definition_sha256": "97713d82d79de3cd4315b574ff269778f4a9dabdd5ecb3de678980ecded66768",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23470,7 +23470,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "f9edde5f746a84d60bc24ae0b231f953fa2b13499aacf9b42a429ae899a5c12d",
+      "definition_sha256": "43b64449ae4ca732aef6faf6941bb7e43667deb0ea916e06e0ccbe5fa1cbc6a5",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23785,28 +23785,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "67d433b8d63b290a1c3322baaa74014e796b04f460d32999c489a5abbf9d451d",
-      "disposition": "KEEP",
-      "evidence": "reachable canonical declaration; live counts are evidence only",
-      "generated_kind": null,
-      "implementation_bead": "polylogue-20eld",
-      "live_row_denominator": "SELECT COUNT(*) FROM sessions",
-      "name": "title_confidence",
-      "object_ref": "index:column:sessions.title_confidence",
-      "object_type": "column",
-      "producer": "index.db canonical writer route",
-      "reindex_timing": "next derived convergence",
-      "semantic_owner": "canonical schema owner",
-      "successor_or_authorization": "none",
-      "table_name": "sessions",
-      "tier": "index",
-      "tier_durability": "rebuildable",
-      "virtual": false
-    },
-    {
-      "campaign_action": "retain and verify the named producer/consumer",
-      "consumer": "index.db production readers",
-      "definition_sha256": "d9e7dcbd1103987b88f99978b120e3225cb3122cc6079616e739cec408cb4fb2",
+      "definition_sha256": "b3c44cd03ad45082720d8a50779d683b29db18baab20d4c92f8eea16de4a837d",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23827,28 +23806,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "03eec00a060b9db46ef88df4170fd4e1bded6a3af7c8a752a93739b6036063b0",
-      "disposition": "KEEP",
-      "evidence": "reachable canonical declaration; live counts are evidence only",
-      "generated_kind": null,
-      "implementation_bead": "polylogue-20eld",
-      "live_row_denominator": "SELECT COUNT(*) FROM sessions",
-      "name": "run_settings_json",
-      "object_ref": "index:column:sessions.run_settings_json",
-      "object_type": "column",
-      "producer": "index.db canonical writer route",
-      "reindex_timing": "next derived convergence",
-      "semantic_owner": "canonical schema owner",
-      "successor_or_authorization": "none",
-      "table_name": "sessions",
-      "tier": "index",
-      "tier_durability": "rebuildable",
-      "virtual": false
-    },
-    {
-      "campaign_action": "retain and verify the named producer/consumer",
-      "consumer": "index.db production readers",
-      "definition_sha256": "bb6a66379bbc76e34017829179b0bcbac2bc3437e2aa2da4e4ac8f324641babe",
+      "definition_sha256": "44e10a2fb78eb4bcaf872d34f207abe334ea1380f1cbfa00bcfded032b39be4b",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23869,7 +23827,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "eb82ccd26e5c08a12450a94823502a9df73b5e3d799a2c3363d13b35f4ad5246",
+      "definition_sha256": "b819356afbd510d37dc76bf548b45ef83d733811659ccd09179885e7e915d1fa",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23890,7 +23848,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "ff0b67de4c679a3a9fb297e6ed5ba94ac0b75409661f3c08238354cf4b7e345f",
+      "definition_sha256": "02325801dbfea324e30bb59412037669e62a7860979f9edfcbed769fc7ea3d43",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23911,7 +23869,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "d4b1409be6b656c05b9f343fbff59e10a347e572f85ab04f03445dcfec04e7bf",
+      "definition_sha256": "bad81fda301cec4b9f152954427db3ff103e3152dc256ef182319ccc89a5375c",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23932,7 +23890,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "07ce1005f86e8f9efd91eef694c8126b11fbcb256384614e1447544baec646c9",
+      "definition_sha256": "c68b1d55634807cc01117518b9df3fb666000fff8d69ffd0947bfd0373c05024",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23953,7 +23911,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "553f5e1ab59a9f2ee160072e905a7522b00cffe72b2a6addfb0536837456d958",
+      "definition_sha256": "132e763e6d0e6283ab5d7b55b9d7edfb2a50747dee4e2a3345d8df302e6279bc",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23974,7 +23932,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "7bd2a0868acff2c53e3f95830b8528d4d3cef92f5785220858881ee21fb84253",
+      "definition_sha256": "73be49e0c4c21aaf6c2166fc00d5ff8f38891c22d163e385f9c050342912ec59",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -23995,7 +23953,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "11d99c062a13df15675c60ba43935ff2bbe8a88899540a3ca8ebff725726bf06",
+      "definition_sha256": "e4a0fc7d8d7a56b475de75185df10f420058bee5799eb0f15e89ddcbff65dd10",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24016,7 +23974,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "157af21dab68a6c553532b6bd6e13ea25601a8903860c48a5fb952025133d0f5",
+      "definition_sha256": "a93f59b7962874d30780c87429082c1a54fbe736fcc004b61e2ed445c27d098d",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24037,7 +23995,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "e32e8dd7c8b695a34b0929cd15e4bef0f613bf7ea70f669009f6b56bae44316f",
+      "definition_sha256": "af9b2e33995deb94e0e25fc34d6f3ca141dc1ebcfec7e39a4ab429e931588a1f",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24058,7 +24016,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "44dcd36b675fea056761ac0a617dba6c2c134db16a4ccb9ec6bbe37e159870d9",
+      "definition_sha256": "6f801ed31ecc844ba7b6426a9f439ae3e1ad452fb8a511d60a038370f66da55b",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24079,7 +24037,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "1be8e3984b02d4caccbb3eadecdd7f87f2f126d87c95fd5a577f8c94c187f445",
+      "definition_sha256": "06b4309b668978ac3ee40b0d087248e20d9e81f9d3855cebb34ae2d219713cab",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24100,7 +24058,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "02ca565de359b1726075df3024e75e3db1b2672954008abc79d40b51bab1a314",
+      "definition_sha256": "b0717e163175eddf2bae1494d0103c00f3ba306cddedc81c9c669b5d663df377",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24121,7 +24079,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "2ca02f6c41b2b34d313cf7c3eeef9b70d644c20fc67aa90f04ea2de748afcf68",
+      "definition_sha256": "c48e0f60b9103bd86fced362b7154a3a803f99e01a4164d4ee5c6bffe09c64d6",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24142,7 +24100,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "5dd68cf4cbcfe7b02975450c13fcf49383c68fdf0484fe29a12492d89583b67b",
+      "definition_sha256": "385747ae656c7826346716a0748b8b05de5c7d500f54063901c7b32acb4ecde9",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24163,7 +24121,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "101544ffeae601f1296d3c3125411011c308884b7f6a50afcc4e729d06b896e3",
+      "definition_sha256": "d1b2974d61688a932050dfd9c72749fcc054771b76472fdf7386d07eedcbf33c",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24184,7 +24142,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "115c0116d20fcf951af76537d3a7cbbbbb4d548dba3a0cbea8babb49537a3f01",
+      "definition_sha256": "00619df3d1db5025e0b43952c4b6a80a47b0807c66577d8bd231a245a9ec5dc9",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24205,7 +24163,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "0ae5f541f540375e194afac33e79d6a8dbebb8af456d1ee79c8712fa4007301c",
+      "definition_sha256": "8f4f5a3314df72857a300331fe7be7a24980099cc385caca0f1518db3aefbfa6",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24226,7 +24184,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "23dd6930256025a2337afda6f8038a8007b1657436aa8f5a39d38039df76434b",
+      "definition_sha256": "541c247d273d1f6416e95cc04c6ae319bfdb978ab463413ecc82e7392c336e3b",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24247,7 +24205,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "644122cf18b2c472ae90b4be6d519c3875b9d0121d2b0e8514e6fec2bebe8145",
+      "definition_sha256": "313aa1f42646394af226331e9ee163f438c338621bfeac1e8c3b02918612662e",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24268,7 +24226,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "c049b0ccaa9f6be66abdf694a6b3a67c597e199a47a73df95e6d801f15dfb16d",
+      "definition_sha256": "a9db4e9a99f1850096683c5a38235ee237fd6678ce239f08367775976eee6a92",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24289,7 +24247,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "cc77b67aedb8a5d8567dd57a9408bbefdde04771e89f223ebf7fc4f363499be9",
+      "definition_sha256": "11355c29be121d6a04476e76ef5c59da9d9ff3c83d922c16755b01cd0736789b",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24310,7 +24268,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "e10df85ba5588bbf74296f1f78d6a4109ee60d9f03514e2109a33dcf256af19e",
+      "definition_sha256": "67912e03365c06d0f53d900f7054cae155b47fc34f5047444b9404128d6cd80b",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24331,7 +24289,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "15aafd1e453fbd6b00dfd6b3ab0a22da77955c111c2bd3118342d3b1d3061df3",
+      "definition_sha256": "d87335ee47ea72a15c15d1366f0969ecd25f788356a523ee03359c13f2b1290c",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -24352,7 +24310,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "d1d77e47730deaf9f3e8c5b6ebf916db04069ba0b585e9511fd799d07e3bdcbd",
+      "definition_sha256": "c36a361c30f48afd0888ed7c27600a3633be642d75bfbdcb97afd8db921cff7f",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": "stored",
@@ -39893,7 +39851,7 @@
   "schema_fingerprints": {
     "audit": "39a2cff1dfbc0d8721f8a29229e6104abbdfa37d6f432d822b412bc580f2b5e9",
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
-    "index": "aa4e40ed5d7ce8c7b945cfc6a2482acffba50f940580af7640b8d7cb67d00be1",
+    "index": "760aac910a4892385617b9732664f4dd632171b5d1fcc161cafbf1005a951f2b",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
     "source": "b6ea0b8cd6f926106f1de584f5a4c1b114ea6749d7375b256c6f91c85f4d7814",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"
@@ -39901,7 +39859,7 @@
   "schema_versions": {
     "audit": 2,
     "embeddings": 5,
-    "index": 95,
+    "index": 96,
     "ops": 1,
     "source": 41,
     "user": 11
@@ -39924,9 +39882,9 @@
       "views": 0
     },
     "index": {
-      "columns": 564,
+      "columns": 562,
       "indexes": 75,
-      "objects": 738,
+      "objects": 736,
       "tables": 56,
       "triggers": 37,
       "views": 6

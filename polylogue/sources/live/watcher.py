@@ -155,7 +155,7 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     stage_summary = _stage_timing_summary(stage_timings_s if isinstance(stage_timings_s, dict) else {})
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
-        "succeeded=%d failed=%d parse_s=%.3f convergence_s=%.3f stages=%s "
+        "succeeded=%d failed=%d excluded=%d parse_s=%.3f convergence_s=%.3f stages=%s "
         "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d time_budget_exceeded=%s",
         prefix,
         source_payload_read_bytes / 1e6,
@@ -165,6 +165,7 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "full_file_count", 0),
         getattr(metrics, "succeeded_file_count", 0),
         getattr(metrics, "failed_file_count", 0),
+        getattr(metrics, "excluded_file_count", 0),
         getattr(metrics, "parse_time_s", 0.0),
         getattr(metrics, "convergence_time_s", 0.0),
         stage_summary,
@@ -173,6 +174,14 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "wal_busy_pages_total", 0),
         getattr(metrics, "time_budget_exceeded", False),
     )
+    excluded_reasons = getattr(metrics, "excluded_reasons", {})
+    if excluded_reasons:
+        logger.info(
+            "%s: admitted nothing for %d planned path(s): %s",
+            prefix,
+            getattr(metrics, "excluded_file_count", 0),
+            ", ".join(f"{reason} x{count}" for reason, count in sorted(excluded_reasons.items())),
+        )
     if getattr(metrics, "time_budget_exceeded", False):
         logger.info(
             "%s: max_pass_seconds budget exceeded -- remaining files deferred to the next tick (polylogue-11cg9)",
@@ -1210,17 +1219,16 @@ class LiveWatcher:
             # parser fingerprint change is exactly the other legitimate
             # reason a previously-poisoned observation deserves a fresh
             # attempt: the code that failed to parse it no longer exists.
-            if identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT:
-                return False
-            self._cursor.revive_replaced_exclusion(
-                path,
-                byte_size=size,
-                st_dev=stat.st_dev,
-                st_ino=stat.st_ino,
-                mtime_ns=stat.st_mtime_ns,
-                current_parser_fingerprint=_PARSER_FINGERPRINT,
-            )
-            return True
+            # Report the fresh attempt without clearing ``excluded``. The
+            # quarantine is lifted by the cursor write of an ingest that
+            # actually retained something, so a path that fails again stays
+            # quarantined. Clearing it here instead left the row
+            # ``excluded = 0`` carrying its old byte offset for the whole
+            # window before acquisition ran, and the raw-frontier cursor map
+            # reads exactly that shape as committed ingest authority with no
+            # accepted head -- a source whose stat changes on every poll, a
+            # live database, re-entered that window on every poll.
+            return not (identity_unchanged and cursor.parser_fingerprint == _PARSER_FINGERPRINT)
         if cursor.failure_count == 0 and cursor.content_fingerprint is None and cursor.next_retry_at is not None:
             if not _retry_due(cursor.next_retry_at):
                 return False

@@ -34,7 +34,6 @@ entity.
 | `title` | `str?` | Parsed session title |
 | `title_source` | `TitleSource?` | Provenance of `title`: `origin` (provider-supplied), `path` (read-time structural-label fallback), `heuristic` (derived, e.g. first human-authored message), or `None`/NULL (no title evidence) |
 | `title_ref` | `str?` | Specific evidence reference for `title_source` beyond the coarse strategy label (e.g. `codex-history:<native_id>`, `message:<provider_message_id>`) |
-| `title_confidence` | `float?` | 0..1 confidence signal for the `title_ref` resolution |
 | `created_at` | `datetime?` | Creation timestamp |
 | `updated_at` | `datetime?` | Last update timestamp |
 | `messages` | `MessageCollection` | Eagerly or lazily materialized messages (`Session` only) |

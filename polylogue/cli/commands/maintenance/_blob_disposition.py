@@ -51,6 +51,10 @@ def blob_disposition_plan_command(archive_root: Path, output: Path, output_forma
         "accepted": plan.accepted,
         "counts": plan.counts,
         "bytes_by_disposition": plan.bytes_by_disposition,
+        "reclaimable_bytes": plan.reclaimable_bytes,
+        "reclaimable_count": plan.reclaimable_count,
+        "retained_by_reference_bytes": plan.retained_by_reference_bytes,
+        "retained_by_reference_count": plan.retained_by_reference_count,
         "denominator": plan.denominator.to_dict(),
     }
     if output_format == "json":
@@ -60,6 +64,10 @@ def blob_disposition_plan_command(archive_root: Path, output: Path, output_forma
     click.echo(f"Digest: {plan.digest()}")
     click.echo(f"Accepted (zero unresolved): {plan.accepted}")
     click.echo(f"Counts: {json.dumps(plan.counts, sort_keys=True)}")
+    click.echo(f"Reclaimable: {plan.reclaimable_count} objects, {plan.reclaimable_bytes} bytes")
+    click.echo(
+        f"Retained by reference: {plan.retained_by_reference_count} objects, {plan.retained_by_reference_bytes} bytes"
+    )
     click.echo("Read-only: true")
 
 

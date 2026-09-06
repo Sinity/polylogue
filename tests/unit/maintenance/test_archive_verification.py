@@ -1419,12 +1419,20 @@ def test_blob_refs_liveness_passes_on_coherent_archive(tmp_path: Path) -> None:
 
 
 def test_blob_reference_closure_rejects_acquired_attachment_without_ref(tmp_path: Path) -> None:
+    """An acquired attachment whose refs vanished is archive debt.
+
+    ``ref_count`` is the discriminator: a non-zero count with no surviving
+    ``attachment_refs`` row means the sweep lost edges it once had, while a
+    zero count is an attachment that never had one.
+
+    Anti-vacuity: seeding ``ref_count`` 0 instead describes the explained
+    shape and the check stays clean."""
     _seed_coherent_archive(tmp_path)
     conn = _connect(tmp_path / "index.db")
     try:
         conn.execute(
             "INSERT INTO attachments (attachment_id, byte_count, blob_hash, acquisition_status, ref_count) "
-            "VALUES ('orphan-acquired', 1, ?, 'acquired', 0)",
+            "VALUES ('orphan-acquired', 1, ?, 'acquired', 1)",
             (b"a" * 32,),
         )
         conn.commit()

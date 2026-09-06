@@ -23,6 +23,7 @@ from devtools import (
     verify,
     verify_runs,
     why,
+    worker_memory,
 )
 from devtools.testmon_provision import TESTMON_ENVIRONMENT, TestmonGraphStatus
 from devtools.verification_result import declared_verification_result
@@ -47,16 +48,20 @@ def test_corpus_workers_default_to_the_corpus_width(monkeypatch: pytest.MonkeyPa
     ignoring the variable makes the override cases fail.
     """
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == str(
+        worker_memory.CORPUS_MAX_WORKERS
+    )
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "0")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "0"
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == "0"
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "1")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == "1"
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == "1"
 
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "64")
-    assert verify._pytest_worker_args(maximum=verify.CORPUS_MAX_WORKERS)[-1] == str(verify.CORPUS_MAX_WORKERS)
+    assert verify._pytest_worker_args(maximum=worker_memory.CORPUS_MAX_WORKERS)[-1] == str(
+        worker_memory.CORPUS_MAX_WORKERS
+    )
 
 
 def test_quick_steps_are_static_gates() -> None:
@@ -78,8 +83,22 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
-def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("provisioned", "expected_diagnosis"),
+    [
+        # An entirely absent .venv is an unprovisioned checkout, not a tool
+        # that happens to be missing: nothing is installed and the remedy is
+        # different.
+        (False, "gate_unprovisioned_environment"),
+        (True, "gate_missing_executable"),
+    ],
+)
+def test_missing_checkout_venv_tool_is_a_typed_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provisioned: bool, expected_diagnosis: str
+) -> None:
     history: dict[str, Any] = {}
+    if provisioned:
+        (tmp_path / ".venv" / "bin").mkdir(parents=True)
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
@@ -90,7 +109,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.Monke
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
-    assert history["diagnosis"] == "gate_missing_executable"
+    assert history["diagnosis"] == expected_diagnosis
     assert history["steps"][0]["required_gate"]["executable"] == str(tmp_path / ".venv/bin/ruff")
 
 

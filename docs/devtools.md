@@ -83,6 +83,7 @@ These are the commands worth remembering during normal repo work:
 
 | Command | Description |
 | --- | --- |
+| `devtools schema closure` | Report which source files feed the derived schema identity. |
 | `devtools schema commit` | Persist a real full-corpus schema generation into committed provider packages. |
 | `devtools schema compare` | Compare two committed schema package versions for a provider. |
 | `devtools schema explain` | Explain a committed package element schema with evidence and annotations. |

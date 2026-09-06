@@ -31,6 +31,7 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.specs import build_runtime_operation_catalog
 from polylogue.storage.archive_identity import ArchiveIdentity
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _DELETE_CAPABILITY = "archive.delete_session"
 # A preview persists one durable target row and one exact effect identity per
@@ -265,7 +266,7 @@ def _load_preview(
     require_prepared: bool,
     require_unexpired: bool = True,
 ) -> MutationPreview:
-    with sqlite3.connect(audit.path) as conn:
+    with sqlite_connection(audit.path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
@@ -290,7 +291,7 @@ def _load_active_authorization(
     token: str,
     principal: MutationPrincipal,
 ) -> tuple[MutationPreview, MutationAuthorization]:
-    with sqlite3.connect(audit.path) as conn:
+    with sqlite_connection(audit.path) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             """
