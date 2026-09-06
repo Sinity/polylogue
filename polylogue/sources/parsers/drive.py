@@ -114,10 +114,16 @@ def _fallback_gemini_content_blocks(chunk_obj: JSONDocument, text: str | None) -
     if isinstance(exec_result, dict) and exec_result:
         output = exec_result.get("output")
         outcome = exec_result.get("outcome")
+        # ``outcome`` is the execution's structural verdict (OUTCOME_OK /
+        # OUTCOME_FAILED / ...). Carry it as metadata, not only rendered into
+        # the text, so the block's outcome is read from the field.
+        outcome_metadata: JSONDocument = (
+            {"metadata": {"outcome": outcome}} if isinstance(outcome, str) and outcome else {}
+        )
         if isinstance(output, str) and output:
-            fallback_content_blocks.append({"type": "tool_result", "text": output})
+            fallback_content_blocks.append({"type": "tool_result", "text": output, **outcome_metadata})
         elif isinstance(outcome, str) and outcome:
-            fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]"})
+            fallback_content_blocks.append({"type": "tool_result", "text": f"[{outcome}]", **outcome_metadata})
 
     return fallback_content_blocks
 

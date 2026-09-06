@@ -21,10 +21,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider, ToolResultUnknownReason
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import get_logger
 from polylogue.sources.providers.codex import CodexRecord
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     AdmissionLedger,
@@ -180,6 +181,7 @@ class _CodexExecChildResult:
     text: str | None
     is_error: bool | None
     exit_code: int | None
+    unknown_reason: str | None
     paths: tuple[str, ...]
     byte_count: int | None
 
@@ -1467,23 +1469,57 @@ def _codex_exec_envelope_outcome(output: object) -> tuple[bool | None, int | Non
     return exit_code != 0, exit_code
 
 
-def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None]:
-    """Resolve (is_error, exit_code) for a Codex tool-result payload.
+def _codex_tool_result_outcome(raw: object) -> tuple[bool | None, int | None, str | None]:
+    """Resolve (is_error, exit_code, unknown reason) for a Codex tool-result payload.
 
     Tries the JSON-structural outcome first (``exit_code``/``is_error``
     fields nested in a decoded JSON object), then falls back to the
     unified-exec text envelope (see ``_codex_exec_envelope_outcome``) when the
     raw payload is a string that JSON-decoding did not resolve to a mapping
-    carrying either field. Anything else remains unknown.
+    carrying either field.
+
+    A payload that announces itself as a JSON structure and does not decode is
+    a declared outcome carrier the source did not retain intact; a decoded
+    structure whose ``exit_code``/``is_error`` is present but off-type is a
+    verdict this mapping does not read.
     """
     decoded = _decoded_json_value(raw) if isinstance(raw, str) else raw
     is_error, exit_code = _structural_outcome(decoded)
     if is_error is None and exit_code is None and isinstance(raw, str):
-        return _codex_exec_envelope_outcome(raw)
-    return is_error, exit_code
+        is_error, exit_code = _codex_exec_envelope_outcome(raw)
+    return (
+        is_error,
+        exit_code,
+        unknown_reason(
+            is_error=is_error,
+            exit_code=exit_code,
+            outcome_field_present=_carries_unread_outcome_field(decoded),
+            source_intact=not _declares_undecoded_structure(raw, decoded),
+        ),
+    )
 
 
-def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
+def _declares_undecoded_structure(raw: object, decoded: object) -> bool:
+    """True when a payload announced a JSON structure that did not decode."""
+    if decoded is not None or not isinstance(raw, str):
+        return False
+    return raw.lstrip()[:1] in {"{", "["}
+
+
+def _carries_unread_outcome_field(value: object) -> bool:
+    """True when an outcome key is present with a value ``_structural_outcome`` cannot read."""
+    for wrapper in _outcome_wrappers(value):
+        raw_exit = wrapper.get("exit_code")
+        if raw_exit is not None and not (isinstance(raw_exit, int) and not isinstance(raw_exit, bool)):
+            return True
+        raw_error = wrapper.get("is_error")
+        if raw_error is not None and not isinstance(raw_error, bool):
+            return True
+    return False
+
+
+def _outcome_wrappers(value: object) -> list[dict[str, object]]:
+    """Return the mappings a Codex outcome field can live in, outermost first."""
     wrappers: list[dict[str, object]] = []
     if isinstance(value, dict):
         wrappers.append(value)
@@ -1491,6 +1527,11 @@ def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
             nested = value.get(key)
             if isinstance(nested, dict):
                 wrappers.append(nested)
+    return wrappers
+
+
+def _structural_outcome(value: object) -> tuple[bool | None, int | None]:
+    wrappers = _outcome_wrappers(value)
     exit_code: int | None = None
     is_error: bool | None = None
     for wrapper in wrappers:
@@ -1593,13 +1634,14 @@ def _code_mode_result_items(output: object, *, child_count: int) -> tuple[object
 def _code_mode_child_results(output: object, *, child_count: int) -> tuple[_CodexExecChildResult, ...]:
     results: list[_CodexExecChildResult] = []
     for item in _code_mode_result_items(output, child_count=child_count):
-        is_error, exit_code = _codex_tool_result_outcome(item)
+        is_error, exit_code, reason = _codex_tool_result_outcome(item)
         results.append(
             _CodexExecChildResult(
                 raw=item,
                 text=_codex_tool_output_text(item),
                 is_error=is_error,
                 exit_code=exit_code,
+                unknown_reason=reason,
                 paths=_structural_paths(item),
                 byte_count=_structural_byte_count(item),
             )
@@ -1858,11 +1900,7 @@ def _code_mode_child_result_blocks(envelope: _CodexExecEnvelope) -> list[ParsedC
                 metadata=metadata,
                 is_error=result.is_error,
                 exit_code=result.exit_code,
-                outcome_unknown_reason=(
-                    ToolResultUnknownReason.NOT_REPORTED.value
-                    if result.is_error is None and result.exit_code is None
-                    else None
-                ),
+                outcome_unknown_reason=result.unknown_reason,
             )
         )
     return blocks
@@ -1983,7 +2021,7 @@ def _codex_tool_message(
         # envelope, see _codex_exec_envelope_outcome) affect the outcome.
         # Arbitrary prose containing exit-code-like wording remains evidence
         # text with an unknown outcome.
-        is_error, exit_code = _codex_tool_result_outcome(output)
+        is_error, exit_code, reason = _codex_tool_result_outcome(output)
         blocks = [
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -1991,9 +2029,7 @@ def _codex_tool_message(
                 text=output_text,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=(
-                    ToolResultUnknownReason.NOT_REPORTED.value if is_error is None and exit_code is None else None
-                ),
+                outcome_unknown_reason=reason,
             )
         ]
         if exec_envelope is not None:
@@ -2100,20 +2136,22 @@ def _mcp_invocation_tool_name(invocation: dict[str, object]) -> str:
     return tool or server or "mcp_tool_call"
 
 
-def _mcp_result_outcome(result: object) -> tuple[bool | None, str | None]:
-    """Extract (is_error, text) from an ``mcp_tool_call_end`` ``result``.
+def _mcp_result_outcome(result: object) -> tuple[bool | None, str | None, str | None]:
+    """Extract (is_error, text, unknown reason) from an ``mcp_tool_call_end`` ``result``.
 
     Codex wraps MCP results as a Rust-style ``{"Ok": ...}`` / ``{"Err": "..."}``
     tagged union rather than the ``is_error``/``exit_code`` shape other Codex
-    tool records use.
+    tool records use. A mapping carrying neither tag is that union with a
+    variant this mapping does not read; anything that is not a mapping is not
+    the union at all and reports no outcome.
     """
     if not isinstance(result, dict):
-        return None, _codex_tool_output_text(result)
+        return None, _codex_tool_output_text(result), unknown_reason(is_error=None)
     if "Err" in result:
-        return True, _codex_tool_output_text(result.get("Err"))
+        return True, _codex_tool_output_text(result.get("Err")), None
     if "Ok" in result:
-        return False, _codex_tool_output_text(result.get("Ok"))
-    return None, _codex_tool_output_text(result)
+        return False, _codex_tool_output_text(result.get("Ok")), None
+    return None, _codex_tool_output_text(result), unknown_reason(is_error=None, outcome_field_present=True)
 
 
 def _codex_mcp_tool_call_messages(
@@ -2168,7 +2206,7 @@ def _codex_mcp_tool_call_messages(
             )
         ],
     )
-    is_error, result_text = _mcp_result_outcome(payload.get("result"))
+    is_error, result_text, mcp_unknown_reason = _mcp_result_outcome(payload.get("result"))
     result_message = ParsedMessage(
         provider_message_id=f"{tool_id}::mcp-output",
         role=Role.TOOL,
@@ -2183,7 +2221,7 @@ def _codex_mcp_tool_call_messages(
                 tool_id=tool_id,
                 text=result_text,
                 is_error=is_error,
-                outcome_unknown_reason=(ToolResultUnknownReason.NOT_REPORTED.value if is_error is None else None),
+                outcome_unknown_reason=mcp_unknown_reason,
             )
         ],
     )

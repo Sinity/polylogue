@@ -3,12 +3,12 @@
   "disposition_counts": {
     "COMPLETE": 67,
     "DERIVE": 7,
-    "KEEP": 1715,
+    "KEEP": 1716,
     "PURGE": 99,
     "TRANSITION": 9
   },
   "format": "polylogue-schema-disposition/v1",
-  "object_count": 1897,
+  "object_count": 1898,
   "objects": [
     {
       "campaign_action": "retain and verify the named producer/consumer",
@@ -5536,7 +5536,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "source.db production readers",
-      "definition_sha256": "11ecc72ec1f74d68c9e2b924d84f524bc9add6b219761f9cf913bff4125e4e4f",
+      "definition_sha256": "507fd2ee53c364c36205e06670cec463ee9e89036a6c1f4969a79023238a7f2e",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -5628,6 +5628,27 @@
       "live_row_denominator": "SELECT COUNT(*) FROM raw_container_coordinates",
       "name": "split_index",
       "object_ref": "source:column:raw_container_coordinates.split_index",
+      "object_type": "column",
+      "producer": "source.db canonical writer route",
+      "reindex_timing": "authenticated durable train",
+      "semantic_owner": "canonical schema owner",
+      "successor_or_authorization": "none",
+      "table_name": "raw_container_coordinates",
+      "tier": "source",
+      "tier_durability": "durable",
+      "virtual": false
+    },
+    {
+      "campaign_action": "retain and verify the named producer/consumer",
+      "consumer": "source.db production readers",
+      "definition_sha256": "77178c558b8b3e6f197af9f0be9a29349a77554eb5cb76822844e99aebc60adb",
+      "disposition": "KEEP",
+      "evidence": "reachable canonical declaration; live counts are evidence only",
+      "generated_kind": null,
+      "implementation_bead": "polylogue-20eld",
+      "live_row_denominator": "SELECT COUNT(*) FROM raw_container_coordinates",
+      "name": "addressing_mode",
+      "object_ref": "source:column:raw_container_coordinates.addressing_mode",
       "object_type": "column",
       "producer": "source.db canonical writer route",
       "reindex_timing": "authenticated durable train",
@@ -13348,7 +13369,7 @@
     {
       "campaign_action": "retain and verify the named producer/consumer",
       "consumer": "index.db production readers",
-      "definition_sha256": "e201533ea190fdf0f38a2c7eb8cbd3929e8e91bcb55c0af5b72685527d0c23ce",
+      "definition_sha256": "a03d93e87010b6efed8d8a717fd8f8e06f8e8698a8dfec73fc24d8bb0ff20ca1",
       "disposition": "KEEP",
       "evidence": "reachable canonical declaration; live counts are evidence only",
       "generated_kind": null,
@@ -39851,9 +39872,9 @@
   "schema_fingerprints": {
     "audit": "39a2cff1dfbc0d8721f8a29229e6104abbdfa37d6f432d822b412bc580f2b5e9",
     "embeddings": "822d7ca7d00c658690337f521b0ad03d912903d95435e71a9a5703480e82dc5f",
-    "index": "760aac910a4892385617b9732664f4dd632171b5d1fcc161cafbf1005a951f2b",
+    "index": "f7048be24a303a16435b1a5a0cfe5026ac7cd64a64ec442960d8586709cfcc0b",
     "ops": "4443709d4b8fa6706cd0f2e350cb34fe7660c734dcd2407da202a425027e2d80",
-    "source": "b6ea0b8cd6f926106f1de584f5a4c1b114ea6749d7375b256c6f91c85f4d7814",
+    "source": "22d85e3edbf2eecb65c1fd753599889d2a9282d366e64cd9d565def16f83208e",
     "user": "e87ac873dd6e228784e367ac4252c76bdd18569d9af0dc38bf2ee33128134559"
   },
   "schema_versions": {
@@ -39861,7 +39882,7 @@
     "embeddings": 5,
     "index": 96,
     "ops": 1,
-    "source": 41,
+    "source": 42,
     "user": 11
   },
   "tier_counts": {
@@ -39898,9 +39919,9 @@
       "views": 0
     },
     "source": {
-      "columns": 433,
+      "columns": 434,
       "indexes": 46,
-      "objects": 522,
+      "objects": 523,
       "tables": 42,
       "triggers": 0,
       "views": 1

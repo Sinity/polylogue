@@ -379,7 +379,12 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="tool-unknown",
                         tool_input={"command": "unknown"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-unknown", text="no status"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="tool-unknown",
+                        text="no status",
+                    ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_USE,
                         tool_name="Bash",
@@ -418,7 +423,12 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
                         tool_id="",
                         tool_input={"command": "empty"},
                     ),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="", text="must not pair"),
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="",
+                        text="must not pair",
+                    ),
                 ],
             )
         ],
@@ -556,12 +566,26 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
             ParsedMessage(
                 provider_message_id="m-result-1",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-one")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="repeated",
+                        text="result-one",
+                    )
+                ],
             ),
             ParsedMessage(
                 provider_message_id="m-result-2",
                 role=Role.ASSISTANT,
-                blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="repeated", text="result-two")],
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="repeated",
+                        text="result-two",
+                    )
+                ],
             ),
         ],
     )

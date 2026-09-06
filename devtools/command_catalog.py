@@ -336,6 +336,22 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         ),
     ),
     CommandSpec(
+        "archive tool-outcome-census",
+        "archive",
+        "Classify every archived tool result by origin, construct, outcome and unknown reason.",
+        "devtools.tool_outcome_census",
+        json_flag=True,
+        use_when=(
+            "Before accepting a rebuilt archive, prove the tool-outcome contract holds over the whole "
+            "candidate: no unknown outcome without a reason, no known outcome carrying one, no reason "
+            "an origin's parsers do not own, and no public projection that disagrees with the block."
+        ),
+        examples=(
+            "devtools archive tool-outcome-census",
+            "devtools archive tool-outcome-census --json",
+        ),
+    ),
+    CommandSpec(
         "archive continuity-evidence",
         "archive",
         "Replay continuity scenarios and verify their query routes are discoverable.",

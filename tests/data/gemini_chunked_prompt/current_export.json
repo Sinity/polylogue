@@ -1,0 +1,125 @@
+{
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "role": "user",
+        "text": "synthetic opening turn",
+        "createTime": "2026-01-05T09:00:00Z",
+        "tokenCount": 4
+      },
+      {
+        "role": "model",
+        "isThought": true,
+        "text": "synthetic thought",
+        "thinkingBudget": 2048,
+        "thoughtSignatures": ["synthetic-signature"],
+        "tokenCount": 3,
+        "finishReason": "STOP"
+      },
+      {
+        "role": "model",
+        "text": "synthetic answer",
+        "parts": [{"text": "synthetic answer"}],
+        "tokenCount": 3,
+        "finishReason": "STOP",
+        "safetyRatings": [
+          {"category": "HARM_CATEGORY_HARASSMENT", "probability": "NEGLIGIBLE"}
+        ]
+      },
+      {
+        "role": "user",
+        "text": "",
+        "driveDocument": {"id": "synthetic-drive-document"}
+      },
+      {
+        "role": "user",
+        "text": "",
+        "driveImage": {"id": "synthetic-drive-image"}
+      },
+      {
+        "role": "user",
+        "text": "",
+        "driveAudio": {"id": "synthetic-drive-audio"}
+      },
+      {
+        "role": "user",
+        "text": "",
+        "driveVideo": {"id": "synthetic-drive-video"}
+      },
+      {
+        "role": "user",
+        "text": "",
+        "youtubeVideo": {"url": "https://example.invalid/synthetic"},
+        "videoMetadata": {"startOffset": "0s"}
+      },
+      {
+        "role": "user",
+        "inlineImage": {"mimeType": "image/png", "data": "AAAA"},
+        "text": ""
+      },
+      {
+        "role": "user",
+        "inlineFile": {"mimeType": "text/plain", "data": "AAAA"},
+        "text": ""
+      },
+      {
+        "role": "model",
+        "executableCode": {"language": "PYTHON", "code": "print(0)"},
+        "tokenCount": 5
+      },
+      {
+        "role": "model",
+        "codeExecutionResult": {"outcome": "OUTCOME_OK", "output": "0"},
+        "tokenCount": 2
+      },
+      {
+        "role": "model",
+        "text": "synthetic grounded answer",
+        "grounding": {"groundingChunks": []},
+        "tokenCount": 3,
+        "finishReason": "STOP"
+      },
+      {
+        "role": "model",
+        "errorMessage": "synthetic upstream refusal",
+        "finishReason": "OTHER"
+      },
+      {
+        "role": "user",
+        "text": "synthetic edited turn",
+        "isEdited": true,
+        "branchParent": {"id": "synthetic-branch-parent"},
+        "branchChildren": [{"id": "synthetic-branch-child"}]
+      }
+    ],
+    "pendingInputs": [{"role": "user", "text": ""}]
+  },
+  "citations": [{"uri": "https://example.invalid/synthetic-citation"}],
+  "runSettings": {
+    "temperature": 1.0,
+    "model": "models/synthetic-model",
+    "topP": 0.95,
+    "topK": 64,
+    "maxOutputTokens": 8192,
+    "safetySettings": [
+      {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"}
+    ],
+    "enableCodeExecution": false,
+    "enableSearchAsATool": false,
+    "enableBrowseAsATool": false,
+    "enableAutoFunctionResponse": false,
+    "enableEnhancedCivicAnswers": false,
+    "enableGoogleMaps": false,
+    "enableImageSearch": false,
+    "enableAgentCollaborativePlanningControl": false,
+    "enableAgentThinkingSummariesControl": false,
+    "enableAgentVisualizationControl": false,
+    "googleSearch": {},
+    "outputResolution": "RESOLUTION_UNSPECIFIED",
+    "responseMimeType": "text/plain",
+    "responseModalities": [],
+    "thinkingBudget": 2048,
+    "thinkingLevel": "THINKING_LEVEL_UNSPECIFIED"
+  },
+  "systemInstruction": {"text": "synthetic system instruction"}
+}

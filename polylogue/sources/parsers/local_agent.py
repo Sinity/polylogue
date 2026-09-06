@@ -18,6 +18,8 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     resolve_tool_outputs_dir,
 )
 from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+from polylogue.sources.parsers.hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     ParsedContentBlock,
@@ -424,7 +426,17 @@ def _parse_hermes_message(
     tool_call_id = _string(record.get("tool_call_id"))
     role = _role(_string(record.get("role")) or "unknown")
     if role is Role.TOOL and text:
-        content_blocks.append(ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id=tool_call_id, text=text))
+        hermes_is_error, hermes_exit_code, hermes_reason = hermes_tool_result_outcome(record.get("content"))
+        content_blocks.append(
+            ParsedContentBlock(
+                type=BlockType.TOOL_RESULT,
+                tool_id=tool_call_id,
+                text=text,
+                is_error=hermes_is_error,
+                exit_code=hermes_exit_code,
+                outcome_unknown_reason=hermes_reason,
+            )
+        )
     if not text and not content_blocks:
         return None
     token_usage = _token_usage_fields(record)
@@ -888,13 +900,15 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
         function_name = _string(function_response.get("name"))
         if function_name:
             result_metadata["function_name"] = function_name
+        response_is_error, response_reason = _status_outcome(status, is_error=True if error else status_is_error)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
                 tool_id=_string(function_response.get("id")) or tool_id,
                 text=text or f"[{status}]",
                 metadata=result_metadata or None,
-                is_error=True if error else status_is_error,
+                is_error=response_is_error,
+                outcome_unknown_reason=response_reason,
             )
         )
     if blocks:
@@ -902,13 +916,15 @@ def _tool_result_blocks(record: JSONDocument, *, fallback_id: str) -> list[Parse
     display_text = _content_text(record.get("resultDisplay"))
     if display_text is None and status is None:
         return []
+    display_is_error, display_reason = _status_outcome(status, is_error=status_is_error)
     return [
         ParsedContentBlock(
             type=BlockType.TOOL_RESULT,
             tool_id=tool_id,
             text=display_text or f"[{status or 'error'}]",
             metadata=metadata or None,
-            is_error=status_is_error,
+            is_error=display_is_error,
+            outcome_unknown_reason=display_reason,
         )
     ]
 
@@ -922,15 +938,31 @@ def _tool_metadata(record: JSONDocument) -> dict[str, object]:
     return metadata
 
 
+#: Gemini CLI's failure-status vocabulary. Matched against the ``status``
+#: field only -- never against result text.
+_STATUS_ERROR_MARKERS = ("error", "fail", "timeout", "cancel", "blocked")
+
+
 def _status_is_error(status: str | None) -> bool | None:
     if status is None:
         return None
     normalized = status.strip().lower()
     if normalized in {"success", "succeeded", "ok", "completed"}:
         return False
-    if any(marker in normalized for marker in ("error", "fail", "timeout", "cancel", "blocked")):
+    if any(marker in normalized for marker in _STATUS_ERROR_MARKERS):
         return True
     return None
+
+
+def _status_outcome(status: str | None, *, is_error: bool | None) -> tuple[bool | None, str | None]:
+    """Map a Gemini CLI tool record's ``status`` field to (is_error, unknown reason).
+
+    ``status`` is this origin's only structural verdict -- the record carries
+    no exit code. A token outside the declared success/failure vocabulary is a
+    verdict the mapping does not read, not an absent one.
+    """
+    unmapped_status = is_error is None and status is not None
+    return is_error, unknown_reason(is_error=is_error, outcome_field_present=unmapped_status)
 
 
 def _tool_input(value: object) -> dict[str, object]:

@@ -5,7 +5,23 @@ from __future__ import annotations
 from hashlib import sha256
 from math import isqrt
 
+from polylogue.core.enums import PolylogueStrEnum
+
 _ZIP_MEMBER_RAW_ID_DOMAIN = b"polylogue:zip-member-raw:v2\0"
+
+
+class MemberAddressingMode(PolylogueStrEnum):
+    """How one acquired raw payload is addressed inside its container member.
+
+    An element is one session-bearing value inside a member that holds several;
+    a whole member is the member document itself. The two are different
+    addresses for different content, and a member that holds one document has
+    no element 0 -- reading it as one is how a positional consumer returns a
+    valid but unrelated conversation.
+    """
+
+    ELEMENT_OF_CONTAINER = "element_of_container"
+    WHOLE_MEMBER = "whole_member"
 
 
 def zip_member_source_index(*, entry_ordinal: int, split_index: int) -> int:
@@ -66,6 +82,7 @@ def zip_member_identity_coordinate(
 
 
 __all__ = [
+    "MemberAddressingMode",
     "zip_member_identity_coordinate",
     "zip_member_raw_id",
     "zip_member_source_coordinate",

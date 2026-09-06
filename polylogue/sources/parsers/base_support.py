@@ -7,8 +7,9 @@ from functools import wraps
 from typing import Any, Literal, TypeVar
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, ToolResultUnknownReason, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
 from polylogue.core.hashing import hash_text
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base_models import (
     AdmissionDisposition,
@@ -497,15 +498,16 @@ def content_blocks_from_segments(
             exit_code = (
                 raw_exit_code if isinstance(raw_exit_code, int) and not isinstance(raw_exit_code, bool) else None
             )
-            # polylogue-2qx.4 / polylogue-cuxz.8: this is the shared
-            # Anthropic-protocol tool_result segment shape (Claude Code,
-            # Claude common, Codex). When the segment itself carries no
-            # boolean ``is_error`` the provider structurally emitted nothing
-            # for this record -- NOT_REPORTED, not a bare unknown. Origin-
-            # specific overlays (e.g. Claude Code's own toolUseResult
-            # verdicts) may resolve or override this afterward.
-            outcome_unknown_reason = (
-                None if is_error is not None or exit_code is not None else ToolResultUnknownReason.NOT_REPORTED.value
+            # The shared Anthropic-protocol tool_result segment shape (Claude
+            # Code, Claude common, Codex). A present-but-unreadable
+            # ``is_error``/``exit_code`` is a structure carrying a verdict this
+            # mapping does not cover; both keys absent is an unreported
+            # outcome. Origin-specific overlays (e.g. Claude Code's own
+            # toolUseResult verdicts) may resolve or override this afterward.
+            outcome_unknown_reason = unknown_reason(
+                is_error=is_error,
+                exit_code=exit_code,
+                outcome_field_present=any(seg.get(key) is not None for key in ("is_error", "exit_code")),
             )
             blocks.append(
                 ParsedContentBlock(

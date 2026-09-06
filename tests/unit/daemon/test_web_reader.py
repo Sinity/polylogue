@@ -3065,6 +3065,7 @@ class TestCockpitAggregateRoutes:
                                 ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-evidence"),
                                 ParsedContentBlock(
                                     type=BlockType.TOOL_RESULT,
+                                    outcome_unknown_reason="not_reported",
                                     text="failed",
                                     tool_id="tool-evidence",
                                 ),
@@ -3102,6 +3103,7 @@ class TestCockpitAggregateRoutes:
             ParsedContentBlock(type=BlockType.TOOL_USE, text="pytest", tool_id="tool-parent"),
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
+                outcome_unknown_reason="not_reported",
                 text="ok",
                 tool_id="tool-parent",
             ),

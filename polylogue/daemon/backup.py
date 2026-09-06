@@ -35,7 +35,7 @@ from polylogue.daemon.cli import checkpoint_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
-from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
+from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
@@ -853,7 +853,7 @@ def _source_recoverability_proofs(
     unproven: list[dict[str, str]] | None = None,
     source_bytes_cache: dict[str, bytes] | None = None,
     decoded_payload_cache: dict[str, object] | None = None,
-    zip_payload_cache: dict[str, dict[int, bytes]] | None = None,
+    zip_payload_cache: MemberCandidateCache | None = None,
     immutable: bool = True,
 ) -> list[dict[str, str]]:
     """Prove missing source-owned bytes by replaying their acquisition payload."""
@@ -1008,6 +1008,7 @@ def _source_recoverability_proofs(
                         "coordinate_format": str(row.get("coordinate_format") or ""),
                         "entry_ordinal": str(row.get("entry_ordinal")) if row.get("entry_ordinal") is not None else "",
                         "split_index": str(row.get("split_index")) if row.get("split_index") is not None else "",
+                        "addressing_mode": str(row.get("addressing_mode") or ""),
                         "revision_kind": str(row.get("revision_kind") or ""),
                         "append_start_offset": (
                             str(historical_append_start)
@@ -1057,10 +1058,13 @@ def _recoverability_failure_kind(error: str) -> str:
         return "legacy_append_window_missing"
     if error == "historical_snapshot:prefix_mismatch":
         return "historical_snapshot_prefix_mismatch"
-    if error.startswith("source_index:") or error in {
+    if error == "member_yields_no_payload":
+        return "no_replay_candidate"
+    if error in {
         "container_coordinate_missing",
         "container_coordinate_mismatch",
         "ambiguous_container_member",
+        "content_identity:unavailable",
     }:
         return "acquisition_coordinate"
     if error.startswith("error:"):
@@ -1587,7 +1591,7 @@ def _verify_archive_file_set_backup(path: Path) -> dict[str, object]:
                 recoverability_unproven = []
             source_bytes_cache: dict[str, bytes] = {}
             decoded_payload_cache: dict[str, object] = {}
-            zip_payload_cache: dict[str, dict[int, bytes]] = {}
+            zip_payload_cache: MemberCandidateCache = {}
             proof_hashes: set[str] = set()
             for proof in recoverability_proofs:
                 if not isinstance(proof, dict):

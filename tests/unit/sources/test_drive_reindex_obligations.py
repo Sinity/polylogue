@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import message_owner_resolution
 from polylogue.schemas.drift_sentinel import UNSEEN_SHAPE, classify_schema_drift
@@ -59,32 +61,10 @@ def test_same_timestamp_document_turns_keep_distinguishable_owners() -> None:
     assert not resolution.ambiguous_keys
 
 
-def test_current_chunked_prompt_shape_resolves_to_a_committed_candidate() -> None:
-    """polylogue-tu1f: the committed package knows the current export shape."""
-    payload = _export([{"role": "user", "text": "synthetic turn"}])
-
+def _drifts_as_unseen(payload: dict[str, Any]) -> bool:
     resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
-
     assert resolution is not None
-    assert resolution.reason != "package_default"
-    assert (
-        classify_schema_drift(
-            resolution_reason=resolution.reason,
-            is_valid=True,
-            drift_warnings=(),
-        )
-        is not UNSEEN_SHAPE
-    )
-
-
-def test_an_unknown_gemini_shape_still_classifies_as_unseen() -> None:
-    """The currency lock above must not have been bought by calling everything known."""
-    resolution = SchemaRegistry().resolve_payload(
-        Provider.GEMINI.value, {"somethingGoogleHasNotShippedYet": {"nested": [1, 2, 3]}}
-    )
-
-    assert resolution is not None
-    assert (
+    return (
         classify_schema_drift(
             resolution_reason=resolution.reason,
             is_valid=True,
@@ -92,6 +72,59 @@ def test_an_unknown_gemini_shape_still_classifies_as_unseen() -> None:
         )
         is UNSEEN_SHAPE
     )
+
+
+# Structural variants a census of the live AI Studio export surface shows in
+# circulation: optional envelope siblings (citations, applets), the four Drive
+# attachment kinds, thought chunks, and per-chunk delivery metadata. Values are
+# synthetic; only the key shape is taken from the wire.
+_CURRENT_SHAPE_VARIANTS: list[tuple[str, dict[str, Any]]] = [
+    ("bare envelope", _export([{"role": "user", "text": "synthetic turn"}])),
+    (
+        "citations sibling",
+        _export([{"role": "user", "text": "t"}]) | {"citations": [{"uri": "https://example.invalid/c"}]},
+    ),
+    ("applets sibling", _export([{"role": "user", "text": "t"}]) | {"applets": []}),
+    ("drive document turn", _export([_document_turn("synthetic-file")])),
+    ("drive image turn", _export([{"role": "user", "text": "", "driveImage": {"id": "synthetic-image"}}])),
+    ("drive audio turn", _export([{"role": "user", "text": "", "driveAudio": {"id": "synthetic-audio"}}])),
+    ("drive video turn", _export([{"role": "user", "text": "", "driveVideo": {"id": "synthetic-video"}}])),
+    ("thought chunk", _export([{"role": "model", "text": "t", "isThought": True, "thoughtSignatures": [""]}])),
+    ("delivery metadata", _export([{"role": "model", "text": "t", "finishReason": "STOP", "tokenCount": 12}])),
+    (
+        "systemInstruction absent",
+        {k: v for k, v in _export([{"role": "user", "text": "t"}]).items() if k != "systemInstruction"},
+    ),
+]
+
+# The currency lock above is worthless if the package answers "known" to
+# everything. Each of these must stay unseen_shape: the committed package
+# recognizes the current export through its ``chunkedPrompt`` anchor, so
+# removing that anchor -- or presenting a different provider's document -- must
+# fall back to the package default.
+_STILL_UNSEEN: list[tuple[str, dict[str, Any]]] = [
+    ("unshipped shape", {"somethingGoogleHasNotShippedYet": {"nested": [1, 2, 3]}}),
+    ("anchor omitted", {k: v for k, v in _export([{"role": "user", "text": "t"}]).items() if k != "chunkedPrompt"}),
+    ("anchor not an object", _export([{"role": "user", "text": "t"}]) | {"chunkedPrompt": []}),
+    ("empty document", {}),
+    ("a ChatGPT export", {"title": "t", "create_time": 1.0, "mapping": {}, "moderation_results": []}),
+]
+
+
+@pytest.mark.parametrize("label,payload", _CURRENT_SHAPE_VARIANTS, ids=[label for label, _ in _CURRENT_SHAPE_VARIANTS])
+def test_current_chunked_prompt_shape_resolves_to_a_committed_candidate(label: str, payload: dict[str, Any]) -> None:
+    """polylogue-tu1f: the committed package knows the current export shape."""
+    resolution = SchemaRegistry().resolve_payload(Provider.GEMINI.value, payload)
+
+    assert resolution is not None
+    assert resolution.reason != "package_default"
+    assert not _drifts_as_unseen(payload)
+
+
+@pytest.mark.parametrize("label,payload", _STILL_UNSEEN, ids=[label for label, _ in _STILL_UNSEEN])
+def test_a_shape_without_the_anchor_still_classifies_as_unseen(label: str, payload: dict[str, Any]) -> None:
+    """The currency lock above must not have been bought by calling everything known."""
+    assert _drifts_as_unseen(payload)
 
 
 def test_zero_message_drive_document_never_becomes_a_session() -> None:

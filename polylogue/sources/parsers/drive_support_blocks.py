@@ -5,6 +5,7 @@ from __future__ import annotations
 from polylogue.archive.viewport.viewports import ContentBlock
 from polylogue.core.enums import BlockType
 from polylogue.core.json import JSONDocument, json_document, json_document_list
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import ParsedContentBlock, ParsedSessionEvent
 
@@ -29,23 +30,33 @@ def _optional_int(payload: JSONDocument, *keys: str) -> int | None:
     return None
 
 
-def _tool_result_error(metadata: JSONDocument, exit_code: int | None) -> bool | None:
+def _tool_result_outcome(metadata: JSONDocument, exit_code: int | None) -> tuple[bool | None, str | None]:
+    """Map a captured tool_result's metadata to (is_error, unknown reason).
+
+    The metadata is the provider's own retained block payload; an
+    outcome-bearing key whose value falls outside this mapping is a verdict
+    the parser did not read, not an absent one.
+    """
     for key in ("is_error", "isError", "error"):
         value = metadata.get(key)
         if isinstance(value, bool):
-            return value
+            return value, None
         if key == "error" and isinstance(value, str) and value:
-            return True
+            return True, None
     outcome = metadata.get("outcome") or metadata.get("status")
     if isinstance(outcome, str) and outcome:
         normalized = outcome.strip().lower()
         if normalized in _SUCCESS_OUTCOMES:
-            return False
+            return False, None
         if any(marker in normalized for marker in _ERROR_OUTCOME_MARKERS):
-            return True
+            return True, None
     if exit_code is not None:
-        return exit_code != 0
-    return None
+        return exit_code != 0, None
+    unread = any(
+        metadata.get(key) is not None
+        for key in ("is_error", "isError", "error", "outcome", "status", "exitCode", "exit_code")
+    )
+    return None, unknown_reason(is_error=None, outcome_field_present=unread)
 
 
 def viewport_block_payload(block: ContentBlock) -> JSONDocument | None:
@@ -95,15 +106,18 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
         if isinstance(language, str) and language:
             metadata_out.setdefault("language", language)
         parsed_type = BlockType.from_string(block_type)
-        exit_code = _optional_int(metadata, "exitCode", "exit_code") if parsed_type is BlockType.TOOL_RESULT else None
+        is_tool_result = parsed_type is BlockType.TOOL_RESULT
+        exit_code = _optional_int(metadata, "exitCode", "exit_code") if is_tool_result else None
+        is_error, outcome_reason = _tool_result_outcome(metadata, exit_code) if is_tool_result else (None, None)
         parsed.append(
             ParsedContentBlock(
                 type=parsed_type,
                 text=text,
                 media_type=media_type,
                 metadata=metadata_out or None,
-                is_error=(_tool_result_error(metadata, exit_code) if parsed_type is BlockType.TOOL_RESULT else None),
+                is_error=is_error,
                 exit_code=exit_code,
+                outcome_unknown_reason=outcome_reason,
             )
         )
     return parsed
