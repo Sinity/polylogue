@@ -261,3 +261,59 @@ def test_publishing_an_excess_key_removes_the_orphan(archive: tuple[Path, str]) 
 
     with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         assert excess_session_profiles(conn) == ()
+
+
+def test_the_adapter_converges_through_the_kernel_against_a_real_archive(
+    archive: tuple[Path, str],
+) -> None:
+    """The vertical slice: kernel, adapter, and a real archive in one pass.
+
+    Proves the seam the two rings meet at -- the adapter returns status strings
+    because storage may not import the daemon ring, and the kernel normalizes
+    them. A mismatch here would only show up in production, where the kernel
+    would treat every key as missing and republish the archive on every pass.
+    """
+    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, converge
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: open_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+    )
+    registry = DerivationRegistry([adapter])
+
+    first = converge(registry, frame)
+    assert first.done == 1, first.outcomes
+    assert _status(index_db, session_id) == "valid"
+
+    assert converge(registry, frame).wrote_nothing
+
+    _mutate(index_db, session_id, "role", "'assistant'")
+    assert converge(registry, frame).done == 1
+    assert _status(index_db, session_id) == "valid"
+
+
+def test_the_kernel_reports_a_quiet_key_as_pending_not_done(archive: tuple[Path, str]) -> None:
+    """Policy deferral leaves the profile absent and the key rediscoverable."""
+    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge
+    from polylogue.storage.derived.session.derivation import SessionProfileDerivation
+
+    index_db, session_id = archive
+    frame = DerivationFrame(archive_root=str(index_db.parent), source_revision="r1")
+    adapter = SessionProfileDerivation(
+        lambda: sqlite3.connect(f"file:{index_db}?mode=ro", uri=True),
+        lambda: open_connection(index_db),
+        materializer_version=_MATERIALIZER_VERSION,
+        session_scope=lambda _frame: [session_id],
+        quiet_keys=lambda _frame: frozenset({session_id}),
+    )
+    report = converge(DerivationRegistry([adapter]), frame)
+
+    assert report.done == 0
+    assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.QUIET
+    assert _status(index_db, session_id) == "missing"
