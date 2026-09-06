@@ -9,7 +9,7 @@ import pytest
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind, classify_artifact, classify_artifact_path
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocumentList, JSONValue
 from polylogue.schemas.observation_identity import resolve_provider_config
 from polylogue.schemas.observation_models import ObservationTerminalStatus
 from polylogue.schemas.sampling_db import _iter_schema_units_from_db
@@ -118,7 +118,7 @@ def test_relationship_index_jsonl_conversation_field_is_metadata_not_session_str
     assert artifact.parse_as_session is False
 
 
-_EXTRACTED_TURNS: list[JSONValue] = [
+_EXTRACTED_TURNS: JSONDocumentList = [
     {
         "file": "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl",
         "timestamp": "2025-06-13T17:40:52.056Z",
@@ -132,7 +132,7 @@ _EXTRACTED_TURNS: list[JSONValue] = [
         "content": "Search for ad-hoc solutions and pattern violations in the codebase.",
     },
 ]
-_PROVIDER_TURNS: list[JSONValue] = [
+_PROVIDER_TURNS: JSONDocumentList = [
     {
         "type": "user",
         "uuid": "u1",
@@ -154,12 +154,11 @@ _PROVIDER_TURNS: list[JSONValue] = [
 #: A genuine turn that also carries the provenance-shaped top-level keys the
 #: extraction rule reads. It stays a session because it still carries a
 #: provider record envelope, which is what the rule actually tests.
-_PROVIDER_TURNS_WITH_PROVENANCE_KEYS: list[JSONValue] = [
-    {**record, "file": "notes.jsonl", "content": "tool read"}  # type: ignore[dict-item]
-    for record in _PROVIDER_TURNS
+_PROVIDER_TURNS_WITH_PROVENANCE_KEYS: JSONDocumentList = [
+    {**record, "file": "notes.jsonl", "content": "tool read"} for record in _PROVIDER_TURNS
 ]
 #: Extracted rows mixed with rows this taxonomy cannot name at all.
-_AMBIGUOUS_EXTRACT: list[JSONValue] = [_EXTRACTED_TURNS[0], {"score": 0.91, "cluster": 3}]
+_AMBIGUOUS_EXTRACT: JSONDocumentList = [_EXTRACTED_TURNS[0], {"score": 0.91, "cluster": 3}]
 
 _SESSION_DIR = "/home/user/.claude/projects/proj/"
 
@@ -226,7 +225,7 @@ _SESSION_DIR = "/home/user/.claude/projects/proj/"
     ],
 )
 def test_extracted_corpus_and_provider_source_stay_distinct_at_every_path(
-    records: list[JSONValue],
+    records: JSONDocumentList,
     source_path: str | None,
     expected_kind: ArtifactKind,
     expected_session: bool,
@@ -268,7 +267,7 @@ def test_extracted_corpus_is_refused_by_the_production_source_route() -> None:
         project = Path(raw_root) / ".claude" / "projects" / "proj"
         project.mkdir(parents=True)
 
-        def write(name: str, records: list[JSONValue]) -> Path:
+        def write(name: str, records: JSONDocumentList) -> Path:
             path = project / name
             path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
             return path
@@ -310,7 +309,7 @@ def test_live_ingest_admission_refuses_the_derivative_at_a_session_path() -> Non
         project = Path(raw_root) / "projects" / "proj"
         project.mkdir(parents=True)
 
-        def write(name: str, records: list[JSONValue]) -> Path:
+        def write(name: str, records: JSONDocumentList) -> Path:
             path = project / name
             path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
             return path
