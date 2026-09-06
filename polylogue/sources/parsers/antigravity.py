@@ -812,6 +812,7 @@ def _section_runs(body: str) -> list[str | tuple[AntigravityActivityMarker, ...]
 def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessage]:
     sections = list(_SECTION_RE.finditer(markdown))
     messages: list[ParsedMessage] = []
+    activity_ordinal = 0
     for index, section in enumerate(sections):
         start = section.end()
         end = sections[index + 1].start() if index + 1 < len(sections) else len(markdown)
@@ -821,7 +822,8 @@ def _messages_from_markdown(markdown: str, cascade_id: str) -> list[ParsedMessag
             if isinstance(run, str):
                 messages.append(_prose_message(run, cascade_id, section_role, heading, len(messages)))
             else:
-                messages.append(_activity_message(run, cascade_id, len(messages)))
+                messages.append(_activity_message(run, cascade_id, len(messages), activity_ordinal))
+                activity_ordinal += 1
 
     if messages:
         return messages
@@ -885,12 +887,18 @@ def _activity_message(
     markers: tuple[AntigravityActivityMarker, ...],
     cascade_id: str,
     position: int,
+    ordinal: int,
 ) -> ParsedMessage:
     """Build the agent tool-activity message for one run of vendor markers.
 
     The marker phrasing is fully recoverable from ``tool_name`` plus
     ``tool_input``, so the message carries no prose: retaining the rendered
     line as text would count agent activity as authored words again.
+
+    ``ordinal`` counts activity runs within the transcript and enters the
+    identity seed. Two runs can render identical markers -- a lone ``*Edited
+    relevant file*`` recurs throughout a real transcript -- and they are
+    distinct events, so content alone cannot identify them.
     """
     rendered = "\n".join(marker.rendered for marker in markers)
     provider_message_id = synthetic_message_id(
@@ -898,7 +906,7 @@ def _activity_message(
         role=Role.ASSISTANT,
         text=rendered,
         timestamp=None,
-        kind=_ACTIVITY_MESSAGE_KIND,
+        kind=f"{_ACTIVITY_MESSAGE_KIND}.{ordinal}",
     )
     blocks = [
         ParsedContentBlock(

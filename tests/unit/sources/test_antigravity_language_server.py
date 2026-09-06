@@ -716,3 +716,22 @@ def test_readiness_budget_admits_more_than_one_request_timeout() -> None:
     """The declared deadline must be able to outlast a single slow probe."""
     assert antigravity._STARTUP_TIMEOUT_S > antigravity._REQUEST_TIMEOUT_S
     assert antigravity._MIN_READY_ATTEMPTS >= 2
+
+
+def test_repeated_identical_activity_runs_keep_distinct_identities() -> None:
+    """Two runs rendering the same markers are distinct events, not one.
+
+    Anti-vacuity: seeding activity identity from the rendered markers alone
+    gives both edits the same ``provider_message_id``, and the writer then
+    drops both to positional identity as an ambiguous native id.
+    """
+    transcript = (
+        "### Planner Response\n\n*Edited relevant file*\n\nFirst pass.\n\n*Edited relevant file*\n\nSecond pass.\n"
+    )
+
+    session = antigravity.parse_markdown_export(transcript, AntigravitySessionSummary(cascade_id="cascade-3"))
+
+    activity = [m for m in session.messages if m.message_type.value == "tool_use"]
+    assert len(activity) == 2
+    assert [b.tool_name for m in activity for b in m.blocks] == ["edited_file", "edited_file"]
+    assert activity[0].provider_message_id != activity[1].provider_message_id
