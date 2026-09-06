@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, TypedDict, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
-from polylogue.archive.query.spec import resolve_default_root_filter
+from polylogue.archive.query.filter_kwargs import (
+    plan_filter_kwargs,
+)
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Origin, TitleSource
@@ -29,13 +31,11 @@ from polylogue.core.types import SessionId
 _AttachableT = TypeVar("_AttachableT", Session, SessionSummary)
 
 if TYPE_CHECKING:
-    from datetime import datetime
     from pathlib import Path
 
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.expression import WithUnitWindow
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.archive.query.predicate import QueryPredicate
     from polylogue.config import Config
     from polylogue.storage.sqlite.archive_tiers.archive import (
         ArchiveSessionSearchHit,
@@ -94,94 +94,7 @@ def _session_seed_hits(
     limit = plan.limit if plan.limit is not None else 50
     pool = max(limit + plan.offset, limit) * 3
     scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
-    return archive.semantic_summaries(scored, limit=pool, offset=0, **_plan_filter_kwargs(plan))
-
-
-def _datetime_to_ms(value: datetime | None) -> int | None:
-    if value is None:
-        return None
-    return int(value.timestamp() * 1000)
-
-
-class _ArchiveFilterKwargs(TypedDict):
-    """The SQL-pushable filter kwarg set shared by every ``ArchiveStore`` reader."""
-
-    origins: tuple[str, ...]
-    excluded_origins: tuple[str, ...]
-    tags: tuple[str, ...]
-    excluded_tags: tuple[str, ...]
-    repo_names: tuple[str, ...]
-    project_refs: tuple[str, ...]
-    has_types: tuple[str, ...]
-    has_tool_use: bool
-    has_thinking: bool
-    has_paste: bool
-    tool_terms: tuple[str, ...]
-    excluded_tool_terms: tuple[str, ...]
-    action_terms: tuple[str, ...]
-    excluded_action_terms: tuple[str, ...]
-    action_sequence: tuple[str, ...]
-    action_text_terms: tuple[str, ...]
-    referenced_paths: tuple[str, ...]
-    cwd_prefix: str | None
-    typed_only: bool
-    message_type: str | None
-    title: str | None
-    min_messages: int | None
-    max_messages: int | None
-    min_words: int | None
-    max_words: int | None
-    session_id: str | None
-    since_ms: int | None
-    until_ms: int | None
-    since_session_id: str | None
-    boolean_predicate: QueryPredicate | None
-    root: bool | None
-
-
-def _plan_filter_kwargs(plan: SessionQueryPlan) -> _ArchiveFilterKwargs:
-    """Translate the SQL-pushable subset of a plan into ``ArchiveStore`` kwargs."""
-    message_type = MessageType.normalize(plan.message_type).value if plan.message_type is not None else None
-    return {
-        "origins": plan.origins,
-        "excluded_origins": plan.excluded_origins,
-        "tags": plan.tags,
-        "excluded_tags": plan.excluded_tags,
-        "repo_names": plan.repo_names,
-        "project_refs": plan.project_refs,
-        "has_types": plan.has_types,
-        "has_tool_use": plan.filter_has_tool_use,
-        "has_thinking": plan.filter_has_thinking,
-        "has_paste": plan.filter_has_paste,
-        "tool_terms": plan.tool_terms,
-        "excluded_tool_terms": plan.excluded_tool_terms,
-        "action_terms": plan.action_terms,
-        "excluded_action_terms": plan.excluded_action_terms,
-        "action_sequence": plan.action_sequence,
-        "action_text_terms": plan.action_text_terms,
-        "referenced_paths": plan.referenced_path,
-        "cwd_prefix": plan.cwd_prefix,
-        "typed_only": plan.typed_only,
-        "message_type": message_type,
-        "title": plan.title,
-        "min_messages": plan.min_messages,
-        "max_messages": plan.max_messages,
-        "min_words": plan.min_words,
-        "max_words": plan.max_words,
-        "session_id": plan.session_id,
-        "since_ms": _datetime_to_ms(plan.since),
-        "until_ms": _datetime_to_ms(plan.until),
-        "since_session_id": plan.since_session_id,
-        "boolean_predicate": plan.boolean_predicate,
-        "root": resolve_default_root_filter(
-            plan.root,
-            boolean_predicate=plan.boolean_predicate,
-            parent_id=plan.parent_id,
-            continuation=plan.continuation,
-            sidechain=plan.sidechain,
-            has_branches=plan.has_branches,
-        ),
-    }
+    return archive.semantic_summaries(scored, limit=pool, offset=0, **plan_filter_kwargs(plan))
 
 
 def _coerce_title_source(value: str | None) -> TitleSource | None:
@@ -360,7 +273,7 @@ def _semantic_hits(
         scored,
         limit=max(limit + plan.offset, limit) * 3,
         offset=0,
-        **_plan_filter_kwargs(plan),
+        **plan_filter_kwargs(plan),
     )
 
 
@@ -372,7 +285,7 @@ def _archive_summaries(
     archive_root: Path,
     default_limit: int,
 ) -> list[ArchiveSessionSummary]:
-    filter_kwargs = _plan_filter_kwargs(plan)
+    filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
     post_filter_fetch = plan.has_post_filters() and plan.limit is not None
     sort = plan.sort
@@ -629,7 +542,7 @@ async def count_archive(
         and plan.similar_session_id is None
         and plan.retrieval_lane not in {"semantic", "hybrid"}
     ):
-        filter_kwargs = _plan_filter_kwargs(plan)
+        filter_kwargs = plan_filter_kwargs(plan)
         query_text = _plan_text_query(plan)
         with archive_read_context(
             archive_root,
@@ -680,7 +593,7 @@ def archive_search_hits(
     text = plan.similar_text or _plan_text_query(plan) or ""
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
-    filter_kwargs = _plan_filter_kwargs(plan)
+    filter_kwargs = plan_filter_kwargs(plan)
 
     def read(archive: ArchiveStore) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
         if plan.similar_session_id is not None:

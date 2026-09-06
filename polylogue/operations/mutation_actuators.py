@@ -675,13 +675,13 @@ class BulkTagActuator(_FailClosedRecovery):
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
         affected = 0
+        assertions = 0
         for session_id in session_ids:
-            if (
-                args.archive.add_user_tags(
-                    (session_id,), tags, author_ref=args.author_ref, author_kind=args.author_kind
-                )
-                > 0
-            ):
+            changed = args.archive.add_user_tags(
+                (session_id,), tags, author_ref=args.author_ref, author_kind=args.author_kind
+            )
+            assertions += changed
+            if changed > 0:
                 affected += 1
         status: MutationTargetStatus = "applied" if affected else "already_satisfied"
         return MutationReceipt(
@@ -698,6 +698,10 @@ class BulkTagActuator(_FailClosedRecovery):
                 "tag_count": len(tags),
                 "affected_count": affected,
                 "skipped_count": requested_count - affected,
+                # Sessions changed (``affected_count``) and session/tag pairs
+                # written differ whenever more than one tag is applied; a
+                # surface that reports pairs needs the second number.
+                "assertion_count": assertions,
             },
         )
 
@@ -758,6 +762,86 @@ class MetadataSetActuator(_FailClosedRecovery):
             receipt_ref=None,
             applied_at=plan.prepared_at,
             domain_receipt={"changed": changed},
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class BulkMetadataSetArgs:
+    """Shared prepare/apply argument shape for multi-session metadata set."""
+
+    archive: ArchiveStore
+    session_ids: tuple[str, ...]
+    pairs: tuple[tuple[str, object], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BulkMetadataSetActuator(_FailClosedRecovery):
+    """Actuator for ``mutate-bulk-set-metadata``: reversible multi-target metadata.
+
+    Real production mutation: ``ArchiveStore.set_user_metadata`` applied per
+    resolved session, the multi-target sibling of ``MetadataSetActuator`` in
+    the same relationship ``BulkTagActuator`` has to ``TagAddActuator``.
+    ``prepare`` plans only sessions that resolve against live state, so a
+    session deleted between selection and execution is skipped rather than
+    failing the whole batch.  Key validation stays in the adapter, matching
+    the single-target actuator's contract.
+    """
+
+    operation: str = "mutate-bulk-set-metadata"
+    destructive_class: DestructiveClass = "reversible"
+    required_confirmation: ConfirmationStrength = "role_only"
+
+    def prepare(self, args: BulkMetadataSetArgs) -> MutationPlan:
+        resolved: list[str] = []
+        for session_id in dict.fromkeys(args.session_ids):
+            try:
+                resolved.append(args.archive.resolve_session_id(session_id))
+            except KeyError:
+                continue
+        return build_plan(
+            operation=self.operation,
+            destructive_class="reversible",
+            target_refs=tuple(make_target_ref("session", sid) for sid in resolved),
+            affected_tiers=("user",),
+            reversible=True,
+            context={
+                "session_ids": resolved,
+                "pairs": [[key, value] for key, value in args.pairs],
+                "requested_session_count": len(args.session_ids),
+            },
+        )
+
+    def apply(self, plan: MutationPlan, args: BulkMetadataSetArgs) -> MutationReceipt:
+        session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
+        planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
+        pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
+        requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        affected = 0
+        assertions = 0
+        for session_id in session_ids:
+            changed = args.archive.set_user_metadata((session_id,), pairs)
+            assertions += changed
+            if changed > 0:
+                affected += 1
+        status: MutationTargetStatus = "applied" if affected else "already_satisfied"
+        return MutationReceipt(
+            operation=self.operation,
+            plan_hash=plan.plan_hash,
+            status=status,
+            target_refs=plan.target_refs,
+            affected_count=affected,
+            detail=None if affected else "no_sessions_changed",
+            receipt_ref=None,
+            applied_at=plan.prepared_at,
+            domain_receipt={
+                "session_count": requested_count,
+                "key_count": len(pairs),
+                "affected_count": affected,
+                "skipped_count": requested_count - affected,
+                # Sessions changed and session/key pairs written differ
+                # whenever more than one key is set; see ``BulkTagActuator``.
+                "assertion_count": assertions,
+            },
         )
 
 

@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, NoReturn, TypeVar, cast
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 import click
-from typing_extensions import NotRequired, TypedDict
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.expression import (
@@ -26,14 +25,17 @@ from polylogue.archive.query.expression import (
     parse_unit_source_expression,
     split_with_projection_clause,
 )
+from polylogue.archive.query.filter_kwargs import (
+    SessionFilterKwargs,
+    spec_session_filter_kwargs,
+    stats_filter_kwargs,
+)
 from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
 from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
     QuerySpecError,
     SessionQuerySpec,
-    parse_query_date,
-    resolve_default_root_filter,
     session_count_unit_label,
 )
 from polylogue.archive.query.transaction import archive_read_context
@@ -133,38 +135,12 @@ def _object_int(value: object) -> int:
     return int(str(value))
 
 
-class _ArchiveFilterKwargs(TypedDict):
-    origin: str | None
-    origins: tuple[str, ...]
-    excluded_origins: tuple[str, ...]
-    tags: tuple[str, ...]
-    excluded_tags: tuple[str, ...]
-    repo_names: tuple[str, ...]
-    project_refs: tuple[str, ...]
-    has_types: tuple[str, ...]
-    has_tool_use: bool
-    has_thinking: bool
-    has_paste: bool
-    tool_terms: tuple[str, ...]
-    excluded_tool_terms: tuple[str, ...]
-    action_terms: tuple[str, ...]
-    excluded_action_terms: tuple[str, ...]
-    action_sequence: tuple[str, ...]
-    action_text_terms: tuple[str, ...]
-    referenced_paths: tuple[str, ...]
-    cwd_prefix: str | None
-    typed_only: bool
-    message_type: str | None
-    title: str | None
-    min_messages: int | None
-    max_messages: int | None
-    min_words: int | None
-    max_words: int | None
-    since_ms: int | None
-    until_ms: int | None
-    since_session_id: str | None
-    root: bool | None
-    boolean_predicate: NotRequired[QueryPredicate]
+def _spec_filter_kwargs(spec: SessionQuerySpec) -> SessionFilterKwargs:
+    """Lower the compiled selection through the canonical plan."""
+    try:
+        return spec_session_filter_kwargs(spec)
+    except QuerySpecError as exc:
+        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
 
 
 def execute_delete_by_session_ids(
@@ -343,7 +319,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
         if unit_source is not None
         else _compiled_session_spec(request, params=params, raw_query=raw_query)
     )
-    origins = compiled_spec.origins or _resolve_origins(params)
+    origins = compiled_spec.origins
     origin = origins[0] if len(origins) == 1 else None
     query = _query_text(compiled_spec.query_terms, {"contains": compiled_spec.contains_terms})
     if compiled_spec.with_units:
@@ -354,31 +330,6 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
 
     tags_to_add = _tuple_tokens(params.get("add_tag"))
     metadata_to_set = _metadata_pairs(params.get("set_meta"))
-    tags = compiled_spec.tags
-    excluded_tags = compiled_spec.excluded_tags
-    repo_names = compiled_spec.repo_names
-    project_refs = compiled_spec.project_refs
-    has_types = compiled_spec.has_types
-    has_tool_use = compiled_spec.filter_has_tool_use
-    has_thinking = compiled_spec.filter_has_thinking
-    has_paste = compiled_spec.filter_has_paste
-    tool_terms = compiled_spec.tool_terms
-    excluded_tool_terms = compiled_spec.excluded_tool_terms
-    action_terms = compiled_spec.action_terms
-    excluded_action_terms = compiled_spec.excluded_action_terms
-    action_sequence = compiled_spec.action_sequence
-    action_text_terms = compiled_spec.action_text_terms
-    referenced_paths = compiled_spec.referenced_path
-    cwd_prefix = compiled_spec.cwd_prefix
-    typed_only = compiled_spec.typed_only
-    message_type = compiled_spec.message_type
-    title_filter = compiled_spec.title
-    min_messages = compiled_spec.min_messages
-    max_messages = compiled_spec.max_messages
-    min_words = compiled_spec.min_words
-    max_words = compiled_spec.max_words
-    since_ms = _spec_date_ms("since", compiled_spec)
-    until_ms = _spec_date_ms("until", compiled_spec)
     since_session_id = compiled_spec.since_session_id
     limit = compiled_spec.limit if compiled_spec.limit is not None and compiled_spec.limit > 0 else _limit(params)
     offset = compiled_spec.offset if compiled_spec.offset > 0 else _offset(params)
@@ -401,41 +352,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     similar_session_id = compiled_spec.similar_session_id
     retrieval_lane = _optional_str(params.get("retrieval_lane")) or compiled_spec.retrieval_lane
     delete_matched = bool(params.get("delete_matched"))
-    excluded_origins = compiled_spec.excluded_origins or _resolve_excluded_origins(params)
-    filter_kwargs: _ArchiveFilterKwargs = {
-        "origin": origin,
-        "origins": origins,
-        "excluded_origins": excluded_origins,
-        "tags": tags,
-        "excluded_tags": excluded_tags,
-        "repo_names": repo_names,
-        "project_refs": project_refs,
-        "has_types": has_types,
-        "has_tool_use": has_tool_use,
-        "has_thinking": has_thinking,
-        "has_paste": has_paste,
-        "tool_terms": tool_terms,
-        "excluded_tool_terms": excluded_tool_terms,
-        "action_terms": action_terms,
-        "excluded_action_terms": excluded_action_terms,
-        "action_sequence": action_sequence,
-        "action_text_terms": action_text_terms,
-        "referenced_paths": referenced_paths,
-        "cwd_prefix": cwd_prefix,
-        "typed_only": typed_only,
-        "message_type": message_type,
-        "title": title_filter,
-        "min_messages": min_messages,
-        "max_messages": max_messages,
-        "min_words": min_words,
-        "max_words": max_words,
-        "since_ms": since_ms,
-        "until_ms": until_ms,
-        "since_session_id": since_session_id,
-        "root": resolve_default_root_filter(compiled_spec.root, boolean_predicate=compiled_spec.boolean_predicate),
-    }
-    if compiled_spec.boolean_predicate is not None:
-        filter_kwargs["boolean_predicate"] = compiled_spec.boolean_predicate
+    filter_kwargs = _spec_filter_kwargs(compiled_spec)
     session_scope_id = compiled_spec.session_id or (
         str(params["conv_id"]) if params.get("conv_id") is not None else None
     )
@@ -600,7 +517,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 try:
                     grouped = archive.stats_by(
                         group_by,
-                        **cast(Any, _stats_filter_kwargs(filter_kwargs)),
+                        **cast(Any, stats_filter_kwargs(filter_kwargs)),
                         session_ids=session_ids,
                     )
                 except ValueError as exc:
@@ -626,7 +543,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 )
                 return
             stats = archive.stats(
-                **cast(Any, _stats_filter_kwargs(filter_kwargs)),
+                **cast(Any, stats_filter_kwargs(filter_kwargs)),
                 session_ids=session_ids,
             )
             _emit_stats(stats, output_format=output_format, origin=origin, query=query, fields=fields)
@@ -636,37 +553,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 _emit_count(
                     archive.count_search_sessions(
                         query,
-                        origin=origin,
-                        origins=origins,
-                        excluded_origins=excluded_origins,
-                        tags=tags,
-                        excluded_tags=excluded_tags,
-                        repo_names=repo_names,
-                        project_refs=project_refs,
-                        has_types=has_types,
-                        has_tool_use=has_tool_use,
-                        has_thinking=has_thinking,
-                        has_paste=has_paste,
-                        tool_terms=tool_terms,
-                        excluded_tool_terms=excluded_tool_terms,
-                        action_terms=action_terms,
-                        excluded_action_terms=excluded_action_terms,
-                        action_sequence=action_sequence,
-                        action_text_terms=action_text_terms,
-                        referenced_paths=referenced_paths,
-                        cwd_prefix=cwd_prefix,
-                        typed_only=typed_only,
-                        message_type=message_type,
-                        title=title_filter,
-                        min_messages=min_messages,
-                        max_messages=max_messages,
-                        min_words=min_words,
-                        max_words=max_words,
-                        since_ms=since_ms,
-                        until_ms=until_ms,
-                        since_session_id=since_session_id,
                         session_id=session_scope_id,
-                        boolean_predicate=filter_kwargs.get("boolean_predicate"),
+                        **filter_kwargs,
                     ),
                     output_format=output_format,
                     origin=origin,
@@ -674,37 +562,8 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             _emit_count(
                 archive.count_sessions(
-                    origin=origin,
-                    origins=origins,
-                    excluded_origins=excluded_origins,
-                    tags=tags,
-                    excluded_tags=excluded_tags,
-                    repo_names=repo_names,
-                    project_refs=project_refs,
-                    has_types=has_types,
-                    has_tool_use=has_tool_use,
-                    has_thinking=has_thinking,
-                    has_paste=has_paste,
-                    tool_terms=tool_terms,
-                    excluded_tool_terms=excluded_tool_terms,
-                    action_terms=action_terms,
-                    excluded_action_terms=excluded_action_terms,
-                    action_sequence=action_sequence,
-                    action_text_terms=action_text_terms,
-                    referenced_paths=referenced_paths,
-                    cwd_prefix=cwd_prefix,
-                    typed_only=typed_only,
-                    message_type=message_type,
-                    title=title_filter,
-                    min_messages=min_messages,
-                    max_messages=max_messages,
-                    min_words=min_words,
-                    max_words=max_words,
-                    since_ms=since_ms,
-                    until_ms=until_ms,
-                    since_session_id=since_session_id,
                     session_id=session_scope_id,
-                    boolean_predicate=filter_kwargs.get("boolean_predicate"),
+                    **filter_kwargs,
                 ),
                 output_format=output_format,
                 origin=origin,
@@ -751,7 +610,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     matched_session_ids = (session_id,) if page_hits else ()
                     if tags_to_add or metadata_to_set:
                         _emit_user_mutations(
-                            archive,
+                            env,
                             matched_session_ids,
                             tags_to_add=tags_to_add,
                             metadata_to_set=metadata_to_set,
@@ -810,9 +669,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 if tags_to_add or metadata_to_set:
-                    _emit_user_mutations(
-                        archive, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set
-                    )
+                    _emit_user_mutations(env, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
                     return
                 if delete_matched:
                     _emit_delete(env, (session_id,), params=params)
@@ -883,7 +740,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             if tags_to_add or metadata_to_set:
                 session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_user_mutations(archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+                _emit_user_mutations(env, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
                 return
             if delete_matched:
                 session_ids = tuple(hit.session_id for hit in page_hits)
@@ -954,7 +811,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         if tags_to_add or metadata_to_set:
             session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_user_mutations(archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+            _emit_user_mutations(env, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
             return
         if delete_matched:
             session_ids = tuple(summary.session_id for summary in page_summaries)
@@ -1066,7 +923,7 @@ def _query_hits(
     sort: str | None,
     reverse: bool,
     session_id: str | None,
-    filter_kwargs: _ArchiveFilterKwargs,
+    filter_kwargs: SessionFilterKwargs,
 ) -> tuple[list[ArchiveSessionSearchHit], str]:
     from polylogue.storage.search_providers import reciprocal_rank_fusion
 
@@ -1167,7 +1024,7 @@ def _count_root_matches(
     similar_text: str | None,
     similar_session_id: str | None = None,
     session_id: str | None,
-    filter_kwargs: _ArchiveFilterKwargs,
+    filter_kwargs: SessionFilterKwargs,
 ) -> int | None:
     """Return an exact indexed total for lexical/list pages.
 
@@ -1899,20 +1756,6 @@ def _has_value(value: object) -> bool:
     return not (value == "" or value == () or value == [])
 
 
-def _resolve_origins(params: dict[str, object]) -> tuple[str, ...]:
-    origin = params.get("origin")
-    if not origin:
-        return ()
-    return tuple(dict.fromkeys(token.strip() for token in str(origin).split(",") if token.strip()))
-
-
-def _resolve_excluded_origins(params: dict[str, object]) -> tuple[str, ...]:
-    explicit_excluded = params.get("exclude_origin")
-    if not explicit_excluded:
-        return ()
-    return tuple(token.strip() for token in str(explicit_excluded).split(",") if token.strip())
-
-
 def _optional_str(value: object) -> str | None:
     if value is None:
         return None
@@ -1982,31 +1825,6 @@ def _optional_int(value: object) -> int | None:
     if isinstance(value, int):
         return value
     return None
-
-
-def _optional_date_ms(field: str, value: object) -> int | None:
-    if not value:
-        return None
-    try:
-        parsed = parse_query_date(field, str(value))
-    except QuerySpecError as exc:
-        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
-    if parsed is None:
-        return None
-    return int(parsed.timestamp() * 1000)
-
-
-def _spec_date_ms(field: str, spec: SessionQuerySpec) -> int | None:
-    value = spec.since if field == "since" else spec.until
-    if value is None:
-        return None
-    try:
-        parsed = parse_query_date(field, value)
-    except QuerySpecError as exc:
-        raise click.ClickException(f"Cannot parse date: {exc.value!r}") from exc
-    if parsed is None:
-        return None
-    return int(parsed.timestamp() * 1000)
 
 
 def _limit(params: dict[str, object]) -> int:
@@ -2102,7 +1920,7 @@ def _matched_session_ids_for_stats(
     query: str,
     session_id: str | None,
     limit: int | None,
-    filter_kwargs: _ArchiveFilterKwargs,
+    filter_kwargs: SessionFilterKwargs,
 ) -> tuple[str, ...]:
     if session_id is not None:
         try:
@@ -2112,12 +1930,6 @@ def _matched_session_ids_for_stats(
     if not query:
         return ()
     return archive.search_session_ids(query, limit=limit, **filter_kwargs)
-
-
-def _stats_filter_kwargs(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
-    stats_kwargs = dict(filter_kwargs)
-    stats_kwargs.pop("boolean_predicate", None)
-    return stats_kwargs
 
 
 def _emit_stats(
@@ -2191,20 +2003,79 @@ def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
     )
 
 
+def _execute_matched_session_mutation(
+    env: AppEnv,
+    actuator: object,
+    build_args: Callable[[ArchiveStore], Any],
+    *,
+    capability: str,
+) -> int:
+    """Drive one PREPARE/AUTHORIZE/EXECUTE cycle and return pairs written.
+
+    The store the query executor holds is read-only evidence, so a mutation
+    opens its own writable handle the way the API facade's mutation methods
+    do.  The receipt's ``affected_count`` counts sessions changed; the root
+    query's mutation envelope reports session/value pairs written, which is
+    the domain receipt's ``assertion_count``.
+    """
+    from polylogue.operations.bindings import runtime_operation_binding
+    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    config = load_effective_config(env)
+    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
+    binding = runtime_operation_binding(cast(Any, actuator))
+    principal = MutationPrincipal("cli", frozenset({capability}), "cli", "write")
+    with ArchiveStore.open_existing(archive_root, read_only=False) as writable:
+        args = build_args(writable)
+        executor = OperationExecutor.for_archive_root(archive_root)
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
+        authorization = executor.authorize_bound(binding, preview, principal)
+        receipt = executor.execute_bound(binding, preview, authorization, args)
+    return int(cast(Any, receipt.domain_receipt)["assertion_count"])
+
+
 def _emit_user_mutations(
-    archive: ArchiveStore,
+    env: AppEnv,
     session_ids: tuple[str, ...],
     *,
     tags_to_add: tuple[str, ...],
     metadata_to_set: tuple[tuple[str, str], ...],
 ) -> None:
+    """Apply matched-session tag/metadata writes through the mutation authority.
+
+    ``user.db`` is durable and irreplaceable, so this route drives the same
+    ``OperationExecutor`` PREPARE/AUTHORIZE/EXECUTE cycle every other surface
+    uses (``polylogue/api/archive.py``'s tag and metadata methods, MCP
+    ``write``) rather than calling the ``ArchiveStore`` writers itself: an
+    adapter that writes the tier directly is a second mutation authority
+    whose preview, authorization and audit records do not exist.
+    """
     from polylogue.surfaces.payloads import MutationResultPayload
 
     changes: dict[str, int] = {}
     if metadata_to_set:
-        changes["metadata"] = archive.set_user_metadata(session_ids, metadata_to_set)
+        from polylogue.operations.mutation_actuators import BulkMetadataSetActuator, BulkMetadataSetArgs
+
+        changes["metadata"] = _execute_matched_session_mutation(
+            env,
+            BulkMetadataSetActuator(),
+            lambda writable: BulkMetadataSetArgs(
+                archive=writable,
+                session_ids=session_ids,
+                pairs=tuple((key, value) for key, value in metadata_to_set),
+            ),
+            capability="archive.set_metadata",
+        )
     if tags_to_add:
-        changes["tags"] = archive.add_user_tags(session_ids, tags_to_add)
+        from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
+
+        changes["tags"] = _execute_matched_session_mutation(
+            env,
+            BulkTagActuator(),
+            lambda writable: BulkTagArgs(archive=writable, session_ids=session_ids, tags=tags_to_add),
+            capability="archive.bulk_tag_sessions",
+        )
     if set(changes) == {"tags"}:
         _emit_mutation(changes["tags"], operation="add_tag")
         return
@@ -2845,7 +2716,7 @@ def _unit_source_display_name(source: QueryUnitSource) -> str:
     return descriptor.plural_source
 
 
-def _unit_source_session_filters(filter_kwargs: _ArchiveFilterKwargs) -> dict[str, object]:
+def _unit_source_session_filters(filter_kwargs: SessionFilterKwargs) -> dict[str, object]:
     from polylogue.archive.query.unit_results import query_unit_session_filters
 
     filters = dict(filter_kwargs)
