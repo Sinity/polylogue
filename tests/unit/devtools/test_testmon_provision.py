@@ -19,6 +19,7 @@ import pytest
 from testmon.db import DATA_VERSION, DB
 
 from devtools import testmon_provision
+from devtools.agent_env import HARNESS_RUN_ENV
 from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
 from devtools.run_tests import ROOT, build_pytest_cmd, focused_pytest_env
 from devtools.testmon_provision import (
@@ -28,7 +29,9 @@ from devtools.testmon_provision import (
     current_environment_key,
     discard_testmon_graph,
     inspect_testmon_graph,
-    testmon_datafile,
+)
+from devtools.testmon_provision import (
+    testmon_datafile as _testmon_datafile,
 )
 from devtools.toolchain import venv_python
 from devtools.verify_runs import VerifyRun
@@ -363,11 +366,11 @@ def test_a_focused_run_traces_a_scratch_graph_not_the_checkout_one(tmp_path: Pat
     environment = focused_pytest_env(run=run, artifacts=artifacts)
 
     datafile = Path(environment["TESTMON_DATAFILE"])
-    assert datafile != testmon_datafile(tmp_path)
+    assert datafile != _testmon_datafile(tmp_path)
     assert datafile.parent == artifacts.step_dir
 
 
-def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path) -> None:
+def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """testmon prunes whichever datafile it opens down to the run's own
     collection, so the production focused command must be shown against a real
     graph, not only against the path it was handed.
@@ -403,6 +406,10 @@ def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path) -> None
     # is stable and none of them would survive a prune.
     (tmp_path / "hub.py").write_text("def shared():\n    return 1\n\n\ndef extra():\n    return 2\n", encoding="utf-8")
 
+    # Exercise a top-level focused command. The outer managed test advertises
+    # that it already holds the pytest slot, which correctly disables testmon
+    # for genuinely nested commands.
+    monkeypatch.delenv(HARNESS_RUN_ENV, raising=False)
     focused = subprocess.run(
         build_pytest_cmd(["tests/test_leaf0.py"]),
         cwd=tmp_path,
