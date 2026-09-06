@@ -14,7 +14,7 @@ from polylogue.storage.search import runtime as search_runtime
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.convergence_harness import (
     build_converged_archive,
-    ingest_convergence_pathology,
+    ingest_composed_sources,
     initialize_active_archive,
 )
 from tests.infra.convergence_laws import (
@@ -61,7 +61,7 @@ def test_generated_workload_has_nonempty_authoritative_fts_probes() -> None:
 
 def test_oracle_contract_handles_multiblock_messages_through_production_reader(tmp_path: Path) -> None:
     workload = generated_convergence_workload()
-    archive = build_converged_archive(tmp_path / "archive", workload.pathology)
+    archive = build_converged_archive(tmp_path / "archive", workload.sources)
 
     with sqlite3.connect(archive.root / "index.db") as conn:
         block_counts = dict(conn.execute("SELECT block_type, COUNT(*) FROM blocks GROUP BY block_type"))
@@ -77,7 +77,7 @@ def test_oracle_contract_handles_multiblock_messages_through_production_reader(t
 def test_projection_rereads_rebuilt_fts_at_the_same_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every projection read bypasses prior-example search cache entries."""
     workload = generated_convergence_workload()
-    archive = build_converged_archive(tmp_path / "archive", workload.pathology)
+    archive = build_converged_archive(tmp_path / "archive", workload.sources)
     readiness_checks = 0
 
     def count_readiness(readiness: Mapping[str, object]) -> None:
@@ -96,10 +96,10 @@ def test_projection_rereads_rebuilt_fts_at_the_same_root(tmp_path: Path, monkeyp
         assert changed > 0
     unconverged_root = tmp_path / "unconverged"
     initialize_active_archive(unconverged_root)
-    ingest_convergence_pathology(
+    ingest_composed_sources(
         unconverged_root,
-        workload.pathology,
-        session_indexes=tuple(range(len(workload.pathology.sessions))),
+        workload.sources,
+        session_indexes=tuple(range(len(workload.sources.sessions))),
         converge_after_each=False,
     )
     with pytest.raises(DatabaseError, match="Search index is incomplete"):
@@ -122,7 +122,7 @@ def test_role_aggregate_reader_has_constant_mutation_control(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, mutated: bool
 ) -> None:
     workload = generated_convergence_workload()
-    archive = build_converged_archive(tmp_path / "archive", workload.pathology)
+    archive = build_converged_archive(tmp_path / "archive", workload.sources)
     if mutated:
         monkeypatch.setattr(ArchiveStore, "query_unit_counts", lambda *_args, **_kwargs: [])
         with pytest.raises(AssertionError, match="production projection differs"):

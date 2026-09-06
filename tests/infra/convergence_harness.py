@@ -50,12 +50,12 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.maintenance import analyze_planner_stats_tables
-from tests.infra.pathology_composer import (
-    ComposedPathology,
+from tests.infra.source_composer import (
+    ComposedSources,
     compose_append_revision_chain,
     compose_fork_prefix_tail_lineage,
-    compose_pathologies,
     compose_quarantined_head_arrangement,
+    compose_sources,
 )
 
 SqlValue = str | int | float | bytes | None
@@ -119,12 +119,12 @@ class ConvergenceArchive:
     """A temporary archive created only through the raw-and-parsed write route."""
 
     root: Path
-    pathology: ComposedPathology
+    composed: ComposedSources
     source_paths: tuple[Path, ...]
     session_ids: tuple[str, ...]
 
 
-def rich_convergence_pathology() -> ComposedPathology:
+def rich_convergence_sources() -> ComposedSources:
     """Return the bounded default corpus with update, lineage, and orphan semantics.
 
     The property loop exercises archive-write and convergence laws, not the
@@ -132,7 +132,7 @@ def rich_convergence_pathology() -> ComposedPathology:
     prefix retain the distinct normalized states needed here while keeping
     each default generated case small enough for the focused managed harness.
     """
-    return compose_pathologies(
+    return compose_sources(
         compose_append_revision_chain(revision_count=2, messages_per_revision=1),
         compose_fork_prefix_tail_lineage(shared_prefix_len=1, child_tail_len=1),
         compose_quarantined_head_arrangement(),
@@ -142,7 +142,7 @@ def rich_convergence_pathology() -> ComposedPathology:
 
 def build_converged_archive(
     root: Path,
-    pathology: ComposedPathology,
+    composed: ComposedSources,
     *,
     session_order: Sequence[int] | None = None,
     incremental: bool = False,
@@ -150,10 +150,10 @@ def build_converged_archive(
 ) -> ConvergenceArchive:
     """Materialize a composed corpus through production writes, then converge it."""
     initialize_active_archive(root)
-    archive = ingest_convergence_pathology(
+    archive = ingest_composed_sources(
         root,
-        pathology,
-        session_indexes=_complete_session_order(pathology, session_order),
+        composed,
+        session_indexes=_complete_session_order(composed, session_order),
         converge_after_each=incremental,
         append_only=append_only,
     )
@@ -170,9 +170,9 @@ def initialize_active_archive(root: Path) -> None:
     initialize_active_archive_root(root)
 
 
-def ingest_convergence_pathology(
+def ingest_composed_sources(
     root: Path,
-    pathology: ComposedPathology,
+    composed: ComposedSources,
     *,
     session_indexes: Sequence[int],
     converge_after_each: bool,
@@ -185,14 +185,14 @@ def ingest_convergence_pathology(
     payload through ``ingest_batch._core._write_session``, exactly as the live
     ingestion layer does after a provider parser has produced a ``ParsedSession``.
     """
-    selected = _validate_session_indexes(pathology, session_indexes)
+    selected = _validate_session_indexes(composed, session_indexes)
     source_paths: list[Path] = []
     session_ids: list[str] = []
     for index in selected:
-        composed_session = pathology.sessions[index]
+        composed_session = composed.sessions[index]
         created_corpus_index = next(
             candidate_index
-            for candidate_index, candidate in enumerate(pathology.sessions)
+            for candidate_index, candidate in enumerate(composed.sessions)
             if candidate.id == composed_session.id
         )
         session = _parsed_session(
@@ -302,11 +302,11 @@ def ingest_convergence_pathology(
             # therefore have no FTS rows to corrupt. The corpus builder may skip
             # that inapplicable mutation; direct corruption tests remain strict.
             make_messages_fts_stale(root / "index.db", session_id=session_id, require_rows=False)
-        archive = ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
+        archive = ConvergenceArchive(root, composed, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
         if converge_after_each:
             converge_convergence_archive(archive)
 
-    return ConvergenceArchive(root, pathology, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
+    return ConvergenceArchive(root, composed, tuple(source_paths), tuple(dict.fromkeys(session_ids)))
 
 
 def converge_convergence_archive(archive: ConvergenceArchive) -> dict[str, SessionState]:
@@ -428,17 +428,17 @@ def assert_derived_readiness_equivalent(left: Path, right: Path) -> None:
         )
 
 
-def _complete_session_order(pathology: ComposedPathology, order: Sequence[int] | None) -> tuple[int, ...]:
-    expected = tuple(range(len(pathology.sessions)))
+def _complete_session_order(composed: ComposedSources, order: Sequence[int] | None) -> tuple[int, ...]:
+    expected = tuple(range(len(composed.sessions)))
     candidate = expected if order is None else tuple(order)
     if len(candidate) != len(expected) or set(candidate) != set(expected):
         raise ValueError("session_order must be a permutation of every composed session index")
     return candidate
 
 
-def rotated_session_order(pathology: ComposedPathology, shift: int) -> tuple[int, ...]:
+def rotated_session_order(composed: ComposedSources, shift: int) -> tuple[int, ...]:
     """Return one generated, non-identity ordering of the complete corpus."""
-    session_count = len(pathology.sessions)
+    session_count = len(composed.sessions)
     if not 0 < shift < session_count:
         raise ValueError("shift must select a non-identity rotation")
     indexes = tuple(range(session_count))
@@ -447,7 +447,7 @@ def rotated_session_order(pathology: ComposedPathology, shift: int) -> tuple[int
 
 def replay_convergence_archive(
     root: Path,
-    pathology: ComposedPathology,
+    composed: ComposedSources,
     *,
     session_indexes: Sequence[int],
     append_only: bool = False,
@@ -457,9 +457,9 @@ def replay_convergence_archive(
     source_paths: list[Path] = []
     session_ids: list[str] = []
     for index in session_indexes:
-        step = ingest_convergence_pathology(
+        step = ingest_composed_sources(
             root,
-            pathology,
+            composed,
             session_indexes=(index,),
             converge_after_each=False,
             append_only=append_only,
@@ -470,7 +470,7 @@ def replay_convergence_archive(
         raise ValueError("replay_convergence_archive requires at least one session index")
     archive = ConvergenceArchive(
         root,
-        pathology,
+        composed,
         tuple(source_paths),
         tuple(dict.fromkeys(session_ids)),
     )
@@ -479,9 +479,9 @@ def replay_convergence_archive(
     return archive
 
 
-def _validate_session_indexes(pathology: ComposedPathology, indexes: Sequence[int]) -> tuple[int, ...]:
+def _validate_session_indexes(composed: ComposedSources, indexes: Sequence[int]) -> tuple[int, ...]:
     selected = tuple(indexes)
-    if len(selected) != len(set(selected)) or any(index < 0 or index >= len(pathology.sessions) for index in selected):
+    if len(selected) != len(set(selected)) or any(index < 0 or index >= len(composed.sessions) for index in selected):
         raise ValueError("session_indexes must be distinct valid composed-session indexes")
     return selected
 
@@ -965,12 +965,12 @@ __all__ = [
     "converge_convergence_archive",
     "debt_ledger_row",
     "derived_readiness_snapshot",
-    "ingest_convergence_pathology",
+    "ingest_composed_sources",
     "initialize_active_archive",
     "make_messages_fts_stale",
     "messages_fts_match_count",
     "raw_authority_facts",
-    "rich_convergence_pathology",
+    "rich_convergence_sources",
     "replay_convergence_archive",
     "rotated_session_order",
     "seed_partial_convergence_archive",

@@ -8,19 +8,16 @@ from pathlib import Path
 import pytest
 
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
-from polylogue.maintenance.pathology_zoo import PATHOLOGY_ZOO_MANIFEST
 from polylogue.pipeline import ids
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.sources.parsers.base import ParsedMessage
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from tests.infra.archive_canonical_snapshot import capture_canonical_snapshot
 from tests.infra.claude_vintage_live_proof import (
-    CONFIDENCE_GAP,
-    run_claude_vintage_live_proof,
-)
-from tests.infra.pathology_zoo import (
     CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID,
-    _claude_vintage_live_proof_payload,
+    CONFIDENCE_GAP,
+    claude_vintage_live_proof_payload,
+    run_claude_vintage_live_proof,
 )
 
 
@@ -68,8 +65,8 @@ def test_sanitized_pair_runs_the_real_route_and_emits_read_only_receipt(
 
 
 def test_red_mutation_restores_the_vintage_conflict_verdict(monkeypatch: pytest.MonkeyPatch) -> None:
-    old_session = parse_ai(_claude_vintage_live_proof_payload(nested_target=False), "old-fallback")
-    new_session = parse_ai(_claude_vintage_live_proof_payload(nested_target=True), "new-fallback")
+    old_session = parse_ai(claude_vintage_live_proof_payload(nested_target=False), "old-fallback")
+    new_session = parse_ai(claude_vintage_live_proof_payload(nested_target=True), "new-fallback")
     current_message_hash_payload = ids._message_hash_payload
 
     def legacy_message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, object]:
@@ -106,8 +103,8 @@ def test_composer_still_isolates_the_content_blocks_presence_axis() -> None:
     to that one axis so the branch the receipt reports stays the branch the real
     cohort exercised.
     """
-    old_payload = _claude_vintage_live_proof_payload(nested_target=False)
-    new_payload = _claude_vintage_live_proof_payload(nested_target=True)
+    old_payload = claude_vintage_live_proof_payload(nested_target=False)
+    new_payload = claude_vintage_live_proof_payload(nested_target=True)
 
     old_messages = old_payload["chat_messages"]
     new_messages = new_payload["chat_messages"]
@@ -138,10 +135,3 @@ def test_composer_still_isolates_the_content_blocks_presence_axis() -> None:
     assert len(old_session.messages[2].blocks) == 0
     assert len(new_session.messages[2].blocks) == 1
     assert (old_session.messages[2].text or "") == (new_session.messages[2].text or "") == text
-
-
-def test_registry_records_the_unrecovered_live_evidence_gap() -> None:
-    member = next(item for item in PATHOLOGY_ZOO_MANIFEST if item.member_id == "claude-vintage-live-proof")
-    assert member.session_ids == (f"claude-ai-export:{CLAUDE_VINTAGE_LIVE_PROOF_SESSION_ID}",)
-    assert member.evidence_note is not None
-    assert "not recoverable" in member.evidence_note

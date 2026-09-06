@@ -11,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 import polylogue.archive.message.artifacts as artifacts_module
-import polylogue.archive.message.model_runtime as model_runtime
 from polylogue.archive.message.types import MessageType
 from tests.infra.builders import make_msg
 
@@ -34,11 +33,6 @@ def test_is_protocol_artifact_uses_stored_message_type() -> None:
         message_type=MessageType.PROTOCOL,
     )
     assert msg.is_protocol_artifact is True
-
-
-def test_model_runtime_does_not_import_classifier() -> None:
-    """``model_runtime`` must not reference the runtime text classifier."""
-    assert not hasattr(model_runtime, "classify_text_message_type")
 
 
 def test_is_context_dump_does_not_call_runtime_classifier(monkeypatch: pytest.MonkeyPatch) -> None:

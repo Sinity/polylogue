@@ -1,6 +1,6 @@
-"""Tests proving each pathology composer's claimed structural property.
+"""Tests proving each source composer's claimed structural property.
 
-These are structural assertions on returned ``ComposedPathology`` values. The
+These are structural assertions on returned ``ComposedSources`` values. The
 composer is the test-infrastructure route that supplies ordered raw payloads
 to future production-ingestion metamorphic tests.
 """
@@ -11,13 +11,13 @@ import json
 
 import pytest
 
-from tests.infra.pathology_composer import (
-    ComposedPathology,
+from tests.infra.source_composer import (
+    ComposedSources,
     compose_append_revision_chain,
     compose_fork_prefix_tail_lineage,
     compose_multi_session_bundle,
-    compose_pathologies,
     compose_quarantined_head_arrangement,
+    compose_sources,
     compose_vintage_variant_pair,
     compose_whale_scale_component,
     extract_new_shape_turns,
@@ -230,7 +230,7 @@ def test_vintage_variant_pair_extracted_content_is_equal_despite_shape_differenc
 def test_composition_nests_existing_pathologies_and_orders_flat_raw_payloads() -> None:
     bundle = compose_multi_session_bundle([{"record": 1}, {"record": 2}], session_count=2)
     variants = compose_vintage_variant_pair()
-    nested = compose_pathologies(bundle, variants, name="raw-shapes")
+    nested = compose_sources(bundle, variants, name="raw-shapes")
     composed = compose_append_revision_chain(session_id="nested-append", revision_count=2).compose(
         nested,
         raw_ingestion_order=(2, 0, 1),
@@ -248,14 +248,14 @@ def test_composition_nests_existing_pathologies_and_orders_flat_raw_payloads() -
 
 @pytest.mark.parametrize("order", [(0, 0), (0,), (0, 2), ("0", 1)])
 def test_raw_ingestion_order_must_be_a_complete_index_permutation(order: tuple[object, ...]) -> None:
-    pathology = compose_vintage_variant_pair()
+    composed = compose_vintage_variant_pair()
 
     with pytest.raises(ValueError, match="permutation"):
-        pathology.with_raw_ingestion_order(order)  # type: ignore[arg-type]
+        composed.with_raw_ingestion_order(order)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
-# ComposedPathology provenance contract
+# ComposedSources provenance contract
 # ---------------------------------------------------------------------------
 
 
@@ -270,10 +270,13 @@ def test_raw_ingestion_order_must_be_a_complete_index_permutation(order: tuple[o
         compose_vintage_variant_pair(),
     ],
 )
-def test_every_composed_pathology_carries_provenance(result: ComposedPathology) -> None:
-    """Every zoo member must be labeled with the pathology it carries and the
-    bead/issue that motivated it (polylogue-yazae growth rule)."""
-    assert result.pathology
-    assert result.motivated_by
+def test_every_arrangement_names_its_shape_and_carries_material(result: ComposedSources) -> None:
+    """An arrangement is selectable by shape and actually carries source material.
+
+    Anti-vacuity: red if a composer returns an arrangement with no ``shape``
+    obligation identifier, or with neither sessions nor raw payloads for a law
+    to admit.
+    """
+    assert result.shape
     assert result.description
     assert result.sessions or result.raw_payloads

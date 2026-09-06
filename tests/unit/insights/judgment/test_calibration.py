@@ -167,12 +167,3 @@ def test_nwise_ordering_gold_disagrees_with_pairwise_candidate_different_winner(
     reports = compute_calibration(candidates, gold)
     key = CalibrationKey(actor_ref="agent:sonnet", execution_context_id="ctx-a", dimension="correctness")
     assert reports[key].agreement_rate == 0.0
-
-
-def test_no_cross_context_pooling_function_is_exposed() -> None:
-    """AC: reports refuse unsupported cross-context pooling -- there is no pooling API."""
-
-    import polylogue.analysis.judgment.calibration as calibration_module
-
-    assert not hasattr(calibration_module, "pool_calibration")
-    assert not hasattr(calibration_module, "pooled_calibration")

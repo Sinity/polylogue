@@ -10,7 +10,7 @@ from hypothesis import strategies as st
 from tests.infra.convergence_harness import (
     build_converged_archive,
     converge_convergence_archive,
-    ingest_convergence_pathology,
+    ingest_composed_sources,
     initialize_active_archive,
     rotated_session_order,
 )
@@ -32,28 +32,28 @@ from tests.infra.convergence_laws import (
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
-    st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1),
-    st.integers(min_value=1, max_value=len(generated_convergence_workload().pathology.sessions) - 1),
+    st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1),
+    st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1),
 )
 def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: int, split: int) -> None:
     workload = generated_convergence_workload()
-    pathology = workload.pathology
-    order = rotated_session_order(pathology, shift)
-    full = build_converged_archive(tmp_path / "full", pathology, session_order=order, append_only=True)
+    composed = workload.sources
+    order = rotated_session_order(composed, shift)
+    full = build_converged_archive(tmp_path / "full", composed, session_order=order, append_only=True)
 
     prefix_root = tmp_path / "prefix"
     initialize_active_archive(prefix_root)
-    prefix = ingest_convergence_pathology(
+    prefix = ingest_composed_sources(
         prefix_root,
-        pathology,
+        composed,
         session_indexes=order[:split],
         converge_after_each=False,
         append_only=True,
     )
     converge_convergence_archive(prefix)
-    combined = ingest_convergence_pathology(
+    combined = ingest_composed_sources(
         prefix_root,
-        pathology,
+        composed,
         session_indexes=order[split:],
         converge_after_each=False,
         append_only=True,

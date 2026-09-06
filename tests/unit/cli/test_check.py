@@ -597,8 +597,14 @@ class TestCheckCommand:
 class TestCheckCommandSupplementary:
     """Tests for check command edge cases."""
 
-    def test_check_origin_options_advertise_no_provider_aliases(self, cli_workspace: WorkspacePaths) -> None:
-        """Doctor help exposes only the origin-worded flags -- no provider aliases."""
+    def test_check_origin_options_are_advertised(self, cli_workspace: WorkspacePaths) -> None:
+        """Doctor help advertises the origin-worded flags.
+
+        Anti-vacuity: red if either flag stops being exposed. The retired
+        provider spellings are refuted by invoking them --
+        ``test_check_schemas_rejects_retired_schema_provider_flag`` and
+        ``test_check_artifacts_rejects_retired_artifact_provider_flag``.
+        """
         from click.testing import CliRunner
 
         from polylogue.cli.click_app import cli
@@ -608,8 +614,6 @@ class TestCheckCommandSupplementary:
         assert result.exit_code == 0
         assert "--schema-origin TEXT" in result.output
         assert "--artifact-origin TEXT" in result.output
-        assert "--schema-provider" not in result.output
-        assert "--artifact-provider" not in result.output
 
     @pytest.mark.parametrize(
         "flag,hint",

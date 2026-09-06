@@ -28,7 +28,7 @@ from polylogue.sources.live.cursor import CursorStore
 from tests.infra.convergence_harness import (
     build_converged_archive,
     debt_ledger_row,
-    rich_convergence_pathology,
+    rich_convergence_sources,
 )
 
 _STALL_ERROR = "derived stage stalled for the debt-surface fixture"
@@ -51,7 +51,7 @@ def _stalled_derived_stage() -> ConvergenceStage:
 
 
 def test_stalled_derived_stage_surfaces_as_retryable_convergence_debt(tmp_path: Path) -> None:
-    archive = build_converged_archive(tmp_path / "archive", rich_convergence_pathology())
+    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources())
     index_db = archive.root / "index.db"
     ops_db = archive.root / "ops.db"
 
@@ -102,7 +102,7 @@ def test_stalled_derived_stage_surfaces_as_retryable_convergence_debt(tmp_path: 
 
 @pytest.mark.asyncio
 async def test_insight_readiness_reads_convergence_debt_as_its_only_signal(tmp_path: Path) -> None:
-    archive = build_converged_archive(tmp_path / "archive", rich_convergence_pathology())
+    archive = build_converged_archive(tmp_path / "archive", rich_convergence_sources())
     index_db = archive.root / "index.db"
     ops_db = archive.root / "ops.db"
 
