@@ -371,11 +371,12 @@ def test_halted_source_is_readable_from_status_not_only_the_log(tmp_path: Path) 
     """
     from polylogue.daemon.catchup_status import HALT_EVENT_KIND, catchup_status_info
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
-    archive_root = tmp_path / "archive"
+    archive_root = tmp_path / "halt-archive"
     archive_root.mkdir()
-    initialize_archive_database(archive_root)
     ops_db = archive_root / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
 
     def insert_halt(ts_ms: int, source_name: str, code: str) -> None:
         with sqlite3.connect(ops_db) as conn:
