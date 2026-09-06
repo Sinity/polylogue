@@ -139,6 +139,24 @@ CLOUD_SANDBOX_ARCHIVE_ROOT = "/tmp/polylogue-archive"
 """Archive root `.claude/settings.json` sets for cloud sandboxes."""
 
 
+def _require_absolute_archive_root(raw: str) -> Path:
+    """Return the archive root named by ``raw``, refusing a relative one.
+
+    A relative root names a different directory for every process cwd, and the
+    first write derived from it -- the API bearer token, the capture spool, the
+    blob store -- lands inside whatever tree the caller started in.
+    ``polylogue.config.config_diagnostics`` reports such a value as
+    ``config_path_not_absolute``; resolving it here would populate the very
+    location that diagnostic warns about.
+    """
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        from ..config import ConfigError  # lazy: avoid paths<->config import cycle
+
+        raise ConfigError(f"archive root must be an absolute path, got {raw!r}")
+    return path
+
+
 def archive_root() -> Path:
     """Archive root.
 
@@ -153,10 +171,10 @@ def archive_root() -> Path:
 
     This module is intentionally stdlib-only, and :mod:`polylogue.config`
     itself imports from here (``GEMINI_DRIVE_FOLDER``), so a top-level
-    import of ``polylogue.config`` would create an import cycle. The env-var
-    fast path below never touches ``polylogue.config`` at all; the config
-    lookup is a *lazy*, function-local import that only runs once the env
-    var is absent, by which point both modules are already fully loaded.
+    import of ``polylogue.config`` would create an import cycle. Every
+    reference to it is a *lazy*, function-local import reached only once the
+    module is already fully loaded.
+
     Nothing here is cached, so a test that monkeypatches
     ``POLYLOGUE_ARCHIVE_ROOT`` (or the config-selecting env vars) between
     calls sees the change immediately -- this must never regress, since many
@@ -165,7 +183,7 @@ def archive_root() -> Path:
     """
     raw = os.environ.get("POLYLOGUE_ARCHIVE_ROOT", "").strip()
     if raw and raw != CLOUD_SANDBOX_ARCHIVE_ROOT:
-        return Path(raw).expanduser()
+        return _require_absolute_archive_root(raw)
 
     from ..config import resolve_archive_root  # lazy: avoid paths<->config import cycle
 

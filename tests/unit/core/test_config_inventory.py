@@ -243,6 +243,41 @@ def test_effective_config_payload_reports_env_relative_archive_root(
     assert diag["value"] == "relative-archive"
 
 
+def test_effective_config_payload_with_relative_archive_root_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    workspace_env: dict[str, Path],
+) -> None:
+    """Reading the effective config is a pure read.
+
+    Anti-vacuity: re-introduce a token mint (or any other first write) on this
+    path and ``relative-archive/api-auth-token`` appears under the process cwd
+    -- the checkout, for a suite run from it -- so the snapshot below goes red.
+    """
+    from polylogue.config import effective_config_payload, load_polylogue_config
+
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("POLYLOGUE_SITE_CONFIG", "")
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", "relative-archive")
+
+    before = sorted(str(path.relative_to(cwd)) for path in cwd.rglob("*"))
+    payload = effective_config_payload(load_polylogue_config())
+    after = sorted(str(path.relative_to(cwd)) for path in cwd.rglob("*"))
+
+    assert before == []
+    assert after == []
+
+    diagnostics = payload["diagnostics"]
+    assert isinstance(diagnostics, list)
+    assert any(
+        diag.get("code") == "config_path_not_absolute" and diag.get("key") == "archive_root"
+        for diag in diagnostics
+        if isinstance(diag, dict)
+    )
+
+
 def test_config_diagnostics_use_resolved_snapshot_not_ambient_environment(
     monkeypatch: pytest.MonkeyPatch,
     workspace_env: dict[str, Path],
