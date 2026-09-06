@@ -111,10 +111,10 @@ def _clean_title_text(text: str) -> str:
 logger = get_logger(__name__)
 # ``_NON_MESSAGE_SIDECAR_RECORD_TYPES`` marks record types that never become a
 # ``ParsedMessage`` row (they are not chat content). That is still correct for
-# all twelve types below -- the name used to be
-# ``_SKIPPED_SIDECAR_RECORD_TYPES``, which stopped being accurate the day most
-# of these started persisting as ``session_events`` (polylogue-pbuh); 13 of
-# the 15 members below ARE persisted today, so "skipped" described the
+# every type below -- the name used to be ``_SKIPPED_SIDECAR_RECORD_TYPES``,
+# which stopped being accurate the day most of these started persisting as
+# ``session_events`` (polylogue-pbuh); all but ``init`` and ``mode`` ARE
+# persisted today, so "skipped" described the
 # pre-polylogue-pbuh behavior, not the current one. Renamed (polylogue lane,
 # audited against the live corpus 2026-07-31) with no compat alias -- this
 # repo does not carry old spellings forward. What changed originally
@@ -216,6 +216,39 @@ logger = get_logger(__name__)
 #                                    (per-file incremental backup, the
 #                                    fine-grained sibling of the
 #                                    whole-snapshot file-history-snapshot type)
+#
+# Five further types (cross-origin parser-shape audit, 2026-09-06; counts from
+# an exhaustive walk of 14,429 session files) carried no ``message`` key and
+# so fell through ordinary message parsing into ``empty_drop_counts``:
+#   result (148)                   EVIDENCE -> claude_subagent_result event.
+#                                    244,950 characters of dispatched-subagent
+#                                    output, averaging 1,655 per record. The
+#                                    archive recorded that a dispatch happened
+#                                    and never what came back.
+#   started (204)                  EVIDENCE -> claude_subagent_started event.
+#                                    Carries no text, only the ``key``/
+#                                    ``agentId`` pair that joins to the
+#                                    matching ``result``; kept so a dispatch
+#                                    with no returned result is still visible.
+#   relocated (2,204)              EVIDENCE -> claude_session_relocated event,
+#                                    AND ``relocatedCwd`` joins the session's
+#                                    working-directory set. The provider is
+#                                    correcting the ``cwd`` stamped on every
+#                                    earlier record; dropping it left the
+#                                    stale original as the session's only
+#                                    working directory.
+#   worktree-state (297)           EVIDENCE -> claude_worktree_state event.
+#                                    ``worktreeSession`` is session topology:
+#                                    which session the worktree belongs to.
+#   cost-state (37)                EVIDENCE -> claude_cost_state event. The
+#                                    CLI's own end-of-session cost ledger.
+#                                    ``hasUnknownModelCost`` is the producer
+#                                    saying its own total is incomplete -- a
+#                                    qualification the derived cost model
+#                                    cannot express on its own, and the
+#                                    reason this is stored as the producer's
+#                                    claim rather than folded into the
+#                                    derived total.
 _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
     {
         "init",
@@ -232,6 +265,11 @@ _NON_MESSAGE_SIDECAR_RECORD_TYPES = frozenset(
         "mode",
         "permission-mode",
         "pr-link",
+        "result",
+        "started",
+        "relocated",
+        "worktree-state",
+        "cost-state",
     }
 )
 
@@ -254,6 +292,11 @@ _SIDECAR_EVENT_TYPES: dict[str, str] = {
     "queue-operation": "claude_queue_operation",
     "ai-title": "claude_ai_title",
     "custom-title": "claude_custom_title",
+    "result": "claude_subagent_result",
+    "started": "claude_subagent_started",
+    "relocated": "claude_session_relocated",
+    "worktree-state": "claude_worktree_state",
+    "cost-state": "claude_cost_state",
 }
 
 # ``attachment.type`` subtype -> session_events.event_type (polylogue lane,
@@ -577,6 +620,55 @@ def _sidecar_evidence_payload(record_type: str, item: dict[str, object]) -> dict
             "backup_file_name": _string_field(backup_mapping, "backupFileName"),
             "backup_version": backup_mapping.get("version"),
             "summary": tracking_path,
+        }
+    if record_type == "result":
+        result_text = _string_field(item, "result")
+        if not result_text:
+            return None
+        return {
+            "agent_id": _string_field(item, "agentId"),
+            "dispatch_key": _string_field(item, "key"),
+            "result": result_text,
+            # The full text is in ``result``; ``summary`` is the one-line
+            # label every other sidecar payload carries.
+            "summary": result_text.strip().split("\n", 1)[0][:200],
+        }
+    if record_type == "started":
+        # No text of its own -- the pairing key is the whole point, so a
+        # dispatch that never returned a result is still visible.
+        dispatch_key = _string_field(item, "key")
+        agent_id = _string_field(item, "agentId")
+        if not dispatch_key and not agent_id:
+            return None
+        return {
+            "agent_id": agent_id,
+            "dispatch_key": dispatch_key,
+            "summary": agent_id or dispatch_key,
+        }
+    if record_type == "relocated":
+        relocated_cwd = _string_field(item, "relocatedCwd")
+        return {"relocated_cwd": relocated_cwd, "summary": relocated_cwd} if relocated_cwd else None
+    if record_type == "worktree-state":
+        worktree_session = _string_field(item, "worktreeSession")
+        return {"worktree_session": worktree_session, "summary": worktree_session} if worktree_session else None
+    if record_type == "cost-state":
+        model_usage = item.get("modelUsage")
+        total_cost = item.get("totalCostUSD")
+        return {
+            "total_cost_usd": total_cost,
+            # The producer's own qualification of the figure above. Absent
+            # evidence has previously been read as a known zero; this makes
+            # "the producer says its total is incomplete" representable.
+            "has_unknown_model_cost": bool(item.get("hasUnknownModelCost")),
+            "model_usage": dict(model_usage) if isinstance(model_usage, dict) else None,
+            "total_duration_ms": item.get("totalDuration"),
+            "total_api_duration_ms": item.get("totalAPIDuration"),
+            "total_api_duration_without_retries_ms": item.get("totalAPIDurationWithoutRetries"),
+            "total_tool_duration_ms": item.get("totalToolDuration"),
+            "total_lines_added": item.get("totalLinesAdded"),
+            "total_lines_removed": item.get("totalLinesRemoved"),
+            "start_time": item.get("startTime"),
+            "summary": f"${total_cost}" if total_cost is not None else "cost-state",
         }
     return None
 
@@ -1565,7 +1657,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     message = item.get("message")
     notification = _task_notification_from_record(item, message)
 
-    # These twelve record types are never chat content -- see the
+    # These record types are never chat content -- see the
     # classification comment above ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``
     # for why each one either persists as typed ``session_events``
     # evidence (polylogue-pbuh) or stays genuinely transient. ``progress``
@@ -1617,6 +1709,14 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                         )
                     )
                     persisted_this_record = True
+            elif record_type == "relocated":
+                # The generic evidence event below records the assertion; the
+                # working-directory set is what read models actually consult,
+                # and ``cwd`` is only read off records that reach the message
+                # path (below), which this one never does.
+                relocated_cwd = _string_field(item, "relocatedCwd")
+                if relocated_cwd:
+                    acc.cwds.add(relocated_cwd)
             elif record_type == "attachment":
                 # Subtype-dispatched -- see ``_attachment_sidecar_event``
                 # and ``_ATTACHMENT_SUBTYPE_EVENT_TYPES`` above. Handled
