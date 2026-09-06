@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -1908,3 +1908,122 @@ def test_embedding_config_disabled_explicitly() -> None:
         from polylogue.daemon.convergence_stages import _embedding_config_enabled
 
         assert _embedding_config_enabled() is False
+
+
+class _ProbeStatements:
+    """SQL every connection issues while one health probe runs."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.statements: list[str] = []
+        self.active = False
+        real_connect = sqlite3.connect
+
+        def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
+            conn = cast(sqlite3.Connection, real_connect(*args, **kwargs))
+            conn.set_trace_callback(self._record)
+            return conn
+
+        monkeypatch.setattr(sqlite3, "connect", counting_connect)
+
+    def _record(self, sql: str) -> None:
+        if self.active:
+            self.statements.append(" ".join(sql.split()))
+
+    @contextmanager
+    def measuring(self) -> Iterator[None]:
+        self.statements = []
+        self.active = True
+        try:
+            yield
+        finally:
+            self.active = False
+
+    @property
+    def block_aggregates(self) -> list[str]:
+        return [sql for sql in self.statements if "blocks" in sql.lower() and "count(" in sql.lower()]
+
+
+def _publish_fts_readiness(archive_root: Path, sessions: int) -> None:
+    archive_db = archive_root / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+        for index in range(sessions):
+            _seed_index_session(conn, session_id=f"codex-session:probe-{index}", text=f"probe needle {index}")
+        conn.commit()
+    stage = stages.make_fts_readiness_stage(archive_db)
+    assert stage.execute(archive_db) is True
+
+
+def test_fts_health_probe_reads_the_published_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-t4iy5.11.1: the medium FTS health probe never aggregates the
+    archive.
+
+    ``check_health`` runs on the daemon's sole writer and ``/api/status``
+    resolves it per request, so an archive-wide aggregate here is paid against
+    every catch-up chunk. The exact audit belongs to the ``fts_readiness``
+    convergence stage; the probe reports that stage's durable verdict.
+
+    Anti-vacuity: restore ``fts_invariant_snapshot_sync`` inside
+    ``_check_fts_readiness_medium`` and the probe issues four COUNT aggregates
+    over ``blocks`` per call. The equal-statement assertion additionally
+    rejects a per-session or per-surface probe loop.
+    """
+    from polylogue.daemon.health import HealthSeverity, _check_fts_readiness_medium
+
+    probe = _ProbeStatements(monkeypatch)
+    small = tmp_path / "small"
+    large = tmp_path / "large"
+    small.mkdir()
+    large.mkdir()
+    _publish_fts_readiness(small, sessions=2)
+    _publish_fts_readiness(large, sessions=40)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(small))
+    with probe.measuring():
+        small_alert = _check_fts_readiness_medium()
+    small_statements = list(probe.statements)
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(large))
+    with probe.measuring():
+        large_alert = _check_fts_readiness_medium()
+    large_statements = list(probe.statements)
+
+    assert small_alert.severity is HealthSeverity.OK
+    assert large_alert.severity is HealthSeverity.OK
+    assert probe.block_aggregates == []
+    assert len(large_statements) == len(small_statements)
+
+
+def test_fts_health_probe_reports_ledger_drift_and_unmeasured_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The probe still fails on published drift, and never calls an unmeasured
+    surface fresh.
+
+    Anti-vacuity: report ``ready`` from table/trigger presence alone and the
+    drifted archive reports OK; treat an unmeasured surface as ready and the
+    third assertion reports OK instead of a warning.
+    """
+    from polylogue.daemon.health import HealthSeverity, _check_fts_readiness_medium
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    _publish_fts_readiness(archive_root, sessions=3)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    assert _check_fts_readiness_medium().severity is HealthSeverity.OK
+
+    archive_db = archive_root / "index.db"
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute("DELETE FROM messages_fts")
+        conn.commit()
+    stages.make_fts_readiness_stage(archive_db).execute(archive_db)
+    drifted = _check_fts_readiness_medium()
+    assert drifted.severity is HealthSeverity.ERROR
+    assert "missing row(s)" in drifted.message
+
+    with sqlite3.connect(archive_db) as conn:
+        conn.execute("DELETE FROM fts_freshness_state")
+        conn.commit()
+    unmeasured = _check_fts_readiness_medium()
+    assert unmeasured.severity is HealthSeverity.WARNING
+    assert "not published yet" in unmeasured.message
