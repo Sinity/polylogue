@@ -9,21 +9,29 @@ it and re-execute everything under the name of selection.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
 from testmon.db import DATA_VERSION, DB
 
 from devtools import testmon_provision
+from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
+from devtools.run_tests import ROOT, build_pytest_cmd, focused_pytest_env
 from devtools.testmon_provision import (
+    TESTMON_COVERAGE_CORE,
     TESTMON_ENVIRONMENT,
     TestmonGraphStatus,
     current_environment_key,
     discard_testmon_graph,
     inspect_testmon_graph,
+    testmon_datafile,
 )
+from devtools.toolchain import venv_python
+from devtools.verify_runs import VerifyRun
 
 
 def _seed_with_testmon(root: Path, *, packages: str | None = None, python_version: str | None = None) -> Path:
@@ -306,3 +314,103 @@ def test_a_local_graph_that_would_rerun_everything_takes_the_primary(tmp_path: P
 
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
     assert inspect_testmon_graph(local_root).full_rerun_cause is None
+
+
+def _synthetic_corpus(root: Path) -> None:
+    """A corpus whose every test runs one shared module, so editing that module
+    leaves no recorded test stable -- the state in which testmon prunes."""
+    (root / "tests").mkdir(parents=True)
+    (root / "hub.py").write_text("def shared():\n    return 1\n", encoding="utf-8")
+    for index in range(5):
+        (root / f"leaf{index}.py").write_text(f"def value():\n    return {index}\n", encoding="utf-8")
+        lines = [f"import leaf{index}", "import hub", ""]
+        for test_index in range(4):
+            lines += [
+                f"def test_{test_index}():",
+                f"    assert leaf{index}.value() + hub.shared() == {index} + 1",
+                "",
+            ]
+        (root / "tests" / f"test_leaf{index}.py").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _recorded_tests(datafile: Path) -> int:
+    connection = sqlite3.connect(f"file:{datafile}?mode=ro", uri=True)
+    with contextlib.closing(connection):
+        return int(connection.execute("SELECT count(*) FROM test_execution").fetchone()[0])
+
+
+def _managed_pytest_environment(root: Path, datafile: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(ROOT)))
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    environment["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
+    environment["TESTMON_DATAFILE"] = str(datafile)
+    for leaked in ("PYTEST_ADDOPTS", "PYTEST_PLUGINS", "PYTEST_XDIST_WORKER", "PYTEST_CURRENT_TEST"):
+        environment.pop(leaked, None)
+    return environment
+
+
+def test_a_focused_run_traces_a_scratch_graph_not_the_checkout_one(tmp_path: Path) -> None:
+    """The checkout's graph is written only by a run whose collection is the corpus.
+
+    Anti-vacuity: return ``env_for_pytest_step`` unchanged and the focused run
+    opens ``.cache/testmon/testmondata`` again, which is the assignment that
+    let a twenty-test selection replace a twenty-thousand-test graph.
+    """
+    run = VerifyRun(tier="focused-test", argv=["tests/unit/devtools"], git_head=None, root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["python", "-m", "pytest"])
+
+    environment = focused_pytest_env(run=run, artifacts=artifacts)
+
+    datafile = Path(environment["TESTMON_DATAFILE"])
+    assert datafile != testmon_datafile(tmp_path)
+    assert datafile.parent == artifacts.step_dir
+
+
+def test_the_focused_command_leaves_a_corpus_graph_whole(tmp_path: Path) -> None:
+    """testmon prunes whichever datafile it opens down to the run's own
+    collection, so the production focused command must be shown against a real
+    graph, not only against the path it was handed.
+
+    Anti-vacuity: point the focused run at the corpus graph and it drops from
+    every recorded test to the four this selection collected.
+    """
+    _synthetic_corpus(tmp_path)
+    corpus_graph = tmp_path / "corpus-testmondata"
+
+    corpus = subprocess.run(
+        [
+            str(venv_python(root=ROOT)),
+            "-m",
+            "pytest",
+            "-q",
+            *MANAGED_PLUGIN_ARGS,
+            "--testmon",
+            f"--testmon-env={TESTMON_ENVIRONMENT}",
+            "--testmon-noselect",
+            "tests",
+        ],
+        cwd=tmp_path,
+        env=_managed_pytest_environment(tmp_path, corpus_graph),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert corpus.returncode == 0, corpus.stdout + corpus.stderr
+    assert _recorded_tests(corpus_graph) == 20
+
+    # Every recorded test now depends on a module that changed, so none of them
+    # is stable and none of them would survive a prune.
+    (tmp_path / "hub.py").write_text("def shared():\n    return 1\n\n\ndef extra():\n    return 2\n", encoding="utf-8")
+
+    focused = subprocess.run(
+        build_pytest_cmd(["tests/test_leaf0.py"]),
+        cwd=tmp_path,
+        env=_managed_pytest_environment(tmp_path, tmp_path / "scratch-testmondata"),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert focused.returncode == 0, focused.stdout + focused.stderr
+    assert _recorded_tests(corpus_graph) == 20
+    assert _recorded_tests(tmp_path / "scratch-testmondata") == 4
