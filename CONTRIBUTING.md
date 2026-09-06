@@ -236,11 +236,8 @@ relative hook path. External task state is independent of Git hooks and branches
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
-- **pre-push**: `devtools verify --quick` (format, lint, mypy, generated
-  surfaces, and fast manifest checks).
-
-The pre-push hook is an early failure gate. The PR baseline is the
-`devtools verify` workflow below.
+- **pre-push**: none. The hosted quick gate on the pull request is the
+  static check; the corpus runs on master per landing wave.
 
 ## Type Checking
 
@@ -266,8 +263,9 @@ devtools verify --quick    # format + lint + mypy + generated checks, including 
 devtools bench slo --include-lab  # explicit benchmark tier
 ```
 
-The quick gate runs on `git push` via the active pre-push hook. It's a fast
-check, not a substitute for the default baseline.
+The quick gate runs on the pull request (hosted) and on demand with
+`devtools verify --quick`. It's a fast check, not a substitute for the
+default baseline.
 
 `devtools verify` does not replay a prior verify result. It always runs the
 static gates, then pytest over unit, property, fuzz, and integration tests,
