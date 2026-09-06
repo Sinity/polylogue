@@ -101,6 +101,10 @@ def test_a_conforming_archive_reports_no_defects(tmp_path: Path) -> None:
     [
         ({"tool_result_outcome_unknown_reason": None}, "unknown_without_reason"),
         (
+            {"tool_outcome": None, "tool_result_outcome_unknown_reason": None},
+            "unknown_without_reason",
+        ),
+        (
             {"tool_outcome": ToolOutcome.OK.value, "tool_result_is_error": 0},
             "known_with_reason",
         ),
@@ -109,7 +113,7 @@ def test_a_conforming_archive_reports_no_defects(tmp_path: Path) -> None:
             "unsupported_without_owner",
         ),
     ],
-    ids=["unknown-without-reason", "known-with-reason", "reason-with-no-owner"],
+    ids=["unknown-without-reason", "null-outcome", "known-with-reason", "reason-with-no-owner"],
 )
 def test_each_forbidden_shape_is_counted(columns: dict[str, object], defect: str, tmp_path: Path) -> None:
     conn = _connect(tmp_path / f"{defect}.db")

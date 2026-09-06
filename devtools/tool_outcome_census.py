@@ -120,7 +120,10 @@ def compute_tool_outcome_census(conn: sqlite3.Connection) -> ToolOutcomeCensus:
         total += count
         key = (str(origin), str(construct), str(outcome or ""), str(reason))
         by_classification[key] = by_classification.get(key, 0) + count
-        if outcome == ToolOutcome.UNKNOWN.value and not reason:
+        # A NULL outcome is the same hole as an unreasoned unknown: the row
+        # states nothing and attributes nothing. The writer cannot produce it,
+        # so any row carrying one arrived past the production route.
+        if (outcome == ToolOutcome.UNKNOWN.value or not outcome) and not reason:
             unknown_without_reason += count
         if outcome in _KNOWN_OUTCOMES and reason:
             known_with_reason += count
