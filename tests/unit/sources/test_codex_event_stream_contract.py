@@ -902,3 +902,126 @@ class TestFunctionsExecLowering:
         )
 
         assert session_content_hash(lowered) != session_content_hash(outer_only)
+
+
+class TestItemCompletedExecEvidence:
+    """Pin that Codex's own record of what it executed reaches the tool_result path.
+
+    The current wire generation states every shell and patch operation a code-mode
+    ``exec`` program performed in an ``event_msg`` -> ``payload.item`` record, and
+    states the outcome nowhere else: the transport ``custom_tool_call_output``
+    carries a rendering of what the model was shown and no exit code at all. Every
+    value asserted below — the exit codes, the full command output, the surplus
+    execution — exists only in ``payload.item``, so a parser that stops reading it
+    collapses this class.
+    """
+
+    @staticmethod
+    def _results(session: ParsedSession) -> dict[str, ParsedContentBlock]:
+        return {
+            block.tool_id: block
+            for message in session.messages
+            for block in message.blocks
+            if block.type == BlockType.TOOL_RESULT and block.tool_id
+        }
+
+    @staticmethod
+    def _uses(session: ParsedSession) -> dict[str, ParsedContentBlock]:
+        return {
+            block.tool_id: block
+            for message in session.messages
+            for block in message.blocks
+            if block.type == BlockType.TOOL_USE and block.tool_id
+        }
+
+    @pytest.fixture
+    def session(self) -> ParsedSession:
+        return _parse(_load_catalog("functions_exec_item_completed.jsonl"), "codex-item-completed")
+
+    def test_failed_command_carries_full_output_and_structural_outcome(self, session: ParsedSession) -> None:
+        results = self._results(session)
+        child = results["call-a::polylogue-child::0"]
+        transport = results["call-a"]
+
+        assert child.exit_code == 2
+        assert child.is_error is True
+        assert child.outcome_unknown_reason is None
+        assert child.text is not None
+        assert child.text.startswith("FAILED tests/unit/test_widget.py::test_shape")
+        assert child.text.count("FAILED ") == 40
+        # The transport rendering is the tail the model was shown; the operation's
+        # own record is an order of magnitude longer and is what gets stored.
+        assert len(child.text) > 10 * len(transport.text or "")
+        # Nothing in the transport record reports an outcome, and none is invented.
+        assert transport.is_error is None
+        assert transport.exit_code is None
+
+    def test_execution_recorded_after_a_yielded_output_still_reaches_its_child(self, session: ParsedSession) -> None:
+        """A command still running when the transport call yields records its item later.
+
+        Attribution is by the command itself, so the item outside the transport
+        call's record span is still the execution of that call's child.
+        """
+        results = self._results(session)
+        transport = results["call-b"]
+        child = results["call-b::polylogue-child::0"]
+
+        assert transport.text is not None
+        assert "Script running with cell ID 3" in transport.text
+        assert transport.exit_code is None
+        assert child.text == "built 2 targets\n"
+        assert child.exit_code == 0
+        assert child.is_error is False
+
+    def test_surplus_loop_execution_becomes_a_child_in_its_own_right(self, session: ParsedSession) -> None:
+        """One call site, two executions: the program source undercounts, the items do not."""
+        uses = self._uses(session)
+        results = self._results(session)
+
+        assert "call-c::polylogue-child::1" in uses
+        surplus = uses["call-c::polylogue-child::1"]
+        assert surplus.tool_name == "exec_command"
+        assert surplus.tool_input is not None
+        assert surplus.tool_input["command"] == "/bin/sh -lc 'wc -l beta.py'"
+        provenance = surplus.tool_input["_polylogue"]
+        assert isinstance(provenance, dict)
+        assert provenance["item_completed_id"] == "exec-dddd4444"
+
+        assert results["call-c::polylogue-child::0"].text == "12 alpha.py\n"
+        assert results["call-c::polylogue-child::0"].exit_code == 0
+        surplus_result = results["call-c::polylogue-child::1"]
+        assert surplus_result.text == "wc: beta.py: No such file or directory\n"
+        assert surplus_result.exit_code == 1
+        assert surplus_result.is_error is True
+
+    def test_patch_execution_matches_within_the_transport_record_span(self, session: ParsedSession) -> None:
+        """A patch has no command to anchor on; the transport call's span is the pairing."""
+        child = self._results(session)["call-d::polylogue-child::0"]
+
+        # `FileChange` reports no exit code -- `status` is the whole outcome signal.
+        assert child.exit_code is None
+        assert child.is_error is False
+        assert child.outcome_unknown_reason is None
+        assert child.text == "Success. Updated the following files:\nM /repo/alpha.py\n"
+        assert child.metadata is not None
+        assert child.metadata["paths"] == ["/repo/alpha.py"]
+
+    def test_item_identity_reaches_session_events(self, session: ParsedSession) -> None:
+        """``blocks`` has no metadata column, so the item anchor must also be an event.
+
+        Without this projection the recorded link between a stored tool_result and
+        the ``item_completed`` it came from is dropped at write time.
+        """
+        anchors = [
+            event.payload.get("codex_item_completed_id")
+            for event in session.session_events
+            if event.event_type == "codex_functions_exec_child_result_evidence"
+        ]
+
+        assert anchors == [
+            "exec-aaaa1111",
+            "exec-bbbb2222",
+            "exec-cccc3333",
+            "exec-dddd4444",
+            "exec-eeee5555",
+        ]
