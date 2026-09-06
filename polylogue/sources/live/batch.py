@@ -828,6 +828,7 @@ class LiveBatchProcessor:
         convergence_time_s = 0.0
         stage_timings: dict[str, float] = {}
         failed_paths: list[str] = []
+        excluded_reasons: dict[str, int] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1201,6 +1202,8 @@ class LiveBatchProcessor:
                 for path in full_result.failed:
                     failed_paths.append(str(path))
                     cursor_fingerprint_read_bytes += self._record_failed_cursor(path)
+                for reason in full_result.excluded.values():
+                    excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -1241,6 +1244,8 @@ class LiveBatchProcessor:
             skipped_file_count=skipped_file_count,
             succeeded_file_count=len(succeeded_paths),
             failed_file_count=len(failed_paths),
+            excluded_file_count=sum(excluded_reasons.values()),
+            excluded_reasons=dict(excluded_reasons),
             source_group_count=len({self._source_name_for(path) for path in paths}),
             input_bytes=input_bytes,
             source_payload_read_bytes=source_payload_read_bytes,
@@ -2101,6 +2106,10 @@ class LiveBatchProcessor:
                 )
                 ingested.append(path)
 
+        # Every planned path this pass admits nothing for, and why. A path
+        # that reaches neither ``ingested`` nor ``failed`` is invisible in the
+        # batch counters, which reads exactly like an idle source.
+        excluded_paths: dict[Path, str] = {}
         for path in (path for path in paths if path not in antigravity_pb_paths):
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
@@ -2137,7 +2146,13 @@ class LiveBatchProcessor:
                     source_class.source_class,
                     source_class.reason,
                 )
-                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                self._mark_excluded_cursor(
+                    path,
+                    stat,
+                    source_name=fallback_provider.value,
+                    reason="unsupported source class",
+                    excluded=excluded_paths,
+                )
                 continue
             origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
             path_artifact = classify_artifact_path(path, provider=fallback_provider)
@@ -2169,7 +2184,13 @@ class LiveBatchProcessor:
                         file_mtime=file_mtime,
                     )
                 if not zip_records:
-                    self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason="zip container held no admissible record",
+                        excluded=excluded_paths,
+                    )
                     continue
                 for member_raw_id, member_record in zip_records:
                     raw_records.append(member_record)
@@ -2289,7 +2310,13 @@ class LiveBatchProcessor:
                 # (logs_2.sqlite's 627 MB of runtime tracing, codex-dev.db's
                 # automation config) -- exclude cleanly without ever reading
                 # the bytes as a generic session artifact.
-                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                self._mark_excluded_cursor(
+                    path,
+                    stat,
+                    source_name=fallback_provider.value,
+                    reason="declared out-of-scope or structurally unverified state database",
+                    excluded=excluded_paths,
+                )
                 continue
             elif source_only:
                 # A derived-only outage must not turn durable acquisition into
@@ -2356,7 +2383,13 @@ class LiveBatchProcessor:
                 # Keep path-only metadata out of the generic JSON fallback,
                 # but let real decoded session evidence outrank a stale or
                 # overbroad filename rule just as offline source parsing does.
-                self._mark_excluded_cursor(path, stat, source_name=fallback_provider.value)
+                self._mark_excluded_cursor(
+                    path,
+                    stat,
+                    source_name=fallback_provider.value,
+                    reason="path rule classifies this as non-session evidence",
+                    excluded=excluded_paths,
+                )
                 continue
             elif origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
                 provider = fallback_provider
@@ -2407,7 +2440,13 @@ class LiveBatchProcessor:
                 # cursor-excluded here because their classification is already
                 # authoritative.
                 if not parse_as_session and provider is not Provider.UNKNOWN:
-                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=source_name,
+                        reason="declared artifact rule: not parsed as a session",
+                        excluded=excluded_paths,
+                    )
                     continue
                 if stat.st_size >= _STREAMING_FULL_INGEST_BYTES:
                     try:
@@ -2475,7 +2514,13 @@ class LiveBatchProcessor:
                     not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
                     and provider is not Provider.UNKNOWN
                 ):
-                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=source_name,
+                        reason="payload carries no session evidence",
+                        excluded=excluded_paths,
+                    )
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
                 blob_publication_receipt_id = blob_store.receipt_id(raw_id)
@@ -2491,7 +2536,13 @@ class LiveBatchProcessor:
                 provider = _detect_provider_from_path_sample(path, fallback_provider)
                 source_name = provider.value
                 if not _parse_path_as_session_artifact(path, provider=provider):
-                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=source_name,
+                        reason="path rule refuses session parsing",
+                        excluded=excluded_paths,
+                    )
                     continue
                 try:
                     if heartbeat is not None:
@@ -2531,7 +2582,13 @@ class LiveBatchProcessor:
                     not _parse_payload_as_session_artifact(path, provider=provider, payload=payload)
                     and provider is not Provider.UNKNOWN
                 ):
-                    self._mark_excluded_cursor(path, stat, source_name=source_name)
+                    self._mark_excluded_cursor(
+                        path,
+                        stat,
+                        source_name=source_name,
+                        reason="payload carries no session evidence",
+                        excluded=excluded_paths,
+                    )
                     continue
                 raw_id, blob_size = blob_store.write_from_bytes(payload)
                 blob_publication_receipt_id = blob_store.receipt_id(raw_id)
@@ -2678,10 +2735,25 @@ class LiveBatchProcessor:
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
+        succeeded_paths = [path for path in ingested if path not in failed_set and path not in skipped_paths]
+        for path in skipped_paths:
+            excluded_paths.setdefault(path, "archive write skipped this raw")
+        accounted = set(succeeded_paths) | failed_set | set(excluded_paths)
+        for path in paths:
+            if path not in accounted:
+                # Reaching here means a planned path left the loop through a
+                # branch that records nothing. Name it rather than let the
+                # chunk report a silent zero.
+                excluded_paths[path] = "dropped without a recorded outcome"
+                logger.warning(
+                    "live.watcher: planned path left the ingest pass with no recorded outcome: %s",
+                    path,
+                )
         result = _full_ingest_result_from_summary(
-            succeeded=[path for path in ingested if path not in failed_set and path not in skipped_paths],
+            succeeded=succeeded_paths,
             failed=failed,
             source_payload_read_bytes=source_payload_read_bytes,
+            excluded=excluded_paths,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -3891,7 +3963,23 @@ class LiveBatchProcessor:
                 return detected
         return None
 
-    def _mark_excluded_cursor(self, path: Path, stat: object, *, source_name: str) -> None:
+    def _mark_excluded_cursor(
+        self,
+        path: Path,
+        stat: object,
+        *,
+        source_name: str,
+        reason: str = "unspecified",
+        excluded: dict[Path, str] | None = None,
+    ) -> None:
+        """Quarantine a path and record why, so the pass can account for it.
+
+        A planned path that is neither ingested nor failed is invisible in the
+        batch counters, which is indistinguishable from an idle source; the
+        caller passes its ``excluded`` map so every drop is named.
+        """
+        if excluded is not None:
+            excluded[path] = reason
         st_size = int(getattr(stat, "st_size", 0))
         self._cursor.set(
             path,

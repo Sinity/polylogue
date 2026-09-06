@@ -25,14 +25,32 @@ from polylogue.sources.providers.codex import CodexRecord
 
 class TestLegacyCompactionDetection:
     def test_summary_type_detected(self) -> None:
-        item = {"type": "summary", "message": {"content": "Session summary text"}, "timestamp": "2024-01-01T10:00:00Z"}
+        """The wire shape Claude Code actually writes: text at the top level.
+
+        Key-set is exactly ``{type, summary, leafUuid}`` -- no ``message``, no
+        ``timestamp``, no ``uuid`` -- for all 6,372 occurrences in the
+        reference corpus. Anti-vacuity: reverting ``_summary_text`` to read
+        only ``message.content`` makes ``summary`` empty and this red.
+        """
+        item = {
+            "type": "summary",
+            "summary": "Session summary text",
+            "leafUuid": "8f2c1d04-0000-4000-8000-000000000001",
+        }
         result = detect_context_compaction(item)
         assert result is not None
         assert result["summary"] == "Session summary text"
-        assert result["timestamp"] == "2024-01-01T10:00:00Z"
+        assert result["preserved_segment_id"] == "8f2c1d04-0000-4000-8000-000000000001"
+        assert result["timestamp"] is None
         assert result["is_modern"] is False
 
-    def test_summary_with_content_blocks(self) -> None:
+    def test_summary_with_legacy_message_content_blocks(self) -> None:
+        """Older records carried the text under ``message.content``.
+
+        Not produced by the current CLI, but the archive holds compaction
+        events whose summary text can only have come from this shape, so the
+        read stays.
+        """
         item = {
             "type": "summary",
             "message": {"content": [{"type": "text", "text": "Block summary"}]},
@@ -43,7 +61,7 @@ class TestLegacyCompactionDetection:
         assert result["summary"] == "Block summary"
         assert result["is_modern"] is False
 
-    def test_summary_with_empty_message(self) -> None:
+    def test_summary_with_no_text_anywhere(self) -> None:
         item = {"type": "summary", "message": {}}
         result = detect_context_compaction(item)
         assert result is not None
@@ -92,6 +110,46 @@ class TestModernCompactionDetection:
         assert result["trigger"] == "token_limit"
         assert result["pre_tokens"] == 128000
         assert result["preserved_segment_id"] == "a1"
+
+    def test_system_compact_boundary_real_wire_shape(self) -> None:
+        """The boundary shape the CLI actually writes.
+
+        ``system`` records carry no ``message`` key at all (0 of 35,041 in the
+        reference corpus); the text is a top-level ``content``, and
+        ``preservedSegment`` is present on only a minority of boundaries while
+        ``logicalParentUuid`` is present on all of them. Anti-vacuity: drop
+        the top-level ``content`` read and ``summary`` goes empty; drop the
+        ``logicalParentUuid`` fallback and ``preserved_segment_id`` goes None.
+        """
+        item = {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "Conversation compacted",
+            "logicalParentUuid": "27beca28-0000-4000-8000-000000000002",
+            "isMeta": False,
+            "level": "info",
+            "timestamp": "2024-06-01T12:00:00Z",
+            "compactMetadata": {"trigger": "auto", "preTokens": 192849},
+        }
+        result = detect_context_compaction(item)
+        assert result is not None
+        assert result["summary"] == "Conversation compacted"
+        assert result["preserved_segment_id"] == "27beca28-0000-4000-8000-000000000002"
+        assert result["trigger"] == "auto"
+        assert result["pre_tokens"] == 192849
+        assert result["is_modern"] is True
+
+    def test_preserved_segment_anchor_wins_over_logical_parent(self) -> None:
+        item = {
+            "type": "system",
+            "subtype": "compact_boundary",
+            "content": "Conversation compacted",
+            "logicalParentUuid": "logical-parent",
+            "compactMetadata": {"preservedSegment": {"anchorUuid": "anchor"}},
+        }
+        result = detect_context_compaction(item)
+        assert result is not None
+        assert result["preserved_segment_id"] == "anchor"
 
     def test_modern_snake_case_fallback(self) -> None:
         """Snake_case keys are a defensive fallback, not the observed live shape."""
@@ -264,9 +322,8 @@ class TestClaudeCodeParserSessionEvents:
             },
             {
                 "type": "summary",
-                "uuid": "s1",
-                "timestamp": "2024-01-01T10:05:00Z",
-                "message": {"content": "Summary of session"},
+                "summary": "Summary of session",
+                "leafUuid": "u1",
             },
             {
                 "type": "assistant",
@@ -295,7 +352,8 @@ class TestClaudeCodeParserSessionEvents:
                 "subtype": "compact_boundary",
                 "uuid": "c1",
                 "timestamp": "2024-01-01T10:05:00Z",
-                "message": {"content": "Modern compacted summary"},
+                "content": "Conversation compacted",
+                "logicalParentUuid": "u1",
                 "compactMetadata": {"trigger": "auto", "preTokens": 100000},
             },
         ]
@@ -306,11 +364,13 @@ class TestClaudeCodeParserSessionEvents:
         assert event.payload["is_modern"] is True
         assert event.payload["trigger"] == "auto"
         assert event.payload["pre_tokens"] == 100000
+        assert event.payload["summary"] == "Conversation compacted"
+        assert event.payload["preserved_segment_id"] == "u1"
 
     def test_compaction_not_duplicated_in_provider_meta(self) -> None:
         """Compactions are session events, not session metadata."""
         payload: list[object] = [
-            {"type": "summary", "uuid": "s1", "message": {"content": "sum"}},
+            {"type": "summary", "summary": "sum", "leafUuid": "u1"},
         ]
         result = parse_code(payload, "test-session")
         assert len(result.session_events) == 1
@@ -329,17 +389,26 @@ class TestClaudeCodeParserSessionEvents:
         assert result.session_events == []
 
     def test_compaction_preserved_as_summary_message(self) -> None:
-        """Compaction records are session events and queryable summary messages."""
+        """A summary record becomes a session event AND a readable message.
+
+        Anti-vacuity: with ``_summary_text`` reading only ``message.content``
+        the summary message carries no blocks and no text -- which is what
+        4,909 of 4,997 stored summary messages in the live archive look like.
+        """
         payload: list[object] = [
             {"type": "user", "uuid": "u1", "message": {"role": "user", "content": "hello"}},
-            {"type": "summary", "uuid": "s1", "message": {"content": "summary"}},
+            {"type": "summary", "summary": "Detailed summary of prior context.", "leafUuid": "u1"},
             {"type": "assistant", "uuid": "a1", "message": {"role": "assistant", "content": "world"}},
         ]
         result = parse_code(payload, "test-session")
         assert len(result.messages) == 3
         roles = [m.role for m in result.messages]
         assert roles == ["user", "system", "assistant"]
-        assert result.messages[1].message_type.value == "summary"
+        summary_message = result.messages[1]
+        assert summary_message.message_type.value == "summary"
+        assert summary_message.text == "Detailed summary of prior context."
+        assert [block.text for block in summary_message.blocks] == ["Detailed summary of prior context."]
+        assert result.session_events[0].boundary_message_position == summary_message.position
 
 
 # =============================================================================

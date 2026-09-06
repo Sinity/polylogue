@@ -94,8 +94,23 @@ def _text_from_message_content(content: object) -> str:
 
 
 def _summary_text(item: object) -> str:
-    message = mapping_or_empty(mapping_or_empty(item).get("message"))
-    return _text_from_message_content(message.get("content"))
+    """Compaction summary text, from wherever the record actually carries it.
+
+    Neither compaction record shape has a ``message`` key. ``type: "summary"``
+    carries the text in a top-level ``summary`` field (key-set is exactly
+    ``{leafUuid, summary, type}`` for all 6,372 occurrences in the reference
+    corpus); ``system``/``compact_boundary`` carries a top-level ``content``,
+    which the ordinary message-text path already reads. Reading only
+    ``message.content`` made every compaction event's summary the empty
+    string.
+    """
+    record = mapping_or_empty(item)
+    message = mapping_or_empty(record.get("message"))
+    for candidate in (message.get("content"), record.get("summary"), record.get("content")):
+        text = _text_from_message_content(candidate)
+        if text:
+            return text
+    return ""
 
 
 def detect_context_compaction(item: Mapping[str, object]) -> ContextCompactionSummary | None:
@@ -108,7 +123,9 @@ def detect_context_compaction(item: Mapping[str, object]) -> ContextCompactionSu
             "timestamp": _json_value(item.get("timestamp")),
             "trigger": None,
             "pre_tokens": None,
-            "preserved_segment_id": None,
+            # ``leafUuid`` is this shape's boundary reference: the record it
+            # names is the last message of the replaced prefix.
+            "preserved_segment_id": optional_string(item.get("leafUuid")),
             "is_modern": False,
         }
 
@@ -123,7 +140,14 @@ def detect_context_compaction(item: Mapping[str, object]) -> ContextCompactionSu
             "timestamp": _json_value(item.get("timestamp")),
             "trigger": _json_value(meta.get("trigger")),
             "pre_tokens": _json_value(meta.get("preTokens") or meta.get("pre_tokens")),
-            "preserved_segment_id": optional_string(preserved.get("anchorUuid") or preserved.get("anchor_uuid")),
+            # ``preservedSegment`` is present on a minority of boundaries (52
+            # of a 200-record sample); ``logicalParentUuid`` is present on all
+            # of them and names the same thing -- the record the compacted
+            # prefix hangs off. Without the fallback the boundary reference is
+            # null for most compactions.
+            "preserved_segment_id": optional_string(
+                preserved.get("anchorUuid") or preserved.get("anchor_uuid") or item.get("logicalParentUuid")
+            ),
             "is_modern": True,
         }
 

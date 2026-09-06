@@ -849,3 +849,153 @@ def test_parse_coverage_event_absent_when_only_ordinary_messages_parsed() -> Non
         "sess-plain",
     )
     assert [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE] == []
+
+
+# ---------------------------------------------------------------------------
+# Record types admitted 2026-09-06 (polylogue-p81hr / -amftr / -z87qb).
+# Each fixture uses the exact key-set the exhaustive corpus walk found -- the
+# defect these cover survived because earlier fixtures asserted a shape the
+# provider never emits.
+# ---------------------------------------------------------------------------
+
+
+def test_result_record_persists_subagent_output() -> None:
+    """A dispatched subagent's returned text becomes evidence, not a drop.
+
+    Anti-vacuity: remove ``result`` from ``_NON_MESSAGE_SIDECAR_RECORD_TYPES``
+    and the record falls back to the empty-content drop -- ``_typed_events``
+    goes empty and ``empty_dropped_by_record_type`` gains ``result``.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "result",
+                "key": "dispatch-7",
+                "agentId": "agent_01SYNTHETIC",
+                "result": "Findings: the selector matched no tests.\nSecond line.",
+            }
+        ],
+        "sess-result",
+    )
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
+    assert events == [
+        (
+            "claude_subagent_result",
+            {
+                "agent_id": "agent_01SYNTHETIC",
+                "dispatch_key": "dispatch-7",
+                "result": "Findings: the selector matched no tests.\nSecond line.",
+                "summary": "Findings: the selector matched no tests.",
+            },
+        )
+    ]
+    coverage = [e for e in parsed.session_events if e.event_type == _COVERAGE_EVENT_TYPE][0]
+    assert coverage.payload["empty_dropped_by_record_type"] == {}
+
+
+def test_started_record_pairs_a_dispatch_with_no_result() -> None:
+    parsed = parse_code(
+        [{"type": "started", "key": "dispatch-7", "agentId": "agent_01SYNTHETIC"}],
+        "sess-started",
+    )
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
+    assert events == [
+        (
+            "claude_subagent_started",
+            {"agent_id": "agent_01SYNTHETIC", "dispatch_key": "dispatch-7", "summary": "agent_01SYNTHETIC"},
+        )
+    ]
+
+
+def test_relocated_record_corrects_the_session_working_directory() -> None:
+    """The provider's own cwd correction reaches the working-directory set.
+
+    Anti-vacuity: drop the ``acc.cwds.add`` in the ``relocated`` branch and
+    ``working_directories`` keeps only the stale original.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-moved",
+                "cwd": "/work/original",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {"type": "relocated", "sessionId": "sess-moved", "relocatedCwd": "/work/moved"},
+        ],
+        "sess-moved",
+    )
+    assert parsed.working_directories == ["/work/moved", "/work/original"]
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
+    assert events == [("claude_session_relocated", {"relocated_cwd": "/work/moved", "summary": "/work/moved"})]
+
+
+def test_worktree_state_record_persists_session_topology() -> None:
+    parsed = parse_code(
+        [
+            {
+                "type": "worktree-state",
+                "sessionId": "sess-main",
+                "worktreeSession": "11111111-2222-4333-8444-555555555555",
+            }
+        ],
+        "sess-main",
+    )
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
+    assert events == [
+        (
+            "claude_worktree_state",
+            {
+                "worktree_session": "11111111-2222-4333-8444-555555555555",
+                "summary": "11111111-2222-4333-8444-555555555555",
+            },
+        )
+    ]
+
+
+def test_cost_state_record_keeps_the_producers_own_incompleteness_flag() -> None:
+    """``hasUnknownModelCost`` is the producer saying its total is partial.
+
+    Anti-vacuity: drop the ``cost-state`` branch and the whole ledger --
+    including the qualification that makes the total safe to read -- becomes
+    an empty-content drop.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "cost-state",
+                "sessionId": "sess-cost",
+                "totalCostUSD": 1.25,
+                "totalAPIDuration": 900,
+                "totalAPIDurationWithoutRetries": 850,
+                "totalToolDuration": 120,
+                "totalLinesAdded": 40,
+                "totalLinesRemoved": 12,
+                "totalDuration": 4000,
+                "startTime": 1750000000000,
+                "modelUsage": {"claude-synthetic-1": {"inputTokens": 10, "outputTokens": 20}},
+                "hasUnknownModelCost": True,
+            }
+        ],
+        "sess-cost",
+    )
+    events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
+    assert events == [
+        (
+            "claude_cost_state",
+            {
+                "total_cost_usd": 1.25,
+                "has_unknown_model_cost": True,
+                "model_usage": {"claude-synthetic-1": {"inputTokens": 10, "outputTokens": 20}},
+                "total_duration_ms": 4000,
+                "total_api_duration_ms": 900,
+                "total_api_duration_without_retries_ms": 850,
+                "total_tool_duration_ms": 120,
+                "total_lines_added": 40,
+                "total_lines_removed": 12,
+                "start_time": 1750000000000,
+                "summary": "$1.25",
+            },
+        )
+    ]
