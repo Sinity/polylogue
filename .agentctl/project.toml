@@ -18,10 +18,11 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
-# Worker checks derive affected tests from the checkout; a candidate passes on
-# the static gates and merges when the hosted quick gate is green; the corpus
-# runs once on master after a landing wave and at the nightly boundary.
-verify = { focused = "verify_affected", candidate = "verify_quick", corpus = "verify_all" }
+# Workers and candidates pass on the static gates and merge when the hosted
+# quick gate is green; pytest runs once on master per landing wave (verify_all)
+# and at the nightly boundary. A worker may still run one focused test file
+# through pytest_focused when its bead names one.
+verify = { focused = "verify_quick", candidate = "verify_quick", corpus = "verify_all" }
 publish = "pr"
 
 [operations.pytest_focused]
@@ -94,3 +95,10 @@ pool = "interactive"
 result = "json"
 cache = "none"
 timeout_seconds = 180
+
+# Landing reviewer for the wave: fast and cheap; the corpus run on master is
+# the correctness backstop.
+[packets.review]
+backend = "claude"
+model = "claude-sonnet-5"
+effort = "medium"
