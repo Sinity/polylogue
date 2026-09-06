@@ -8,7 +8,7 @@ root_markers = ["pyproject.toml", "polylogue"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--accept-flake-config", "--command"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "POLYLOGUE_PYTEST_WORKERS"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 require = ["POLYLOGUE_ARCHIVE_ROOT"]
 
@@ -18,9 +18,10 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
-# Focused runs go through the pytest pool; a candidate's tests are the pull
-# request's hosted `verify` check; the corpus is the nightly master-boundary run.
-verify = { focused = "pytest_focused", candidate = "hosted:verify", corpus = "verify_all" }
+# Worker checks derive affected tests from the checkout; a candidate's tests
+# are the pull request's hosted `verify` check; the corpus runs at the nightly
+# master boundary.
+verify = { focused = "verify_affected", candidate = "hosted:verify", corpus = "verify_all" }
 publish = "pr"
 
 [operations.pytest_focused]

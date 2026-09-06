@@ -62,6 +62,7 @@ jobs:
           echo "run_id=$(jq --raw-output .run_id .cache/verify/current-run.json)" >> "$GITHUB_OUTPUT"
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
+          POLYLOGUE_PYTEST_WORKERS: "4"
 
       # A zero exit is not the evidence; the run receipt is. The check fails
       # unless this run's receipt succeeded and either a pytest step ran to
