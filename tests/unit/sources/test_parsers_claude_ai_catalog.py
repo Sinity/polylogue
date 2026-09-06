@@ -31,8 +31,10 @@ from polylogue.core.enums import MaterialOrigin, Provider, TitleSource
 from polylogue.sources.parsers.claude import looks_like_ai, parse_ai
 from polylogue.sources.parsers.claude.ai_parser import (
     CLAUDE_ACCOUNT_MEMORY_INGEST_FLAG,
+    CLAUDE_PROJECT_KNOWLEDGE_INGEST_FLAG,
     CLAUDE_TEMPORARY_CHAT_INGEST_FLAG,
     looks_like_claude_memories,
+    looks_like_claude_project,
 )
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.pipeline_roundtrip import (
@@ -178,6 +180,108 @@ def test_claude_memories_reimport_is_idempotent_on_account_id() -> None:
     first = parse_ai(payload, "fallback-a")
     second = parse_ai(payload, "fallback-b")
     assert first.provider_session_id == second.provider_session_id == "account-memory:acct-1"
+
+
+def _project_export_payload() -> dict[str, Any]:
+    """The ``projects/<uuid>.json`` key-set as exported.
+
+    Top-level keys and the ``docs[]``/``creator`` key-sets are exactly those
+    the real export carries; the values are synthetic.
+    """
+    return {
+        "uuid": "01976160-0000-4000-8000-000000000001",
+        "name": "Polylogue",
+        "description": "Standing context for the archive project.",
+        "is_private": True,
+        "is_starter_project": False,
+        "prompt_template": "Answer with evidence from the project knowledge.",
+        "created_at": "2026-05-01T00:00:00Z",
+        "updated_at": "2026-06-01T00:00:00Z",
+        "creator": {"uuid": "creator-1", "full_name": "Example Person"},
+        "docs": [
+            {
+                "uuid": "doc-b",
+                "filename": "schema-notes.md",
+                "content": "Second document body.",
+                "created_at": "2026-05-03T00:00:00Z",
+            },
+            {
+                "uuid": "doc-a",
+                "filename": "architecture.md",
+                "content": "First document body.",
+                "created_at": "2026-05-02T00:00:00Z",
+            },
+        ],
+    }
+
+
+def test_claude_project_export_is_detected_and_dispatched_from_parse_ai() -> None:
+    """bd polylogue-lus6e: the fourth claude-ai wire shape reaches a parser.
+
+    Anti-vacuity: remove the ``looks_like_claude_project`` dispatch from
+    ``parse_ai`` and the payload falls through to the conversation path,
+    which finds no ``chat_messages`` and produces a session with zero
+    messages -- the state that left 6.5M characters of project knowledge
+    unread.
+    """
+    payload = _project_export_payload()
+    assert looks_like_claude_project(payload)
+    assert not looks_like_ai(payload)
+    assert not looks_like_claude_memories(payload)
+
+    session = parse_ai(payload, "fallback")
+    assert session.source_name is Provider.CLAUDE_AI
+    assert session.provider_session_id == "project:01976160-0000-4000-8000-000000000001"
+    assert session.title == "Polylogue"
+    assert session.title_source is TitleSource.ORIGIN
+    assert CLAUDE_PROJECT_KNOWLEDGE_INGEST_FLAG in session.ingest_flags
+
+    assert [message.provider_message_id for message in session.messages] == [
+        "prompt-template",
+        "doc:doc-b",
+        "doc:doc-a",
+    ]
+    assert [message.text for message in session.messages] == [
+        "Answer with evidence from the project knowledge.",
+        "Second document body.",
+        "First document body.",
+    ]
+    # The user wrote the template and supplied the documents;
+    # GENERATED_CONTEXT_PACK marks provider-generated bundles.
+    assert all(message.material_origin is MaterialOrigin.HUMAN_AUTHORED for message in session.messages)
+    assert session.messages[1].blocks[0].metadata == {"doc_uuid": "doc-b", "filename": "schema-notes.md"}
+    assert session.active_leaf_message_provider_id == "doc:doc-a"
+    assert session.messages[-1].is_active_leaf is True
+
+    metadata_events = [e for e in session.session_events if e.event_type == "claude_project_metadata"]
+    assert len(metadata_events) == 1
+    assert metadata_events[0].payload["document_count"] == 2
+    assert metadata_events[0].payload["is_starter_project"] is False
+
+
+def test_claude_project_reimport_is_idempotent_on_project_uuid() -> None:
+    payload = _project_export_payload()
+    first = parse_ai(payload, "fallback-a")
+    second = parse_ai(payload, "fallback-b")
+    assert first.provider_session_id == second.provider_session_id
+    assert first.provider_session_id == "project:01976160-0000-4000-8000-000000000001"
+
+
+def test_claude_project_detector_does_not_claim_conversation_exports() -> None:
+    conversation = {"uuid": "conv-1", "name": "chat", "chat_messages": [{"sender": "human", "text": "hi"}]}
+    assert not looks_like_claude_project(conversation)
+    assert looks_like_ai(conversation)
+
+
+def test_claude_project_skips_empty_documents() -> None:
+    payload = _project_export_payload()
+    payload["docs"] = [
+        {"uuid": "doc-a", "filename": "empty.md", "content": "   ", "created_at": "2026-05-02T00:00:00Z"}
+    ]
+    payload["prompt_template"] = ""
+    session = parse_ai(payload, "fallback")
+    assert session.messages == []
+    assert session.active_leaf_message_provider_id is None
 
 
 def test_claude_rich_segments_and_attachment_fields_are_preserved() -> None:

@@ -323,6 +323,16 @@ def _looks_like_claude_memories_sequence(payload: object) -> bool:
     return record is not None and claude.looks_like_claude_memories(record)
 
 
+def _looks_like_claude_project_record(payload: object) -> bool:
+    record = _payload_record(payload)
+    return record is not None and claude.looks_like_claude_project(record)
+
+
+def _looks_like_claude_project_sequence(payload: object) -> bool:
+    record = _first_sequence_record(payload)
+    return record is not None and claude.looks_like_claude_project(record)
+
+
 def _looks_like_claude_ai_record(payload: object) -> bool:
     record = _payload_record(payload)
     return record is not None and claude.looks_like_ai(record)
