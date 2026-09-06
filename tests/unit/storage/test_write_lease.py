@@ -130,3 +130,53 @@ def test_a_readonly_open_never_needs_a_lease(db_path: Path) -> None:
     with arm_write_lease_enforcement():
         with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
             assert conn.execute("SELECT count(*) FROM t").fetchone()[0] >= 0
+
+
+def test_every_write_mode_factory_in_storage_routes_through_the_lease() -> None:
+    """The census the bead asks for: no second door into a writable tier.
+
+    A new write-mode factory that forgets ``require_write_lease`` reintroduces
+    exactly the defect this closes -- an in-process writer outside the gate,
+    exhausting the busy timeout of whoever holds it. Enumerating the factories
+    is what makes that a test failure rather than a review miss.
+
+    Anti-vacuity: drop the ``require_write_lease`` call from any listed factory
+    and this fails naming it.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    #: Every function in ``polylogue/storage`` that opens a write-mode SQLite
+    #: connection to an archive tier. Read-only opens are deliberately absent.
+    write_mode_factories = {
+        "polylogue/storage/sqlite/connection_profile.py": {"open_connection", "open_daemon_connection"},
+        "polylogue/storage/sqlite/connection.py": {"_get_cached_connection"},
+    }
+
+    repo_root = _Path(__file__).resolve().parents[3]
+    unguarded: list[str] = []
+    for relative, functions in write_mode_factories.items():
+        module = ast.parse((repo_root / relative).read_text(encoding="utf-8"))
+        found = {
+            node.name: node for node in ast.walk(module) if isinstance(node, ast.FunctionDef) and node.name in functions
+        }
+        assert set(found) == functions, f"{relative}: {functions - set(found)} no longer exist; update the census"
+        for name, node in found.items():
+            calls = {
+                call.func.id
+                for call in ast.walk(node)
+                if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+            }
+            if "require_write_lease" not in calls:
+                unguarded.append(f"{relative}:{name}")
+    assert unguarded == [], f"write-mode factories that do not take the lease: {unguarded}"
+
+
+def test_the_cached_write_connection_is_refused_without_a_lease(tmp_path: Path) -> None:
+    """The async runtime's thread-local writer is on the lease like any other."""
+    from polylogue.storage.sqlite.connection import open_connection as cached_write_connection
+
+    with arm_write_lease_enforcement():
+        with pytest.raises(UnleasedWriteError):
+            with cached_write_connection(tmp_path / "cached.db"):
+                pass

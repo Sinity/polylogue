@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
@@ -116,6 +117,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         initialize_active_archive_root(path.parent)
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    require_write_lease(f"cached write connection({path})")
     conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     try:
         os.chmod(path, 0o600)
