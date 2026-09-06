@@ -24,6 +24,10 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
     resolved_polylogue_path,
 )
+from tests.infra.session_archive_root import (
+    discard_session_archive_root,
+    pin_session_archive_root,
+)
 
 _TESTS_REPO_ROOT = Path(__file__).resolve().parents[1]
 try:
@@ -50,6 +54,10 @@ if TYPE_CHECKING:
     from tests.infra.storage_records import SessionBuilder
 
 
+#: Scratch archive root this process is pinned to, for teardown.
+_SESSION_ARCHIVE_ROOT: Path | None = None
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Refuse a test run that imports the product from another checkout, or bypasses the harness in a lane."""
     del config
@@ -58,7 +66,18 @@ def pytest_configure(config: pytest.Config) -> None:
     bare = refuse_bare_pytest(os.environ)
     if bare is not None:
         raise pytest.UsageError(bare)
+    global _SESSION_ARCHIVE_ROOT
+    _SESSION_ARCHIVE_ROOT = pin_session_archive_root(os.environ)
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
+    sys.stderr.write(f"pytest: session archive root → {_SESSION_ARCHIVE_ROOT}\n")
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    del config
+    global _SESSION_ARCHIVE_ROOT
+    if _SESSION_ARCHIVE_ROOT is not None:
+        discard_session_archive_root(_SESSION_ARCHIVE_ROOT)
+        _SESSION_ARCHIVE_ROOT = None
 
 
 #: A test's own working set of descriptors. Legitimate per-test use is a
