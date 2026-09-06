@@ -436,8 +436,20 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
         "attempted": failed,
         "still_failed": still_failed,
         "flaky": flaky,
-        "rerun_report": str(rerun_report.relative_to(ROOT)),
+        # Reported relative to the checkout when it lies inside one, absolute
+        # otherwise. A step directory can sit outside ROOT -- a configured
+        # basetemp root, or a caller that supplies its own artifact directory --
+        # and a rerun that adjudicated flakes correctly must not then die
+        # formatting its own path.
+        "rerun_report": str(_path_for_receipt(rerun_report)),
     }
+
+
+def _path_for_receipt(path: Path) -> Path:
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
 
 
 def _pytest_report_path(command: Sequence[str]) -> Path:

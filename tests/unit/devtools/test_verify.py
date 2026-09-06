@@ -83,8 +83,22 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
-def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("provisioned", "expected_diagnosis"),
+    [
+        # An entirely absent .venv is an unprovisioned checkout, not a tool
+        # that happens to be missing: nothing is installed and the remedy is
+        # different.
+        (False, "gate_unprovisioned_environment"),
+        (True, "gate_missing_executable"),
+    ],
+)
+def test_missing_checkout_venv_tool_is_a_typed_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, provisioned: bool, expected_diagnosis: str
+) -> None:
     history: dict[str, Any] = {}
+    if provisioned:
+        (tmp_path / ".venv" / "bin").mkdir(parents=True)
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
@@ -95,7 +109,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(monkeypatch: pytest.Monke
     monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
-    assert history["diagnosis"] == "gate_missing_executable"
+    assert history["diagnosis"] == expected_diagnosis
     assert history["steps"][0]["required_gate"]["executable"] == str(tmp_path / ".venv/bin/ruff")
 
 
