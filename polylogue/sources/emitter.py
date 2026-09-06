@@ -11,6 +11,7 @@ from typing import IO, TYPE_CHECKING
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
 from .assembly import get_assembly_spec
@@ -430,6 +431,7 @@ class _SessionEmitter:
             raw_bytes=raw_bytes,
             source_path=self._ctx.source_path_str,
             source_index=source_index,
+            addressing_mode=(MemberAddressingMode.ELEMENT_OF_CONTAINER if source_index is not None else None),
             file_mtime=self._ctx.file_mtime,
             provider_hint=provider_override or self._ctx.provider_hint,
             sidecar_snapshot=(

@@ -119,6 +119,7 @@ from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import require_json_value
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
@@ -1470,6 +1471,7 @@ class ArchiveStore:
         coordinate_format: Literal["zip-v2"],
         entry_ordinal: int,
         split_index: int,
+        addressing_mode: MemberAddressingMode | str | None,
     ) -> None:
         self._require_writable("record source.db container coordinate")
         record_raw_container_coordinate(
@@ -1478,6 +1480,7 @@ class ArchiveStore:
             coordinate_format=coordinate_format,
             entry_ordinal=entry_ordinal,
             split_index=split_index,
+            addressing_mode=addressing_mode,
         )
 
     def admit_raw_artifact_payload(

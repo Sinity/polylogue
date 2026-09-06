@@ -22,6 +22,7 @@ from polylogue.core.enums import (
     WebConstructType,
 )
 from polylogue.core.message_owner import MessageOwnerCoordinate
+from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.security import sanitize_path as _sanitize_path_helper
 from polylogue.core.timestamps import parse_timestamp
 
@@ -626,6 +627,11 @@ class RawSessionData(BaseModel):
     raw_bytes: bytes = b""
     source_path: str
     source_index: int | None = None
+    # The address kind this payload was acquired under. ``source_index`` is a
+    # position inside a container member and cannot express "the member
+    # document itself"; ``None`` means the acquiring route is not a container
+    # member at all.
+    addressing_mode: MemberAddressingMode | None = None
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None

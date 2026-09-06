@@ -15,6 +15,7 @@ debugging landmarks. For a task-to-owner map, start with
 | Async SQLite is the primary runtime; sync SQLite exists for CLI, schema tooling, and batch-ingest write paths | `storage/sqlite/async_sqlite.py`, `storage/sqlite/connection.py`, `pipeline/services/ingest_batch/_core.py` |
 | SQLite read/write tuning is profile-driven, not backend-local | `storage/sqlite/connection_profile.py` |
 | FTS tokenizer is `unicode61` (no porter stemmer) | `storage/sqlite/archive_tiers/index.py` |
+| `raw_sessions.source_index` is a reacquisition hint, never an address; a container member is addressed by `raw_container_coordinates.addressing_mode` plus content identity | `operations/zip_acquisition_replay.py:resolve_member_candidate()`, `core/content_identity.py:structural_content_identity()` |
 | Schema bootstrap branching is shared across sync and async backends | `storage/sqlite/schema_bootstrap.py:decide_schema_bootstrap()` |
 | A tier file's existence/size/`PRAGMA user_version` status is computed exactly once, in the substrate, and consumed by every status surface -- reimplementing this probe per-surface previously let a bare CLI status and a daemon-backed status disagree in production (polylogue-703) | `storage/archive_readiness.py:probe_archive_tier()`, consumed by `daemon/status.py:_archive_tier_status()` and `cli/commands/status.py:_archive_one_tier_status()` |
 
@@ -959,6 +960,34 @@ Archive writes are idempotent by content hash:
 - On re-ingest, if the content hash matches, the session is skipped
   (idempotency). If it differs, the session is updated and dependent
   insights are rebuilt.
+
+## Export Member Addressing
+
+An export container member is addressed two ways, and the two are different
+content:
+
+- **element of container** -- one session-bearing value inside a member that
+  holds several. `raw_sessions.source_index` records the acquisition
+  splitter's element position for it.
+- **whole member** -- the member document itself. It has no element position;
+  the coordinate slot it occupies is 0 for want of anything else to put there.
+
+`raw_container_coordinates.addressing_mode` records which reading applies.
+A `NULL` mode is a row acquired before the column existed: unknown, not a
+default reading.
+
+The position is a hint. Providers reorder, insert into, and re-export their
+members, so the value at a recorded position may be a different and equally
+valid conversation. Reacquisition (`operations/zip_acquisition_replay.py`,
+`storage/blob_integrity.py:_member_payload_by_content()`) therefore checks the
+hinted value's content identity first and returns it only when it matches;
+otherwise it resolves across the whole member and reports a typed ambiguity
+when nothing does.
+
+Content identity is structural, not textual: `core/content_identity.py`
+digests the *decoded* value under the provider value contract, so
+re-serialization and `1` versus `1.0` do not change it, while `1` versus
+`"1"`, `true` versus `1`, and array order do.
 
 ## FTS5 Model
 

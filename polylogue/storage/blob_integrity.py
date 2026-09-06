@@ -902,6 +902,11 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
     coordinate_format_column = "coordinate.coordinate_format" if has_container_coordinates else "NULL"
     entry_ordinal_column = "coordinate.entry_ordinal" if has_container_coordinates else "NULL"
     split_index_column = "coordinate.split_index" if has_container_coordinates else "NULL"
+    addressing_mode_column = (
+        "coordinate.addressing_mode"
+        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "addressing_mode")
+        else "NULL"
+    )
     blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
     parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
     validation_status_column = (
@@ -930,6 +935,7 @@ def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]
                {coordinate_format_column} AS coordinate_format,
                {entry_ordinal_column} AS entry_ordinal,
                {split_index_column} AS split_index,
+               {addressing_mode_column} AS addressing_mode,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
         {coordinate_join}
@@ -1337,6 +1343,11 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
     coordinate_format_column = "coordinate.coordinate_format" if has_container_coordinates else "NULL"
     entry_ordinal_column = "coordinate.entry_ordinal" if has_container_coordinates else "NULL"
     split_index_column = "coordinate.split_index" if has_container_coordinates else "NULL"
+    addressing_mode_column = (
+        "coordinate.addressing_mode"
+        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "addressing_mode")
+        else "NULL"
+    )
     rows = conn.execute(
         f"""
         SELECT lower(hex(blob_hash)) AS blob_hash,
@@ -1351,7 +1362,8 @@ def _missing_raw_backed_blob_rows(conn: sqlite3.Connection) -> list[dict[str, An
                {file_mtime_ms_column} AS file_mtime_ms,
                {coordinate_format_column} AS coordinate_format,
                {entry_ordinal_column} AS entry_ordinal,
-               {split_index_column} AS split_index
+               {split_index_column} AS split_index,
+               {addressing_mode_column} AS addressing_mode
         FROM raw_sessions
         {coordinate_join}
         WHERE blob_hash IS NOT NULL
@@ -1395,11 +1407,39 @@ def _split_container_source_path(source_path: str) -> tuple[Path, str] | None:
     return Path(outer), member
 
 
-def _jsonl_payload_at_index(raw_bytes: bytes, source_index: int) -> object:
-    for idx, line in enumerate(raw_bytes.splitlines()):
-        if idx == source_index:
-            return json_loads(line)
-    raise IndexError(f"source_index {source_index} outside JSONL stream")
+def _jsonl_payloads(raw_bytes: bytes) -> list[object]:
+    return [json_loads(line) for line in raw_bytes.splitlines() if line.strip()]
+
+
+def _member_payload_by_content(
+    decoded_payload: object,
+    *,
+    split_index: int,
+    blob_hash: str | None,
+) -> bytes:
+    """Return the member value the recorded reference names.
+
+    ``split_index`` chooses which value is checked first and never which value
+    is returned: an export that reorders or inserts elements leaves a valid but
+    unrelated conversation at the recorded position.
+    """
+    if isinstance(decoded_payload, list):
+        elements = list(decoded_payload)
+    elif split_index == 0:
+        elements = [decoded_payload]
+    else:
+        raise IndexError("non-array JSON payload only supports source_index 0")
+    if 0 <= split_index < len(elements):
+        hinted = json_dumps_bytes(elements[split_index])
+        if blob_hash is None or hashlib.sha256(hinted).hexdigest() == blob_hash:
+            return hinted
+    elif blob_hash is None:
+        raise IndexError(f"source_index {split_index} outside member array")
+    for element in elements:
+        encoded = json_dumps_bytes(element)
+        if hashlib.sha256(encoded).hexdigest() == blob_hash:
+            return encoded
+    raise IndexError(f"no member value matches the content identity of {blob_hash}")
 
 
 def _current_raw_payload_bytes(
@@ -1490,28 +1530,20 @@ def _current_raw_payload_bytes(
         try:
             if decoded_payload_cache is not None and cache_key in decoded_payload_cache:
                 decoded_payload = decoded_payload_cache[cache_key]
-                if isinstance(decoded_payload, list):
-                    payload = decoded_payload[int(split_index)]
-                elif int(split_index) == 0:
-                    payload = decoded_payload
-                else:
-                    raise IndexError("non-array JSON payload only supports source_index 0")
+            elif member.endswith(".jsonl"):
+                decoded_payload = _jsonl_payloads(member_bytes)
             else:
-                if member.endswith(".jsonl"):
-                    payload = _jsonl_payload_at_index(member_bytes, int(split_index))
-                else:
-                    decoded_payload = json_loads(member_bytes)
-                    if decoded_payload_cache is not None:
-                        decoded_payload_cache[cache_key] = decoded_payload
-                    if isinstance(decoded_payload, list):
-                        payload = decoded_payload[int(split_index)]
-                    elif int(split_index) == 0:
-                        payload = decoded_payload
-                    else:
-                        raise IndexError("non-array JSON payload only supports source_index 0")
+                decoded_payload = json_loads(member_bytes)
+            if decoded_payload_cache is not None:
+                decoded_payload_cache[cache_key] = decoded_payload
+            payload_bytes = _member_payload_by_content(
+                decoded_payload,
+                split_index=int(split_index),
+                blob_hash=blob_hash,
+            )
         except (IndexError, CoreJSONDecodeError, UnicodeDecodeError) as exc:
             return None, f"source_index:{exc}"
-        return json_dumps_bytes(payload), None
+        return payload_bytes, None
 
     path = Path(source_path)
     if not path.exists():
@@ -1980,6 +2012,10 @@ def replace_raw_backed_blob_reference_debt_from_source(
                             coordinate_format="zip-v2",
                             entry_ordinal=entry_ordinal,
                             split_index=split_index,
+                            # Recanonicalization re-asserts a coordinate it
+                            # read; it did not acquire the member and so has
+                            # no reading of its own to record.
+                            addressing_mode=None,
                             manage_transaction=False,
                         )
                     _delete_blob_refs_for_raw_id(conn, raw_id)
