@@ -611,6 +611,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     if tags_to_add or metadata_to_set:
                         _emit_user_mutations(
                             env,
+                            archive,
                             matched_session_ids,
                             tags_to_add=tags_to_add,
                             metadata_to_set=metadata_to_set,
@@ -669,7 +670,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                     )
                     return
                 if tags_to_add or metadata_to_set:
-                    _emit_user_mutations(env, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+                    _emit_user_mutations(
+                        env, archive, (session_id,), tags_to_add=tags_to_add, metadata_to_set=metadata_to_set
+                    )
                     return
                 if delete_matched:
                     _emit_delete(env, (session_id,), params=params)
@@ -740,7 +743,9 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
                 return
             if tags_to_add or metadata_to_set:
                 session_ids = tuple(hit.session_id for hit in page_hits)
-                _emit_user_mutations(env, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+                _emit_user_mutations(
+                    env, archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set
+                )
                 return
             if delete_matched:
                 session_ids = tuple(hit.session_id for hit in page_hits)
@@ -811,7 +816,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
             return
         if tags_to_add or metadata_to_set:
             session_ids = tuple(summary.session_id for summary in page_summaries)
-            _emit_user_mutations(env, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
+            _emit_user_mutations(env, archive, session_ids, tags_to_add=tags_to_add, metadata_to_set=metadata_to_set)
             return
         if delete_matched:
             session_ids = tuple(summary.session_id for summary in page_summaries)
@@ -2037,6 +2042,7 @@ def _execute_matched_session_mutation(
 
 def _emit_user_mutations(
     env: AppEnv,
+    archive: ArchiveStore,
     session_ids: tuple[str, ...],
     *,
     tags_to_add: tuple[str, ...],
@@ -2050,7 +2056,13 @@ def _emit_user_mutations(
     ``write``) rather than calling the ``ArchiveStore`` writers itself: an
     adapter that writes the tier directly is a second mutation authority
     whose preview, authorization and audit records do not exist.
+
+    Selection is finished by the time this runs, so the evidence snapshot is
+    released first: it holds ``user.db`` attached inside an open read
+    transaction, and the writable connection the mutation needs cannot set up
+    against that lock.
     """
+    archive.end_read_snapshot()
     from polylogue.surfaces.payloads import MutationResultPayload
 
     changes: dict[str, int] = {}
