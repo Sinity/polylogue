@@ -1259,7 +1259,11 @@ def _claude_code_spec() -> OriginSpec:
             ("code_parser._finalize_code_session.parent_session_provider_id",),
             "parent session is derived from the Claude sessionId relationship",
         ),
-        inheritance_branch_point=_absent_topology("Claude Code wire carries no inheritance boundary"),
+        inheritance_branch_point=TopologyCapability(
+            "carried",
+            ("claude_code fork-context-ref.parentLastUuid + .parentSessionId",),
+            "a forked subagent transcript names the parent message it diverged at and never replays it",
+        ),
         parent_dispatch=TopologyCapability(
             "positive-derived",
             (

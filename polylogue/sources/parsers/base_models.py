@@ -509,6 +509,15 @@ class ParsedSession(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     session_events: list[ParsedSessionEvent] = Field(default_factory=list)
     parent_session_provider_id: str | None = None
+    # The parent-session message a provider record names as this session's
+    # divergence point (Claude Code ``fork-context-ref.parentLastUuid``). A
+    # provider-native id in the PARENT's namespace, so it is only meaningful
+    # alongside ``parent_session_provider_id``; the archive writer binds it to
+    # ``session_links.branch_point_message_id`` once that parent message
+    # exists. Distinct from the branch point the writer derives by aligning a
+    # physically replayed prefix: this one is asserted, and is the only
+    # evidence available when the child does not replay the parent at all.
+    branch_point_provider_message_id: str | None = None
     # Exact provider-native names that can refer to this emitted session.
     # These are parser evidence, never prefix/suffix guesses.
     provider_session_aliases: list[str] = Field(default_factory=list, exclude=True, repr=False)

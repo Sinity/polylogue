@@ -4192,6 +4192,67 @@ def _upsert_session_link(
     )
 
 
+#: ``evidence_json`` key holding the provider-native id of the parent message
+#: a parser asserted as this child's divergence point
+#: (``ParsedSession.branch_point_provider_message_id``). It is kept after the
+#: id binds so the claim stays auditable and re-binds idempotently against a
+#: parent that arrives, or is replaced, later.
+ASSERTED_BRANCH_POINT_EVIDENCE_KEY = "asserted_branch_point_native_id"
+
+
+def _bind_asserted_branch_point(
+    conn: sqlite3.Connection,
+    parent_session_id: str | None,
+    native_id: str | None,
+) -> str | None:
+    """Return the parent's ``message_id`` for an asserted branch point.
+
+    ``None`` when the parent or that exact message is not in the archive yet:
+    ``session_links.branch_point_message_id`` has no FK, so an unbacked id
+    would be a dangling lineage reference rather than a placeholder --
+    ``_refill_inbound_asserted_branch_points`` binds it when the parent lands.
+    """
+    if not parent_session_id or not native_id or not native_id.strip():
+        return None
+    candidate = archive_message_id(parent_session_id, native_id.strip(), position=0)
+    row = conn.execute("SELECT 1 FROM messages WHERE message_id = ? LIMIT 1", (candidate,)).fetchone()
+    return candidate if row is not None else None
+
+
+def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_session_id: str) -> None:
+    """Bind children's asserted branch points now that this parent exists.
+
+    The mirror of ``_refill_inbound_dispatch_block_ids`` for the branch point:
+    a child parsed before its parent recorded the claim in ``evidence_json``
+    but had no message to point at. Runs after inbound identity resolution so
+    edges resolved on this same write are covered.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT src_session_id, dst_origin, dst_native_id, link_type,
+               json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}')
+          FROM session_links
+         WHERE resolved_dst_session_id = ?
+           AND branch_point_message_id IS NULL
+           AND json_valid(evidence_json)
+           AND json_type(evidence_json) = 'object'
+           AND json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IS NOT NULL
+        """,
+        (parent_session_id,),
+    ).fetchall()
+    for src_session_id, dst_origin, dst_native_id, link_type, asserted_native_id in rows:
+        bound = _bind_asserted_branch_point(conn, parent_session_id, str(asserted_native_id))
+        if bound is None:
+            continue
+        conn.execute(
+            """
+            UPDATE session_links SET branch_point_message_id = ?
+             WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+            """,
+            (bound, src_session_id, dst_origin, dst_native_id, link_type),
+        )
+
+
 def _write_session_link(
     conn: sqlite3.Connection,
     session_id: str,
@@ -4265,6 +4326,22 @@ def _write_session_link(
     parent_tool_use_block_id = dispatch.block_id
     method = dispatch.method or "parser-parent"
     evidence: dict[str, object] = {"parent_session_provider_id": session.parent_session_provider_id}
+    # A parser-asserted branch point is the only branch point available when
+    # the child does not physically replay the parent's prefix, so prefix
+    # alignment produced none. Alignment wins where both exist: it is measured
+    # against stored content, the assertion is a provider claim.
+    asserted_branch_point = (session.branch_point_provider_message_id or "").strip()
+    if asserted_branch_point:
+        evidence[ASSERTED_BRANCH_POINT_EVIDENCE_KEY] = asserted_branch_point
+        if branch_point_message_id is None:
+            # ``branch_point_content_address`` stays NULL: it is the staleness
+            # witness for a prefix this child stores a tail of, and an asserted
+            # branch point comes with no such prefix.
+            branch_point_message_id = _bind_asserted_branch_point(
+                conn,
+                _existing_parent_session_id(conn, session, origin),
+                asserted_branch_point,
+            )
     identity_reason = _session_target_resolution_reason(conn, origin, dst_native_id)
     if identity_reason is not None:
         evidence["resolution_reason"] = identity_reason
@@ -4637,6 +4714,10 @@ def _resolve_session_graph(
             bulk_build=bulk_build,
         )
     record_substage("reextract_prefix_tails", t0)
+
+    t0 = time.perf_counter()
+    _refill_inbound_asserted_branch_points(conn, session_id)
+    record_substage("inbound_asserted_branch_points", t0)
 
     impacted_session_ids = {session_id, *resolved_child_ids, *(invalidated_session_ids or set())}
     t0 = time.perf_counter()
