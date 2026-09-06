@@ -60,6 +60,10 @@ words = [word for word in sys.argv[1:] if word != "--json"]
 verb = " ".join(words[:2])
 if verb == "job start":
     shutil.copyfile(sys.argv[-1], {launch_snapshot!r})
+    if {receipt!r} is not None:
+        # The slot runner publishes its result document next to the launch file.
+        with open(sys.argv[-1][: -len(".json")] + ".result.json", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({receipt!r}))
     print(json.dumps({{"job_id": {job_id}, "phase": "queued", "terminal": False}}))
 elif verb == "job get":
     print(json.dumps({{"job_id": {job_id}, "phase": {phase!r}, "terminal": True, "exit_code": {exit_code}}}))
@@ -87,6 +91,7 @@ def _install_fake_agentctl(
     job_id: int = 7,
     phase: str = "succeeded",
     exit_code: int = 0,
+    receipt: dict[str, Any] | None = None,
 ) -> Path:
     directory = tmp_path / "fakebin"
     script = _install_executable(
@@ -96,6 +101,7 @@ def _install_fake_agentctl(
             job_id=job_id,
             phase=phase,
             exit_code=exit_code,
+            receipt=receipt,
             launch_snapshot=str(tmp_path / "submitted-launch.json"),
         ),
     )
@@ -348,15 +354,13 @@ def test_an_unknown_terminal_phase_is_unavailable(tmp_path: Path, monkeypatch: p
 
 
 def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124)
-    receipt_path = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+    receipt = {"status": "timed_out", "diagnosis": "pytest_deadline"}
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124, receipt=receipt)
 
     outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
 
     assert outcome.returncode == 124
-    assert outcome.receipt == {"status": "timed_out", "diagnosis": "pytest_deadline"}
+    assert outcome.receipt == receipt
 
 
 def test_a_stale_result_document_is_not_reported_as_this_run_s(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
