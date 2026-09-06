@@ -403,6 +403,66 @@ class TestSessionMetadata:
         assert result.parent_session_provider_id == "parent-2"
         assert result.branch_type == BranchType.SUBAGENT
 
+    def test_subagent_thread_spawn_alone_sets_subagent_parent(self) -> None:
+        # The common real spawn shape: the parent is named only under
+        # `source.subagent.thread_spawn`, with no `forked_from_id`.
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-3",
+                    "source": {
+                        "subagent": {
+                            "thread_spawn": {
+                                "parent_thread_id": "parent-3",
+                                "depth": 1,
+                                "agent_role": "explorer",
+                                "agent_nickname": "Ironwood",
+                            }
+                        }
+                    },
+                    "timestamp": "2024-01-01",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "exploring"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.provider_session_id == "child-3"
+        assert result.parent_session_provider_id == "parent-3"
+        assert result.branch_type == BranchType.SUBAGENT
+
+    def test_top_level_parent_thread_id_sets_parent(self) -> None:
+        # The rarest carrier: a top-level `parent_thread_id` with no subagent
+        # block. It proves a parent but not the relationship type.
+        payload = [
+            {
+                "type": "session_meta",
+                "payload": {
+                    "id": "child-4",
+                    "parent_thread_id": "parent-4",
+                    "timestamp": "2024-01-01",
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "resumed"}],
+                },
+            },
+        ]
+        result = parse(payload, "fallback")
+        assert result.parent_session_provider_id == "parent-4"
+        assert result.branch_type is None
+
     def test_forked_from_id_beats_legacy_second_meta_heuristic(self) -> None:
         # When the explicit marker is present, the embedded parent meta (second
         # session_meta = the copied parent's header) must not override it.
@@ -2115,18 +2175,22 @@ class TestUnreadFieldTriage:
                 "payload": {
                     "message": "summary",
                     "replacement_history": [
+                        # Codex carries `phase` on the history *entry*; content
+                        # items are exactly {text,type} or {image_url,type}.
                         {
                             "type": "message",
                             "role": "assistant",
+                            "phase": "final_answer",
                             "content": [
-                                {"type": "output_text", "text": "final answer", "phase": "final_answer"},
-                                {"type": "output_text", "text": "draft", "phase": "draft"},
+                                {"type": "output_text", "text": "final answer"},
+                                {"type": "output_text", "text": "still the same answer"},
                             ],
                         },
                         {
                             "type": "message",
                             "role": "assistant",
-                            "content": [{"type": "output_text", "text": "again", "phase": "final_answer"}],
+                            "phase": "draft",
+                            "content": [{"type": "output_text", "text": "again"}],
                         },
                         {
                             "type": "ghost_snapshot",
@@ -2144,7 +2208,7 @@ class TestUnreadFieldTriage:
         result = parse(payload, "fallback")
         event = result.session_events[0]
         assert event.payload["replacement_history_count"] == 4
-        assert event.payload["replacement_history_phase_counts"] == {"draft": 1, "final_answer": 2}
+        assert event.payload["replacement_history_phase_counts"] == {"draft": 1, "final_answer": 1}
         assert event.payload["replacement_history_ghost_commit_count"] == 1
         assert event.payload["replacement_history_image_count"] == 1
 

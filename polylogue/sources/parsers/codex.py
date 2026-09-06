@@ -2450,6 +2450,12 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # prefix in this rollout. See docs/design/session-lineage-model.md.
     forked_from_id: str | None = None
     is_subagent_spawn = False
+    # A spawned subagent usually records its parent only under
+    # `source.subagent.thread_spawn.parent_thread_id`; `forked_from_id` is
+    # present on a minority of spawns. A top-level `parent_thread_id` is the
+    # third, rarest carrier. All three name the same parent thread.
+    spawn_parent_thread_id: str | None = None
+    meta_parent_thread_id: str | None = None
     # Structural evidence for the legacy (no forked_from_id) continuation
     # fallback below: the child's own cwd/git, and the same facts read off
     # the second distinct session_meta encountered (a resumed session
@@ -2499,9 +2505,10 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
             # (message/reasoning/ghost_snapshot) already parsed once from the
             # live stream earlier in this file -- storing them again here
             # would duplicate full message content. What it adds beyond the
-            # count is per-item annotation Codex doesn't emit on the live
-            # stream: an internal generation `phase` tag on content items, a
-            # `ghost_commit` on some entries, and inline images. Those are
+            # count is per-entry annotation Codex doesn't emit on the live
+            # stream: an internal generation `phase` tag on the entry, a
+            # `ghost_commit` on some entries, and inline images on content
+            # items. Those are
             # captured as bounded aggregates, not raw duplication.
             phase_counts: dict[str, int] = {}
             ghost_commit_count = 0
@@ -2511,14 +2518,14 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     continue
                 if isinstance(entry.get("ghost_commit"), dict):
                     ghost_commit_count += 1
+                phase = entry.get("phase")
+                if isinstance(phase, str) and phase:
+                    phase_counts[phase] = phase_counts.get(phase, 0) + 1
                 entry_content = entry.get("content")
                 if isinstance(entry_content, list):
                     for content_item in entry_content:
                         if not isinstance(content_item, dict):
                             continue
-                        phase = content_item.get("phase")
-                        if isinstance(phase, str) and phase:
-                            phase_counts[phase] = phase_counts.get(phase, 0) + 1
                         if isinstance(content_item.get("image_url"), str | dict):
                             image_count += 1
             if phase_counts:
@@ -2793,6 +2800,14 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
                     source_val = session_meta.get("source")
                     if isinstance(source_val, dict) and isinstance(source_val.get("subagent"), dict):
                         is_subagent_spawn = True
+                        thread_spawn = source_val["subagent"].get("thread_spawn")
+                        if isinstance(thread_spawn, dict):
+                            spawn_parent = thread_spawn.get("parent_thread_id")
+                            if isinstance(spawn_parent, str) and spawn_parent.strip():
+                                spawn_parent_thread_id = spawn_parent.strip()
+                    meta_parent = session_meta.get("parent_thread_id")
+                    if isinstance(meta_parent, str) and meta_parent.strip():
+                        meta_parent_thread_id = meta_parent.strip()
                     cwd_val = session_meta.get("cwd")
                     if isinstance(cwd_val, str) and cwd_val.strip():
                         first_meta_cwd = cwd_val.strip()
@@ -2946,7 +2961,10 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
 
     # Lineage: prefer the explicit markers on the child's own session_meta.
     #   - `source.subagent.thread_spawn` → spawned subagent (positive evidence
-    #     of a subagent relationship): assign SUBAGENT.
+    #     of a subagent relationship): assign SUBAGENT. The parent id comes
+    #     from whichever carrier is present -- `forked_from_id`,
+    #     `thread_spawn.parent_thread_id`, or a top-level `parent_thread_id`;
+    #     a spawn block alone is the common shape and names no other parent.
     #   - `forked_from_id` (no subagent block) → the child shares the parent's
     #     leading context prefix, but Codex sets this field for BOTH a divergent
     #     user fork AND a plain resume of the same thread. The marker proves a
@@ -2964,8 +2982,9 @@ def _parse_records(records: Iterable[object], fallback_id: str, *, _reiterable: 
     # evidence is not proof of any relationship (e.g. two structurally
     # unrelated session_metas concatenated in one payload), so it stays fully
     # unclassified rather than fabricating CONTINUATION from a bare count.
-    if forked_from_id is not None:
-        parent_id: str | None = forked_from_id
+    explicit_parent_id = forked_from_id or spawn_parent_thread_id or meta_parent_thread_id
+    if explicit_parent_id is not None:
+        parent_id: str | None = explicit_parent_id
         branch_type = BranchType.SUBAGENT if is_subagent_spawn else None
     elif len(session_metas_seen) > 1 and _has_continuation_evidence(
         first_timestamp=session_timestamp_pair,
