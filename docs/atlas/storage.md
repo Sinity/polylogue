@@ -9,7 +9,7 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 | Tier | Runtime durability | Backup | Primary contents |
 | --- | --- | --- | --- |
 | `source.db` | `irreplaceable` | required | Raw acquisition records, blob references and publication reservations, GC generations, hook events, sidecars (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:45-51`; `polylogue/storage/sqlite/archive_tiers/source.py:28-62`; `polylogue/storage/sqlite/archive_tiers/source.py:535-587`) |
-| `index.db` | `rebuildable` | no | Parsed sessions, messages, blocks, action pairs/views, lineage links, FTS state, materialized insights (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:52-57`; `polylogue/storage/sqlite/archive_tiers/index.py:493-590`; `polylogue/storage/sqlite/archive_tiers/index.py:766-857`; `polylogue/storage/sqlite/archive_tiers/index.py:1085-1099`) |
+| `index.db` | `rebuildable` | no | Parsed sessions, messages, blocks, action pairs/views, lineage links, FTS state, materialized insights (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:52-57`; `polylogue/storage/sqlite/archive_tiers/index.py:501-598`; `polylogue/storage/sqlite/archive_tiers/index.py:774-865`; `polylogue/storage/sqlite/archive_tiers/index.py:1093-1107`) |
 | `embeddings.db` | `expensive_rebuild` | required | Vector table, metadata, references, status, derivation state, failures (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:58-63`; `polylogue/storage/sqlite/archive_tiers/embeddings.py:24-87`) |
 | `user.db` | `human` | required | Assertions, saved queries/results, annotation schemas and batches, settings, context-delivery provenance (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:64-69`; `polylogue/storage/sqlite/archive_tiers/user.py:19-40`; `polylogue/storage/sqlite/archive_tiers/user.py:236-318`) |
 | `audit.db` | `irreplaceable` | required | Operation previews, authorization, runs, attempts, events, continuity head (`polylogue/storage/sqlite/archive_tiers/bootstrap.py:76-81`; `polylogue/storage/sqlite/archive_tiers/audit.py:20-35`; `polylogue/storage/sqlite/archive_tiers/audit.py:80-115`; `polylogue/storage/sqlite/archive_tiers/audit.py:181-229`) |
@@ -20,13 +20,13 @@ Six SQLite tiers plus a content-addressed filesystem blob store. Durability, not
 - `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:520-530`).
 - `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; positional identity becomes `session_id || ':p:' || position || '.' || variant_index` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:101-105`).
 - `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path/search projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:266-313`).
-- Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:493-495`; `polylogue/storage/sqlite/archive_tiers/index.py:512-514`; `polylogue/storage/sqlite/archive_tiers/index.py:570-572`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:106-113`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:279-283`).
+- Sessions, messages, and blocks are `STRICT`; message and block ownership is enforced by cascading FKs (`polylogue/storage/sqlite/archive_tiers/index.py:501-503`; `polylogue/storage/sqlite/archive_tiers/index.py:520-522`; `polylogue/storage/sqlite/archive_tiers/index.py:578-580`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:106-113`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:279-283`).
 - `material_origin` is independently constrained from role, preserving authoredness as a separate axis (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:115-125`).
 - Tool outcomes use the canonical enum derived from structured parser evidence;
   deliberate unknown outcomes preserve their parser reason. The `actions` view
   joins paired blocks and derives `result_state` without prose matching
   (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:293-309`;
-  `polylogue/storage/sqlite/archive_tiers/index.py:801-839`).
+  `polylogue/storage/sqlite/archive_tiers/index.py:809-847`).
 
 ## Parsed-session write choke point
 
