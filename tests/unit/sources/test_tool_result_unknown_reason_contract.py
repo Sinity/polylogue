@@ -34,6 +34,7 @@ from polylogue.sources.parsers.chatgpt import parse as parse_chatgpt
 from polylogue.sources.parsers.claude.code_parser import parse_code
 from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as parse_codex
+from polylogue.sources.parsers.drive import looks_like as drive_looks_like
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.sources.parsers.local_agent import (
     looks_like_gemini_cli,
@@ -481,6 +482,7 @@ def test_detection_routes_each_wire_record_to_the_parser_that_maps_its_outcome()
     assert chatgpt_looks_like(_chatgpt_payload("in_progress"))
     assert looks_like_gemini_cli(_gemini_cli_payload({"id": "tc-1", "name": "read_file", "status": "success"}))
     assert looks_like_hermes(_hermes_payload("plain tool output"))
+    assert drive_looks_like(_drive_payload("OUTCOME_OK"))
 
 
 def test_unpaired_invocation_is_no_result_not_an_unknown_outcome(tmp_path: Path) -> None:
