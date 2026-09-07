@@ -430,3 +430,157 @@ def test_background_task_start_ack_gets_distrusted_reason() -> None:
     assert len(result_blocks) == 1
     assert result_blocks[0].is_error is None
     assert result_blocks[0].outcome_unknown_reason == "distrusted"
+
+
+def test_capability_attribution_skill_and_plugin_land_on_their_own_event() -> None:
+    """The ``attribution*`` cluster must reach ``claude_capability_attribution``.
+
+    The fixture is the shape the corpus carries: top-level keys on a
+    ``type:"assistant"`` record, not nested under ``message``, and with no
+    ``message.usage`` -- the event must not be gated on usage the way
+    ``request_id`` is. Deleting the ``_capability_attribution_payload`` call
+    in ``_fold_code_record`` leaves no event at all.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-attribution-skill",
+                "attributionSkill": "superpowers:dispatching-parallel-agents",
+                "attributionPlugin": "superpowers",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "dispatching"}]},
+            },
+        ],
+        "sess-attribution-skill",
+    )
+    assert [e for e in parsed.session_events if e.event_type == "message_usage"] == []
+    events = [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"]
+    assert len(events) == 1
+    assert events[0].source_message_provider_id == "a1"
+    assert events[0].payload["skill"] == "superpowers:dispatching-parallel-agents"
+    assert events[0].payload["plugin"] == "superpowers"
+    assert events[0].payload["summary"] == "superpowers:dispatching-parallel-agents"
+    assert "mcp_server" not in events[0].payload
+    assert "agent" not in events[0].payload
+
+
+def test_capability_attribution_mcp_pair_names_the_called_tool() -> None:
+    """``attributionMcpServer``/``attributionMcpTool`` co-occur on every record
+    that carries either (7,683 each, the same rows) and together name one MCP
+    call -- the summary must join them rather than keep only the server."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-attribution-mcp",
+                "attributionMcpServer": "context7",
+                "attributionMcpTool": "resolve-library-id",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "looking it up"}]},
+            },
+        ],
+        "sess-attribution-mcp",
+    )
+    events = [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"]
+    assert len(events) == 1
+    assert events[0].payload["mcp_server"] == "context7"
+    assert events[0].payload["mcp_tool"] == "resolve-library-id"
+    assert events[0].payload["summary"] == "context7:resolve-library-id"
+
+
+def test_capability_attribution_plugin_without_a_skill_is_kept() -> None:
+    """``attributionPlugin`` is not redundant with ``attributionSkill``: a
+    plugin-shipped skill carries the plugin prefix in its own value, but
+    ``feature-dev`` stamps the plugin on 541 records with no skill at all.
+    Dropping plugin as derivable from skill loses those turns entirely."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-attribution-plugin",
+                "attributionPlugin": "feature-dev",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "batching"}]},
+            },
+        ],
+        "sess-attribution-plugin",
+    )
+    events = [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"]
+    assert len(events) == 1
+    assert events[0].payload["plugin"] == "feature-dev"
+    assert events[0].payload["summary"] == "feature-dev"
+    assert "skill" not in events[0].payload
+
+
+def test_capability_attribution_agent_is_read_per_turn_not_per_session() -> None:
+    """A subagent transcript that replays a parent's prefix carries the parent's
+    agent on the replayed head and its own on the divergent tail. Collapsing
+    ``attributionAgent`` to one session-level value -- or reading only the
+    first or the last record's -- loses the split this asserts.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-attribution-agent",
+                "attributionAgent": "triage",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "replayed prefix"}]},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a2",
+                "sessionId": "sess-attribution-agent",
+                "attributionAgent": "fork",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "divergent tail"}]},
+            },
+        ],
+        "sess-attribution-agent",
+    )
+    events = [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"]
+    assert [(e.source_message_provider_id, e.payload["agent"]) for e in events] == [("a1", "triage"), ("a2", "fork")]
+    assert [e.payload["summary"] for e in events] == ["triage", "fork"]
+
+
+def test_capability_attribution_survives_the_empty_content_drop() -> None:
+    """An assistant record whose message never materializes -- an API error
+    row with no content -- still carries the capability that produced the
+    attempt. Emitting after the empty-content drop instead of before it would
+    lose exactly these turns.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-attribution-empty",
+                "attributionSkill": "code-review",
+                "isApiErrorMessage": True,
+                "message": {"role": "assistant", "content": []},
+            },
+        ],
+        "sess-attribution-empty",
+    )
+    assert parsed.messages == []
+    events = [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"]
+    assert len(events) == 1
+    assert events[0].payload["skill"] == "code-review"
+
+
+def test_capability_attribution_absent_emits_no_event() -> None:
+    """Anti-vacuity: a record carrying none of the five fields must not
+    fabricate an event, and a blank value is not a capability."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-no-attribution",
+                "attributionSkill": "",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+            },
+        ],
+        "sess-no-attribution",
+    )
+    assert [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"] == []
