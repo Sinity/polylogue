@@ -93,11 +93,9 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 ```
 <archive_root>/hooks/                   # Default archive root: ~/.local/share/polylogue
 ├── pending/
-│   └── <event-id>.json                 # Atomic producer envelopes
-├── acknowledged/
-│   └── <event-id>.json                 # Source-tier receipt after commit
-├── claude-code-<session-id>.jsonl      # Legacy Claude journal
-└── codex-<session-id>.jsonl            # Legacy Codex journal
+│   └── <YYYY-MM-DD>/<event-id>.json    # Atomic producer envelopes, day-sharded
+└── acknowledged/
+    └── <YYYY-MM-DD>/<event-id>.json    # Source-tier receipt after commit
 ```
 
 The hooks sidecar directory always lives under the resolved archive root
