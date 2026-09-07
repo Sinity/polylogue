@@ -28,6 +28,7 @@ from polylogue.storage.derived.session.derivation import (
     publish_session_profile,
 )
 from polylogue.storage.derived.session.input_binding import session_input_bindings
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -131,7 +132,7 @@ def _semantic_relations(index_db: Path) -> dict[str, list[tuple[object, ...]]]:
     return relations
 
 
-def _status(index_db: Path):
+def _status(index_db: Path) -> SessionInsightStatusSnapshot:
     with closing(_read_connection(index_db)) as conn:
         return session_insight_status_sync(conn)
 

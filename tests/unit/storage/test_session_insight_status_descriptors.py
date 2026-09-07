@@ -101,6 +101,7 @@ def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
             {"source_table": True},
             {"materialized_rows": 7},
             verify_freshness=False,
+            non_valid=None,
         ) == ("expected_rows", 7)
 
 
