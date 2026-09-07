@@ -2348,6 +2348,43 @@ def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[st
     assert next(source for source in sources if source.root == default_root).name == "codex"
 
 
+def test_default_sources_watch_the_legacy_data_home_inbox(workspace_env: dict[str, Path]) -> None:
+    """An archive root moved off the XDG data home leaves an inbox behind it,
+    and exports staged there before the move are under no other watch root.
+
+    Anti-vacuity: drop ``_legacy_data_home_inbox_sources`` and the only inbox
+    root is the archive one, so a wipe-and-reconverge never reads the older
+    inbox at all.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    inbox_roots = {source.root for source in daemon_cli.default_sources() if source.name == "inbox"}
+
+    assert inbox_roots == {
+        workspace_env["archive_root"] / "inbox",
+        workspace_env["data_root"] / "polylogue" / "inbox",
+    }
+
+
+def test_default_sources_name_one_inbox_when_the_archive_lives_in_the_data_home(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The default layout has one inbox, and the legacy root must not double it.
+
+    Anti-vacuity: return the legacy source unconditionally and this root is
+    watched, scanned, and cursor-tracked twice under one name.
+    """
+    from polylogue.daemon import cli as daemon_cli
+
+    data_home = workspace_env["data_root"] / "polylogue"
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(data_home))
+
+    inbox_roots = [source.root for source in daemon_cli.default_sources() if source.name == "inbox"]
+
+    assert inbox_roots == [data_home / "inbox"]
+
+
 def test_workspace_env_isolates_typed_default_source_roots(workspace_env: dict[str, Path]) -> None:
     from polylogue.daemon import cli as daemon_cli
 
