@@ -193,6 +193,17 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
 )
 
+# One-tier operations (backup/checkpoint and similar maintenance) must not
+# attach sibling databases or renegotiate journal mode while another writer is
+# active.  The existing file mode is adopted as-is.
+ISOLATED_TIER_WRITE_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=DB_TIMEOUT,
+    busy_timeout_ms=DB_TIMEOUT * 1000,
+    cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
+)
+
 # An owned INACTIVE index generation is never read by anything until
 # ``IndexGenerationStore.promote()`` swaps the ``index.db`` symlink, and is
 # unconditionally discarded (``discard_if_inactive``) if the pass raises.
@@ -661,6 +672,7 @@ def open_connection(
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = WRITE_CONNECTION_PROFILE,
+    archive_root: str | Path | None = None,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -674,7 +686,7 @@ def open_connection(
     """
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
-    require_write_lease(f"open_connection({path})")
+    require_write_lease(f"open_connection({path})", archive_root=archive_root)
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
@@ -698,6 +710,7 @@ def open_daemon_connection(
     busy_timeout_ms: int | None = None,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    archive_root: str | Path | None = None,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection for daemon maintenance/ops writes.
 
@@ -706,7 +719,7 @@ def open_daemon_connection(
     mmap profile, because systemd charges their SQLite page cache to the
     service cgroup for the lifetime of the process.
     """
-    require_write_lease(f"open_daemon_connection({path})")
+    require_write_lease(f"open_daemon_connection({path})", archive_root=archive_root)
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
@@ -848,6 +861,34 @@ def open_profiled_connection(
     )
 
 
+def open_isolated_write_connection(
+    path: str | Path,
+    *,
+    purpose: str,
+    profile: SQLiteConnectionProfile = ISOLATED_TIER_WRITE_PROFILE,
+    timeout: float | None = None,
+    archive_root: str | Path | None = None,
+) -> sqlite3.Connection:
+    """Open one writable tier without attaching sibling databases.
+
+    Snapshot/checkpoint and other one-tier operations must still pass through
+    the same lease boundary as ordinary archive writes.  Keeping this factory
+    separate prevents those operations from accidentally widening their
+    transaction to attached tiers.
+    """
+    if profile.role != "write":
+        raise ValueError("open_isolated_write_connection requires a write profile")
+    require_write_lease(purpose, archive_root=archive_root)
+    conn = sqlite3.connect(str(path), timeout=profile.timeout_seconds if timeout is None else timeout)
+    try:
+        for statement in profile.pragma_statements:
+            conn.execute(statement)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 @contextmanager
 def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
     """Context manager for a single-use read-write connection.
@@ -873,6 +914,7 @@ __all__ = [
     "DAEMON_WRITE_CACHE_SIZE_KIB",
     "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "DAEMON_WRITE_CONNECTION_PROFILE",
+    "ISOLATED_TIER_WRITE_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
     "MEMORY_BUDGET_BYTES",
     "MEMORY_BUDGET_ENV_VAR",
@@ -898,6 +940,7 @@ __all__ = [
     "mapped_bytes_budget",
     "assert_tier_schema_supported",
     "open_daemon_connection",
+    "open_isolated_write_connection",
     "open_connection",
     "open_readonly_connection",
 ]

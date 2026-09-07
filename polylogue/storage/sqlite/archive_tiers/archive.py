@@ -819,7 +819,7 @@ class ArchiveStore:
             )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
-            require_write_lease(f"ArchiveStore(index={self.index_db_path})")
+            require_write_lease(f"ArchiveStore(index={self.index_db_path})", archive_root=archive_root)
             self._conn = (
                 sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
@@ -1007,6 +1007,7 @@ class ArchiveStore:
                 conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
+                require_write_lease(f"ArchiveStore(source={self.source_db_path})", archive_root=self.archive_root)
                 conn = sqlite3.connect(self.source_db_path)
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
@@ -5082,6 +5083,7 @@ class ArchiveStore:
         cost that was never implicated by the incident.
         """
         self._require_writable("delete index.db sessions")
+        require_write_lease(f"ArchiveStore.delete_sessions(index={self.index_db_path})", archive_root=self.archive_root)
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0

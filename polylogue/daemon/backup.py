@@ -51,6 +51,8 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+from polylogue.storage.sqlite.write_lease import write_lease
 
 logger = get_logger(__name__)
 
@@ -467,9 +469,12 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
 def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
     """Copy a checkpointed tier while excluding concurrent SQLite writers."""
     live_path = src.resolve(strict=True)
-    conn = sqlite3.connect(str(live_path), timeout=30.0)
+    conn = open_isolated_write_connection(
+        live_path,
+        purpose=f"backup snapshot({live_path})",
+        archive_root=archive_root(),
+    )
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
         for _attempt in range(_SNAPSHOT_LOCK_ATTEMPTS):
             _checkpoint_sqlite_for_snapshot(conn, live_path)
             conn.execute("BEGIN IMMEDIATE")
@@ -1308,7 +1313,13 @@ def backup_archive(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
+    # Backups checkpoint and briefly take ``BEGIN IMMEDIATE`` on each live
+    # tier.  They are therefore writers even though the copied bytes are
+    # read-only.  Acquire the same process lease as daemon publications; when
+    # invoked from a coordinator this is re-entrant and cannot create a second
+    # ownership path.
+    with write_lease("maintenance.backup", archive_root=archive_root()):
+        result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result

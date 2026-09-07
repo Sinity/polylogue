@@ -2547,10 +2547,14 @@ async def run_daemon_services(
     """
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
+    with (
+        archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion,
+        arm_write_lease_enforcement(process_wide=True),
+    ):
         await _run_daemon_services_under_active_writer_lease(
             rebuild_exclusion=rebuild_exclusion,
             sources=sources,
