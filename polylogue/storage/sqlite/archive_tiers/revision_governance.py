@@ -189,7 +189,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
-    PreparedSessionRows,
+    PreparedRows,
     _event_summary,
     _json_dumps,
     _next_session_event_position,
@@ -370,7 +370,7 @@ def _write_parsed_precedence_result(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedSessionRows | None = None,
+    prepared: PreparedRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
     session = normalize_session_timestamps(session, fallback_timestamp=raw_revision_file_mtime(store, raw_id))
     session_id = str(make_session_id(session.source_name, session.provider_session_id))
@@ -2885,14 +2885,15 @@ def apply_raw_revision_replay(
     bulk_build: bool = False,
     defer_fts: bool = False,
     skip_already_applied: bool = False,
-    prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
+    prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
     """Apply a proven chain and atomically receipt its exact index state.
 
-    ``prepared_by_raw_id`` (polylogue-fpid) optionally supplies row tuples
-    already built off the writer thread for one or more of ``plan.
-    accepted_raw_ids`` -- keyed by ``raw_id``, value either the
-    ``PreparedSessionRows`` itself or a ``Future`` resolved here right
+    ``prepared_by_raw_id`` (polylogue-fpid) optionally supplies rows already
+    built off the writer thread for one or more of ``plan.accepted_raw_ids``
+    -- keyed by ``raw_id``, value either tuples (``PreparedSessionRows``), a
+    binding into an attached shard (``PreparedSessionShardRows``,
+    polylogue-bp12n.6), or a ``Future`` resolved here right
     before use (so a caller can ``submit()`` the CPU-bound build on a
     background thread and let it run concurrently with this function's own
     attachment-preacquisition/blob-flush/head-lookup preamble, then pay only
@@ -3094,7 +3095,7 @@ def apply_raw_revision_replay(
             # content and only a full replace accepts them, so they are
             # consulted only when that chunk is the whole composed write. A
             # stale or missing entry always falls back to an inline build.
-            resolved_prepared: PreparedSessionRows | None = None
+            resolved_prepared: PreparedRows | None = None
             if full_replace and len(pending_raw_ids) == 1 and prepared_by_raw_id is not None:
                 prepared_candidate = prepared_by_raw_id.get(tip_raw_id)
                 if isinstance(prepared_candidate, Future):
@@ -4004,7 +4005,7 @@ def _index_parsed_for_retained_raw(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedSessionRows | None = None,
+    prepared: PreparedRows | None = None,
 ) -> ArchiveRawParsedWriteResult:
     provider = Provider.from_string(session.source_name)
     # Retained replay no longer has the parser's RawSessionData descriptor;

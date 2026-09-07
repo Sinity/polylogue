@@ -357,7 +357,15 @@ class LiveWatcher:
         # own the stage's lifecycle themselves); otherwise one is created
         # here, owned by this watcher, and shut down in ``stop()``.
         self._owns_parse_stage = parse_stage is None
-        self._parse_stage: LiveParseStage | None = parse_stage if parse_stage is not None else LiveParseStage()
+        # polylogue-bp12n.6: a stage the watcher owns also writes each parsed
+        # file's rows into a shard the writer copies. The directory is
+        # disposable scratch beside the tiers it feeds; nothing in it
+        # survives ``stop()``.
+        self._parse_stage: LiveParseStage | None = (
+            parse_stage
+            if parse_stage is not None
+            else LiveParseStage(shard_directory=Path(polylogue.archive_root) / "parse-shards")
+        )
         self._pending_paths: set[Path] = set()
         self._forced_reparse_paths: set[Path] = set()
         self._pending_scheduled = False
