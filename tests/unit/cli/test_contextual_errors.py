@@ -115,6 +115,10 @@ def _summaries(*ids: str) -> list[SessionSummary]:
     return [SessionSummary(id=ref, origin="claude-ai-export", title=f"Session {ref}") for ref in ids]
 
 
+def _loader(*ids: str) -> object:
+    return lambda: _summaries(*ids)
+
+
 def test_a_non_interactive_caller_never_reaches_the_chooser(monkeypatch: pytest.MonkeyPatch) -> None:
     """The gate is checked before the chooser, not inside it."""
 
@@ -126,7 +130,7 @@ def test_a_non_interactive_caller_never_reaches_the_chooser(monkeypatch: pytest.
     monkeypatch.setattr(select_module, "_choose_with_fzf", _explode)
 
     with pytest.raises(AmbiguousSelectionError) as refusal:
-        resolve_ambiguous_selection(_env(plain=True), _summaries("o:1", "o:2"), operation="continue")  # type: ignore[arg-type]
+        resolve_ambiguous_selection(_env(plain=True), ("o:1", "o:2"), operation="continue")  # type: ignore[arg-type]
     rendered = refusal.value.format_message()
     assert "o:1" in rendered and "o:2" in rendered
     assert "Next:" in rendered
@@ -141,7 +145,12 @@ def test_the_chooser_runs_and_decides_on_a_terminal(monkeypatch: pytest.MonkeyPa
         lambda _env, rows: rows[1],
     )
 
-    chosen = resolve_ambiguous_selection(_env(plain=False), _summaries("o:1", "o:2"), operation="continue")  # type: ignore[arg-type]
+    chosen = resolve_ambiguous_selection(
+        _env(plain=False),  # type: ignore[arg-type]
+        ("o:1", "o:2"),
+        operation="continue",
+        rows_loader=_loader("o:1", "o:2"),  # type: ignore[arg-type]
+    )
     assert chosen == "o:2"
 
 
@@ -154,7 +163,7 @@ def test_a_single_candidate_is_not_an_ambiguity(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(select_module, "interactive_selection_available", lambda _env: True)
     monkeypatch.setattr(select_module, "choose_select_row", _explode)
 
-    assert resolve_ambiguous_selection(_env(plain=False), _summaries("o:1"), operation="continue") == "o:1"  # type: ignore[arg-type]
+    assert resolve_ambiguous_selection(_env(plain=False), ("o:1",), operation="continue") == "o:1"  # type: ignore[arg-type]
 
 
 def test_a_cancelled_chooser_still_refuses_deterministically(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -163,7 +172,7 @@ def test_a_cancelled_chooser_still_refuses_deterministically(monkeypatch: pytest
     monkeypatch.setattr(select_module, "choose_select_row", lambda _env, _rows: None)
 
     with pytest.raises(AmbiguousSelectionError):
-        resolve_ambiguous_selection(_env(plain=False), _summaries("o:1", "o:2"), operation="continue")  # type: ignore[arg-type]
+        resolve_ambiguous_selection(_env(plain=False), ("o:1", "o:2"), operation="continue")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

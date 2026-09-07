@@ -16,7 +16,6 @@ import click
 from click.shell_completion import CompletionItem
 
 if TYPE_CHECKING:
-    from polylogue.archive.session.domain_models import SessionSummary
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
     from polylogue.surfaces.payloads import FacetsResponse
@@ -2576,20 +2575,21 @@ def _resolve_query_action_session_id(
         resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
         bounded_spec = replace(spec, limit=resolve_limit)
 
-        async def _resolve() -> list[SessionSummary]:
-            return list(await bounded_spec.list_summaries(env.config))
+        async def _resolve() -> list[str]:
+            summaries = await bounded_spec.list_summaries(env.config)
+            return [str(summary.id) for summary in summaries]
 
-        summaries = run_coroutine_sync(_resolve())
-        session_ids = [str(summary.id) for summary in summaries]
+        session_ids = run_coroutine_sync(_resolve())
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
             from polylogue.cli.select import resolve_ambiguous_selection
 
             return resolve_ambiguous_selection(
                 env,
-                summaries,
+                session_ids,
                 operation=operation,
                 multi_match_hint=multi_match_hint,
+                rows_loader=lambda: run_coroutine_sync(bounded_spec.list_summaries(env.config)),
             )
         check_cardinality(
             len(session_ids),

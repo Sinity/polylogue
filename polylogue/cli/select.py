@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn
 
@@ -225,16 +225,21 @@ async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: i
 
 def resolve_ambiguous_selection(
     env: AppEnv,
-    results: Sequence[Session | SessionSummary],
+    candidates: Sequence[str],
     *,
     operation: str,
     multi_match_hint: str | None = None,
+    rows_loader: Callable[[], Sequence[Session | SessionSummary]] | None = None,
 ) -> str:
-    """Resolve several matches to one session ref, or refuse deterministically.
+    """Resolve several matched refs to one, or refuse deterministically.
 
     On a terminal the fuzzy chooser runs; anywhere else — a pipe, a captured
     runner, ``--plain`` — the candidates are reported as a typed refusal, so no
     non-interactive consumer can be left waiting on a prompt it cannot answer.
+
+    ``rows_loader`` supplies the richer labels the chooser displays and is
+    called only once a chooser will actually run, so the refusal path costs the
+    same read it did before.
     """
     from polylogue.cli.contextual_errors import (
         AMBIGUITY_CANDIDATE_LIMIT,
@@ -242,20 +247,23 @@ def resolve_ambiguous_selection(
         ambiguous_selection_actions,
     )
 
-    rows = [select_row_from_result(result) for result in results]
-    if len(rows) == 1:
-        return rows[0].session_id
-    if interactive_selection_available(env):
+    refs = tuple(str(candidate) for candidate in candidates)
+    if len(refs) == 1:
+        return refs[0]
+    if refs and interactive_selection_available(env):
+        loaded = rows_loader() if rows_loader is not None else ()
+        rows = [select_row_from_result(result) for result in loaded] or [
+            SelectSessionRow(session_id=ref, origin="unknown", title=ref, date=None) for ref in refs
+        ]
         chosen = choose_select_row(env, rows)
         if chosen is not None:
             return chosen.session_id
-    refs = tuple(row.session_id for row in rows[:AMBIGUITY_CANDIDATE_LIMIT])
     hint = multi_match_hint or "Narrow the query to one session or run select first."
     raise AmbiguousSelectionError(
-        f"'{operation}' matched {len(rows)} sessions. {hint}",
-        candidates=refs,
+        f"'{operation}' matched {len(refs)} sessions. {hint}",
+        candidates=refs[:AMBIGUITY_CANDIDATE_LIMIT],
         next_actions=ambiguous_selection_actions(operation, refs[0] if refs else None),
-        bounded=len(rows) > AMBIGUITY_CANDIDATE_LIMIT,
+        bounded=len(refs) > AMBIGUITY_CANDIDATE_LIMIT,
     )
 
 
