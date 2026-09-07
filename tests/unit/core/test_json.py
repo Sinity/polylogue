@@ -363,9 +363,7 @@ def test_stdlib_diverges_from_canonical_format_for_small_exponents() -> None:
 
 
 def test_msgspec_exponent_normalizer_does_not_corrupt_string_content() -> None:
-    """The exponent-sign normalizer operates on raw encoded bytes via a regex
-    that must skip over string literals -- a string containing an "e5"-shaped
-    substring must survive untouched, not have a `+` spliced into it."""
+    """Exponent normalization skips string literals entirely."""
     original = core_json._BACKEND
     core_json._BACKEND = "msgspec"
     try:
