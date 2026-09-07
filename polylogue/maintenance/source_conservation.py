@@ -61,6 +61,7 @@ _TERM_DECODE_FAILED = "decode_failed"
 _TERM_CENSUS_NON_SESSION = "census_non_session"
 _TERM_UNCLASSIFIED_SHAPE = "unclassified_shape"
 _TERM_PENDING = "pending"
+_TERM_MISSING_BLOB = "missing_blob"
 _TERM_AUTHORITY_BLOCKED = "authority_blocked_head"
 _TERM_QUARANTINED_COHORT = "quarantined_cohort_unmaterialized"
 _TERM_UNEXPLAINED = "unexplained"
@@ -96,6 +97,10 @@ _RULES: dict[str, str] = {
     _TERM_CENSUS_NON_SESSION: "raw_membership_census recorded a terminal non-session verdict",
     _TERM_UNCLASSIFIED_SHAPE: "artifact taxonomy holds no classification (unknown/unknown); a rule is missing",
     _TERM_PENDING: "acquired; convergence has not parsed it yet",
+    _TERM_MISSING_BLOB: (
+        "raw payload is not retained by the blob ledger or its bytes are unavailable; "
+        "re-acquire the source before parsing"
+    ),
     _TERM_AUTHORITY_BLOCKED: (
         "an unresolved raw_authority_blockers row names this raw as the accepted revision head "
         "while the index materialized a different raw of the same logical source; the authority "
@@ -134,6 +139,7 @@ _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
         _TERM_UNCLASSIFIED_SHAPE,
+        _TERM_MISSING_BLOB,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
         _TERM_SESSION_WITHOUT_RAW,
@@ -310,6 +316,21 @@ def _source_exists(archive_root: Path, source_path: str) -> bool:
     return path.exists()
 
 
+def _blob_exists(archive_root: Path, blob_hash: object) -> bool:
+    """Return whether a raw payload's content-addressed bytes are present."""
+    if isinstance(blob_hash, memoryview):
+        blob_hash = blob_hash.tobytes()
+    if isinstance(blob_hash, bytes):
+        digest = blob_hash.hex()
+    elif isinstance(blob_hash, str):
+        digest = blob_hash.lower()
+    else:
+        return False
+    if len(digest) < 3:
+        return False
+    return (archive_root / "blob" / digest[:2] / digest[2:]).is_file()
+
+
 def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
     """Return the ``heads`` CTE and the CASE expression typing every raw row."""
     has_artifacts = table_exists(conn, "raw_artifacts")
@@ -401,6 +422,7 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
                 r.raw_id,
                 r.origin,
                 r.source_path,
+                r.blob_hash,
                 r.parse_error,
                 r.parsed_at_ms,
                 r.validation_status,
@@ -463,7 +485,7 @@ def audit_source_conservation(
     forward_total = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
 
     typed_rows = conn.execute(
-        f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
+        f"{heads_cte} SELECT raw_id, origin, source_path, blob_hash, artifact_kind, bytes_retained, blocker_reason, "
         f"{term_case} AS term FROM heads"
     ).fetchall()
 
@@ -471,7 +493,7 @@ def audit_source_conservation(
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
     missing_paths: dict[str, bool] = {}
-    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
+    for raw_id, origin, source_path, blob_hash, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
         if probe_filesystem:
             present = missing_paths.get(source_path)
             if present is None:
@@ -479,6 +501,11 @@ def audit_source_conservation(
                 missing_paths[source_path] = present
             if not present:
                 term = _TERM_SOURCE_MISSING if bytes_retained else _TERM_SOURCE_LOST
+        # A parsed raw with no published payload cannot be replayed from the
+        # archive. Keep this classification independent of the optional source
+        # path probe so read-only audits still account for missing blobs.
+        if term == _TERM_UNEXPLAINED and (not bytes_retained or not _blob_exists(archive_root, blob_hash)):
+            term = _TERM_MISSING_BLOB
         counts[term] = counts.get(term, 0) + 1
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
@@ -706,6 +733,7 @@ def audit_source_conservation(
         _TERM_CENSUS_NON_SESSION,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_PENDING,
+        _TERM_MISSING_BLOB,
         _TERM_AUTHORITY_BLOCKED,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
