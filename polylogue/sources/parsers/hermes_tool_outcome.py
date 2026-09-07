@@ -39,7 +39,10 @@ def tool_result_outcome(raw_content: object) -> tuple[bool | None, int | None, s
     if payload.get("error") is not None:
         return True, exit_code, None
     if "success" in payload:
-        return not bool(payload["success"]), exit_code, None
+        raw_success = payload["success"]
+        if not isinstance(raw_success, bool):
+            return None, None, unknown_reason(is_error=None, outcome_field_present=True)
+        return not raw_success, exit_code, None
     if exit_code is not None:
         return exit_code != 0, exit_code, None
     # ``exit_code``/``success`` present but off-type is a verdict this mapping
