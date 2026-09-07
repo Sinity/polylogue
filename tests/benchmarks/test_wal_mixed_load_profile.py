@@ -112,15 +112,21 @@ class _MixedLoad:
             conn.close()
 
     def _interactive_reads(self, stop: threading.Event) -> None:
+        """What a bounded interactive reader actually does: read, then rebind.
+
+        A frame is rebound both when the generation it read moved and when it
+        reaches its declared age, so no reader in this profile pins WAL frames
+        for longer than the policy allows.
+        """
         frames = [read_frame(self.db, timeout_class="interactive-read") for _ in range(_READ_FRAMES)]
         try:
-            while not stop.is_set():
+            while not stop.wait(0.01):
                 for frame in frames:
-                    frame.connection.execute("SELECT count(*) FROM payload").fetchone()
                     self.max_frame_age_s = max(self.max_frame_age_s, frame.age_s)
-                    if not frame.revalidate():
+                    if frame.expired or not frame.revalidate():
                         frame.rebind()
                         self.rebinds += 1
+                    frame.connection.execute("SELECT count(*) FROM payload").fetchone()
         finally:
             for frame in frames:
                 frame.close()
