@@ -14,7 +14,7 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
 from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
@@ -23,12 +23,14 @@ from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
+    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
-    PROGRESS_PLUGIN_NAME,
+    REPORT_PLUGIN_ARGS,
     managed_plugin_args,
 )
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
+from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
@@ -56,12 +58,7 @@ from devtools.verify_runs import (
     git_head,
     prune_successful_verify_runs,
 )
-from devtools.worker_memory import (
-    CONTROLLER_PEAK_MIB,
-    CORPUS_MAX_WORKERS,
-    MEMORY_HEADROOM_FRACTION,
-    WORKER_PEAK_MIB,
-)
+from devtools.worker_memory import CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -151,25 +148,6 @@ def _anchor_verification_paths() -> None:
     os.chdir(ROOT)
 
 
-#: The pytest pool's soft memory ceiling: ``agentctl-pytest.slice`` MemoryHigh,
-#: 6 GiB (MemoryMax 8 GiB, no swap). Above the soft ceiling the kernel does not
-#: kill the run, it throttles every allocation: a corpus run parked there
-#: crawls without reporting while it holds the host's one pytest slot, and the
-#: queue behind it never drains.
-PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 6 * 1024
-
-
-def pytest_worker_ceiling() -> int:
-    """The widest managed run that fits inside the pytest pool by construction.
-
-    Width follows the workload and the slice it is confined to -- the suite is
-    SQLite archive IO, and the slice's ceiling is fixed by the runtime -- never
-    host cores or the memory that happens to be free when the run starts.
-    """
-    budget = PYTEST_SLICE_MEMORY_HIGH_MIB * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
-    return max(1, min(CORPUS_MAX_WORKERS, int(budget // WORKER_PEAK_MIB)))
-
-
 def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
     """xdist arguments for the corpus run.
 
@@ -214,11 +192,8 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         *IGNORED_COLLECTION_ARGS,
         "--durations=10",
         f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
-        "--json-report",
-        "--json-report-omit=collectors,log,streams,warnings",
-        f"--json-report-file={PYTEST_REPORT_PATH}",
-        "-p",
-        PROGRESS_PLUGIN_NAME,
+        report_file_argument(PYTEST_REPORT_PATH),
+        *DEVTOOLS_PLUGIN_ARGS,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
         *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
@@ -240,7 +215,7 @@ def build_verify_steps(*, quick: bool, selection: str = "all") -> list[tuple[str
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
         PYTEST_JUNIT_REPORT_DIR.mkdir(parents=True, exist_ok=True)
-        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=pytest_worker_ceiling()))
+        steps += _pytest_steps(selection=selection, worker_args=_pytest_worker_args(maximum=CORPUS_MAX_WORKERS))
     return steps
 
 
@@ -334,7 +309,8 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
     ]
-    paths += [Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")]
+    for report in (_pytest_report_path(command),):
+        paths += [report, *spool_paths(report)]
     for path in paths:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -398,9 +374,8 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
         "pytest",
         "-q",
         "--tb=short",
-        "--json-report",
-        "--json-report-omit=collectors,log,streams,warnings",
-        f"--json-report-file={rerun_report}",
+        report_file_argument(rerun_report),
+        *REPORT_PLUGIN_ARGS,
         *MANAGED_PLUGIN_ARGS,
         "-p",
         "no:testmon",
@@ -501,8 +476,9 @@ def _path_for_receipt(path: Path) -> Path:
 
 
 def _pytest_report_path(command: Sequence[str]) -> Path:
+    prefix = f"{REPORT_FILE_OPTION}="
     return next(
-        (Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")),
+        (Path(argument.split("=", 1)[1]) for argument in command if argument.startswith(prefix)),
         PYTEST_REPORT_PATH,
     )
 

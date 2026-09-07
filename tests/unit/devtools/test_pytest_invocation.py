@@ -15,8 +15,14 @@ from devtools.pytest_invocation import (
     MANAGED_PLUGIN_ARGS,
     PROGRESS_PLUGIN_NAME,
 )
-from devtools.verify import PYTEST_SLICE_MEMORY_HIGH_MIB, _pytest_steps, build_verify_steps, pytest_worker_ceiling
-from devtools.worker_memory import CONTROLLER_PEAK_MIB, MEMORY_HEADROOM_FRACTION, WORKER_PEAK_MIB
+from devtools.verify import _pytest_steps, build_verify_steps
+from devtools.worker_memory import (
+    CONTROLLER_PEAK_MIB,
+    CORPUS_MAX_WORKERS,
+    MEMORY_HEADROOM_FRACTION,
+    PYTEST_SLICE_MEMORY_HIGH_MIB,
+    WORKER_PEAK_MIB,
+)
 
 
 def _command(selection: str) -> list[str]:
@@ -70,10 +76,10 @@ def test_the_corpus_runs_as_one_unpartitioned_collection() -> None:
 def test_the_managed_width_fits_the_pytest_pool_by_construction() -> None:
     """The corpus command cannot ask for more memory than its slice allows.
 
-    Anti-vacuity: restoring the bare corpus width (eight workers, 6,563 MiB
-    against a 6 GiB soft ceiling) makes this red -- which is the run that
-    parked above `memory.high`, crawled under allocation throttling, and held
-    the host's one pytest slot until it was killed.
+    Anti-vacuity: declare ``CORPUS_MAX_WORKERS`` as a literal wider than
+    ``width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)`` and this goes red -- a run
+    that wide parks above ``memory.high``, crawls under allocation throttling,
+    and holds the host's one pytest slot until systemd-oomd kills it.
     """
     command = build_verify_steps(quick=False, selection="all")[-1][1]
     workers = int(command[command.index("-n") + 1])
@@ -92,4 +98,4 @@ def test_a_wider_configured_width_is_reduced_to_what_the_pool_holds(monkeypatch:
 
     command = build_verify_steps(quick=False, selection="all")[-1][1]
 
-    assert command[command.index("-n") + 1] == str(pytest_worker_ceiling())
+    assert command[command.index("-n") + 1] == str(CORPUS_MAX_WORKERS)

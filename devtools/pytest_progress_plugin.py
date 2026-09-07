@@ -1,9 +1,9 @@
 """Incremental pytest event and selection ledgers for ``devtools verify``.
 
-The pytest-json-report and JUnit artifacts are written at session end. When a
-long verify run is interrupted, those reports may never flush. This plugin
-writes one JSON object per completed test call so the operator still has
-node-level failure evidence after an interrupted run.
+The JSON report and the JUnit artifact are assembled at session end. When a
+long verify run is interrupted, neither is written. This plugin writes one JSON
+object per completed test call so the operator still has node-level failure
+evidence after an interrupted run.
 """
 
 from __future__ import annotations
@@ -410,7 +410,7 @@ def pytest_runtest_logreport(report: Any) -> None:
 
 @pytest.hookimpl
 def pytest_sessionfinish(session: Any, exitstatus: int) -> None:
-    """Write a compact post-run diagnosis artifact independent of pytest-json-report."""
+    """Write a compact post-run diagnosis artifact independent of the JSON report."""
     del session
     try:
         # Worker processes have their own in-memory slowest lists. The controller

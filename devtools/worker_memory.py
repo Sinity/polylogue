@@ -21,29 +21,45 @@ __all__ = [
     "CONTROLLER_PEAK_MIB",
     "CORPUS_MAX_WORKERS",
     "MEMORY_HEADROOM_FRACTION",
+    "PYTEST_SLICE_MEMORY_HIGH_MIB",
     "WORKER_PEAK_MIB",
     "available_memory_mib",
     "cgroup_available_mib",
     "memory_bounded_worker_cap",
     "resize_worker_argument",
+    "width_within",
 ]
 
-#: The widest the corpus and the runner's affected tier ever ask for. Measured
-#: 2026-09-03 uncontended: 47 minutes for 20,860 tests at eight workers; at two
-#: the same run takes about seven hours and the required check cannot finish
-#: inside its slot timeout. What a run may actually take is decided by the live
-#: bounds below, never by this number.
-CORPUS_MAX_WORKERS = 8
-#: What one worker and the controller cost at peak, in MiB. Measured on the
-#: 8-worker seed: workers 0.53-0.67 GiB PSS, controller about 1.05 GiB. The
-#: worker figure takes the upper end so the estimate errs toward fewer workers.
-#: These are properties of the workload; pressure enters as the live readings,
-#: not as these constants.
+#: What one worker and the controller cost at peak, in MiB: worker PSS takes
+#: the upper end of the measured spread so the estimate errs toward fewer
+#: workers. These are properties of the workload; pressure enters as the live
+#: readings, never as these constants.
 WORKER_PEAK_MIB = 686
 CONTROLLER_PEAK_MIB = 1075
 #: Memory left unclaimed so the run stays clear of the out-of-memory daemon's
 #: pressure threshold rather than approaching it.
 MEMORY_HEADROOM_FRACTION = 0.2
+#: The pytest pool's soft ceiling: ``agentctl-pytest.slice`` MemoryHigh, 6 GiB
+#: (MemoryMax 8 GiB, no swap). Above the soft ceiling the kernel does not kill
+#: the run, it throttles every allocation, and the slice asks systemd-oomd to
+#: kill on the sustained pressure that throttling produces.
+PYTEST_SLICE_MEMORY_HIGH_MIB: Final = 6 * 1024
+
+
+def width_within(budget_mib: float) -> int:
+    """The widest run whose peak fits ``budget_mib`` with the headroom kept back.
+
+    Never zero: a slow run beats a run that does not start.
+    """
+    budget = budget_mib * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
+    return max(1, int(budget // WORKER_PEAK_MIB))
+
+
+#: The corpus width, and the ceiling any configured width is reduced to. It is
+#: what the pytest slice holds at the peaks above rather than a number declared
+#: beside them, so an idle slice yields exactly this many workers and the live
+#: bounds below narrow only a slice that is already occupied.
+CORPUS_MAX_WORKERS = width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)
 
 #: This process's cgroup v2 membership, and where that hierarchy is mounted.
 CGROUP_PROCESS_PATH: Final = Path("/proc/self/cgroup")
@@ -162,9 +178,7 @@ def memory_bounded_worker_cap(
     if not measured:
         return requested, {"basis": "unmeasured", "workers": requested, "requested_workers": requested}
     available = min(measured)
-    budget = available * (1.0 - MEMORY_HEADROOM_FRACTION) - CONTROLLER_PEAK_MIB
-    fits = int(budget // WORKER_PEAK_MIB)
-    workers = max(1, min(requested, fits))
+    workers = max(1, min(requested, width_within(available)))
     return workers, {
         "basis": "cgroup_budget" if cgroup is not None and cgroup == available else "mem_available",
         "available_mib": available,

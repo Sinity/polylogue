@@ -321,16 +321,42 @@ def test_a_membership_this_mount_cannot_resolve_constrains_nothing(tmp_path: Pat
     assert cgroup_available_mib(process_cgroup=paths["process_cgroup"], root=paths["cgroup_root"]) is None
 
 
+def test_an_idle_pytest_slice_runs_the_declared_corpus_width(tmp_path: Path) -> None:
+    """The declared width is what the slice holds, so an idle slice yields all of it.
+
+    The width is derived from the slice's own ceiling rather than declared
+    beside it, which is what keeps the two from disagreeing: a corpus that
+    asks for more than its sizing rule allows is narrowed on every start and
+    never once runs at the width it declares.
+
+    Anti-vacuity: declare ``CORPUS_MAX_WORKERS`` as a literal either side of
+    ``width_within(PYTEST_SLICE_MEMORY_HIGH_MIB)`` and this goes red -- wider
+    overruns the soft ceiling the slice kills for, narrower leaves the slot
+    holding memory it never spends.
+    """
+    paths = _pytest_slice(tmp_path, current_mib=0)
+    workers, basis = memory_bounded_worker_cap(requested=CORPUS_MAX_WORKERS, meminfo=_meminfo(tmp_path, 28000), **paths)
+
+    assert workers == CORPUS_MAX_WORKERS
+    assert basis["narrowed"] is False
+    assert basis["basis"] == "cgroup_budget"
+    # The declared width is the widest one that still keeps the headroom back.
+    headroom_budget = PYTEST_SLICE_HIGH_MIB * (1.0 - MEMORY_HEADROOM_FRACTION)
+    assert _peak_mib(CORPUS_MAX_WORKERS) <= headroom_budget
+    assert _peak_mib(CORPUS_MAX_WORKERS + 1) > headroom_budget
+
+
 def test_the_pytest_slice_bounds_a_host_with_memory_to_spare(tmp_path: Path) -> None:
     """The killed condition of job 1836: the host was idle, the cgroup was not.
 
     About 10 GiB available on the host would hold the full width; the pytest
     slice's own budget holds fewer, and it is the slice that kills.
     """
-    paths = _pytest_slice(tmp_path, current_mib=350)
+    occupied_mib = 1500
+    paths = _pytest_slice(tmp_path, current_mib=occupied_mib)
     workers, basis = memory_bounded_worker_cap(meminfo=_meminfo(tmp_path, 10000), **paths)
     assert basis["basis"] == "cgroup_budget"
-    assert basis["cgroup_available_mib"] == PYTEST_SLICE_HIGH_MIB - 350
+    assert basis["cgroup_available_mib"] == PYTEST_SLICE_HIGH_MIB - occupied_mib
     assert basis["host_available_mib"] == 10000
     assert workers < CORPUS_MAX_WORKERS
     # The host alone would have chosen the width that was killed.
@@ -356,7 +382,7 @@ def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, mo
     from devtools import verify
 
     monkeypatch.delenv("POLYLOGUE_PYTEST_WORKERS", raising=False)
-    current_mib = 350
+    current_mib = 1500
     argv = ["python", "-m", "pytest", *verify._pytest_worker_args(maximum=CORPUS_MAX_WORKERS), "tests"]
     assert argv[argv.index("-n") + 1] == str(CORPUS_MAX_WORKERS)
 
@@ -370,8 +396,8 @@ def test_a_hosted_verify_launch_stays_inside_the_pytest_slice(tmp_path: Path, mo
     assert current_mib + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB
     assert current_mib + _peak_mib(workers) <= PYTEST_SLICE_MAX_MIB
     assert 4800 + _peak_mib(workers) <= AGENTCTL_SLICE_HIGH_MIB
-    # The width that was killed does not fit the ceiling that killed it.
-    assert current_mib + _peak_mib(CORPUS_MAX_WORKERS) > PYTEST_SLICE_HIGH_MIB
+    # A slice already holding memory yields less than it holds when idle.
+    assert workers < CORPUS_MAX_WORKERS
 
 
 def test_resize_narrows_the_worker_argument_in_place(tmp_path: Path) -> None:
