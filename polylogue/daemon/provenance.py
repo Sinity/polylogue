@@ -33,13 +33,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import get_blob_store
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 

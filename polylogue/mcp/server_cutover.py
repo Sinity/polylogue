@@ -111,7 +111,7 @@ async def _resolve_reference_query_pipeline(
 
     evaluator = ArchiveCanonicalPlanEvaluator(index_db)
     try:
-        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+        from polylogue.api.archive import open_readonly_connection
 
         with closing(
             open_readonly_connection(

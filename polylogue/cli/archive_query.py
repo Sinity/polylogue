@@ -241,7 +241,7 @@ def _execute_reference_query_pipeline(
         raise click.ClickException("archive is not initialized")
     from contextlib import closing
 
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+    from polylogue.api.archive import open_readonly_connection
 
     evaluator = ArchiveCanonicalPlanEvaluator(index_db_path)
     try:

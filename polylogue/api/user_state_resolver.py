@@ -21,6 +21,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import TypedDict
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.core.user_state_targets import (
     TARGET_ATTACHMENT,
     TARGET_BLOCK,
@@ -31,7 +32,6 @@ from polylogue.core.user_state_targets import (
     identity_key,
     validate_target_kind,
 )
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 class ResolvedTarget(TypedDict, total=False):
