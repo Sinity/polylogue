@@ -79,6 +79,15 @@ def _archive(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return archive_root, blob_root, hooks_root, capture_spool
 
 
+def _reference(source_db: Path, *blob_hashes: str) -> None:
+    """Name blobs in a durable relation so liveness, not silence, decides."""
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            "INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, 'raw_payload')",
+            [(bytes.fromhex(blob_hash),) for blob_hash in blob_hashes],
+        )
+
+
 def _plan_and_context(
     archive_root: Path,
     blob_root: Path,
@@ -236,6 +245,7 @@ def test_an_unresolved_member_refuses_the_whole_plan(tmp_path: Path) -> None:
     store = BlobStore(blob_root)
     proven_hash, _ = store.write_from_bytes(_stored_bytes(envelope, tmp_path))
     mystery_hash, _ = store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
+    _reference(archive_root / "source.db", mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
     assert plan.unresolved_count == 1
 
@@ -407,7 +417,8 @@ def test_restoration_proceeds_while_other_members_are_unresolved(tmp_path: Path)
     archive_root, blob_root, hooks_root, capture_spool = _archive(tmp_path)
     store = BlobStore(blob_root)
     sole_hash, _ = store.write_from_bytes(_stored_bytes(_hook_envelope("sole-copy"), tmp_path))
-    store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
+    mystery_hash, _ = store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
+    _reference(archive_root / "source.db", mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
     assert not plan.accepted
 

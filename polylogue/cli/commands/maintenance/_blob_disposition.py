@@ -26,8 +26,17 @@ def blob_disposition_group() -> None:
     required=True,
     help="Destination for the immutable plan artifact.",
 )
+@click.option(
+    "--export-archive-root",
+    "export_archive_roots",
+    type=click.Path(path_type=Path, exists=True, file_okay=False, readable=True),
+    multiple=True,
+    help="Directory of retained provider export archives whose members can prove extracted blobs.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
-def blob_disposition_plan_command(archive_root: Path, output: Path, output_format: str) -> None:
+def blob_disposition_plan_command(
+    archive_root: Path, output: Path, export_archive_roots: tuple[Path, ...], output_format: str
+) -> None:
     """Compile a read-only, zero-unknown disposition plan. Never mutates."""
     from polylogue.maintenance.blob_disposition import compile_disposition_plan, resolve_disposition_roots
 
@@ -39,6 +48,7 @@ def blob_disposition_plan_command(archive_root: Path, output: Path, output_forma
             source_db=archive_root / "source.db",
             hook_spool_sources=hook_sources,
             browser_capture_spool=capture_spool,
+            export_archive_roots=export_archive_roots,
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_text(json.dumps(plan.to_dict(), ensure_ascii=False, sort_keys=True, indent=2) + "\n")
@@ -98,6 +108,13 @@ def blob_disposition_plan_command(archive_root: Path, output: Path, output_forma
     default=False,
     help="Perform the restorations. Without it the run is a dry rehearsal.",
 )
+@click.option(
+    "--export-archive-root",
+    "export_archive_roots",
+    type=click.Path(path_type=Path, exists=True, file_okay=False, readable=True),
+    multiple=True,
+    help="Export-archive directories the plan was compiled with; a proof cannot be revalidated without them.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def blob_disposition_restore_command(
     archive_root: Path,
@@ -105,6 +122,7 @@ def blob_disposition_restore_command(
     authorized_digest: str,
     receipt: Path,
     active: bool,
+    export_archive_roots: tuple[Path, ...],
     output_format: str,
 ) -> None:
     """Restore sole-copy carriers into their ordinary spool. Deletes nothing.
@@ -136,6 +154,7 @@ def blob_disposition_restore_command(
             source_db=archive_root / "source.db",
             hook_spool_sources=hook_sources,
             browser_capture_spool=capture_spool,
+            export_archive_roots=export_archive_roots,
         )
         results = restore_plan_members(
             plan,
@@ -193,6 +212,13 @@ def blob_disposition_restore_command(
     default=False,
     help="Perform the authorized effects. Without it the run is a dry rehearsal.",
 )
+@click.option(
+    "--export-archive-root",
+    "export_archive_roots",
+    type=click.Path(path_type=Path, exists=True, file_okay=False, readable=True),
+    multiple=True,
+    help="Export-archive directories the plan was compiled with; a proof cannot be revalidated without them.",
+)
 @click.option("--output-format", type=click.Choice(["plain", "json"]), default="plain", show_default=True)
 def blob_disposition_apply_command(
     archive_root: Path,
@@ -200,6 +226,7 @@ def blob_disposition_apply_command(
     authorized_digest: str,
     receipt: Path,
     active: bool,
+    export_archive_roots: tuple[Path, ...],
     output_format: str,
 ) -> None:
     """Restore sole copies, then delete proven-redundant objects."""
@@ -222,6 +249,7 @@ def blob_disposition_apply_command(
             source_db=archive_root / "source.db",
             hook_spool_sources=hook_sources,
             browser_capture_spool=capture_spool,
+            export_archive_roots=export_archive_roots,
         )
         block_reason = offline_writer_block_reason(
             Config(archive_root=archive_root, render_root=render_root(), sources=[])
