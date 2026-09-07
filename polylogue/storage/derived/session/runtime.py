@@ -18,70 +18,16 @@ def session_profile_candidates(
     *,
     materializer_version: int,
 ) -> list[str]:
-    """Sessions whose profile is not valid, by value-complete inspection.
+    """Sessions whose partition is not valid, by value-complete inspection.
 
     Re-exported here because this module is the daemon converger's declared
     window onto session-insight runtime; the implementation belongs to the
     domain (:mod:`polylogue.storage.derived.session.derivation`).
-
-    This is authority. :func:`session_profile_stale_predicate` below is a cheap
-    SQL prefilter over identity only, and identity does not move when a role, a
-    model name, or a token count does.
     """
     from polylogue.storage.derived.session.derivation import inspect_session_profiles
 
     statuses = inspect_session_profiles(conn, session_ids, materializer_version=materializer_version)
     return sorted(session_id for session_id, status in statuses.items() if status != "valid")
-
-
-def session_profile_stale_predicate(
-    sessions_alias: str,
-    profile_alias: str,
-) -> str:
-    """SQL boolean fragment: a cheap identity prefilter, never authority.
-
-    Narrows candidates before the value-complete inspection in
-    :func:`session_profile_candidates` reads them. On its own it cannot see a
-    changed role, model, or token count, which is exactly the defect the
-    value-complete binding exists to close; do not use it to certify freshness.
-
-    True when ``profile_alias``'s cached sort key is
-    stale relative to ``sessions_alias``.
-
-    Single source of truth for the sort-key staleness comparison, shared by
-    the daemon converger (``daemon/convergence_stages.py``), ops repair
-    (``storage/raw_convergence.py``), and the candidate prefilter
-    (``storage/derived/session/status.py``) — see polylogue-a7xr.2.
-
-    ``sessions_alias.sort_key_ms`` is milliseconds; ``profile_alias`` caches it
-    in ``source_sort_key`` seconds, so the common case compares the two within
-    a microsecond epsilon after unit conversion.
-
-    ``sort_key_ms`` can be NULL — a session with no derivable temporal sort
-    key (the "timeless session" case). There is then no numeric sort key to
-    compare, so staleness instead compares the profile's cached
-    ``source_updated_at`` against the session's ``updated_at_ms`` (both
-    reduced to whole seconds). This NULL-branch semantics is deliberately the
-    converger's original choice, not repair's: repair previously and
-    independently reimplemented this branch by COALESCEing the missing sort
-    key to ``0.0`` and comparing it against ``source_sort_key``, which
-    permanently flagged any NULL-``sort_key_ms`` session with a nonzero cached
-    ``source_sort_key`` as stale — causing repair to re-flag rows the
-    converger already considered fresh (repeated churn) or vice versa
-    (missed rebuilds).
-    """
-    return (
-        "(\n"
-        f"    ({sessions_alias}.sort_key_ms IS NOT NULL\n"
-        f"     AND ABS(COALESCE({profile_alias}.source_sort_key, 0.0) - "
-        f"(CAST({sessions_alias}.sort_key_ms AS REAL) / 1000.0)) > 0.000001)\n"
-        "    OR\n"
-        f"    ({sessions_alias}.sort_key_ms IS NULL\n"
-        f"     AND COALESCE(strftime('%s', {profile_alias}.source_updated_at), "
-        f"{profile_alias}.source_updated_at, '') != "
-        f"COALESCE(CAST({sessions_alias}.updated_at_ms / 1000 AS TEXT), ''))\n"
-        ")"
-    )
 
 
 class SessionInsightRefreshChunkPayload(TypedDict):

@@ -26,7 +26,8 @@ from polylogue.sources.parsers.base import (
     ParsedSessionEvent,
 )
 from polylogue.sources.parsers.hermes_state import parse_state_db
-from polylogue.storage.derived.session.status import session_profile_repair_candidate_ids_sync
+from polylogue.storage.derived.session.derivation import archive_session_partition_statuses
+from polylogue.storage.derived.session.input_binding import session_input_bindings
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION, LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers import write as _write_module
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -80,9 +81,10 @@ def _msg(
 
 
 def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
-    """Materialize the derived session products a converger would have written
-    for ``session_id`` as it stands, copying the session's own freshness
-    carriers so the staleness predicate reports the profile current."""
+    """Materialize the derived partition a converger would have written for
+    ``session_id`` as it stands, stamping the value-complete input binding so
+    inspection reports it current."""
+    binding = session_input_bindings(conn, (session_id,))[session_id]
     conn.execute(
         """
         INSERT INTO session_profiles (
@@ -91,11 +93,11 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
             message_count, work_event_count, phase_count
         )
         SELECT session_id, ?, '', datetime(updated_at_ms / 1000, 'unixepoch'),
-               CAST(sort_key_ms AS REAL) / 1000.0, lower(hex(content_hash)), ?, origin, ?, 1, 1
+               CAST(sort_key_ms AS REAL) / 1000.0, ?, ?, origin, ?, 1, 1
         FROM sessions
         WHERE session_id = ?
         """,
-        (SESSION_INSIGHT_MATERIALIZER_VERSION, message_count, message_count, session_id),
+        (SESSION_INSIGHT_MATERIALIZER_VERSION, binding, message_count, message_count, session_id),
     )
     conn.execute(
         "INSERT INTO session_latency_profiles (session_id, materializer_version, materialized_at, source_name)"
@@ -108,6 +110,11 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
         (session_id,),
     )
     conn.execute("INSERT INTO session_phases (session_id, position) VALUES (?, 0)", (session_id,))
+
+
+def _nonvalid_partitions(conn: sqlite3.Connection) -> list[str]:
+    statuses = archive_session_partition_statuses(conn, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
+    return sorted(session_id for session_id, status in statuses.items() if status != "valid")
 
 
 async def _read_texts(path: Path, session_id: str) -> list[str | None]:
@@ -753,7 +760,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
     )
     child_id = write_parsed_session_to_archive(conn, child)
     _seed_fresh_session_products(conn, child_id, message_count=4)
-    assert child_id not in session_profile_repair_candidate_ids_sync(conn)
+    assert _nonvalid_partitions(conn) == []
 
     parent = ParsedSession(
         source_name=Provider.CODEX,
@@ -774,7 +781,7 @@ def test_late_parent_resolution_invalidates_child_derived_products(tmp_path: Pat
     for relation in ("session_profiles", "session_latency_profiles", "session_work_events", "session_phases"):
         retained = conn.execute(f"SELECT COUNT(*) FROM {relation} WHERE session_id = ?", (child_id,)).fetchone()[0]
         assert retained == 0, f"{relation} retained the pre-extraction projection"
-    assert child_id in session_profile_repair_candidate_ids_sync(conn)
+    assert child_id in _nonvalid_partitions(conn)
 
     conn.close()
 

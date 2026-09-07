@@ -33,10 +33,8 @@ from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import ContentHash, SessionId
 from polylogue.pipeline.services.process_pool import parallel_threads_effective, resolve_parse_worker_count
 from polylogue.storage.derived.session.input_binding import (
-    SessionInputDigest,
-    session_input_binding_sql,
     session_input_bindings,
-    session_row_binding_sql,
+    session_input_bindings_async,
 )
 from polylogue.storage.derived.session.latency_profiles import (
     build_latency_profile_facts,
@@ -1506,7 +1504,7 @@ async def build_large_session_insight_record_bundle_async(
     row = await _session_count_row_async(conn, session_id)
     model_usage = (await get_model_usage_batch(conn, [session_id])).get(session_id, [])
     terminal_state_result = await _bounded_session_terminal_state_async(conn, session_id, row)
-    bindings = await _async_session_input_bindings(conn, (session_id,))
+    bindings = await session_input_bindings_async(conn, (session_id,))
     profile = _large_session_profile_record_from_row(
         row,
         session_id,
@@ -1682,26 +1680,6 @@ async def _load_message_counts_async(
     )
     rows = await cursor.fetchall()
     return {str(row["session_id"]): int(row["message_count"] or 0) for row in rows}
-
-
-async def _async_session_input_bindings(
-    conn: aiosqlite.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, str]:
-    """The value-complete binding over the async writer's connection.
-
-    Feeds the shared :class:`SessionInputDigest`, so the digest definition is
-    not duplicated for the async route.
-    """
-    unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
-    if not unique:
-        return {}
-    digest = SessionInputDigest(unique)
-    for sql in (session_row_binding_sql(len(unique)), session_input_binding_sql(len(unique))):
-        async with conn.execute(sql, unique) as cursor:
-            async for row in cursor:
-                digest.add_row(row)
-    return digest.result()
 
 
 def rebuild_session_insights_sync(
@@ -2119,7 +2097,7 @@ async def rebuild_session_insights_async(
                     compaction_counts_by_session=batch.compaction_counts_by_session,
                     logical_session_ids_by_session=root_ids_by_session,
                     model_usage_by_session=batch.model_usage_by_session,
-                    input_content_hash_by_session=await _async_session_input_bindings(conn, chunk_full_ids),
+                    input_content_hash_by_session=await session_input_bindings_async(conn, chunk_full_ids),
                 )
             )
 
