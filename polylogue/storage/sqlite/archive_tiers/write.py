@@ -49,6 +49,7 @@ from polylogue.core.enums import (
     ToolOutcome,
     admitted_session_kind,
 )
+from polylogue.core.hook_payload import payload_key_spellings
 from polylogue.core.identity_law import message_id as archive_message_id
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
@@ -577,11 +578,20 @@ def write_parsed_session_to_archive(
     lineage_inheritance: str | None = None
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
-    hook_parent_provider_id = _authoritative_parent_claim(
+    # This runs before the session's blocks are written and exists to supply a
+    # parent the parser did not name, so it offers no ``parent_candidate``: a
+    # claim that only confirms a named parent has nothing to add this early,
+    # and its ``tool_use_id`` join would read the outgoing block rows.
+    hook_parent_claim = _authoritative_parent_claim(
+        conn,
         source_conn,
         origin=origin.value,
+        child_session_id=session_id,
         child_native_id=native_id,
+        child_provider_values=(),
+        parent_candidate=None,
     )
+    hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
     effective_session_kind = session.session_kind
     if hook_parent_provider_id is not None and session.parent_session_provider_id is None:
         effective_session_kind = SessionKind.SUBAGENT
@@ -4024,31 +4034,108 @@ def _write_parent_links(
         )
 
 
-def _authoritative_parent_claim(
-    source_conn: sqlite3.Connection | None,
-    *,
-    origin: str,
-    child_native_id: str,
-) -> str | None:
-    """Return the hook-asserted parent thread id for ``child_native_id``.
+@dataclass(frozen=True, slots=True)
+class _HookParentClaim:
+    """One durable hook assertion of a child's parent, with its own evidence.
 
-    polylogue-foee acquired ``codex_thread_spawn_edge`` rows into the durable
-    ``source.db`` hook spool, keyed by ``session_native_id = parent_thread_id``
+    ``evidence`` is merged into ``session_links.evidence_json`` so the row
+    itself records which hook fields decided it.
+    """
+
+    parent_native_id: str
+    evidence: Mapping[str, object]
+
+
+#: Claude Code writes a dispatched child's transcript to
+#: ``<session>/subagents/agent-<agentId>.jsonl`` and the child parser claims
+#: that stem as a provider alias, so a hook payload's bare ``agent_id`` maps
+#: onto the child by stripping this prefix.
+_SUBAGENT_STEM_PREFIX = "agent-"
+
+#: Hook event types whose payload carries the dispatched agent's identity.
+_AGENT_BEARING_HOOK_EVENTS = ("PreToolUse", "PostToolUse")
+
+#: The canonical hook keys one dispatch claim is built from, in extraction order.
+_AGENT_DISPATCH_HOOK_KEYS = ("agent_id", "agent_type", "tool_use_id")
+
+#: SQLite parameter batch for the child's ``tool_id`` membership check.
+_HOOK_TOOL_ID_CHUNK = 500
+
+
+def _hook_payload_json_paths(key: str) -> tuple[str, ...]:
+    """Every JSON path one canonical hook key can occupy in ``payload_json``.
+
+    A spool-drained row stores the producer envelope (the harness payload
+    nested under ``$.payload``); evidence written directly stores the bare
+    payload. Both generations of every spelling come from
+    :func:`polylogue.core.hook_payload.payload_key_spellings`, so a reader
+    keyed on one spelling cannot see the other as a field nothing ever sent.
+    Envelope before payload, matching ``hook_record_field``'s precedence.
+    """
+    spellings = payload_key_spellings(key)
+    return tuple([f"$.{spelling}" for spelling in spellings] + [f"$.payload.{spelling}" for spelling in spellings])
+
+
+def _hook_field_slices(keys: Sequence[str]) -> dict[str, slice]:
+    """Where each key's values sit in the concatenated multi-path result."""
+    slices: dict[str, slice] = {}
+    offset = 0
+    for key in keys:
+        width = len(_hook_payload_json_paths(key))
+        slices[key] = slice(offset, offset + width)
+        offset += width
+    return slices
+
+
+def _hook_extracted_fields(extracted: object, field_slices: Mapping[str, slice]) -> dict[str, str]:
+    """Decode one multi-path ``json_extract`` array into canonical string fields.
+
+    First non-empty spelling wins, matching ``hook_payload_field``; a key whose
+    every spelling is absent or empty is simply missing from the result, never
+    an empty string a caller could mistake for a sent value.
+    """
+    if not isinstance(extracted, str):
+        return {}
+    try:
+        values = json.loads(extracted)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(values, list):
+        return {}
+    fields: dict[str, str] = {}
+    for key, span in field_slices.items():
+        for value in values[span]:
+            if isinstance(value, str) and value:
+                fields[key] = value
+                break
+    return fields
+
+
+def _hook_spool_present(source_conn: sqlite3.Connection) -> bool:
+    """Whether this source tier carries the hook spool at all.
+
+    An index-only harness (or a source tier predating the spool) has no such
+    table. Absent evidence is silence, never a conflict.
+    """
+    return (
+        source_conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'").fetchone()
+        is not None
+    )
+
+
+def _codex_spawn_edge_parent_claim(
+    source_conn: sqlite3.Connection,
+    *,
+    child_native_id: str,
+) -> _HookParentClaim | None:
+    """Return the ``codex_thread_spawn_edge`` parent for ``child_native_id``.
+
+    polylogue-foee acquired those rows into the durable ``source.db`` hook
+    spool, keyed by ``session_native_id = parent_thread_id``
     (``sources/codex_state_evidence.py``). A child-side lookup therefore cannot
     use ``list_hook_events(session_native_id=...)``; it matches the payload's
-    own ``child_thread_id`` instead. ``None`` means "hook evidence is silent
-    about this child", which is not the same as "hook evidence disagrees" --
-    only the latter is a conflict.
+    own ``child_thread_id`` instead.
     """
-    if source_conn is None or origin != Origin.CODEX_SESSION.value or not child_native_id:
-        return None
-    has_hook_spool = source_conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'"
-    ).fetchone()
-    if has_hook_spool is None:
-        # An index-only harness (or a source tier predating the hook spool)
-        # has no such table. Absent evidence is silence, never a conflict.
-        return None
     row = source_conn.execute(
         """
         SELECT json_extract(payload_json, '$.parent_thread_id')
@@ -4063,7 +4150,155 @@ def _authoritative_parent_claim(
     if row is None or row[0] is None:
         return None
     parent = str(row[0]).strip()
-    return parent or None
+    if not parent:
+        return None
+    return _HookParentClaim(parent, {"codex_thread_spawn_edge_parent": parent})
+
+
+def _child_tool_use_id_matches(
+    conn: sqlite3.Connection,
+    child_session_id: str,
+    tool_use_ids: Sequence[str],
+) -> int:
+    """Count the hook-attributed tool calls archived as this child's own blocks."""
+    matched = 0
+    for start in range(0, len(tool_use_ids), _HOOK_TOOL_ID_CHUNK):
+        chunk = tool_use_ids[start : start + _HOOK_TOOL_ID_CHUNK]
+        placeholders = ", ".join("?" * len(chunk))
+        matched += int(
+            conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT tool_id) FROM blocks
+                WHERE session_id = ? AND block_type = ? AND tool_id IN ({placeholders})
+                """,
+                (child_session_id, BlockType.TOOL_USE.value, *chunk),
+            ).fetchone()[0]
+        )
+    return matched
+
+
+def _claude_agent_dispatch_parent_claim(
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection,
+    *,
+    child_session_id: str,
+    child_provider_values: Iterable[str],
+    parent_candidate: str,
+) -> _HookParentClaim | None:
+    """Return the hook-asserted dispatch of one Claude Code subagent child.
+
+    Claude Code stamps ``agent_id`` (the agent instance) and ``agent_type``
+    (the agent definition) on the ``PreToolUse``/``PostToolUse`` payloads of
+    the calls a dispatched agent itself made, in the DISPATCHING session's hook
+    journal. The dispatching ``Agent`` call carries no such pair, so the pair
+    identifies the child rather than the dispatch block: it is the runtime's
+    own per-call assertion of which agent instance ran under which session,
+    which transcript shape cannot reconstruct.
+
+    The lookup is keyed on ``session_native_id``, the spool's only indexed
+    access path, so it costs the named parent's own hook events rather than a
+    scan of the spool. It therefore confirms a parent the parser named and
+    cannot discover one; hook silence stays silence.
+
+    A claim is admitted only when a ``tool_use_id`` the hook attributed to the
+    agent instance is archived as a ``tool_use`` block in this child. That join
+    is what makes the assertion about this session rather than about a name
+    that merely matches.
+
+    All three fields are lifted by ONE multi-path ``json_extract`` per row.
+    Hook payloads carry whole tool inputs and responses, so a per-field
+    extraction would re-parse megabytes of JSON for every subagent written.
+    """
+    agent_ids = sorted(
+        {
+            value[len(_SUBAGENT_STEM_PREFIX) :]
+            for value in child_provider_values
+            if value.startswith(_SUBAGENT_STEM_PREFIX) and len(value) > len(_SUBAGENT_STEM_PREFIX)
+        }
+    )
+    if not agent_ids or not _hook_spool_present(source_conn):
+        return None
+    paths = [path for key in _AGENT_DISPATCH_HOOK_KEYS for path in _hook_payload_json_paths(key)]
+    field_slices = _hook_field_slices(_AGENT_DISPATCH_HOOK_KEYS)
+    path_sql = ", ".join(f"'{path}'" for path in paths)
+    event_placeholders = ", ".join("?" * len(_AGENT_BEARING_HOOK_EVENTS))
+    rows = source_conn.execute(
+        f"""
+        SELECT DISTINCT json_extract(payload_json, {path_sql})
+        FROM raw_hook_events
+        WHERE origin = ?
+          AND session_native_id = ?
+          AND event_type IN ({event_placeholders})
+        """,
+        (Origin.CLAUDE_CODE_SESSION.value, parent_candidate, *_AGENT_BEARING_HOOK_EVENTS),
+    ).fetchall()
+    wanted = set(agent_ids)
+    tool_use_ids: dict[str, set[str]] = defaultdict(set)
+    agent_types: dict[str, str] = {}
+    for (extracted,) in rows:
+        fields = _hook_extracted_fields(extracted, field_slices)
+        agent_id = fields.get("agent_id")
+        tool_use_id = fields.get("tool_use_id")
+        if agent_id is None or tool_use_id is None or agent_id not in wanted:
+            continue
+        tool_use_ids[agent_id].add(tool_use_id)
+        agent_type = fields.get("agent_type")
+        if agent_type is not None and agent_id not in agent_types:
+            agent_types[agent_id] = agent_type
+    for agent_id in agent_ids:
+        matches = _child_tool_use_id_matches(conn, child_session_id, sorted(tool_use_ids.get(agent_id, ())))
+        if not matches:
+            continue
+        return _HookParentClaim(
+            parent_candidate,
+            {
+                "claude_hook_agent_id": agent_id,
+                "claude_hook_agent_type": agent_types.get(agent_id),
+                "claude_hook_tool_use_id_matches": matches,
+            },
+        )
+    return None
+
+
+def _child_provider_values(session: ParsedSession) -> tuple[str, ...]:
+    """The provider names this child claims for itself, its own id first."""
+    values = [
+        (session.provider_session_id or "").strip(),
+        *(str(alias).strip() for alias in session.provider_session_aliases),
+    ]
+    return tuple(dict.fromkeys(value for value in values if value))
+
+
+def _authoritative_parent_claim(
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
+    *,
+    origin: str,
+    child_session_id: str,
+    child_native_id: str,
+    child_provider_values: Iterable[str],
+    parent_candidate: str | None,
+) -> _HookParentClaim | None:
+    """Return the hook-asserted parent for this child, or ``None`` for silence.
+
+    ``None`` means "hook evidence is silent about this child", which is not the
+    same as "hook evidence disagrees" -- only the latter is a conflict.
+    """
+    if source_conn is None or not child_native_id:
+        return None
+    if origin == Origin.CODEX_SESSION.value:
+        if not _hook_spool_present(source_conn):
+            return None
+        return _codex_spawn_edge_parent_claim(source_conn, child_native_id=child_native_id)
+    if origin == Origin.CLAUDE_CODE_SESSION.value and parent_candidate:
+        return _claude_agent_dispatch_parent_claim(
+            conn,
+            source_conn,
+            child_session_id=child_session_id,
+            child_provider_values=child_provider_values,
+            parent_candidate=parent_candidate,
+        )
+    return None
 
 
 def _supersede_stale_authoritative_links(
@@ -4261,8 +4496,9 @@ def _write_session_link(
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
-    ``source_conn`` is the durable ``source.db`` handle carrying polylogue-foee's
-    acquired ``codex_thread_spawn_edge`` evidence. It is optional exactly as it
+    ``source_conn`` is the durable ``source.db`` handle carrying the acquired
+    hook evidence -- Codex ``codex_thread_spawn_edge`` rows and Claude Code's
+    ``agent_id``/``agent_type`` tool-call stamps. It is optional exactly as it
     is on ``revision_authority_refuses_write``: an index-only harness passes
     ``None`` and every behaviour below collapses to the pre-existing
     parser-only path.
@@ -4278,11 +4514,20 @@ def _write_session_link(
     """
     origin = origin_from_provider(session.source_name).value
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0
-    hook_parent = _authoritative_parent_claim(
+    # Match exact stored provider identities and parser-emitted aliases after
+    # the same normalization used for session native ids.
+    parent_native_id = _sqlite_text((session.parent_session_provider_id or "").strip()) or None
+    hook_claim = _authoritative_parent_claim(
+        conn,
         source_conn,
         origin=origin,
+        child_session_id=session_id,
         child_native_id=(session.provider_session_id or "").strip(),
+        child_provider_values=_child_provider_values(session),
+        parent_candidate=parent_native_id,
     )
+    hook_parent = hook_claim.parent_native_id if hook_claim is not None else None
+    hook_evidence: Mapping[str, object] = hook_claim.evidence if hook_claim is not None else {}
 
     if not session.parent_session_provider_id:
         # Hook evidence can know a parent transcript inference never found.
@@ -4308,13 +4553,11 @@ def _write_session_link(
                 parent_tool_use_block_id=None,
                 method=HOOK_AUTHORITATIVE_LINK_METHOD,
                 confidence=1.0,
-                evidence_json=_json_dumps({"codex_thread_spawn_edge_parent": hook_parent, "parser_parent": None}),
+                evidence_json=_json_dumps({**hook_evidence, "parser_parent": None}),
                 observed_at_ms=observed_at_ms,
             )
         return
-    # Match exact stored provider identities and parser-emitted aliases after
-    # the same normalization used for session native ids.
-    dst_native_id = _sqlite_text(session.parent_session_provider_id.strip())
+    dst_native_id = parent_native_id
     if not dst_native_id:
         return
     link_type = branch_type_to_edge_type(session.branch_type, default=TopologyEdgeType.BRANCH).value
@@ -4354,11 +4597,11 @@ def _write_session_link(
     contradicted = hook_parent is not None and hook_parent != dst_native_id
     if agreeing:
         method = HOOK_AUTHORITATIVE_LINK_METHOD
-        evidence["codex_thread_spawn_edge_parent"] = hook_parent
+        evidence.update(hook_evidence)
     elif contradicted:
         method = HOOK_CONTRADICTED_LINK_METHOD
         status = TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
-        evidence["codex_thread_spawn_edge_parent"] = hook_parent
+        evidence.update(hook_evidence)
         evidence["contradiction"] = "authoritative hook evidence names a different parent"
         evidence["resolution_reason"] = "identity-contradiction"
 
@@ -4409,12 +4652,7 @@ def _write_session_link(
             parent_tool_use_block_id=parent_tool_use_block_id,
             method=HOOK_AUTHORITATIVE_LINK_METHOD,
             confidence=1.0,
-            evidence_json=_json_dumps(
-                {
-                    "codex_thread_spawn_edge_parent": hook_parent,
-                    "superseded_parser_parent": dst_native_id,
-                }
-            ),
+            evidence_json=_json_dumps({**hook_evidence, "superseded_parser_parent": dst_native_id}),
             observed_at_ms=observed_at_ms,
         )
 
