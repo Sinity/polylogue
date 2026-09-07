@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import ExitStack, closing
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,21 +51,23 @@ def _build(
     user_conn: sqlite3.Connection | None = None,
     audit_conn: sqlite3.Connection | None = None,
 ) -> DurableReferenceTransition:
+    """Plan the transition from the archive's own files.
+
+    ``user_conn``/``audit_conn`` are supplied by ``apply``, which already holds
+    them read-write under the archive lease; the caller owns those.
+    """
     from polylogue.maintenance.durable_reference_transition import (
         plan_durable_reference_transition,
         source_session_claims,
     )
     from polylogue.version import POLYLOGUE_VERSION
 
-    owned_user = user_conn is None
-    owned_audit = audit_conn is None
-    user = _readonly(root / "user.db") if owned_user else user_conn
-    audit = _readonly(root / "audit.db") if owned_audit else audit_conn
-    source = _readonly(root / "source.db")
-    candidate = _readonly(candidate_index)
-    predecessor = _readonly(predecessor_index)
-    try:
-        assert user is not None and audit is not None
+    with ExitStack() as stack:
+        user = user_conn if user_conn is not None else stack.enter_context(closing(_readonly(root / "user.db")))
+        audit = audit_conn if audit_conn is not None else stack.enter_context(closing(_readonly(root / "audit.db")))
+        source = stack.enter_context(closing(_readonly(root / "source.db")))
+        candidate = stack.enter_context(closing(_readonly(candidate_index)))
+        predecessor = stack.enter_context(closing(_readonly(predecessor_index)))
         return plan_durable_reference_transition(
             user_conn=user,
             audit_conn=audit,
@@ -76,16 +79,6 @@ def _build(
             candidate_index_path=str(candidate_index),
             predecessor_index_path=str(predecessor_index),
         )
-    finally:
-        for connection, owned in (
-            (user, owned_user),
-            (audit, owned_audit),
-            (source, True),
-            (candidate, True),
-            (predecessor, True),
-        ):
-            if owned and connection is not None:
-                connection.close()
 
 
 @click.group("durable-reference-transition")
