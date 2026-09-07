@@ -29,6 +29,7 @@ from typing import Any
 
 from devtools.agent_env import runtime_env
 from devtools.pytest_evidence import evaluate_pytest_evidence
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV
 from devtools.testmon_provision import TESTMON_DATA_RELPATH
 
 
@@ -442,8 +443,14 @@ def env_for_pytest_step(env: dict[str, str], *, run: VerifyRun, artifacts: Pytes
     # dies in an internal error rather than a test result.
     datafile = run.root / TESTMON_DATA_RELPATH
     datafile.parent.mkdir(parents=True, exist_ok=True)
+    # Every managed run records its own archive-construction and write cost,
+    # beside the artifacts the rest of the receipt is read from. Set by the
+    # step rather than inherited, because the queue reduces the submitting
+    # client's environment and an ambient switch never reaches the run.
+    suite_cost_dir = env.get(SUITE_COST_DIR_ENV, "").strip() or str(artifacts.step_dir / "suite-cost")
     updated.update(
         {
+            SUITE_COST_DIR_ENV: suite_cost_dir,
             "POLYLOGUE_VERIFY_RUN_ID": run.run_id,
             # Scratch archives never need durability; see connection_profile.
             "POLYLOGUE_SQLITE_SYNCHRONOUS": "OFF",

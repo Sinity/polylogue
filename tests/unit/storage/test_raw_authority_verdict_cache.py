@@ -27,7 +27,7 @@ from polylogue.storage.raw_authority_verdict_cache import (
     write_raw_authority_verdict_cache,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_source_key: str) -> str:
@@ -46,7 +46,7 @@ def _bind_full(archive: ArchiveStore, *, raw_id: str, payload: bytes, logical_so
 
 
 def test_cold_cache_computes_and_persists(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
@@ -65,7 +65,7 @@ def test_cold_cache_computes_and_persists(tmp_path: Path) -> None:
 
 
 def test_second_read_does_not_recompute(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
 
@@ -83,7 +83,7 @@ def test_second_read_does_not_recompute(tmp_path: Path, monkeypatch: pytest.Monk
 
 
 def test_new_revision_invalidates_the_cache(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
         first = get_or_compute_raw_authority_verdicts(archive, "codex:s1", now_ms=1000)
@@ -104,7 +104,7 @@ def test_new_revision_invalidates_the_cache(tmp_path: Path) -> None:
 
 
 def test_changed_content_fingerprint_invalidates_the_cache(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
@@ -138,7 +138,7 @@ def test_changed_content_fingerprint_invalidates_the_cache(tmp_path: Path) -> No
 
 def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> None:
     """The cache must follow the persisted byte-proof links used by append verdicts."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="baseline", payload=b"one\n", logical_source_key="codex:s1")
         append_id = archive.write_raw_payload(
@@ -182,7 +182,7 @@ def test_append_authority_promotion_invalidates_the_cache(tmp_path: Path) -> Non
 
 def test_write_requires_full_cohort_and_replaces_prior_rows(tmp_path: Path) -> None:
     """A rewrite must clear the cohort's whole prior row set, not accumulate."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="oldest", payload=b"one\n", logical_source_key="codex:s1")
         _bind_full(archive, raw_id="newest", payload=b"one\ntwo\n", logical_source_key="codex:s1")
@@ -211,7 +211,7 @@ def test_write_requires_full_cohort_and_replaces_prior_rows(tmp_path: Path) -> N
 
 
 def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         verdicts = get_or_compute_raw_authority_verdicts(archive, "codex:does-not-exist", now_ms=1000)
 
@@ -222,7 +222,7 @@ def test_missing_cohort_returns_no_verdicts_and_no_cache_write(tmp_path: Path) -
 
 
 def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="full-oldest", payload=b"one\n", logical_source_key="codex:full")
         _bind_full(archive, raw_id="full-newest", payload=b"one\ntwo\n", logical_source_key="codex:full")
@@ -290,7 +290,7 @@ def test_warmup_is_bounded_and_caches_append_cohorts(tmp_path: Path) -> None:
 
 
 def test_warmup_does_not_recompute_fresh_cohorts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="only", payload=b"payload", logical_source_key="codex:s1")
         warm_raw_authority_verdict_cache(archive, max_cohorts=1, now_ms=1000)
@@ -313,7 +313,7 @@ def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
     ``IntegrityError: UNIQUE constraint failed: raw_authority_verdicts.raw_id``,
     which stalled the converger 84 times in rehearsal-10 (2026-09-05).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="moved", payload=b"one\n", logical_source_key="codex:pending")
         write_raw_authority_verdict_cache(
@@ -327,7 +327,7 @@ def test_rekeyed_raw_replaces_its_stale_cache_row(tmp_path: Path) -> None:
 
 def test_find_work_classifies_every_cohort_in_two_statements(tmp_path: Path) -> None:
     """Anti-vacuity: a per-cohort probe issues two statements per cohort, red at three cohorts."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         _bind_full(archive, raw_id="fresh-1", payload=b"fresh\n", logical_source_key="codex:fresh")
         _bind_full(archive, raw_id="stale-1", payload=b"stale\n", logical_source_key="codex:stale")

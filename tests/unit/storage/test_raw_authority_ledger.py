@@ -47,9 +47,10 @@ from polylogue.storage.raw_reconciler import (
     inspect_raw_authority_frontier,
 )
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.revision_application import RevisionApplicationReceipt
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _config(root: Path) -> Config:
@@ -81,7 +82,7 @@ def _frontier_test_item(
 
 def test_frontier_plan_v1_identity_survives_historical_and_current_witnesses(tmp_path: Path) -> None:
     """A v1 plan without a top-level raw_id remains reusable after restart."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     strategy_witness = json_document(
         {
             "schema": "polylogue.raw-authority-strategy-witness.v1",
@@ -138,7 +139,7 @@ def test_frontier_plan_v1_identity_survives_historical_and_current_witnesses(tmp
 
 def test_terminal_race_requires_persisted_primary_raw_not_auxiliary_overlap(tmp_path: Path) -> None:
     """A changed primary cannot be authorized by a terminal item sharing an old auxiliary raw."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     plan = RawReplayPlan(
         plan_id="stale-copy-forward-plan",
         input_digest="p" * 64,
@@ -254,7 +255,7 @@ def _write_codex_raw(
 
 
 def test_moved_path_census_stabilizes_preview_and_apply_plan_identity(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     old_raw = _write_codex_raw(
         tmp_path,
         native_id="moved-session",
@@ -284,7 +285,7 @@ def test_moved_path_census_stabilizes_preview_and_apply_plan_identity(tmp_path: 
 
 
 def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="first", source_path="first.jsonl", acquired_at_ms=1)
     _write_codex_raw(tmp_path, native_id="second", source_path="second.jsonl", acquired_at_ms=2)
 
@@ -367,7 +368,7 @@ def test_census_ledger_conserves_unselected_plan_and_application_receipt(tmp_pat
 
 
 def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="fixed", source_path="fixed.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
@@ -383,7 +384,7 @@ def test_two_successive_quiescent_censuses_are_required_for_fixed_point(tmp_path
 
 
 def test_stale_plan_persists_blocker_before_automatic_replay_refuses_work(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="stale", source_path="stale.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -430,7 +431,7 @@ def test_auto_resolve_stale_plan_blockers_unblocks_materialization_unattended(tm
     already does elsewhere. auto_resolve_stale_plan_blockers must clear it
     without any human-supplied resolution text, and repair must proceed
     on the very next call."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="stale2", source_path="stale2.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -478,7 +479,7 @@ def test_auto_resolve_stale_plan_blockers_never_touches_frontier_judgment_blocke
     auto_resolve_stale_plan_blockers must only ever query non-frontier
     (stale_plan) blockers, never attempt -- and therefore never accidentally
     satisfy -- a judgment-gated one."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="judgment", source_path="judgment.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     base_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -525,7 +526,7 @@ def test_auto_resolve_stale_plan_blockers_never_touches_frontier_judgment_blocke
 
 
 def test_interrupted_census_has_no_partial_plan_visibility_and_retries_once(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     first = _write_codex_raw(tmp_path, native_id="atomic-first", source_path="atomic-first.jsonl", acquired_at_ms=1)
     second = _write_codex_raw(
         tmp_path,
@@ -611,7 +612,7 @@ def test_postflight_allows_carried_plan_superseded_by_selected_logical_source(tm
     Anti-vacuity: treating raw-id disjointness as the only relationship makes
     finalization reject this valid postflight because ``retired`` is omitted.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     selected = RawReplayPlan(
         plan_id="selected",
         input_digest="a" * 64,
@@ -673,7 +674,7 @@ def test_postflight_allows_carried_plan_superseded_by_selected_logical_source(tm
 
 def test_postflight_rejects_missing_independent_carried_plan(tmp_path: Path) -> None:
     """Logical-source supersession must not weaken independent-plan protection."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     selected = RawReplayPlan(
         plan_id="selected",
         input_digest="a" * 64,
@@ -724,7 +725,7 @@ def test_postflight_rejects_missing_independent_carried_plan(tmp_path: Path) -> 
 
 def test_postflight_rejects_carried_plan_shared_with_retryable_selection(tmp_path: Path) -> None:
     """Retryable work cannot retire a different raw for the same logical source."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     retryable = RawReplayPlan(
         plan_id="retryable",
         input_digest="a" * 64,
@@ -793,7 +794,7 @@ def test_interrupted_finalize_tolerates_a_reclassified_carried_plan(tmp_path: Pa
     ``test_postflight_rejects_carried_plan_shared_with_retryable_selection``
     immediately above) -- only crash recovery gets the tolerance.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     retryable = RawReplayPlan(
         plan_id="retryable",
         input_digest="a" * 64,
@@ -849,7 +850,7 @@ def test_interrupted_finalize_tolerates_a_reclassified_carried_plan(tmp_path: Pa
 
 
 def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     first = _write_codex_raw(
         tmp_path,
         native_id="merged",
@@ -916,7 +917,7 @@ def test_global_census_quiesces_moved_component_before_any_plan_is_published(tmp
 
 
 def test_census_page_bounds_one_oversized_plan_and_detail_chunks_reconstruct_it(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_ids = tuple(f"raw-{index:05d}" for index in range(2_000))
     plan = RawReplayPlan(
         plan_id="raw-replay:oversized",
@@ -952,7 +953,7 @@ def test_census_page_bounds_one_oversized_plan_and_detail_chunks_reconstruct_it(
 
 
 def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
         tmp_path,
         native_id="crash",
@@ -1062,7 +1063,7 @@ def test_interrupted_apply_recovers_exact_durable_postconditions(tmp_path: Path)
 
 
 def test_interrupted_recovery_receives_repair_pinned_index_path(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="pinned-recovery", source_path="pinned-recovery.jsonl", acquired_at_ms=1)
 
     with patch.object(
@@ -1089,7 +1090,7 @@ def test_interrupted_recovery_receives_repair_pinned_index_path(tmp_path: Path) 
 
 
 def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _write_codex_raw(tmp_path, native_id="receipt", source_path="receipt.jsonl", acquired_at_ms=1)
     real_receipt = raw_authority_mod.raw_replay_application_receipt
 
@@ -1114,7 +1115,7 @@ def test_parsed_timestamp_without_exact_application_receipt_fails_closed(tmp_pat
 
 
 def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="active-receipt", source_path="active.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1129,7 +1130,7 @@ def test_application_receipt_reads_the_active_generation_not_shadow_index(tmp_pa
 
 
 def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="active-plan", source_path="active-plan.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).success is True
     shadow_plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1148,7 +1149,7 @@ def test_replay_plan_build_and_validation_read_the_active_generation(tmp_path: P
 
 
 def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
     (tmp_path / ".index-active-pointer").write_text(str(active_index), encoding="utf-8")
@@ -1161,7 +1162,7 @@ def test_frontier_census_reads_the_active_generation_not_shadow_index(tmp_path: 
 
 
 def test_frontier_census_is_ephemeral_before_durable_ledger_migration(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("DROP TABLE raw_authority_blockers")
         conn.execute("DROP TABLE raw_authority_censuses")
@@ -1175,7 +1176,7 @@ def test_frontier_census_is_ephemeral_before_durable_ledger_migration(tmp_path: 
 
 @pytest.mark.parametrize("field", ["session_id", "accepted_raw_id", "accepted_content_hash"])
 def test_application_receipt_requires_exact_application_authority(tmp_path: Path, field: str) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id=f"exact-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1207,7 +1208,7 @@ def test_application_receipt_requires_exact_application_authority(tmp_path: Path
 def test_application_receipt_recovery_rejects_malformed_authority_evidence(
     tmp_path: Path, field: str, replacement: object
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id=f"malformed-{field}", source_path=f"{field}.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1224,7 +1225,7 @@ def test_application_receipt_recovery_rejects_malformed_authority_evidence(
 
 def test_application_receipt_recovery_rejects_source_revision_from_another_shared_membership(tmp_path: Path) -> None:
     """A grouped raw cannot lend key B's revision evidence to key A's application."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="shared-memberships", source_path="shared.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).success is True
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1288,7 +1289,7 @@ def test_application_receipt_recovery_rejects_source_revision_from_another_share
 
 
 def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _write_codex_raw(
         tmp_path,
         native_id="partial-component",
@@ -1334,7 +1335,7 @@ def test_recovery_rejects_partial_expanded_membership_postconditions(tmp_path: P
 
 
 def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="resume", source_path="resume.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1389,7 +1390,7 @@ def test_stale_blocker_resolution_replans_current_evidence_and_resumes(tmp_path:
 
 
 def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="repeat", source_path="repeat.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -1441,7 +1442,7 @@ def test_identical_stale_rejection_after_resolution_creates_new_open_blocker(tmp
 
 def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_path: Path) -> None:
     """A crash after outcome commit finalizes the planned census on restart."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     plan = RawReplayPlan(
         plan_id="raw-replay:outcome-recorded",
         input_digest="a" * 64,
@@ -1479,7 +1480,7 @@ def test_recovery_returns_planned_census_after_all_outcomes_are_recorded(tmp_pat
 
 
 def test_frontier_preview_cannot_claim_one_plan_twice(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     plan = RawReplayPlan(
         plan_id="raw-authority-frontier:" + "a" * 64,
         input_digest="b" * 64,
@@ -1502,7 +1503,7 @@ def test_frontier_preview_cannot_claim_one_plan_twice(tmp_path: Path) -> None:
 
 def test_concurrent_frontier_claims_serialize_before_apply_census(tmp_path: Path) -> None:
     """One preview plan has one durable apply census, even under concurrent callers."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     plan = RawReplayPlan(
         plan_id="raw-authority-frontier:" + "c" * 64,
         input_digest="d" * 64,
@@ -1541,7 +1542,7 @@ def test_concurrent_frontier_claims_serialize_before_apply_census(tmp_path: Path
 
 
 def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     first = record_raw_authority_census(
         tmp_path,
         (),
@@ -1595,7 +1596,7 @@ def test_fixed_point_compares_residual_identity_and_parser_fingerprint(tmp_path:
 
 
 def test_stale_per_raw_parser_fingerprint_is_recensused_before_planning(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="parser-drift", source_path="parser-drift.jsonl", acquired_at_ms=1)
     first = converge_raw_materialization(_config(tmp_path), dry_run=True)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -1671,7 +1672,7 @@ def test_ambiguous_verdict_under_current_fingerprint_stays_terminal(tmp_path: Pa
     classifier fingerprint is still authoritative -- it must not be
     replayed without new evidence.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _raw_id, outcome = _seed_ambiguous_membership_component(
         tmp_path, native_id="current-ambiguous", parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT
     )
@@ -1698,7 +1699,7 @@ def test_ambiguous_verdict_under_superseded_fingerprint_is_replayable(
     json_each(?)) ...)`` guard) makes this test fail by re-classifying the
     plan as TERMINAL.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     assert superseded_fingerprint in raw_authority_mod.SUPERSEDED_MEMBERSHIP_FINGERPRINTS
     _raw_id, outcome = _seed_ambiguous_membership_component(
         tmp_path, native_id="superseded-ambiguous", parser_fingerprint=superseded_fingerprint
@@ -1710,7 +1711,7 @@ def test_ambiguous_verdict_with_no_census_row_stays_terminal(tmp_path: Path) -> 
     """polylogue-9dxn: absent census evidence must default to conservative
     (terminal), not to "assume the classifier fix already applies".
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     _raw_id, outcome = _seed_ambiguous_membership_component(
         tmp_path, native_id="uncensused-ambiguous", parser_fingerprint=None
     )
@@ -1776,7 +1777,7 @@ def test_frontier_classifies_dangling_head_session_as_corrupt(tmp_path: Path) ->
     the rebuildable index tier). Proven-current accepted heads must never
     silently read as healthy in this shape.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="dangling-session", source_path="dangling.jsonl", acquired_at_ms=1)
     assert converge_raw_materialization(_config(tmp_path)).repaired_count == 1
 
@@ -1824,7 +1825,7 @@ def test_frontier_classifies_head_session_raw_mismatch_as_corrupt(tmp_path: Path
     disagreement between two derived-tier tables that a read-only census
     must surface as a durable blocker rather than silently trust the head.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     accepted_raw_id = _write_codex_raw(
         tmp_path, native_id="mismatch-one", source_path="mismatch.jsonl", acquired_at_ms=1
     )
@@ -1876,7 +1877,7 @@ def test_verified_blob_receipt_invalidates_when_blob_bytes_change_underneath_it(
     prevent: a performance win here would be worthless (and actively unsafe)
     if it could paper over real corruption.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
         tmp_path, native_id="tamper-target", source_path="tamper.jsonl", acquired_at_ms=1, text="hello"
     )
@@ -1920,7 +1921,7 @@ def test_verified_blob_receipt_skips_rehash_on_unchanged_blob_across_census_pass
     trusting a wall-clock or state proxy, so the assertion fails honestly if
     the receipt cache regresses back to re-verifying every restart.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
         tmp_path, native_id="unchanged-target", source_path="unchanged.jsonl", acquired_at_ms=1, text="hello"
     )
@@ -1976,7 +1977,7 @@ def test_ineligible_quarantined_raw_gets_a_terminal_actuator_not_refine_quaranti
     honest NONE actuator -- never REFINE_QUARANTINE -- while remaining
     countable (state_counts) and operator-visible (raw_authority_blockers).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(
         tmp_path, native_id="quarantine-ineligible", source_path="quarantine.jsonl", acquired_at_ms=1
     )
@@ -2079,7 +2080,7 @@ def test_census_plan_rows_are_bounded_by_retention(tmp_path: Path, monkeypatch: 
     makes this fail with row counts growing linearly in census count.
     """
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 3)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="retain", source_path="retain.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -2107,7 +2108,7 @@ def test_census_retention_keeps_the_newest_censuses_readable(tmp_path: Path, mon
     inspection pager (``WHERE census_id = ? ORDER BY ordinal``) is the only reader
     of these rows, and it is always pointed at recent history."""
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="newest", source_path="newest.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -2143,7 +2144,7 @@ def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_histor
     """
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_HEADER_RETENTION", 2)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="predecessor", source_path="predecessor.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -2181,7 +2182,7 @@ def test_census_header_retention_preserves_predecessor_fk_and_prunes_safe_histor
     # prune cycle. It exercises the bounded-delete path without severing the
     # predecessor chain under test above.
     safe_root = tmp_path / "safe-prune"
-    initialize_active_archive_root(safe_root)
+    bootstrap_archive_root(safe_root)
     with sqlite3.connect(safe_root / "source.db") as conn:
         conn.executemany(
             """
@@ -2228,7 +2229,7 @@ def test_census_header_retention_bounds_a_long_contiguous_production_chain(
     """A continuous census chain stays bounded at an explicit NULL boundary."""
     retention = 4
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_HEADER_RETENTION", retention)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="long-chain", source_path="long-chain.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]
@@ -2297,7 +2298,7 @@ def test_census_plan_rows_prune_past_retention_even_with_an_unresolved_blocker(
     actually needs).
     """
     monkeypatch.setattr(raw_authority_mod, "RAW_AUTHORITY_CENSUS_PLAN_RETENTION", 2)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_id = _write_codex_raw(tmp_path, native_id="pinned", source_path="pinned.jsonl", acquired_at_ms=1)
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     plan = build_raw_replay_plans(tmp_path, ((raw_id,),))[0]

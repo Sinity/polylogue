@@ -364,7 +364,6 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
-    initialize_active_archive_root,
     initialize_archive_database,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -373,6 +372,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     upsert_raw_artifact,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 _ARCHIVE_STORAGE_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -866,7 +866,7 @@ def test_full_ingest_acquires_but_does_not_parse_when_derived_tier_degraded(
     # durable tier is absent ("source-only acquisition refused because the
     # durable source tier is missing"), so this case has to stand up a real
     # archive rather than only naming an index path.
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -917,7 +917,7 @@ def test_source_only_full_ingest_refuses_missing_durable_source_tier(tmp_path: P
     """An established archive cannot silently bootstrap over source.db loss."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     (tmp_path / "source.db").unlink()
     root = tmp_path / "sessions"
     root.mkdir()
@@ -947,7 +947,7 @@ def test_source_only_antigravity_metadata_stays_pending_with_mutable_companion(t
     """Cursor authority cannot cover metadata while omitting its sibling bytes."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "antigravity"
     metadata = root / "brain" / "work-session" / "plan.md.metadata.json"
     metadata.parent.mkdir(parents=True)
@@ -986,7 +986,7 @@ def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     """The production full-ingest ZIP route must retain bytes before decode."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
     bundle = root / "degraded.zip"
@@ -1036,7 +1036,7 @@ def test_source_only_full_ingest_bounds_oversized_ndjson_sampling(
     """The production NDJSON route reaches streaming retention before eager decode."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "inbox"
     root.mkdir()
     source = root / "oversized.ndjson"
@@ -1083,7 +1083,7 @@ def test_source_only_zip_read_failure_remains_retryable_after_partial_copy(
     """The real source-only route must not exclude a transiently unreadable ZIP."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
     bundle = root / "retry.zip"
@@ -1159,7 +1159,7 @@ def test_source_only_zip_replay_resolves_unknown_chatgpt_member_and_keeps_duplic
     """
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "inbox"
     root.mkdir()
     bundle = root / "export.zip"
@@ -1335,7 +1335,7 @@ def test_source_only_full_ingest_snapshots_declared_codex_state_without_shape_pr
     """A degraded source tier retains each declared future-shaped Codex state DB."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "codex"
     root.mkdir()
     state_db = root / state_name
@@ -1366,7 +1366,7 @@ def test_source_only_foreign_sqlite_name_cannot_claim_codex_authority(tmp_path: 
     """A foreign watch source cannot turn a filename into Codex authority."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "inbox"
     state_db = root / "state_5.sqlite"
     _write_plain_sqlite_db(state_db)
@@ -1428,7 +1428,7 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
     """Frozen validation admits state as non-session before mutable replay."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "codex"
     state_db = root / "state_5.sqlite"
     _write_codex_thread_state_db(state_db)
@@ -1472,7 +1472,7 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
     """A direct file copy loses an uncheckpointed WAL row; the snapshot retains it."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "hermes"
     state_db = root / state_name
     state_db.parent.mkdir(parents=True)
@@ -1589,9 +1589,9 @@ def test_live_raw_compaction_holds_generation_lease_through_delete(
 
     from polylogue.storage import raw_retention
     from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     root = tmp_path / "sessions"
     root.mkdir()
     path = root / "session.jsonl"
@@ -2392,7 +2392,7 @@ def test_full_ingest_writes_archive_with_route_observability(
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -2487,7 +2487,7 @@ def test_streaming_full_ingest_writes_archive_from_blob(
     source.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -2625,7 +2625,7 @@ def test_streaming_sized_browser_capture_json_uses_native_payload_detection(
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -2707,7 +2707,7 @@ def test_generic_large_browser_capture_json_uses_prefix_detection_without_unknow
     source.write_text(json.dumps(capture_payload), encoding="utf-8")
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -4261,7 +4261,7 @@ def test_live_append_chain_survives_post_ingest_compaction(
     path.write_bytes(payload)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -4436,7 +4436,7 @@ def test_append_ingest_proves_byte_authority_at_capture_without_reconciler(tmp_p
     path.write_bytes(baseline)
     index_db = tmp_path / "index.db"
     source_db = tmp_path / "source.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     cursor = CursorStore(index_db)
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
@@ -5553,7 +5553,7 @@ def test_raw_failure_cursor_guard_rejects_contradictory_or_mismatched_evidence(t
     path = root / "guard.jsonl"
     path.write_bytes(b'{"type":"session_meta","payload":{"id":"guard"}}\n')
     index_db = tmp_path / "index.db"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         mismatched_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -6496,7 +6496,7 @@ def test_full_ingest_skips_durably_excised_content_without_aborting_batch(
 
     # Pre-mark the excised file's exact content hash as durably excised,
     # mirroring a prior real `polylogue ops excise` apply.
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         record_excised_blob_hash(
@@ -6782,7 +6782,7 @@ def test_live_third_raw_reunifies_with_backfill_retired_siblings(tmp_path: Path)
             "mapping": mapping,
         }
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
         raw_a = store.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -6937,7 +6937,7 @@ def test_membership_sweep_defers_sibling_retirement_instead_of_quarantining_curr
     always attempted while its dependent is still live, regardless of
     raw_id hash ordering.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_a = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -7108,7 +7108,7 @@ def test_raw_membership_decision_pending_distinguishes_null_from_ambiguous(tmp_p
     pending) versus census with an ambiguous classification (decided,
     unresolved).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="pending-vs-ambiguous",
@@ -7193,7 +7193,7 @@ def test_live_membership_reprocesses_parser_drift_without_retiring_unrelated_hea
     current_projection = session_revision_projection(current_session)
     assert legacy_projection.session_hash != current_projection.session_hash
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         legacy_raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
