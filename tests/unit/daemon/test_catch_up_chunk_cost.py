@@ -11,7 +11,7 @@ Reverting any ``whole_archive`` deferral (raw authority: two statements per
 cohort; Claude workflow: one per artifact row) makes the large archive's chunk
 issue more statements than the small archive's, reverting the FTS readiness
 deferral makes the snapshot spy fire, and reverting hook-event scoping makes the
-read address every session in the archive.
+read return every session's events, not the chunk's.
 """
 
 from __future__ import annotations
@@ -32,8 +32,6 @@ from polylogue.sources.live import hook_paste_enrichment
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import WatchSource
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 _MESSAGES_PER_SESSION = 8
 
@@ -62,11 +60,26 @@ def _session_records(uuid: str) -> list[dict[str, object]]:
     return records
 
 
-def _write_session(corpus_root: Path, source_db: Path, ordinal: int) -> Path:
-    uuid = f"deadbeef-0000-0000-0000-{ordinal:012x}"
+def _session_uuid(ordinal: int) -> str:
+    return f"deadbeef-0000-0000-0000-{ordinal:012x}"
+
+
+def _write_session(corpus_root: Path, ordinal: int) -> Path:
+    uuid = _session_uuid(ordinal)
     path = corpus_root / "test-project" / f"{uuid}.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(record) + "\n" for record in _session_records(uuid)), encoding="utf-8")
+    return path
+
+
+def _seed_hook_event(source_db: Path, ordinal: int) -> None:
+    """One durable UserPromptSubmit hook event, as the spool drain commits it.
+
+    Seeded after ingest: the source tier is created and migrated by the
+    ingest itself, and a hand-initialized one sits at the chain floor and is
+    refused durable admission.
+    """
+    uuid = _session_uuid(ordinal)
     envelope = {
         "event_type": "UserPromptSubmit",
         "session_id": uuid,
@@ -91,7 +104,6 @@ def _write_session(corpus_root: Path, source_db: Path, ordinal: int) -> Path:
                 1778371200000,
             ),
         )
-    return path
 
 
 class _Polylogue:
@@ -101,15 +113,15 @@ class _Polylogue:
 
 
 class _ChunkProbe:
-    """Statements issued and hook-event scopes read while one chunk converges."""
+    """Statements issued and hook events read while one chunk converges."""
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.statements = 0
-        self.hook_scopes_read = 0
+        self.hook_events_read = 0
         self.snapshot_calls = 0
         self.active = False
         real_connect = sqlite3.connect
-        real_scoped_hook_keys = hook_paste_enrichment._scoped_hook_keys
+        real_iter_hook_paste_events = hook_paste_enrichment._iter_hook_paste_events
         real_snapshot = convergence_stages._record_fts_freshness_after_insights
 
         def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
@@ -117,11 +129,11 @@ class _ChunkProbe:
             conn.set_trace_callback(self._count_statement)
             return conn
 
-        def counting_scoped_hook_keys(session_ids: Any) -> list[tuple[str, str]]:
-            keys = real_scoped_hook_keys(session_ids)
+        def counting_hook_paste_events(source_db: Path, session_ids: Any = None) -> list[dict[str, object]]:
+            events = real_iter_hook_paste_events(source_db, session_ids)
             if self.active:
-                self.hook_scopes_read += len(keys)
-            return keys
+                self.hook_events_read += len(events)
+            return events
 
         def counting_snapshot(conn: sqlite3.Connection) -> bool:
             if self.active:
@@ -129,7 +141,7 @@ class _ChunkProbe:
             return real_snapshot(conn)
 
         monkeypatch.setattr(sqlite3, "connect", counting_connect)
-        monkeypatch.setattr(hook_paste_enrichment, "_scoped_hook_keys", counting_scoped_hook_keys)
+        monkeypatch.setattr(hook_paste_enrichment, "_iter_hook_paste_events", counting_hook_paste_events)
         monkeypatch.setattr(convergence_stages, "_record_fts_freshness_after_insights", counting_snapshot)
 
     def _count_statement(self, sql: str) -> None:
@@ -148,8 +160,6 @@ def _build(
 ) -> tuple[LiveBatchProcessor, Path, Path]:
     archive_root = tmp_path / f"archive-{seeded_sessions}"
     archive_root.mkdir()
-    source_db = archive_root / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
     corpus_root = tmp_path / f"corpus-{seeded_sessions}"
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(archive_root / "polylogue.toml"))
@@ -162,9 +172,12 @@ def _build(
         parser_fingerprint="chunk-cost-v1",
         converger=converger,
     )
-    seeded = [_write_session(corpus_root, source_db, ordinal) for ordinal in range(seeded_sessions)]
+    seeded = [_write_session(corpus_root, ordinal) for ordinal in range(seeded_sessions)]
     metrics = asyncio.run(processor.ingest_files(seeded, emit_event=False))
     assert metrics.succeeded_file_count == seeded_sessions
+    source_db = archive_root / "source.db"
+    for ordinal in range(seeded_sessions):
+        _seed_hook_event(source_db, ordinal)
     return processor, corpus_root, source_db
 
 
@@ -200,22 +213,24 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
     results: dict[int, tuple[int, int, int, dict[str, float]]] = {}
     for seeded_sessions in (small_sessions, large_sessions):
         processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions)
-        chunk = [_write_session(corpus_root, source_db, seeded_sessions + offset) for offset in range(chunk_files)]
-        probe.statements = probe.hook_scopes_read = probe.snapshot_calls = 0
+        chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
+        for offset in range(chunk_files):
+            _seed_hook_event(source_db, seeded_sessions + offset)
+        probe.statements = probe.hook_events_read = probe.snapshot_calls = 0
         metrics = _converge_chunk(processor, probe, chunk, whole_archive=False)
         assert metrics.succeeded_file_count == chunk_files
         results[seeded_sessions] = (
             probe.statements,
-            probe.hook_scopes_read,
+            probe.hook_events_read,
             probe.snapshot_calls,
             dict(metrics.stage_timings_s),
         )
 
-    small_statements, small_scopes, small_snapshots, small_stages = results[small_sessions]
-    large_statements, large_scopes, large_snapshots, large_stages = results[large_sessions]
+    small_statements, small_events, small_snapshots, small_stages = results[small_sessions]
+    large_statements, large_events, large_snapshots, large_stages = results[large_sessions]
     deferred = {"raw_authority_verdict_cache", "claude_workflow", "delegation_work_evidence", "fts_readiness"}
 
-    assert small_scopes == large_scopes == chunk_files
+    assert small_events == large_events == chunk_files
     assert small_snapshots == large_snapshots == 0
     assert not deferred & set(small_stages) and not deferred & set(large_stages)
     assert "hook_paste_enrichment" in large_stages
@@ -228,9 +243,10 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
 def test_final_catch_up_chunk_runs_the_whole_archive_stages(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     probe = _ChunkProbe(monkeypatch)
     processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=2)
-    chunk = [_write_session(corpus_root, source_db, 2)]
+    chunk = [_write_session(corpus_root, 2)]
+    _seed_hook_event(source_db, 2)
 
-    probe.statements = probe.hook_scopes_read = probe.snapshot_calls = 0
+    probe.statements = probe.hook_events_read = probe.snapshot_calls = 0
     metrics = _converge_chunk(processor, probe, chunk, whole_archive=True)
 
     assert metrics.succeeded_file_count == 1
