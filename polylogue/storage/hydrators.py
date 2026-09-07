@@ -136,6 +136,9 @@ def session_event_from_record(record: SessionEventRecord) -> SessionEvent:
         source_message_provider_id=record.source_message_provider_id,
         raw_id=record.raw_id,
         materializer_version=record.materializer_version,
+        boundary_start_position=record.boundary_start_position,
+        boundary_end_position=record.boundary_end_position,
+        boundary_message_id=record.boundary_message_id,
     )
 
 

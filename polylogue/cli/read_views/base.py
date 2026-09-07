@@ -89,6 +89,16 @@ class ReadViewEffectiveContextOptions:
     at_position: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ReadViewLineageOptions:
+    """Independent node and edge windows over the compact lineage graph."""
+
+    node_offset: int = 0
+    node_limit: int | None = None
+    edge_offset: int = 0
+    edge_limit: int | None = None
+
+
 ReadViewOptions = (
     ReadViewMessageOptions
     | ReadViewContextOptions
@@ -98,6 +108,7 @@ ReadViewOptions = (
     | ReadViewChronicleOptions
     | ReadViewEventsOptions
     | ReadViewEffectiveContextOptions
+    | ReadViewLineageOptions
 )
 ReadViewOptionValues = Mapping[str, object]
 ReadViewOptionBuilder = Callable[[ReadViewOptionValues], ReadViewOptions | None]
@@ -246,6 +257,7 @@ __all__ = [
     "ReadViewHandler",
     "ReadViewHandlerFunc",
     "ReadViewInvocation",
+    "ReadViewLineageOptions",
     "ReadViewOptionName",
     "ReadViewMessageOptions",
     "ReadViewNeighborOptions",
