@@ -264,17 +264,17 @@ rules:
   - target: polylogue/storage
     description: "Storage substrate must not import surface adapters."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui, polylogue/rendering]
+      from: [polylogue/api, polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui, polylogue/rendering]
 
   - target: polylogue/pipeline
     description: "Pipeline orchestration must not import interactive surfaces."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
+      from: [polylogue/api, polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
   - target: polylogue/sources
     description: "Source acquisition/parsing must not import surface adapters."
     disallow:
-      from: [polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
+      from: [polylogue/api, polylogue/cli, polylogue/mcp, polylogue/daemon, polylogue/ui]
 
   - target: polylogue/analysis
     description: "Derived insights must not import daemon/MCP/UI adapters."

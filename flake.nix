@@ -528,7 +528,7 @@
             # every later shell (and every dispatched lane) trust a venv with
             # no dev tools — the recurring "missing ruff/pytest in managed
             # env" lane failures.
-            if uv sync --extra dev --frozen --quiet \
+            if uv sync --extra dev --group audit --frozen --quiet \
                && .venv/bin/python -c "import pytest" 2>/dev/null \
                && [ -x .venv/bin/ruff ]; then
               printf '%s' "$sync_fingerprint" > "$sync_fingerprint_file"

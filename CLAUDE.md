@@ -71,7 +71,7 @@ ingest and full replay/reindex.
 | --- | --- | --- |
 | `source.db` | durable | raw acquired bytes, artifact taxonomy, blob/GC substrate, hook events, sidecars |
 | `index.db` | rebuildable | parsed tree, FTS, links, costs, materialized insights |
-| `embeddings.db` | rebuildable | vectors, meta, status |
+| `embeddings.db` | expensive to rebuild | vectors, meta, status; preserve reusable vectors before replacement |
 | `user.db` | durable, irreplaceable | unified `assertions`, settings, annotation schemas/provenance |
 | `audit.db` | durable, append-only | previews, authorizations, attempts, continuity |
 | `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
@@ -97,18 +97,17 @@ behind a verified backup, one `PRAGMA user_version` step at a time. Derived
 tiers carry no version chain: `storage/sqlite/archive_tiers/schema_identity.py`
 stamps one identity hash over the tier's DDL plus the lowering, materializer
 and replay-routing fingerprints, every open compares it, and a mismatch is a
-typed `SchemaSkew` whose only remedy is reconvergence through the production
-daemon route (there is no separate manual rebuild mechanism). A derived-schema
-edit therefore costs a full reconvergence of the archive — cheap only while the
-archive is small. Classify every schema change before editing: metadata-only,
+typed `SchemaSkew`. The required recovery design is reconvergence through the
+production daemon. Existing maintenance entry points must be checked for that
+ownership before use; their presence does not prove the transition is complete.
+A derived-schema edit can require full reconvergence. Classify every schema change before editing: metadata-only,
 index-only, additive-derived, additive-durable, or semantic-reparse.
 
 **The identity moves on ordinary code edits, not just DDL.** Those three
 fingerprints are AST closures over imported source, so a pure-performance change
 touching no schema moves the identity exactly as a new column does. The closure
-is 442 of 1,241 modules and follows the import graph, not directory boundaries:
-`daemon/write_coordinator.py` is in it while `daemon/convergence.py` and
-`sources/live/watcher.py` are not. Do not classify by path — ask:
+follows the current import graph, not directory boundaries. Determine membership
+on the candidate being changed; do not classify by path. Ask:
 `devtools schema closure <file>`. Because comments are absent from an AST, a
 comment-only edit does not move it. Land every closure change *before* a rebuild
 starts; one landing mid-run silently invalidates it.
@@ -133,11 +132,16 @@ records.
 
 ## Runtime
 
-The daemon owns all writes (`polylogued run`); the main process is the sole
-SQLite writer. Ingest stages: acquire → parse → materialize → index; the
-`DaemonConverger` drives derived-model convergence (FTS, embeddings, insights)
-with bounded work, quiet-window deferral for hot files, and `convergence_debt`
-for retryable backlog. Derived read models converge from durable evidence —
+The required live-write owner is `polylogued run`, with one SQLite writer
+coordinating mutations. Process-local write-lease enforcement alone does not
+exclude external CLI/API writers; inspect the actual route before claiming
+sole-writer adoption. Remaining bypasses are completion work, not an alternate
+write policy.
+
+Ingest stages are acquire → parse → materialize → index. `DaemonConverger`
+drives ordered recovery and derivation stages; `make_default_convergence_stages`
+is the current stage list. Hot-file deferral and `convergence_debt` retain
+retryable backlog. Derived read models converge from durable evidence —
 there is no standing "repair" product concept; a failure state is either
 explicit-and-retryable or a typed permanent refusal.
 
@@ -148,7 +152,7 @@ explicit-and-retryable or a typed permanent refusal.
   needs signalled intent (the `find` keyword, a quoted expression, or field
   syntax) — a bare unquoted word errors with a hint. The grammar
   (`archive/query/expression.py`) is a real DSL lowered to SQL.
-- **MCP**: 12 capability-gated operation-dispatcher tools; adding an operation
+- **MCP**: capability-gated operation-dispatcher tools; adding an operation
   updates the dispatcher's verb table (`EXPECTED_TOOL_NAMES` is derived; a
   missing tool contract fails discovery). Tool contracts are currently
   per-tool, not per-operation, and MCP insight projections are a hard-coded
@@ -184,20 +188,21 @@ are not independently anchor-checked; durable citations belong in
   a lane with SQLite backup, replacing unusable lane copies. If no seed is
   available, the run reports a full seed run; `--all` runs every test and
   updates fingerprints, and `--quick` is the static gates alone.
-- Every managed pytest run executes inside the host's single-slot `pytest`
-  pool. A job already in that pool (its cgroup or `AGENTCTL_POOL`) runs in
+- Every managed pytest run executes inside its declared host test pool.
+  A job already admitted to the appropriate pool runs in
   place; every other caller, lanes included, submits `pytest_focused` through
   `agentctl job start`, waits, reads the captured log the run prints, and
   refuses if the runtime is unreachable. A job id is never slot ownership.
-- `.agentctl/project.toml` declares `workspace.verify`: focused runs are
-  `pytest_focused`, a candidate's tests are the pull request's hosted `verify`
-  check (which fails unless the run receipt it names shows a pytest step or a
-  recorded `selection = "none"` reason), the corpus is `verify_all`.
+- Read `.agentctl/project.toml` for `workspace.verify`, review policy, and
+  operation-to-pool mappings on the current candidate. `pytest_focused` runs
+  bounded tests; `verify_affected` runs affected verification; `verify_all`
+  runs the corpus. A static-only wave policy does not establish pytest success
+  or make every hosted check required. Check actual branch requirements.
 - `devtools why` — explain the last run before reading receipts by hand.
 - `devtools gate <name>` — one named invariant check (`gate --list`);
   `verify --quick` is the fast subset. `status`, `render [<surface>|all]
   [--check]`, `scenario`, `smoke`, `archive <sub>`, `schema <sub>`,
-  `bench <sub>`, `cache gc` are the other verbs; twelve in all.
+  `bench <sub>`, `cache gc` are other command groups.
 - `devtools render all --check` can print per-surface `sync OK` yet exit 1 —
   grep for `out of sync`.
 
@@ -210,8 +215,8 @@ condition — what mutation or bypass would make it red.
 Fixtures are generated and deterministic (`tests/infra/`: SessionBuilder,
 seeded archives, pathology composer, corpus programs); timestamp-sensitive
 tests use `frozen_clock` (an autouse guard rejects wall-clock reads). Keep
-ambient machine data out of tests. The required per-PR `verify` check runs
-affected pytest through the host slot; the quick gate remains a separate check.
+ambient machine data out of tests. Read the exact test selection and outcome
+from its run record; a green quick gate is static evidence only.
 
 Change cross-checks: parser/detection → origin specs + real fixtures + replay
 parity; storage/schema → fresh DDL + declared migration or moved identity +

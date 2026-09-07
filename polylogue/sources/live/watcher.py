@@ -24,11 +24,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import Any, Protocol, cast
 
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
@@ -71,9 +72,6 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
-
-if TYPE_CHECKING:
-    from polylogue.api import Polylogue
 
 logger = get_logger(__name__)
 # Bump whenever parser semantics change the values derived from already-
@@ -383,7 +381,7 @@ class LiveWatcher:
 
     def __init__(
         self,
-        polylogue: Polylogue,
+        polylogue: ArchiveRootOwner,
         sources: Iterable[WatchSource],
         *,
         debounce_s: float = 2.0,
@@ -2403,7 +2401,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
     )
 
 
-def _cursor_db_path(polylogue: Polylogue) -> Path:
+def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:
     """Use the archive ops tier for daemon cursor state."""
     backend = getattr(polylogue, "backend", None)
     db_path = getattr(backend, "db_path", None)

@@ -53,6 +53,7 @@ from polylogue.core.metrics import (
     read_peak_rss_children_mb,
     read_peak_rss_self_mb,
 )
+from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
@@ -211,7 +212,6 @@ from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, PreparedS
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
 if TYPE_CHECKING:
-    from polylogue.api import Polylogue
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 
 logger = get_logger(__name__)
@@ -614,7 +614,7 @@ class LiveBatchProcessor:
 
     def __init__(
         self,
-        polylogue: Polylogue,
+        polylogue: ArchiveRootOwner,
         sources: Iterable[Any],
         *,
         cursor: CursorStore,

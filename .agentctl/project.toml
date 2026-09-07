@@ -18,6 +18,14 @@ POLYLOGUE_ARCHIVE_ROOT = "/realm/state/polylogue"
 [workspace]
 root = "/realm/worktrees"
 default_base = "origin/master"
+retain_artifacts = [
+  ".cache/verify/*.json",
+  ".cache/verify/*.jsonl",
+  ".cache/verify/*.log",
+  ".cache/verify/runs/**/*.json",
+  ".cache/verify/runs/**/*.jsonl",
+  ".cache/verify/runs/**/*.log",
+]
 # One agent's hard memory ceiling. Heavy work (a live-archive census, a
 # corpus scan) runs through the `scratch` operation in the bulk pool, never
 # inside the agent's own process.
