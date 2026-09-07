@@ -44,7 +44,7 @@ async function intentKey(scopeNamespace, provider, accountScope, locator) {
 }
 
 export class CaptureJobClient {
-  constructor({ baseUrl, token, cache, fetchImpl = fetch, requestTimeoutMs = CAPTURE_JOB_REQUEST_TIMEOUT_MS }) {
+  constructor({ baseUrl, token, cache, fetchImpl = globalThis.fetch?.bind(globalThis), requestTimeoutMs = CAPTURE_JOB_REQUEST_TIMEOUT_MS }) {
     this.baseUrl = baseUrl;
     this.token = token;
     this.cache = cache;

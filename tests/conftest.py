@@ -766,12 +766,19 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         return
     run_root = Path(basetemp).resolve()
     run_root.mkdir(parents=True, exist_ok=True)
+    from tests.infra.archive_templates import build_bootstrap_archive_template
+
     build_empty_archive_template(run_root)
+    build_bootstrap_archive_template(run_root)
     from tests.infra.shared_session_archives import warm_shared_session_archives
+    from tests.infra.workload_artifacts import NAMED_WORKLOAD_PROFILES, build_seeded_archive
 
     outcome = warm_shared_session_archives()
     for name, reason in outcome.failed:
         sys.stderr.write(f"pytest: shared archive {name} left cold for its fixture to build: {reason}\n")
+    build_seeded_archive()
+    for profile in NAMED_WORKLOAD_PROFILES:
+        build_seeded_archive(profile.corpus_specs())
 
 
 @pytest.fixture(scope="session")
@@ -780,9 +787,32 @@ def empty_archive_template(
     worker_id: str,
 ) -> Path:
     """The run's shared empty archive; built here only when no controller warmed it."""
+    return build_empty_archive_template(_run_root(tmp_path_factory, worker_id))
+
+
+def _run_root(tmp_path_factory: pytest.TempPathFactory, worker_id: str) -> Path:
+    """The directory shared by every worker of this run."""
     worker_base = tmp_path_factory.getbasetemp()
-    run_root = worker_base.parent if worker_id != "master" else worker_base
-    return build_empty_archive_template(run_root)
+    return worker_base.parent if worker_id != "master" else worker_base
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _bootstrap_archive_template_root(
+    tmp_path_factory: pytest.TempPathFactory,
+    worker_id: str,
+) -> Iterator[None]:
+    """Point ``bootstrap_archive_root`` at this run's shared template.
+
+    A worker that never registers still bootstraps correctly -- it just pays
+    full DDL write cost per archive instead of a reflink clone.
+    """
+    from tests.infra.archive_templates import register_bootstrap_template_root
+
+    register_bootstrap_template_root(_run_root(tmp_path_factory, worker_id))
+    try:
+        yield
+    finally:
+        register_bootstrap_template_root(None)
 
 
 @pytest.fixture

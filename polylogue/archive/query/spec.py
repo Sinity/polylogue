@@ -74,6 +74,12 @@ QUERY_RETRIEVAL_LANES = ("auto", "dialogue", "actions", "hybrid")
 #: so no single caller can request an unbounded fetch.
 MAX_QUERY_LIMIT = 1000
 
+#: Default page size for session-list reads when callers omit ``limit``.
+#: Every read surface imports this value so an equivalent request has one
+#: bounded result shape regardless of whether it arrives through the CLI,
+#: MCP, Python API, or daemon HTTP.
+DEFAULT_SESSION_LIST_LIMIT = 20
+
 
 def clamp_query_limit(limit: object, *, default: int = 10) -> int:
     """Clamp a requested ``limit`` into ``[1, MAX_QUERY_LIMIT]``.

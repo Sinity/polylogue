@@ -220,6 +220,15 @@ class ParsedContentBlock(BaseModel):
                 self.outcome_unknown_reason = ToolResultUnknownReason(self.outcome_unknown_reason).value
             except ValueError as exc:
                 raise ValueError("tool-result unknown reason is outside the normalized vocabulary") from exc
+        if self.tool_outcome is ToolOutcome.UNKNOWN and self.outcome_unknown_reason is None:
+            raise ValueError("unknown tool-result outcomes must carry one ToolResultUnknownReason")
+        if (
+            self.tool_outcome in (ToolOutcome.OK, ToolOutcome.ERROR, ToolOutcome.NO_RESULT)
+            and self.outcome_unknown_reason is not None
+        ):
+            raise ValueError("known tool-result outcomes cannot carry an unknown reason")
+        if self.tool_outcome is ToolOutcome.UNKNOWN and self.is_error is not None:
+            raise ValueError("unknown tool-result outcomes cannot carry is_error")
         if self.is_error is None and self.outcome_unknown_reason is None:
             # Fail closed at the producer boundary: a reason assigned here
             # would be one no parser derived from the record, which is exactly

@@ -114,9 +114,9 @@ result = "json"
 cache = "none"
 timeout_seconds = 180
 
-# Landing reviewer for the wave: fast and cheap; the corpus run on master is
-# the correctness backstop.
+# Integration helpers for the wave; verification and publication policy remain
+# controlled by the project settings above.
 [packets.review]
-backend = "claude"
-model = "claude-sonnet-5"
-effort = "medium"
+backend = "codex"
+model = "gpt-5.6-luna"
+effort = "high"

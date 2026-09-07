@@ -21,8 +21,12 @@ When validation succeeds via ClaudeAISession model:
 
 - Converts `chat_messages` into ordered message text with role preservation.
 - Captures attachment metadata from `attachments`/`files` lists.
+- Reads an optional `content_base64` attachment field for exact binary bytes;
+  `extracted_content` remains the UTF-8 fallback when no binary carrier is
+  supplied.
 - Falls back to untyped extraction for non-standard exports.
 
 ## Limitations
 
-- Attachment binaries are not copied from Claude exports; only metadata is recorded.
+- A malformed `content_base64` carrier fails parsing rather than being treated
+  as extracted text.

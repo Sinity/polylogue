@@ -3,7 +3,10 @@
 Anti-vacuity: restore any ``with sqlite_connection(...)`` in
 ``durable_change_train`` (or elsewhere in the archive bootstrap) to the builtin
 ``with sqlite3.connect(...)`` form and ``test_archive_bootstrap_closes_every_tier_connection``
-goes red -- that form commits the transaction and leaks the descriptor.
+goes red -- that form commits the transaction and leaks the descriptor. The
+same applies to a helper that hands a bare connection to ``with``:
+``test_reopening_an_existing_archive_closes_startup_reconcile_connections``
+covers the reopen route, which creation-only coverage cannot reach.
 """
 
 from __future__ import annotations
@@ -67,4 +70,25 @@ def test_archive_bootstrap_closes_every_tier_connection(tmp_path: Path) -> None:
     before = _open_fd_count()
     for index in range(5):
         initialize_active_archive_root(tmp_path / f"root-{index}")
+    assert _open_fd_count() == before
+
+
+@pytest.mark.skipif(not Path("/proc/self/fd").exists(), reason="descriptor count needs /proc")
+def test_reopening_an_existing_archive_closes_startup_reconcile_connections(tmp_path: Path) -> None:
+    """Reopening an archive reconciles durable trains against existing tiers.
+
+    Creation takes the fresh-bootstrap route and opens no existing tier, so
+    only a reopen exercises ``_open_existing_tier``. Anti-vacuity: return the
+    bare connection from that helper again and each reopen retains one
+    descriptor per durable tier.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "existing"
+    initialize_active_archive_root(root)
+    # One warm reopen so lazily opened caches are not counted as a leak.
+    initialize_active_archive_root(root)
+    before = _open_fd_count()
+    for _ in range(5):
+        initialize_active_archive_root(root)
     assert _open_fd_count() == before

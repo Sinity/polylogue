@@ -9,19 +9,16 @@ carries meaning in this protocol -- consumers must not depend on it.
 
 from __future__ import annotations
 
-from polylogue.core.json import JSONValue, dumps_bytes, loads
-from polylogue.core.text_identity import nfc
+from typing import cast
+
+from polylogue.core.digest import IDENTITY, normalized
+from polylogue.core.digest import canonical_bytes as canonical_profile_bytes
+from polylogue.core.json import JSONValue, loads
 
 
 def nfc_normalize(value: JSONValue) -> JSONValue:
     """Recursively NFC-normalize every string in a JSON-compatible value."""
-    if isinstance(value, str):
-        return nfc(value)
-    if isinstance(value, list):
-        return [nfc_normalize(item) for item in value]
-    if isinstance(value, dict):
-        return {nfc(key): nfc_normalize(item) for key, item in value.items()}
-    return value
+    return cast(JSONValue, normalized(value))
 
 
 def canonical_bytes(value: JSONValue) -> bytes:
@@ -30,8 +27,7 @@ def canonical_bytes(value: JSONValue) -> bytes:
     No trailing newline -- callers that frame this as an NDJSON line append
     ``b"\\n"`` themselves so the digest/line-length story stays explicit.
     """
-    normalized = nfc_normalize(value)
-    return dumps_bytes(normalized, sort_keys=True)
+    return canonical_profile_bytes(value, IDENTITY)
 
 
 def canonical_line(value: JSONValue) -> bytes:

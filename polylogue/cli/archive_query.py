@@ -34,6 +34,7 @@ from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
 from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
+    DEFAULT_SESSION_LIST_LIMIT,
     QuerySpecError,
     SessionQuerySpec,
     session_count_unit_label,
@@ -110,6 +111,10 @@ _PageRow = TypeVar("_PageRow", "ArchiveSessionSummary", "ArchiveSessionSearchHit
 _UNSUPPORTED_PARAM_MESSAGES: dict[str, str] = {}
 _QueryUnitTextLine = Callable[[dict[str, object]], str]
 _DAEMON_MUTATION_TIMEOUT_S: float | None = None
+# A mutation the operator interrupted exits 130 (the shell's SIGINT
+# convention): a cancelled write must never share an exit code with a
+# completed one.
+_CANCELLED_EXIT_CODE = 130
 _NATIVE_REF_RE = re.compile(r"(?=.*\d)[A-Za-z0-9][A-Za-z0-9_.:-]{11,}")
 _TIMING_ENV: ContextVar[AppEnv | None] = ContextVar("archive_query_timing_env", default=None)
 
@@ -234,12 +239,19 @@ def _execute_reference_query_pipeline(
     user_db_path = archive_root / "user.db"
     if not user_db_path.exists() or not index_db_path.exists():
         raise click.ClickException("archive is not initialized")
-    import sqlite3
     from contextlib import closing
+
+    from polylogue.api.archive import open_readonly_connection
 
     evaluator = ArchiveCanonicalPlanEvaluator(index_db_path)
     try:
-        with closing(sqlite3.connect(f"file:{user_db_path}?mode=ro", uri=True, timeout=5.0)) as conn:
+        with closing(
+            open_readonly_connection(
+                user_db_path,
+                timeout_class="interactive-read",
+                validate_schema=False,
+            )
+        ) as conn:
             resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(conn, evaluator))
     except KeyError as exc:
         raise click.UsageError(f"reference not found: {pipeline.operand.reference.format()}") from exc
@@ -1414,24 +1426,35 @@ def _fetch_daemon_payload(
     return payload
 
 
-def _submit_daemon_mutation(
+def _submit_mutation_operation(
     config: Config,
-    path: str,
-    *,
-    body: dict[str, object],
-) -> dict[str, object] | None:
-    """Submit a confirmed write to the matching daemon and retain its outcome.
+    operation: str,
+    payload: dict[str, object],
+) -> dict[str, object]:
+    """Run one declared write or control operation and return its result.
 
-    Read fast paths may give up quickly and read from SQLite instead. A delete
-    cannot do that after its request reaches the daemon, because retrying
-    offline would make the confirmed actuator outcome ambiguous.
+    The daemon is the sole writer, so a mutation has no direct executor: the
+    kernel refuses with ``OperationUnavailableError`` when no daemon answers
+    rather than falling back to a second write authority. Once the request is
+    on the socket, an absent receipt is indeterminate, never a retryable
+    absence.
     """
-
-    if _daemon_disabled():
-        return None
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.cli.operation_kernel import (
+        OperationKernel,
+        OperationRequest,
+        OperationUnavailableError,
+    )
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
+    from polylogue.operations.daemon_protocol import MUTATION_OPERATION_NAMES
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+    from polylogue.version import POLYLOGUE_VERSION
+
+    if operation not in MUTATION_OPERATION_NAMES:
+        raise RuntimeError(f"operation is not a declared mutation: {operation}")
+    if _daemon_disabled():
+        raise OperationUnavailableError(f"daemon is unavailable for operation: {operation}")
 
     mutation_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
     client = DaemonClient(
@@ -1442,10 +1465,22 @@ def _submit_daemon_mutation(
             allow_no_auth=getattr(config, "api_allow_no_auth", False),
         ),
     )
-    payload = client.request_mutation_json("POST", path, body)
-    if payload is not None and client.last_elapsed_ms is not None:
-        payload["_daemon_elapsed_ms"] = client.last_elapsed_ms
-    return payload
+    kernel = OperationKernel(
+        lambda request: client.operation(
+            request.operation,
+            dict(request.payload),
+            archive_root=str(mutation_root),
+            index_schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+    )
+    result = kernel.execute(OperationRequest(operation, payload))
+    value = result.value
+    if not isinstance(value, dict):
+        from polylogue.cli.operation_kernel import OperationEnvelopeError
+
+        raise OperationEnvelopeError(f"{operation} returned a non-object result")
+    return dict(value)
 
 
 _DAEMON_LIST_ITEM_KEEP_KEYS = (
@@ -1811,7 +1846,7 @@ def _limit(params: dict[str, object]) -> int:
     value = params.get("limit")
     if isinstance(value, int) and value > 0:
         return value
-    return 20
+    return DEFAULT_SESSION_LIST_LIMIT
 
 
 def _offset(params: dict[str, object]) -> int:
@@ -1983,38 +2018,6 @@ def _emit_mutation(changed: int, *, operation: MutationOperation) -> None:
     )
 
 
-def _execute_matched_session_mutation(
-    env: AppEnv,
-    actuator: object,
-    build_args: Callable[[ArchiveStore], Any],
-    *,
-    capability: str,
-) -> int:
-    """Drive one PREPARE/AUTHORIZE/EXECUTE cycle and return pairs written.
-
-    The store the query executor holds is read-only evidence, so a mutation
-    opens its own writable handle the way the API facade's mutation methods
-    do.  The receipt's ``affected_count`` counts sessions changed; the root
-    query's mutation envelope reports session/value pairs written, which is
-    the domain receipt's ``assertion_count``.
-    """
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    config = load_effective_config(env)
-    archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-    binding = runtime_operation_binding(cast(Any, actuator))
-    principal = MutationPrincipal("cli", frozenset({capability}), "cli", "write")
-    with ArchiveStore.open_existing(archive_root, read_only=False) as writable:
-        args = build_args(writable)
-        executor = OperationExecutor.for_archive_root(archive_root)
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=archive_root)
-        authorization = executor.authorize_bound(binding, preview, principal)
-        receipt = executor.execute_bound(binding, preview, authorization, args)
-    return int(cast(Any, receipt.domain_receipt)["assertion_count"])
-
-
 def _emit_user_mutations(
     env: AppEnv,
     archive: ArchiveStore,
@@ -2025,43 +2028,40 @@ def _emit_user_mutations(
 ) -> None:
     """Apply matched-session tag/metadata writes through the mutation authority.
 
-    ``user.db`` is durable and irreplaceable, so this route drives the same
-    ``OperationExecutor`` PREPARE/AUTHORIZE/EXECUTE cycle every other surface
-    uses (``polylogue/api/archive.py``'s tag and metadata methods, MCP
-    ``write``) rather than calling the ``ArchiveStore`` writers itself: an
-    adapter that writes the tier directly is a second mutation authority
-    whose preview, authorization and audit records do not exist.
+    ``user.db`` is durable and irreplaceable, so this route lowers to the
+    declared ``mutation.session.tag``/``mutation.session.metadata``
+    operations. The daemon owns the PREPARE/AUTHORIZE/EXECUTE cycle behind
+    them; an adapter that opened its own writable handle would be a second
+    write authority whose preview, authorization and audit records the
+    daemon's journal does not have.
 
     Selection is finished by the time this runs, so the evidence snapshot is
     released first: it holds ``user.db`` attached inside an open read
-    transaction, and the writable connection the mutation needs cannot set up
-    against that lock.
+    transaction, which the daemon's writer cannot set up against.
     """
     archive.end_read_snapshot()
+    from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.surfaces.payloads import MutationResultPayload
+
+    config = load_effective_config(env)
+
+    def _apply(operation: str, payload: dict[str, object]) -> int:
+        try:
+            result = _submit_mutation_operation(config, operation, payload)
+        except OperationKernelError as exc:
+            raise _mutation_refusal(exc, operation) from exc
+        return _object_int(result.get("affected_count"))
 
     changes: dict[str, int] = {}
     if metadata_to_set:
-        from polylogue.operations.mutation_actuators import BulkMetadataSetActuator, BulkMetadataSetArgs
-
-        changes["metadata"] = _execute_matched_session_mutation(
-            env,
-            BulkMetadataSetActuator(),
-            lambda writable: BulkMetadataSetArgs(
-                archive=writable,
-                session_ids=session_ids,
-                pairs=tuple((key, value) for key, value in metadata_to_set),
-            ),
-            capability="archive.set_metadata",
+        changes["metadata"] = _apply(
+            "mutation.session.metadata",
+            {"session_ids": list(session_ids), "pairs": [[key, value] for key, value in metadata_to_set]},
         )
     if tags_to_add:
-        from polylogue.operations.mutation_actuators import BulkTagActuator, BulkTagArgs
-
-        changes["tags"] = _execute_matched_session_mutation(
-            env,
-            BulkTagActuator(),
-            lambda writable: BulkTagArgs(archive=writable, session_ids=session_ids, tags=tags_to_add),
-            capability="archive.bulk_tag_sessions",
+        changes["tags"] = _apply(
+            "mutation.session.tag",
+            {"session_ids": list(session_ids), "tags": list(tags_to_add)},
         )
     if set(changes) == {"tags"}:
         _emit_mutation(changes["tags"], operation="add_tag")
@@ -2130,23 +2130,16 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
         )
         return
     config = load_effective_config(env)
-    from polylogue.daemon_client import DaemonMutationIndeterminateError, DaemonResponseError
+    from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        daemon_preview = _submit_daemon_mutation(
+        daemon_preview = _submit_mutation_operation(
             config,
-            "/api/cli/delete/prepare",
-            body={"session_ids": list(session_ids)},
+            "mutation.session.delete.preview",
+            {"session_ids": list(session_ids)},
         )
-    except DaemonMutationIndeterminateError as exc:
-        raise click.ClickException(
-            "delete preview outcome is indeterminate after the daemon accepted the request; "
-            "do not retry offline, inspect daemon audit state before retrying"
-        ) from exc
-    except DaemonResponseError as exc:
-        raise click.ClickException(f"daemon refused delete preview ({exc.status}): {exc.detail}") from exc
-    if daemon_preview is None:
-        raise click.ClickException("daemon is unavailable; it must prepare the delete authorization")
+    except OperationKernelError as exc:
+        raise _delete_refusal(exc, "prepare") from exc
 
     prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
     daemon_preview_refs = _daemon_preview_refs(daemon_preview)
@@ -2158,76 +2151,39 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
             click.echo(f"  - {session_id}", err=True)
         if len(prepared_session_ids) > 5:
             click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
-        if not env.ui.confirm("Proceed?", default=False):
-            try:
-                cancellation = _submit_daemon_mutation(
-                    config,
-                    "/api/cli/delete/cancel",
-                    body={"preview_refs": list(daemon_preview_refs)},
-                )
-            except DaemonMutationIndeterminateError as exc:
-                raise click.ClickException(
-                    "delete cancellation outcome is indeterminate after the daemon accepted the request; "
-                    "inspect daemon audit state before retrying"
-                ) from exc
-            except DaemonResponseError as exc:
-                raise click.ClickException(f"daemon refused delete cancellation ({exc.status}): {exc.detail}") from exc
-            if cancellation is None:
-                raise click.ClickException("daemon became unavailable before it cancelled the delete preview")
-            # An acknowledgement that names other previews, or none, is not
-            # evidence that this delete was cancelled.
-            acknowledged_refs = _daemon_preview_refs(cancellation)
-            if (
-                cancellation.get("status") != "cancelled"
-                or acknowledged_refs is None
-                or set(acknowledged_refs) != set(daemon_preview_refs)
-            ):
-                raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
-            click.echo(
-                MutationResultPayload(
-                    status="aborted", operation="delete", session_count=count, affected_count=0
-                ).to_json(exclude_none=True)
-            )
+        try:
+            proceed = env.ui.confirm("Proceed?", default=False)
+        except (KeyboardInterrupt, click.Abort):
+            proceed = False
+            interrupted = True
+        else:
+            interrupted = False
+        if not proceed:
+            _cancel_delete_preview(config, daemon_preview_refs, count=count, interrupted=interrupted)
             return
     try:
-        daemon_authorization = _submit_daemon_mutation(
+        daemon_authorization = _submit_mutation_operation(
             config,
-            "/api/cli/delete/authorize",
-            body={"preview_refs": list(daemon_preview_refs)},
+            "mutation.session.delete.authorize",
+            {"preview_refs": list(daemon_preview_refs)},
         )
-        if daemon_authorization is None:
-            raise click.ClickException("daemon became unavailable before it authorized the confirmed delete")
-        authorization_tokens = daemon_authorization.get("authorization_tokens")
-        if isinstance(authorization_tokens, list) and all(
-            isinstance(token, str) and token for token in authorization_tokens
-        ):
-            daemon_authorization_tokens = tuple(authorization_tokens)
-        else:
-            authorization_token = daemon_authorization.get("authorization_token")
-            if not isinstance(authorization_token, str) or not authorization_token:
-                raise click.ClickException("daemon returned an invalid delete authorization")
-            daemon_authorization_tokens = (authorization_token,)
-        if len(daemon_authorization_tokens) != len(daemon_preview_refs):
-            raise click.ClickException("daemon returned an invalid delete authorization")
-        daemon_payload = _submit_daemon_mutation(
+    except KeyboardInterrupt:
+        # The confirmed write never reached the socket, so the preview is
+        # still the daemon's to release and the operator gets a cancelled
+        # receipt instead of a half-rendered success.
+        _cancel_delete_preview(config, daemon_preview_refs, count=count, interrupted=True)
+        return
+    except OperationKernelError as exc:
+        raise _delete_refusal(exc, "authorize") from exc
+    daemon_authorization_tokens = _delete_authorization_tokens(daemon_authorization, len(daemon_preview_refs))
+    try:
+        daemon_payload = _submit_mutation_operation(
             config,
-            "/api/cli/delete",
-            body={"authorization_tokens": list(daemon_authorization_tokens)},
+            "mutation.session.delete.execute",
+            {"authorization_tokens": list(daemon_authorization_tokens)},
         )
-    except DaemonMutationIndeterminateError as exc:
-        raise click.ClickException(
-            "delete outcome is indeterminate after the daemon accepted the request; "
-            "do not retry offline, inspect the archive or wait for the daemon to report completion"
-        ) from exc
-    except DaemonResponseError as exc:
-        if exc.code == "delete_partially_applied":
-            raise click.ClickException(
-                f"delete partially applied ({exc.status}): {exc.detail}; "
-                f"completed_chunks={exc.completed_chunks}; affected_count={exc.affected_count}"
-            ) from exc
-        raise click.ClickException(f"daemon refused delete ({exc.status}): {exc.detail}") from exc
-    if daemon_payload is None:
-        raise click.ClickException("daemon became unavailable before it consumed the confirmed delete authorization")
+    except OperationKernelError as exc:
+        raise _delete_refusal(exc, "execute") from exc
     deleted = _object_int(daemon_payload.get("affected_count"))
     # ``session_count`` = matched, ``affected_count`` = sessions actually deleted.
     click.echo(
@@ -2238,6 +2194,105 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
             affected_count=deleted,
         ).to_json(exclude_none=True)
     )
+
+
+def _mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
+    """Translate a typed operation failure into the mutation route's message."""
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+    )
+
+    if isinstance(exc, OperationIndeterminateError):
+        return click.ClickException(
+            f"{operation} outcome is indeterminate after the daemon accepted the request; "
+            "do not retry offline, inspect daemon audit state before retrying"
+        )
+    if isinstance(exc, OperationUnavailableError):
+        return click.ClickException(f"daemon is unavailable; it must execute {operation}")
+    if isinstance(exc, OperationFailedError):
+        return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
+    return click.ClickException(f"{operation} failed: {exc}")
+
+
+def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
+    """Translate a typed operation failure into the delete route's message."""
+    from polylogue.cli.operation_kernel import (
+        OperationFailedError,
+        OperationIndeterminateError,
+        OperationUnavailableError,
+    )
+
+    if isinstance(exc, OperationIndeterminateError):
+        return click.ClickException(
+            f"delete {stage} outcome is indeterminate after the daemon accepted the request; "
+            "do not retry offline, inspect daemon audit state before retrying"
+        )
+    if isinstance(exc, OperationUnavailableError):
+        return click.ClickException(f"daemon is unavailable; it must {stage} the delete")
+    if isinstance(exc, OperationFailedError):
+        if exc.code == "delete_partially_applied":
+            return click.ClickException(
+                f"delete partially applied: {exc.detail}; "
+                f"completed_chunks={exc.data.get('completed_chunks')}; "
+                f"affected_count={exc.data.get('affected_count')}"
+            )
+        return click.ClickException(f"daemon refused delete {stage} ({exc.code}): {exc.detail}")
+    return click.ClickException(f"delete {stage} failed: {exc}")
+
+
+def _delete_authorization_tokens(daemon_authorization: dict[str, object], expected: int) -> tuple[str, ...]:
+    """Read the daemon's one-time tokens; a count mismatch is not authorization."""
+
+    tokens = daemon_authorization.get("authorization_tokens")
+    if isinstance(tokens, list) and all(isinstance(token, str) and token for token in tokens):
+        issued = tuple(tokens)
+    else:
+        token = daemon_authorization.get("authorization_token")
+        if not isinstance(token, str) or not token:
+            raise click.ClickException("daemon returned an invalid delete authorization")
+        issued = (token,)
+    if len(issued) != expected:
+        raise click.ClickException("daemon returned an invalid delete authorization")
+    return issued
+
+
+def _cancel_delete_preview(
+    config: Config,
+    preview_refs: tuple[str, ...],
+    *,
+    count: int,
+    interrupted: bool,
+) -> None:
+    """Release an unconfirmed preview through the operation's cancel route."""
+    from polylogue.cli.operation_kernel import OperationKernelError
+    from polylogue.surfaces.payloads import MutationResultPayload
+
+    try:
+        cancellation = _submit_mutation_operation(
+            config,
+            "mutation.session.delete.cancel",
+            {"preview_refs": list(preview_refs)},
+        )
+    except OperationKernelError as exc:
+        raise click.ClickException(f"daemon did not cancel the delete preview: {exc}") from exc
+    # An acknowledgement that names other previews, or none, is not evidence
+    # that this delete was cancelled.
+    acknowledged_refs = _daemon_preview_refs(cancellation)
+    if (
+        cancellation.get("status") != "cancelled"
+        or acknowledged_refs is None
+        or set(acknowledged_refs) != set(preview_refs)
+    ):
+        raise click.ClickException("daemon returned an invalid delete cancellation acknowledgement")
+    click.echo(
+        MutationResultPayload(status="aborted", operation="delete", session_count=count, affected_count=0).to_json(
+            exclude_none=True
+        )
+    )
+    if interrupted:
+        raise click.exceptions.Exit(_CANCELLED_EXIT_CODE)
 
 
 def _prepared_delete_session_ids(

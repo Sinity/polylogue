@@ -41,6 +41,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [Configuration](configuration.md) | XDG paths, environment variables, and runtime configuration. |
 | [Glossary](glossary.md) | Plain-language translation of the internal taxonomy. |
 | [Provider, Origin, and Source Identity](provider-origin-identity.md) | Vocabulary map for provider-wire family, public origin, material source, and parser binding. |
+| [SQLite Connection and WAL Policy](sqlite-connection-policy.md) | Named timeout classes, checkpoint ownership and escalation, read-frame lifetime, and the connection inventory. |
 | [Provider Package Completeness](provider-completeness.md) | Readiness report for provider/importer package modes by origin and capture mode. |
 | [Material Protocol v1](material-protocol-v1.md) | Normalized-session interchange wire format. |
 | [Sidecars](sidecars.md) | Every sidecar kind, its handling contract, and the failure mode when mishandled. |

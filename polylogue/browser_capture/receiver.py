@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 
 from polylogue.browser_capture.models import (
@@ -221,6 +222,21 @@ def resolve_receiver_auth_token(
     return load_or_mint_receiver_token(token_path)
 
 
+class CaptureConvergence(StrEnum):
+    """What the spool does with an incoming capture of a resident identity.
+
+    One provider session keeps one artifact, so a second delivery is an
+    ordinary revision of the same identity rather than a conflict. Only
+    ``NAME_COLLISION`` is a genuine refusal: two different sessions claiming
+    one artifact name.
+    """
+
+    PUBLISH = "publish"
+    DUPLICATE = "duplicate"
+    SUPERSEDED = "superseded"
+    NAME_COLLISION = "name_collision"
+
+
 @dataclass(frozen=True, slots=True)
 class BrowserCaptureWriteResult:
     """Result of accepting a browser-capture envelope."""
@@ -235,6 +251,7 @@ class BrowserCaptureWriteResult:
     dedup_content_hash: str
     capture_instance_id: str | None
     accepted_identities: tuple[BrowserCaptureAcceptedIdentity, ...] = ()
+    convergence: CaptureConvergence = CaptureConvergence.PUBLISH
 
 
 @dataclass(frozen=True, slots=True)
@@ -326,6 +343,19 @@ def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
 def _timestamp_ms(value: object) -> int | None:
     parsed = parse_timestamp(value if isinstance(value, (str, int, float)) else None)
     return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
+def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
+    """Return a session update timestamp only when it is independent evidence.
+
+    Adapters without a provider-side update time fill ``session.updated_at``
+    from ``provenance.captured_at``.  That fallback describes when the page was
+    observed, not when the session changed, so it must not participate in the
+    session-timestamp ordering below.
+    """
+    updated_at = _timestamp_ms(envelope.session.updated_at)
+    captured_at = _timestamp_ms(envelope.provenance.captured_at)
+    return None if updated_at is not None and updated_at == captured_at else updated_at
 
 
 def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
@@ -569,7 +599,8 @@ class SpoolUsage:
     total_bytes: int
 
 
-def _spool_usage(spool_root: Path) -> SpoolUsage:
+def spool_usage(spool_root: Path) -> SpoolUsage:
+    """Count the artifacts the spool quota is measured against."""
     file_count = 0
     total_bytes = 0
     if spool_root.exists():
@@ -594,7 +625,7 @@ def _check_spool_quota(
     SPOOL_MAX_BYTES/POST_COMMAND_QUEUE_MAX_* and have it take effect --
     a default parameter value binds at function-definition time, before
     any monkeypatch runs."""
-    usage = _spool_usage(spool_root)
+    usage = spool_usage(spool_root)
     if usage.file_count >= max_files or usage.total_bytes >= max_bytes:
         raise SpoolQuotaExceededError(
             f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
@@ -604,23 +635,50 @@ def _check_spool_quota(
 
 def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
     """Prevent a stale, smaller snapshot from replacing a richer spool item."""
-    incoming_updated = _timestamp_ms(incoming.session.updated_at)
-    existing_updated = _timestamp_ms(existing.session.updated_at)
+    incoming_updated = _session_update_evidence_ms(incoming)
+    existing_updated = _session_update_evidence_ms(existing)
     incoming_captured = _timestamp_ms(incoming.provenance.captured_at)
     existing_captured = _timestamp_ms(existing.provenance.captured_at)
     incoming_turns = len(incoming.session.turns)
     existing_turns = len(existing.session.turns)
-    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
-        return False
     if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
         return False
     if incoming_turns < existing_turns:
         return False
+    # A later observation with more turns is directly richer evidence.  A
+    # provider's update timestamp can lag that observation, so it must not
+    # veto the turn-count improvement.
+    if incoming_turns > existing_turns:
+        return True
+    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
+        return False
+    # An absent update timestamp is unknown, not a change from an existing
+    # provider timestamp.  Only compare that field when the incoming capture
+    # carries independent session-side evidence.
     return (
-        incoming_updated != existing_updated
+        (incoming_updated is not None and incoming_updated != existing_updated)
         or incoming_captured != existing_captured
         or incoming_turns != existing_turns
     )
+
+
+def capture_convergence(
+    incoming: BrowserCaptureEnvelope,
+    existing: BrowserCaptureEnvelope,
+) -> CaptureConvergence:
+    """Decide what a resident artifact of the same name does to an incoming capture.
+
+    The whole spool-admission rule for a destination that is already occupied,
+    so a caller that must predict admission without writing — a restoration
+    rehearsal — asks this rather than restating it.
+    """
+    if incoming.provider is not existing.provider or incoming.provider_session_id != existing.provider_session_id:
+        return CaptureConvergence.NAME_COLLISION
+    if capture_dedup_content_hash(existing) == capture_dedup_content_hash(incoming):
+        return CaptureConvergence.DUPLICATE
+    if not _capture_is_newer_or_richer(incoming, existing):
+        return CaptureConvergence.SUPERSEDED
+    return CaptureConvergence.PUBLISH
 
 
 def write_capture_envelope(
@@ -697,12 +755,12 @@ def _write_capture_envelope(
                 raise BrowserCaptureSpoolConflictError(
                     f"existing capture artifact is unreadable or malformed: {target.name}"
                 ) from exc
-            if (
-                existing.provider is not envelope.provider
-                or existing.provider_session_id != envelope.provider_session_id
-            ):
+            convergence = capture_convergence(envelope, existing)
+            if convergence is CaptureConvergence.NAME_COLLISION:
                 raise BrowserCaptureSpoolConflictError(f"capture artifact name collision for {target.name}")
-            if capture_dedup_content_hash(existing) == dedup_content_hash:
+            if convergence is not CaptureConvergence.PUBLISH:
+                # A duplicate echoes the incoming fingerprint; a superseded
+                # delivery echoes the fingerprint of the revision that stays.
                 return BrowserCaptureWriteResult(
                     provider=envelope.provider.value,
                     provider_session_id=envelope.provider_session_id,
@@ -711,22 +769,14 @@ def _write_capture_envelope(
                     bytes_written=target.stat().st_size,
                     replaced=True,
                     deduplicated=True,
-                    dedup_content_hash=dedup_content_hash,
+                    dedup_content_hash=(
+                        dedup_content_hash
+                        if convergence is CaptureConvergence.DUPLICATE
+                        else capture_dedup_content_hash(existing)
+                    ),
                     capture_instance_id=envelope.provenance.extension_instance_id,
                     accepted_identities=accepted_identities,
-                )
-            if not _capture_is_newer_or_richer(envelope, existing):
-                return BrowserCaptureWriteResult(
-                    provider=envelope.provider.value,
-                    provider_session_id=envelope.provider_session_id,
-                    path=target,
-                    artifact_ref=capture_artifact_ref(envelope, root),
-                    bytes_written=target.stat().st_size,
-                    replaced=True,
-                    deduplicated=True,
-                    dedup_content_hash=capture_dedup_content_hash(existing),
-                    capture_instance_id=envelope.provenance.extension_instance_id,
-                    accepted_identities=accepted_identities,
+                    convergence=convergence,
                 )
         else:
             _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
@@ -762,6 +812,7 @@ def _write_capture_envelope(
         dedup_content_hash=dedup_content_hash,
         capture_instance_id=envelope.provenance.extension_instance_id,
         accepted_identities=accepted_identities,
+        convergence=CaptureConvergence.PUBLISH,
     )
 
 
@@ -1021,8 +1072,12 @@ __all__ = [
     "BrowserCaptureReceiverConfig",
     "BrowserCaptureWriteResult",
     "BrowserCaptureSpoolConflictError",
+    "CaptureConvergence",
+    "SpoolUsage",
     "backfill_checkpoint_root",
     "capture_artifact_ref",
+    "capture_convergence",
+    "spool_usage",
     "capture_response_id",
     "_is_extension_origin_pattern",
     "capture_artifact_path",

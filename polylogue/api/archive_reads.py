@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+
 if TYPE_CHECKING:
     from polylogue.archive.query.search_hits import SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
@@ -22,7 +24,7 @@ class ArchiveReadCapability(Protocol):
         content_projection: ContentProjectionSpec | None = None,
     ) -> list[Session]: ...
     async def list_summaries(
-        self, *, limit: int | None = 50, offset: int = 0, origin: str | None = None
+        self, *, limit: int | None = DEFAULT_SESSION_LIST_LIMIT, offset: int = 0, origin: str | None = None
     ) -> list[SessionSummary]: ...
     async def list_sessions_for_spec(
         self, spec: SessionQuerySpec, *, content_projection: ContentProjectionSpec | None = None

@@ -17,11 +17,10 @@ NFC-normalized before hashing -- ``hash_payload`` itself deliberately does
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 
+from polylogue.core.digest import QUERY, canonical_bytes, nfc
 from polylogue.core.hashing import hash_payload
-from polylogue.core.text_identity import nfc
 
 JSONScalar = str | int | float | bool | None
 
@@ -62,7 +61,7 @@ def canonicalize(value: object) -> object:
 
 
 def _sort_key(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return canonical_bytes(value, QUERY).decode("utf-8")
 
 
 def content_ref(kind: str, payload: Mapping[str, object]) -> str:

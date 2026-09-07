@@ -10,7 +10,7 @@ from pydantic import Field
 
 from polylogue.archive.message.types import validate_message_type_filter
 from polylogue.archive.query.fields import mcp_query_field_names, query_boundary_alternatives
-from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec, split_csv
+from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT, QuerySpecError, SessionQuerySpec, split_csv
 from polylogue.operations.origin_filters import public_origin_filter_tokens
 
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
@@ -151,7 +151,7 @@ class MCPSessionQueryRequest:
     since_session_id: str | None = None
     message_type: str | None = None
     offset: MCPToolOffset = 0
-    limit: MCPToolLimit = 10
+    limit: MCPToolLimit = DEFAULT_SESSION_LIST_LIMIT
     cursor: str | None = None
     include_affordances: bool = False
 

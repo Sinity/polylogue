@@ -20,8 +20,10 @@ from concurrent.futures import CancelledError, InvalidStateError
 from concurrent.futures import Future as ConcurrentFuture
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar
 
+from polylogue.core.write_lease import bind_write_lease_thread, current_write_lease, write_lease
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -69,6 +71,12 @@ WRITE_HOLD_BUDGETS_S: Mapping[str, float] = {
     "watcher.catch_up.chunk": 30.0,
     "watcher.live_ingest": 30.0,
     "watcher.": 30.0,
+    # Checkpointing gets its own ceiling rather than the general maintenance
+    # one: it is the recurring hold most likely to grow with archive size, and
+    # a budget it shares with publication cannot show that it did
+    # (CHECKPOINT_HOLD_BUDGET_S in storage/sqlite/connection_profile.py, not
+    # imported here because the daemon ring may not reach into storage).
+    "maintenance.wal_checkpoint": 20.0,
     "maintenance.": 120.0,
 }
 _DEFAULT_WRITE_HOLD_BUDGET_S = 60.0
@@ -236,9 +244,15 @@ class DaemonWriteCoordinator:
     bounded cancellation without allowing the next SQLite writer to overlap.
     """
 
-    def __init__(self, *, observer: WriteEventObserver | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        observer: WriteEventObserver | None = None,
+        archive_root: str | Path | None = None,
+    ) -> None:
         self._lock = _PriorityGate()
         self._observer = observer
+        self._archive_root = archive_root
         self._sequence = 0
         self._active_actor: str | None = None
         self._queued: list[tuple[int, str]] = []
@@ -362,7 +376,12 @@ class DaemonWriteCoordinator:
         token = _ACTIVE_LEASE.set((self, owner))
         outcome: WriteOutcome = "success"
         try:
-            return await operation()
+            # Establish the storage-side authorization in the coordinator-owned
+            # task.  ``_run_in_daemon_thread`` copies this context into the
+            # actual writer thread, so every writable open remains behind the
+            # same gate even when the callable is synchronous.
+            with write_lease(request.actor, archive_root=self._archive_root, coordinator=self):
+                return await operation()
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
@@ -603,7 +622,14 @@ async def _run_in_daemon_thread(
     def worker() -> None:
         error: BaseException | None = None
         try:
-            value = context.run(function, *args, **kwargs)
+            # The context copied from the coordinator task carries the lease;
+            # bind this concrete worker thread before any SQLite factory runs.
+            def invoke() -> T:
+                if current_write_lease() is not None:
+                    bind_write_lease_thread()
+                return function(*args, **kwargs)
+
+            value = context.run(invoke)
         except BaseException as exc:
             error = exc
             with contextlib.suppress(InvalidStateError):
@@ -750,7 +776,9 @@ def daemon_write_coordinator() -> DaemonWriteCoordinator:
     loop = asyncio.get_running_loop()
     coordinator = _COORDINATORS.get(loop)
     if coordinator is None:
-        coordinator = DaemonWriteCoordinator()
+        from polylogue.paths import archive_root
+
+        coordinator = DaemonWriteCoordinator(archive_root=archive_root())
         _COORDINATORS[loop] = coordinator
     return coordinator
 

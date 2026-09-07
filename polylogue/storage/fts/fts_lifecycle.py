@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -77,11 +76,6 @@ def _status_int(status: dict[str, object], key: str) -> int:
         except ValueError:
             return 0
     return 0
-
-
-def _passive_wal_checkpoint_sync(conn: sqlite3.Connection) -> None:
-    with suppress(sqlite3.Error):
-        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
 
 
 def _message_trigger_names_for_sync(conn: sqlite3.Connection) -> tuple[str, ...]:
@@ -437,7 +431,6 @@ def insert_missing_message_rows_batched_sync(
             identity_changed = conn.total_changes - identity_changes_before
         if inserted or identity_changed:
             conn.commit()
-            _passive_wal_checkpoint_sync(conn)
         if progress_callback is not None:
             progress_callback(lower, upper, max(0, inserted))
         lower = upper
@@ -473,7 +466,6 @@ def delete_excess_message_rows_batched_sync(
         deleted_total += deleted
         if deleted:
             conn.commit()
-            _passive_wal_checkpoint_sync(conn)
         if progress_callback is not None:
             progress_callback(deleted)
         if len(rowids) < batch_rows:

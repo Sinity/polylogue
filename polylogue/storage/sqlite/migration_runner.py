@@ -29,6 +29,7 @@ from polylogue.storage.backup_attestation import (
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 _LOGGER = logging.getLogger(__name__)
@@ -613,7 +614,7 @@ def _canonical_json_sha256(payload: object) -> str:
 
 
 def _sqlite_user_version(path: Path) -> int:
-    with closing(sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)) as conn:
+    with closing(open_readonly_connection(path, immutable=True, validate_schema=False)) as conn:
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 

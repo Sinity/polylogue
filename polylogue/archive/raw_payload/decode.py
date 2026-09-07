@@ -458,7 +458,11 @@ def _unrecognized_binary_marker_payload(prefix: bytes, *, source_path: str | Pat
 
 def _binary_artifact_envelope(binary_marker: JSONDocument, *, provider: Provider) -> RawPayloadEnvelope:
     signature_name = binary_marker["binary_format"]
-    kind = ArtifactKind.BINARY_DATABASE if signature_name == "sqlite" else ArtifactKind.BINARY_DOCUMENT
+    kind = (
+        ArtifactKind.BINARY_DATABASE
+        if signature_name in {"sqlite", "sqlite-logical-export"}
+        else ArtifactKind.BINARY_DOCUMENT
+    )
     return RawPayloadEnvelope(
         payload=binary_marker,
         provider=provider,
@@ -469,7 +473,7 @@ def _binary_artifact_envelope(binary_marker: JSONDocument, *, provider: Provider
             parse_as_session=False,
             schema_eligible=False,
             default_priority=0,
-            reason=f"unrecognized {signature_name}-shaped binary payload; refused as session content (polylogue-hbtj2)",
+            reason=f"unrecognized {signature_name}-shaped payload; refused as session content (polylogue-hbtj2)",
         ),
     )
 

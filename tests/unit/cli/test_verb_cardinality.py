@@ -814,11 +814,11 @@ class TestDeleteCardinalityLargeNonMocked:
 
         prepared: dict[str, list[str]] = {}
 
-        def _route(_config: Any, path: str, *, body: dict[str, object]) -> dict[str, object]:
-            if path.endswith("/prepare"):
-                prepared["ids"] = [str(item) for item in cast(list[Any], body["session_ids"])]
+        def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+            if operation.endswith(".preview"):
+                prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
                 return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
-            if path.endswith("/authorize"):
+            if operation.endswith(".authorize"):
                 return {"status": "authorized", "authorization_token": "test-authorization"}
             with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
                 affected = archive.delete_sessions(tuple(prepared["ids"]))
@@ -859,7 +859,7 @@ class TestDeleteCardinalityLargeNonMocked:
 
         # 3. Deleted set: --yes --all removes the entire matched set.
         with patch(
-            "polylogue.cli.archive_query._submit_daemon_mutation",
+            "polylogue.cli.archive_query._submit_mutation_operation",
             side_effect=self._daemon_delete_route(workspace_env["archive_root"]),
         ):
             result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)

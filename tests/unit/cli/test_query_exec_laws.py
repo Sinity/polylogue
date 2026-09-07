@@ -2816,17 +2816,16 @@ def test_async_execute_query_archive_adds_tags_to_session(
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    # The tag write runs through the mutation authority on its own writable
-    # handle, so this case's claim -- that the resolved session id and the
-    # requested tags are the ones carried into the write -- is asserted at the
-    # actuator argument boundary, which is where the write is now decided.
-    captured: list[tuple[str, object]] = []
+    # The tag write is the daemon's, so this case's claim -- that the resolved
+    # session id and the requested tags are the ones carried into the write --
+    # is asserted on the operation payload, which is what leaves the CLI.
+    captured: list[tuple[str, dict[str, object]]] = []
 
-    def _capture(_env: object, actuator: object, build_args: object, *, capability: str) -> int:
-        captured.append((capability, build_args(FakeArchiveStore())))  # type: ignore[operator]
-        return 2
+    def _capture(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        captured.append((operation, payload))
+        return {"status": "ok", "affected_count": 2}
 
-    with patch("polylogue.cli.archive_query._execute_matched_session_mutation", side_effect=_capture):
+    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_capture):
         asyncio.run(
             _execute_query_params(
                 env,
@@ -2839,10 +2838,11 @@ def test_async_execute_query_archive_adds_tags_to_session(
             )
         )
 
-    assert [capability for capability, _args in captured] == ["archive.bulk_tag_sessions"]
-    args = captured[0][1]
-    assert args.session_ids == ("codex-session:native-1",)  # type: ignore[attr-defined]
-    assert args.tags == ("review", "ready")  # type: ignore[attr-defined]
+    assert [operation for operation, _payload in captured] == ["mutation.session.tag"]
+    assert captured[0][1] == {
+        "session_ids": ["codex-session:native-1"],
+        "tags": ["review", "ready"],
+    }
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "add_tag",
@@ -2886,15 +2886,15 @@ def test_async_execute_query_archive_deletes_session_by_id(
     # keep this case's real claim -- that the resolved session id is the one
     # carried into the delete -- by asserting it at the daemon boundary, which
     # is where the write now happens.
-    def _daemon_delete(_config: object, path: str, *, body: dict[str, object]) -> dict[str, object]:
-        if path.endswith("/prepare"):
-            assert body["session_ids"] == ["codex-session:native-1"]
+    def _daemon_delete(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        if operation.endswith(".preview"):
+            assert payload["session_ids"] == ["codex-session:native-1"]
             return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["codex-session:native-1"]}
-        if path.endswith("/authorize"):
+        if operation.endswith(".authorize"):
             return {"status": "authorized", "authorization_token": "test-authorization"}
         return {"status": "deleted", "affected_count": 1, "session_ids": ["codex-session:native-1"]}
 
-    with patch("polylogue.cli.archive_query._submit_daemon_mutation", side_effect=_daemon_delete):
+    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_daemon_delete):
         asyncio.run(
             _execute_query_params(
                 env,
@@ -2946,15 +2946,15 @@ def test_async_execute_query_archive_sets_session_metadata(
         classmethod(lambda cls, root: FakeArchiveStore()),
     )
 
-    # Asserted at the actuator argument boundary for the same reason as the
-    # tag case above: the write itself happens on the authority's own handle.
-    captured: list[tuple[str, object]] = []
+    # Asserted on the operation payload for the same reason as the tag case
+    # above: the write itself is the daemon's.
+    captured: list[tuple[str, dict[str, object]]] = []
 
-    def _capture(_env: object, actuator: object, build_args: object, *, capability: str) -> int:
-        captured.append((capability, build_args(FakeArchiveStore())))  # type: ignore[operator]
-        return 1
+    def _capture(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        captured.append((operation, payload))
+        return {"status": "ok", "affected_count": 1}
 
-    with patch("polylogue.cli.archive_query._execute_matched_session_mutation", side_effect=_capture):
+    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_capture):
         asyncio.run(
             _execute_query_params(
                 env,
@@ -2967,10 +2967,11 @@ def test_async_execute_query_archive_sets_session_metadata(
             )
         )
 
-    assert [capability for capability, _args in captured] == ["archive.set_metadata"]
-    args = captured[0][1]
-    assert args.session_ids == ("codex-session:native-1",)  # type: ignore[attr-defined]
-    assert args.pairs == (("priority", "high"),)  # type: ignore[attr-defined]
+    assert [operation for operation, _payload in captured] == ["mutation.session.metadata"]
+    assert captured[0][1] == {
+        "session_ids": ["codex-session:native-1"],
+        "pairs": [["priority", "high"]],
+    }
     assert json.loads(capsys.readouterr().out) == {
         "status": "ok",
         "operation": "set_meta",

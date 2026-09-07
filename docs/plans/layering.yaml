@@ -85,6 +85,12 @@ writer_modules:
         [rebuild_archive_messages_fts, refresh_and_sweep_attachment_rows,
         repair_stale_prefix_branch_points, replace_parser_ingest_flag_tags,
         upsert_parser_ingest_flag_tags, upsert_session_profile_costs, write_parsed_session_to_archive]
+    - path: polylogue/storage/sqlite/archive_tiers/write_shard.py
+      surfaces:
+        - tier: index
+          durability: rebuildable
+          interruption: replayable
+      entrypoints: [copy_shard_session_rows]
     - path: polylogue/storage/sqlite/archive_tiers/session_annotations_write.py
       surfaces:
         - tier: index
@@ -177,6 +183,20 @@ rules:
     disallow:
       from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
       baseline: docs/plans/layering-surface-baseline.json
+
+  - target: polylogue/cli
+    description: >-
+      Mutation authority — the daemon is the sole writer, so a CLI adapter
+      lowers a write to a declared operation instead of driving the mutation
+      executor in its own process. The baseline names the command families
+      that still hold a second write authority; it may only shrink.
+    disallow:
+      from:
+        - polylogue/operations/mutation_transaction
+        - polylogue/operations/mutation_actuators
+        - polylogue/operations/delete_authorization
+        - polylogue/operations/session_mutations
+      baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 
   - target: polylogue/mcp
     description: >-

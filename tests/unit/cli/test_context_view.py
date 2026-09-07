@@ -14,14 +14,43 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from polylogue.analysis.lineage_graph import (
+    CompactLineageEdge,
+    CompactLineageGraph,
+    CompactLineageNode,
+    LineageEdgeResolution,
+    LineageEdgeRole,
+    LineageNodeRole,
+)
 from polylogue.context.preamble import compose_context_preamble
 from polylogue.core.enums import AssertionKind
+from polylogue.core.types import SessionId
 
 
 def _session() -> SimpleNamespace:
     return SimpleNamespace(
         git_repository_url="https://github.com/Sinity/polylogue",
         git_branch="master",
+    )
+
+
+def _lineage_graph() -> CompactLineageGraph:
+    """Seed with one resolved parent, as the compact relation returns it."""
+    return CompactLineageGraph(
+        seed_id=SessionId("target"),
+        root_id=SessionId("root-1"),
+        nodes=(
+            CompactLineageNode(session_id=SessionId("target"), role=LineageNodeRole.SEED, is_seed=True),
+            CompactLineageNode(session_id=SessionId("parent-1"), role=LineageNodeRole.ANCESTOR, depth_from_seed=-1),
+        ),
+        edges=(
+            CompactLineageEdge(
+                child_id=SessionId("target"),
+                parent_id=SessionId("parent-1"),
+                role=LineageEdgeRole.SEED_PARENT,
+                resolution=LineageEdgeResolution.RESOLVED,
+            ),
+        ),
     )
 
 
@@ -33,9 +62,7 @@ def _mock_subprocess_failure(**kwargs: object) -> MagicMock:
 def test_compose_context_preamble_emits_preamble() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
-    env.polylogue.get_session_topology = AsyncMock(
-        return_value=SimpleNamespace(logical_session_id="root-1", parent_session_id="parent-1")
-    )
+    env.polylogue.compact_lineage = AsyncMock(return_value=_lineage_graph())
     env.polylogue.find_resume_candidates = AsyncMock(
         return_value=[SimpleNamespace(session_id="rel-1", title="Related", terminal_state="open")]
     )
@@ -60,7 +87,7 @@ def test_compose_context_preamble_git_enrichment_overrides_branch() -> None:
     superseding the session's possibly-stale recorded branch."""
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
-    env.polylogue.get_session_topology = AsyncMock(return_value=None)
+    env.polylogue.compact_lineage = AsyncMock(return_value=None)
     env.polylogue.find_resume_candidates = AsyncMock(return_value=[])
 
     def _git_side_effect(args: list[str], **kwargs: object) -> MagicMock:
@@ -81,7 +108,7 @@ def test_compose_context_preamble_git_enrichment_overrides_branch() -> None:
 def test_compose_context_preamble_includes_injectable_assertion_claims() -> None:
     env = MagicMock()
     env.polylogue.get_session = AsyncMock(return_value=_session())
-    env.polylogue.get_session_topology = AsyncMock(return_value=None)
+    env.polylogue.compact_lineage = AsyncMock(return_value=None)
     env.polylogue.find_resume_candidates = AsyncMock(return_value=[])
     env.polylogue.list_assertion_claim_payloads = AsyncMock(
         return_value=[

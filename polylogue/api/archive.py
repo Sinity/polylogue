@@ -31,6 +31,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import (
+    DEFAULT_SESSION_LIST_LIMIT,
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
@@ -84,7 +85,15 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     archive_message_display_text,
 )
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    ReadFrameExpiredError,
+    StaleContinuationError,
+    open_connection,
+)
+from polylogue.storage.sqlite.connection_profile import (
+    open_readonly_connection as open_readonly_connection,
+)
+from polylogue.storage.sqlite.connection_profile import read_frame as read_frame
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
@@ -1528,17 +1537,24 @@ def _read_source_and_index(
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
-        source_conn.row_factory = sqlite3.Row
-        try:
-            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
-            index_conn.row_factory = sqlite3.Row
-            try:
-                return work(source_conn, index_conn)
-            finally:
-                index_conn.close()
-        finally:
-            source_conn.close()
+        # ``work`` is caller-supplied and its duration is not this seam's to
+        # know, so both readers are frames: each is bound to the generation it
+        # opened on and refuses to serve past the declared snapshot age rather
+        # than pinning WAL frames for an unbounded audit.
+        with (
+            read_frame(source_db, timeout_class="background-read") as source_frame,
+            read_frame(index_db, timeout_class="background-read") as index_frame,
+        ):
+            return work(source_frame.connection, index_frame.connection)
+    except (ReadFrameExpiredError, StaleContinuationError):
+        logger.warning(
+            "%s read exceeded its declared frame: source_db=%s index_db=%s",
+            seam,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
     except sqlite3.Error:
         logger.warning(
             "%s read failed (archive present but unreadable): source_db=%s index_db=%s",
@@ -1593,18 +1609,29 @@ def _archive_correlate_claude_agent_dispatches(config: Config) -> ClaudeAgentDis
 
 
 def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
-    """Reconcile acquired Codex ``thread_spawn_edge`` evidence against
-    transcript-inferred topology (bd polylogue-foee AC#2).
+    """Reconcile projected Codex spawn edges against transcript-inferred topology.
 
-    Read-only audit seam over ``source.db``'s hook-event spool and
-    ``index.db``'s ``session_links``; see
-    ``context.codex_spawn_edge_correlation`` for the join semantics and
-    ``_read_source_and_index`` for the ``None`` contract.
+    Read-only audit seam over ``index.db``; see
+    ``context.codex_spawn_edge_correlation`` for the join semantics. ``None``
+    covers the archive not being initialized yet or being unreadable.
     """
 
     from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
 
-    return _read_source_and_index(config, reconcile_codex_spawn_edges, seam="codex_spawn_edge reconciliation")
+    archive_root = _active_archive_root(config)
+    index_db = archive_root / "index.db"
+    if not index_db.exists():
+        return None
+    try:
+        index_conn = open_readonly_connection(index_db, timeout_class="background-read")
+        index_conn.row_factory = sqlite3.Row
+        try:
+            return reconcile_codex_spawn_edges(index_conn)
+        finally:
+            index_conn.close()
+    except sqlite3.Error:
+        logger.warning("codex_spawn_edge reconciliation is unavailable", exc_info=True)
+        return None
 
 
 def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
@@ -2967,6 +2994,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if session is None:
             return None
         resolved_session_id = str(session.id)
+        # The envelope read that backs get_session does not carry session_events,
+        # and the digest's compaction geometry (polylogue-4ts.5) is stored there.
+        events = await self.repository.get_session_event_models(resolved_session_id)
+        session = session.model_copy(update={"session_events": tuple(events)})
         session_links: list[dict[str, object]] = await self.repository.queries.list_session_links_for_session(
             resolved_session_id
         )
@@ -3416,12 +3447,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return _archive_correlate_claude_agent_dispatches(self.config)
 
     async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
-        """Reconcile acquired Codex spawn-edge evidence against inferred topology (bd polylogue-foee AC#2).
+        """Reconcile projected Codex spawn edges against inferred topology.
 
-        Read-only audit seam over the durable spool (source.db
-        ``raw_hook_events``, ``codex_thread_spawn_edge`` events acquired by
-        polylogue-0jf4) and the ingested topology (index.db
-        ``session_links``, ``BranchType.SUBAGENT`` edges
+        Read-only audit seam over index.db: the ``codex_thread_spawn_edges``
+        projection of the retained state export, and the ingested topology
+        (``session_links``, ``BranchType.SUBAGENT`` edges
         ``sources/parsers/codex.py`` infers structurally from each child
         session's own transcript). Reports how many transcript-inferred
         edges are backed by Codex's own orchestration-level record, and how
@@ -5365,7 +5395,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         def read(archive: ArchiveStore) -> list[Session]:
             summaries = archive.list_summaries(
                 origin=origin,
-                limit=50 if limit is None else limit,
+                limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
             )
             sessions = [
                 _archive_session_to_session(
@@ -5391,7 +5421,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     async def list_summaries(
         self,
         *,
-        limit: int | None = 50,
+        limit: int | None = DEFAULT_SESSION_LIST_LIMIT,
         offset: int = 0,
         origin: str | None = None,
     ) -> builtins.list[SessionSummary]:
@@ -5409,7 +5439,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 _archive_summary_to_domain(summary)
                 for summary in archive.list_summaries(
                     origin=origin,
-                    limit=50 if limit is None else limit,
+                    limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
                     offset=offset,
                 )
             ],
@@ -6687,7 +6717,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="archive.sessions.query",
             arguments={"origin": origin, "tag": tag, "since": since, "until": until, "sort": sort, **kwargs},
-            work=lambda archive: _archive_list_summaries_for_spec(archive, spec, default_limit=50),
+            work=lambda archive: _archive_list_summaries_for_spec(
+                archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT
+            ),
             page_size=limit,
             offset=offset,
             projection="session-summary",

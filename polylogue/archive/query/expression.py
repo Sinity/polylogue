@@ -156,6 +156,7 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.query.spec import (
     QUERY_ACTION_TYPES,
+    QUERY_SEQUENCE_ACTION_TYPES,
     QuerySpecError,
     SessionQuerySpec,
     normalize_retrieval_lane,
@@ -3335,6 +3336,9 @@ class _SpecAccumulator:
     cwd_prefix: str | None = None
     action_terms: list[str] = field(default_factory=list)
     excluded_action_terms: list[str] = field(default_factory=list)
+    action_sequence: list[str] = field(default_factory=list)
+    action_text_terms: list[str] = field(default_factory=list)
+    since_session_id: str | None = None
     tool_terms: list[str] = field(default_factory=list)
     excluded_tool_terms: list[str] = field(default_factory=list)
     origins: list[str] = field(default_factory=list)
@@ -3511,6 +3515,40 @@ class _SpecAccumulator:
                 else:
                     self.action_terms.append(candidate)
 
+        elif fname == "action_sequence":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'action_sequence'", field=fname)
+            steps = [step.strip().lower() for step in tok.raw_value.split(">") if step.strip()]
+            if len(steps) < 2:
+                raise ExpressionCompileError(
+                    "action_sequence needs at least two arrow-separated steps, e.g. action_sequence:file_edit>shell",
+                    field=fname,
+                )
+            for step in steps:
+                if step not in QUERY_SEQUENCE_ACTION_TYPES:
+                    raise ExpressionCompileError(
+                        f"unknown action {step!r}; recognized: " + ", ".join(QUERY_SEQUENCE_ACTION_TYPES),
+                        field=fname,
+                    )
+            self.action_sequence = steps
+
+        elif fname == "action_text":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'action_text'", field=fname)
+            self.action_text_terms.extend(values)
+
+        elif fname == "since_session":
+            if tok.negated:
+                raise ExpressionCompileError("negation is not supported for 'since_session'", field=fname)
+            if values:
+                candidate = values[-1]
+                if ".." in candidate.split("/") or candidate == ".":
+                    raise ExpressionCompileError(
+                        f"invalid session reference {candidate!r} for 'since_session'",
+                        field=fname,
+                    )
+                self.since_session_id = candidate
+
         elif fname == "has":
             if tok.negated:
                 raise ExpressionCompileError("negation is not supported for 'has'", field=fname)
@@ -3622,6 +3660,9 @@ class _SpecAccumulator:
             cwd_prefix=self.cwd_prefix,
             action_terms=tuple(self.action_terms),
             excluded_action_terms=tuple(self.excluded_action_terms),
+            action_sequence=tuple(self.action_sequence),
+            action_text_terms=tuple(self.action_text_terms),
+            since_session_id=self.since_session_id,
             tool_terms=tuple(self.tool_terms),
             excluded_tool_terms=tuple(self.excluded_tool_terms),
             origins=tuple(self.origins),
@@ -3659,6 +3700,11 @@ class _SpecAccumulator:
             self.cwd_prefix = other.cwd_prefix
         self.action_terms.extend(other.action_terms)
         self.excluded_action_terms.extend(other.excluded_action_terms)
+        if other.action_sequence:
+            self.action_sequence = list(other.action_sequence)
+        self.action_text_terms.extend(other.action_text_terms)
+        if other.since_session_id is not None:
+            self.since_session_id = other.since_session_id
         self.tool_terms.extend(other.tool_terms)
         self.excluded_tool_terms.extend(other.excluded_tool_terms)
         self.origins.extend(other.origins)

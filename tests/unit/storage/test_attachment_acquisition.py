@@ -5,6 +5,7 @@ bytes are honestly marked 'unfetched' with a NULL hash (no fabricated hash).
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import sqlite3
 from pathlib import Path
@@ -224,6 +225,77 @@ def test_claude_extracted_attachment_content_is_acquired(tmp_path: Path, monkeyp
     assert ref is not None
     assert ref[1] == "claude-ai-export:claude-attachment-session"
     assert ref[2] == archive_message_id("claude-ai-export:claude-attachment-session", "m0", position=0)
+
+
+def test_claude_content_base64_preserves_non_utf8_bytes_and_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = BlobStore(tmp_path / "blob")
+    monkeypatch.setattr("polylogue.storage.blob_store.get_blob_store", lambda: store)
+    payload = b"\x00\xff\x80\x01not-utf8"
+    carrier = base64.b64encode(payload).decode("ascii")
+    common = {
+        "file_uuid": "native-binary-1",
+        "file_name": "payload.bin",
+        "file_type": "application/octet-stream",
+        "file_size": len(payload),
+    }
+    upload_only = parse_ai(
+        {
+            "uuid": "claude-binary-session",
+            "chat_messages": [{"uuid": "m0", "sender": "human", "text": "upload", "attachments": [common]}],
+        },
+        "fallback",
+    )
+    binary = parse_ai(
+        {
+            "uuid": "claude-binary-session",
+            "chat_messages": [
+                {
+                    "uuid": "m0",
+                    "sender": "human",
+                    "text": "upload",
+                    "attachments": [{**common, "content_base64": carrier, "extracted_content": "not the bytes"}],
+                }
+            ],
+        },
+        "fallback",
+    )
+    assert upload_only.attachments[0].provider_attachment_id == binary.attachments[0].provider_attachment_id
+    assert binary.attachments[0].inline_bytes == payload
+
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(conn, binary, preacquired_attachment_blobs=_preacquired(store, binary))
+    row = conn.execute("SELECT attachment_id, blob_hash, acquisition_status FROM attachments").fetchone()
+    assert row["attachment_id"]
+    assert bytes(row["blob_hash"]) == hashlib.sha256(payload).digest()
+    assert row["acquisition_status"] == "acquired"
+    assert store.read_all(hashlib.sha256(payload).hexdigest()) == payload
+
+
+def test_claude_malformed_content_base64_does_not_fall_back_to_text() -> None:
+    with pytest.raises(ValueError, match="invalid base64"):
+        parse_ai(
+            {
+                "uuid": "claude-binary-invalid",
+                "chat_messages": [
+                    {
+                        "uuid": "m0",
+                        "sender": "human",
+                        "text": "upload",
+                        "attachments": [
+                            {
+                                "file_uuid": "native-binary-invalid",
+                                "file_name": "payload.bin",
+                                "content_base64": "not base64",
+                                "extracted_content": "fallback text",
+                            }
+                        ],
+                    }
+                ],
+            },
+            "fallback",
+        )
 
 
 @pytest.mark.parametrize("payload", [b"must be reserved first", b""], ids=["nonempty", "empty"])
