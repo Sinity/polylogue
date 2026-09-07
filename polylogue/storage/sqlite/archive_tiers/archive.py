@@ -999,6 +999,23 @@ class ArchiveStore:
         """
         self._conn.interrupt()
 
+    @property
+    def index_connection(self) -> sqlite3.Connection | None:
+        """The index-tier handle, or ``None`` while the derived tier is closed.
+
+        Acquire-only ingestion and frozen source validation hold no index
+        handle at all, so a derived projection asks here rather than writing
+        through a stale-schema connection.
+        """
+        if isinstance(self._conn, _SourceTierOnlyIndexConnection):
+            return None
+        return self._conn
+
+    @property
+    def source_connection(self) -> sqlite3.Connection:
+        """The durable source-tier handle, opened on first use."""
+        return self._ensure_source_conn()
+
     def _optional_source_conn(self) -> sqlite3.Connection | None:
         """Return the source.db handle for evidence reads, or ``None``.
 

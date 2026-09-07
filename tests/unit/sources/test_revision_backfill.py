@@ -1050,7 +1050,12 @@ def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
 
 
 def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
-    state_path = tmp_path / f"{title}.sqlite"
+    """Return the retained material for one Codex state revision: its export."""
+    from polylogue.sources.sqlite_export import logical_export_bytes
+    from polylogue.sources.sqlite_snapshot import member_export_scope
+
+    state_path = tmp_path / f"{title}" / "state_5.sqlite"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(state_path) as conn:
         conn.executescript(
             """
@@ -1069,7 +1074,7 @@ def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
             ("codex-state-thread", title, "/work", 1, 1, "cli", None, None, None, 0),
         )
         conn.commit()
-    return state_path.read_bytes()
+    return logical_export_bytes(state_path, scope=member_export_scope(state_path))
 
 
 def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path: Path) -> None:
@@ -1093,6 +1098,8 @@ def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path:
             "SELECT parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (None, None)
         assert conn.execute("SELECT COUNT(*) FROM raw_hook_events").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM codex_thread_state").fetchone() == (0,)
 
 
 def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) -> None:
@@ -1119,18 +1126,10 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
 
     census_historical_revision_evidence(tmp_path)
 
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        payload_json = conn.execute(
-            """
-            SELECT payload_json
-            FROM raw_hook_events
-            WHERE event_type = 'codex_thread_title' AND session_native_id = 'codex-state-thread'
-            ORDER BY observed_at_ms DESC, hook_event_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    assert payload_json is not None
-    assert json.loads(str(payload_json[0]))["title"] == "title A"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        title = conn.execute("SELECT title FROM codex_thread_state WHERE thread_id = 'codex-state-thread'").fetchone()
+    assert title is not None
+    assert title[0] == "title A"
 
 
 def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_path: Path) -> None:
@@ -1157,18 +1156,10 @@ def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_pa
 
     census_historical_revision_evidence(tmp_path)
 
-    with sqlite3.connect(tmp_path / "source.db") as conn:
-        payload_json = conn.execute(
-            """
-            SELECT payload_json
-            FROM raw_hook_events
-            WHERE event_type = 'codex_thread_title' AND session_native_id = 'codex-state-thread'
-            ORDER BY observed_at_ms DESC, hook_event_id DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    assert payload_json is not None
-    assert json.loads(str(payload_json[0]))["title"] == "newer title"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        title = conn.execute("SELECT title FROM codex_thread_state WHERE thread_id = 'codex-state-thread'").fetchone()
+    assert title is not None
+    assert title[0] == "newer title"
 
 
 def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> None:

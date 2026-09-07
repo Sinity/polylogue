@@ -1,12 +1,13 @@
-"""Mutable SQLite sources are identified by logical content, not page bytes.
+"""Mutable SQLite sources are retained and identified as logical exports.
 
 A live database's page image changes after every commit, checkpoint and
-vacuum, so byte identity re-acquires whole snapshots of content the archive
-already holds. These tests drive the production acquisition route
+vacuum, so retaining and identifying it by its bytes re-acquires whole copies
+of content the archive already holds -- and no reader can prove those bytes
+against the live database. These tests drive the production acquisition route
 (``snapshot_sqlite_to_blob`` and ``LiveBatchProcessor.ingest_files``) and the
 production freshness gate (``LiveWatcher._needs_work_from_state``) and assert
-that identity, idempotency and continuity follow the declared logical
-revision.
+that the retained material, its identity, idempotency and continuity all
+follow the declared logical export.
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from typing import Any, cast
 import pytest
 
 import polylogue.sources.live.watcher as live_watcher
+import polylogue.sources.sqlite_export as sqlite_export
 import polylogue.sources.sqlite_snapshot as sqlite_snapshot
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
@@ -29,12 +31,17 @@ from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.sources.live.watcher import LiveWatcher
 from polylogue.sources.origin_specs import database_capability_for_provider
+from polylogue.sources.sqlite_export import (
+    looks_like_logical_export_path,
+    open_logical_source,
+)
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
     hermes_profile_raw_id,
     retained_content_revision,
     snapshot_sqlite_to_blob,
     sqlite_logical_revision,
+    sqlite_member_revision,
     sqlite_source_revision,
 )
 from polylogue.storage.blob_store import BlobStore
@@ -83,6 +90,34 @@ def _write_state_db(path: Path, *, sessions: int = 1, wal: bool = False) -> None
             )
 
 
+def _write_thread_state_db(path: Path, *, threads: int = 1, title: str = "title") -> None:
+    """A Codex ``state_5.sqlite``: the declared member's own schema.
+
+    A member's export carries its declared logical tables, so a fixture whose
+    filename claims one member and whose schema is another's exports nothing.
+    """
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, title TEXT, cwd TEXT, created_at_ms INTEGER,
+                updated_at_ms INTEGER, source TEXT, model TEXT, agent_nickname TEXT,
+                agent_role TEXT, archived INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE thread_spawn_edges (
+                parent_thread_id TEXT, child_thread_id TEXT, status TEXT
+            );
+            CREATE TABLE thread_dynamic_tools (thread_id TEXT, tool TEXT);
+            """
+        )
+        for index in range(threads):
+            conn.execute(
+                "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, archived) "
+                "VALUES (?, ?, '/repo', 1, 2, 'cli', 0)",
+                (f"thread-{index}", f"{title}-{index}"),
+            )
+
+
 def _blob_store(tmp_path: Path) -> BlobStore:
     return BlobStore(tmp_path / "blob")
 
@@ -92,24 +127,26 @@ def _blob_store(tmp_path: Path) -> BlobStore:
 # ---------------------------------------------------------------------------
 
 
-def test_a_repaged_database_keeps_the_identity_its_content_earns(tmp_path: Path) -> None:
-    """Anti-vacuity: key ``codex_state_raw_id`` on ``snapshot.blob_hash``
-    again and the two ids diverge here, which is the 13-snapshot residue.
+def test_a_repaged_database_retains_one_material_and_one_identity(tmp_path: Path) -> None:
+    """Anti-vacuity: retain the page image and this writes a second whole blob
+    for content the archive already holds, and the two raw ids diverge.
 
     Vacuuming to a new page size rewrites every page and every offset in the
     file while leaving the schema and every row exactly where they were.
     """
     source = tmp_path / "state_5.sqlite"
-    _write_state_db(source, sessions=3)
+    _write_thread_state_db(source, threads=3)
     store = _blob_store(tmp_path)
 
     before = snapshot_sqlite_to_blob(source, store)
+    page_image = source.read_bytes()
     with closing(sqlite3.connect(source)) as conn:
         conn.execute("PRAGMA page_size=8192")
         conn.execute("VACUUM")
     after = snapshot_sqlite_to_blob(source, store)
 
-    assert before.blob_hash != after.blob_hash, "sanity: the page image was rewritten"
+    assert source.read_bytes() != page_image, "sanity: the page image was rewritten"
+    assert before.blob_hash == after.blob_hash
     assert before.source_revision == after.source_revision
     assert codex_state_raw_id(source, before.source_revision) == codex_state_raw_id(source, after.source_revision)
 
@@ -121,21 +158,24 @@ def test_freelist_churn_from_an_insert_and_delete_changes_no_identity(tmp_path: 
     revision for a database holding exactly the rows already acquired.
     """
     source = tmp_path / "state_5.sqlite"
-    _write_state_db(source, sessions=3)
+    _write_thread_state_db(source, threads=3)
     store = _blob_store(tmp_path)
     before = snapshot_sqlite_to_blob(source, store)
+    page_image = source.read_bytes()
 
     with closing(sqlite3.connect(source)) as conn, conn:
         conn.executemany(
-            "INSERT INTO messages (id, session_id, role, content, timestamp) VALUES (?, 'session-0', 'user', ?, 9.0)",
-            [(1000 + index, "x" * 400) for index in range(500)],
+            "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, archived) "
+            "VALUES (?, ?, '/repo', 1, 2, 'cli', 0)",
+            [(f"churn-{index}", "x" * 400) for index in range(500)],
         )
     with closing(sqlite3.connect(source)) as conn, conn:
-        conn.execute("DELETE FROM messages WHERE id >= 1000")
+        conn.execute("DELETE FROM threads WHERE id LIKE 'churn-%'")
 
     after = snapshot_sqlite_to_blob(source, store)
 
-    assert before.blob_hash != after.blob_hash, "sanity: the freelist moved the page image"
+    assert source.read_bytes() != page_image, "sanity: the freelist moved the page image"
+    assert before.blob_hash == after.blob_hash
     assert before.source_revision == after.source_revision
     assert codex_state_raw_id(source, before.source_revision) == codex_state_raw_id(source, after.source_revision)
 
@@ -148,13 +188,13 @@ def test_one_changed_row_invalidates_identity_under_byte_similarity(tmp_path: Pa
     every page offset are unchanged; only one row's value differs.
     """
     source = tmp_path / "state_5.sqlite"
-    _write_state_db(source, sessions=3)
+    _write_thread_state_db(source, threads=3)
     store = _blob_store(tmp_path)
     before = snapshot_sqlite_to_blob(source, store)
     size_before = source.stat().st_size
 
     with closing(sqlite3.connect(source)) as conn, conn:
-        conn.execute("UPDATE sessions SET title = 'title-X' WHERE id = 'session-1'")
+        conn.execute("UPDATE threads SET title = 'title-X' WHERE id = 'thread-1'")
 
     after = snapshot_sqlite_to_blob(source, store)
 
@@ -171,7 +211,7 @@ def test_restoring_an_older_page_image_does_not_pass_as_the_state_it_replaced(tm
     ``sqlite_source_revision`` and the restored file passes as the newer
     content it no longer holds.
     """
-    source = tmp_path / "state_5.sqlite"
+    source = tmp_path / "state.db"
     _write_state_db(source, sessions=3)
     original_bytes = source.read_bytes()
     original_revision = sqlite_logical_revision(source)
@@ -195,7 +235,7 @@ def test_restoring_an_older_page_image_does_not_pass_as_the_state_it_replaced(tm
 
 def test_schema_change_moves_the_logical_revision(tmp_path: Path) -> None:
     """Anti-vacuity: digest rows only and an added column or table is invisible."""
-    source = tmp_path / "state_5.sqlite"
+    source = tmp_path / "state.db"
     _write_state_db(source, sessions=1)
     baseline = sqlite_logical_revision(source)
 
@@ -241,6 +281,110 @@ def test_retained_blob_yields_the_same_content_term_as_live_acquisition(tmp_path
     )
 
 
+def test_the_retained_material_is_the_declared_logical_export(tmp_path: Path) -> None:
+    """Acquisition retains the declared member's export, never a page image.
+
+    Anti-vacuity: write the backup bytes to the blob store again and the blob
+    starts with the SQLite file-format header instead of the export document,
+    and it carries every table rather than the declared product.
+    """
+    source = tmp_path / "state_5.sqlite"
+    _write_thread_state_db(source, threads=0)
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute(
+            "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, archived) "
+            "VALUES ('t-1', 'Curated', '/repo', 1, 2, 'cli', 0)"
+        )
+        conn.execute("INSERT INTO thread_spawn_edges VALUES ('t-1', 't-2', 'closed')")
+    store = _blob_store(tmp_path)
+
+    snapshot = snapshot_sqlite_to_blob(source, store)
+    blob = store.blob_path(snapshot.blob_hash)
+
+    assert looks_like_logical_export_path(blob)
+    assert not blob.read_bytes().startswith(b"SQLite format 3\x00")
+    header = sqlite_export.read_export_header(blob)
+    assert header.member == "state_5.sqlite"
+    assert header.origin == "codex-session"
+    assert header.kind == "thread_state"
+    assert set(header.tables) == {"threads", "thread_spawn_edges"}
+    with closing(open_logical_source(blob)) as conn:
+        assert list(conn.execute("SELECT id, title FROM threads")) == [("t-1", "Curated")]
+        assert list(conn.execute("SELECT parent_thread_id, child_thread_id, status FROM thread_spawn_edges")) == [
+            ("t-1", "t-2", "closed")
+        ]
+
+
+def test_a_change_outside_the_declared_tables_mints_no_revision(tmp_path: Path) -> None:
+    """The member's revision is the revision of what it is acquired for.
+
+    Anti-vacuity: export every table and an unrelated write mints a second
+    raw revision for a logical product that did not move.
+    """
+    source = tmp_path / "state_5.sqlite"
+    _write_thread_state_db(source, threads=1, title="Curated")
+    store = _blob_store(tmp_path)
+    before = snapshot_sqlite_to_blob(source, store)
+
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("INSERT INTO thread_dynamic_tools VALUES ('t-1', 'shell')")
+
+    after = snapshot_sqlite_to_blob(source, store)
+    assert after.blob_hash == before.blob_hash
+    assert codex_state_raw_id(source, after.source_revision) == codex_state_raw_id(source, before.source_revision)
+
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("UPDATE threads SET title = 'Renamed' WHERE id = 'thread-0'")
+    changed = snapshot_sqlite_to_blob(source, store)
+    assert changed.blob_hash != before.blob_hash
+
+
+def test_an_export_round_trips_every_storage_class(tmp_path: Path) -> None:
+    """Anti-vacuity: encode values without their storage class and an integer
+    5, the text "5" and a five-byte blob all read back the same.
+    """
+    source = tmp_path / "values.db"
+    with closing(sqlite3.connect(source)) as conn, conn:
+        conn.execute("CREATE TABLE v (kind TEXT, value)")
+        conn.executemany(
+            "INSERT INTO v (kind, value) VALUES (?, ?)",
+            [
+                ("integer", 5),
+                ("text", "5"),
+                ("real", 5.5),
+                ("blob", b"\x00\x01\xff"),
+                ("null", None),
+            ],
+        )
+        conn.execute("INSERT INTO v (kind, value) VALUES ('invalid-utf8', CAST(x'ff' AS TEXT))")
+
+    export = tmp_path / "export.jsonl"
+    export.write_bytes(sqlite_export.logical_export_bytes(source))
+    with closing(open_logical_source(export)) as conn:
+        conn.text_factory = bytes
+        rebuilt = {
+            bytes(row[0]).decode(): (row[1], type(row[1]).__name__) for row in conn.execute("SELECT kind, value FROM v")
+        }
+        classes = {
+            bytes(row[0]).decode(): bytes(row[1]).decode() for row in conn.execute("SELECT kind, typeof(value) FROM v")
+        }
+
+    assert rebuilt["integer"] == (5, "int")
+    assert rebuilt["text"] == (b"5", "bytes")
+    assert rebuilt["real"] == (5.5, "float")
+    assert rebuilt["blob"] == (b"\x00\x01\xff", "bytes")
+    assert rebuilt["null"] == (None, "NoneType")
+    assert rebuilt["invalid-utf8"] == (b"\xff", "bytes")
+    assert classes == {
+        "integer": "integer",
+        "text": "text",
+        "real": "real",
+        "blob": "blob",
+        "null": "null",
+        "invalid-utf8": "text",
+    }
+
+
 def test_non_sqlite_material_is_identified_by_its_bytes(tmp_path: Path) -> None:
     """Anti-vacuity: try to open every blob as SQLite and a Hermes ATOF
     stream's raw identity raises instead of resolving."""
@@ -276,36 +420,48 @@ def test_wal_source_with_an_uncommitted_writer_snapshots_committed_state_only(tm
         writer.close()
 
     blob = store.blob_path(snapshot.blob_hash)
-    with closing(sqlite3.connect(f"file:{blob.resolve()}?mode=ro&immutable=1", uri=True)) as conn:
+    assert looks_like_logical_export_path(blob), "the retained material is the export, never a page image"
+    with closing(open_logical_source(blob)) as conn:
         ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
     assert ids == {"session-0", "session-1"}
-    assert sqlite_logical_revision(blob, immutable=True) == snapshot.source_revision
+    assert retained_content_revision(blob, snapshot.blob_hash) == snapshot.source_revision
 
 
-def test_a_commit_during_the_backup_refuses_the_acquisition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A torn observation is refused, never published.
+def test_a_commit_during_the_export_cannot_enter_it(tmp_path: Path) -> None:
+    """The export is one SQLite read snapshot, so a racing commit stays outside it.
 
-    Anti-vacuity: delete the post-backup revision comparison in
-    ``snapshot_sqlite_to_blob`` and this acquisition succeeds while carrying
-    a revision that describes neither the state before nor after the commit.
+    Anti-vacuity: drop the ``BEGIN`` in ``write_logical_export`` and the row
+    committed after the first table is written lands in the same export,
+    which then describes neither the state before nor the state after.
     """
     source = tmp_path / "state.db"
     _write_state_db(source, sessions=2, wal=True)
-    store = _blob_store(tmp_path)
-    real_backup = sqlite_snapshot.snapshot_sqlite_database
 
-    def backup_then_commit(src: Path, destination: Path) -> None:
-        real_backup(src, destination)
-        with closing(sqlite3.connect(src)) as conn, conn:
-            conn.execute(
-                "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
-                "VALUES ('raced', 'cli', '{}', 1.0, 8.0, 'completed', 'raced')"
-            )
+    class CommitOnFirstWrite:
+        def __init__(self) -> None:
+            self.buffer = bytearray()
+            self.committed = False
 
-    monkeypatch.setattr(sqlite_snapshot, "snapshot_sqlite_database", backup_then_commit)
+        def write(self, payload: bytes) -> int:
+            if not self.committed:
+                self.committed = True
+                with closing(sqlite3.connect(source)) as conn, conn:
+                    conn.execute(
+                        "INSERT INTO sessions (id, source, model_config, started_at, ended_at, end_reason, title) "
+                        "VALUES ('raced', 'cli', '{}', 1.0, 8.0, 'completed', 'raced')"
+                    )
+            self.buffer.extend(payload)
+            return len(payload)
 
-    with pytest.raises(OSError, match="SQLite source changed during backup"):
-        snapshot_sqlite_to_blob(source, store)
+    sink = CommitOnFirstWrite()
+    sqlite_export.write_logical_export(source, cast(Any, sink), tables=("schema_version", "sessions", "messages"))
+
+    assert sink.committed, "sanity: the racing commit ran while the export was streaming"
+    export = tmp_path / "export.jsonl"
+    export.write_bytes(bytes(sink.buffer))
+    with closing(open_logical_source(export)) as conn:
+        ids = {str(row[0]) for row in conn.execute("SELECT id FROM sessions")}
+    assert ids == {"session-0", "session-1"}
 
 
 def test_a_corrupt_database_fails_typed_and_publishes_nothing(tmp_path: Path) -> None:
@@ -345,7 +501,7 @@ def test_a_write_locked_database_is_still_acquirable(tmp_path: Path) -> None:
         holder.rollback()
         holder.close()
 
-    assert snapshot.source_revision == sqlite_logical_revision(source)
+    assert snapshot.source_revision == sqlite_member_revision(source)
 
 
 # ---------------------------------------------------------------------------
