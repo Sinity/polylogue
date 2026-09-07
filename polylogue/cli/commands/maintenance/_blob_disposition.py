@@ -64,9 +64,10 @@ def blob_disposition_plan_command(archive_root: Path, output: Path, output_forma
     click.echo(f"Digest: {plan.digest()}")
     click.echo(f"Accepted (zero unresolved): {plan.accepted}")
     click.echo(f"Counts: {json.dumps(plan.counts, sort_keys=True)}")
-    click.echo(f"Reclaimable: {plan.reclaimable_count} objects, {plan.reclaimable_bytes} bytes")
+    click.echo(f"Proven redundant, unreferenced: {plan.reclaimable_count} objects, {plan.reclaimable_bytes} bytes")
     click.echo(
-        f"Retained by reference: {plan.retained_by_reference_count} objects, {plan.retained_by_reference_bytes} bytes"
+        f"Proven redundant, referenced: {plan.retained_by_reference_count} objects, "
+        f"{plan.retained_by_reference_bytes} bytes"
     )
     click.echo("Read-only: true")
 
@@ -137,7 +138,7 @@ def blob_disposition_restore_command(
             hook_spool_sources=hook_sources,
             browser_capture_spool=capture_spool,
         )
-        results = restore_plan_members(
+        restorations = restore_plan_members(
             plan,
             context=context,
             hook_spool_root=hooks_root,
@@ -150,18 +151,21 @@ def blob_disposition_restore_command(
             archive_root=plan.archive_root,
             blob_root=plan.blob_root,
             dry_run=not active,
-            results=results,
+            results=(),
+            restorations=restorations,
         )
         write_receipt(receipt, result)
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
     if output_format == "json":
-        click.echo(json.dumps({"receipt": str(receipt), "ok": result.ok, "counts": result.counts}, sort_keys=True))
+        click.echo(
+            json.dumps({"receipt": str(receipt), "ok": result.ok, "counts": result.restoration_counts}, sort_keys=True)
+        )
     else:
         click.echo(f"Restoration receipt: {receipt}")
         click.echo(f"Dry run: {not active}")
-        click.echo(f"Counts: {json.dumps(result.counts, sort_keys=True)}")
+        click.echo(f"Counts: {json.dumps(result.restoration_counts, sort_keys=True)}")
     if not result.ok:
         raise SystemExit(1)
 
@@ -202,7 +206,12 @@ def blob_disposition_apply_command(
     active: bool,
     output_format: str,
 ) -> None:
-    """Restore sole copies, then delete proven-redundant objects."""
+    """Restore sole copies, then delete every member no durable row names.
+
+    Deletion is bounded by unreferencedness, not by disposition: a referenced
+    object stays whatever its proof says, and an unexplained orphan nothing
+    references goes exactly as recurring GC would take it.
+    """
     from polylogue.config import Config
     from polylogue.maintenance.blob_disposition import (
         BlobDispositionPlan,
@@ -241,13 +250,32 @@ def blob_disposition_apply_command(
     except (OSError, RuntimeError, ValueError) as exc:
         raise click.ClickException(str(exc)) from exc
 
-    summary = {"receipt": str(receipt), "ok": result.ok, "counts": result.counts, "blockers": list(result.blockers)}
+    summary = {
+        "receipt": str(receipt),
+        "ok": result.ok,
+        "counts": result.counts,
+        "restoration_counts": result.restoration_counts,
+        "cohorts": result.cohorts,
+        "totals": result.to_dict()["totals"],
+        "blockers": list(result.blockers),
+    }
     if output_format == "json":
         click.echo(json.dumps(summary, sort_keys=True))
     else:
+        before, after = result.namespace_before, result.namespace_after
         click.echo(f"Disposition receipt: {receipt}")
         click.echo(f"Dry run: {not active}")
         click.echo(f"Counts: {json.dumps(result.counts, sort_keys=True)}")
+        click.echo(f"Restorations: {json.dumps(result.restoration_counts, sort_keys=True)}")
+        click.echo(f"Deleted: {result.deleted_count} objects, {result.deleted_bytes} bytes")
+        click.echo(f"Invalid namespace entries deleted: {result.invalid_entries_deleted}")
+        click.echo(f"Namespace before: {before.blob_count} blobs, {before.blob_bytes} bytes")
+        click.echo(f"Namespace after: {after.blob_count} blobs, {after.blob_bytes} bytes")
+        for cohort, totals in sorted(result.cohorts.items()):
+            click.echo(
+                f"  {cohort}: {totals['members']} members, "
+                f"{totals['deleted']} deleted, {totals['retained_bytes']} bytes left in the namespace"
+            )
         for blocker in result.blockers:
             click.echo(f"Blocked: {blocker}")
     if not result.ok:
