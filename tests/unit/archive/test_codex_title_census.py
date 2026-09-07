@@ -12,19 +12,15 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.archive.codex_title_census import (
-    CodexHookEventTitleCoverage,
+    CodexRetainedStateTitleCoverage,
     CodexTitleCensus,
     compare_censuses,
-    compute_codex_hook_event_title_coverage,
+    compute_codex_retained_state_title_coverage,
     compute_codex_title_census,
 )
-from polylogue.core.enums import BlockType, MaterialOrigin, Origin, Provider, Role, TitleSource
+from polylogue.core.enums import BlockType, MaterialOrigin, Provider, Role, TitleSource
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.source_write import (
-    ArchiveHookEvent,
-    write_source_hook_event,
-)
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 
@@ -143,68 +139,42 @@ def test_census_round_trips_through_json_dict(tmp_path: Path) -> None:
     assert restored == census
 
 
-def _write_codex_thread_title_hook_event(source_db_path: Path, *, thread_id: str, title: str) -> None:
-    """Write a real ``codex_thread_title`` raw_hook_events row (polylogue-0jf4
-    shape) directly into ``source.db``."""
-    payload: dict[str, object] = {"thread_id": thread_id, "title": title}
-    with sqlite3.connect(source_db_path) as conn:
-        write_source_hook_event(
-            conn,
-            origin=Origin.CODEX_SESSION,
-            source_path="synthetic:state-db",
-            carrier_relative_path=f"synthetic:state-db:{thread_id}",
-            payload=json_dumps(payload),
-            acquired_at_ms=1_000,
-            raw_id=f"raw-{thread_id}",
-            hook_event=ArchiveHookEvent(
-                hook_event_id=f"codex-thread-title:{thread_id}",
-                origin=Origin.CODEX_SESSION,
-                source_path="synthetic:state-db",
-                event_type="codex_thread_title",
-                payload=payload,
-                observed_at_ms=1_000,
-                native_id=f"{thread_id}:codex_thread_title",
-                session_native_id=thread_id,
-            ),
+def _write_projected_thread_title(index_db_path: Path, *, thread_id: str, title: str) -> None:
+    """Write a real ``codex_thread_state`` projection row into ``index.db``."""
+    with sqlite3.connect(index_db_path) as conn:
+        conn.execute(
+            "INSERT INTO codex_thread_state (thread_id, title, archived, observed_at_ms) VALUES (?, ?, 0, 1000)",
+            (thread_id, title),
         )
+        conn.commit()
 
 
-def json_dumps(payload: dict[str, object]) -> bytes:
-    import json as _json
-
-    return _json.dumps(payload).encode("utf-8")
-
-
-def test_hook_event_title_coverage_reports_lower_bound(tmp_path: Path) -> None:
-    """bd polylogue-foee AC#3: unresolved sessions whose thread id is covered
-    by an acquired ``codex_thread_title`` hook event are counted as coverage
-    -- a resolved session or one lacking a matching hook event is excluded."""
+def test_retained_state_title_coverage_reports_lower_bound(tmp_path: Path) -> None:
+    """Unresolved sessions whose thread id carries a projected title are counted
+    as coverage -- a resolved session, or one with no projected title, is not."""
     db_path = tmp_path / "index.db"
     with ArchiveStore(tmp_path, initialize=True, read_only=False):
         pass
     _seed_corpus(db_path)
 
-    # native-b/c/d/e are unresolved; only native-b and native-d get a
-    # matching hook event. native-a is already resolved and must not count
-    # even though we also give it a hook event.
-    _write_codex_thread_title_hook_event(tmp_path / "source.db", thread_id="native-a", title="ignored")
-    _write_codex_thread_title_hook_event(tmp_path / "source.db", thread_id="native-b", title="Recovered B")
-    _write_codex_thread_title_hook_event(tmp_path / "source.db", thread_id="native-d", title="Recovered D")
+    # native-b/c/d/e are unresolved; only native-b and native-d get a projected
+    # title. native-a is already resolved and must not count even though we
+    # also give it one.
+    _write_projected_thread_title(db_path, thread_id="native-a", title="ignored")
+    _write_projected_thread_title(db_path, thread_id="native-b", title="Recovered B")
+    _write_projected_thread_title(db_path, thread_id="native-d", title="Recovered D")
 
-    with (
-        sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as index_conn,
-        sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True) as source_conn,
-    ):
-        coverage = compute_codex_hook_event_title_coverage(index_conn, source_conn)
+    with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as index_conn:
+        coverage = compute_codex_retained_state_title_coverage(index_conn)
 
     assert coverage.unresolved_count == 4
-    assert coverage.covered_by_hook_event_count == 2
+    assert coverage.covered_by_retained_state_count == 2
     assert coverage.coverage_fraction == 0.5
     restored = coverage.to_dict()
-    assert restored["covered_by_hook_event_count"] == 2
+    assert restored["covered_by_retained_state_count"] == 2
 
 
-def test_hook_event_title_coverage_fraction_reads_complete_at_zero_unresolved() -> None:
+def test_retained_state_title_coverage_fraction_reads_complete_at_zero_unresolved() -> None:
     """Zero unresolved sessions means nothing left to cover -- 1.0, not 0.0.
 
     Matches the sibling CodexTitleCensus.resolved_fraction convention: an
@@ -212,7 +182,7 @@ def test_hook_event_title_coverage_fraction_reads_complete_at_zero_unresolved() 
     reading "0/0 unresolved (0.0%) covered" could otherwise misread complete
     resolution as no coverage at all).
     """
-    coverage = CodexHookEventTitleCoverage(unresolved_count=0, covered_by_hook_event_count=0)
+    coverage = CodexRetainedStateTitleCoverage(unresolved_count=0, covered_by_retained_state_count=0)
     assert coverage.coverage_fraction == 1.0
     assert coverage.to_dict()["coverage_fraction"] == 1.0
 

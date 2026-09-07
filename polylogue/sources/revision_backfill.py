@@ -64,7 +64,7 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.sqlite_snapshot import looks_like_sqlite_bytes
+from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.artifacts.inspection import artifact_observation_id
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -3146,6 +3146,7 @@ def _enrich_retained_parse_results(
     if not isinstance(archive, ArchiveStore):
         return
     source_conn = archive._ensure_source_conn()
+    index_conn = archive.index_connection
     for raw_id, outcome in tuple(results.items()):
         if isinstance(outcome, Exception):
             continue
@@ -3158,7 +3159,7 @@ def _enrich_retained_parse_results(
             _replay_safe_enrich_sessions(
                 provider=provider,
                 sessions=sessions,
-                source_conn=source_conn,
+                index_conn=index_conn,
             ),
             payload_bytes,
             kind,
@@ -3193,16 +3194,15 @@ def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
     sessions: list[ParsedSession],
-    source_conn: sqlite3.Connection | None = None,
+    index_conn: sqlite3.Connection | None = None,
 ) -> list[ParsedSession]:
     """Enrich one retained parse without consulting ambient source files.
 
-    bd polylogue-zco96: Codex title resolution's step 3b reads acquired
-    ``codex_thread_title`` hook events. Those are durable source-tier rows,
-    so a reindex resolves the same curated titles a live ingest does instead
-    of baking in the content-heuristic first-prompt fallback. Without a
-    source connection the bundle stays empty and only the parsed-content
-    fallbacks apply.
+    Codex title resolution's step 3b reads the projected ``threads.title``
+    rows, recomputed from the retained state export, so a reindex resolves the
+    same curated titles a live ingest does instead of baking in the
+    content-heuristic first-prompt fallback. Without an index connection the
+    bundle stays empty and only the parsed-content fallbacks apply.
     """
     from polylogue.sources.assembly import SidecarData, get_assembly_spec
 
@@ -3210,13 +3210,13 @@ def _replay_safe_enrich_sessions(
     if spec is None:
         return sessions
     sidecar_data = cast("SidecarData", {})
-    if provider is Provider.CODEX and source_conn is not None:
-        from polylogue.sources.assembly_codex import read_codex_thread_title_hook_events
+    if provider is Provider.CODEX and index_conn is not None:
+        from polylogue.sources.codex_state_projection import read_thread_titles
 
         thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
-        titles = read_codex_thread_title_hook_events(source_conn, thread_ids=thread_ids)
+        titles = read_thread_titles(index_conn, thread_ids=thread_ids)
         if titles:
-            sidecar_data = cast("SidecarData", {"hook_event_titles": titles})
+            sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
     return [spec.enrich_session(session, sidecar_data) for session in sessions]
 
 
@@ -3426,8 +3426,8 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     )
 
 
-def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tuple[Path, str, str] | None:
-    """Identify one immutable retained Codex state snapshot without mutating it."""
+def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tuple[Path, str, str, str] | None:
+    """Identify one immutable retained Codex state export without mutating it."""
     provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     if provider is not Provider.CODEX:
         return None
@@ -3437,21 +3437,21 @@ def _retained_codex_state_descriptor(archive: ArchiveStore, raw_id: str) -> tupl
     state_kind = codex_state.classify_codex_sqlite_path(state_path, immutable=True)
     if state_kind not in codex_state.IN_SCOPE_KINDS:
         return None
-    return state_path, source_path, state_kind
+    return state_path, source_path, state_kind, blob_hash
 
 
 def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) -> bool:
-    """Apply a retained, in-scope Codex state snapshot without minting a session.
+    """Apply a retained, in-scope Codex state export without minting a session.
 
-    Source-only acquisition snapshots named Codex databases before it can
+    Source-only acquisition exports named Codex databases before it can
     inspect their schema.  Once recovery owns the derived tier, only a
-    recognized retained snapshot may become thread evidence.  The parser
-    reads the immutable blob path, never the original mutable state DB.
+    recognized retained export may become thread evidence.  The parser reads
+    the immutable blob path, never the original mutable state DB.
     """
     descriptor = _retained_codex_state_descriptor(archive, raw_id)
     if descriptor is None:
         return False
-    state_path, source_path, state_kind = descriptor
+    state_path, source_path, state_kind, blob_hash = descriptor
     record_codex_state_snapshot_terminal(
         archive,
         raw_id,
@@ -3460,6 +3460,7 @@ def _replay_retained_codex_state_evidence(archive: ArchiveStore, raw_id: str) ->
         source_path=source_path,
         acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
         censused_at_ms=0,
+        blob_hash=blob_hash,
     )
     return True
 
@@ -4126,6 +4127,7 @@ class _ParsedSessionSpill:
         sessions = _replay_safe_enrich_sessions(
             provider=provider,
             sessions=sessions,
+            index_conn=archive.index_connection,
         )
         self.add(raw_id, sessions, payload_bytes=payload_bytes)
         return sessions, payload_bytes
@@ -4340,7 +4342,7 @@ def _parse_one_raw(
         return sessions
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
-    if provider is Provider.HERMES and looks_like_sqlite_bytes(payload):
+    if provider is Provider.HERMES and looks_like_logical_source_bytes(payload):
         with _sqlite_payload_path(payload, payload_path, archive_root) as sqlite_path:
             if hermes_state.looks_like_state_db_path(sqlite_path, immutable=True):
                 return hermes_state.parse_state_db(

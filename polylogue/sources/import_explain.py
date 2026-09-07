@@ -461,7 +461,7 @@ def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportEx
             reason=f"Hermes state.db parser failure: {type(exc).__name__}: {exc}",
             detected_provider=Provider.HERMES,
         )
-    fidelity = hermes_state.import_fidelity_declaration(sessions, acquisition_method="sqlite_backup")
+    fidelity = hermes_state.import_fidelity_declaration(sessions, acquisition_method="logical_export")
     return ImportExplainEntryPayload(
         source_path=str(path),
         artifact_kind="sqlite_state_database",
@@ -474,7 +474,7 @@ def _explain_hermes_state_db(path: Path, *, provider_hint: Provider) -> ImportEx
         ),
         parser="hermes_state_db",
         parser_version=None if fidelity.schema_version is None else f"state-db-v{fidelity.schema_version}",
-        parser_mode="sqlite_backup",
+        parser_mode="logical_export",
         produced=_produced_rows(sessions),
         caveats=(
             "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",
@@ -519,7 +519,7 @@ def _explain_hermes_verification_evidence_db(path: Path, *, provider_hint: Provi
         parser_version=None
         if fidelity.schema_version is None
         else f"verification-evidence-db-v{fidelity.schema_version}",
-        parser_mode="sqlite_backup",
+        parser_mode="logical_export",
         produced=_produced_rows(sessions),
         caveats=(
             "dry-run inspected the live SQLite database read-only; import snapshots bytes before parsing.",

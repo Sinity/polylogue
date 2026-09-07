@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.connection_profile import (
     WRITE_CONNECTION_PROFILE,
     WRITE_MMAP_SIZE_BYTES,
     _attach_sibling_tiers,
+    open_readonly_connection,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
@@ -206,7 +207,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
             yield conn
         return
 
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
+    conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
     _configure_read_connection(conn)
     try:
         if not _is_initialized_archive_index(path):

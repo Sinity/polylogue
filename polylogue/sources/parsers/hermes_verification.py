@@ -75,13 +75,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -183,16 +184,20 @@ def looks_like_verification_evidence_db_payload(payload: JSONDocument) -> bool:
 
 
 def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = False) -> bool:
-    """Return true when *path* is a readable Hermes verification_evidence.db."""
+    """Return true when *path* is a Hermes verification_evidence.db or its export.
+
+    Answered from the table/column shape alone, so probing a retained export
+    never costs a reconstruction of its rows.
+    """
     try:
-        with _connect_readonly(path, immutable=immutable) as conn:
-            return _has_required_tables(conn)
-    except sqlite3.Error:
+        return _shape_has_required_tables(logical_source_shape(path, immutable=immutable))
+    except (sqlite3.Error, OSError, LogicalExportError, ValueError):
         return False
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    conn = open_readonly_connection(path.resolve(), immutable=immutable, validate_schema=False)
+    """Open a retained logical export or a live Hermes database for reading."""
+    conn = open_logical_source(path, immutable=immutable)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -202,17 +207,19 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
 
 
 def _has_required_tables(conn: sqlite3.Connection) -> bool:
-    tables = {
-        str(row[0])
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND name IN ('meta', 'verification_events', 'verification_state')"
-        ).fetchall()
-    }
-    if tables != {"meta", "verification_events", "verification_state"}:
+    return _shape_has_required_tables(_connection_shape(conn))
+
+
+def _connection_shape(conn: sqlite3.Connection) -> Mapping[str, tuple[str, ...]]:
+    tables = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    return {table: tuple(sorted(_columns(conn, table))) for table in tables}
+
+
+def _shape_has_required_tables(shape: Mapping[str, tuple[str, ...]]) -> bool:
+    if not {"meta", "verification_events", "verification_state"} <= set(shape):
         return False
-    return _REQUIRED_EVENT_COLUMNS.issubset(_columns(conn, "verification_events")) and _REQUIRED_STATE_COLUMNS.issubset(
-        _columns(conn, "verification_state")
+    return _REQUIRED_EVENT_COLUMNS.issubset(set(shape["verification_events"])) and _REQUIRED_STATE_COLUMNS.issubset(
+        set(shape["verification_state"])
     )
 
 
@@ -545,7 +552,7 @@ def import_fidelity_declaration(sessions: list[ParsedSession]) -> HermesImportFi
         producer="Hermes coding-verification ledger (verification_evidence.db, live schema v1)",
         schema_version=1,
         profile_namespace=None,
-        acquisition_method="sqlite_backup",
+        acquisition_method="logical_export",
         retained_blob_reproducibility=HermesFidelityCapability(
             status="exact",
             observed=1,
