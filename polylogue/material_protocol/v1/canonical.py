@@ -9,19 +9,18 @@ carries meaning in this protocol -- consumers must not depend on it.
 
 from __future__ import annotations
 
-import unicodedata
-
 from polylogue.core.json import JSONValue, dumps_bytes, loads
+from polylogue.core.text_identity import nfc
 
 
 def nfc_normalize(value: JSONValue) -> JSONValue:
     """Recursively NFC-normalize every string in a JSON-compatible value."""
     if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
+        return nfc(value)
     if isinstance(value, list):
         return [nfc_normalize(item) for item in value]
     if isinstance(value, dict):
-        return {unicodedata.normalize("NFC", key): nfc_normalize(item) for key, item in value.items()}
+        return {nfc(key): nfc_normalize(item) for key, item in value.items()}
     return value
 
 

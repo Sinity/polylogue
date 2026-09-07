@@ -11,10 +11,11 @@ while it still separates values JSON itself distinguishes -- ``true`` from
 
 from __future__ import annotations
 
-import unicodedata
 from decimal import Decimal
 from hashlib import sha256
 from math import isfinite
+
+from polylogue.core.text_identity import nfc
 
 _CONTENT_IDENTITY_DOMAIN = b"polylogue:member-content:v1\0"
 
@@ -46,7 +47,7 @@ def _encode(value: object, out: list[bytes]) -> None:
             _encode(item, out)
         return
     if isinstance(value, dict):
-        items = sorted((unicodedata.normalize("NFC", str(key)), item) for key, item in value.items())
+        items = sorted((nfc(str(key)), item) for key, item in value.items())
         out.append(b"o%d;" % len(items))
         for key, item in items:
             _encode_text(b"k", key, out)
@@ -56,7 +57,7 @@ def _encode(value: object, out: list[bytes]) -> None:
 
 
 def _encode_text(tag: bytes, value: str, out: list[bytes]) -> None:
-    encoded = unicodedata.normalize("NFC", value).encode("utf-8", errors="surrogatepass")
+    encoded = nfc(value).encode("utf-8", errors="surrogatepass")
     out.append(b"%s%d:" % (tag, len(encoded)))
     out.append(encoded)
     out.append(b";")

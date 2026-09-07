@@ -706,3 +706,49 @@ def test_provider_enum_interop_with_ids(provider: Provider, conv_str: str) -> No
     assert metadata["session_id"] == cid
     assert metadata["provider"] == provider
     assert str(metadata["provider"]) == provider.value
+
+
+# ---------------------------------------------------------------------------
+# The decode contract the JSONL boundary relies on
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("backend", _backend_params())
+@given(value=_json_value)
+def test_loads_output_is_a_json_value_under_every_backend(
+    monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend, value: object
+) -> None:
+    """``loads`` decodes into JSON's own vocabulary and nothing else.
+
+    ``sources/decoder_json`` stopped re-walking every decoded JSONL record to
+    rediscover this, so the guarantee lives here. Anti-vacuity: a backend that
+    decoded a number to ``Decimal``, or an object to a non-string-keyed dict,
+    makes this red.
+    """
+    monkeypatch.setattr(core_json, "_BACKEND", backend)
+    decoded = core_json.loads(core_json.dumps(value))
+    assert core_json.is_json_value(decoded)
+
+
+@given(value=_json_value)
+def test_json_document_or_none_matches_the_two_pass_route(value: object) -> None:
+    """One walk answers exactly what normalize-then-validate answered."""
+    lowered = core_json.normalize_json_decimal(value)
+    expected = lowered if core_json.is_json_document(lowered) else None
+    assert core_json.json_document_or_none(value) == expected
+
+
+def test_json_document_or_none_lowers_decimal_and_refuses_non_json() -> None:
+    assert core_json.json_document_or_none({"n": Decimal("1.5")}) == {"n": 1.5}
+    assert core_json.json_document_or_none({"n": Decimal("2")}) == {"n": 2}
+    assert core_json.json_document_or_none({"deep": [{"n": Decimal("0.25")}]}) == {"deep": [{"n": 0.25}]}
+    assert core_json.json_document_or_none({"bad": object()}) is None
+    assert core_json.json_document_or_none({1: "not a string key"}) is None
+    assert core_json.json_document_or_none([{"a": 1}]) is None
+
+
+def test_json_document_or_none_returns_the_same_object_when_nothing_changes() -> None:
+    """A Decimal-free record is not rebuilt, so the walk allocates nothing."""
+    record: dict[str, object] = {"a": 1, "b": [1, 2, {"c": "x"}], "d": None}
+    assert core_json.json_document_or_none(record) is record
+    assert core_json.normalize_json_decimal(record) is record
