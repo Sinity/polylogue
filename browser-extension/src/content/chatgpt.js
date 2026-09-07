@@ -933,6 +933,9 @@
         retry_after_seconds: throttle.retry_after_seconds ?? null,
       };
     }
+    if (throttle?.ok !== true) {
+      return { ok: false, error: "provider_throttle_authority_unavailable" };
+    }
     // Intercepted responses are only a bootstrap/fallback cache. A long-running
     // conversation can grow substantially after the response observed at page
     // load, so every explicit capture first asks ChatGPT for current native

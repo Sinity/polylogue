@@ -297,6 +297,23 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     expect(result).toMatchObject({ ok: false, error: "provider_throttle_authority_unavailable" });
     expect(fetch).not.toHaveBeenCalled();
   });
+
+  it("fails closed when the shared throttle authority returns a negative response", async () => {
+    const fetch = vi.fn(async () => notFoundResponse());
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/authority-negative",
+      fetch,
+      runtimeMessage: async (message) => {
+        if (message.type === "polylogue.providerThrottle") return { ok: false, error: "worker reloading" };
+        return undefined;
+      },
+    });
+
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result).toMatchObject({ ok: false, error: "provider_throttle_authority_unavailable" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
 });
 
 describe("chatgpt.js asset descriptor identification (through a real capture)", () => {
