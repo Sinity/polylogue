@@ -29,6 +29,7 @@ from polylogue.core.enums import PasteBoundary
 from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
 from polylogue.logging import get_logger
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = get_logger(__name__)
 
@@ -137,6 +138,7 @@ def _archive_source_path(db_path: Path) -> Path:
 
 
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:
+    require_write_lease(f"hook paste enrichment({index_db})", archive_root=index_db.parent)
     conn = sqlite3.connect(str(index_db))
     updated = 0
     updated_sessions: set[str] = set()

@@ -45,6 +45,7 @@ from polylogue.storage.sqlite.queries import (
 from polylogue.storage.sqlite.queries import stats as stats_q
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
 async def _apply_pragma_statements_async(conn: aiosqlite.Connection, statements: tuple[str, ...]) -> None:
@@ -183,6 +184,7 @@ async def ensure_schema_once(backend: SQLiteBackend) -> None:
         if _is_initialized_archive_index(backend._db_path):
             backend._schema_ensured = True
             return
+        require_write_lease(f"async schema initialization({backend._db_path})")
         async with aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT) as init_conn:
             os.chmod(backend._db_path, 0o600)
             await configure_connection(init_conn)
@@ -220,6 +222,7 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
 
     async with backend._write_lock:
         if backend._txn_conn is None:
+            require_write_lease(f"async transaction({backend._db_path})")
             backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
             await configure_connection(backend._txn_conn)
 
@@ -236,6 +239,7 @@ async def _backend_begin(backend: SQLiteBackend) -> None:
     """Begin a transaction or nested savepoint."""
     await backend._ensure_schema_once()
     if backend._txn_conn is None:
+        require_write_lease(f"async transaction begin({backend._db_path})")
         backend._txn_conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
         await configure_connection(backend._txn_conn)
 
@@ -312,6 +316,7 @@ async def _backend_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite
 async def _bulk_connection(backend: SQLiteBackend) -> AsyncIterator[None]:
     """Keep a single connection alive for many sequential operations."""
     await backend._ensure_schema_once()
+    require_write_lease(f"async bulk transaction({backend._db_path})")
     conn = await aiosqlite.connect(backend._db_path, timeout=DB_TIMEOUT)
     await configure_connection(conn)
     await conn.execute("BEGIN IMMEDIATE")

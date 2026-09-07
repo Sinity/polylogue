@@ -47,6 +47,7 @@ from polylogue.storage.blob_liveness import (
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
 from polylogue.storage.introspection import column_exists as _column_exists
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = get_logger(__name__)
 
@@ -1731,6 +1732,7 @@ def prune_orphan_blob_reference_debt(
             Path(quarantine_path) if quarantine_path is not None else _default_blob_ref_quarantine_path(source_db)
         )
         _write_blob_ref_quarantine(resolved_quarantine_path, limited_candidates)
+        require_write_lease(f"blob integrity quarantine({source_db})", archive_root=source_db.parent)
         with closing(sqlite3.connect(source_db)) as write_conn:
             pruned_refs = _delete_blob_ref_rows(write_conn, limited_candidates)
             write_conn.commit()
@@ -1967,6 +1969,7 @@ def replace_raw_backed_blob_reference_debt_from_source(
     written_blobs = 0
     written_bytes = 0
     if not dry_run and candidate_updates:
+        require_write_lease(f"blob integrity publication({source_db})", archive_root=source_db.parent)
         from polylogue.storage.blob_publication import (
             ArchiveBlobPublisher,
             consume_blob_publication_receipt,
