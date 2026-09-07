@@ -5759,6 +5759,48 @@ def _price_provider_usage_tokens(
     return CatalogCost(cost_usd)
 
 
+def _reprice_model_usage_rows(conn: sqlite3.Connection, session_id: str) -> int:
+    """Refresh catalog costs for persisted token totals during a rebuild.
+
+    ``session_model_usage`` rows can outlive the provider-event or message
+    evidence that originally produced them (for example, an index generated
+    before catalog pricing was wired in). Rebuilds must still reprice those
+    canonical token totals so catalog-covered models are not left with a
+    misleading NULL cost. Provider-reported dollars remain untouched.
+    """
+    rows = conn.execute(
+        """
+        SELECT model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+        FROM session_model_usage
+        WHERE session_id = ?
+        """,
+        (session_id,),
+    ).fetchall()
+    changed = 0
+    for row in rows:
+        model_name = str(row[0] or "").strip()
+        if not model_name:
+            continue
+        catalog_cost = _price_provider_usage_tokens(
+            conn,
+            model_name,
+            input_tokens=int(row[1] or 0),
+            output_tokens=int(row[2] or 0),
+            cache_read_tokens=int(row[3] or 0),
+            cache_write_tokens=int(row[4] or 0),
+        )
+        value = None if catalog_cost is None else catalog_cost.value
+        changed += conn.execute(
+            """
+            UPDATE session_model_usage
+            SET catalog_cost_usd = ?
+            WHERE session_id = ? AND model_name = ?
+            """,
+            (value, session_id, model_name),
+        ).rowcount
+    return changed
+
+
 def _upsert_provider_usage_model_rollup(
     conn: sqlite3.Connection,
     session_id: str,

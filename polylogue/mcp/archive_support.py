@@ -8,7 +8,11 @@ from pathlib import Path
 from time import monotonic
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from polylogue.archive.query.spec import parse_query_date, resolve_default_root_filter
+from polylogue.archive.query.spec import (
+    DEFAULT_SESSION_LIST_LIMIT,
+    parse_query_date,
+    resolve_default_root_filter,
+)
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_reader
@@ -288,7 +292,7 @@ def archive_session_list_payload(
     *,
     config: Config | None = None,
     archive_root: Path | None = None,
-    default_limit: int = 10,
+    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
 ) -> MCPPaginatedQueryResultPayload:
     """Build the generic MCP list-sessions envelope from the archive."""
     from polylogue.mcp.payloads import MCPPaginatedQueryResultPayload
