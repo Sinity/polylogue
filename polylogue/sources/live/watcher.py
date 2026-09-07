@@ -212,6 +212,44 @@ def _log_unclaimed_catch_up_candidate(path: Path, *, source_name: str, reason: s
     log_unclaimed_file(path=path, size=size, mtime=mtime, reason=reason, source_name=source_name)
 
 
+def _directory_identity(path: Path) -> tuple[int, int] | None:
+    """Return the device/inode a directory really occupies.
+
+    ``None`` for anything that cannot be statted -- a broken symlink or a
+    directory that vanished mid-walk -- neither of which can be descended.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino)
+
+
+def _descendable_directory_names(
+    source: WatchSource,
+    directory: Path,
+    dirnames: list[str],
+    walked: set[tuple[int, int]],
+) -> list[str]:
+    """Return the child directory names a source's walk may descend into.
+
+    ``walked`` accumulates every directory identity the walk has entered, so a
+    symlink pointing at an ancestor or at an already-walked sibling tree is
+    dropped rather than followed a second time.
+    """
+    descendable: list[str] = []
+    for dirname in dirnames:
+        child = directory / dirname
+        if source.ignores_directory(child):
+            continue
+        identity = _directory_identity(child)
+        if identity is None or identity in walked:
+            continue
+        walked.add(identity)
+        descendable.append(dirname)
+    return descendable
+
+
 @dataclass(frozen=True, slots=True)
 class WatchSource:
     """A directory to watch for live session files."""
@@ -960,10 +998,17 @@ class LiveWatcher:
                 continue
             if source in self._hook_sources():
                 continue
-            for directory, dirnames, filenames in os.walk(source.root, followlinks=False):
-                dirnames[:] = [
-                    dirname for dirname in dirnames if not source.ignores_directory(Path(directory) / dirname)
-                ]
+            # A directory symlink under a watch root is a deliberate placement
+            # -- the inbox exposes whole export corpora that way -- so the walk
+            # follows it. ``walked`` carries every directory identity already
+            # entered, which bounds the walk against symlink cycles and keeps
+            # one file from becoming a candidate under two names.
+            walked: set[tuple[int, int]] = set()
+            root_identity = _directory_identity(source.root)
+            if root_identity is not None:
+                walked.add(root_identity)
+            for directory, dirnames, filenames in os.walk(source.root, followlinks=True):
+                dirnames[:] = _descendable_directory_names(source, Path(directory), dirnames, walked)
                 for filename in filenames:
                     path = Path(directory) / filename
                     if deepest_source_for_path(path, self._sources) is not source:
@@ -2171,6 +2216,23 @@ def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[Candida
     return ordered
 
 
+def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
+    """Return the XDG data-home inbox when the archive root has moved away.
+
+    ``archive_root()`` defaults to ``data_home()``, so an archive whose root
+    was later pointed elsewhere leaves its inbox behind under no watch root at
+    all: exports staged there before the move are acquired by nothing, and a
+    wipe-and-reconverge never reads them. Same finite legacy-root topology the
+    hook spools already carry. Inert where the two inboxes coincide.
+    """
+    from polylogue.paths import archive_root, data_home
+
+    legacy_root = data_home() / "inbox"
+    if legacy_root.resolve() == (archive_root() / "inbox").resolve():
+        return ()
+    return (WatchSource(name="inbox", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
+
+
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
@@ -2248,6 +2310,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
+        *_legacy_data_home_inbox_sources(),
         *hook_watch_sources(hook_spool_sources()),
     )
 

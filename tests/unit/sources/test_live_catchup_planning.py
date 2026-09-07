@@ -1087,3 +1087,78 @@ async def test_process_wide_degrade_mid_run_ends_the_catch_up_loop(
 
     chunk_leases = [actor for actor in coordinator.actors if actor == "watcher.catch_up.chunk"]
     assert len(chunk_leases) == 1
+
+
+def _inbox_watcher(root: Path, archive_root: Path) -> LiveWatcher:
+    polylogue = SimpleNamespace(archive_root=archive_root, backend=None)
+    return LiveWatcher(
+        cast(Any, polylogue),
+        (WatchSource(name="inbox", root=root),),
+        cursor=CursorStore(archive_root / "cursor.sqlite"),
+    )
+
+
+def test_catch_up_scan_reaches_a_symlinked_export_corpus(tmp_path: Path) -> None:
+    """A directory symlink under a watch root is a deliberate placement -- the
+    archive inbox exposes whole export corpora that way -- so the files behind
+    it are catch-up candidates.
+
+    Anti-vacuity: walking with ``followlinks=False``, or resolving ownership
+    from the resolved path alone, leaves only ``staged`` and the linked corpus
+    is acquired by nothing.
+    """
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    staged = inbox / "staged.jsonl"
+    staged.write_text('{"role":"user","content":"staged"}\n', encoding="utf-8")
+    (corpus / "exported.jsonl").write_text('{"role":"user","content":"exported"}\n', encoding="utf-8")
+    (inbox / "chatgpt").symlink_to(corpus, target_is_directory=True)
+
+    watcher = _inbox_watcher(inbox, tmp_path)
+    candidates = watcher._scan_catch_up_candidates([inbox])
+
+    assert {candidate.path for candidate in candidates} == {staged, inbox / "chatgpt" / "exported.jsonl"}
+
+
+def test_catch_up_scan_walks_a_symlink_cycle_once(tmp_path: Path) -> None:
+    """Following directory symlinks stays bounded: a link pointing back at its
+    own ancestor is not descended a second time.
+
+    Anti-vacuity: drop the walked-identity check and the same file returns
+    once per ``loop/nested`` repetition until the walk dies on path length.
+    """
+    inbox = tmp_path / "inbox"
+    nested = inbox / "nested"
+    nested.mkdir(parents=True)
+    session = nested / "session.jsonl"
+    session.write_text('{"role":"user","content":"hello"}\n', encoding="utf-8")
+    (nested / "loop").symlink_to(inbox, target_is_directory=True)
+
+    watcher = _inbox_watcher(inbox, tmp_path)
+    candidates = watcher._scan_catch_up_candidates([inbox])
+
+    assert [candidate.path for candidate in candidates] == [session]
+
+
+def test_catch_up_scan_reaches_one_corpus_linked_twice_once(tmp_path: Path) -> None:
+    """Two links to one corpus name one acquisition, not two.
+
+    Anti-vacuity: without the shared walked-identity set the file is a
+    candidate under both link names, and the daemon leases the writer twice
+    to ingest identical bytes.
+    """
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "exported.jsonl").write_text('{"role":"user","content":"exported"}\n', encoding="utf-8")
+    (inbox / "chatgpt").symlink_to(corpus, target_is_directory=True)
+    (inbox / "chatgpt-alias").symlink_to(corpus, target_is_directory=True)
+
+    watcher = _inbox_watcher(inbox, tmp_path)
+    candidates = watcher._scan_catch_up_candidates([inbox])
+
+    assert len(candidates) == 1
+    assert candidates[0].path.name == "exported.jsonl"
