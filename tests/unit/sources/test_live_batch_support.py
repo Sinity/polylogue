@@ -27,7 +27,7 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.core.enums import ArtifactSupportStatus, Provider
-from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS
+from polylogue.core.raw_failure_evidence import RAW_FAILURE_EVIDENCE_KINDS, RawFailureEvidenceKind
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash, session_revision_projection
 from polylogue.sources.dispatch import parse_payload
@@ -35,7 +35,6 @@ from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.append_ingest import ingest_append_plans
 from polylogue.sources.live.batch import (
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
-    CursorAuthorityBlockedError,
     LiveBatchProcessor,
     _ArchiveFullWriteResult,
     append_capability_receipt,
@@ -2088,8 +2087,10 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
         artifact = conn.execute("SELECT artifact_kind FROM raw_artifacts ORDER BY last_observed_at_ms DESC").fetchone()
     assert artifact == ("deferred_hot_jsonl_capture",)
 
-    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
-        asyncio.run(processor.ingest_files([path]))
+    retry = asyncio.run(processor.ingest_files([path]))
+    assert retry.full_file_count == 1
+    assert retry.succeeded_file_count == 1
+    assert retry.failed_file_count == 0
 
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
@@ -4766,7 +4767,11 @@ def test_full_ingest_does_not_advance_cursor_across_same_size_replacement(
     )
     replaced = False
 
-    def replace_after_acquisition(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+    def replace_after_acquisition(
+        paths: list[Path],
+        **kwargs: object,
+    ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        del kwargs
         nonlocal replaced
         if not replaced:
             if replacement_mode == "atomic":
@@ -5078,7 +5083,11 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     pre_rewrite_stat = path.stat()
     replaced = False
 
-    def replace_after_append(paths: list[Path]) -> tuple[set[Path], float, dict[str, float], list[object]]:
+    def replace_after_append(
+        paths: list[Path],
+        **kwargs: object,
+    ) -> tuple[set[Path], float, dict[str, float], list[object]]:
+        del kwargs
         nonlocal replaced
         if not replaced:
             if rewrite_mode == "atomic-replacement":
@@ -5239,18 +5248,37 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
 
     assert second.full_file_count == 1
     assert second.append_file_count == 0
-    assert second.succeeded_file_count == 0
-    assert second.failed_file_count == 1
+    # The full route retains the competing bytes and records a typed deferred
+    # frontier carrier; source acquisition is successful even though replay
+    # remains pending until a later observation can order the revisions.
+    assert second.succeeded_file_count == 1
+    assert second.failed_file_count == 0
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT native_id FROM messages ORDER BY native_id").fetchall() == [("message-0",)]
         assert conn.execute("SELECT substr(search_text, 1, 5) FROM blocks ORDER BY search_text").fetchall() == [
             ("zeroa",),
         ]
-    failed_cursor = cursor.get_record(path)
-    assert failed_cursor is not None
-    assert failed_cursor.byte_offset == len(baseline)
-    assert failed_cursor.failure_count == 1
-    assert failed_cursor.next_retry_at is not None
+    retained_cursor = cursor.get_record(path)
+    assert retained_cursor is not None
+    assert retained_cursor.byte_offset == len(rewritten + appended)
+    assert retained_cursor.failure_count == 0
+    assert retained_cursor.next_retry_at is None
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        retained = conn.execute(
+            """
+            SELECT r.blob_hash, r.blob_size
+            FROM raw_sessions AS r
+            JOIN raw_artifacts AS a USING (raw_id)
+            WHERE r.source_path = ? AND a.artifact_kind = ?
+            """,
+            (str(path), RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value),
+        ).fetchone()
+    assert retained is not None
+    assert retained[1] == len(rewritten + appended)
+    assert BlobStore(tmp_path / "blob").read_all(bytes(retained[0]).hex()) == rewritten + appended
+    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
+    assert lifecycle.deferred == 1
+    assert lifecycle.unexplained == 0
 
 
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
@@ -6139,7 +6167,7 @@ def test_append_admission_bind_failure_persists_exact_pending_envelope_and_retri
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE source_index = -1").fetchone() == (1,)
 
 
-def test_public_full_blob_batch_bind_failure_persists_bytes_and_blocks_unsafe_retry(
+def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_only_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6202,8 +6230,10 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_blocks_unsafe_re
     )
     assert isinstance(row[13], str) and "injected blob bind failure" in row[13]
 
-    with pytest.raises(CursorAuthorityBlockedError, match="source-selection gate blocked"):
-        asyncio.run(processor.ingest_files([source], emit_event=False))
+    retry = asyncio.run(processor.ingest_files([source], emit_event=False))
+    assert retry.full_file_count == 1
+    assert retry.succeeded_file_count == 1
+    assert retry.failed_file_count == 0
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone() == (1,)
@@ -8260,7 +8290,11 @@ async def test_live_append_plans_flush_in_bounded_groups(
 
     monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
     monkeypatch.setattr(processor, "_ingest_append_plans", fake_ingest_append_plans)
-    monkeypatch.setattr(processor, "_converge_paths", lambda paths: (paths, 0.0, {}, []))
+    monkeypatch.setattr(
+        processor,
+        "_converge_paths",
+        lambda paths, **kwargs: (paths, 0.0, {}, []),
+    )
     monkeypatch.setattr(processor, "_record_append_cursor", lambda plan: True)
     monkeypatch.setattr(processor, "_record_convergence_outcome", lambda path, debts: None)
     monkeypatch.setattr("polylogue.sources.live.batch._append_plan_group_ready", lambda plans: len(plans) >= 2)
