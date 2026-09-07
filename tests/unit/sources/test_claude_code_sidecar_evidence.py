@@ -254,7 +254,8 @@ def test_permission_mode_persists_operational_signal() -> None:
     )
     events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
-        ("claude_permission_mode", {"permission_mode": "bypassPermissions", "summary": "bypassPermissions"})
+        ("claude_permission_mode", {"permission_mode": "bypassPermissions", "summary": "bypassPermissions"}),
+        ("claude_session_environment", {"permission_modes": {"bypassPermissions": 1}}),
     ]
 
 
