@@ -170,6 +170,7 @@ BOUNDED_REPAIR_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
 # provider artifacts. It has no mmap allowance, only this page-cache limit.
 OBSERVATION_JOURNAL_CACHE_SIZE_KIB = _scale_profile_size(65536)  # 64 MiB
 WAL_AUTOCHECKPOINT_PAGES = 10000
+OWNED_WAL_AUTOCHECKPOINT_PAGES = 0
 # #1614: soft cap on the WAL file. After any checkpoint that frees
 # pages, SQLite truncates the WAL down to this size. Without this cap
 # the WAL grows unbounded when a TRUNCATE checkpoint is blocked by a
@@ -386,12 +387,6 @@ WAL_ESCALATION_BYTES = 512 * 1024 * 1024
 #: against its own ceiling instead of disappearing into whichever publication
 #: hold happened to contain it.
 CHECKPOINT_HOLD_BUDGET_S = 20.0
-
-#: Implicit autocheckpoint pages for a writable connection in a process that
-#: runs the recurring coordinator: none. Any other process keeps
-#: ``WAL_AUTOCHECKPOINT_PAGES``, because a one-shot CLI or API writer has no
-#: recurring owner to defer to and an unbounded WAL is the worse failure.
-OWNED_WAL_AUTOCHECKPOINT_PAGES = 0
 
 _RECURRING_CHECKPOINT_OWNER = threading.Event()
 

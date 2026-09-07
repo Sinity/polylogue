@@ -76,7 +76,6 @@ async def _resolve_reference_query_pipeline(
     with stages returns a typed ``not_implemented`` error naming the gap
     rather than silently ignoring the stages or crashing.
     """
-    import sqlite3
     from contextlib import closing
 
     from polylogue.archive.query.evaluator import RetainedRelationUnavailableError
@@ -112,7 +111,15 @@ async def _resolve_reference_query_pipeline(
 
     evaluator = ArchiveCanonicalPlanEvaluator(index_db)
     try:
-        with closing(sqlite3.connect(f"file:{user_db}?mode=ro", uri=True, timeout=5.0)) as conn:
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(
+            open_readonly_connection(
+                user_db,
+                timeout_class="interactive-read",
+                validate_schema=False,
+            )
+        ) as conn:
             from polylogue.archive.query.evaluator import DurableRefResolver
 
             resolver = DurableRefResolver(conn, evaluator)

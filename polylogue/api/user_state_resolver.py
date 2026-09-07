@@ -31,6 +31,7 @@ from polylogue.core.user_state_targets import (
     identity_key,
     validate_target_kind,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 class ResolvedTarget(TypedDict, total=False):
@@ -57,7 +58,9 @@ def _index_db_path(archive_root: Path) -> Path | None:
     if not candidate.exists():
         return None
     try:
-        with closing(sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)) as conn:
+        with closing(
+            open_readonly_connection(candidate, timeout_class="interactive-read", validate_schema=False)
+        ) as conn:
             row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
     except sqlite3.Error:
         return None
@@ -65,7 +68,7 @@ def _index_db_path(archive_root: Path) -> Path | None:
 
 
 def _row_exists_sync(db_path: Path, sql: str, params: tuple[object, ...]) -> bool:
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
         row = conn.execute(sql, params).fetchone()
     return row is not None
 
@@ -89,7 +92,7 @@ def _block_exists_sync(
     message_id: str,
     block_index: int,
 ) -> bool:
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
         row = conn.execute(
             """
             SELECT 1

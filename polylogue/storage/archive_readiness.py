@@ -119,7 +119,7 @@ def claude_workflow_materialization_status(ops_db: Path) -> dict[str, object] | 
     if not ops_db.exists():
         return None
     try:
-        with closing(sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)) as conn:
+        with closing(open_readonly_connection(ops_db, timeout_class="background-read", validate_schema=False)) as conn:
             conn.row_factory = sqlite3.Row
             has_table = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'daemon_stage_events'"
@@ -234,7 +234,7 @@ def raw_materialization_readiness_snapshot(
 
         with closing(open_readonly_connection(index_db, tier=ArchiveTier.INDEX)) as conn:
             conn.row_factory = sqlite3.Row
-            conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
+            conn.execute("ATTACH DATABASE ? AS source", (f"file:{source_db}?mode=ro",))
             raw_columns = _table_columns(conn, "source", "raw_sessions")
             session_columns = _table_columns(conn, "main", "sessions")
             row = conn.execute(
@@ -706,7 +706,9 @@ def missing_source_raw_session_evidence(active_archive: Path, *, limit: int = 10
             "lost_source_evidence_samples": [],
         }
     try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
+        with closing(
+            open_readonly_connection(index_db, timeout_class="background-read", validate_schema=False)
+        ) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("ATTACH DATABASE ? AS source", (str(source_db),))
             if not _table_columns(conn, "main", "sessions") or not _table_columns(conn, "source", "raw_sessions"):
@@ -1389,7 +1391,7 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
 
     missing_source_evidence = missing_source_raw_session_evidence(root)
     try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        conn = open_readonly_connection(index_db, timeout_class="background-read", validate_schema=False)
         try:
             if not _table_exists(conn, "sessions"):
                 return {"checked": False, "reason": "missing_sessions_table", "surfaces": {}}
@@ -1397,7 +1399,9 @@ def archive_readiness_status(root: Path) -> dict[str, Any]:
             source_conn: sqlite3.Connection | None = None
             try:
                 if source_check_available:
-                    source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+                    source_conn = open_readonly_connection(
+                        source_db, timeout_class="background-read", validate_schema=False
+                    )
                     source_check_available = _table_exists(source_conn, "raw_sessions")
                 counts = _archive_readiness_counts(
                     conn,

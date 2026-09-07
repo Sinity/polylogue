@@ -39,6 +39,7 @@ from polylogue.logging import get_logger
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -94,7 +95,11 @@ def _fetch_archive_provenance_row(
     if not archive_db.exists():
         return None
     source_db = archive_root_path / "source.db"
-    conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(
+        archive_db,
+        timeout_class="background-read",
+        validate_schema=False,
+    )
     try:
         conn.row_factory = sqlite3.Row
         if source_db.exists():
