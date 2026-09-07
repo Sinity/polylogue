@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import fcntl
 import hashlib
 import json
@@ -27,6 +29,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureAcceptedIdentity,
     BrowserCaptureArchiveLifecycle,
     BrowserCaptureArchiveStatePayload,
+    BrowserCaptureAttachment,
     BrowserCaptureEnvelope,
     BrowserCaptureReceiverStatusPayload,
 )
@@ -328,7 +331,28 @@ def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
     this hash lets two concurrently running instances converge on one spool
     artifact while the receiver can still echo each poster's attribution.
     """
+    return hashlib.sha256(_capture_hash_bytes(envelope)).hexdigest()
+
+
+def _capture_hash_bytes(
+    envelope: BrowserCaptureEnvelope,
+    *,
+    without_attachment_carriers: bool = False,
+) -> bytes:
+    """Serialize the semantic capture fingerprint without the fast JSON path.
+
+    The msgspec encoder has pathological peak memory use for very large
+    strings on the receiver's input route.  This hash is admission metadata,
+    so the stdlib encoder's bounded, predictable allocation is preferable to
+    retaining the accelerator's output characteristics here.
+    """
     session = envelope.session.model_dump(mode="json", exclude_none=True)
+    if without_attachment_carriers:
+        for attachment in session.get("attachments", []):
+            attachment.pop("content_base64", None)
+        for turn in session.get("turns", []):
+            for attachment in turn.get("attachments", []):
+                attachment.pop("content_base64", None)
     session["provider_meta"] = _semantic_provider_meta(envelope.session.provider_meta)
     payload = {
         "polylogue_capture_kind": envelope.polylogue_capture_kind,
@@ -337,7 +361,80 @@ def capture_dedup_content_hash(envelope: BrowserCaptureEnvelope) -> str:
         "provider_meta": _semantic_provider_meta(envelope.provider_meta),
         "raw_provider_payload": envelope.raw_provider_payload,
     }
-    return hashlib.sha256(dumps_bytes(payload, sort_keys=True)).hexdigest()
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+_INVALID_ATTACHMENT_CARRIER = object()
+
+
+def _decode_capture_content_base64(value: str) -> bytes | object:
+    """Decode the declared carrier, returning a sentinel for malformed input."""
+    data = value
+    if value.startswith("data:") and ";base64," in value:
+        _, data = value.split(";base64,", 1)
+    try:
+        return base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error):
+        return _INVALID_ATTACHMENT_CARRIER
+
+
+def _capture_attachments(envelope: BrowserCaptureEnvelope) -> list[BrowserCaptureAttachment]:
+    return [
+        *envelope.session.attachments,
+        *(attachment for turn in envelope.session.turns for attachment in turn.attachments),
+    ]
+
+
+def _capture_has_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
+    return any(attachment.content_base64 is not None for attachment in _capture_attachments(envelope))
+
+
+def _capture_has_invalid_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
+    return any(
+        attachment.content_base64 is not None
+        and _decode_capture_content_base64(attachment.content_base64) is _INVALID_ATTACHMENT_CARRIER
+        for attachment in _capture_attachments(envelope)
+    )
+
+
+def _attachment_content_enrichment(
+    incoming: BrowserCaptureEnvelope,
+    existing: BrowserCaptureEnvelope,
+) -> bool:
+    """Accept only a valid carrier added to an otherwise identical capture."""
+    incoming_attachments = _capture_attachments(incoming)
+    existing_attachments = _capture_attachments(existing)
+    if not incoming_attachments or len(incoming_attachments) != len(existing_attachments):
+        return False
+    if incoming.provenance.model_dump(mode="json", exclude_none=True) != existing.provenance.model_dump(
+        mode="json", exclude_none=True
+    ):
+        return False
+    if _semantic_provider_meta(incoming.provider_meta) != _semantic_provider_meta(existing.provider_meta):
+        return False
+    if _capture_hash_bytes(incoming, without_attachment_carriers=True) != _capture_hash_bytes(
+        existing, without_attachment_carriers=True
+    ):
+        return False
+
+    added_carrier = False
+    for incoming_attachment, existing_attachment in zip(incoming_attachments, existing_attachments, strict=True):
+        incoming_value = incoming_attachment.content_base64
+        existing_value = existing_attachment.content_base64
+        if incoming_value is None:
+            if existing_value is not None:
+                return False
+            continue
+        incoming_bytes = _decode_capture_content_base64(incoming_value)
+        if incoming_bytes is _INVALID_ATTACHMENT_CARRIER:
+            return False
+        if existing_value is None:
+            added_carrier = True
+            continue
+        existing_bytes = _decode_capture_content_base64(existing_value)
+        if existing_bytes is _INVALID_ATTACHMENT_CARRIER or incoming_bytes != existing_bytes:
+            return False
+    return added_carrier
 
 
 def _timestamp_ms(value: object) -> int | None:
@@ -674,8 +771,18 @@ def capture_convergence(
     """
     if incoming.provider is not existing.provider or incoming.provider_session_id != existing.provider_session_id:
         return CaptureConvergence.NAME_COLLISION
+    if _capture_has_invalid_content_carrier(incoming):
+        return CaptureConvergence.SUPERSEDED
     if capture_dedup_content_hash(existing) == capture_dedup_content_hash(incoming):
         return CaptureConvergence.DUPLICATE
+    if _attachment_content_enrichment(incoming, existing):
+        return CaptureConvergence.PUBLISH
+    # A carrier is an acquisition claim, not freshness evidence.  If it does
+    # not satisfy the narrow enrichment relation, do not let a newer timestamp
+    # or turn count smuggle changed, malformed, or cross-identity bytes into
+    # the resident artifact.
+    if _capture_has_content_carrier(incoming):
+        return CaptureConvergence.SUPERSEDED
     if not _capture_is_newer_or_richer(incoming, existing):
         return CaptureConvergence.SUPERSEDED
     return CaptureConvergence.PUBLISH
