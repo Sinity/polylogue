@@ -20,8 +20,10 @@ from polylogue.archive.query.metadata import (
     QUERY_UNIT_DESCRIPTORS,
 )
 from polylogue.scenarios.workload import BudgetSemantics
+from polylogue.schemas.generation.archive_workload_profile import _shape_anchors
 from tests.infra.query_contract import (
     CENSUS_FAMILIES,
+    CORPUS_SHAPE_ANCHORS,
     NON_REF_FIELDS,
     PIPELINE_STAGE_EXEMPTIONS,
     PIPELINE_STAGE_KINDS,
@@ -142,3 +144,28 @@ def test_query_law_census_family_declares_a_gated_budget_from_an_slo_owner(famil
     gates = [budget for budget in family.budgets if budget.semantics is BudgetSemantics.REGRESSION_GATE]
     assert gates, "a census family with no regression gate measures nothing that can fail"
     assert family.pushdown_marker.strip(), "a census family must declare the restriction it pushes down"
+
+
+def test_query_law_corpus_shape_anchors_name_the_profile_keys_production_emits() -> None:
+    """The declared corpus shapes are quoted from the live profile builder.
+
+    Anti-vacuity: renaming a distribution key in
+    ``archive_workload_profile`` without repointing the anchor fails here,
+    so a recorded profile can always replace the declared values.
+    """
+
+    quantiles = {"quantiles": {"p50": 1.0, "p95": 2.0, "max": 3.0}}
+    emitted = _shape_anchors(
+        {
+            "session_shapes": {"message_count": quantiles},
+            "action_shapes": {
+                "tool_uses_per_session": quantiles,
+                "tool_results_per_session": quantiles,
+            },
+            "topology": {"children_per_parent": quantiles},
+        },
+        {"blob_size": quantiles},
+    )
+    assert {str(anchor["distribution_ref"]) for anchor in emitted} == {
+        anchor.distribution_ref for anchor in CORPUS_SHAPE_ANCHORS
+    }
