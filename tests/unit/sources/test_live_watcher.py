@@ -4353,3 +4353,70 @@ async def test_catch_up_chunk_losing_a_lock_race_defers_instead_of_dying(tmp_pat
     assert calls == [[source_path]]
     assert deferred == [[source_path]]
     watcher.stop()
+
+
+def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_reading(tmp_path: Path) -> None:
+    """A decided-ambiguous verdict stops catch-up re-reading the same bytes.
+
+    polylogue-i03t8: such a raw is never parsed and never reaches the index,
+    so ``_archived_cursor_row`` cannot see it and reconciliation reported
+    INCOMPATIBLE -- ``_needs_work`` stayed True on every start and the daemon
+    re-read the whole file to reach the same verdict. The retained bytes are
+    the proof of what was consumed, so the cursor is restored from them and
+    only a changed observation reopens full ingest.
+
+    Anti-vacuity: without ``_decided_unresolved_cursor_row`` the first
+    ``_needs_work`` here is True and the cursor stays absent.
+    """
+    from polylogue.archive.session_revision_membership import MembershipClassification
+    from polylogue.pipeline.ids import session_revision_projection
+
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    source_path = source_root / "decided-unresolved.jsonl"
+    payload = b'{"native_id":"decided-unresolved"}\n'
+    source_path.write_bytes(payload)
+
+    initialize_active_archive_root(tmp_path)
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="decided-unresolved",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="ambiguous content")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=payload,
+            source_path=str(source_path),
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+        )
+        archive.apply_raw_membership_classification(
+            "codex-session:decided-unresolved",
+            MembershipClassification((), (), (raw_id,)),
+            {raw_id: session},
+            {raw_id: session_revision_projection(session)},
+            acquired_at_ms=2,
+        )
+
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        source_root,
+        sources=(WatchSource(name="codex", root=source_root),),
+    )
+    assert watcher._cursor.get_record(source_path) is None
+
+    assert watcher._needs_work(source_path) is False
+    record = watcher._cursor.get_record(source_path)
+    assert record is not None
+    assert record.byte_offset == len(payload)
+    assert watcher._needs_work(source_path) is False
+
+    source_path.write_bytes(payload + b'{"native_id":"decided-unresolved-2"}\n')
+    assert watcher._needs_work(source_path) is True
+    watcher.stop()

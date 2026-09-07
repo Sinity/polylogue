@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider, ValidationStatus
 from polylogue.core.errors import RawCASFrontierError
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
@@ -530,4 +531,149 @@ def test_daemon_restart_resumes_parsing_of_an_interrupted_batch(tmp_path: Path) 
     assert rows[0][0] == "conv-stuck"
 
 
+def test_restart_rewinds_cursor_that_outran_unparsed_raw(tmp_path: Path) -> None:
+    """An interrupted full admission cannot leave its cursor at file end.
+
+    The source row is durable before parse/index work starts.  Reopening the
+    cursor store after a simulated kill must rewind the incomplete observation
+    while retaining the recovery debt that drives raw materialization.
+    """
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "cursor-ahead.json"
+    source_path.write_text("placeholder")
+    _write_stuck_raw(tmp_path, source_path=str(source_path))
+
+    live_db = tmp_path / "live.sqlite"
+    store = CursorStore(live_db, ops_db_path=tmp_path / "ops.db")
+    store.set(
+        source_path,
+        source_path.stat().st_size,
+        byte_offset=source_path.stat().st_size,
+        last_complete_newline=source_path.stat().st_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="claimed-complete",
+        tail_hash="claimed-complete",
+    )
+    store.begin_ingest_attempt(paths=[source_path], input_bytes=source_path.stat().st_size, queued_file_count=1)
+
+    restarted_store = CursorStore(live_db, ops_db_path=tmp_path / "ops.db")
+
+    cursor = restarted_store.get_record(source_path)
+    assert cursor is not None
+    assert cursor.byte_offset == 0
+    assert cursor.last_complete_newline == 0
+    assert cursor.content_fingerprint is None
+    assert cursor.tail_hash is None
+    assert any(
+        debt.stage == "raw_parse_recovery" and debt.subject_id == str(source_path)
+        for debt in restarted_store.list_convergence_debt(limit=50)
+    )
+
+
 __all__: list[str] = []
+
+
+def _write_decided_unresolved_raw(archive_root: Path, *, source_path: str) -> str:
+    """Write a raw whose membership arbitration concluded ``ambiguous``.
+
+    ``apply_raw_membership_classification`` is the production arbiter: it
+    records the verdict and quarantines the raw in one call. The result never
+    parses and never reaches the index, which is exactly the shape that reads
+    as pending recovery work forever.
+    """
+    from polylogue.archive.session_revision_membership import MembershipClassification
+    from polylogue.pipeline.ids import session_revision_projection
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="decided-unresolved",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="ambiguous content")],
+    )
+    with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"native_id":"decided-unresolved"}\n',
+            source_path=source_path,
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+        )
+        archive.apply_raw_membership_classification(
+            "codex-session:decided-unresolved",
+            MembershipClassification((), (), (raw_id,)),
+            {raw_id: session},
+            {raw_id: session_revision_projection(session)},
+            acquired_at_ms=2,
+        )
+    return raw_id
+
+
+def test_raw_parse_recovery_terminates_on_a_decided_unresolved_membership(tmp_path: Path) -> None:
+    """A decided-ambiguous verdict drains its debt instead of retrying forever.
+
+    polylogue-plbsn/polylogue-i03t8: the raw carries no ``parse_error`` and no
+    session, so the pending probe counted it on every pass while
+    ``converge_raw_materialization`` reported it converged and quarantined --
+    ``execute`` returned False forever and the ``raw_parse_recovery`` debt the
+    interrupted-attempt sweep registered for the path was never resolved.
+
+    Anti-vacuity: dropping the ``decided_unresolved_membership_sql`` clause
+    from ``_raw_parse_recovery_pending_count`` makes ``check`` stay True and
+    ``execute`` return False here, which is the reported defect.
+    """
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "decided-unresolved.jsonl"
+    raw_id = _write_decided_unresolved_raw(tmp_path, source_path=str(path))
+
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute(
+            "SELECT revision_authority, parsed_at_ms, parse_error FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone() == ("quarantined", None, None)
+        assert conn.execute("SELECT decision FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)).fetchone() == (
+            "ambiguous",
+        )
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
+    assert stage.check(path) is False
+    assert bool(stage.execute(path)) is True
+    assert stage.check(path) is False
+
+
+def test_raw_parse_recovery_still_pending_while_arbitration_has_not_run(tmp_path: Path) -> None:
+    """A censused-but-unarbitrated raw stays pending: only a verdict is terminal.
+
+    Pins the narrow scope of the exclusion -- ``decision IS NULL`` is the
+    conveyor hand-off state, not a decided outcome, so recovery must still
+    drive it.
+    """
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "pending-arbitration.jsonl"
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="pending-arbitration",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="pending content")],
+    )
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=b'{"native_id":"pending-arbitration"}\n',
+            source_path=str(path),
+            acquired_at_ms=1,
+        )
+        archive.replace_raw_membership_census(
+            raw_id,
+            [session],
+            parser_fingerprint="test-parser",
+            censused_at_ms=1,
+        )
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db", archive_root=tmp_path)
+    assert stage.check(path) is True
