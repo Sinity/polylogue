@@ -106,6 +106,44 @@
       "title": "AuthorityEnvelope",
       "type": "object"
     },
+    "OutcomeEnvelope": {
+      "additionalProperties": false,
+      "description": "The terminal outcome of one operation, decided at the operation boundary.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "state": {
+          "enum": [
+            "ok",
+            "empty",
+            "degraded",
+            "error"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "OutcomeEnvelope",
+      "type": "object"
+    },
     "QueryUnitAggregateRowPayload": {
       "additionalProperties": false,
       "description": "Grouped aggregate row over a terminal query-unit result set.",
@@ -248,6 +286,9 @@
       "title": "Offset",
       "type": "integer"
     },
+    "outcome": {
+      "$ref": "#/$defs/OutcomeEnvelope"
+    },
     "pipeline": {
       "anyOf": [
         {
@@ -367,7 +408,8 @@
     "items",
     "total",
     "limit",
-    "offset"
+    "offset",
+    "outcome"
   ],
   "title": "Query Unit Aggregate Envelope",
   "type": "object",

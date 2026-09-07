@@ -42,6 +42,7 @@ from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.formatting import format_session
 from polylogue.rendering.identity import IdentityFrame, identity_frame
 from polylogue.surfaces.authority import AuthorityEnvelope
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 from polylogue.surfaces.payloads import (
     SearchCursor,
     SessionSearchHitPayload,
@@ -939,7 +940,7 @@ def no_results(
     *,
     selection: SessionQuerySpec | None = None,
     diagnostics: QueryMissDiagnostics | None = None,
-    exit_code: int | None = 2,
+    exit_code: int | None = OUTCOME_EXIT_CODES["empty"],
 ) -> None:
     """Emit the canonical no-results contract for output surfaces."""
     emit_no_results(

@@ -2956,9 +2956,13 @@ def _archive_debt_status_summary() -> dict[str, object]:
 
         payload = archive_debt_list(archive_root=archive_root(), limit=5, exact_fts=False)
     except Exception:
+        # A failed scan and a feature that was never asked for both produce
+        # zero rows; the log and the reason are what tell them apart.
+        logger.warning("archive-debt status summary failed", exc_info=True)
         return {
             "endpoint": "/api/archive-debt",
             "available": False,
+            "reason": "archive_debt_scan_failed",
             "rows": [],
             "totals": {},
         }

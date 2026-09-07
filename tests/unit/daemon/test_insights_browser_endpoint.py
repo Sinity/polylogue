@@ -8,11 +8,12 @@ returns a single typed envelope joining four per-session insight kinds:
 - session phases
 - thread membership
 
-Each kind carries a readiness chip from the closed vocabulary
-(``q-ready`` / ``q-partial`` / ``q-missing``). Unknown sessions are a
-hard 404. Existing sessions without any materialized insight return
-200 with explicit ``q-missing`` shapes per kind (panel never blank —
-AC#1120).
+Each kind carries a canonical terminal outcome plus a readiness chip from
+the closed vocabulary (``q-error`` / ``q-missing`` / ``q-partial`` /
+``q-ready``). Unknown sessions are a hard 404. Existing sessions without any
+materialized insight return 200 with explicit ``q-missing`` shapes per kind
+(panel never blank — AC#1120), and a kind whose insight surface could not
+answer returns ``q-error`` so it is never read as zero rows.
 
 These tests exercise the pure helpers (``_readiness_tag``,
 ``_parse_insight_includes``, panel projectors) and the end-to-end dispatch
@@ -44,6 +45,11 @@ from polylogue.daemon.http import (
     _thread_panel_payload,
     _work_event_panel_payload,
 )
+from polylogue.surfaces.outcome import decide_outcome
+
+_OK = decide_outcome(matched=1)
+_EMPTY = decide_outcome(matched=0)
+_FAILED = decide_outcome(matched=0, error="insight_unavailable:probe")
 
 # ---------------------------------------------------------------------------
 # In-process handler harness (mirrors test_cost_panel_endpoint.py)
@@ -111,25 +117,31 @@ def _seed_minimum_archive(workspace_env: dict[str, Path]) -> str:
 
 
 class TestReadinessTagMapping:
-    """``_readiness_tag`` maps materialized/row-count to the readiness chips."""
+    """``_readiness_tag`` maps a panel's outcome and row count to the chips."""
 
     def test_unmaterialized_is_missing(self) -> None:
-        assert _readiness_tag(materialized=False) == "q-missing"
+        assert _readiness_tag(_EMPTY, materialized=False) == "q-missing"
 
     def test_unmaterialized_with_zero_rows_is_missing(self) -> None:
         # The materialized flag wins — a missing surface cannot be partial.
-        assert _readiness_tag(materialized=False, row_count=0) == "q-missing"
+        assert _readiness_tag(_EMPTY, materialized=False, row_count=0) == "q-missing"
 
     def test_materialized_with_zero_rows_is_partial(self) -> None:
         # Rebuild ran but produced nothing — explicit "partial" surface.
-        assert _readiness_tag(materialized=True, row_count=0) == "q-partial"
+        assert _readiness_tag(_EMPTY, materialized=True, row_count=0) == "q-partial"
 
     def test_materialized_with_rows_is_ready(self) -> None:
-        assert _readiness_tag(materialized=True, row_count=3) == "q-ready"
+        assert _readiness_tag(_OK, materialized=True, row_count=3) == "q-ready"
 
     def test_materialized_without_row_count_is_ready(self) -> None:
         # row_count=None (e.g. session profile) defaults to ready.
-        assert _readiness_tag(materialized=True) == "q-ready"
+        assert _readiness_tag(_OK, materialized=True) == "q-ready"
+
+    def test_failed_surface_is_q_error_not_missing(self) -> None:
+        # An insight surface that could not answer must not be reported with
+        # the same chip as a session that genuinely has no rows.
+        assert _readiness_tag(_FAILED, materialized=False) == "q-error"
+        assert _readiness_tag(_FAILED, materialized=False, row_count=0) == "q-error"
 
 
 # ---------------------------------------------------------------------------
@@ -168,37 +180,37 @@ class TestEmptyPayloads:
     """Empty-state panels must surface explicit q-missing — never blank."""
 
     def test_empty_profile_panel_is_q_missing(self) -> None:
-        payload = _empty_profile_panel_payload()
+        payload = _empty_profile_panel_payload(_EMPTY)
         assert payload["readiness_tag"] == "q-missing"
         assert payload["materialized"] is False
         assert payload["profile"] is None
         assert payload["provenance"] is None
 
     def test_empty_work_event_panel_is_q_missing(self) -> None:
-        payload = _work_event_panel_payload([])
+        payload = _work_event_panel_payload([], _EMPTY)
         assert payload["readiness_tag"] == "q-missing"
         assert payload["materialized"] is False
         assert payload["count"] == 0
         assert payload["events"] == []
 
     def test_empty_phase_panel_is_q_missing(self) -> None:
-        payload = _phase_panel_payload([])
+        payload = _phase_panel_payload([], _EMPTY)
         assert payload["readiness_tag"] == "q-missing"
         assert payload["count"] == 0
         assert payload["phases"] == []
 
     def test_empty_thread_panel_is_q_missing(self) -> None:
-        payload = _thread_panel_payload([])
+        payload = _thread_panel_payload([], _EMPTY)
         assert payload["readiness_tag"] == "q-missing"
         assert payload["count"] == 0
         assert payload["threads"] == []
 
     def test_payloads_round_trip_through_json(self) -> None:
         for payload in (
-            _empty_profile_panel_payload(),
-            _work_event_panel_payload([]),
-            _phase_panel_payload([]),
-            _thread_panel_payload([]),
+            _empty_profile_panel_payload(_EMPTY),
+            _work_event_panel_payload([], _EMPTY),
+            _phase_panel_payload([], _EMPTY),
+            _thread_panel_payload([], _EMPTY),
         ):
             json.dumps(payload)
 
@@ -219,7 +231,8 @@ class TestEmptyPayloads:
                     inference=_Dump(),
                     provenance=SimpleNamespace(materializer_version=1),
                 )
-            ]
+            ],
+            _OK,
         )
         event = cast(list[dict[str, object]], payload["events"])[0]
         assert event["origin"] == "claude-code-session"
@@ -242,7 +255,8 @@ class TestEmptyPayloads:
                     inference=_Dump(),
                     provenance=SimpleNamespace(materializer_version=1),
                 )
-            ]
+            ],
+            _OK,
         )
         phase = cast(list[dict[str, object]], payload["phases"])[0]
         assert phase["origin"] == "codex-session"
@@ -290,6 +304,8 @@ class TestInsightsEndpointDispatch:
         for kind in INSIGHT_KINDS:
             assert kinds[kind]["readiness_tag"] in {"q-ready", "q-partial", "q-missing"}
             assert "materialized" in kinds[kind]
+            assert kinds[kind]["outcome"]["state"] in {"ok", "empty"}
+        assert payload["outcome"]["state"] in {"ok", "empty"}
 
     def test_include_param_restricts_kinds(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_minimum_archive(workspace_env)
@@ -330,3 +346,77 @@ class TestInsightsEndpointDispatch:
         _, payload = send_json.call_args.args
         # All panel data ships over HTTP as JSON.
         json.dumps(payload)
+
+
+class TestUnavailableInsightSurface:
+    """An insight surface that cannot answer is never rendered as zero rows.
+
+    Anti-vacuity: restoring the pre-fix handler — swallowing
+    ``ArchiveInsightUnavailableError`` into an empty list and deriving
+    readiness from ``bool(rows)`` — makes every assertion below fail, because
+    the failed panel would then be byte-identical to the genuinely empty one.
+    """
+
+    @staticmethod
+    def _panels(workspace_env: dict[str, Path], *, fail: bool) -> dict[str, object]:
+        import pytest as _pytest
+
+        from polylogue.analysis.archive import ArchiveInsightUnavailableError
+
+        session_id = _seed_minimum_archive(workspace_env)
+        handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=timeline,phases")
+        _, send_json = _capture_responses(handler)
+        if fail:
+            from polylogue.api import Polylogue
+
+            monkeypatch = _pytest.MonkeyPatch()
+
+            async def _unavailable(*_args: object, **_kwargs: object) -> object:
+                raise ArchiveInsightUnavailableError("work-event insight surface is unavailable")
+
+            try:
+                monkeypatch.setattr(Polylogue, "list_session_work_event_insights", _unavailable, raising=True)
+                handler.do_GET()
+            finally:
+                monkeypatch.undo()
+        else:
+            handler.do_GET()
+        _, payload = send_json.call_args.args
+        return cast(dict[str, object], payload)
+
+    def test_failed_panel_is_distinguishable_from_empty(self, workspace_env: dict[str, Path]) -> None:
+        failed = self._panels(workspace_env, fail=True)
+        failed_timeline = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["timeline"])
+        assert failed_timeline["outcome"] == {
+            "state": "error",
+            "reason": "insight_unavailable:timeline",
+            "detail": {},
+        }
+        assert failed_timeline["readiness_tag"] == "q-error"
+        assert failed_timeline["count"] == 0
+
+    def test_empty_panel_stays_empty(self, workspace_env: dict[str, Path]) -> None:
+        healthy = self._panels(workspace_env, fail=False)
+        healthy_timeline = cast(dict[str, object], cast(dict[str, object], healthy["kinds"])["timeline"])
+        assert cast(dict[str, object], healthy_timeline["outcome"])["state"] == "empty"
+        assert healthy_timeline["readiness_tag"] == "q-missing"
+        assert healthy_timeline["count"] == 0
+
+    def test_envelope_outcome_is_degraded_when_one_kind_fails(self, workspace_env: dict[str, Path]) -> None:
+        failed = self._panels(workspace_env, fail=True)
+        envelope_outcome = cast(dict[str, object], failed["outcome"])
+        assert envelope_outcome["state"] == "degraded"
+        assert envelope_outcome["reason"] == "insight_unavailable:timeline"
+        # The unaffected kind still answered, which is what "degraded" means.
+        phases = cast(dict[str, object], cast(dict[str, object], failed["kinds"])["phases"])
+        assert cast(dict[str, object], phases["outcome"])["state"] in {"ok", "empty"}
+
+    def test_failure_is_logged(self, workspace_env: dict[str, Path], caplog: object) -> None:
+        import logging
+
+        import pytest as _pytest
+
+        typed = cast(_pytest.LogCaptureFixture, caplog)
+        with typed.at_level(logging.WARNING, logger="polylogue.daemon.http"):
+            self._panels(workspace_env, fail=True)
+        assert any("timeline" in record.getMessage() for record in typed.records)

@@ -92,6 +92,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
 from polylogue.surfaces.authority import serialize_authority
+from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -603,8 +604,15 @@ def _route_readiness_payload(
     ).model_dump(mode="json")
 
 
-def _session_list_state(total: int, *, filtered: bool) -> tuple[RouteReadinessState, str | None]:
-    if total > 0:
+def _session_list_state(outcome: OutcomeEnvelope, *, filtered: bool) -> tuple[RouteReadinessState, str | None]:
+    """Project the canonical terminal outcome onto the reader's readiness chip.
+
+    The chip is presentation over the one decision the operation already made;
+    it never re-derives readiness from the row count.
+    """
+    if not outcome.rows_are_authoritative:
+        return "degraded", outcome.reason
+    if outcome.state == "ok":
         return "ready", None
     if filtered:
         return "no_results", "No sessions matched the active query or filters."
@@ -889,14 +897,18 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
 INSIGHT_KINDS: tuple[str, ...] = ("profile", "timeline", "phases", "threads")
 
 
-def _readiness_tag(*, materialized: bool, row_count: int | None = None) -> str:
-    """Map a materialized/row-count pair to the readiness chip vocabulary.
+def _readiness_tag(outcome: OutcomeEnvelope, *, materialized: bool, row_count: int | None = None) -> str:
+    """Map one panel's terminal outcome and row count to the readiness chip.
 
-    The chip vocabulary is closed (``q-ready`` / ``q-partial`` / ``q-missing``).
-    Unknown / unmaterialized rows are ``q-missing``; materialized rows with
-    zero downstream rows are ``q-partial`` (the rebuild ran but produced
-    nothing); everything else is ``q-ready``.
+    The chip vocabulary is closed (``q-error`` / ``q-missing`` / ``q-partial``
+    / ``q-ready``). ``q-error`` is what a panel whose insight surface could not
+    answer reports; without it an unavailable surface and a session that
+    genuinely has no rows both render as zero rows. Unmaterialized rows are
+    ``q-missing``; materialized rows with zero downstream rows are
+    ``q-partial`` (the rebuild ran but produced nothing).
     """
+    if not outcome.rows_are_authoritative:
+        return "q-error"
     if not materialized:
         return "q-missing"
     if row_count is not None and row_count <= 0:
@@ -974,24 +986,28 @@ def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     and adds a readiness chip + provenance summary on top.
     """
     body = dict(profile.to_dict())
+    row_count = int(body.get("message_count", 0) or 0)
+    outcome = decide_outcome(matched=row_count)
     return {
-        "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=True, row_count=row_count),
         "materialized": True,
         "profile": body,
         "provenance": _provenance_dict(provenance),
     }
 
 
-def _empty_profile_panel_payload() -> dict[str, object]:
+def _empty_profile_panel_payload(outcome: OutcomeEnvelope) -> dict[str, object]:
     return {
-        "readiness_tag": "q-missing",
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=False),
         "materialized": False,
         "profile": None,
         "provenance": None,
     }
 
 
-def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
+def _work_event_panel_payload(events: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for ev in events:
         items.append(
@@ -1006,14 +1022,15 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(events), row_count=len(events)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(events), row_count=len(events)),
         "materialized": bool(events),
         "count": len(items),
         "events": items,
     }
 
 
-def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
+def _phase_panel_payload(phases: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for ph in phases:
         items.append(
@@ -1028,14 +1045,15 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(phases), row_count=len(phases)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(phases), row_count=len(phases)),
         "materialized": bool(phases),
         "count": len(items),
         "phases": items,
     }
 
 
-def _thread_panel_payload(threads: list[Any]) -> dict[str, object]:
+def _thread_panel_payload(threads: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for th in threads:
         items.append(
@@ -1048,7 +1066,8 @@ def _thread_panel_payload(threads: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(threads), row_count=len(threads)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(threads), row_count=len(threads)),
         "materialized": bool(threads),
         "count": len(items),
         "threads": items,
@@ -3110,10 +3129,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
             items.append(row)
 
-        route_state_name, route_state_reason = _session_list_state(total, filtered=spec.has_filters())
+        list_outcome = decide_outcome(matched=total)
+        route_state_name, route_state_reason = _session_list_state(list_outcome, filtered=spec.has_filters())
         from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
         result: dict[str, object] = {
+            "outcome": list_outcome.to_dict(),
             "items": items,
             "total": total,
             "total_unit": session_count_unit_label(
@@ -3265,6 +3286,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
                         reason = "No session matched the id filter."
                         return {
+                            "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
                             "query": fts_query,
                             "retrieval_lane": "dialogue",
                             "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3280,6 +3302,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         }
                     reason = "No session matched the id filter."
                     return {
+                        "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
                         "items": [],
                         "total": 0,
                         "limit": limit,
@@ -3322,6 +3345,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         archive_session_count=None,
                     ).model_dump(mode="json", by_alias=True)
                     return {
+                        "outcome": decide_outcome(matched=0, degraded=("search_index_degraded",)).to_dict(),
                         "query": fts_query,
                         "retrieval_lane": "dialogue",
                         "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3351,10 +3375,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         **_filter_kw,  # type: ignore[arg-type]
                     ),
                 )
-                route_state_name, route_state_reason = _session_list_state(total, filtered=True)
+                search_outcome = decide_outcome(matched=total)
+                route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
                 from polylogue.archive.query.spec import session_count_unit_label
 
                 payload: dict[str, object] = {
+                    "outcome": search_outcome.to_dict(),
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3417,10 +3443,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
                 )
             )
-            route_state_name, route_state_reason = _session_list_state(total, filtered=filtered)
+            archive_list_outcome = decide_outcome(matched=total)
+            route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
             from polylogue.archive.query.spec import session_count_unit_label
 
             return {
+                "outcome": archive_list_outcome.to_dict(),
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,
                 "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
@@ -3984,21 +4012,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
         kinds = envelope["kinds"]
         assert isinstance(kinds, dict)
+        panel_outcomes: list[OutcomeEnvelope] = []
+
+        def _unavailable(kind: str, exc: BaseException) -> OutcomeEnvelope:
+            logger.warning("session insight %r unavailable for %s: %s", kind, conv_id, exc)
+            return decide_outcome(matched=0, error=f"insight_unavailable:{kind}")
 
         if "profile" in includes:
             from polylogue.analysis.archive import SessionProfileInsight
             from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
+            profile_outcome: OutcomeEnvelope | None = None
             try:
                 # Archive read returns the full record directly; hydrate it into
                 # the domain ``SessionProfile`` for the panel projection. Native
                 # returns ``None`` (rather than raising) when the profile is not
-                # materialized, so the except below is defensive only.
+                # materialized, so the except below is the unavailable-surface
+                # path, not the unmaterialized one.
                 profile_record = await poly.get_session_profile_record(conv_id)
-            except ArchiveInsightUnavailableError:
-                # The substrate hasn't materialized this insight kind yet;
-                # surface q-missing rather than 503 the whole envelope.
+            except ArchiveInsightUnavailableError as exc:
+                # The insight surface could not answer; the panel reports
+                # q-error rather than 503-ing the whole envelope.
                 profile_record = None
+                profile_outcome = _unavailable("profile", exc)
             profile = hydrate_session_profile(profile_record) if profile_record is not None else None
             profile_insight = (
                 SessionProfileInsight.from_record(profile_record, tier="evidence")
@@ -4008,8 +4044,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             panel = (
                 _profile_panel_payload(profile, profile_insight.provenance)
                 if profile is not None and profile_insight is not None
-                else _empty_profile_panel_payload()
+                else _empty_profile_panel_payload(profile_outcome or decide_outcome(matched=0))
             )
+            panel_outcomes.append(OutcomeEnvelope.model_validate(panel["outcome"]))
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
             # :func:`polylogue.analysis.provenance.is_stale` helper so the
@@ -4028,29 +4065,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 events = await poly.list_session_work_event_insights(
                     SessionWorkEventInsightQuery(session_id=conv_id, limit=None)
                 )
-            except ArchiveInsightUnavailableError:
+                timeline_outcome = decide_outcome(matched=len(events))
+            except ArchiveInsightUnavailableError as exc:
                 events = []
-            kinds["timeline"] = _work_event_panel_payload(events)
+                timeline_outcome = _unavailable("timeline", exc)
+            panel_outcomes.append(timeline_outcome)
+            kinds["timeline"] = _work_event_panel_payload(events, timeline_outcome)
 
         if "phases" in includes:
             try:
                 phases = await poly.list_session_phase_insights(
                     SessionPhaseInsightQuery(session_id=conv_id, limit=None)
                 )
-            except ArchiveInsightUnavailableError:
+                phases_outcome = decide_outcome(matched=len(phases))
+            except ArchiveInsightUnavailableError as exc:
                 phases = []
-            kinds["phases"] = _phase_panel_payload(phases)
+                phases_outcome = _unavailable("phases", exc)
+            panel_outcomes.append(phases_outcome)
+            kinds["phases"] = _phase_panel_payload(phases, phases_outcome)
 
         if "threads" in includes:
             try:
                 # Work threads are not keyed per-session in the substrate;
                 # the reader filters the materialized rows by membership.
                 all_threads = await poly.list_thread_insights(ThreadInsightQuery(limit=None))
-            except ArchiveInsightUnavailableError:
+                threads_error: OutcomeEnvelope | None = None
+            except ArchiveInsightUnavailableError as exc:
                 all_threads = []
+                threads_error = _unavailable("threads", exc)
             member_threads = [th for th in all_threads if conv_id in (th.thread.session_ids or ())]
-            kinds["threads"] = _thread_panel_payload(member_threads)
+            threads_outcome = threads_error or decide_outcome(matched=len(member_threads))
+            panel_outcomes.append(threads_outcome)
+            kinds["threads"] = _thread_panel_payload(member_threads, threads_outcome)
 
+        envelope["outcome"] = combine_outcomes(panel_outcomes).to_dict()
         return envelope
 
     # ------------------------------------------------------------------

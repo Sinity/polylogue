@@ -339,6 +339,7 @@ def _running_server_without_seed(
 # surface returns these identities verbatim.
 from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
+from polylogue.surfaces.outcome import decide_outcome
 
 _SEED_SPECS = [
     ("claude-code", "c1", "m-c1", "Claude Code session about authentication"),
@@ -3281,7 +3282,9 @@ class TestSharedQueryPayloads:
         route_state = RouteReadinessPayload(
             state="empty", route="/api/sessions", reason="Archive contains no sessions."
         )
-        r = SessionListResponse(items=(), total=0, limit=50, offset=0, route_state=route_state)
+        r = SessionListResponse(
+            items=(), total=0, limit=50, offset=0, route_state=route_state, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["items"] == []
         assert d["total"] == 0
@@ -3344,7 +3347,9 @@ class TestSharedQueryPayloads:
             filters=("tag=missing",),
             reasons=(QueryMissReasonPayload(code="no_results", severity="info", summary="no match"),),
         )
-        r = SessionListResponse(items=(), total=0, limit=10, offset=0, diagnostics=diag)
+        r = SessionListResponse(
+            items=(), total=0, limit=10, offset=0, diagnostics=diag, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["diagnostics"] is not None
         assert d["diagnostics"]["message"] == "No results."
@@ -3354,6 +3359,7 @@ class TestSharedQueryPayloads:
         from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
 
         r = FacetsResponse(
+            outcome=decide_outcome(matched=15),
             scoped_to_query=False,
             generated_at="2026-06-22T00:00:00Z",
             budget_exceeded=True,

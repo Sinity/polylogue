@@ -16,6 +16,7 @@ from polylogue.core.web_urls import canonical_session_url
 from polylogue.readiness import component_from_outcome_check, component_from_raw_materialization_readiness
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.surfaces.authority import AuthorityEnvelope
+from polylogue.surfaces.outcome import OutcomeEnvelope
 from polylogue.surfaces.payloads import (
     MutationResultPayload,
     SearchCursor,
@@ -923,6 +924,7 @@ class MCPMessagesListPayload(SurfacePayloadModel):
     lineage_complete: bool = True
     lineage_truncation_reason: str | None = None
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPRawArtifactPayload(SurfacePayloadModel):
