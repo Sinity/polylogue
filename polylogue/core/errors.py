@@ -57,7 +57,16 @@ class ArchiveTierUnavailableError(DatabaseError):
         super().__init__(f"{tier} tier unavailable at {path}: {reason}. {guidance}")
 
 
-class SchemaVersionMismatchError(DatabaseError):
+class SchemaRefusalError(DatabaseError):
+    """Base class for schema refusals raised before a tier can be served.
+
+    Version mismatches and derived-schema identity mismatches carry different
+    remediation metadata, but callers that only need to reject an unreadable
+    tier should be able to handle both through one stable ancestor.
+    """
+
+
+class SchemaVersionMismatchError(SchemaRefusalError):
     """Raised when the on-disk schema version cannot be served by this runtime.
 
     The runtime expects ``expected_version`` (the build-time ``SCHEMA_VERSION``
@@ -86,7 +95,7 @@ class SchemaVersionMismatchError(DatabaseError):
         self.lifecycle_action = lifecycle_action
 
 
-class SchemaSkewError(DatabaseError):
+class SchemaSkewError(SchemaRefusalError):
     """A tier cannot be served by this runtime's schema contract."""
 
     code = "schema_skew"
@@ -148,6 +157,7 @@ __all__ = [
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
     "RawCASFrontierError",
+    "SchemaRefusalError",
     "SchemaVersionMismatchError",
     "SchemaSkew",
     "SchemaSkewError",
