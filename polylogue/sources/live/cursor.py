@@ -13,7 +13,7 @@ import sqlite3
 import threading
 import uuid
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -399,7 +399,7 @@ class CursorStore:
         if not source_db.exists():
             return
         try:
-            with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
                 placeholders = ",".join("?" for _ in paths)
                 rows = conn.execute(
                     f"""
