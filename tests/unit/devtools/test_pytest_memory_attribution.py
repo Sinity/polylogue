@@ -119,6 +119,20 @@ def test_the_peak_survives_a_later_quieter_sample(tmp_path: Path) -> None:
     assert document["samples"] == 2
 
 
+def test_each_memory_metric_keeps_its_own_peak(tmp_path: Path) -> None:
+    """RSS can spike at a different moment than PSS and is still evidence."""
+    proc = _proc(tmp_path)
+    _process(proc, 100, pgid=100, pss_kib=3000 * KIB, rss_kib=3200 * KIB)
+    sampler = _sampler(tmp_path, proc)
+    sampler.sample()
+    _process(proc, 100, pgid=100, pss_kib=2000 * KIB, rss_kib=5000 * KIB)
+    sampler.sample()
+    document = sampler.snapshot()
+
+    assert document["peak"]["pss_kib"] == 3000 * KIB
+    assert document["peak"]["rss_kib"] == 5000 * KIB
+
+
 def test_a_process_that_exits_keeps_its_attribution(tmp_path: Path) -> None:
     """A worker that was killed is the one the receipt most needs to name."""
     proc = _proc(tmp_path)
