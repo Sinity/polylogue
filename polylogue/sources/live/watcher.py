@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
@@ -262,6 +262,22 @@ def hook_watch_sources(specs: Iterable[HookSpoolSourceSpec]) -> tuple[WatchSourc
     )
 
 
+class WriteCoordinator(Protocol):
+    """The daemon's in-process write gate, as this module needs it.
+
+    Declared as a Protocol so a coordinator that does not satisfy it fails
+    loudly at the call. The previous ``getattr(coordinator, "run", None)``
+    dispatch silently downgraded to an ungated archive write whenever the
+    injected object had the wrong shape, which made the single-writer
+    invariant defeasible by a test double (polylogue-8qm4k). ``None`` remains
+    the explicit standalone opt-out; a wrong shape is now an error.
+    """
+
+    async def run(self, actor: str, operation: Callable[[], Awaitable[Any]], /) -> Any: ...
+
+    async def run_sync(self, actor: str, function: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any: ...
+
+
 @dataclass(frozen=True, slots=True)
 class CandidateSourceFile:
     """One statted source file candidate from a catch-up scan."""
@@ -314,7 +330,7 @@ class LiveWatcher:
         converger: object | None = None,  # DaemonConverger | None — avoids circular import
         event_emitter: LiveBatchEventEmitter | None = None,
         catch_up_event_emitter: Callable[..., None] | None = None,
-        write_coordinator: object | None = None,
+        write_coordinator: WriteCoordinator | None = None,
         parse_stage: LiveParseStage | None = None,
     ) -> None:
         self._polylogue = polylogue
@@ -386,10 +402,9 @@ class LiveWatcher:
         **kwargs: Any,
     ) -> Any:
         """Run blocking watcher writes without joining the loop executor at exit."""
-        run_sync = getattr(self._write_coordinator, "run_sync", None)
-        if callable(run_sync):
-            return await run_sync(actor, function, *args, **kwargs)
-        return await asyncio.to_thread(function, *args, **kwargs)
+        if self._write_coordinator is None:
+            return await asyncio.to_thread(function, *args, **kwargs)
+        return await self._write_coordinator.run_sync(actor, function, *args, **kwargs)
 
     @property
     def catch_up_complete(self) -> asyncio.Event:
@@ -1865,8 +1880,10 @@ class LiveWatcher:
                     whole_archive_convergence=whole_archive_convergence,
                 )
 
-            run = getattr(self._write_coordinator, "run", None)
-            metrics = await run("watcher.live_ingest", ingest) if callable(run) else await ingest()
+            if self._write_coordinator is None:
+                metrics = await ingest()
+            else:
+                metrics = await self._write_coordinator.run("watcher.live_ingest", ingest)
         return metrics
 
     async def _emit_catch_up_terminal(
@@ -1944,11 +1961,10 @@ class LiveWatcher:
 
     async def _run_coordinated(self, actor: str, operation: Callable[[], Awaitable[None]]) -> None:
         """Run a complete watcher write batch under the injected coordinator."""
-        run = getattr(self._write_coordinator, "run", None)
-        if callable(run):
-            await run(actor, operation)
+        if self._write_coordinator is None:
+            await operation()
             return
-        await operation()
+        await self._write_coordinator.run(actor, operation)
 
     def _source_name_for(self, path: Path) -> str:
         source = deepest_source_for_path(path, self._sources)

@@ -409,3 +409,50 @@ async def test_incomplete_append_deferral_cannot_write_before_batch_lease(
     assert record is not None
     assert record.byte_size == source.stat().st_size
     assert record.byte_offset == len(complete)
+
+
+def test_a_wrong_shaped_coordinator_cannot_silently_ungate_writes(tmp_path: Path) -> None:
+    """An injected coordinator that lacks ``run`` fails loudly, not silently.
+
+    Anti-vacuity: restore the ``getattr(self._write_coordinator, "run", None)``
+    dispatch with a ``callable()`` fallback and this goes green while the write
+    proceeds ungated -- which is how a test double's shape could defeat the
+    single-writer invariant in production (polylogue-8qm4k).
+    """
+
+    class NotACoordinator:
+        """Has neither ``run`` nor ``run_sync``."""
+
+    ran: list[str] = []
+
+    async def operation() -> None:
+        ran.append("wrote")
+
+    (tmp_path / "src").mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path)),
+        (WatchSource(name="src", root=tmp_path / "src"),),
+        write_coordinator=cast(Any, NotACoordinator()),
+    )
+    with pytest.raises(AttributeError):
+        asyncio.run(watcher._run_coordinated("test.actor", operation))
+
+    assert ran == []
+
+
+def test_an_absent_coordinator_remains_an_explicit_standalone_opt_out(tmp_path: Path) -> None:
+    """``None`` still means standalone, so the guard above is not overreach."""
+    ran: list[str] = []
+
+    async def operation() -> None:
+        ran.append("wrote")
+
+    (tmp_path / "src").mkdir()
+    watcher = LiveWatcher(
+        cast(Any, SimpleNamespace(archive_root=tmp_path)),
+        (WatchSource(name="src", root=tmp_path / "src"),),
+        write_coordinator=None,
+    )
+    asyncio.run(watcher._run_coordinated("test.actor", operation))
+
+    assert ran == ["wrote"]

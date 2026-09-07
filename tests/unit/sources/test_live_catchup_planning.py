@@ -893,7 +893,7 @@ def _two_source_watcher(
             WatchSource(name="beta", root=root / "beta"),
         ),
         cursor=CursorStore(tmp_path / "cursor.sqlite"),
-        write_coordinator=write_coordinator,
+        write_coordinator=cast(Any, write_coordinator),
         event_emitter=event_emitter,
     )
     return watcher, alpha_files, beta_files
