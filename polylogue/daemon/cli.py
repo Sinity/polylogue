@@ -3075,7 +3075,6 @@ async def _run_daemon_services_under_active_writer_lease(
 
             uds_server = DaemonAPIUnixHTTPServer(
                 daemon_socket_path(archive_root_path),
-                DaemonAPIHandler,
                 auth_token=resolved_api_auth_token,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )

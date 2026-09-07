@@ -25,7 +25,10 @@ abstract layer above it was removed.
 
 from __future__ import annotations
 
+from pydantic import ConfigDict
+
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.operations.daemon_protocol import AcceptedOperationReference, DaemonOperationOutcome
 from polylogue.surfaces.payloads import SurfacePayloadModel
 
 
@@ -60,6 +63,22 @@ class OperationFollowUp(SurfacePayloadModel):
         return json_document(self.model_dump(mode="json"))
 
 
+class AcceptedOperation(SurfacePayloadModel):
+    """Durable acceptance result; completion is event-driven, not polling-only."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    reference: dict[str, str]
+    outcome: str = DaemonOperationOutcome.ACCEPTED.value
+
+    @classmethod
+    def from_reference(cls, reference: AcceptedOperationReference) -> AcceptedOperation:
+        return cls(reference=reference.to_dict())
+
+    def to_dict(self) -> JSONDocument:
+        return json_document(self.model_dump(mode="json"))
+
+
 __all__ = [
+    "AcceptedOperation",
     "OperationFollowUp",
 ]
