@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sqlite3
 from pathlib import Path
 
@@ -61,30 +60,16 @@ def _texts(path: Path, session_id: str) -> list[str | None]:
     return asyncio.run(read())
 
 
-def test_hook_parent_is_authoritative_before_prefix_normalization(tmp_path: Path) -> None:
-    """Anti-vacuity: using parser parent before hook evidence leaves the child dangling."""
+def test_state_parent_is_authoritative_before_prefix_normalization(tmp_path: Path) -> None:
+    """Anti-vacuity: using parser parent before state evidence leaves the child dangling."""
     index = _index(tmp_path / "index.db")
     source = sqlite3.connect(tmp_path / "source.db")
     initialize_archive_tier(source, ArchiveTier.SOURCE)
-    source.execute(
-        """
-        INSERT INTO raw_hook_events(
-            hook_event_id, origin, source_path, event_type, payload_json,
-            observed_at_ms, native_id, session_native_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            "hook-edge",
-            Origin.CODEX_SESSION.value,
-            "/private/state.sqlite",
-            "codex_thread_spawn_edge",
-            json.dumps({"parent_thread_id": "hook-parent", "child_thread_id": "child"}),
-            1,
-            "child",
-            "hook-parent",
-        ),
+    index.execute(
+        "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
+        "VALUES ('hook-parent', 'child', 'closed', 1)",
     )
-    source.commit()
+    index.commit()
     write_parsed_session_to_archive(
         index, _session("hook-parent", [_message("h0", "hook prefix", 0)]), source_conn=source
     )

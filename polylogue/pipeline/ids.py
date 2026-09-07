@@ -70,6 +70,7 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "user_context_text",
             "paste_spans",
             "stop_reason",
+            "is_aborted_mid_stream",
         }
     ),
     "ParsedSession": frozenset(
@@ -94,6 +95,7 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
             "git_branch",
             "git_repository_url",
             "provider_project_ref",
+            "team_name",
             "git_commit_hash",
             "display_name",
             "pending_drafts",

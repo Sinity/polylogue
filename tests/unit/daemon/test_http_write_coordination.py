@@ -758,7 +758,17 @@ def test_standalone_http_server_stops_loop_after_late_writer_drain() -> None:
     assert shutdown.await_count == 2
 
 
-def test_coordinated_mutation_does_not_use_timeout_detaching_read_executor() -> None:
+def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() -> None:
+    """A mutation is scheduled as control and waits for its own substrate call.
+
+    Anti-vacuity: routing it as ``interactive-read`` would record the work
+    under the read class, and the read contract's timeout would be free to
+    detach a request whose writer lease is still held.
+    """
+
+    from polylogue.daemon.execution import BoundedComputeAdapter
+
+    kernel = BoundedComputeAdapter(max_workers=2, queue_units=2)
     handler = object.__new__(DaemonAPIHandler)
     handler._write_gate_depth = 1
 
@@ -769,9 +779,13 @@ def test_coordinated_mutation_does_not_use_timeout_detaching_read_executor() -> 
         return "persisted"
 
     handler._run_archive_query = run_direct  # type: ignore[assignment]
-    handler.server = SimpleNamespace(  # type: ignore[assignment]
-        archive_query_admission=SimpleNamespace(acquire=lambda **_kwargs: (_ for _ in ()).throw(AssertionError())),
-        archive_query_executor=SimpleNamespace(submit=lambda *_args: (_ for _ in ()).throw(AssertionError())),
-    )
+    handler.server = SimpleNamespace(execution_kernel=kernel)  # type: ignore[assignment]
 
-    assert handler._sync_run(mutation) == "persisted"
+    try:
+        assert handler._sync_run(mutation) == "persisted"
+        snapshot = kernel.snapshot()
+        assert snapshot.by_class("control").admitted == 1
+        assert snapshot.by_class("interactive-read").admitted == 0
+        assert snapshot.used_units == 0
+    finally:
+        kernel.shutdown(wait=True)

@@ -89,9 +89,11 @@ from polylogue.storage.sqlite.connection_profile import (
     ReadFrameExpiredError,
     StaleContinuationError,
     open_connection,
-    open_readonly_connection,
-    read_frame,
 )
+from polylogue.storage.sqlite.connection_profile import (
+    open_readonly_connection as open_readonly_connection,
+)
+from polylogue.storage.sqlite.connection_profile import read_frame as read_frame
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
@@ -1607,18 +1609,29 @@ def _archive_correlate_claude_agent_dispatches(config: Config) -> ClaudeAgentDis
 
 
 def _archive_reconcile_codex_spawn_edges(config: Config) -> CodexSpawnEdgeReconciliation | None:
-    """Reconcile acquired Codex ``thread_spawn_edge`` evidence against
-    transcript-inferred topology (bd polylogue-foee AC#2).
+    """Reconcile projected Codex spawn edges against transcript-inferred topology.
 
-    Read-only audit seam over ``source.db``'s hook-event spool and
-    ``index.db``'s ``session_links``; see
-    ``context.codex_spawn_edge_correlation`` for the join semantics and
-    ``_read_source_and_index`` for the ``None`` contract.
+    Read-only audit seam over ``index.db``; see
+    ``context.codex_spawn_edge_correlation`` for the join semantics. ``None``
+    covers the archive not being initialized yet or being unreadable.
     """
 
     from polylogue.context.codex_spawn_edge_correlation import reconcile_codex_spawn_edges
 
-    return _read_source_and_index(config, reconcile_codex_spawn_edges, seam="codex_spawn_edge reconciliation")
+    archive_root = _active_archive_root(config)
+    index_db = archive_root / "index.db"
+    if not index_db.exists():
+        return None
+    try:
+        index_conn = open_readonly_connection(index_db, timeout_class="background-read")
+        index_conn.row_factory = sqlite3.Row
+        try:
+            return reconcile_codex_spawn_edges(index_conn)
+        finally:
+            index_conn.close()
+    except sqlite3.Error:
+        logger.warning("codex_spawn_edge reconciliation is unavailable", exc_info=True)
+        return None
 
 
 def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealth:
@@ -3434,12 +3447,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return _archive_correlate_claude_agent_dispatches(self.config)
 
     async def reconcile_codex_spawn_edges(self) -> CodexSpawnEdgeReconciliation | None:
-        """Reconcile acquired Codex spawn-edge evidence against inferred topology (bd polylogue-foee AC#2).
+        """Reconcile projected Codex spawn edges against inferred topology.
 
-        Read-only audit seam over the durable spool (source.db
-        ``raw_hook_events``, ``codex_thread_spawn_edge`` events acquired by
-        polylogue-0jf4) and the ingested topology (index.db
-        ``session_links``, ``BranchType.SUBAGENT`` edges
+        Read-only audit seam over index.db: the ``codex_thread_spawn_edges``
+        projection of the retained state export, and the ingested topology
+        (``session_links``, ``BranchType.SUBAGENT`` edges
         ``sources/parsers/codex.py`` infers structurally from each child
         session's own transcript). Reports how many transcript-inferred
         edges are backed by Codex's own orchestration-level record, and how

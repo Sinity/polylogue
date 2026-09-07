@@ -15,6 +15,7 @@ from uuid import uuid4
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +114,7 @@ class BlobPublicationReservationStore:
         # Do not apply the general archive connection profile here. Its
         # journal-mode PRAGMA fails immediately when GC owns the source write
         # lock; the publication protocol must instead wait at BEGIN IMMEDIATE.
+        require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
         conn = sqlite3.connect(self.source_db_path, timeout=30.0)
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA busy_timeout = 30000")
@@ -405,6 +407,7 @@ def reconcile_blob_publication_reservations(
         else:
             unresolved += 1
     if clear_ids:
+        require_write_lease(f"blob publication reconciliation({source_db_path})", archive_root=source_db_path.parent)
         conn = sqlite3.connect(source_db_path)
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -479,6 +482,7 @@ def abandon_blob_publication_receipts(
         from polylogue.storage.archive_identity import ArchiveLocation
 
         resolved_index = index_db_path or ArchiveLocation.resolve(source_db_path.parent).active_index_path
+        require_write_lease(f"blob publication abandonment({source_db_path})", archive_root=source_db_path.parent)
         source_conn = sqlite3.connect(source_db_path)
         index_conn: sqlite3.Connection | None = None
         abandoned: list[str] = []

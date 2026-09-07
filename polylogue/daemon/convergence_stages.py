@@ -966,15 +966,22 @@ def _raw_parse_recovery_pending_roots(
                           OR r.validated_at_ms >= r.parsed_at_ms
                         )
                       )
+                      -- A successful parse can still be stranded when the
+                      -- index projection is interrupted or an older
+                      -- generation is active. Keep parsed-but-unindexed raw
+                      -- on the recovery queue. Explicitly skipped
+                      -- non-session artifacts are terminal.
+                      AND NOT (
+                        COALESCE(r.validation_status, '') = 'skipped'
+                        AND r.parsed_at_ms IS NOT NULL
+                        AND r.parse_error IS NULL
+                      )
                       AND (
                         (
-                          r.parsed_at_ms IS NULL
-                          AND (
-                            r.parse_error IS NULL
-                            OR r.parse_error = 'OperationalError: database is locked'
-                            OR r.parse_error LIKE 'decode:%No such file or directory:%'
-                            OR r.parse_error LIKE 'membership_replay_conflict:%'
-                          )
+                          r.parse_error IS NULL
+                          OR r.parse_error = 'OperationalError: database is locked'
+                          OR r.parse_error LIKE 'decode:%No such file or directory:%'
+                          OR r.parse_error LIKE 'membership_replay_conflict:%'
                         )
                         OR EXISTS (
                             SELECT 1

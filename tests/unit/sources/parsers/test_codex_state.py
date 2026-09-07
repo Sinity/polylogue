@@ -14,7 +14,6 @@ import threading
 import time
 from pathlib import Path
 
-from polylogue.sources.parsers.base import ParsedSessionEvent
 from polylogue.sources.parsers.codex_state import (
     CODEX_STATE_FIDELITY,
     IN_SCOPE_KINDS,
@@ -26,7 +25,6 @@ from polylogue.sources.parsers.codex_state import (
     parse_codex_goals_db,
     parse_codex_memories_db,
     parse_codex_state_db,
-    spawn_edges_as_session_events,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -275,7 +273,15 @@ def test_classifies_unreadable_path_as_unknown(tmp_path: Path) -> None:
 
 def test_fidelity_declaration_covers_every_known_kind() -> None:
     kinds = {classification.kind for classification in CODEX_STATE_FIDELITY}
-    assert kinds == {"thread_state", "goals", "memories", "logs", "automation"}
+    assert kinds == {
+        "thread_state",
+        "goals",
+        "memories",
+        "logs",
+        "automation",
+        "thread_history",
+        "queue",
+    }
     dispositions = {classification.kind: classification.disposition for classification in CODEX_STATE_FIDELITY}
     assert dispositions["thread_state"] == "acquire"
     assert dispositions["goals"] == "acquire-partial"
@@ -293,8 +299,34 @@ def test_fidelity_declaration_covers_every_known_kind() -> None:
         "memories_1.sqlite": ("memories", "acquire-partial"),
         "logs_2.sqlite": ("logs", "out-of-scope"),
         "codex-dev.db": ("automation", "out-of-scope"),
+        "thread_history_1.sqlite": ("thread_history", "out-of-scope"),
+        "queue_1.sqlite": ("queue", "out-of-scope"),
     }
     assert declared_codex_sqlite_classification(Path("unknown.sqlite")) is None
+
+
+def test_every_declared_codex_database_has_a_disposition_and_a_reason() -> None:
+    """A database beside a declared one is a silent acquisition decision.
+
+    Anti-vacuity: drop ``thread_history_1.sqlite`` (3.6 GB on the measured
+    install) or ``queue_1.sqlite`` from either declaration and the two sides
+    stop agreeing.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.origin_specs import database_capability_for_provider
+
+    capability = database_capability_for_provider(Provider.CODEX)
+    assert capability is not None
+    declared = {member.filename: member for member in capability.members}
+    fidelity = {
+        filename: classification for classification in CODEX_STATE_FIDELITY for filename in classification.filenames
+    }
+    assert set(declared) == set(fidelity)
+    for filename, member in declared.items():
+        assert member.disposition == fidelity[filename].disposition, filename
+        assert member.kind == fidelity[filename].kind, filename
+        assert member.reason.strip(), filename
+        assert fidelity[filename].reason.strip(), filename
 
 
 # --- parsing ------------------------------------------------------------
@@ -339,27 +371,6 @@ def test_parse_memories_db_omits_raw_memory_text(tmp_path: Path) -> None:
     assert record.has_rollout_slug is True
     assert record.selected_for_phase2 is True
     assert not hasattr(record, "raw_memory")
-
-
-# --- session_events shape for spawn edges --------------------------------
-
-
-def test_spawn_edges_as_session_events(tmp_path: Path) -> None:
-    path = tmp_path / "state_5.sqlite"
-    _write_state_db(path)
-    snapshot = parse_codex_state_db(path)
-    grouped = spawn_edges_as_session_events(snapshot.spawn_edges)
-    assert set(grouped) == {"0000-thread-parent"}
-    events = grouped["0000-thread-parent"]
-    assert len(events) == 1
-    event = events[0]
-    assert isinstance(event, ParsedSessionEvent)
-    assert event.event_type == "codex_thread_spawn_edge"
-    assert event.payload == {
-        "parent_thread_id": "0000-thread-parent",
-        "child_thread_id": "0000-thread-child",
-        "status": "closed",
-    }
 
 
 # --- marker payload round trip -------------------------------------------

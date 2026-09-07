@@ -71,169 +71,72 @@ def test_daemon_escape_environment_is_explicit(
     assert _daemon_disabled() is expected
 
 
-def test_daemon_probe_rejects_the_tmp_archive_config_trap(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A socket from a different resolved archive must never answer this CLI."""
+def test_operation_rejects_a_socket_serving_a_different_archive(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A socket from a different resolved archive must never answer this CLI.
+
+    Anti-vacuity: dropping the archive-identity comparison in ``operation``
+    makes this envelope acceptable.
+    """
 
     from polylogue.cli.daemon_client import DaemonClient
+    from polylogue.daemon_client import DaemonOperationProtocolError
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
     client = DaemonClient(tmp_path / "daemon.sock")
-    monkeypatch.setattr(
-        client,
-        "request_json",
-        lambda _method, _path: {
-            "archive_root": "/tmp",
-            "index_schema_version": 24,
-            "daemon_version": "0.1.0",
-        },
-    )
+    captured: dict[str, object] = {}
 
-    assert (
-        client.probe(
-            archive_root="/realm/archive",
-            index_schema_version=24,
-            daemon_version="0.1.0",
-        )
-        is None
-    )
+    def fake_request(method: str, path: str, body: dict[str, object], **_kwargs: object) -> dict[str, object]:
+        captured.update(body)
+        return {
+            "protocol": DAEMON_OPERATION_PROTOCOL,
+            "operation": "status",
+            "request_id": body["request_id"],
+            "archive": {"root": "/tmp"},
+        }
+
+    monkeypatch.setattr(client, "request_json", fake_request)
+
+    with pytest.raises(DaemonOperationProtocolError, match="different archive identity"):
+        client.operation("status", {}, archive_root="/realm/archive")
 
 
-def test_daemon_client_probes_the_production_uds_server(
+def test_operation_reaches_the_production_uds_server(
     monkeypatch: pytest.MonkeyPatch, _short_uds_runtime_dir: Path
 ) -> None:
-    """The stdlib client reaches the production AF_UNIX server, not a TCP substitute."""
+    """The stdlib client reaches the production AF_UNIX server in one request.
+
+    Anti-vacuity: the handler below fails the test if the client issues a
+    health probe before its operation.
+    """
 
     from http import HTTPStatus
 
     from polylogue.cli.daemon_client import DaemonClient
     from polylogue.daemon.http import DaemonAPIHandler
     from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
 
-    def health(self: DaemonAPIHandler) -> None:
-        self._send_json(
-            HTTPStatus.OK,
-            {
-                "archive_root": "/realm/archive",
-                "index_schema_version": 24,
-                "daemon_version": "0.1.0",
-                "commit": "test",
-                "started_at": "2026-07-13T00:00:00+00:00",
-            },
-        )
+    def refuse_health(self: DaemonAPIHandler) -> None:
+        raise AssertionError("the CLI path must not issue a health probe")
 
-    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", health)
+    def status(self: DaemonAPIHandler) -> None:
+        self._send_json(HTTPStatus.OK, {"daemon": {"running": True}})
+
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", refuse_health)
+    monkeypatch.setattr(DaemonAPIHandler, "_handle_status", lambda self, _params: status(self))
     socket_path = _short_uds_runtime_dir / f"daemon-{getpid()}.sock"
     server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
     server.auth_token = "uds-test-token"
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        client = DaemonClient(socket_path, auth_token="uds-test-token")
-        assert (
-            client.probe(
-                archive_root="/realm/archive",
-                index_schema_version=24,
-                daemon_version="0.1.0",
-            )
-            is not None
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_daemon_client_can_probe_matching_writer_through_degraded_health(
-    monkeypatch: pytest.MonkeyPatch,
-    _short_uds_runtime_dir: Path,
-) -> None:
-    """Maintenance discovers the writer without weakening query readiness."""
-    from http import HTTPStatus
-
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.daemon.http import DaemonAPIHandler
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
-
-    def degraded_health(self: DaemonAPIHandler) -> None:
-        self._send_json(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            {
-                "archive_root": "/realm/archive",
-                "index_schema_version": 24,
-                "daemon_version": "0.1.0",
-                "raw_failure_lifecycle_state": "degraded",
-            },
-        )
-
-    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", degraded_health)
-    socket_path = _short_uds_runtime_dir / f"degraded-{getpid()}.sock"
-    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        client = DaemonClient(socket_path)
-        assert (
-            client.probe(
-                archive_root="/realm/archive",
-                index_schema_version=24,
-                daemon_version="0.1.0",
-            )
-            is None
-        )
-        assert (
-            client.probe(
-                archive_root="/realm/archive",
-                index_schema_version=24,
-                daemon_version="0.1.0",
-                accept_degraded=True,
-            )
-            is not None
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
-
-
-def test_daemon_client_rejects_unrelated_503_when_degraded_probe_is_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-    _short_uds_runtime_dir: Path,
-) -> None:
-    """The production probe route accepts a maintenance ``degraded`` 503,
-    not any matching identity payload. Mutating that lifecycle state to
-    ``blocked`` must keep the writer unavailable to the caller."""
-    from http import HTTPStatus
-
-    from polylogue.cli.daemon_client import DaemonClient
-    from polylogue.daemon.http import DaemonAPIHandler
-    from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
-
-    def blocked_health(self: DaemonAPIHandler) -> None:
-        self._send_json(
-            HTTPStatus.SERVICE_UNAVAILABLE,
-            {
-                "archive_root": "/realm/archive",
-                "index_schema_version": 24,
-                "daemon_version": "0.1.0",
-                "raw_failure_lifecycle_state": "blocked",
-            },
-        )
-
-    monkeypatch.setattr(DaemonAPIHandler, "_handle_health", blocked_health)
-    socket_path = _short_uds_runtime_dir / f"blocked-{getpid()}.sock"
-    server = DaemonAPIUnixHTTPServer(socket_path, DaemonAPIHandler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        client = DaemonClient(socket_path)
-        assert (
-            client.probe(
-                archive_root="/realm/archive",
-                index_schema_version=24,
-                daemon_version="0.1.0",
-                accept_degraded=True,
-            )
-            is None
-        )
+        client = DaemonClient(socket_path, auth_token="uds-test-token", timeout_s=2)
+        envelope = client.operation("status", {})
+        assert envelope is not None
+        assert envelope["protocol"] == DAEMON_OPERATION_PROTOCOL
+        assert envelope["result"] == {"daemon": {"running": True}}
     finally:
         server.shutdown()
         server.server_close()

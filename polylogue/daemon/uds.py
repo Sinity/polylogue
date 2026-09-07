@@ -60,9 +60,6 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
             thread_name_prefix="polylogue-compute",
         )
         self.archive_query_executor = self.execution_kernel.executor
-        self.archive_query_admission = threading.BoundedSemaphore(
-            _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
-        )
         self.coordination_cache: dict[tuple[str, int], Any] = {}
         self.coordination_cache_lock = threading.Lock()
         self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)

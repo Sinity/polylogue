@@ -181,9 +181,9 @@ def test_database_origins_declare_snapshot_and_member_disposition() -> None:
     assert codex is not None
     assert hermes is not None
     for capability in (codex, hermes):
-        assert capability.snapshot_method == "sqlite_backup"
-        assert "Connection.backup" in capability.consistency_fence
-        assert "mtime_ns" in capability.revision_identity
+        assert capability.snapshot_method == "logical_export"
+        assert "read transaction" in capability.consistency_fence
+        assert "logical export" in capability.revision_identity
         assert capability.full_snapshot_per_revision
         assert capability.snapshot_lineage_policy
         assert capability.filenames
