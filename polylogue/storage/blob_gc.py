@@ -52,7 +52,7 @@ import sqlite3
 import stat
 import time
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -1076,36 +1076,20 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
     blocked: set[str] = set()
     errors: list[str] = []
     touched: set[Path] = set()
-    exclusion = None
-    source_conn: sqlite3.Connection | None = None
-    index_conn: sqlite3.Connection | None = None
+    tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
+    if tier_blockers:
+        return LegacyBlobUnlinkResult(blocked=candidates, errors=tier_blockers)
 
-    try:
-        if dry_run:
-            source_conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
-            index_conn = sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True)
-        else:
+    with ExitStack() as stack:
+        if not dry_run:
             require_write_lease(f"blob GC({source_db_path})", archive_root=source_db_path.parent)
-            exclusion = exclude_archive_blob_publishers(source_db_path)
-            exclusion.__enter__()
-            source_conn = sqlite3.connect(f"file:{source_db_path}?mode=rw", uri=True)
-            index_conn = sqlite3.connect(f"file:{index_db_path}?mode=rw", uri=True)
+            stack.enter_context(exclude_archive_blob_publishers(source_db_path))
+        mode = "ro" if dry_run else "rw"
+        source_conn = stack.enter_context(closing(sqlite3.connect(f"file:{source_db_path}?mode={mode}", uri=True)))
+        index_conn = stack.enter_context(closing(sqlite3.connect(f"file:{index_db_path}?mode={mode}", uri=True)))
+        if not dry_run:
             source_conn.execute("BEGIN IMMEDIATE")
             index_conn.execute("BEGIN IMMEDIATE")
-    except (OSError, RuntimeError, sqlite3.Error) as exc:
-        if index_conn is not None:
-            index_conn.close()
-        if source_conn is not None:
-            source_conn.close()
-        if exclusion is not None:
-            exclusion.__exit__(None, None, None)
-        return LegacyBlobUnlinkResult(
-            blocked=candidates,
-            errors=(f"blob liveness tiers are unavailable: {exc}",),
-        )
-
-    assert index_conn is not None
-    try:
         preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
         if preflight.state is LivenessState.BLOCKED:
             return LegacyBlobUnlinkResult(blocked=candidates, errors=preflight.blockers)
@@ -1142,17 +1126,6 @@ def unlink_unreferenced_blob_hashes_without_generation_ledger(
         if not dry_run:
             source_conn.commit()
             index_conn.commit()
-    except (OSError, RuntimeError, sqlite3.Error) as exc:
-        if not dry_run:
-            source_conn.rollback()
-            index_conn.rollback()
-        errors.append(f"blob liveness query is unreadable: {exc}")
-        blocked.update(candidates - deleted - retained)
-    finally:
-        index_conn.close()
-        source_conn.close()
-        if exclusion is not None:
-            exclusion.__exit__(None, None, None)
 
     for directory in sorted(touched):
         _fsync_directory(directory)

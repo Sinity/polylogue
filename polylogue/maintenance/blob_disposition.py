@@ -981,19 +981,16 @@ def referenced_blob_hashes(source_db: Path, index_db: Path | None = None) -> fro
     # an orphan by the legacy apply fallback.
     if index_db is not None:
         with closing(_open_ro(index_db)) as conn:
-            try:
-                present = {
-                    str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
-                }
-                if "attachments" in present:
-                    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
-                    if "blob_hash" in columns:
-                        rows = conn.execute(
-                            "SELECT DISTINCT lower(hex(blob_hash)) FROM attachments WHERE blob_hash IS NOT NULL"
-                        ).fetchall()
-                        hashes.update(str(row[0]) for row in rows)
-            except sqlite3.Error as exc:
-                raise BlobDispositionError(f"index attachment relation is unreadable: {exc}") from exc
+            present = {
+                str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+            }
+            if "attachments" in present:
+                columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
+                if "blob_hash" in columns:
+                    rows = conn.execute(
+                        "SELECT DISTINCT lower(hex(blob_hash)) FROM attachments WHERE blob_hash IS NOT NULL"
+                    ).fetchall()
+                    hashes.update(str(row[0]) for row in rows)
     return frozenset(hashes)
 
 
