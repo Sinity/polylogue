@@ -3762,10 +3762,13 @@ def _write_attachments(
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(id(attachment))
         if message_id is None:
-            # The owner is ambiguous, so no ref may be guessed, but the
-            # attachment's identity and bytes are still evidence. The row is
-            # written unreferenced and kept out of the ref-count sweep, which
-            # exists to collect rows whose refs went away.
+            # An attachment carrying inline or precomputed bytes whose owner
+            # is absent from this ingest cannot be represented by a reachable
+            # ref. Do not acquire or persist those bytes; a prior row is swept
+            # through ``refresh_attachment_ids`` below when its last ref was
+            # dropped. Metadata-only records remain as unfetched evidence.
+            if attachment.inline_bytes is not None or attachment.precomputed_blob is not None:
+                continue
             _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
             continue
         direction, producer_ref = _attachment_provenance(
