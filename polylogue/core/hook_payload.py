@@ -29,9 +29,10 @@ _IRREGULAR_SPELLINGS: Mapping[str, tuple[str, ...]] = {
 #: Every canonical payload key an in-tree hook reader consumes:
 #: ``sources/live/hook_paste_enrichment`` (session id, timestamp),
 #: ``archive/message/paste_detection`` (the text fields), ``sources/hook_producer``
-#: (provider detection) and ``context/claude_agent_dispatch_correlation``
-#: (subagent lineage). A key belongs here when a reader reads it, not when the
-#: harness emits it.
+#: (provider detection), ``context/claude_agent_dispatch_correlation`` (subagent
+#: lineage, read-only) and ``storage/sqlite/archive_tiers/write`` (the same
+#: lineage written as a ``session_links`` edge). A key belongs here when a
+#: reader reads it, not when the harness emits it.
 HOOK_READER_KEYS: tuple[str, ...] = (
     "agent_id",
     "agent_type",
