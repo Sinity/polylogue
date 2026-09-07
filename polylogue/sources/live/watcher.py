@@ -32,6 +32,7 @@ from polylogue.core.enums import Origin, Provider
 from polylogue.core.source_halts import halted_sources, source_halt
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.sqlite_locking import is_transient_sqlite_lock
+from polylogue.core.write_hold import WriteHoldBudgetError
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import (
     HookSpoolSourceSpec,
@@ -109,9 +110,11 @@ _CATCH_UP_HOT_FILE_AGE_S = 60.0 * 60.0
 # them by any margin (the original de2a incident was an in-size-bounds 7 MB
 # chunk that held the writer for 860s). Mirrors de2a's
 # ``_RAW_MATERIALIZATION_MAX_PASS_SECONDS`` / qlae's
-# ``_DRIVE_CATCHUP_MAX_PASS_SECONDS`` constant and value -- checked *between*
-# full-ingest records/groups (a single session write cannot be split
-# mid-transaction), never mid-record.
+# ``_DRIVE_CATCHUP_MAX_PASS_SECONDS`` constant and value -- checked between
+# acquired files, full-ingest progress groups and archive-write records (a
+# single session write cannot be split mid-transaction), never mid-record, so
+# overshoot is one work item. Past the writer gate's own declared hold bound
+# the same checkpoints end the pass with ``WriteHoldBudgetError``.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # polylogue-2qrx: minimum age a deferred incomplete-tail observation must
@@ -868,6 +871,18 @@ class LiveWatcher:
 
                 try:
                     await self._run_coordinated("watcher.catch_up.chunk", ingest_chunk)
+                except WriteHoldBudgetError as exc:
+                    # The chunk ran one work item past the bound it was
+                    # admitted under. Ending it here is what makes the bound
+                    # real; the files it did not reach are ordinary backlog.
+                    failed += len(chunk_paths)
+                    logger.warning(
+                        "live.watcher: catch-up chunk %d/%d ended at its declared writer-hold bound: %s",
+                        chunk_index,
+                        len(chunks),
+                        exc,
+                    )
+                    self._defer_unaccounted_failed_retries(chunk_paths)
                 except sqlite3.OperationalError as exc:
                     if not _is_retryable_lock_error(exc):
                         raise
@@ -1316,6 +1331,11 @@ class LiveWatcher:
 
         try:
             await self._run_coordinated("watcher.live_batch", flush_batch)
+        except WriteHoldBudgetError as exc:
+            logger.warning("live.watcher: changed-file batch ended at its declared writer-hold bound: %s", exc)
+            async with self._batch_lock:
+                self._pending_paths.update(paths)
+                self._forced_reparse_paths.update(forced_paths)
         except CursorAuthorityBlockedError as exc:
             logger.warning("live.watcher: changed-file batch refused by cursor authority: %s", exc)
             # Authority denial must leave both durable cursor state and the
