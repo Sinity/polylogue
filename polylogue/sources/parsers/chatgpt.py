@@ -13,10 +13,11 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import (
     BlockType,
+    MaterialOrigin,
     Provider,
     SessionKind,
+    StopReason,
     TitleSource,
-    ToolResultUnknownReason,
     WebConstructType,
 )
 from polylogue.core.timestamps import parse_timestamp
@@ -248,14 +249,52 @@ _CHATGPT_TERMINAL_NODE_STATES: dict[str, bool] = {
 #: is a state this mapping does not cover.
 _CHATGPT_UNCONCLUDED_NODE_STATES = frozenset({"in_progress"})
 
+#: ``metadata.aggregate_result.status``: a code-interpreter run's own verdict.
+#: The node's ``status`` describes message delivery, so a run that raised
+#: in-kernel still sits on a ``finished_successfully`` node -- measured over
+#: 614 captures, all 165 ``failed_with_in_kernel_exception`` and all 7
+#: ``cancelled`` runs do. ``cancelled`` is deliberately in neither set: the
+#: run concluded, but reports nothing about whether the tool did its work.
+_CHATGPT_AGGREGATE_RESULT_STATES: dict[str, bool] = {
+    "success": False,
+    "failed_with_in_kernel_exception": True,
+}
 
-def _node_status_outcome(node_status: object) -> tuple[bool | None, str | None]:
-    """Map a tool-result node's own ``status`` to (is_error, unknown reason).
 
-    ChatGPT exports carry no exit code, so the node's terminal state is the
-    only structural verdict a tool result has. Read from the field, never from
-    the result text.
+def _aggregate_result_outcome(aggregate_result: object) -> tuple[bool | None, bool]:
+    """Return (is_error, run record present) for a code-interpreter run.
+
+    ``timeout_triggered`` is not a failure flag: it is an integer (60) that
+    appears on a successful run as readily as on a failed one, so it is never
+    read as error evidence.
     """
+    if not isinstance(aggregate_result, Mapping):
+        return None, False
+    if isinstance(aggregate_result.get("in_kernel_exception"), Mapping):
+        return True, True
+    if isinstance(aggregate_result.get("system_exception"), Mapping):
+        return True, True
+    status = aggregate_result.get("status")
+    if isinstance(status, str) and status in _CHATGPT_AGGREGATE_RESULT_STATES:
+        return _CHATGPT_AGGREGATE_RESULT_STATES[status], True
+    return None, True
+
+
+def _node_status_outcome(node_status: object, aggregate_result: object = None) -> tuple[bool | None, str | None]:
+    """Map a tool-result node's structural evidence to (is_error, unknown reason).
+
+    Two independent fields state an outcome. ``metadata.aggregate_result`` is
+    the run's own verdict and outranks the node's ``status``, which only says
+    the message carrying the run's output was delivered. A run record that
+    states no verdict leaves the result honestly unknown rather than letting
+    the delivery status stand in for one. Read from the fields, never from the
+    result text; ChatGPT exports carry no exit code.
+    """
+    aggregate_is_error, aggregate_present = _aggregate_result_outcome(aggregate_result)
+    if aggregate_is_error is not None:
+        return aggregate_is_error, None
+    if aggregate_present:
+        return None, unknown_reason(is_error=None, outcome_field_present=True)
     if isinstance(node_status, str) and node_status in _CHATGPT_TERMINAL_NODE_STATES:
         return _CHATGPT_TERMINAL_NODE_STATES[node_status], None
     unrecognized = isinstance(node_status, str) and node_status not in _CHATGPT_UNCONCLUDED_NODE_STATES
@@ -297,6 +336,26 @@ def _iter_mapping_items(value: object) -> list[Mapping[str, object]]:
     return []
 
 
+def _reference_token(item: Mapping[str, object]) -> str | None:
+    """Compose ChatGPT's own citation token for a result, e.g. ``turn0search4``.
+
+    ``ref_id`` is a ``{turn_index, ref_type, ref_index}`` triple, and the token
+    it spells is exactly what the inline citation markers in assistant text
+    carry -- composing it here is what lets a citation anchor join the result
+    it cites. Measured ``ref_type`` values:
+    search/view/news/academia/reddit/youtube.
+    """
+    ref = item.get("ref_id")
+    if not isinstance(ref, Mapping):
+        return None
+    turn_index = _int_value(ref, "turn_index")
+    ref_type = _string_value(ref, "ref_type")
+    ref_index = _int_value(ref, "ref_index")
+    if turn_index is None or ref_type is None or ref_index is None:
+        return None
+    return f"turn{turn_index}{ref_type}{ref_index}"
+
+
 def _construct_from_reference(
     item: Mapping[str, object],
     *,
@@ -325,7 +384,8 @@ def _construct_from_reference(
         title=pick("title", "name", "source_name", "source_label"),
         url=pick("url", "link", "source_url", "cloud_doc_url"),
         text=pick("snippet", "text", "content", "description", "quote"),
-        source_id=pick("id", "source_id", "ref_id", "attribution_id", "textdoc_id", "library_file_id"),
+        source_id=pick("id", "source_id", "ref_id", "attribution_id", "textdoc_id", "library_file_id")
+        or _reference_token(item),
         group_id=group_id,
         group_title=group_title,
         asset_pointer=pick("asset_pointer"),
@@ -392,6 +452,122 @@ def _constructs_from_content_reference_item(
     return constructs
 
 
+#: ``metadata.finish_details.type`` -> ``messages.stop_reason``. The wire
+#: vocabulary is OpenAI's; ``messages.stop_reason`` is Anthropic's
+#: :class:`StopReason`, so only exact equivalences are mapped and every other
+#: token (``interrupted``, ``skipped``, ``unknown``) leaves the column NULL
+#: rather than widening a guess into it.
+_CHATGPT_STOP_REASONS: dict[str, StopReason] = {
+    "stop": StopReason.END_TURN,
+    "max_tokens": StopReason.MAX_TOKENS,
+}
+
+
+def _stop_reason_from_finish_details(finish_details: object) -> str | None:
+    """Return the ``messages.stop_reason`` value a node's finish details name."""
+    if not isinstance(finish_details, Mapping):
+        return None
+    mapped = _CHATGPT_STOP_REASONS.get(str(finish_details.get("type")))
+    return mapped.value if mapped is not None else None
+
+
+#: A ChatGPT author whose ``real_author`` names a tool did not write its
+#: message: the envelope role is the channel the tool's output was rendered
+#: through. Measured values: ``tool:web``, ``tool:web.run``, ``tool:web.search``.
+_CHATGPT_TOOL_AUTHOR_PREFIX = "tool:"
+
+
+def _real_author(author: object) -> str | None:
+    """Return ``author.metadata.real_author``, the wire's own authorship note."""
+    if not isinstance(author, Mapping):
+        return None
+    metadata = author.get("metadata")
+    if not isinstance(metadata, Mapping):
+        return None
+    return _string_value(metadata, "real_author")
+
+
+#: A ChatGPT conversation permalink. The captured id is the cited
+#: conversation's own native id -- the join key a cross-session edge needs,
+#: kept resolvable on the construct so the edge can be built later without
+#: reparsing.
+_CHATGPT_CONVERSATION_URL_RE = re.compile(r"^https?://chatgpt\.com/c/([0-9a-fA-F-]+)")
+
+
+def _conversation_context_citation_construct(
+    item: Mapping[str, object],
+    citation: Mapping[str, object],
+    *,
+    rank: int,
+) -> ParsedWebConstruct:
+    """Project one cross-conversation memory retrieval into a construct.
+
+    ChatGPT's personalization layer answers from earlier conversations and
+    records each retrieval here: which conversation was read, its title and
+    snippet, and the span of the answer the retrieval backs.
+    """
+    url = _string_value(citation, "url")
+    cited_conversation = _CHATGPT_CONVERSATION_URL_RE.match(url) if url else None
+    return ParsedWebConstruct(
+        construct_type=WebConstructType.CONTENT_REFERENCE,
+        provider_key="conversation_context_citation_metadata",
+        title=_string_value(citation, "conversation_title", "title"),
+        url=url,
+        text=_string_value(citation, "snippet", "matched_text"),
+        source_id=(
+            cited_conversation.group(1)
+            if cited_conversation
+            else _string_value(citation, "memory_id", "citation_uuid") or _string_value(item, "citation_uuid")
+        ),
+        group_id=_string_value(item, "citation_uuid"),
+        group_title=_string_value(citation, "category") or _string_value(item, "retrieval_origin"),
+        status=_string_value(citation, "conversation_context_type"),
+        rank=rank,
+        start_index=_int_value(citation, "start_idx"),
+        end_index=_int_value(citation, "end_idx"),
+    )
+
+
+#: Wire keys that can hold a search group's results. ``entries`` is the shape
+#: every measured capture uses (67,867 results over 614 captures); the others
+#: are alternate spellings kept so an older export shape still lands.
+_SEARCH_RESULT_GROUP_ENTRY_KEYS = ("entries", "results", "items", "search_results", "sources")
+
+
+def _search_result_group_constructs(container: object, *, provider_key: str) -> list[ParsedWebConstruct]:
+    """Project one ``search_result_groups`` list into SEARCH_RESULT constructs.
+
+    A group is ``{type, domain, entries[]}``: ``domain`` is the only label it
+    carries, so it is the group title, and each entry carries its own
+    title/url/snippet plus the ``ref_id`` triple that names it in the answer's
+    inline citations.
+    """
+    if not isinstance(container, Mapping):
+        return []
+    constructs: list[ParsedWebConstruct] = []
+    for group_rank, group in enumerate(_iter_mapping_items(container.get("search_result_groups"))):
+        group_id = _string_value(group, "id", "group_id") or str(group_rank)
+        group_title = _string_value(group, "title", "name", "query", "domain")
+        candidates: object = []
+        for key in _SEARCH_RESULT_GROUP_ENTRY_KEYS:
+            value = group.get(key)
+            if value:
+                candidates = value
+                break
+        for rank, item in enumerate(_iter_mapping_items(candidates)):
+            constructs.append(
+                _construct_from_reference(
+                    item,
+                    construct_type=WebConstructType.SEARCH_RESULT,
+                    provider_key=provider_key,
+                    rank=rank,
+                    group_id=group_id,
+                    group_title=group_title,
+                )
+            )
+    return constructs
+
+
 def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebConstruct]:
     if not isinstance(msg_metadata, Mapping):
         return []
@@ -433,23 +609,16 @@ def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebCon
                         rank=rank,
                     )
                 )
-    for group_rank, group in enumerate(_iter_mapping_items(msg_metadata.get("search_result_groups"))):
-        group_id = _string_value(group, "id", "group_id") or str(group_rank)
-        group_title = _string_value(group, "title", "name", "query")
-        candidates = (
-            group.get("results") or group.get("items") or group.get("search_results") or group.get("sources") or []
+    constructs.extend(_search_result_group_constructs(msg_metadata, provider_key="search_result_groups"))
+    # The reasoning-trace copy of the same structure: a search a thought step
+    # ran, expandable in the UI under the chain of thought. Same group/entry
+    # shape, its own provider_key so the two are distinguishable downstream.
+    constructs.extend(
+        _search_result_group_constructs(
+            msg_metadata.get("inline_cot_expandable_content"),
+            provider_key="inline_cot_expandable_content.search_result_groups",
         )
-        for rank, item in enumerate(_iter_mapping_items(candidates)):
-            constructs.append(
-                _construct_from_reference(
-                    item,
-                    construct_type=WebConstructType.SEARCH_RESULT,
-                    provider_key="search_result_groups",
-                    rank=rank,
-                    group_id=group_id,
-                    group_title=group_title,
-                )
-            )
+    )
     for rank, item in enumerate(_iter_mapping_items(msg_metadata.get("selected_sources"))):
         constructs.append(
             _construct_from_reference(
@@ -487,10 +656,20 @@ def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebCon
                 construct_type=WebConstructType.ASYNC_TASK,
                 provider_key="aggregate_result",
                 title=_string_value(item, "title"),
-                text=_string_value(item, "output", "text", "stdout", "stderr"),
-                status=_string_value(item, "status", "exit_code"),
+                # The program the run executed. It exists nowhere else: the
+                # calling ``code`` node's text is measured empty or an
+                # unrelated tool-call payload on every sampled call, and the
+                # result node's text is the run's output, not its input.
+                text=_string_value(item, "code"),
+                status=_string_value(item, "status"),
+                task_id=_string_value(item, "run_id"),
             )
         )
+    for rank, item in enumerate(_iter_mapping_items(msg_metadata.get("conversation_context_citation_metadata"))):
+        citation = item.get("citation")
+        if not isinstance(citation, Mapping):
+            continue
+        constructs.append(_conversation_context_citation_construct(item, citation, rank=rank))
     return constructs
 
 
@@ -665,25 +844,12 @@ def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -
     return current
 
 
-def _concluded_tool_status_is_error(status: object) -> bool | None:
-    """Read the export's terminal-state vocabulary for a completed tool run.
-
-    ``finished_successfully`` and ``finished_partial_completion`` are the only
-    states that conclude an outcome; anything else (``in_progress``, absent)
-    stays honestly unknown. This export carries no numeric exit code.
-    """
-    if status == "finished_partial_completion":
-        return True
-    if status == "finished_successfully":
-        return False
-    return None
-
-
 def _tool_role_result_blocks(
     blocks: list[ParsedContentBlock],
     *,
     tool_id: str | None,
     status: object,
+    aggregate_result: object,
     content_type: str,
     text: str,
 ) -> list[ParsedContentBlock]:
@@ -702,8 +868,7 @@ def _tool_role_result_blocks(
     """
     if any(block.type is BlockType.TOOL_RESULT for block in blocks):
         return blocks
-    is_error = _concluded_tool_status_is_error(status)
-    unknown_reason = ToolResultUnknownReason.NOT_REPORTED.value if is_error is None else None
+    is_error, outcome_unknown = _node_status_outcome(status, aggregate_result)
     metadata: dict[str, object] = {"content_type": content_type}
     for index, block in enumerate(blocks):
         if block.type not in _TOOL_RESULT_CARRIER_TYPES:
@@ -718,7 +883,7 @@ def _tool_role_result_blocks(
                 # "code"`` branch synthesizes one for the call side only.
                 "tool_input": None,
                 "is_error": is_error,
-                "outcome_unknown_reason": unknown_reason,
+                "outcome_unknown_reason": outcome_unknown,
                 "metadata": {**(block.metadata or {}), **metadata},
             }
         )
@@ -731,7 +896,7 @@ def _tool_role_result_blocks(
             tool_id=tool_id,
             metadata=metadata,
             is_error=is_error,
-            outcome_unknown_reason=unknown_reason,
+            outcome_unknown_reason=outcome_unknown,
         ),
     )
     return blocks
@@ -814,14 +979,14 @@ def extract_messages_from_mapping(
                         branch_index = children.index(current_node_id)
 
         # Extract attachments from message metadata
-        msg_metadata = msg.get("metadata") or {}
-        if isinstance(msg_metadata, dict):
-            msg_attachments = msg_metadata.get("attachments") or []
-            if isinstance(msg_attachments, list):
-                for attach in msg_attachments:
-                    attachment = attachment_from_meta(attach, str(msg_id), role=role)
-                    if attachment is not None:
-                        attachments.append(attachment)
+        raw_msg_metadata = msg.get("metadata")
+        msg_metadata: Mapping[str, object] = raw_msg_metadata if isinstance(raw_msg_metadata, Mapping) else {}
+        msg_attachments = msg_metadata.get("attachments") or []
+        if isinstance(msg_attachments, list):
+            for attach in msg_attachments:
+                attachment = attachment_from_meta(attach, str(msg_id), role=role)
+                if attachment is not None:
+                    attachments.append(attachment)
 
         # Assistant-generated downloadable files (#sandbox links). Code
         # Interpreter deliverables surface only as `sandbox:/mnt/data/...`
@@ -845,23 +1010,18 @@ def extract_messages_from_mapping(
                     )
                 )
 
-        model_slug: object = None
-        model_effort: str | None = None
-        duration_raw: object = None
-
-        # Extract message-level metadata from typed fields
-        if isinstance(msg_metadata, dict):
-            model_slug = msg_metadata.get("model_slug")
-            model_effort = _string_value(
-                msg_metadata,
-                "thinking_effort",
-                "reasoning_effort",
-                "model_effort",
-                "modelEffort",
-            )
-            duration_raw = msg_metadata.get("durationMs")
-            if duration_raw is None:
-                duration_raw = msg_metadata.get("duration_ms")
+        # Message-level metadata from typed fields
+        model_slug = msg_metadata.get("model_slug")
+        model_effort = _string_value(
+            msg_metadata,
+            "thinking_effort",
+            "reasoning_effort",
+            "model_effort",
+            "modelEffort",
+        )
+        duration_raw = msg_metadata.get("durationMs")
+        if duration_raw is None:
+            duration_raw = msg_metadata.get("duration_ms")
         model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
         duration_ms = _non_negative_int(duration_raw)
 
@@ -961,9 +1121,11 @@ def extract_messages_from_mapping(
             # pair carry a shared tool_id and the `actions` view can join
             # them.
             #
-            # The outcome comes from the node's own `status` -- see
-            # ``_node_status_outcome``; this export carries no exit code.
-            execution_is_error, execution_unknown_reason = _node_status_outcome(msg.get("status"))
+            # The outcome comes from the run record and the node's status --
+            # see ``_node_status_outcome``; this export carries no exit code.
+            execution_is_error, execution_unknown_reason = _node_status_outcome(
+                msg.get("status"), msg_metadata.get("aggregate_result")
+            )
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_RESULT,
@@ -981,9 +1143,11 @@ def extract_messages_from_mapping(
             # tool_id = the calling node's id (mapping-tree `parent`), the
             # same convention execution_output/code use above (polylogue-
             # 4fm3/polylogue-grub) so the actions view can join the pair.
-            # is_error reads the node's own `status`, the same terminal-
-            # state vocabulary execution_output reads.
-            computer_is_error, computer_unknown_reason = _node_status_outcome(msg.get("status"))
+            # is_error reads the same structural evidence execution_output
+            # reads.
+            computer_is_error, computer_unknown_reason = _node_status_outcome(
+                msg.get("status"), msg_metadata.get("aggregate_result")
+            )
             state = content.get("state")
             state_url = _string_value(state, "url") if isinstance(state, Mapping) else None
             state_title = _string_value(state, "title") if isinstance(state, Mapping) else None
@@ -1096,7 +1260,9 @@ def extract_messages_from_mapping(
             # document it was read from -- "a code result with citation
             # anchors". tool_id/is_error follow the same execution_output
             # convention as the branches above.
-            citable_is_error, citable_unknown_reason = _node_status_outcome(msg.get("status"))
+            citable_is_error, citable_unknown_reason = _node_status_outcome(
+                msg.get("status"), msg_metadata.get("aggregate_result")
+            )
             cite_metadata = content.get("metadata")
             cite_constructs: list[ParsedWebConstruct] = []
             if isinstance(cite_metadata, Mapping):
@@ -1219,6 +1385,7 @@ def extract_messages_from_mapping(
                 content_blocks,
                 tool_id=tool_result_owner_id,
                 status=msg.get("status"),
+                aggregate_result=msg_metadata.get("aggregate_result"),
                 # Read the node's own content type: the ``parts`` loop above
                 # rebinds ``content_type`` to an audio part's type.
                 content_type=str(content.get("content_type", "text")),
@@ -1295,8 +1462,26 @@ def extract_messages_from_mapping(
 
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
-        user_context_val = msg_metadata.get("user_context_message_data") if isinstance(msg_metadata, Mapping) else None
+        user_context_val = msg_metadata.get("user_context_message_data")
         message_type = forced_message_type or classify_text_message_type(text) or MessageType.MESSAGE
+        real_author = _real_author(author)
+        material_origin = human_authored_override(
+            role,
+            message_type,
+            classify_material_origin(
+                role=role,
+                message_type=message_type,
+                text=text,
+                block_types=tuple(block.type for block in content_blocks),
+            ),
+        )
+        # ``real_author`` is the wire stating who actually produced this
+        # message's content. A tool author overrides the envelope: 397
+        # measured ``role: assistant`` nodes carry ``tool:web``, and reading
+        # them as model output is what makes assistant-word accounting
+        # over-count.
+        if real_author is not None and real_author.startswith(_CHATGPT_TOOL_AUTHOR_PREFIX):
+            material_origin = MaterialOrigin.TOOL_RESULT
         parsed = ParsedMessage(
             provider_message_id=str(msg_id),
             role=role,
@@ -1304,16 +1489,8 @@ def extract_messages_from_mapping(
             timestamp=str(timestamp) if timestamp is not None else None,
             blocks=content_blocks,
             message_type=message_type,
-            material_origin=human_authored_override(
-                role,
-                message_type,
-                classify_material_origin(
-                    role=role,
-                    message_type=message_type,
-                    text=text,
-                    block_types=tuple(block.type for block in content_blocks),
-                ),
-            ),
+            material_origin=material_origin,
+            stop_reason=_stop_reason_from_finish_details(msg_metadata.get("finish_details")),
             parent_message_provider_id=parent_message_provider_id,
             position=idx - 1,
             branch_index=branch_index,
@@ -1588,6 +1765,132 @@ def shared_decode_mapping(payload: Mapping[str, object]) -> dict[str, object]:
 # ``browser_capture.py``'s ``browser_capture_block_metadata``: one event per
 # block carrying non-empty metadata, whole dict verbatim (no fixed key
 # vocabulary to prune against here, unlike the Claude AI web-tool case).
+def _run_stream_text(aggregate_result: Mapping[str, object]) -> str:
+    """Concatenate a code-interpreter run's stdout/stderr stream text.
+
+    Both wire shapes carry it: the slim record under ``messages[]``
+    (``message_type: "stream"``) and the full one additionally under
+    ``jupyter_messages[]`` (``msg_type: "stream"``), which repeats the same
+    bytes. Read the slim list first so the repeat is never concatenated onto
+    itself.
+    """
+    for key, type_key in (("messages", "message_type"), ("jupyter_messages", "msg_type")):
+        parts: list[str] = []
+        for record in _iter_mapping_items(aggregate_result.get(key)):
+            if record.get(type_key) != "stream":
+                continue
+            content = record.get("content")
+            text = _string_value(record, "text") or (
+                _string_value(content, "text") if isinstance(content, Mapping) else None
+            )
+            if text:
+                parts.append(text)
+        if parts:
+            return "".join(parts)
+    return ""
+
+
+def _aggregate_result_events(mapping: Mapping[str, object], emitted_message_ids: set[str]) -> list[ParsedSessionEvent]:
+    """Conserve each code-interpreter run's own record.
+
+    The run's output already IS the result node's text, so the stream text is
+    stored verbatim only where that duplication does not hold and its length
+    is recorded either way -- the same conservation shape Codex's
+    ``last_agent_message`` event uses. Everything else here (the run id, its
+    clock, the timeout it ran under, the exception class) exists nowhere else
+    in the parsed session, and neither does the executed program, which rides
+    the ``aggregate_result`` web construct.
+    """
+    events: list[ParsedSessionEvent] = []
+    for node_id, node in mapping.items():
+        if not isinstance(node, Mapping):
+            continue
+        message = node.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        metadata = message.get("metadata")
+        aggregate_result = metadata.get("aggregate_result") if isinstance(metadata, Mapping) else None
+        if not isinstance(aggregate_result, Mapping):
+            continue
+        message_id = str(message.get("id") or node_id)
+        if message_id not in emitted_message_ids:
+            continue
+        content = message.get("content")
+        node_text = _string_value(content, "text") if isinstance(content, Mapping) else None
+        stream_text = _run_stream_text(aggregate_result)
+        exception = aggregate_result.get("in_kernel_exception")
+        exception = exception if isinstance(exception, Mapping) else {}
+        system_exception = aggregate_result.get("system_exception")
+        payload: dict[str, object] = {"status": _string_value(aggregate_result, "status")}
+        for key in ("run_id", "start_time", "end_time", "update_time", "timeout_triggered"):
+            value = aggregate_result.get(key)
+            if value is not None:
+                payload[key] = value
+        final_expression_output = aggregate_result.get("final_expression_output")
+        if final_expression_output is not None:
+            payload["final_expression_output"] = final_expression_output
+        if exception:
+            payload["in_kernel_exception_name"] = _string_value(exception, "name")
+            if exception.get("args") is not None:
+                payload["in_kernel_exception_args"] = exception["args"]
+        if isinstance(system_exception, Mapping):
+            payload["system_exception"] = dict(system_exception)
+        if stream_text:
+            payload["stream_chars"] = len(stream_text)
+            payload["stream_retained_as_message_text"] = stream_text == node_text
+            if stream_text != node_text:
+                payload["stream_text"] = stream_text
+        events.append(
+            ParsedSessionEvent(
+                event_type="chatgpt_code_interpreter_run",
+                timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
+                source_message_provider_id=message_id,
+                payload=payload,
+            )
+        )
+    return events
+
+
+def _message_authorship_events(
+    mapping: Mapping[str, object], emitted_message_ids: set[str]
+) -> list[ParsedSessionEvent]:
+    """Conserve the wire's own statement of what a message is and who wrote it.
+
+    ``channel`` separates a turn's reasoning-adjacent ``commentary`` from the
+    ``final`` answer the user was shown -- ChatGPT's analogue of Codex's
+    ``phase`` -- and ``author.metadata.real_author`` names the tool that
+    actually produced a message rendered through another role's envelope.
+    """
+    events: list[ParsedSessionEvent] = []
+    for node_id, node in mapping.items():
+        if not isinstance(node, Mapping):
+            continue
+        message = node.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        channel = _string_value(message, "channel")
+        real_author = _real_author(message.get("author"))
+        if channel is None and real_author is None:
+            continue
+        message_id = str(message.get("id") or node_id)
+        if message_id not in emitted_message_ids:
+            continue
+        payload: dict[str, object] = {}
+        if channel is not None:
+            payload["channel"] = channel
+        if real_author is not None:
+            payload["real_author"] = real_author
+        events.append(
+            ParsedSessionEvent(
+                event_type="chatgpt_message_authorship",
+                timestamp=str(message.get("create_time")) if message.get("create_time") is not None else None,
+                source_message_provider_id=message_id,
+                payload=payload,
+            )
+        )
+    return events
+
+
 def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[ParsedSessionEvent]:
     events: list[ParsedSessionEvent] = []
     for message in messages:
@@ -1682,6 +1985,8 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         for timing in generation_timings
     ]
     session_events.extend(_block_metadata_evidence_events(messages))
+    session_events.extend(_aggregate_result_events(mapping, emitted_message_ids))
+    session_events.extend(_message_authorship_events(mapping, emitted_message_ids))
     duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     provider_title = payload.get("title") or payload.get("name")
     title = provider_title or fallback_id

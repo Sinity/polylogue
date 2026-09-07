@@ -1288,3 +1288,44 @@ def test_claude_sibling_variant_continuations_all_reach_archive_with_blocks(
     assert block_texts_by_message["continuation-b"], "continuation-b lost its blocks"
     assert "follow-up inside variant a's world" in " ".join(block_texts_by_message["continuation-a"])
     assert "follow-up inside variant b's world" in " ".join(block_texts_by_message["continuation-b"])
+
+
+# The web surface emits Anthropic's own stop_reason vocabulary plus
+# product-surface additions. `messages.stop_reason` is constrained to
+# StopReason, so only exact members land and the rest stay NULL — a parser
+# that passed the token through would write a value the column rejects.
+_CLAUDE_WEB_STOP_REASON_CASES: list[tuple[str | None, str | None, str]] = [
+    ("stop_sequence", "stop_sequence", "the value 3,987 measured web messages carry"),
+    ("end_turn", "end_turn", "an ordinary completed turn"),
+    ("max_tokens", "max_tokens", "a length cut"),
+    ("user_canceled", None, "a cancel is a product-surface state, not a StopReason"),
+    ("conversation_length_limit", None, "a context-limit stop names no StopReason member"),
+    ("error", None, "an error is not a terminal-state member"),
+    (None, None, "a message the wire reports nothing for"),
+]
+
+
+@pytest.mark.parametrize(
+    ("wire_value", "expected", "desc"),
+    _CLAUDE_WEB_STOP_REASON_CASES,
+    ids=[case[2] for case in _CLAUDE_WEB_STOP_REASON_CASES],
+)
+def test_claude_web_stop_reason_lands_only_for_declared_members(
+    wire_value: str | None, expected: str | None, desc: str
+) -> None:
+    message: dict[str, Any] = {
+        "uuid": "msg-1",
+        "sender": "assistant",
+        "text": "Answer",
+        "created_at": "2026-01-01T00:00:00Z",
+    }
+    if wire_value is not None:
+        message["stop_reason"] = wire_value
+
+    session = parse_payload(
+        "claude-ai",
+        {"uuid": "conv-1", "name": "Conversation", "chat_messages": [message]},
+        "conv-1",
+    )[0]
+
+    assert session.messages[0].stop_reason == expected, desc
