@@ -419,6 +419,18 @@ class TestMetadataRoundtrip:
 class TestSessionLevelMetadata:
     """Pin the session envelope contract built around ``chunkedPrompt``."""
 
+    def test_top_level_citations_survive_as_session_event(self) -> None:
+        """Grounding URIs from the export envelope remain session evidence."""
+        payload = _load_catalog("current_export.json")
+        citations = payload["citations"]
+
+        session = _parse(payload, "current_export")
+
+        citation_events = [event for event in session.session_events if event.event_type == "gemini_citations"]
+        assert len(citation_events) == 1
+        assert citation_events[0].source_message_provider_id is None
+        assert citation_events[0].payload == {"citations": citations}
+
     def test_current_export_carries_no_document_level_identity(self) -> None:
         """The shape AI Studio writes today has no envelope to read identity from.
 
