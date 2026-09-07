@@ -102,9 +102,13 @@ def _derived_rows(index_db: Path, statements: dict[str, str]) -> dict[str, list[
 
 
 _HERMES_ROWS = {
-    "sessions": "SELECT origin, native_id, title, message_count FROM sessions ORDER BY session_id",
-    "messages": "SELECT session_id, position, role, text FROM messages ORDER BY message_id",
-    "blocks": "SELECT message_id, position, type, text FROM blocks ORDER BY block_id",
+    "sessions": (
+        "SELECT origin, native_id, title, message_count, word_count, content_hash FROM sessions ORDER BY session_id"
+    ),
+    "messages": (
+        "SELECT session_id, position, role, material_origin, word_count, content_hash FROM messages ORDER BY message_id"
+    ),
+    "blocks": "SELECT message_id, position, block_type, text, content_hash FROM blocks ORDER BY block_id",
 }
 
 _CODEX_ROWS = {
