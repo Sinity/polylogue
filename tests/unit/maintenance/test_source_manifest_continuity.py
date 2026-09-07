@@ -7,10 +7,12 @@ import pytest
 
 from polylogue.maintenance.source_manifest_continuity import (
     ConsumptionReceipt,
+    FrontierState,
     MemberState,
     SourceContinuityError,
     SourceDeclaration,
     SourceRole,
+    build_source_frontier,
     build_source_manifest,
     canonical_source_declarations,
     recheck_source_manifest,
@@ -170,3 +172,30 @@ def test_backup_evidence_is_external_authenticated_and_fresh() -> None:
         validate_backup_evidence(
             {"authenticated": True, "reference": "backup:42", "observed_at_ms": 1}, now_ms=1000, max_age_ms=200
         )
+
+
+def test_frontier_retains_missing_roots_and_valid_empty_roots(tmp_path: Path) -> None:
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    frontier = build_source_frontier(
+        [
+            SourceDeclaration("empty", SourceRole.DIRECTORY, empty, True),
+            SourceDeclaration("missing", SourceRole.DIRECTORY, tmp_path / "missing", True),
+        ]
+    )
+    assert frontier.root_states["empty"] is FrontierState.VALID_EMPTY
+    assert frontier.root_states["missing"] is FrontierState.UNAVAILABLE
+    assert frontier.complete is False
+    assert any(item.startswith("unavailable:missing:") for item in frontier.blockers)
+    frontier.verify_integrity()
+
+
+def test_frontier_digest_binds_captured_member_after_path_mutation(tmp_path: Path) -> None:
+    root = _source(tmp_path, "captured")
+    frontier = build_source_frontier([SourceDeclaration("captured", SourceRole.DIRECTORY, root, True)])
+    (root / "one.jsonl").write_text("changed", encoding="utf-8")
+    # The captured denominator remains verifiable without rereading mutable
+    # source bytes; a changed live root is a new observation, not a refreshed
+    # frontier.
+    frontier.verify_integrity()
+    assert frontier.members[0].content_sha256 != ""

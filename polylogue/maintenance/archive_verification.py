@@ -69,6 +69,7 @@ from polylogue.maintenance.source_conservation import (
     typed_raw_cte,
     valid_byte_duplicate_supersession_expr,
 )
+from polylogue.maintenance.source_manifest_continuity import SourceFrontier
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
 from polylogue.storage.blob_integrity import scan_attachment_coverage, scan_blob_integrity
 from polylogue.storage.blob_liveness import (
@@ -643,12 +644,29 @@ def _check_source_index_coverage_at_candidate(
     return _check_source_index_coverage_at_index_path(archive_root, index_path, sample_limit)
 
 
-def _check_source_conservation(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
-    return _check_source_conservation_at_index_path(archive_root, _resolve_index_path(archive_root), sample_limit)
+def _check_source_conservation(
+    archive_root: Path,
+    sample_limit: int,
+    *,
+    source_frontier: SourceFrontier | None = None,
+    require_source_frontier: bool = False,
+) -> ArchiveVerificationCheck:
+    return _check_source_conservation_at_index_path(
+        archive_root,
+        _resolve_index_path(archive_root),
+        sample_limit,
+        source_frontier=source_frontier,
+        require_source_frontier=require_source_frontier,
+    )
 
 
 def _check_source_conservation_at_index_path(
-    archive_root: Path, index_path: Path, sample_limit: int
+    archive_root: Path,
+    index_path: Path,
+    sample_limit: int,
+    *,
+    source_frontier: SourceFrontier | None = None,
+    require_source_frontier: bool = False,
 ) -> ArchiveVerificationCheck:
     """Every acquired source item and every index row types into one term.
 
@@ -666,6 +684,12 @@ def _check_source_conservation_at_index_path(
     acquired are warnings.
     """
     name = "source-conservation"
+    if require_source_frontier and source_frontier is None:
+        return _error_check(
+            name,
+            "configured source frontier is missing",
+            evidence={"outcome_reason": "missing_source_frontier", "frontier_required": True},
+        )
     source_path = _tier_path(archive_root, ArchiveTier.SOURCE)
     if not source_path.exists() or not index_path.exists():
         return _skip_check(name, "source.db or index.db not present")
@@ -679,7 +703,12 @@ def _check_source_conservation_at_index_path(
         except sqlite3.Error as exc:
             return _error_check(name, f"could not attach index.db: {exc}", exc=exc)
         try:
-            report = audit_source_conservation(conn, archive_root=archive_root, sample_limit=sample_limit)
+            report = audit_source_conservation(
+                conn,
+                archive_root=archive_root,
+                sample_limit=sample_limit,
+                frontier=source_frontier,
+            )
         except sqlite3.Error as exc:
             return _error_check(name, f"could not read source/index tiers: {exc}", exc=exc)
     finally:
@@ -763,6 +792,8 @@ def archive_verification_migrated_owner_adapters(
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
     index_path_override: Path | None = None,
     active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
+    source_frontier: SourceFrontier | None = None,
+    require_source_frontier: bool = False,
 ) -> tuple[BoundOutcomeOwner, ...]:
     """Bind the migrated source/storage producers to the result seam.
 
@@ -938,9 +969,20 @@ def archive_verification_migrated_owner_adapters(
             ),
             owned_reference="test_deleted_source_file_without_retained_bytes_trips_source_conservation",
             check=lambda: (
-                _check_source_conservation_at_index_path(archive_root, index_path_override, sample_limit)
+                _check_source_conservation_at_index_path(
+                    archive_root,
+                    index_path_override,
+                    sample_limit,
+                    source_frontier=source_frontier,
+                    require_source_frontier=require_source_frontier,
+                )
                 if index_path_override is not None
-                else _check_source_conservation(archive_root, sample_limit)
+                else _check_source_conservation(
+                    archive_root,
+                    sample_limit,
+                    source_frontier=source_frontier,
+                    require_source_frontier=require_source_frontier,
+                )
             ),
         ),
         _declared_owner(
@@ -1133,6 +1175,8 @@ def archive_verification_domain_adapters(
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
     index_path_override: Path | None = None,
     active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
+    source_frontier: SourceFrontier | None = None,
+    require_source_frontier: bool = False,
 ) -> tuple[BoundOutcomeOwner, ...]:
     """Return executable declarations from the owners of each predicate."""
     owners = archive_verification_migrated_owner_adapters(
@@ -1140,6 +1184,8 @@ def archive_verification_domain_adapters(
         sample_limit=sample_limit,
         index_path_override=index_path_override,
         active_index_context=active_index_context,
+        source_frontier=source_frontier,
+        require_source_frontier=require_source_frontier,
     )
     if not all(owner.semantic_owner and owner.owned_reference and owner.applicable_routes for owner in owners):
         raise ValueError("an archive verification owner omitted its domain declaration")
@@ -1164,12 +1210,16 @@ class ArchiveVerificationCoverage:
     missing_production_routes: tuple[str, ...] = ()
     ownerless_checks: tuple[str, ...] = ()
     duplicate_checks: tuple[str, ...] = ()
+    source_frontier_sha256: str | None = None
+    source_frontier_total: int | None = None
 
     def to_json(self) -> JSONDocument:
         return json_document(
             {
                 "route": self.route,
                 "candidate_id": self.candidate_id,
+                "source_frontier_sha256": self.source_frontier_sha256,
+                "source_frontier_total": self.source_frontier_total,
                 "denominator": len(self.declarations),
                 "declarations": [
                     {
@@ -3404,6 +3454,8 @@ def verify_archive(
     sample_limit: int = DEFAULT_SAMPLE_LIMIT,
     index_path_override: Path | None = None,
     active_index_context: Literal["required", "unavailable_for_candidate"] = "required",
+    source_frontier: SourceFrontier | None = None,
+    require_source_frontier: bool = False,
 ) -> ArchiveVerificationReport:
     """Run selected owner declarations and return disposable evidence."""
     declarations = archive_verification_domain_adapters(
@@ -3411,6 +3463,8 @@ def verify_archive(
         sample_limit=sample_limit,
         index_path_override=index_path_override,
         active_index_context=active_index_context,
+        source_frontier=source_frontier,
+        require_source_frontier=require_source_frontier,
     )
     by_name = {owner.name: owner for owner in declarations}
     selected_names = (
@@ -3436,6 +3490,8 @@ def verify_archive(
             owner.name for owner in selected if not owner.semantic_owner or not owner.owned_reference
         ),
         duplicate_checks=tuple(sorted({name for name in selected_names if selected_names.count(name) > 1})),
+        source_frontier_sha256=source_frontier.frontier_sha256 if source_frontier is not None else None,
+        source_frontier_total=source_frontier.item_count if source_frontier is not None else None,
     )
     return ArchiveVerificationReport(
         checks=report.checks,

@@ -428,6 +428,23 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
     return tuple(result)
 
 
+def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...]:
+    """Enumerate one declared source without copying or mutating it.
+
+    This is the read-only observation law shared by source-cut and source
+    conservation.  In particular, archive members and mutable SQLite roots
+    are observed at their declared logical granularity rather than being
+    reduced to one root row or a filesystem byte count.
+    """
+    return _observe(
+        SourceCutBinding(
+            declaration,
+            _root_identity(declaration.root),
+            _default_policy(declaration.role),
+        )
+    )
+
+
 def _try_reflink(source: Path, destination: Path) -> bool:
     try:
         with source.open("rb") as source_stream:
@@ -1020,6 +1037,7 @@ __all__ = [
     "execute_source_cut",
     "load_source_cut",
     "preflight_source_cut",
+    "observe_source_members",
     "reacquire_candidate",
 ]
 
