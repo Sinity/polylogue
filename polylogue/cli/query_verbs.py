@@ -1708,8 +1708,13 @@ def delete_verb(
         polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
     """
+    from polylogue.cli.contextual_errors import (
+        AMBIGUITY_CANDIDATE_LIMIT,
+        AmbiguousSelectionError,
+        ContextualCliError,
+        NextAction,
+    )
     from polylogue.cli.verb_cardinality import (
-        CardinalityError,
         check_cardinality,
         probe_session_ids_for_verb,
         resolve_session_ids_for_verb,
@@ -1740,22 +1745,37 @@ def delete_verb(
     if dry_run:
         probe_ids = probe_session_ids_for_verb(env, request, limit=2)
         if len(probe_ids) > 1 and not all_flag:
-            raise click.UsageError(
+            raise AmbiguousSelectionError(
                 "'delete dry-run' matched multiple sessions. "
-                "Use --all to preview every matched session, or narrow the query."
+                "Use --all to preview every matched session, or narrow the query.",
+                candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
+                next_actions=(
+                    NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
+                    NextAction("Preview one session", "polylogue find id:<REF> then delete --dry-run"),
+                ),
             )
         session_ids = resolve_session_ids_for_verb(env, request)
         execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
         return
     if not yes_flag:
-        raise click.UsageError("delete requires --yes for actual deletion; use --dry-run to preview.")
+        raise ContextualCliError(
+            "delete requires --yes for actual deletion.",
+            next_actions=(
+                NextAction("Preview the deletion first", "polylogue find <QUERY> then delete --dry-run"),
+                NextAction("Confirm the deletion", "polylogue find <QUERY> then delete --yes"),
+            ),
+        )
 
     # Enforce cardinality before any destructive action.
     session_ids = resolve_session_ids_for_verb(env, request)
-    try:
-        check_cardinality(len(session_ids), allow_all=all_flag, first_only=False, operation="delete")
-    except CardinalityError as exc:
-        raise click.UsageError(str(exc)) from exc
+    check_cardinality(
+        len(session_ids),
+        allow_all=all_flag,
+        first_only=False,
+        operation="delete",
+        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
+        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    )
 
     # Delete using the pre-resolved IDs so all matched sessions are removed.
     execute_delete_by_session_ids(env, session_ids, force=yes_flag)
@@ -1822,7 +1842,8 @@ def mark_verb(
     """
     import hashlib
 
-    from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import check_cardinality, resolve_session_ids_for_verb
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1851,14 +1872,24 @@ def mark_verb(
         return
 
     if apply_all and first_only:
-        raise click.UsageError("mark --all and --first are mutually exclusive.")
+        raise ContextualCliError(
+            "mark --all and --first are mutually exclusive.",
+            next_actions=(
+                NextAction("Mark every matched session", "polylogue find <QUERY> then mark --all <FLAGS>"),
+                NextAction("Mark the first match only", "polylogue find <QUERY> then mark --first <FLAGS>"),
+            ),
+        )
 
     # Resolve matched sessions and enforce cardinality.
     session_ids = resolve_session_ids_for_verb(env, request)
-    try:
-        check_cardinality(len(session_ids), allow_all=apply_all, first_only=first_only, operation="mark")
-    except CardinalityError as exc:
-        raise click.UsageError(str(exc)) from exc
+    check_cardinality(
+        len(session_ids),
+        allow_all=apply_all,
+        first_only=first_only,
+        operation="mark",
+        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
+        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    )
 
     # Honour --first: act only on the leading result when multiple matched.
     target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
@@ -2529,7 +2560,8 @@ def _resolve_query_action_session_id(
     if request.query_terms:
         from dataclasses import replace
 
-        from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
+        from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+        from polylogue.cli.verb_cardinality import check_cardinality
 
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
@@ -2540,7 +2572,7 @@ def _resolve_query_action_session_id(
         if not spec.latest and not spec.has_filters():
             return None
 
-        resolve_limit = 1 if first_only else 2
+        resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
         bounded_spec = replace(spec, limit=resolve_limit)
 
         async def _resolve() -> list[str]:
@@ -2549,24 +2581,24 @@ def _resolve_query_action_session_id(
 
         session_ids = run_coroutine_sync(_resolve())
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
-        try:
-            if multi_match_hint is not None:
-                check_cardinality(
-                    len(session_ids),
-                    allow_all=False,
-                    first_only=first_only,
-                    operation=operation,
-                    multi_match_hint=multi_match_hint,
-                )
-            else:
-                check_cardinality(
-                    len(session_ids),
-                    allow_all=False,
-                    first_only=first_only,
-                    operation=operation,
-                )
-        except CardinalityError as exc:
-            raise click.UsageError(str(exc)) from exc
+        if len(session_ids) > 1 and not first_only:
+            from polylogue.cli.select import resolve_ambiguous_selection
+
+            return resolve_ambiguous_selection(
+                env,
+                session_ids,
+                operation=operation,
+                multi_match_hint=multi_match_hint,
+                rows_loader=lambda: run_coroutine_sync(bounded_spec.list_summaries(env.config)),
+            )
+        check_cardinality(
+            len(session_ids),
+            allow_all=False,
+            first_only=first_only,
+            operation=operation,
+            multi_match_hint=multi_match_hint,
+            candidates=tuple(session_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
+        )
         return session_ids[0] if session_ids else None
 
     return _resolve_target_session_id(request)
