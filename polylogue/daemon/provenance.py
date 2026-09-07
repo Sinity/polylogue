@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.core.payload_coercion import row_iso_from_epoch_ms as _iso_from_epoch_ms
 from polylogue.core.raw_state import raw_state_authority
 from polylogue.logging import get_logger
@@ -94,7 +95,11 @@ def _fetch_archive_provenance_row(
     if not archive_db.exists():
         return None
     source_db = archive_root_path / "source.db"
-    conn = sqlite3.connect(f"file:{archive_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(
+        archive_db,
+        timeout_class="background-read",
+        validate_schema=False,
+    )
     try:
         conn.row_factory = sqlite3.Row
         if source_db.exists():
@@ -197,55 +202,7 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
         return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     if not dbp.exists() and archive_db is not None:
         return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
-    conn = sqlite3.connect(str(dbp))
-    try:
-        conn.row_factory = sqlite3.Row
-        cur = conn.execute(
-            """
-            SELECT
-                c.session_id   AS session_id,
-                c.source_name     AS origin,
-                c.content_hash      AS content_hash,
-                c.raw_id            AS raw_id,
-                r.source_path       AS source_path,
-                r.source_name       AS raw_source_name,
-                r.blob_size         AS blob_size,
-                r.acquired_at       AS acquired_at,
-                r.file_mtime        AS file_mtime,
-                r.parsed_at         AS parsed_at,
-                r.parse_error       AS parse_error,
-                r.validated_at      AS validated_at,
-                r.validation_status AS validation_status,
-                r.validation_error  AS validation_error
-            FROM sessions AS c
-            LEFT JOIN raw_sessions AS r ON r.raw_id = c.raw_id
-            WHERE c.session_id = ?
-            """,
-            (session_id,),
-        )
-        row = cur.fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return None
-    return ProvenanceRow(
-        session_id=str(row["session_id"]),
-        origin=(str(row["origin"]) if row["origin"] is not None else None),
-        content_hash=str(row["content_hash"] or ""),
-        raw_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
-        raw_blob_id=(str(row["raw_id"]) if row["raw_id"] is not None else None),
-        source_path=(str(row["source_path"]) if row["source_path"] is not None else None),
-        blob_size=(int(row["blob_size"]) if row["blob_size"] is not None else None),
-        acquired_at=(str(row["acquired_at"]) if row["acquired_at"] is not None else None),
-        file_mtime=(str(row["file_mtime"]) if row["file_mtime"] is not None else None),
-        parsed_at=(str(row["parsed_at"]) if row["parsed_at"] is not None else None),
-        parsed_at_ms=None,
-        parse_error=(str(row["parse_error"]) if row["parse_error"] is not None else None),
-        validated_at=(str(row["validated_at"]) if row["validated_at"] is not None else None),
-        validated_at_ms=None,
-        validation_status=(str(row["validation_status"]) if row["validation_status"] is not None else None),
-        validation_error=(str(row["validation_error"]) if row["validation_error"] is not None else None),
-    )
+    return None
 
 
 def _quarantine_state(row: ProvenanceRow) -> tuple[bool, str | None]:

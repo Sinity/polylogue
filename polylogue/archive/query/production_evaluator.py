@@ -69,7 +69,15 @@ def _tier_generation(db_path: Path, *, label: str) -> str:
     if not db_path.exists():
         return f"{label}:absent"
     try:
-        with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)) as conn:
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(
+            open_readonly_connection(
+                db_path,
+                timeout_class="background-read",
+                validate_schema=False,
+            )
+        ) as conn:
             return f"{label}:v{_pragma_user_version(conn)}"
     except sqlite3.Error:
         logger.warning("production-evaluator: could not read %s generation", label, exc_info=True)
@@ -81,7 +89,15 @@ def _index_epoch(index_db: Path) -> str:
     if not index_db.exists():
         return "index:absent"
     try:
-        with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)) as conn:
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(
+            open_readonly_connection(
+                index_db,
+                timeout_class="background-read",
+                validate_schema=False,
+            )
+        ) as conn:
             version = _pragma_user_version(conn)
             row = conn.execute("SELECT MAX(updated_at_ms) FROM sessions").fetchone()
             watermark = int(row[0]) if row is not None and row[0] is not None else 0

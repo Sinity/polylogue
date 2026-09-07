@@ -33,6 +33,19 @@ def test_a_deep_and_old_queue_takes_the_cold_backlog_shape() -> None:
     )
     assert shape.mode is IngestMode.COLD_BACKLOG
     assert shape.max_bytes > LIVE_TRICKLE_MAX_BYTES
+    assert shape.defer_secondary_indexes is False
+    assert shape.fresh_build is False
+
+
+def test_an_empty_owned_generation_admits_fresh_writer_and_index_deferral() -> None:
+    shape = select_batch_shape(
+        queue_depth=COLD_BACKLOG_MIN_QUEUE_DEPTH,
+        queue_age_s=COLD_BACKLOG_MIN_QUEUE_AGE_S,
+        destination=_OWNED_INDEX,
+        archive_empty=True,
+    )
+    assert shape.defer_secondary_indexes is True
+    assert shape.fresh_build is True
 
 
 @pytest.mark.parametrize(
