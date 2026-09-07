@@ -55,7 +55,8 @@ if TYPE_CHECKING:
 class ArchiveRootOwner(Protocol):
     """Minimal archive handle required by live-ingest coordination."""
 
-    archive_root: Path
+    @property
+    def archive_root(self) -> Path: ...
 
 
 @runtime_checkable
