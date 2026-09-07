@@ -129,8 +129,8 @@
     },
     {
       "code": "ambient_path_literal",
-      "detail": "line 1175: reads ambient path '~/.codex'",
-      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:6b578fb8b32ebe4e:0",
+      "detail": "line 1170: reads ambient path '~/.codex'",
+      "fingerprint": "ambient_path_literal:tests/unit/sources/test_assembly.py:fc87a28edf82bb09:0",
       "path": "tests/unit/sources/test_assembly.py"
     },
     {

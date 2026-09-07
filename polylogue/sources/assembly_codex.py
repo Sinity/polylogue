@@ -144,80 +144,38 @@ def _parse_state_db_file(state_path: Path) -> dict[str, str]:
     return titles
 
 
-def read_codex_thread_title_hook_events(
-    source_conn: sqlite3.Connection,
-    *,
-    thread_ids: Sequence[str] | None = None,
-) -> dict[str, str]:
-    """Return ``{thread_id: title}`` from acquired ``codex_thread_title`` hook events.
-
-    ``polylogue-0jf4``'s state-db acquisition writes one durable
-    ``raw_hook_events`` row per observed ``threads.title``
-    (``sources/codex_state_evidence.py``). This is the read side, feeding
-    ladder step 3b in ``CodexAssemblySpec.enrich_session``.
-
-    ``thread_ids`` restricts the read to those sessions, served by
-    ``idx_raw_hook_events_session``; without it the whole Codex hook-event
-    set is scanned. Later observations of the same thread win, matching the
-    ``observed_at_ms`` ordering ``list_hook_events`` applies.
-
-    Any failure (missing table, locked file, corrupt payload) degrades to an
-    empty mapping, matching every other sidecar source in this module.
-    """
-    from polylogue.core.enums import Origin
-    from polylogue.storage.sqlite.archive_tiers.source_write import list_hook_events
-
-    titles: dict[str, str] = {}
-    try:
-        if thread_ids is None:
-            events = list_hook_events(source_conn, origin=Origin.CODEX_SESSION)
-        else:
-            events = tuple(
-                event
-                for thread_id in dict.fromkeys(thread_ids)
-                for event in list_hook_events(
-                    source_conn,
-                    origin=Origin.CODEX_SESSION,
-                    session_native_id=thread_id,
-                )
-            )
-    except sqlite3.Error as exc:
-        logger.debug("Failed to read Codex thread-title hook events: %s", exc)
-        return {}
-    for event in events:
-        if event.event_type != "codex_thread_title":
-            continue
-        thread_id = event.session_native_id
-        title = event.payload.get("title")
-        if isinstance(thread_id, str) and thread_id and isinstance(title, str) and title.strip():
-            titles[thread_id] = title.strip()
-    return titles
-
-
-def resolve_codex_hook_event_titles(
+def resolve_retained_codex_state_titles(
     archive_root: Path,
     thread_ids: Sequence[str],
 ) -> CodexHistoryTitles:
-    """Read acquired Codex thread titles for ``thread_ids`` out of ``source.db``.
+    """Read projected Codex thread titles for ``thread_ids`` out of ``index.db``.
 
-    The durable archive is the evidence carrier for this lane, so both the
-    pipeline ingest worker and retained-raw replay resolve step 3b from it
-    rather than from any live ``~/.codex`` file. A read-only connection keeps
-    this safe beside the daemon's single writer, and an absent or unreadable
-    ``source.db`` degrades to no evidence.
+    The archive is the evidence carrier for this lane, so both the pipeline
+    ingest worker and retained-raw replay resolve step 3b from it rather than
+    from any live ``~/.codex`` file. A read-only connection keeps this safe
+    beside the daemon's single writer, and an absent or unreadable index
+    degrades to no evidence.
     """
     if not thread_ids:
         return {}
-    source_db = archive_root / "source.db"
-    if not source_db.exists():
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    try:
+        index_db = resolve_active_index_path(archive_root)
+    except Exception as exc:
+        logger.debug("Failed to resolve index.db for Codex thread titles: %s", exc)
+        return {}
+    if not index_db.exists():
         return {}
     try:
-        conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
+        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=5.0)
     except sqlite3.Error as exc:
-        logger.debug("Failed to open source.db for Codex thread titles: %s", exc)
+        logger.debug("Failed to open index.db for Codex thread titles: %s", exc)
         return {}
     try:
-        return read_codex_thread_title_hook_events(conn, thread_ids=thread_ids)
+        from polylogue.sources.codex_state_projection import read_thread_titles
+
+        return read_thread_titles(conn, thread_ids=thread_ids)
     finally:
         conn.close()
 
@@ -317,9 +275,9 @@ class CodexAssemblySpec:
         sidecar_data: SidecarData,
     ) -> ParsedSession:
         """Resolve a Codex title: thread name → authored history →
-        state_5.sqlite thread title (live read) → acquired
-        codex_thread_title hook event (durable snapshot, gap-fill only) →
-        first human-authored message → leave the native id.
+        state_5.sqlite thread title (live read) → projected thread title from
+        the retained state export (gap-fill only) → first human-authored
+        message → leave the native id.
 
         A ``role=user`` row alone never becomes a title: Codex runtime
         context and operator protocol rows share that role, so only
@@ -329,7 +287,7 @@ class CodexAssemblySpec:
         thread_names: CodexThreadNames = sidecar_data.get("thread_names", {})
         history_titles: CodexHistoryTitles = sidecar_data.get("history_titles", {})
         state_titles: CodexHistoryTitles = sidecar_data.get("state_titles", {})
-        hook_event_titles: CodexHistoryTitles = sidecar_data.get("hook_event_titles", {})
+        retained_state_titles: CodexHistoryTitles = sidecar_data.get("retained_state_titles", {})
         cid = conv.provider_session_id
 
         # 1. Provider thread name — authoritative, may replace a stale title.
@@ -397,23 +355,21 @@ class CodexAssemblySpec:
                     }
                 )
 
-        # 3b. codex_thread_title raw_hook_events -- bd polylogue-foee. A
-        # durable, replay-safe capture of the SAME threads.title column step
-        # 3 reads live (polylogue-0jf4's snapshot acquisition, via
-        # sqlite3.Connection.backup() rather than a racy direct open). Only
-        # fills the gap left by a live-read miss (state_5.sqlite rotated,
-        # deleted, or momentarily locked past step 3's own read) -- never
-        # overrides a title step 3 already resolved from the live file.
-        hook_event_text = hook_event_titles.get(cid)
-        if hook_event_text:
-            preview = _title_preview(hook_event_text)
+        # 3b. codex_thread_state -- the SAME threads.title column step 3 reads
+        # live, projected from the retained logical export rather than from the
+        # operator's file. Only fills the gap left by a live-read miss
+        # (state_5.sqlite rotated, deleted, or momentarily locked past step 3's
+        # own read) -- never overrides a title step 3 already resolved.
+        retained_state_text = retained_state_titles.get(cid)
+        if retained_state_text:
+            preview = _title_preview(retained_state_text)
             if preview:
-                is_echo = _is_prompt_echo(hook_event_text, conv)
+                is_echo = _is_prompt_echo(retained_state_text, conv)
                 return conv.model_copy(
                     update={
                         "title": preview,
                         "title_source": TitleSource.HEURISTIC if is_echo else TitleSource.ORIGIN,
-                        "title_ref": f"codex-thread-title-hook-event:{cid}",
+                        "title_ref": f"codex-retained-state-title:{cid}",
                     }
                 )
 
@@ -454,6 +410,5 @@ __all__ = [
     "_parse_codex_history",
     "_parse_codex_session_index",
     "_parse_codex_state_titles",
-    "read_codex_thread_title_hook_events",
-    "resolve_codex_hook_event_titles",
+    "resolve_retained_codex_state_titles",
 ]

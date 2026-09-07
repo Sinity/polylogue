@@ -3253,7 +3253,14 @@ class LiveBatchProcessor:
                             source_path=record.source_path,
                             acquired_at_ms=acquired_at_ms,
                             censused_at_ms=acquired_at_ms,
+                            blob_hash=blob_hash,
                         )
+                        # Source references commit promptly while the derived
+                        # index follows a bulk cadence the session-write paths
+                        # drive. This record writes no session, so nothing else
+                        # would ever commit the thread-state projection it just
+                        # recomputed.
+                        archive.commit()
                         result.terminal_raw_ids[record.raw_id] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue

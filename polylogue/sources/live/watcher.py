@@ -65,7 +65,7 @@ from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
     sqlite_database_for_sidecar,
-    sqlite_logical_revision,
+    sqlite_member_revision,
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
@@ -2060,13 +2060,16 @@ class LiveWatcher:
 
         Only a recorded fingerprint that is itself a logical revision can
         answer; every other cursor shape falls through to work, which is what
-        the filesystem observation already claimed.
+        the filesystem observation already claimed. The revision is scoped to
+        the member's declared logical tables, exactly as acquisition records
+        it -- a whole-database digest would report work for a commit in a
+        table nothing reads.
         """
         recorded = cursor.content_fingerprint
         if recorded is None:
             return True
         try:
-            return sqlite_logical_revision(path) != recorded
+            return sqlite_member_revision(path) != recorded
         except (sqlite3.Error, OSError, UnicodeDecodeError):
             # Acquisition owns the consistent read and reports its own typed
             # failure; a locked or damaged database is not silently fresh.

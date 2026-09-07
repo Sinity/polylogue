@@ -149,23 +149,23 @@ def topology_status_excluded_sql(column: str = "status") -> str:
 
 
 #: ``session_links.method`` token for an edge whose destination is backed by
-#: acquired ``codex_thread_spawn_edge`` hook evidence (polylogue-foee) rather
-#: than by transcript inference.
+#: Codex's own ``thread_spawn_edges`` record rather than by transcript
+#: inference.
 HOOK_AUTHORITATIVE_LINK_METHOD = "authoritative-hook-evidence"
 
 #: ``session_links.method`` token for a parser-inferred edge naming a DIFFERENT
-#: parent than the authoritative hook evidence does for the same child. The row
-#: is retained so both evidence sources survive, but carries
+#: parent than the authoritative state evidence does for the same child. The
+#: row is retained so both evidence sources survive, but carries
 #: ``TopologyEdgeStatus.QUARANTINED`` so no projection composes through it.
 HOOK_CONTRADICTED_LINK_METHOD = "contradicted-by-hook-evidence"
 
-#: ``session_links.method`` token for an authoritative edge that a NEWER hook
-#: claim replaced. polylogue-foee's evidence spool can revise itself: a later
-#: ``codex_thread_spawn_edge`` naming a different parent for the same child
-#: must not leave two permanent authoritative edges at different primary keys,
-#: because composition would then pick between them by arrival order -- the
-#: exact defect this mechanism exists to remove. The older edge is re-marked
-#: rather than deleted, so both claims stay auditable.
+#: ``session_links.method`` token for an authoritative edge that a NEWER state
+#: claim replaced. The evidence revises itself: a later export naming a
+#: different parent for the same child must not leave two permanent
+#: authoritative edges at different primary keys, because composition would
+#: then pick between them by arrival order -- the exact defect this mechanism
+#: exists to remove. The older edge is re-marked rather than deleted, so both
+#: claims stay auditable.
 HOOK_SUPERSEDED_LINK_METHOD = "superseded-by-newer-hook-evidence"
 
 #: Tokens marking an edge whose state was decided from durable hook evidence

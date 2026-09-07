@@ -76,6 +76,12 @@ ingest and full replay/reindex.
 | `audit.db` | durable, append-only | previews, authorizations, attempts, continuity |
 | `ops.db` | disposable | cursors, attempts, convergence debt, daemon telemetry |
 
+A mutable SQLite source is the one material that is not its own bytes: a
+declared database member is retained as the canonical logical export of its
+declared `logical_tables` (`sources/sqlite_export.py`), and that export's blob
+hash is the member's logical revision. A page image cannot be proven against a
+live database and re-snapshots on every commit.
+
 Never use rebuildable state as authority for durable mutation; never strand
 existing durable archives with a schema shortcut. Archive writes are
 idempotent by content hash (SHA-256 over NFC-normalized payload, excluding
