@@ -35,6 +35,7 @@ from tests.infra.builders import make_conv, make_msg
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
+WORK_EVENT_SUMMARY_PATH = Path("/repo/README.md")
 ARCHIVE_SESSION_PATH = REPO_ROOT / "polylogue" / "archive" / "session"
 ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action" / "events.py"
 
@@ -100,7 +101,7 @@ def _protocol_summary_session() -> SessionModel:
                     role="user",
                     origin="claude-code",
                     text="<system-reminder>skip this</system-reminder>\n"
-                    + (f"Please inspect {README_PATH} and summarize the findings clearly. " * 3),
+                    + (f"Please inspect {WORK_EVENT_SUMMARY_PATH} and summarize the findings clearly. " * 3),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                     material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 ),
@@ -1098,7 +1099,7 @@ def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() ->
     summary = events[0].summary
     assert "<system-reminder>" not in summary
     assert "skip this" not in summary
-    assert f"Please inspect {README_PATH}" in summary
+    assert f"Please inspect {WORK_EVENT_SUMMARY_PATH}" in summary
     assert "This trailing note should be truncated away" not in summary
     assert len(summary) <= 200
 
