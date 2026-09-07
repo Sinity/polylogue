@@ -136,7 +136,7 @@ def plan_command(
         "schema": _PLAN_SCHEMA,
         "archive_root": str(resolved_root),
         "producer": producer,
-        **transition.receipt(applied=False),
+        "transition": transition.receipt(applied=False),
     }
     payload = json.dumps(document, indent=2, sort_keys=True).encode("utf-8")
     output_path.write_bytes(payload)
@@ -205,6 +205,7 @@ def apply_command(
     resolved_root = _root(root)
     if document.get("archive_root") != str(resolved_root):
         raise click.ClickException(f"plan was produced for a different archive root: {document.get('archive_root')}")
+    record = document["transition"]
 
     try:
         with acquire_durable_archive_ownership(resolved_root, owner_id=f"durable-reference-transition:{os.getpid()}"):
@@ -217,13 +218,13 @@ def apply_command(
                 # authorization, and the durable tiers may have moved since.
                 transition = _build(
                     resolved_root,
-                    Path(str(document["candidate_index_path"])),
-                    Path(str(document["predecessor_index_path"])),
+                    Path(str(record["candidate_index_path"])),
+                    Path(str(record["predecessor_index_path"])),
                     producer=str(document["producer"]),
                     user_conn=user,
                     audit_conn=audit,
                 )
-                if transition.plan.digest() != document["plan_digest"]:
+                if transition.plan.digest() != record["plan_digest"]:
                     raise click.ClickException("archive state no longer matches the authorized plan")
                 apply_durable_reference_transition(
                     user_conn=user,

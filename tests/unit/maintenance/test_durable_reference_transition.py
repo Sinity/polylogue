@@ -82,6 +82,7 @@ def _predecessor_index() -> sqlite3.Connection:
         ((SESSION, None, 0), (SESSION, "m-1", 1)),
     )
     conn.execute("INSERT INTO blocks (message_id, position) VALUES (?, 0)", (f"{SESSION}:m-1",))
+    conn.commit()
     return conn
 
 
@@ -103,6 +104,7 @@ def _candidate_index(*, native_id_shadowing_a_position: bool = False) -> sqlite3
         "INSERT INTO blocks (message_id, session_id, position, block_type) VALUES (?, ?, 0, 'text')",
         (f"{SESSION}:n:m-1", SESSION),
     )
+    conn.commit()
     return conn
 
 
@@ -139,6 +141,8 @@ def _durable_tiers(refs: tuple[str, ...]) -> tuple[sqlite3.Connection, sqlite3.C
         receipt=EvaluationReceipt("receipt", "source-gen", "user-gen", "index-gen", "polylogue:0.3.0"),
         created_at_ms=3,
     )
+    user.commit()
+    audit.commit()
     return user, audit
 
 
@@ -310,7 +314,11 @@ def test_an_opaque_build_ref_is_not_reported_as_a_lost_session() -> None:
 
 
 def _archive_root(tmp_path: Path) -> tuple[Path, Path]:
-    """A durable file set plus a candidate index generation, on disk."""
+    """A durable file set plus a candidate index generation, on disk.
+
+    Every fixture connection commits before it is copied out: `backup` blocks
+    on a source still inside a write transaction.
+    """
     root = tmp_path / "archive"
     root.mkdir()
     user, audit = _durable_tiers((NATIVE_OLD, POSITIONAL_OLD))
@@ -357,8 +365,10 @@ def test_the_maintenance_verb_plans_the_transition_against_a_real_archive(tmp_pa
     assert result.exit_code == 0, result.output
     document = json.loads(plan_path.read_text(encoding="utf-8"))
     assert document["schema"] == "polylogue.durable-reference-transition-plan.v1"
-    assert document["dispositions"][ObjectRefDisposition.EXPLICITLY_MIGRATED.value] == 2
-    assert sorted(pair[1] for pair in document["forward"]) == sorted((NATIVE_NEW, POSITIONAL_NEW))
+    transition = document["transition"]
+    assert transition["schema"] == "polylogue.durable-reference-transition.v1"
+    assert transition["dispositions"][ObjectRefDisposition.EXPLICITLY_MIGRATED.value] == 2
+    assert sorted(pair[1] for pair in transition["forward"]) == sorted((NATIVE_NEW, POSITIONAL_NEW))
 
 
 def test_apply_refuses_a_plan_it_was_not_given_the_digest_for(tmp_path: Path) -> None:
