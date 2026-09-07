@@ -34,6 +34,7 @@ import stat
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING
 
 from polylogue.maintenance.blob_disposition import (
     BLOB_REFERENCE_RELATIONS,
@@ -44,6 +45,10 @@ from polylogue.maintenance.blob_disposition import (
     RestorationDestination,
 )
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
+
+if TYPE_CHECKING:
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.browser_capture.receiver import CaptureConvergence, SpoolUsage
 
 TOOL_VERSION = "blob-disposition-apply-v3"
 
@@ -65,6 +70,7 @@ class RestorationOutcome(StrEnum):
 
     RESTORED = "restored"
     RESTORATION_ALREADY_PRESENT = "restoration_already_present"
+    RESTORATION_SUPERSEDED = "restoration_superseded"
     BLOCKED = "blocked"
 
 
@@ -78,7 +84,17 @@ class MemberOutcome(StrEnum):
 
 
 # The material is in an ordinary spool under these outcomes and only these.
-_COMPLETED_RESTORATIONS = frozenset({RestorationOutcome.RESTORED, RestorationOutcome.RESTORATION_ALREADY_PRESENT})
+# A superseded revision is among them: one provider session keeps exactly one
+# spool artifact, and the revision the spool converged on is the material the
+# archive wants. A carrier the spool declines as older is accounted for by the
+# newer artifact holding that identity, not stranded.
+_COMPLETED_RESTORATIONS = frozenset(
+    {
+        RestorationOutcome.RESTORED,
+        RestorationOutcome.RESTORATION_ALREADY_PRESENT,
+        RestorationOutcome.RESTORATION_SUPERSEDED,
+    }
+)
 # Outcomes that leave the object physically in the namespace.
 _RETAINED_IN_NAMESPACE = frozenset({MemberOutcome.RETAINED_REFERENCED, MemberOutcome.BLOCKED})
 
@@ -325,7 +341,106 @@ def _resident_hook_event(spool_root: Path, event_id: str) -> Path | None:
     return None
 
 
-def _restore_hook_event(member: BlobDispositionMember, *, path: Path, spool_root: Path) -> RestorationResult:
+@dataclass(slots=True)
+class _RehearsedSpools:
+    """What the spools would hold once a rehearsal's own restorations landed.
+
+    A rehearsal writes nothing, so material an earlier member of the same run
+    would have published is invisible on disk. Carrying it here is what makes
+    a rehearsal's counts the counts its apply produces: 584 session identities
+    across 880 carriers converge on 584 artifacts either way.
+    """
+
+    hook_events: dict[str, tuple[dict[str, object], Path | None]] = field(default_factory=dict)
+    captures: dict[Path, BrowserCaptureEnvelope] = field(default_factory=dict)
+    _usage: SpoolUsage | None = None
+    _added_files: int = 0
+    _added_bytes: int = 0
+
+    def hook_event(self, spool_root: Path, event_id: str) -> tuple[dict[str, object] | None, Path | None, str | None]:
+        """Return the event this identity finds resident, where, and any read failure."""
+        from polylogue.sources.hooks import HookSpoolRecordError, read_hook_spool_record
+
+        rehearsed = self.hook_events.get(event_id)
+        if rehearsed is not None:
+            return rehearsed[0], rehearsed[1], None
+        resident = _resident_hook_event(spool_root, event_id)
+        if resident is None:
+            return None, None, None
+        try:
+            return read_hook_spool_record(resident), resident, None
+        except HookSpoolRecordError as exc:
+            return None, resident, f"destination is unreadable: {exc}"
+
+    def record_hook_event(self, event_id: str, envelope: dict[str, object], *, path: Path | None = None) -> None:
+        self.hook_events[event_id] = (envelope, path)
+
+    def capture(self, target: Path) -> tuple[BrowserCaptureEnvelope | None, str | None]:
+        """Return the capture this artifact name would find resident, and any read failure."""
+        from pydantic import ValidationError
+
+        from polylogue.browser_capture.models import BrowserCaptureEnvelope
+
+        rehearsed = self.captures.get(target)
+        if rehearsed is not None:
+            return rehearsed, None
+        if not target.is_file():
+            return None, None
+        try:
+            return BrowserCaptureEnvelope.model_validate_json(target.read_bytes()), None
+        except (OSError, ValidationError, ValueError):
+            return None, f"existing capture artifact is unreadable or malformed: {target.name}"
+
+    def record_capture(self, target: Path, envelope: BrowserCaptureEnvelope, *, size_bytes: int, new: bool) -> None:
+        self.captures[target] = envelope
+        if new:
+            self._added_files += 1
+            self._added_bytes += size_bytes
+
+    def capture_quota_refusal(self, spool_root: Path) -> str | None:
+        """Report the quota the receiver would refuse a new artifact against.
+
+        The receiver checks the quota only for an artifact it is about to
+        create, and every creation this run rehearses counts toward the next
+        one's check.
+        """
+        from polylogue.browser_capture.receiver import SPOOL_MAX_BYTES, SPOOL_MAX_FILES, spool_usage
+
+        if self._usage is None:
+            self._usage = spool_usage(spool_root)
+        file_count = self._usage.file_count + self._added_files
+        total_bytes = self._usage.total_bytes + self._added_bytes
+        if file_count >= SPOOL_MAX_FILES or total_bytes >= SPOOL_MAX_BYTES:
+            return (
+                f"capture spool quota exceeded: {file_count} files, {total_bytes} bytes "
+                f"(limits: {SPOOL_MAX_FILES} files, {SPOOL_MAX_BYTES} bytes)"
+            )
+        return None
+
+
+def _hook_enqueue_arguments(envelope: dict[str, object]) -> tuple[dict[str, object] | None, str | None]:
+    """Return the admission call this envelope makes, or why it cannot make one."""
+    arguments: dict[str, object] = {}
+    for name in ("event_type", "session_id", "provider", "timestamp", "event_id"):
+        value = envelope.get(name)
+        if not isinstance(value, str) or not value:
+            return None, f"carrier envelope has no {name}"
+        arguments[name] = value
+    payload = envelope.get("payload")
+    if not isinstance(payload, dict):
+        return None, "carrier envelope has no payload object"
+    arguments["payload"] = dict(payload)
+    return arguments, None
+
+
+def _restore_hook_event(
+    member: BlobDispositionMember,
+    *,
+    path: Path,
+    spool_root: Path,
+    rehearsed: _RehearsedSpools,
+    dry_run: bool,
+) -> RestorationResult:
     from polylogue.sources.hooks import (
         HookSpoolRecordError,
         enqueue_hook_event,
@@ -348,15 +463,11 @@ def _restore_hook_event(member: BlobDispositionMember, *, path: Path, spool_root
         return RestorationResult(
             member.blob_hash, RestorationOutcome.BLOCKED, "carrier envelope has no event identity", destination
         )
-    resident = _resident_hook_event(spool_root, event_id)
+    resident, resident_path, unreadable = rehearsed.hook_event(spool_root, event_id)
+    if unreadable is not None:
+        return RestorationResult(member.blob_hash, RestorationOutcome.BLOCKED, unreadable, destination)
     if resident is not None:
-        try:
-            existing = read_hook_spool_record(resident)
-        except HookSpoolRecordError as exc:
-            return RestorationResult(
-                member.blob_hash, RestorationOutcome.BLOCKED, f"destination is unreadable: {exc}", destination
-            )
-        if existing != envelope:
+        if resident != envelope:
             return RestorationResult(
                 member.blob_hash,
                 RestorationOutcome.BLOCKED,
@@ -368,18 +479,20 @@ def _restore_hook_event(member: BlobDispositionMember, *, path: Path, spool_root
             RestorationOutcome.RESTORATION_ALREADY_PRESENT,
             "the ordinary spool already holds this event",
             destination,
-            str(resident),
+            "" if resident_path is None else str(resident_path),
+        )
+    arguments, refusal = _hook_enqueue_arguments(envelope)
+    if arguments is None:
+        return RestorationResult(
+            member.blob_hash, RestorationOutcome.BLOCKED, f"ordinary spool admission refused: {refusal}", destination
+        )
+    if dry_run:
+        rehearsed.record_hook_event(event_id, envelope)
+        return RestorationResult(
+            member.blob_hash, RestorationOutcome.RESTORED, f"would restore to {destination}", destination
         )
     try:
-        published = enqueue_hook_event(
-            event_type=str(envelope["event_type"]),
-            session_id=str(envelope["session_id"]),
-            provider=str(envelope["provider"]),
-            timestamp=str(envelope["timestamp"]),
-            payload=dict(envelope["payload"]),
-            root=spool_root,
-            event_id=str(envelope["event_id"]),
-        )
+        published = enqueue_hook_event(root=spool_root, **arguments)  # type: ignore[arg-type]
     except (KeyError, TypeError, HookSpoolRecordError, OSError) as exc:
         return RestorationResult(
             member.blob_hash, RestorationOutcome.BLOCKED, f"ordinary spool admission refused: {exc}", destination
@@ -404,7 +517,58 @@ def _restore_hook_event(member: BlobDispositionMember, *, path: Path, spool_root
     return RestorationResult(member.blob_hash, RestorationOutcome.RESTORED, "", destination, str(published))
 
 
-def _restore_browser_capture(member: BlobDispositionMember, *, path: Path, spool_root: Path) -> RestorationResult:
+def _converged_capture(
+    member: BlobDispositionMember,
+    *,
+    convergence: CaptureConvergence,
+    target: Path,
+    destination_kind: str,
+) -> RestorationResult | None:
+    """Translate the spool's verdict on a resident identity, or None to publish."""
+    from polylogue.browser_capture.receiver import CaptureConvergence
+
+    if convergence is CaptureConvergence.DUPLICATE:
+        return RestorationResult(
+            member.blob_hash,
+            RestorationOutcome.RESTORATION_ALREADY_PRESENT,
+            "the ordinary spool already holds this capture",
+            destination_kind,
+            str(target),
+        )
+    if convergence is CaptureConvergence.SUPERSEDED:
+        return RestorationResult(
+            member.blob_hash,
+            RestorationOutcome.RESTORATION_SUPERSEDED,
+            "the ordinary spool holds a newer or richer capture of this session",
+            destination_kind,
+            str(target),
+        )
+    if convergence is CaptureConvergence.NAME_COLLISION:
+        return RestorationResult(
+            member.blob_hash,
+            RestorationOutcome.BLOCKED,
+            f"ordinary spool admission refused: capture artifact name collision for {target.name}",
+            destination_kind,
+        )
+    return None
+
+
+def _restore_browser_capture(
+    member: BlobDispositionMember,
+    *,
+    path: Path,
+    spool_root: Path,
+    rehearsed: _RehearsedSpools,
+    dry_run: bool,
+) -> RestorationResult:
+    """Hand one carrier to the capture spool and record the verdict it gives.
+
+    One provider session keeps one artifact, so a carrier arriving at an
+    occupied name is an ordinary revision the spool converges: it publishes
+    the newer or richer one and declines the rest. Only a malformed envelope,
+    a genuinely different session claiming the name, or the spool quota stops
+    a carrier here.
+    """
     from pydantic import ValidationError
 
     from polylogue.browser_capture.models import BrowserCaptureEnvelope
@@ -412,7 +576,7 @@ def _restore_browser_capture(member: BlobDispositionMember, *, path: Path, spool
         BrowserCaptureSpoolConflictError,
         SpoolQuotaExceededError,
         capture_artifact_path,
-        capture_dedup_content_hash,
+        capture_convergence,
         write_capture_envelope_bytes,
     )
 
@@ -424,38 +588,62 @@ def _restore_browser_capture(member: BlobDispositionMember, *, path: Path, spool
         return RestorationResult(
             member.blob_hash, RestorationOutcome.BLOCKED, f"carrier is not a valid capture: {exc}", destination_kind
         )
-    destination = capture_artifact_path(envelope, spool_root)
-    if destination.is_file():
-        try:
-            existing = BrowserCaptureEnvelope.model_validate_json(destination.read_bytes())
-        except (OSError, ValidationError, ValueError) as exc:
-            return RestorationResult(
-                member.blob_hash, RestorationOutcome.BLOCKED, f"destination is unreadable: {exc}", destination_kind
-            )
-        if capture_dedup_content_hash(existing) != capture_dedup_content_hash(envelope):
+    target = capture_artifact_path(envelope, spool_root)
+
+    if dry_run:
+        resident, unreadable = rehearsed.capture(target)
+        if unreadable is not None:
             return RestorationResult(
                 member.blob_hash,
                 RestorationOutcome.BLOCKED,
-                "destination holds a different capture under the same identity",
+                f"ordinary spool admission refused: {unreadable}",
                 destination_kind,
             )
+        if resident is not None:
+            converged = _converged_capture(
+                member,
+                convergence=capture_convergence(envelope, resident),
+                target=target,
+                destination_kind=destination_kind,
+            )
+            if converged is not None:
+                return converged
+        else:
+            refusal = rehearsed.capture_quota_refusal(spool_root)
+            if refusal is not None:
+                return RestorationResult(
+                    member.blob_hash,
+                    RestorationOutcome.BLOCKED,
+                    f"ordinary spool admission refused: {refusal}",
+                    destination_kind,
+                )
+        rehearsed.record_capture(target, envelope, size_bytes=len(raw), new=resident is None)
         return RestorationResult(
             member.blob_hash,
-            RestorationOutcome.RESTORATION_ALREADY_PRESENT,
-            "the ordinary spool already holds this capture",
+            RestorationOutcome.RESTORED,
+            f"would restore to {destination_kind}",
             destination_kind,
-            str(destination),
+            str(target),
         )
+
     try:
-        write_capture_envelope_bytes(raw, spool_path=spool_root)
+        written = write_capture_envelope_bytes(raw, spool_path=spool_root)
     except (BrowserCaptureSpoolConflictError, SpoolQuotaExceededError, OSError, ValueError) as exc:
         return RestorationResult(
-            member.blob_hash, RestorationOutcome.BLOCKED, f"ordinary spool admission refused: {exc}", destination_kind
+            member.blob_hash,
+            RestorationOutcome.BLOCKED,
+            f"ordinary spool admission refused: {exc}",
+            destination_kind,
         )
+    converged = _converged_capture(
+        member, convergence=written.convergence, target=written.path, destination_kind=destination_kind
+    )
+    if converged is not None:
+        return converged
     # The capture receiver publishes the acquired bytes verbatim, so the only
     # honest residency check is the carrier's own bytes read back out.
     try:
-        published = destination.read_bytes()
+        published = written.path.read_bytes()
     except OSError as exc:
         return RestorationResult(
             member.blob_hash, RestorationOutcome.BLOCKED, f"restored file does not read back: {exc}", destination_kind
@@ -467,8 +655,8 @@ def _restore_browser_capture(member: BlobDispositionMember, *, path: Path, spool
             f"restored capture is {len(published)} bytes, not the carrier's {len(raw)}",
             destination_kind,
         )
-    _fsync_directory(destination.parent)
-    return RestorationResult(member.blob_hash, RestorationOutcome.RESTORED, "", destination_kind, str(destination))
+    _fsync_directory(written.path.parent)
+    return RestorationResult(member.blob_hash, RestorationOutcome.RESTORED, "", destination_kind, str(written.path))
 
 
 def _fsync_directory(path: Path) -> None:
@@ -498,8 +686,12 @@ def restore_plan_members(
     a configured source already holds is not published a second time: a
     carrier restored by an earlier pass is proven at the spool it was restored
     into, which is exactly the residency this step exists to establish.
+
+    A rehearsal resolves every destination and evaluates the same admission
+    rule the apply hands its carriers to, so the two report the same counts.
     """
     results: list[RestorationResult] = []
+    rehearsed = _RehearsedSpools()
     for member in plan.members_for(BlobDisposition.RESTORE_REQUIRED):
         drift = _carrier_drift(member, context=context)
         if drift is not None:
@@ -529,20 +721,16 @@ def restore_plan_members(
                 )
             )
             continue
-        if dry_run:
+        if destination is RestorationDestination.HOOK_EVENT_SPOOL:
             results.append(
-                RestorationResult(
-                    member.blob_hash,
-                    RestorationOutcome.RESTORED,
-                    f"would restore to {destination.value}",
-                    destination.value,
+                _restore_hook_event(member, path=path, spool_root=hook_spool_root, rehearsed=rehearsed, dry_run=dry_run)
+            )
+        else:
+            results.append(
+                _restore_browser_capture(
+                    member, path=path, spool_root=browser_capture_spool, rehearsed=rehearsed, dry_run=dry_run
                 )
             )
-            continue
-        if destination is RestorationDestination.HOOK_EVENT_SPOOL:
-            results.append(_restore_hook_event(member, path=path, spool_root=hook_spool_root))
-        else:
-            results.append(_restore_browser_capture(member, path=path, spool_root=browser_capture_spool))
     return tuple(results)
 
 
