@@ -12,7 +12,6 @@ import hashlib
 import hmac
 import json
 import sqlite3
-import unicodedata
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -27,6 +26,7 @@ from polylogue.browser_capture.capture_job_events import (
     read_capture_job_retention,
 )
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
+from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes, digest
 from polylogue.paths import browser_capture_spool_root
 
 _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
@@ -41,31 +41,26 @@ class CaptureJobError(Exception):
 
 
 def canonical_json(value: object) -> str:
-    if value is None or isinstance(value, bool):
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, str):
-        return json.dumps(unicodedata.normalize("NFC", value), ensure_ascii=False, separators=(",", ":"))
-    if isinstance(value, int) and not isinstance(value, bool) and abs(value) <= 9_007_199_254_740_991:
-        return str(value)
-    if isinstance(value, list):
-        return "[" + ",".join(canonical_json(item) for item in value) + "]"
-    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
-        entries = sorted(
-            ((unicodedata.normalize("NFC", key), item) for key, item in value.items()),
-            key=lambda entry: entry[0],
-        )
-        if any(entries[index - 1][0] == entries[index][0] for index in range(1, len(entries))):
-            raise CaptureJobError(400, "non_canonical_key_collision")
-        return (
-            "{"
-            + ",".join(json.dumps(key, ensure_ascii=False) + ":" + canonical_json(item) for key, item in entries)
-            + "}"
-        )
-    raise CaptureJobError(400, "non_canonical_json")
+    """Return the capture protocol's canonical JSON text for *value*.
+
+    The extension recomputes this text in JavaScript, so the profile admits
+    only numbers a double represents exactly.
+    """
+    try:
+        return canonical_bytes(value, CAPTURE).decode("utf-8")
+    except KeyCollisionError as exc:
+        raise CaptureJobError(400, "non_canonical_key_collision") from exc
+    except (CanonicalizationError, TypeError, UnicodeEncodeError) as exc:
+        raise CaptureJobError(400, "non_canonical_json") from exc
 
 
 def canonical_digest(value: object) -> str:
-    return "sha256:" + hashlib.sha256(canonical_json(value).encode()).hexdigest()
+    try:
+        return digest(value, CAPTURE)
+    except KeyCollisionError as exc:
+        raise CaptureJobError(400, "non_canonical_key_collision") from exc
+    except (CanonicalizationError, TypeError, UnicodeEncodeError) as exc:
+        raise CaptureJobError(400, "non_canonical_json") from exc
 
 
 def capture_job_database_path(spool_path: Path | None = None) -> Path:

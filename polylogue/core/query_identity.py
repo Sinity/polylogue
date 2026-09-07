@@ -18,10 +18,10 @@ itself (e.g. a promoted ``retained_query_runs`` row).
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Final, TypeAlias
 
+from polylogue.core.digest import nfc
 from polylogue.core.hashing import hash_payload
 from polylogue.core.refs import ObjectRef
 
@@ -57,16 +57,16 @@ def canonical_query_plan(
     planner. ``field_aliases`` maps accepted aliases to the planner's canonical
     field token; it is applied only to values in ``field`` keys.
     """
-    aliases = {_nfc(key): _nfc(value) for key, value in (field_aliases or {}).items()}
-    protocol_version = _nfc(definition_protocol_version)
+    aliases = {nfc(key): nfc(value) for key, value in (field_aliases or {}).items()}
+    protocol_version = nfc(definition_protocol_version)
     if not protocol_version:
         raise ValueError("definition protocol version cannot be empty")
     return {
         "ast": _canonical_value(planned_ast, field_aliases=aliases),
         "definition_protocol_version": protocol_version,
-        "grain": _nfc(grain),
-        "lane": _nfc(lane),
-        "rank_policy": _nfc(rank_policy),
+        "grain": nfc(grain),
+        "lane": nfc(lane),
+        "rank_policy": nfc(rank_policy),
     }
 
 
@@ -94,7 +94,7 @@ def query_hash_for_plan(
 
 def require_supported_definition_protocol_version(definition_protocol_version: str) -> str:
     """Return a supported definition version or fail closed before evaluation."""
-    version = _nfc(definition_protocol_version)
+    version = nfc(definition_protocol_version)
     if version not in SUPPORTED_QUERY_DEFINITION_PROTOCOL_VERSIONS:
         raise ValueError(f"unsupported query definition protocol version: {version!r}")
     return version
@@ -122,13 +122,11 @@ def result_set_ref(result_set_id: str) -> ObjectRef:
 
 def _canonical_value(value: JsonValue, *, field_aliases: Mapping[str, str]) -> JsonValue:
     if isinstance(value, str):
-        return _nfc(value)
+        return nfc(value)
     if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, Mapping):
-        normalized = {
-            _nfc(str(key)): _canonical_value(item, field_aliases=field_aliases) for key, item in value.items()
-        }
+        normalized = {nfc(str(key)): _canonical_value(item, field_aliases=field_aliases) for key, item in value.items()}
         field = normalized.get("field")
         if isinstance(field, str):
             normalized["field"] = field_aliases.get(field, field)
@@ -153,10 +151,6 @@ def _canonical_sort_key(value: JsonValue) -> str:
     # hash_payload's encoding is the protocol's compact sorted-key JSON form.
     # Using it as a sort key makes commutative children deterministic too.
     return hash_payload(value)
-
-
-def _nfc(value: str) -> str:
-    return unicodedata.normalize("NFC", value)
 
 
 def _require_sha256(value: str, *, label: str) -> None:
