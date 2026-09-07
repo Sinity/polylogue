@@ -171,8 +171,11 @@ def test_missing_fts_repair_commits_and_checkpoints_batches(test_conn: sqlite3.C
 
     assert inserted == 3
     assert test_conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] == 3
-    checkpoints = [sql for sql in traced if "wal_checkpoint(PASSIVE)" in sql]
-    assert len(checkpoints) == 3
+    # Repair commits per batch and checkpoints never: the daemon's recurring
+    # coordinator is the process' only ordinary checkpoint owner, and a
+    # checkpoint reintroduced here would run inside this hold.
+    assert [sql for sql in traced if "wal_checkpoint" in sql] == []
+    assert len([sql for sql in traced if sql.strip().upper() == "COMMIT"]) == 3
 
 
 def test_bulk_fts_rebuild_resumes_from_committed_missing_rows(test_conn: sqlite3.Connection) -> None:

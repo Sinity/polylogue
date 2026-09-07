@@ -21,6 +21,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
@@ -493,10 +494,7 @@ def _fidelity_capability(
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    uri = path.resolve().as_uri() + "?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = open_readonly_connection(path.resolve(), immutable=immutable, validate_schema=False)
     conn.row_factory = sqlite3.Row
     return conn
 

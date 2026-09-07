@@ -84,7 +84,13 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     archive_message_display_text,
 )
-from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    ReadFrameExpiredError,
+    StaleContinuationError,
+    open_connection,
+    open_readonly_connection,
+    read_frame,
+)
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
@@ -1528,17 +1534,24 @@ def _read_source_and_index(
     if not source_db.exists() or not index_db.exists():
         return None
     try:
-        source_conn = open_readonly_connection(source_db, timeout_class="background-read")
-        source_conn.row_factory = sqlite3.Row
-        try:
-            index_conn = open_readonly_connection(index_db, timeout_class="background-read")
-            index_conn.row_factory = sqlite3.Row
-            try:
-                return work(source_conn, index_conn)
-            finally:
-                index_conn.close()
-        finally:
-            source_conn.close()
+        # ``work`` is caller-supplied and its duration is not this seam's to
+        # know, so both readers are frames: each is bound to the generation it
+        # opened on and refuses to serve past the declared snapshot age rather
+        # than pinning WAL frames for an unbounded audit.
+        with (
+            read_frame(source_db, timeout_class="background-read") as source_frame,
+            read_frame(index_db, timeout_class="background-read") as index_frame,
+        ):
+            return work(source_frame.connection, index_frame.connection)
+    except (ReadFrameExpiredError, StaleContinuationError):
+        logger.warning(
+            "%s read exceeded its declared frame: source_db=%s index_db=%s",
+            seam,
+            source_db,
+            index_db,
+            exc_info=True,
+        )
+        return None
     except sqlite3.Error:
         logger.warning(
             "%s read failed (archive present but unreadable): source_db=%s index_db=%s",

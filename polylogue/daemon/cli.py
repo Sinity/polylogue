@@ -636,6 +636,10 @@ def _configure_fts_automerge_sync(db: Path) -> None:
 #: one) -- see polylogue-de2a for the harder writer-fairness question.
 _FTS_MERGE_INTERVAL_SECONDS = 60
 
+#: The recurring checkpoint coordinator's writer actor. Named here so its hold
+#: budget in ``write_coordinator.py`` binds to the one caller that uses it.
+WAL_CHECKPOINT_ACTOR = "maintenance.wal_checkpoint"
+
 
 async def _periodic_fts_merge() -> None:
     """Run a bounded FTS5 merge every 60s to amortise segment cost (#1851).
@@ -658,17 +662,33 @@ async def _periodic_fts_merge() -> None:
             logger.warning("daemon: FTS periodic merge failed", exc_info=True)
 
 
-def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
-    """Expose the daemon's checkpoint seam to offline daemon operations."""
-    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection as run_checkpoint
-
-    return run_checkpoint(conn, mode)
+# The daemon ring's seam onto the storage checkpoint and one-tier writer
+# factories: daemon modules take them from here rather than each reaching into
+# storage on its own.
+from polylogue.storage.sqlite.connection_profile import (  # noqa: E402
+    open_isolated_write_connection as open_isolated_write_connection,
+)
+from polylogue.storage.sqlite.wal_checkpoint import (  # noqa: E402
+    checkpoint_connection as checkpoint_connection,
+)
 
 
 async def _periodic_wal_checkpoint() -> None:
-    """Run WAL checkpoints every 5 minutes to keep tier WAL files bounded."""
+    """Run the process' only ordinary WAL checkpoints, every 5 minutes.
+
+    Recurring escalation is PASSIVE and nothing further: RESTART needs a
+    declared quiescent boundary and TRUNCATE belongs to seal, shutdown and
+    offline generation lifecycle. A busy result therefore retains the WAL and
+    reports its blockers instead of retrying, because the reader holding those
+    frames is doing legitimate work.
+
+    It runs under the writer gate with its own actor, so its wait and hold are
+    attributed to checkpointing and measured against
+    ``CHECKPOINT_HOLD_BUDGET_S`` rather than absorbed into a publication hold.
+    """
     from polylogue.paths import archive_root
-    from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
+    from polylogue.storage.sqlite.connection_profile import CHECKPOINT_HOLD_BUDGET_S
+    from polylogue.storage.sqlite.wal_checkpoint import checkpoint_archive_wals
 
     while True:
         await asyncio.sleep(300)
@@ -677,21 +697,26 @@ async def _periodic_wal_checkpoint() -> None:
             continue
         try:
             observations = await daemon_write_coordinator().run_sync(
-                "maintenance.wal_checkpoint",
-                maybe_checkpoint_archive_wals,
+                WAL_CHECKPOINT_ACTOR,
+                checkpoint_archive_wals,
                 root,
                 reason="periodic",
+                escalation="recurring",
+                collect_blockers=True,
             )
             for observation in observations:
                 if not observation.ran:
                     continue
                 logger.info(
-                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d error=%s blockers=%s",
+                    "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d "
+                    "hold_s=%.3f budget_s=%.1f error=%s blockers=%s",
                     observation.mode,
                     observation.wal_bytes_before,
                     observation.wal_bytes_after,
                     observation.busy_pages,
                     observation.checkpointed_pages,
+                    observation.elapsed_s,
+                    CHECKPOINT_HOLD_BUDGET_S,
                     observation.error,
                     ",".join(observation.blocking_processes[:5]),
                 )
@@ -2547,10 +2572,14 @@ async def run_daemon_services(
     """
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
+    from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion:
+    # The daemon runs the recurring checkpoint coordinator below, so every
+    # writable connection it opens for the rest of this scope defers implicit
+    # autocheckpoint work to that coordinator.
+    with archive_writer_rebuild_exclusion(archive_root_path) as rebuild_exclusion, arm_recurring_checkpoint_owner():
         await _run_daemon_services_under_active_writer_lease(
             rebuild_exclusion=rebuild_exclusion,
             sources=sources,

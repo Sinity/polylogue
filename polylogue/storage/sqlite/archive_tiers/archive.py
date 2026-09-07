@@ -316,11 +316,12 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.connection_profile import (
-    BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PRAGMA_STATEMENTS,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
     open_connection,
     open_readonly_connection,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -825,10 +826,8 @@ class ArchiveStore:
                 if self._inactive_candidate_durable_read_only
                 else sqlite3.connect(self.index_db_path)
             )
-            pragma_statements = (
-                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
-                if bulk_build_profile
-                else WRITE_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements = write_connection_pragma_statements(
+                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
