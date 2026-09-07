@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import BlockType, Origin, Provider, Role, ToolOutcome
-from polylogue.core.types import MessageId, SessionId
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.hydrators import message_from_record
 from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
@@ -184,7 +184,7 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
         tool_id="toolu_1",
         tool_input='{"command": "ls"}',
         semantic_type=None,
-        tool_outcome=ToolOutcome.SUCCESS,
+        tool_outcome=ToolOutcome.OK,
         signature=None,
     )
     projected = BLOCKS_SPEC.domain_kwargs(record)
@@ -205,13 +205,13 @@ def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
     # Enum members lower to their wire text and JSON payloads decode; neither
     # is left to a per-family mapper.
     assert projected["type"] == "tool_use"
-    assert projected["tool_outcome"] == "success"
+    assert projected["tool_outcome"] == "ok"
     assert projected["tool_input"] == {"command": "ls"}
 
     message = MessageRecord(
         message_id=MessageId("s:m"),
         session_id=SessionId("s"),
-        content_hash="0" * 64,
+        content_hash=ContentHash("0" * 64),
         blocks=[record],
     )
     hydrated = message_from_record(message, [], origin=Origin.CLAUDE_CODE_SESSION)
