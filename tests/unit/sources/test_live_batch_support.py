@@ -43,6 +43,8 @@ from polylogue.sources.live.batch import (
 from polylogue.sources.live.batch_support import (
     _BROWSER_CAPTURE_PREFIX_PROBE_BYTES,
     _DEFER_APPEND,
+    _LARGE_JSON_DOCUMENT_PROVIDERS,
+    _STREAMING_FULL_INGEST_BYTES,
     _AppendPlan,
     _AppendResult,
     _browser_capture_prefix_probe,
@@ -68,6 +70,7 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
 from polylogue.storage.sqlite.archive_tiers import archive as archive_tier_module
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
+from tests.infra.source_builders import make_chatgpt_node, make_claude_chat_message
 
 
 @pytest.mark.parametrize(
@@ -8288,3 +8291,153 @@ async def test_live_append_plans_flush_in_bounded_groups(
     assert ("completed", "archive_append") in [
         (stage, str(payload.get("storage_route"))) for stage, payload in route_payloads
     ]
+
+
+def _gemini_cli_checkpoint(padding: str) -> dict[str, Any]:
+    return {
+        "sessionId": "gemini-large-1",
+        "projectHash": "project-hash",
+        "startTime": "2026-03-16T09:40:00.000Z",
+        "lastUpdated": "2026-03-16T11:01:00.000Z",
+        "kind": "chat",
+        "summary": "Large checkpoint",
+        "messages": [
+            {
+                "id": "u1",
+                "timestamp": "2026-03-16T09:40:01.000Z",
+                "type": "user",
+                "content": ["review this transcript"],
+            },
+            {
+                "id": "a1",
+                "timestamp": "2026-03-16T09:40:02.000Z",
+                "type": "gemini",
+                "content": padding,
+                "model": "gemini-test",
+            },
+        ],
+    }
+
+
+def test_gemini_cli_checkpoint_over_the_streaming_bound_reaches_the_archive(tmp_path: Path) -> None:
+    """A Gemini CLI checkpoint must acquire whatever its size.
+
+    Above ``_STREAMING_FULL_INGEST_BYTES`` admission is decided from the path
+    alone, so a provider absent from ``_LARGE_JSON_DOCUMENT_PROVIDERS`` has its
+    file excluded with the cursor advanced to EOF and no failure recorded --
+    the loss leaves no trace to find later. Dropping ``Provider.GEMINI_CLI``
+    from that set turns this red.
+    """
+    root = tmp_path / "chats"
+    source = root / "session-2026-03-16T09-40-5c12869b.json"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        json.dumps(_gemini_cli_checkpoint("y" * (_STREAMING_FULL_INGEST_BYTES + 1024))),
+        encoding="utf-8",
+    )
+    assert source.stat().st_size > _STREAMING_FULL_INGEST_BYTES
+
+    cursor = CursorStore(tmp_path / "index.db")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=tmp_path / "index.db"))),
+        (WatchSource(name="gemini-cli", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    result = asyncio.run(processor.ingest_files([source], emit_event=False))
+
+    assert result.failed_file_count == 0
+    assert result.excluded_file_count == 0
+    assert result.ingested_session_count == 1
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE origin = 'gemini-cli-session'").fetchone() == (1,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+    with sqlite3.connect(cursor._ops_db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM ingest_cursor WHERE excluded = 1").fetchone() == (0,)
+
+
+#: One whole-document ``.json`` session per provider that can exceed the
+#: streaming bound. Keyed on the provider the acquisition route resolves; the
+#: expected admission is read from the payload predicate, never restated.
+_LARGE_JSON_SESSION_DOCUMENTS: dict[Provider, Any] = {
+    Provider.GEMINI_CLI: _gemini_cli_checkpoint("padded reply"),
+    Provider.CHATGPT: [
+        {
+            "id": "conv-1",
+            "title": "Export conversation",
+            "create_time": 1767225600.0,
+            "mapping": {
+                "u1": make_chatgpt_node("u1", "user", ["hello"], children=["a1"]),
+                "a1": make_chatgpt_node("a1", "assistant", ["reply"], parent="u1"),
+            },
+        }
+    ],
+    Provider.CLAUDE_AI: [
+        {
+            "uuid": "claude-conv-1",
+            "name": "Export conversation",
+            "created_at": "2026-03-16T09:40:00.000000Z",
+            "chat_messages": [
+                make_claude_chat_message("cm1", "human", "hello"),
+                make_claude_chat_message("cm2", "assistant", "reply"),
+            ],
+        }
+    ],
+    Provider.GEMINI: {
+        "runSettings": {"model": "models/gemini-test"},
+        "systemInstruction": {},
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "hello"},
+                {"role": "model", "text": "reply"},
+            ]
+        },
+    },
+    Provider.DRIVE: {
+        "runSettings": {"model": "models/gemini-test"},
+        "systemInstruction": {},
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "hello"},
+                {"role": "model", "text": "reply"},
+            ]
+        },
+    },
+}
+
+
+def test_large_json_document_providers_each_have_an_admission_witness() -> None:
+    """Every provider the streaming bound admits carries a witness document.
+
+    Without this the parity test below silently stops covering a provider the
+    moment one is added to ``_LARGE_JSON_DOCUMENT_PROVIDERS``.
+    """
+    assert set(_LARGE_JSON_SESSION_DOCUMENTS) == set(_LARGE_JSON_DOCUMENT_PROVIDERS)
+
+
+@pytest.mark.parametrize("provider", sorted(_LARGE_JSON_DOCUMENT_PROVIDERS))
+def test_json_session_admission_does_not_depend_on_file_size(
+    provider: Provider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Path-only admission above the bound must agree with payload admission.
+
+    ``_parse_path_as_session_artifact`` cannot read a file above
+    ``_STREAMING_FULL_INGEST_BYTES``, so it decides from the provider alone.
+    Where the two predicates disagree, a session is acquired below the bound
+    and silently dropped above it.
+    """
+    document = _LARGE_JSON_SESSION_DOCUMENTS[provider]
+    target = tmp_path / "chats" / "session.json"
+    target.parent.mkdir(parents=True)
+    payload = json.dumps(document).encode("utf-8")
+    target.write_bytes(payload)
+
+    # The witness must itself be a session, or the parity below is vacuous.
+    assert _parse_payload_as_session_artifact(target, provider=provider, payload=payload) is True
+    assert _parse_path_as_session_artifact(target, provider=provider) is True
+
+    monkeypatch.setattr("polylogue.sources.live.batch_support._STREAMING_FULL_INGEST_BYTES", 1)
+    assert _parse_path_as_session_artifact(target, provider=provider) is True
