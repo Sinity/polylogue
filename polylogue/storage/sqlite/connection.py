@@ -22,9 +22,11 @@ from polylogue.storage.sqlite.connection_profile import (
     READ_MMAP_SIZE_BYTES,
     WAL_AUTOCHECKPOINT_PAGES,
     WRITE_CACHE_SIZE_KIB,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
     WRITE_MMAP_SIZE_BYTES,
     _attach_sibling_tiers,
+    open_readonly_connection,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.schema import _ensure_schema, assert_readable_archive_layout
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
@@ -122,7 +124,7 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
     try:
         os.chmod(path, 0o600)
         conn.row_factory = sqlite3.Row
-        _apply_pragma_statements(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
+        _apply_pragma_statements(conn, write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
         _load_sqlite_vec(conn)
         _attach_sibling_tiers(conn)
         register_pl_fold(conn)
@@ -205,7 +207,7 @@ def open_read_connection(db_path: Path | str | None = None) -> Iterator[sqlite3.
             yield conn
         return
 
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=READ_DB_TIMEOUT)
+    conn = open_readonly_connection(path, timeout_class="interactive-read", validate_schema=False)
     _configure_read_connection(conn)
     try:
         if not _is_initialized_archive_index(path):
@@ -296,7 +298,7 @@ __all__ = [
     "READ_DB_TIMEOUT",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",
-    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
+    "write_connection_pragma_statements",
     "WRITE_MMAP_SIZE_BYTES",
     "_build_provider_scope_filter",
     "_build_scope_filter",

@@ -7,7 +7,11 @@ here and the marker file appears. Widening ``INHERITED_ENVIRONMENT_KEYS`` makes
 either half of the temporary-directory containment (the ``--basetemp``
 argument or the exported TMPDIR) makes
 ``test_a_submitted_run_contains_its_temporary_trees`` red. Treating a job id
-as ownership makes ``test_a_job_id_is_never_slot_ownership`` red.
+as ownership makes ``test_a_job_id_is_never_slot_ownership`` red. Publishing the
+result document only on the timeout path makes
+``test_a_queued_run_publishes_its_result_document`` red, and dropping the memory
+sampler makes ``test_a_held_run_records_what_it_took`` red -- a run that is
+killed leaves the receipt as the only account of what it took.
 
 Every submitting test here resolves ``agentctl`` from a fake that is the whole
 PATH, so a green run says nothing about what the workstation has deployed; the
@@ -56,6 +60,10 @@ words = [word for word in sys.argv[1:] if word != "--json"]
 verb = " ".join(words[:2])
 if verb == "job start":
     shutil.copyfile(sys.argv[-1], {launch_snapshot!r})
+    if {receipt!r} is not None:
+        # The slot runner publishes its result document next to the launch file.
+        with open(sys.argv[-1][: -len(".json")] + ".result.json", "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({receipt!r}))
     print(json.dumps({{"job_id": {job_id}, "phase": "queued", "terminal": False}}))
 elif verb == "job get":
     print(json.dumps({{"job_id": {job_id}, "phase": {phase!r}, "terminal": True, "exit_code": {exit_code}}}))
@@ -83,6 +91,7 @@ def _install_fake_agentctl(
     job_id: int = 7,
     phase: str = "succeeded",
     exit_code: int = 0,
+    receipt: dict[str, Any] | None = None,
 ) -> Path:
     directory = tmp_path / "fakebin"
     script = _install_executable(
@@ -92,6 +101,7 @@ def _install_fake_agentctl(
             job_id=job_id,
             phase=phase,
             exit_code=exit_code,
+            receipt=receipt,
             launch_snapshot=str(tmp_path / "submitted-launch.json"),
         ),
     )
@@ -344,15 +354,26 @@ def test_an_unknown_terminal_phase_is_unavailable(tmp_path: Path, monkeypatch: p
 
 
 def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124)
-    receipt_path = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+    receipt = {"status": "timed_out", "diagnosis": "pytest_deadline"}
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124, receipt=receipt)
 
     outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
 
     assert outcome.returncode == 124
-    assert outcome.receipt == {"status": "timed_out", "diagnosis": "pytest_deadline"}
+    assert outcome.receipt == receipt
+
+
+def test_a_stale_result_document_is_not_reported_as_this_run_s(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The client's paths are per pid, and a pid is reused."""
+    _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="succeeded", exit_code=0)
+    stale = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    assert outcome.returncode == 0
+    assert outcome.receipt is None
 
 
 def test_the_slot_runner_executes_the_launch_file(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
@@ -667,3 +688,56 @@ def test_a_refused_cancellation_leaves_the_launch_file_for_the_job(tmp_path: Pat
     assert _verbs(record)[-1] == "job cancel 11"
     surviving = list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json"))
     assert len(surviving) == 1, surviving
+
+
+@pytest.mark.uses_real_clock("measures a real child process group over sampling intervals")
+def test_a_held_run_records_what_it_took(tmp_path: Path) -> None:
+    """The receipt attributes the run's peak to the processes that took it."""
+    command = [
+        sys.executable,
+        "-c",
+        "import time; block = b'x' * (96 * 1024 * 1024); time.sleep(1.2); del block",
+    ]
+
+    outcome = run_pytest(command, cwd=str(tmp_path), env=_environment(POLYLOGUE_PYTEST_SLOT="held"), root=tmp_path)
+
+    assert outcome.returncode == 0
+    receipt = outcome.receipt
+    assert receipt is not None
+    assert receipt["kind"] == "polylogue.pytest-slot-result"
+    memory = receipt["memory"]
+    assert memory["observed_samples"] >= 1
+    # The child allocated 96 MiB; the peak is at least that, and it is named.
+    assert memory["peak"]["pss_kib"] >= 96 * 1024
+    assert memory["processes"][0]["peak_rss_kib"] >= 96 * 1024
+    assert memory["host_mem_available_mib"]["minimum"] is not None
+
+
+@pytest.mark.uses_real_clock("runs a real child through the slot runner")
+def test_a_queued_run_publishes_its_result_document(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A run that ends normally files the same document a timed-out one does.
+
+    The waiting client reads that file: it is how the width a queued run chose,
+    and the peak it then reached, reach the verification receipt at all.
+    """
+    log_path = tmp_path / "slot.log"
+    launch_path = tmp_path / "launch.json"
+    launch_path.write_text(
+        json.dumps(
+            {
+                "argv": [sys.executable, "-c", "import time; time.sleep(0.7)"],
+                "working_directory": str(tmp_path),
+                "environment": {"PATH": os.environ["PATH"]},
+                "log_path": str(log_path),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert pytest_slot.main([str(launch_path)]) == 0
+
+    published = json.loads(log_path.with_suffix(".result.json").read_text(encoding="utf-8"))
+    assert published == json.loads(capsys.readouterr().out)
+    assert published["status"] == "success"
+    assert published["memory"]["observed_samples"] >= 1
+    assert published["memory"]["processes"], "the run's own processes are named"

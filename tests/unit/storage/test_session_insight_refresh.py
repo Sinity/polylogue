@@ -862,6 +862,48 @@ def test_session_insight_rebuild_materializes_message_token_costs(tmp_path: Path
     assert row["model_name"] == "claude-sonnet-4-5"
 
 
+def test_session_insight_rebuild_reprices_existing_usage_rows(tmp_path: Path) -> None:
+    """Catalog pricing is repaired even when source evidence is no longer present."""
+    db_path = tmp_path / "profile-stale-catalog-cost.db"
+    with open_connection(db_path) as conn:
+        store_records(
+            session=make_session(
+                "conv-stale-catalog-cost",
+                source_name="codex",
+                title="Stale catalog cost",
+                created_at="2026-05-12T09:00:00+00:00",
+            ),
+            messages=[
+                make_message(
+                    "conv-stale-catalog-cost:msg-1",
+                    "conv-stale-catalog-cost",
+                    text="Usage evidence",
+                    model_name="gpt-5.5",
+                    input_tokens=1_000,
+                    output_tokens=100,
+                ),
+            ],
+            attachments=[],
+            conn=conn,
+        )
+        session_id = _sid("conv-stale-catalog-cost", "codex-session")
+        conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+        conn.execute(
+            "UPDATE session_model_usage SET input_tokens = 1_000, output_tokens = 100, catalog_cost_usd = NULL WHERE session_id = ?",
+            (session_id,),
+        )
+        conn.commit()
+
+        rebuild_session_insights_sync(conn, session_ids=[session_id])
+        row = conn.execute(
+            "SELECT catalog_cost_usd FROM session_model_usage WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+
+    assert row is not None
+    assert row["catalog_cost_usd"] > 0
+
+
 def test_session_insight_rebuild_preserves_session_provider_cost(tmp_path: Path) -> None:
     # Provider-reported cost is sourced from typed per-message token usage now
     # (#803/#1139): the legacy session-level ``provider_meta`` total/duration

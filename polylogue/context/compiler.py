@@ -18,6 +18,7 @@ from pydantic import Field, model_validator
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.assertions import AssertionContextTrustClass, derive_assertion_context_trust
+from polylogue.core.digest import REFERENCE, canonical_bytes, digest
 from polylogue.core.evidence_integrity import EvidenceIntegrityVerdict
 from polylogue.core.refs import EvidenceRef, ExecutionContextRef, ObjectRef
 from polylogue.surfaces.chronicle import ChronicleProjectionPayload, render_chronicle_markdown
@@ -146,13 +147,13 @@ class ContextSnapshotRecord(ArchiveInsightModel):
 def canonical_context_image_json(image: ContextImage) -> str:
     """Serialize one compiled image deterministically for delivery evidence."""
 
-    return json.dumps(image.model_dump(mode="json"), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return canonical_bytes(image.model_dump(mode="json"), REFERENCE).decode("utf-8")
 
 
 def context_image_sha256(image: ContextImage) -> str:
     """Return the content identity of the complete compiled image."""
 
-    return hashlib.sha256(canonical_context_image_json(image).encode("utf-8")).hexdigest()
+    return digest(image.model_dump(mode="json"), REFERENCE)
 
 
 def compile_messages_context_segment(

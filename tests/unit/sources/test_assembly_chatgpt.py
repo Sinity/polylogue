@@ -2,8 +2,8 @@
 
 Exercises the real ``sources/assembly.py`` protocol wiring end to end: on-disk
 sidecar discovery (both extracted-directory and ZIP-bundle shapes) and
-attachment enrichment for both ``.dat`` id resolution and sandbox-file tiered
-resolution.
+attachment enrichment for both asset-member id resolution and sandbox-file
+tiered resolution.
 """
 
 from __future__ import annotations
@@ -270,8 +270,8 @@ class TestEnrichSession:
         assert "resolved_file_id" not in events[0].payload
 
 
-class TestAcquireDatBlobsFromZip:
-    """bd polylogue-8ac0 — streaming ``.dat`` asset bytes into the blob store."""
+class TestAcquireAssetBlobsFromZip:
+    """bd polylogue-8ac0 / polylogue-1nd1s — streaming asset bytes into the blob store."""
 
     def test_dat_member_streamed_into_blob_store(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "export.zip"
@@ -283,21 +283,21 @@ class TestAcquireDatBlobsFromZip:
         store = BlobStore(tmp_path / "blobs")
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
 
-        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
-        assert dat_blobs is not None
-        assert "file-xyz" in dat_blobs
-        blob_hash, size = dat_blobs["file-xyz"]
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
+        assert asset_blobs is not None
+        assert "file-xyz" in asset_blobs
+        blob_hash, size = asset_blobs["file-xyz"]
         assert size == len(dat_bytes)
         assert store.exists(blob_hash)
         assert store.read_all(blob_hash) == dat_bytes
 
-    def test_no_blob_store_leaves_dat_blobs_absent(self, tmp_path: Path) -> None:
+    def test_no_blob_store_leaves_asset_blobs_absent(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "export.zip"
         with zipfile.ZipFile(zip_path, "w") as zf:
             zf.writestr("file-xyz.dat", b"bytes")
 
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path])
-        assert "chatgpt_dat_blobs" not in sidecar_data
+        assert "chatgpt_asset_blobs" not in sidecar_data
 
     def test_non_dat_members_are_not_streamed(self, tmp_path: Path) -> None:
         zip_path = tmp_path / "export.zip"
@@ -306,7 +306,7 @@ class TestAcquireDatBlobsFromZip:
 
         store = BlobStore(tmp_path / "blobs")
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
-        assert "chatgpt_dat_blobs" not in sidecar_data
+        assert "chatgpt_asset_blobs" not in sidecar_data
 
     def test_many_dat_members_obey_aggregate_limit_before_second_read(
         self,
@@ -338,9 +338,9 @@ class TestAcquireDatBlobsFromZip:
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
 
         assert opened == ["file-first.dat"]
-        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
-        assert dat_blobs is not None
-        assert set(dat_blobs) == {"file-first"}
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
+        assert asset_blobs is not None
+        assert set(asset_blobs) == {"file-first"}
 
     def test_json_and_dat_members_share_aggregate_limit_before_dat_read(
         self,
@@ -372,10 +372,86 @@ class TestAcquireDatBlobsFromZip:
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
 
         assert opened == ["library_files.json"]
-        assert "chatgpt_dat_blobs" not in sidecar_data
+        assert "chatgpt_asset_blobs" not in sidecar_data
+
+    def test_extension_carrying_members_are_acquired(self, tmp_path: Path) -> None:
+        """bd polylogue-1nd1s: an export that names assets by real extension.
+
+        The 2026-04-23 export ships its assets as ``.png``/``.webp``/``.jpg``
+        and extension-less members under per-conversation subdirectories
+        instead of as flat ``file-<id>.dat``. Admitting only JSON and ``.dat``
+        filtered every one of them out before any reader saw it, leaving the
+        conversations' asset pointers with no bytes to bind to. Red if
+        admission goes back to selecting members by suffix.
+        """
+        zip_path = tmp_path / "export.zip"
+        # member name -> (bytes, the asset id the name carries)
+        members = {
+            "conv-1/image/file_0000000000ac6243a75c01ca3ff57b84-c5e08f86.png": (
+                b"screenshot bytes",
+                "file_0000000000ac6243a75c01ca3ff57b84",
+            ),
+            "dalle-generations/file-0nRBfsDLFpRdQVKa9WffrQCE-3f165a39.webp": (
+                b"generated image",
+                "file-0nRBfsDLFpRdQVKa9WffrQCE",
+            ),
+            "file-05HzDzfH11W85mpcVKafDihK-1f3bd27e-ce02": (
+                b"no extension at all",
+                "file-05HzDzfH11W85mpcVKafDihK",
+            ),
+            "03adfe6a4b1e5a0#file_00000000cc4c7243aa6bdd0537ca804e#p_0.jpg-p_0.jpg": (
+                b"page render",
+                "file_00000000cc4c7243aa6bdd0537ca804e",
+            ),
+            "conv-1/audio/file_66f6b1408b20203c-e7b106a6.wav": (
+                b"voice note",
+                "file_66f6b1408b20203c",
+            ),
+            "file_000000007e9471f48ae216a0f081438b-issues-open.json": (
+                b'{"real": "asset"}',
+                "file_000000007e9471f48ae216a0f081438b",
+            ),
+        }
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversations-000.json", "[]")
+            zf.writestr("chat.html", b"<html>the whole transcript render</html>")
+            for name, (payload, _asset_id) in members.items():
+                zf.writestr(name, payload)
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
+        assert asset_blobs is not None
+        assert set(asset_blobs) == {asset_id for _payload, asset_id in members.values()}
+        for payload, asset_id in members.values():
+            blob_hash, size = asset_blobs[asset_id]
+            assert size == len(payload)
+            assert store.read_all(blob_hash) == payload
+
+    def test_non_asset_members_are_never_acquired(self, tmp_path: Path) -> None:
+        """The transcript render and the sidecars are not assets.
+
+        ``conversation_asset_file_names.json`` contains the substring
+        ``file_names``; a substring match would stream the lookup table into
+        the blob store as if it were an asset. Red if the id match stops being
+        anchored.
+        """
+        zip_path = tmp_path / "export.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversations-000.json", "[]")
+            zf.writestr("chat.html", b"<html>render</html>")
+            zf.writestr("conversation_asset_file_names.json", json.dumps({"file-xyz.dat": "photo.png"}))
+            zf.writestr("library_files.json", json.dumps([]))
+            zf.writestr("user.json", "{}")
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        assert "chatgpt_asset_blobs" not in sidecar_data
 
 
-class TestAcquireDatBlobsFromDirectory:
+class TestAcquireAssetBlobsFromDirectory:
     def test_dat_sibling_streamed_into_blob_store(self, tmp_path: Path) -> None:
         (tmp_path / "conversations-000.json").write_text("[]", encoding="utf-8")
         dat_bytes = b"library file bytes"
@@ -384,11 +460,34 @@ class TestAcquireDatBlobsFromDirectory:
         store = BlobStore(tmp_path / "blobs")
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([tmp_path / "conversations-000.json"], blob_store=store)
 
-        dat_blobs = sidecar_data.get("chatgpt_dat_blobs")
-        assert dat_blobs is not None
-        blob_hash, size = dat_blobs["file_abc"]
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
+        assert asset_blobs is not None
+        blob_hash, size = asset_blobs["file_abc"]
         assert size == len(dat_bytes)
         assert store.read_all(blob_hash) == dat_bytes
+
+    def test_extension_carrying_assets_in_subdirectories_are_acquired(self, tmp_path: Path) -> None:
+        """bd polylogue-1nd1s: an extracted export nests assets one level down.
+
+        The extension-carrying export shape puts a conversation's assets under
+        ``<conversation>/image/`` and ``<conversation>/audio/``, so a
+        non-recursive sibling glob reaches none of them. Red if the directory
+        walk stops descending.
+        """
+        (tmp_path / "conversations-000.json").write_text("[]", encoding="utf-8")
+        image_dir = tmp_path / "conv-1" / "image"
+        image_dir.mkdir(parents=True)
+        image_bytes = b"nested screenshot bytes"
+        (image_dir / "file_0000000000ac6243a75c01ca3ff57b84-c5e08f86.png").write_bytes(image_bytes)
+
+        store = BlobStore(tmp_path / "blobs")
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([tmp_path / "conversations-000.json"], blob_store=store)
+
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
+        assert asset_blobs is not None
+        blob_hash, size = asset_blobs["file_0000000000ac6243a75c01ca3ff57b84"]
+        assert size == len(image_bytes)
+        assert store.read_all(blob_hash) == image_bytes
 
 
 class TestEnrichSessionAcquiresBlobs:
@@ -401,7 +500,7 @@ class TestEnrichSessionAcquiresBlobs:
             conv,
             {
                 "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
-                "chatgpt_dat_blobs": {"file-xyz": ("ab" * 32, 5)},
+                "chatgpt_asset_blobs": {"file-xyz": ("ab" * 32, 5)},
             },
         )
 
@@ -431,7 +530,7 @@ class TestEnrichSessionAcquiresBlobs:
             conv,
             {
                 "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
-                "chatgpt_dat_blobs": {"file_shot1": ("ab" * 32, 27100)},
+                "chatgpt_asset_blobs": {"file_shot1": ("ab" * 32, 27100)},
             },
         )
 
@@ -450,7 +549,7 @@ class TestEnrichSessionAcquiresBlobs:
             conv,
             {
                 "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
-                "chatgpt_dat_blobs": {"file-xyz": ("cd" * 32, 5)},
+                "chatgpt_asset_blobs": {"file-xyz": ("cd" * 32, 5)},
             },
         )
 
@@ -458,7 +557,7 @@ class TestEnrichSessionAcquiresBlobs:
         assert resolved.precomputed_blob is None
         assert resolved.inline_bytes == b"already carrying real bytes"
 
-    def test_sandbox_attachment_never_joins_dat_blobs(self) -> None:
+    def test_sandbox_attachment_never_joins_asset_blobs(self) -> None:
         attachment = ParsedAttachment(
             provider_attachment_id="sandbox:m-unrelated:/mnt/data/mystery.bin",
             message_provider_id="m-unrelated",
@@ -473,7 +572,7 @@ class TestEnrichSessionAcquiresBlobs:
             conv,
             {
                 "chatgpt_asset_index": ChatGPTAssetIndex.empty(),
-                "chatgpt_dat_blobs": {"mystery.bin": ("ef" * 32, 5)},
+                "chatgpt_asset_blobs": {"mystery.bin": ("ef" * 32, 5)},
             },
         )
 
@@ -519,7 +618,7 @@ class TestZipBundleEndToEndBlobAcquisition:
         blob_root = tmp_path / "blobs"
         store = BlobStore(blob_root)
         sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
-        assert "file-xyz" in sidecar_data.get("chatgpt_dat_blobs", {})
+        assert "file-xyz" in sidecar_data.get("chatgpt_asset_blobs", {})
 
         results = list(
             parse_one_source_path(
@@ -536,6 +635,93 @@ class TestZipBundleEndToEndBlobAcquisition:
         _, session = results[0]
         assert len(session.attachments) == 1
         resolved = session.attachments[0]
-        blob_hash, size = sidecar_data["chatgpt_dat_blobs"]["file-xyz"]
+        blob_hash, size = sidecar_data["chatgpt_asset_blobs"]["file-xyz"]
         assert resolved.precomputed_blob == (blob_hash, size)
         assert resolved.name == "photo.png"
+
+    def test_extension_carrying_asset_binds_to_its_pointer_attachment(self, tmp_path: Path) -> None:
+        """bd polylogue-1nd1s + polylogue-91kys, end to end through real ingest.
+
+        An asset named by its real extension is acquired, the content part
+        that points at it produces the attachment row, and the two join on the
+        bare file id. Red if either half regresses: an unadmitted member
+        leaves ``precomputed_blob`` unset, and a pointer that reaches storage
+        as block metadata alone leaves no attachment for the bytes to bind to.
+        """
+        from polylogue.sources.source_parsing import parse_one_source_path
+
+        pointer = "sediment://file_0000000000ac6243a75c01ca3ff57b84"
+        conversation = {
+            "id": "conv-1",
+            "conversation_id": "conv-1",
+            "title": "generated image",
+            "create_time": 1704067200.0,
+            "current_node": "a1",
+            "mapping": {
+                "u1": {
+                    "id": "u1",
+                    "message": {
+                        "id": "u1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["draw something"]},
+                        "create_time": 1704067200.0,
+                    },
+                    "parent": None,
+                    "children": ["a1"],
+                },
+                "a1": {
+                    "id": "a1",
+                    "message": {
+                        "id": "a1",
+                        "author": {"role": "assistant"},
+                        "content": {
+                            "content_type": "multimodal_text",
+                            "parts": [
+                                {
+                                    "content_type": "image_asset_pointer",
+                                    "asset_pointer": pointer,
+                                    "size_bytes": 16,
+                                    "width": 1024,
+                                    "height": 768,
+                                }
+                            ],
+                        },
+                        "create_time": 1704067201.0,
+                    },
+                    "parent": "u1",
+                    "children": [],
+                },
+            },
+        }
+
+        zip_path = tmp_path / "export.zip"
+        image_bytes = b"the real image!!"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("conversations-000.json", json.dumps([conversation]))
+            zf.writestr(
+                "conv-1/image/file_0000000000ac6243a75c01ca3ff57b84-c5e08f86.png",
+                image_bytes,
+            )
+
+        blob_root = tmp_path / "blobs"
+        store = BlobStore(blob_root)
+        sidecar_data = ChatGPTAssemblySpec().discover_sidecars([zip_path], blob_store=store)
+
+        results = list(
+            parse_one_source_path(
+                str(zip_path),
+                file_mtime=None,
+                source_name="chatgpt",
+                sidecar_data=sidecar_data,
+                capture_raw=False,
+                blob_root=blob_root,
+                blob_store=store,
+            )
+        )
+        assert len(results) == 1
+        _, session = results[0]
+        attachment = next(a for a in session.attachments if a.provider_attachment_id == pointer)
+        assert attachment.provider_file_id == "file_0000000000ac6243a75c01ca3ff57b84"
+        blob_hash, size = sidecar_data["chatgpt_asset_blobs"]["file_0000000000ac6243a75c01ca3ff57b84"]
+        assert attachment.precomputed_blob == (blob_hash, size)
+        assert store.read_all(blob_hash) == image_bytes

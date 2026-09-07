@@ -22,6 +22,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.filter_kwargs import (
     plan_filter_kwargs,
 )
+from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.core.enums import MaterialOrigin, Origin, TitleSource
@@ -414,7 +415,7 @@ async def list_summaries_archive(
     *,
     archive_root: Path,
     config: Config | None,
-    default_limit: int = 50,
+    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
@@ -468,7 +469,7 @@ async def list_archive(
     *,
     archive_root: Path,
     config: Config | None,
-    default_limit: int = 50,
+    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
     with_units: tuple[str, ...] = (),
     with_unit_fields: dict[str, tuple[str, ...]] | None = None,
     with_unit_windows: Mapping[str, WithUnitWindow] | None = None,
@@ -579,7 +580,7 @@ def archive_search_hits(
     *,
     archive_root: Path,
     config: Config | None,
-    default_limit: int = 50,
+    default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
     archive: ArchiveStore | None = None,
 ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
     """Resolve a search plan to archive session hits paired with summaries.

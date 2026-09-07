@@ -606,7 +606,7 @@ def _check_source_conservation_at_index_path(
     vanished into ``source_missing``. Reverse: every session traces to a raw
     row that is not a declared non-session artifact, and every message,
     block, and attachment ref traces to its owner. Blocking terms are the
-    unexplained ones (``unexplained``, ``unclassified_shape``,
+    unexplained ones (``unexplained``, ``unclassified_shape``, ``missing_blob``,
     ``quarantined_cohort_unmaterialized``, ``source_lost``, orphans,
     phantoms); a source file that is gone while its raw payload bytes are
     retained (``source_missing``) is typed accounting, and ``pending``,
@@ -1404,7 +1404,7 @@ def _check_lineage_sanity(
 def _check_hook_authority_topology_conflict(archive_root: Path, sample_limit: int) -> ArchiveVerificationCheck:
     """Census contradictions between hook evidence and transcript inference.
 
-    A contradiction is not an error: acquired ``codex_thread_spawn_edge``
+    A contradiction is not an error: Codex's own ``thread_spawn_edges``
     evidence disagreeing with a parser-inferred parent is exactly the case the
     write path is designed to resolve, and the quarantined loser is the
     recorded proof that it did. What WOULD be a defect is a contradiction that

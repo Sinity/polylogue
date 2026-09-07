@@ -92,11 +92,11 @@ def test_hermes_state_db_explain_declares_v16_fidelity_and_coverage(tmp_path: Pa
     [entry] = explain_import_path(path, source_name="hermes").entries
 
     assert entry.detector == "hermes_state_db"
-    assert entry.parser_mode == "sqlite_backup"
+    assert entry.parser_mode == "logical_export"
     assert entry.produced.sessions == 2
     assert entry.fidelity is not None
     assert entry.fidelity.schema_version == 16
-    assert entry.fidelity.acquisition_method == "sqlite_backup"
+    assert entry.fidelity.acquisition_method == "logical_export"
     assert entry.fidelity.retained_blob_reproducibility.status == "exact"
     assert entry.fidelity.capabilities["message_state"].status == "exact"
     assert entry.fidelity.capabilities["message_state"].counts == {

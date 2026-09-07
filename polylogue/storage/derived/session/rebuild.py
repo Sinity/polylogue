@@ -1537,20 +1537,34 @@ def _refresh_provider_usage_rollup(conn: sqlite3.Connection, session_id: str) ->
     ``session_id`` — they read ``session_provider_usage_events`` and
     ``messages``, which are already persisted archive tables independent of
     any in-flight ``ParsedSession`` — so calling them here re-derives the
-    rollup the same way ingest does, without needing the original parse.
+    rollup the same way ingest does, without needing the original parse. A
+    final pass reprices any surviving token rows whose source evidence is no
+    longer available.
     """
     from polylogue.storage.sqlite.archive_tiers.write import (
         _aggregate_message_tokens_into_model_usage,
         _aggregate_provider_usage_into_model_usage,
+        _reprice_model_usage_rows,
     )
 
     _aggregate_provider_usage_into_model_usage(conn, session_id)
     _aggregate_message_tokens_into_model_usage(conn, session_id)
+    _reprice_model_usage_rows(conn, session_id)
     row = conn.execute(
         "SELECT COUNT(*) FROM session_model_usage WHERE session_id = ?",
         (session_id,),
     ).fetchone()
     return int(row[0]) if row is not None else 0
+
+
+async def _refresh_provider_usage_rollup_async(conn: aiosqlite.Connection, session_id: str) -> int:
+    """Run the sync provider-usage refresh on aiosqlite's worker thread."""
+    result = await conn._execute(  # type: ignore[no-untyped-call]
+        _refresh_provider_usage_rollup,
+        conn._conn,
+        session_id,
+    )
+    return int(result)
 
 
 def _count_record_bundles(
@@ -2069,6 +2083,8 @@ async def rebuild_session_insights_async(
 
     for chunk_info in session_chunks:
         chunk = chunk_info.session_ids
+        for session_id in chunk:
+            await _refresh_provider_usage_rollup_async(conn, session_id)
         chunk_degraded_ids = tuple(session_id for session_id in chunk if session_id in heavy_session_ids)
         chunk_full_ids = tuple(session_id for session_id in chunk if session_id not in heavy_session_ids)
         if chunk_info.max_estimated_session_messages >= _SESSION_INSIGHT_DEGRADED_MESSAGE_THRESHOLD:

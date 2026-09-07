@@ -14,6 +14,11 @@ configured source:
     The object is the only verified carrier of wanted material and names an
     ordinary spool destination that current acquisition admits. Restoration
     precedes any removal.
+``unreferenced``
+    No durable relation names the object. Blob publication precedes the row
+    that owns it and reference-dropping repairs strand objects by design
+    (``docs/internals.md``), so an unnamed object is daemon GC's to collect:
+    a positive outcome this plan records, never removes, and never blocks on.
 ``unresolved``
     Nothing above holds. Unresolved is never downgraded to discard and never
     authorizes restoration.
@@ -27,8 +32,9 @@ first, never what is removed.
 
 This is a one-time transition planner. Its deletion trigger is the terminal
 disposition receipt: once the physical namespace is accounted for, this
-module and its apply sibling go with it, and only the recurring liveness,
-publication, GC, and spool-admission laws remain in their owners.
+module, its apply sibling, and the normalized-comparison module the
+containment prover routes through go with it, and only the recurring
+liveness, publication, GC, and spool-admission laws remain in their owners.
 """
 
 from __future__ import annotations
@@ -42,9 +48,15 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import IO, Protocol
+from typing import IO, TYPE_CHECKING, Protocol
 
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobNamespaceEntryKind, BlobStore
+
+if TYPE_CHECKING:
+    from zipfile import ZipFile
+
+    from polylogue.core.enums import Provider
+    from polylogue.maintenance.blob_residue_comparison import NormalizedContribution
 
 TOOL_VERSION = "blob-disposition-plan-v1"
 
@@ -65,6 +77,7 @@ class BlobDisposition(StrEnum):
     SOURCE_PRESENT = "source_present"
     SUPERSEDED_PREFIX = "superseded_prefix"
     RESTORE_REQUIRED = "restore_required"
+    UNREFERENCED = "unreferenced"
     UNRESOLVED = "unresolved"
 
 
@@ -87,6 +100,7 @@ class SourceProofMode(StrEnum):
 
     BYTE_IDENTICAL = "byte_identical"
     SEMANTIC_EQUIVALENT = "semantic_equivalent"
+    SEMANTIC_CONTAINED = "semantic_contained"
     STRICT_PREFIX = "strict_prefix"
 
 
@@ -152,6 +166,75 @@ class BlobDispositionMember:
         }
 
 
+# A SQLite reader that opens a content-addressed object as a database writes
+# its journal beside the object, under a name the namespace cannot own.
+_SQLITE_SIDECAR_SUFFIXES = ("-shm", "-wal", "-journal")
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidNamespaceEntry:
+    """One filesystem entry inside the blob namespace that is not a blob.
+
+    An entry blocks acceptance until it carries positive evidence of what it
+    is. ``explanation`` is that evidence; ``None`` is the unexplained state.
+    """
+
+    relative_path: str
+    issue: str
+    explanation: str | None = None
+
+    @property
+    def explained(self) -> bool:
+        return self.explanation is not None
+
+    def to_dict(self) -> dict[str, object]:
+        return {"relative_path": self.relative_path, "issue": self.issue, "explanation": self.explanation}
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, object]) -> InvalidNamespaceEntry:
+        explanation = payload.get("explanation")
+        return cls(
+            relative_path=str(payload["relative_path"]),
+            issue=str(payload["issue"]),
+            explanation=None if explanation is None else str(explanation),
+        )
+
+
+def explain_invalid_namespace_entry(entry: BlobNamespaceEntry, *, blob_store: BlobStore) -> InvalidNamespaceEntry:
+    """Attach positive evidence to one invalid entry, or leave it unexplained.
+
+    The only explained shape is a SQLite sidecar named after a blob that is
+    still present: reading a stored database opens it in place, and the
+    journal it writes carries no content of its own. An entry whose base
+    object is absent is not explained by this rule -- the sidecar could then
+    be the only surviving trace of that database.
+    """
+    relative_path = entry.relative_path
+    issue = entry.issue.value if entry.issue is not None else "unclassified"
+    shard, _, leaf = relative_path.partition("/")
+    for suffix in _SQLITE_SIDECAR_SUFFIXES:
+        if not leaf.endswith(suffix):
+            continue
+        base_hash = f"{shard}{leaf[: -len(suffix)]}"
+        if len(base_hash) != 64 or not _is_lowercase_hex(base_hash):
+            break
+        if not blob_store.blob_path(base_hash).is_file():
+            break
+        return InvalidNamespaceEntry(
+            relative_path=relative_path,
+            issue=issue,
+            explanation=(
+                f"SQLite sidecar of retained blob {base_hash}, written beside it by a reader that opened "
+                "the stored database in place; it carries no content of its own"
+            ),
+        )
+    return InvalidNamespaceEntry(relative_path=relative_path, issue=issue)
+
+
+def _is_lowercase_hex(value: str) -> bool:
+    return all(character in "0123456789abcdef" for character in value)
+
+
 @dataclass(frozen=True, slots=True)
 class BlobDispositionDenominator:
     """The exact population a plan was compiled from."""
@@ -162,7 +245,11 @@ class BlobDispositionDenominator:
     referenced_hash_count: int
     referenced_present_count: int
     referenced_absent_count: int
-    invalid_namespace_entries: tuple[str, ...] = ()
+    invalid_namespace_entries: tuple[InvalidNamespaceEntry, ...] = ()
+
+    @property
+    def unexplained_namespace_entries(self) -> tuple[InvalidNamespaceEntry, ...]:
+        return tuple(entry for entry in self.invalid_namespace_entries if not entry.explained)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,7 +259,8 @@ class BlobDispositionDenominator:
             "referenced_hash_count": self.referenced_hash_count,
             "referenced_present_count": self.referenced_present_count,
             "referenced_absent_count": self.referenced_absent_count,
-            "invalid_namespace_entries": list(self.invalid_namespace_entries),
+            "invalid_namespace_entries": [entry.to_dict() for entry in self.invalid_namespace_entries],
+            "unexplained_namespace_entry_count": len(self.unexplained_namespace_entries),
         }
 
 
@@ -239,8 +327,8 @@ class BlobDispositionPlan:
 
     @property
     def accepted(self) -> bool:
-        """Whether the namespace is completely explained by this plan."""
-        return self.unresolved_count == 0 and not self.denominator.invalid_namespace_entries
+        """A plan is acceptable only when nothing is unexplained."""
+        return self.unresolved_count == 0 and not self.denominator.unexplained_namespace_entries
 
     def members_for(self, disposition: BlobDisposition) -> tuple[BlobDispositionMember, ...]:
         return tuple(member for member in self.members if member.disposition is disposition)
@@ -296,7 +384,9 @@ class BlobDispositionPlan:
                     referenced_present_count=int(denominator["referenced_present_count"]),
                     referenced_absent_count=int(denominator["referenced_absent_count"]),
                     invalid_namespace_entries=tuple(
-                        str(entry) for entry in denominator.get("invalid_namespace_entries", ())
+                        InvalidNamespaceEntry.from_dict(entry)
+                        for entry in denominator.get("invalid_namespace_entries", ())
+                        if isinstance(entry, Mapping)
                     ),
                 ),
                 members=members,
@@ -375,6 +465,13 @@ class HookEventSpoolProver:
     spool file does not carry, and both sides are serialized independently.
     Byte equality is therefore the wrong law here: the proof is equality of
     the production-route record, which is what admission would reproduce.
+
+    The proposition is that acquisition still reaches the content, not that
+    the bytes exist somewhere under a declared root. Only ``pending/`` is
+    read: ``drain_hook_event_spool`` and ``hook_watch_sources`` both take
+    :func:`pending_hook_spool_dir`, and an ``acknowledged/`` receipt is a
+    commit record for the source.db that consumed it -- a fresh archive
+    re-ingests nothing from there.
     """
 
     name = "hook-event-spool"
@@ -387,9 +484,11 @@ class HookEventSpoolProver:
     def _spool_index(self) -> dict[str, tuple[str, Path]]:
         if self._index is not None:
             return self._index
+        from polylogue.sources.hooks import pending_hook_spool_dir
+
         index: dict[str, tuple[str, Path]] = {}
         for source_id, root in self._sources:
-            for directory, subdirectories, filenames in os.walk(root):
+            for directory, subdirectories, filenames in os.walk(pending_hook_spool_dir(root)):
                 subdirectories.sort()
                 for filename in sorted(filenames):
                     if not filename.endswith(".json"):
@@ -517,6 +616,7 @@ class RawSourceCarrier:
 
     source_path: str
     append_start_offset: int | None = None
+    origin: str | None = None
 
 
 class RawSourceFileProver:
@@ -613,6 +713,225 @@ class AppendPrefixProver:
         return None
 
 
+class CodexStateEvidenceProver:
+    """Prove a retained Codex state export against its live logical source.
+
+    Codex state is acquired through ``snapshot_sqlite_to_blob`` as a
+    canonical logical export, not as row-shaped hook payloads. Recomputing
+    that export digest over the live database is the source-authoritative
+    proof and remains valid across SQLite page-layout changes.
+    """
+
+    name = "codex-state-evidence"
+
+    def __init__(self, carriers_by_hash: Mapping[str, tuple[str, ...]]) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._payloads: dict[str, frozenset[str]] = {}
+
+    def _payload_hashes(self, source_path: str) -> frozenset[str]:
+        cached = self._payloads.get(source_path)
+        if cached is None:
+            cached = codex_state_logical_export_hashes(Path(source_path))
+            self._payloads[source_path] = cached
+        return cached
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        for source_path in self._carriers.get(blob_hash, ()):
+            if blob_hash not in self._payload_hashes(source_path):
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=SourceProofMode.SEMANTIC_EQUIVALENT,
+                source_id="codex-state-db",
+                source_path=source_path,
+                detail="the live state database re-emits the retained canonical logical export",
+            )
+        return None
+
+
+def codex_state_logical_export_hashes(state_db: Path) -> frozenset[str]:
+    """Return the canonical logical-export digest emitted for a state DB."""
+    from polylogue.sources.parsers import codex_state
+    from polylogue.sources.sqlite_snapshot import sqlite_member_revision
+
+    try:
+        if codex_state.classify_codex_sqlite_path(state_db, immutable=True) != "thread_state":
+            return frozenset()
+        return frozenset({sqlite_member_revision(state_db, immutable=True)})
+    except Exception:
+        return frozenset()
+
+
+class ExportArchiveMemberProver:
+    """Prove a blob against a member of a retained provider export archive.
+
+    An attachment is extracted from an export zip, so its bytes exist in no
+    file a filesystem walk can hash. The central directory carries each
+    member's uncompressed size, which selects the few members worth
+    decompressing, and the proof is a fresh SHA-256 over the decompressed
+    member -- the same law the byte-identity walk applies to loose files.
+    """
+
+    name = "export-archive-member"
+
+    def __init__(self, export_roots: Sequence[Path], *, source_id: str = "provider-export-archive") -> None:
+        self._roots = tuple(export_roots)
+        self._source_id = source_id
+        self._members_by_size: dict[int, list[tuple[Path, str]]] | None = None
+        self._hashed_sizes: dict[int, dict[str, tuple[Path, str]]] = {}
+        self._open_archives: dict[Path, ZipFile | None] = {}
+
+    def _index(self) -> dict[int, list[tuple[Path, str]]]:
+        if self._members_by_size is not None:
+            return self._members_by_size
+        import zipfile
+
+        index: dict[int, list[tuple[Path, str]]] = {}
+        for root in self._roots:
+            if not root.is_dir():
+                continue
+            for archive in sorted(root.rglob("*.zip")):
+                try:
+                    with zipfile.ZipFile(archive) as handle:
+                        entries = handle.infolist()
+                except (OSError, zipfile.BadZipFile):
+                    continue
+                for info in entries:
+                    if info.is_dir():
+                        continue
+                    index.setdefault(info.file_size, []).append((archive, info.filename))
+        self._members_by_size = index
+        return index
+
+    def _archive_handle(self, archive: Path) -> ZipFile | None:
+        """Keep each archive open: a 16 GB export's central directory is not free."""
+        import zipfile
+
+        if archive not in self._open_archives:
+            try:
+                self._open_archives[archive] = zipfile.ZipFile(archive)
+            except (OSError, zipfile.BadZipFile):
+                self._open_archives[archive] = None
+        return self._open_archives[archive]
+
+    def _hashes_for_size(self, size_bytes: int) -> dict[str, tuple[Path, str]]:
+        cached = self._hashed_sizes.get(size_bytes)
+        if cached is not None:
+            return cached
+        import zipfile
+
+        hashes: dict[str, tuple[Path, str]] = {}
+        for archive, member in self._index().get(size_bytes, ()):
+            handle = self._archive_handle(archive)
+            if handle is None:
+                continue
+            try:
+                with handle.open(member) as stream:
+                    digest, consumed = _hash_stream(stream)
+            except (OSError, zipfile.BadZipFile, RuntimeError, EOFError):
+                continue
+            if consumed != size_bytes:
+                continue
+            hashes.setdefault(digest, (archive, member))
+        self._hashed_sizes[size_bytes] = hashes
+        return hashes
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        located = self._hashes_for_size(size_bytes).get(blob_hash)
+        if located is None:
+            return None
+        archive, member = located
+        return SourceProof(
+            prover=self.name,
+            mode=SourceProofMode.BYTE_IDENTICAL,
+            source_id=self._source_id,
+            source_path=f"{archive}!{member}",
+            detail="fresh hash over the decompressed export member",
+        )
+
+
+class SemanticContainmentProver:
+    """Prove a carrier's material still lies inside its live source file.
+
+    A provider that rewrites a file in place -- a leading record refreshed, a
+    re-export replaying the same items in another order -- breaks byte
+    identity while losing nothing, so byte equality is the wrong law for a
+    whole-session carrier. The law is the normalized session contribution
+    both sides produce through the live detector, parser and admission: the
+    source proves the blob when it reproduces every stored session and no
+    stored axis is missing from it. A blob that yields no session proves
+    nothing, and containment in the other direction is a divergence.
+    """
+
+    name = "semantic-containment"
+
+    def __init__(self, carriers_by_hash: Mapping[str, tuple[RawSourceCarrier, ...]]) -> None:
+        self._carriers = dict(carriers_by_hash)
+        self._current: dict[tuple[str, str], NormalizedContribution | None] = {}
+
+    def _provider(self, carrier: RawSourceCarrier) -> Provider:
+        from polylogue.core.enums import Origin
+        from polylogue.core.sources import provider_from_origin
+
+        return provider_from_origin(Origin.from_string(carrier.origin))
+
+    def _contribution(self, path: Path, *, logical: Path, provider: Provider) -> NormalizedContribution | None:
+        from polylogue.maintenance.blob_residue_comparison import NormalizedContribution, parse_production_route
+
+        try:
+            route, _observation = parse_production_route(path, provider_hint=provider, logical_path=logical)
+            if route.error is not None or not route.sessions:
+                return None
+            return NormalizedContribution.from_sessions(route.sessions)
+        except Exception:
+            return None
+
+    def _current_contribution(self, source: Path, provider: Provider) -> NormalizedContribution | None:
+        key = (str(source), provider.value)
+        if key not in self._current:
+            self._current[key] = self._contribution(source, logical=source, provider=provider)
+        return self._current[key]
+
+    def prove(self, blob_hash: str, path: Path, size_bytes: int) -> SourceProof | None:
+        from polylogue.maintenance.blob_residue_comparison import (
+            ComparisonOutcome,
+            compare_normalized_contributions,
+        )
+
+        for carrier in self._carriers.get(blob_hash, ()):
+            source = Path(carrier.source_path)
+            if not source.is_file():
+                continue
+            provider = self._provider(carrier)
+            current = self._current_contribution(source, provider)
+            if current is None:
+                continue
+            stored = self._contribution(path, logical=source, provider=provider)
+            if stored is None:
+                continue
+            comparison = compare_normalized_contributions(stored, current)
+            if comparison.unresolved:
+                continue
+            if comparison.outcome is ComparisonOutcome.REPRODUCED_NORMALIZED:
+                mode = SourceProofMode.SEMANTIC_EQUIVALENT
+                detail = "the live source reproduces every stored normalized session axis"
+            elif comparison.outcome is ComparisonOutcome.SUPERSEDED_PREFIX:
+                mode = SourceProofMode.SEMANTIC_CONTAINED
+                detail = (
+                    f"the live source contains the stored material and extends {', '.join(comparison.extended_fields)}"
+                )
+            else:
+                continue
+            return SourceProof(
+                prover=self.name,
+                mode=mode,
+                source_id="configured-source-file",
+                source_path=str(source),
+                detail=detail,
+            )
+        return None
+
+
 @dataclass(frozen=True, slots=True)
 class BlobDispositionContext:
     """Everything a compilation needs, resolved once and reused per member."""
@@ -665,18 +984,47 @@ def raw_source_carriers_by_hash(source_db: Path) -> dict[str, tuple[RawSourceCar
     with closing(_open_ro(source_db)) as conn:
         try:
             rows = conn.execute(
-                "SELECT lower(hex(blob_hash)), source_path, append_start_offset FROM raw_sessions "
+                "SELECT lower(hex(blob_hash)), source_path, append_start_offset, origin FROM raw_sessions "
                 "WHERE blob_hash IS NOT NULL AND source_path IS NOT NULL"
             ).fetchall()
         except sqlite3.Error as exc:
             raise BlobDispositionError(f"raw_sessions is unreadable: {exc}") from exc
-    for blob_hash, source_path, offset in rows:
-        carrier = RawSourceCarrier(str(source_path), int(offset) if offset is not None else None)
+    for blob_hash, source_path, offset, origin in rows:
+        carrier = RawSourceCarrier(
+            str(source_path),
+            int(offset) if offset is not None else None,
+            None if origin is None else str(origin),
+        )
         mapping.setdefault(str(blob_hash), set()).add(carrier)
     return {
         key: tuple(sorted(value, key=lambda item: (item.source_path, item.append_start_offset or 0)))
         for key, value in mapping.items()
     }
+
+
+def hook_event_carriers_by_hash(source_db: Path) -> dict[str, tuple[str, ...]]:
+    """Map each acquired hook payload hash to the sources that emitted it."""
+    with closing(_open_ro(source_db)) as conn:
+        present = {
+            str(row[0])
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')").fetchall()
+        }
+        if "raw_hook_events" not in present:
+            return {}
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(raw_hook_events)").fetchall()}
+        if not {"blob_hash", "source_path"}.issubset(columns):
+            return {}
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT lower(hex(blob_hash)), source_path FROM raw_hook_events "
+                "WHERE blob_hash IS NOT NULL AND source_path IS NOT NULL"
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise BlobDispositionError(f"raw_hook_events is unreadable: {exc}") from exc
+    mapping: dict[str, set[str]] = {}
+    for blob_hash, source_path in rows:
+        mapping.setdefault(str(blob_hash), set()).add(str(source_path))
+    return {key: tuple(sorted(value)) for key, value in mapping.items()}
 
 
 def append_successors_by_hash(source_db: Path) -> dict[str, tuple[str, ...]]:
@@ -758,6 +1106,14 @@ def classify_blob(
             reason="no configured source holds this content and it names an ordinary spool destination",
             restoration=restoration,
         )
+    if not referenced:
+        return BlobDispositionMember(
+            blob_hash=blob_hash,
+            size_bytes=size_bytes,
+            referenced=False,
+            disposition=BlobDisposition.UNREFERENCED,
+            reason="no durable relation names this object; daemon GC owns it",
+        )
     return BlobDispositionMember(
         blob_hash=blob_hash,
         size_bytes=size_bytes,
@@ -790,16 +1146,26 @@ def build_disposition_context(
     source_db: Path,
     hook_spool_sources: Sequence[tuple[str, Path]],
     browser_capture_spool: Path,
+    export_archive_roots: Sequence[Path] = (),
 ) -> BlobDispositionContext:
-    """Resolve the prover set from configured sources, not from history."""
+    """Resolve the prover set from configured sources, not from history.
+
+    Order is cost, not authority: every prover answers the same question and
+    the first proof stands, so the ones that read a single envelope run
+    before the ones that decompress an export or reparse a whole session.
+    """
     store = BlobStore(blob_root)
     hook_prover = HookEventSpoolProver(hook_spool_sources)
     capture_prover = BrowserCaptureSpoolProver(browser_capture_spool)
+    raw_carriers = raw_source_carriers_by_hash(source_db)
     provers: tuple[BlobSourceProver, ...] = (
         hook_prover,
         capture_prover,
-        RawSourceFileProver(raw_source_carriers_by_hash(source_db)),
+        RawSourceFileProver(raw_carriers),
         AppendPrefixProver(append_successors_by_hash(source_db), blob_store=store),
+        CodexStateEvidenceProver(hook_event_carriers_by_hash(source_db)),
+        ExportArchiveMemberProver(export_archive_roots),
+        SemanticContainmentProver(raw_carriers),
     )
     return BlobDispositionContext(
         blob_store=store,
@@ -817,6 +1183,7 @@ def compile_disposition_plan(
     context: BlobDispositionContext | None = None,
     hook_spool_sources: Sequence[tuple[str, Path]] | None = None,
     browser_capture_spool: Path | None = None,
+    export_archive_roots: Sequence[Path] = (),
     progress: object | None = None,
 ) -> BlobDispositionPlan:
     """Walk the complete physical namespace and compile one immutable plan."""
@@ -829,14 +1196,15 @@ def compile_disposition_plan(
             source_db=source_db,
             hook_spool_sources=hook_spool_sources,
             browser_capture_spool=browser_capture_spool,
+            export_archive_roots=export_archive_roots,
         )
     members: list[BlobDispositionMember] = []
-    invalid: list[str] = []
+    invalid: list[InvalidNamespaceEntry] = []
     seen: set[str] = set()
     file_count = 0
     for entry in context.blob_store.iter_namespace():
         if entry.kind is not BlobNamespaceEntryKind.BLOB:
-            invalid.append(f"{entry.relative_path}: {entry.issue.value if entry.issue else 'unclassified'}")
+            invalid.append(explain_invalid_namespace_entry(entry, blob_store=context.blob_store))
             continue
         file_count += 1
         assert entry.hash_hex is not None
@@ -854,7 +1222,7 @@ def compile_disposition_plan(
         referenced_hash_count=len(context.referenced_hashes),
         referenced_present_count=len(context.referenced_hashes & present),
         referenced_absent_count=len(context.referenced_hashes - present),
-        invalid_namespace_entries=tuple(sorted(invalid)),
+        invalid_namespace_entries=tuple(sorted(invalid, key=lambda entry: entry.relative_path)),
     )
     return BlobDispositionPlan(
         tool_version=TOOL_VERSION,
@@ -878,17 +1246,24 @@ __all__ = [
     "BlobRestorationResolver",
     "BlobSourceProver",
     "BrowserCaptureSpoolProver",
+    "CodexStateEvidenceProver",
+    "ExportArchiveMemberProver",
+    "InvalidNamespaceEntry",
     "HookEventSpoolProver",
     "RawSourceCarrier",
     "RawSourceFileProver",
     "RestorationDestination",
     "RestorationTarget",
+    "SemanticContainmentProver",
     "SourceProof",
     "SourceProofMode",
     "append_successors_by_hash",
     "build_disposition_context",
     "classify_blob",
+    "codex_state_logical_export_hashes",
     "compile_disposition_plan",
+    "explain_invalid_namespace_entry",
+    "hook_event_carriers_by_hash",
     "raw_source_carriers_by_hash",
     "resolve_disposition_roots",
     "referenced_blob_hashes",

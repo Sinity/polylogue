@@ -239,7 +239,7 @@ def test_import_fidelity_declares_exact_for_populated_capabilities(tmp_path: Pat
     sessions = hermes_verification.parse_verification_evidence_db(path)
     fidelity = hermes_verification.import_fidelity_declaration(sessions)
 
-    assert fidelity.acquisition_method == "sqlite_backup"
+    assert fidelity.acquisition_method == "logical_export"
     assert fidelity.retained_blob_reproducibility.status == "exact"
     assert fidelity.capabilities["command_evidence"].status == "exact"
     assert fidelity.capabilities["outcome_evidence"].status == "exact"

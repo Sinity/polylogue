@@ -798,7 +798,8 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
     next_attempt_at: new Date(Date.now() + retryDelayForAttempt(0)).toISOString(),
     last_error: String(error?.message || error || "unknown"),
   };
-  if (byteLength(entry) > CAPTURE_QUEUE_MAX_BYTES) {
+  const entryByteSize = byteLength(entry);
+  if (entryByteSize > CAPTURE_QUEUE_MAX_BYTES) {
     // A single envelope over budget can never fit; queueing it would only
     // evict every other pending retry to make room for one that still won't
     // fit. Surface it as an immediate drop instead.
@@ -807,6 +808,9 @@ async function enqueueCaptureForRetry({ envelope, reason, error, tab = null }) {
     await appendCaptureLog({
       ok: false,
       reason: "capture_queue_entry_over_budget",
+      provider: envelope?.session?.provider || null,
+      provider_session_id: envelope?.session?.provider_session_id || null,
+      byte_size: entryByteSize,
       error: entry.last_error,
     });
     return { queue: await getCaptureQueue(), accepted: false, evicted: [entry] };

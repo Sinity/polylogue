@@ -12,6 +12,11 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
 
+def _declared_profile(name: str) -> connection_profile.SQLiteConnectionProfile:
+    """Resolve a named class the way a production caller does: read, then write."""
+    return connection_profile.READ_PROFILES.get(name) or connection_profile.WRITE_PROFILES[name]
+
+
 def test_declared_read_profiles_are_query_only() -> None:
     assert set(connection_profile.TIMEOUT_CLASSES) == {
         "interactive-read",
@@ -85,7 +90,8 @@ def test_open_readonly_connection_rejects_immutable_with_descriptor(tmp_path: Pa
     ("profile_name", "expected_busy_timeout_ms", "expected_query_only"),
     [
         ("background-read", connection_profile.DB_TIMEOUT * 1000, 1),
-        ("offline-bulk", connection_profile.DB_TIMEOUT * 1000, 0),
+        ("interactive-read", connection_profile.READ_DB_TIMEOUT * 1000, 1),
+        ("publication", connection_profile.DB_TIMEOUT * 1000, 0),
     ],
 )
 def test_open_profiled_connection_applies_the_selected_profile(
@@ -100,13 +106,13 @@ def test_open_profiled_connection_applies_the_selected_profile(
 
     connection = connection_profile.open_profiled_connection(
         db_path,
-        profile=connection_profile.TIMEOUT_PROFILES[profile_name],
+        profile=_declared_profile(profile_name),
     )
     try:
         assert connection.execute("PRAGMA busy_timeout").fetchone() == (expected_busy_timeout_ms,)
         assert connection.execute("PRAGMA query_only").fetchone() == (expected_query_only,)
-        if profile_name == "offline-bulk":
-            assert connection.execute("PRAGMA journal_mode").fetchone() == ("memory",)
+        if profile_name == "publication":
+            assert connection.execute("PRAGMA journal_mode").fetchone() == ("wal",)
         else:
             with pytest.raises(sqlite3.OperationalError, match="attempt to write a readonly database"):
                 connection.execute("INSERT INTO evidence VALUES ('blocked')")

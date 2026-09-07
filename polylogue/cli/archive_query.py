@@ -34,6 +34,7 @@ from polylogue.archive.query.metadata import query_unit_descriptor
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryLineagePredicate, QueryPredicate
 from polylogue.archive.query.search_hits import bound_display_text
 from polylogue.archive.query.spec import (
+    DEFAULT_SESSION_LIST_LIMIT,
     QuerySpecError,
     SessionQuerySpec,
     session_count_unit_label,
@@ -238,12 +239,19 @@ def _execute_reference_query_pipeline(
     user_db_path = archive_root / "user.db"
     if not user_db_path.exists() or not index_db_path.exists():
         raise click.ClickException("archive is not initialized")
-    import sqlite3
     from contextlib import closing
+
+    from polylogue.api.archive import open_readonly_connection
 
     evaluator = ArchiveCanonicalPlanEvaluator(index_db_path)
     try:
-        with closing(sqlite3.connect(f"file:{user_db_path}?mode=ro", uri=True, timeout=5.0)) as conn:
+        with closing(
+            open_readonly_connection(
+                user_db_path,
+                timeout_class="interactive-read",
+                validate_schema=False,
+            )
+        ) as conn:
             resolved = resolve_ref_operand(pipeline.operand, DurableRefResolver(conn, evaluator))
     except KeyError as exc:
         raise click.UsageError(f"reference not found: {pipeline.operand.reference.format()}") from exc
@@ -1838,7 +1846,7 @@ def _limit(params: dict[str, object]) -> int:
     value = params.get("limit")
     if isinstance(value, int) and value > 0:
         return value
-    return 20
+    return DEFAULT_SESSION_LIST_LIMIT
 
 
 def _offset(params: dict[str, object]) -> int:

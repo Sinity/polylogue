@@ -21,6 +21,7 @@ from typing import Any
 from urllib.parse import quote
 
 from polylogue.archive.query.execution_control import classify_unit_expression_workload
+from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
 from polylogue.archive.query.unit_results import query_unit_envelope, query_unit_request
 from polylogue.logging import get_logger
@@ -285,7 +286,9 @@ def render_archive_overview_page(
 """
 
 
-SESSION_LIST_LIMIT = 20
+# Compatibility alias for callers that imported the daemon constant before
+# session-list defaults moved to the shared query specification.
+SESSION_LIST_LIMIT = DEFAULT_SESSION_LIST_LIMIT
 SESSION_READ_MESSAGE_LIMIT = 30
 
 
@@ -305,9 +308,9 @@ def render_session_list_page(
     items = page.get("items") if page is not None else None
     rows = items if isinstance(items, list) else []
     total = page.get("total") if page is not None else None
-    limit = page.get("limit") if isinstance(page, Mapping) else SESSION_LIST_LIMIT
+    limit = page.get("limit") if isinstance(page, Mapping) else DEFAULT_SESSION_LIST_LIMIT
     offset = page.get("offset") if isinstance(page, Mapping) else 0
-    limit_int = limit if isinstance(limit, int) else SESSION_LIST_LIMIT
+    limit_int = limit if isinstance(limit, int) else DEFAULT_SESSION_LIST_LIMIT
     offset_int = offset if isinstance(offset, int) else 0
     has_more = isinstance(total, int) and offset_int + len(rows) < total
     rendered_rows = (

@@ -790,7 +790,7 @@ class DatabaseMemberRule:
 class DatabaseSourceCapability:
     """Declared acquisition contract for an origin backed by SQLite files."""
 
-    snapshot_method: Literal["sqlite_backup"]
+    snapshot_method: Literal["logical_export"]
     consistency_fence: str
     revision_identity: str
     raw_id_strategy: str
@@ -1231,6 +1231,22 @@ def _claude_code_spec() -> OriginSpec:
             "index. forkedFrom ({sessionId, messageUuid}, 10,561 records across 9 forked sessions) resolves "
             "to the session's parent edge and rides claude_forked_from with its branch point; it is adopted "
             "only when no identity-anchored route already resolved a parent.",
+            "polylogue-sd7n1 (full-corpus census 2026-09-07, 14,684 session files): the capability-attribution "
+            "cluster -- attributionAgent (517,881), attributionSkill (50,586), attributionMcpServer and "
+            "attributionMcpTool (7,683 each, never one without the other), attributionPlugin (5,430) -- is "
+            "always a top-level string on an assistant record and occurs on no other record type. All five "
+            "ride claude_capability_attribution, one event per record carrying any of them, keyed to the "
+            "message uuid. Read off the record rather than inside the usage-gated message_usage payload so "
+            "an assistant turn with no message.usage keeps its attribution, and emitted before the "
+            "empty-content drop so an API-error row still names the capability that produced the attempt. "
+            "Plugin is not redundant with skill: a plugin-shipped skill carries the plugin prefix in its own "
+            "value (superpowers:brainstorming) but feature-dev stamps the plugin on 541 records with no "
+            "skill at all. attributionAgent is read here on the session route rather than left to "
+            "orchestration.py's Workflow agent-*.meta.json allowlist: it occurs only in subagent "
+            "(agent-*.jsonl) transcripts, and a transcript that replays a parent's prefix carries the "
+            "parent's agent on the contiguous replayed head and its own on the divergent tail (every "
+            "multi-valued file in a 300-file walk, e.g. 8 triage turns then 52 fork turns), so a "
+            "session-level projection would erase the split.",
             "claude/index.py's _GIT_BRANCH_PREFIXES (title-fallback heuristic: "
             "does a bare index-summary string look like a branch name rather "
             "than a title) is also not a DroppedValueVocabulary candidate: it "
@@ -1445,6 +1461,49 @@ def database_capability_for_provider(provider: Provider) -> DatabaseSourceCapabi
     return None
 
 
+@dataclass(frozen=True, slots=True)
+class DatabaseMemberBinding:
+    """One declared database member together with the origin that declares it."""
+
+    origin: Origin
+    provider: Provider
+    member: DatabaseMemberRule
+
+
+def database_member_for_filename(filename: str) -> DatabaseMemberBinding | None:
+    """Return the declared member rule owning a database basename.
+
+    Acquisition needs the declared logical product for a file it holds only a
+    path to, so the lookup is by basename across every DB-shaped origin. A
+    basename claimed by two origins is a declaration defect, reported by
+    :func:`validate_database_member_filenames` rather than resolved here.
+    """
+    for spec in ORIGIN_SPECS:
+        capability = spec.database_capability
+        if capability is None:
+            continue
+        member = capability.member(filename)
+        if member is not None:
+            return DatabaseMemberBinding(
+                origin=spec.origin,
+                provider=spec.provider_wires[0],
+                member=member,
+            )
+    return None
+
+
+def validate_database_member_filenames() -> tuple[str, ...]:
+    """Return every database basename declared by more than one origin."""
+    seen: dict[str, list[str]] = {}
+    for spec in ORIGIN_SPECS:
+        capability = spec.database_capability
+        if capability is None:
+            continue
+        for member in capability.members:
+            seen.setdefault(member.filename, []).append(spec.origin.value)
+    return tuple(sorted(filename for filename, origins in seen.items() if len(origins) > 1))
+
+
 def _chatgpt_spec() -> OriginSpec:
     origin = Origin.CHATGPT_EXPORT
     spec = OriginSpec(
@@ -1475,7 +1534,14 @@ def _chatgpt_spec() -> OriginSpec:
         spec,
         topology_capabilities=TopologyCapabilities(
             message_parent=TopologyCapability("carried", ("chatgpt.mapping.parent",)),
-            message_branch_state=TopologyCapability("carried", ("chatgpt.mapping.children",)),
+            message_branch_state=TopologyCapability(
+                "carried",
+                # ``children`` states sibling order where the export ships
+                # it; the reduced export shape ships none, and the ordinal
+                # among the siblings naming the same ``parent`` carries the
+                # same sequence.
+                ("chatgpt.mapping.children", "chatgpt.mapping.parent"),
+            ),
             session_parent_target=_absent_topology("ChatGPT exports carry no session-parent target"),
             inheritance_branch_point=_absent_topology(
                 "ChatGPT mapping ancestry is intra-session message topology, not cross-session inheritance"
@@ -1662,9 +1728,11 @@ def _codex_spec() -> OriginSpec:
             }
         ),
         database_capability=DatabaseSourceCapability(
-            snapshot_method="sqlite_backup",
-            consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
-            revision_identity="sha256 over declared schema objects and typed logical rows (sqlite_logical_revision)",
+            snapshot_method="logical_export",
+            consistency_fence="one SQLite read transaction over a mode=ro URI",
+            revision_identity=(
+                "sha256 over the canonical logical export of the member's declared tables (sqlite_logical_revision)"
+            ),
             raw_id_strategy="codex state raw-id domain + absolute source path + logical revision",
             members=(
                 DatabaseMemberRule(
@@ -1673,7 +1741,7 @@ def _codex_spec() -> OriginSpec:
                     "thread_state",
                     "threads and spawn edges are unique state evidence",
                     logical_tables=("threads", "thread_spawn_edges"),
-                    consumer="polylogue/sources/codex_state_evidence.py:write_codex_thread_state_evidence",
+                    consumer="polylogue/sources/codex_state_projection.py:apply_retained_state_export",
                 ),
                 DatabaseMemberRule(
                     "goals_1.sqlite",
@@ -1693,9 +1761,23 @@ def _codex_spec() -> OriginSpec:
                 DatabaseMemberRule(
                     "codex-dev.db", "out-of-scope", "automation", "automation scheduling is not session evidence"
                 ),
+                DatabaseMemberRule(
+                    "thread_history_1.sqlite",
+                    "out-of-scope",
+                    "thread_history",
+                    "a measured projection of the rollout JSONL the archive already acquires",
+                ),
+                DatabaseMemberRule(
+                    "queue_1.sqlite",
+                    "out-of-scope",
+                    "queue",
+                    "input queued for submission, not evidence of a session that happened",
+                ),
             ),
             full_snapshot_per_revision=True,
-            snapshot_lineage_policy="one snapshot blob per logical revision; supersession and dedup receipts govern lineage retention",
+            snapshot_lineage_policy=(
+                "one export blob per logical revision; supersession and dedup receipts govern lineage retention"
+            ),
         ),
     )
     carried = TopologyCapability("carried", ("codex_state.thread.parent_thread_id",))
@@ -1785,9 +1867,11 @@ def _hermes_spec() -> OriginSpec:
             }
         ),
         database_capability=DatabaseSourceCapability(
-            snapshot_method="sqlite_backup",
-            consistency_fence="sqlite3.Connection.backup over a mode=ro URI",
-            revision_identity="sha256 over declared schema objects and typed logical rows (sqlite_logical_revision)",
+            snapshot_method="logical_export",
+            consistency_fence="one SQLite read transaction over a mode=ro URI",
+            revision_identity=(
+                "sha256 over the canonical logical export of the member's declared tables (sqlite_logical_revision)"
+            ),
             raw_id_strategy="Hermes profile raw-id domain + profile path + member filename + source index + logical revision",
             members=(
                 DatabaseMemberRule(
@@ -1808,7 +1892,9 @@ def _hermes_spec() -> OriginSpec:
                 ),
             ),
             full_snapshot_per_revision=True,
-            snapshot_lineage_policy="one snapshot blob per logical revision; supersession and dedup receipts govern lineage retention",
+            snapshot_lineage_policy=(
+                "one export blob per logical revision; supersession and dedup receipts govern lineage retention"
+            ),
         ),
     )
     carried = TopologyCapability(
@@ -2853,7 +2939,10 @@ __all__ = [
     "check_dropped_value_vocabularies",
     "origin_specs",
     "tool_outcome_unknown_reasons_for_origin",
+    "DatabaseMemberBinding",
     "database_capability_for_provider",
+    "database_member_for_filename",
+    "validate_database_member_filenames",
     "topology_capability_census",
     "public_origin_descriptions",
     "public_origin_meanings",

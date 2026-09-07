@@ -23,6 +23,7 @@ __all__ = [
     "REPORT_PLUGIN_ARGS",
     "STREAM_REPORT_PLUGIN_NAME",
     "TESTMON_RETENTION_PLUGIN_NAME",
+    "SUITE_COST_PLUGIN_NAME",
 ]
 
 #: Neutralize any addopts configured in pyproject so the invocation is closed.
@@ -49,6 +50,10 @@ DEVTOOLS_PLUGIN_ARGS: Final[tuple[str, ...]] = tuple(
 #: A run that needs the report but none of the session-wide ledgers: the rerun
 #: of failed tests writes its own report beside the step it adjudicates.
 REPORT_PLUGIN_ARGS: Final[tuple[str, ...]] = ("-p", STREAM_REPORT_PLUGIN_NAME)
+
+#: Archive-construction and write-cost receipt. Collects nothing and hooks no
+#: collection stage; it is inert unless ``POLYLOGUE_SUITE_COST_DIR`` is set.
+SUITE_COST_PLUGIN_NAME: Final = "devtools.pytest_suite_cost_plugin"
 
 #: Plugins loaded explicitly, because autoload is disabled for reproducibility.
 #: Adding or removing one changes which hooks run during collection.

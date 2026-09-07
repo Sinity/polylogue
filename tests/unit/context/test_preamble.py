@@ -86,7 +86,7 @@ class TestBuildContextPreambleGitEnrichment:
 
         poly = MagicMock()
         poly.get_session = AsyncMock(return_value=None)
-        poly.get_session_topology = AsyncMock(return_value=None)
+        poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
 
@@ -112,7 +112,7 @@ class TestBuildContextPreambleGitEnrichment:
         session = MagicMock(git_repository_url="https://example.invalid/repo", git_branch="main-stale")
         poly = MagicMock()
         poly.get_session = AsyncMock(return_value=session)
-        poly.get_session_topology = AsyncMock(return_value=None)
+        poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
 
@@ -132,7 +132,7 @@ class TestBuildContextPreambleGitEnrichment:
         session = MagicMock(git_repository_url="https://example.invalid/repo", git_branch="recorded-branch")
         poly = MagicMock()
         poly.get_session = AsyncMock(return_value=session)
-        poly.get_session_topology = AsyncMock(return_value=None)
+        poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
 
@@ -174,7 +174,7 @@ class TestBuildContextPreambleGitEnrichment:
         poly.config.archive_root.mkdir()
         initialize_archive_database(poly.config.archive_root / "ops.db", ArchiveTier.OPS)
         poly.get_session = AsyncMock(return_value=session)
-        poly.get_session_topology = AsyncMock(return_value=None)
+        poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
 

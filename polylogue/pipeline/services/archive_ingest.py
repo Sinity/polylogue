@@ -49,7 +49,6 @@ from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError, deterministic_raw_session_id
 from polylogue.storage.sqlite.maintenance import maybe_optimize_archive_tiers
-from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_archive_wals
 
 logger = get_logger(__name__)
 
@@ -644,24 +643,18 @@ def _record_post_commit_upkeep(archive_root: Path, result: ParseResult, *, reaso
     """Run bounded archive-tier upkeep after a direct archive ingest commit.
 
     Direct re-ingest writes through ``ArchiveStore`` instead of the daemon's
-    ingest-batch core.  The upkeep still belongs on the ingest path: WAL
-    checkpointing and planner statistics are rebuildable archive invariants, not
-    operator maintenance chores that only happen when the daemon has been up for
-    a full periodic cycle.
+    ingest-batch core, so planner statistics still need refreshing here. WAL
+    checkpointing does not belong on this path: the daemon's recurring
+    coordinator is the only ordinary checkpoint owner, and where no daemon is
+    running the writer's own bounded ``wal_autocheckpoint`` caps the WAL.
     """
 
-    wal_observations = maybe_checkpoint_archive_wals(archive_root, reason=reason, allow_truncate=False)
     optimize_observations = maybe_optimize_archive_tiers(archive_root, reason=reason)
     result.batch_observations.append(
         {
             "archive_post_commit_upkeep": True,
             "reason": reason,
             "archive_root": str(archive_root),
-            "wal_checkpoint_modes": [observation.mode for observation in wal_observations if observation.ran],
-            "wal_checkpoint_errors": [observation.error for observation in wal_observations if observation.error],
-            "wal_checkpoint_blocked_count": sum(
-                1 for observation in wal_observations if observation.busy_pages > 0 or observation.blocking_processes
-            ),
             "sqlite_optimize_ran": sum(1 for observation in optimize_observations if observation.ran),
             "sqlite_optimize_errors": [observation.error for observation in optimize_observations if observation.error],
         }

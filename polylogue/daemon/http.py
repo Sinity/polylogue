@@ -2228,9 +2228,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_webui_html(HTTPStatus.OK, render_archive_overview_page(bundle, page))
 
     def _serve_webui_session_list(self, params: dict[str, list[str]]) -> None:
-        from polylogue.archive.query.spec import QuerySpecError, clamp_query_limit
+        from polylogue.archive.query.spec import (
+            DEFAULT_SESSION_LIST_LIMIT,
+            QuerySpecError,
+            clamp_query_limit,
+        )
         from polylogue.daemon.webui import (
-            SESSION_LIST_LIMIT,
             WebUIAssetBundle,
             WebUIAssetError,
             render_session_list_page,
@@ -2259,7 +2262,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             self._send_webui_html(HTTPStatus.SERVICE_UNAVAILABLE, body)
             return
-        limit = clamp_query_limit(self._get_int(params, "limit", SESSION_LIST_LIMIT), default=SESSION_LIST_LIMIT)
+        limit = clamp_query_limit(
+            self._get_int(params, "limit", DEFAULT_SESSION_LIST_LIMIT),
+            default=DEFAULT_SESSION_LIST_LIMIT,
+        )
         offset = max(0, self._get_int(params, "offset", 0))
         try:
             page = self._do_archive_session_list(archive_root, params, limit, offset, "/sessions")
@@ -3000,14 +3006,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_list_sessions(self, params: dict[str, list[str]]) -> None:
-        from polylogue.archive.query.spec import clamp_query_limit
+        from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT, clamp_query_limit
 
         query_params = _build_query_spec_params(params, self)
         route = _public_route_from_request_path(self.path)
         # Clamp to the shared MAX_QUERY_LIMIT ceiling so the daemon honors the
         # same page-size cap as MCP instead of an arbitrary ?limit=99999999
-        # (#1749). The default stays 50; clamp_query_limit only caps the top.
-        limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
+        # (#1749).
+        limit = clamp_query_limit(
+            self._get_int(params, "limit", DEFAULT_SESSION_LIST_LIMIT),
+            default=DEFAULT_SESSION_LIST_LIMIT,
+        )
         offset = max(0, self._get_int(params, "offset", 0))
         cursor_values = params.get("cursor") or []
         cursor = cursor_values[0] if cursor_values else None
@@ -4692,6 +4701,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return {"session_id": conv_id, "messages": messages}
 
             payload = self._sync_run(_get_effective)
+        elif view == "lineage":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get_lineage(poly: Polylogue) -> object | None:
+                from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
+
+                graph = await poly.compact_lineage(
+                    conv_id,
+                    node_offset=max(0, self._get_int(params, "node_offset", 0)),
+                    node_limit=self._get_int(params, "node_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                    edge_offset=max(0, self._get_int(params, "edge_offset", 0)),
+                    edge_limit=self._get_int(params, "edge_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                )
+                return None if graph is None else graph.model_dump(mode="json")
+
+            payload = self._sync_run(_get_lineage)
         else:
 
             async def _get(poly: Polylogue) -> object | None:
