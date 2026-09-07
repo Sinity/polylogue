@@ -1663,21 +1663,25 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 admission_class="control" if mutating else "interactive-read",
                 cancellation=cancellation,
             )
-            if mutating:
-                # A mutation may not use the read contract, which deliberately
-                # leaves timed-out work running: its route-level writer lease
-                # must stay held until the substrate call finishes. The control
-                # class reserves capacity precisely so this wait is bounded by
-                # the mutation itself rather than by read pressure.
-                return submitted.future.result()
             try:
-                return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-            except FutureTimeoutError as exc:
-                cancellation.cancel()
-                raise TimeoutError(
-                    f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                    "the daemon may be busy with catch-up ingestion/embedding"
-                ) from exc
+                if mutating:
+                    # A mutation may not use the read contract, which
+                    # deliberately leaves timed-out work running: its
+                    # route-level writer lease must stay held until the
+                    # substrate call finishes. The control class reserves
+                    # capacity precisely so this wait is bounded by the
+                    # mutation itself rather than by read pressure.
+                    return submitted.future.result()
+                try:
+                    return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
+                except FutureTimeoutError as exc:
+                    cancellation.cancel()
+                    raise TimeoutError(
+                        f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                        "the daemon may be busy with catch-up ingestion/embedding"
+                    ) from exc
+            finally:
+                self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
 
         # Narrow in-process handler doubles construct no kernel. They have no
         # concurrency to schedule, so the work runs on this thread.
@@ -5122,6 +5126,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             params["query"] = [expression]
         self._handle_list_sessions(params)
 
+    def _operation_timing(self, started: float) -> dict[str, object]:
+        """Measured envelope timing; ``queue_ms`` is the scheduler's own wait."""
+
+        return {
+            "elapsed_ms": int((monotonic() - started) * 1000),
+            "queue_ms": getattr(self, "_last_queue_delay_ms", 0),
+        }
+
     @daemon_safe_handler
     def _handle_daemon_operation(self) -> None:
         """Execute one archive-scoped operation and return one typed envelope.
@@ -5141,6 +5153,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.version import POLYLOGUE_VERSION
 
+        operation_started = monotonic()
+        self._last_queue_delay_ms = 0
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -5339,7 +5353,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 progress={"state": "failed"},
                 outcome="failed",
                 served_by={"daemon_version": POLYLOGUE_VERSION},
-                timing={"elapsed_ms": 0, "queue_ms": 0},
+                timing=self._operation_timing(operation_started),
                 schema_versions={"index": INDEX_SCHEMA_VERSION},
                 error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
                 request_id=request.request_id,
@@ -5360,7 +5374,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             progress={"state": "complete"},
             outcome="complete",
             served_by={"daemon_version": POLYLOGUE_VERSION},
-            timing={"elapsed_ms": 0, "queue_ms": 0},
+            timing=self._operation_timing(operation_started),
             schema_versions={"index": INDEX_SCHEMA_VERSION},
             result=result,
             request_id=request.request_id,

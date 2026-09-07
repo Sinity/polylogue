@@ -247,6 +247,13 @@ def current_cancellation() -> CancellationHandle | None:
 class SubmittedOperation:
     future: Future[object]
     cancellation: CancellationHandle
+    _task: _Task | None = None
+
+    @property
+    def queue_delay_s(self) -> float:
+        """Admission-to-dispatch wait for this unit; zero while still queued."""
+
+        return 0.0 if self._task is None else self._task.queue_delay_s
 
 
 class _ClassState:
@@ -289,6 +296,7 @@ class _Task:
         "cancellation",
         "function",
         "future",
+        "queue_delay_s",
         "queued_at",
         "slots",
         "state",
@@ -314,6 +322,7 @@ class _Task:
         self.bytes = estimated_bytes
         self.slots = slots
         self.queued_at = monotonic()
+        self.queue_delay_s = 0.0
         self.state = "admitted"
 
 
@@ -448,7 +457,7 @@ class BoundedComputeAdapter:
 
         handle.add_listener(lambda: self._cancel_before_start(task))
         self._run_task(runnable)
-        return SubmittedOperation(future=future, cancellation=handle)
+        return SubmittedOperation(future=future, cancellation=handle, _task=task)
 
     # -- dispatch -------------------------------------------------------
 
@@ -472,13 +481,14 @@ class BoundedComputeAdapter:
                 continue
             queue.popleft()
             task.state = "running"
+            task.queue_delay_s = monotonic() - task.queued_at
             self._active_units += task.units
             self._active_bytes += task.bytes
             self._active_slots += task.slots
             state.active_units += task.units
             state.active_slots += task.slots
             state.dispatched += 1
-            state.max_wait_s = max(state.max_wait_s, monotonic() - task.queued_at)
+            state.max_wait_s = max(state.max_wait_s, task.queue_delay_s)
             return task
         return None
 
