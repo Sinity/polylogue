@@ -14,7 +14,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.archive.query.expression import parse_unit_source_expression
 from polylogue.core.enums import ActionResultState, BlockType, Origin, Provider
-from polylogue.core.errors import SchemaSkew
+from polylogue.core.errors import SchemaRefusalError, SchemaSkewError, SchemaVersionMismatchError
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.scenarios.workload import (
     BudgetVerdict,
@@ -69,15 +69,16 @@ def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_
     with sqlite3.connect(index_path) as conn:
         conn.execute(f"PRAGMA user_version = {INDEX_SCHEMA_VERSION - 1}")
 
-    with pytest.raises(SchemaSkew) as exc_info:
+    with pytest.raises(SchemaRefusalError) as exc_info:
         ArchiveStore.open_existing(tmp_path, index_path=index_path)
 
     refusal = exc_info.value
-    assert refusal.tier == "index"
-    assert refusal.found == INDEX_SCHEMA_VERSION - 1
-    assert refusal.expected == INDEX_SCHEMA_VERSION
-    assert refusal.remedy == "rebuild or migrate the tier with the current runtime before retrying"
-    assert "index schema skew" in str(refusal)
+    assert isinstance(refusal, SchemaVersionMismatchError)
+    assert refusal.current_version == INDEX_SCHEMA_VERSION - 1
+    assert refusal.expected_version == INDEX_SCHEMA_VERSION
+    assert refusal.generation_id == "gen-stale-read"
+    assert refusal.lifecycle_action == "rebuild_index"
+    assert "schema version" in str(refusal)
 
 
 def test_read_open_rejects_stale_index_identity(tmp_path: Path) -> None:
@@ -88,8 +89,9 @@ def test_read_open_rejects_stale_index_identity(tmp_path: Path) -> None:
     with sqlite3.connect(tmp_path / "index.db") as connection:
         connection.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = 'index'")
 
-    with pytest.raises(SchemaSkew, match="stale derived tier"):
+    with pytest.raises(SchemaRefusalError, match="stale derived tier") as exc_info:
         ArchiveStore.open_existing(tmp_path, read_only=True)
+    assert isinstance(exc_info.value, SchemaSkewError)
 
 
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(

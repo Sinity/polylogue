@@ -24,7 +24,7 @@ from typing import Literal
 
 import aiosqlite
 
-from polylogue.core.errors import SchemaSkewError
+from polylogue.core.errors import SchemaRefusalError, SchemaSkewError
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL, INDEX_SCHEMA_VERSION
 
 SCHEMA_DDL = INDEX_DDL
@@ -235,6 +235,7 @@ __all__ = [
     "SCHEMA_DDL",
     "SCHEMA_VERSION",
     "SchemaSkew",
+    "SchemaRefusalError",
     "SchemaSkewError",
     "SchemaBootstrapDecision",
     "SchemaSnapshot",
