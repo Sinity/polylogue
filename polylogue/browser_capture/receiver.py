@@ -328,6 +328,19 @@ def _timestamp_ms(value: object) -> int | None:
     return int(parsed.timestamp() * 1000) if parsed is not None else None
 
 
+def _session_update_evidence_ms(envelope: BrowserCaptureEnvelope) -> int | None:
+    """Return a session update timestamp only when it is independent evidence.
+
+    Adapters without a provider-side update time fill ``session.updated_at``
+    from ``provenance.captured_at``.  That fallback describes when the page was
+    observed, not when the session changed, so it must not participate in the
+    session-timestamp ordering below.
+    """
+    updated_at = _timestamp_ms(envelope.session.updated_at)
+    captured_at = _timestamp_ms(envelope.provenance.captured_at)
+    return None if updated_at is not None and updated_at == captured_at else updated_at
+
+
 def _open_readonly_sqlite(path: Path) -> sqlite3.Connection | None:
     if not path.exists():
         return None
@@ -604,20 +617,28 @@ def _check_spool_quota(
 
 def _capture_is_newer_or_richer(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
     """Prevent a stale, smaller snapshot from replacing a richer spool item."""
-    incoming_updated = _timestamp_ms(incoming.session.updated_at)
-    existing_updated = _timestamp_ms(existing.session.updated_at)
+    incoming_updated = _session_update_evidence_ms(incoming)
+    existing_updated = _session_update_evidence_ms(existing)
     incoming_captured = _timestamp_ms(incoming.provenance.captured_at)
     existing_captured = _timestamp_ms(existing.provenance.captured_at)
     incoming_turns = len(incoming.session.turns)
     existing_turns = len(existing.session.turns)
-    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
-        return False
     if existing_captured is not None and incoming_captured is not None and incoming_captured < existing_captured:
         return False
     if incoming_turns < existing_turns:
         return False
+    # A later observation with more turns is directly richer evidence.  A
+    # provider's update timestamp can lag that observation, so it must not
+    # veto the turn-count improvement.
+    if incoming_turns > existing_turns:
+        return True
+    if existing_updated is not None and incoming_updated is not None and incoming_updated < existing_updated:
+        return False
+    # An absent update timestamp is unknown, not a change from an existing
+    # provider timestamp.  Only compare that field when the incoming capture
+    # carries independent session-side evidence.
     return (
-        incoming_updated != existing_updated
+        (incoming_updated is not None and incoming_updated != existing_updated)
         or incoming_captured != existing_captured
         or incoming_turns != existing_turns
     )
