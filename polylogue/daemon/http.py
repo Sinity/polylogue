@@ -12,7 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
 from dataclasses import replace as dataclasses_replace
@@ -464,34 +464,36 @@ def _authenticated_post_routes() -> tuple[_StaticPostRoute, ...]:
             "_handle_mcp_call_log",
         ),
         _StaticPostRoute("/api/reset", ("api", "reset"), "_handle_reset"),
-        _StaticPostRoute(
-            "/api/cli/delete/prepare",
-            ("api", "cli", "delete", "prepare"),
-            "_handle_cli_delete_prepare",
-        ),
-        _StaticPostRoute(
-            "/api/cli/delete/authorize",
-            ("api", "cli", "delete", "authorize"),
-            "_handle_cli_delete_authorize",
-        ),
-        _StaticPostRoute(
-            "/api/cli/delete/cancel",
-            ("api", "cli", "delete", "cancel"),
-            "_handle_cli_delete_cancel",
-        ),
-        _StaticPostRoute("/api/cli/delete", ("api", "cli", "delete"), "_handle_cli_delete"),
         _StaticPostRoute("/api/ingest", ("api", "ingest"), "_handle_ingest"),
         _StaticPostRoute("/api/demo/augment", ("api", "demo", "augment"), "_handle_demo_augment"),
     )
 
 
 def _cli_read_post_routes() -> tuple[_StaticPostRoute, ...]:
-    """Read-only POST routes whose request bodies carry CLI parameter maps."""
+    """POST routes whose request bodies carry CLI parameter maps.
+
+    ``/api/operation`` also carries write and control operations; those are
+    re-checked against the machine-client credential inside the handler once
+    the declared authority of the requested operation is known.
+    """
 
     return (
         _StaticPostRoute("/api/cli/query", ("api", "cli", "query"), "_handle_cli_query"),
         _StaticPostRoute("/api/operation", ("api", "operation"), "_handle_daemon_operation"),
     )
+
+
+# Mutation/control operations name the handler that owns their semantics. The
+# operation envelope is the only transport: there is no per-command HTTP path
+# that reaches these.
+_MUTATION_OPERATION_HANDLERS: dict[str, str] = {
+    "mutation.session.delete.preview": "_handle_cli_delete_prepare",
+    "mutation.session.delete.authorize": "_handle_cli_delete_authorize",
+    "mutation.session.delete.cancel": "_handle_cli_delete_cancel",
+    "mutation.session.delete.execute": "_handle_cli_delete",
+    "mutation.session.tag": "_handle_cli_session_tag",
+    "mutation.session.metadata": "_handle_cli_session_metadata",
+}
 
 
 def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
@@ -1400,8 +1402,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
         return False
 
-    def _cli_delete_principal(self) -> MutationPrincipal:
-        """Derive, never accept, the audit principal for a CLI delete request."""
+    def _cli_mutation_principal(self, capability: str) -> MutationPrincipal:
+        """Derive, never accept, the audit principal for a CLI mutation request."""
 
         from polylogue.operations.mutation_transaction import MutationPrincipal
 
@@ -1416,10 +1418,13 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             raise RuntimeError("authenticated CLI mutation request has no bearer principal")
         return MutationPrincipal(
             actor_ref=actor_ref,
-            capabilities=frozenset({"archive.delete_session"}),
+            capabilities=frozenset({capability}),
             surface="cli",
             role_label=role_label,
         )
+
+    def _cli_delete_principal(self) -> MutationPrincipal:
+        return self._cli_mutation_principal("archive.delete_session")
 
     def _check_host_admission(self, *, credential_request: bool = False) -> bool:
         """Reject requests whose Host header does not name this daemon.
@@ -5165,10 +5170,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         """
         from polylogue.config import load_polylogue_config
         from polylogue.operations.daemon_protocol import (
+            MAX_DECLARED_OPERATION_BODY_BYTES,
             MAX_OPERATION_BODY_BYTES,
             MAX_OPERATION_RESULT_BYTES,
             DaemonOperationEnvelope,
             DaemonOperationRequest,
+            OperationStatus,
             archive_identity,
         )
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
@@ -5182,9 +5189,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if content_type != "application/json":
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             return
-        if content_length <= 0 or content_length > MAX_OPERATION_BODY_BYTES:
+        if content_length <= 0 or content_length > MAX_DECLARED_OPERATION_BODY_BYTES:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing or too large")
             return
+        if content_length > MAX_OPERATION_BODY_BYTES:
+            # Only a write operation declares a body larger than a parameter
+            # map, and the operation is unknown until the body is parsed.
+            # Charge the machine-client credential before reading it, so a
+            # read credential's exposure stays at the parameter-map bound.
+            if not self._check_auth(allow_web=False):
+                return
+            if not self._check_cross_origin():
+                return
         try:
             raw_bytes = self.rfile.read(content_length)
             if len(raw_bytes) != content_length:
@@ -5235,9 +5251,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        from polylogue.operations.daemon_protocol import daemon_operation_spec
+        from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
 
         spec = daemon_operation_spec(request.operation)
+        if spec is not None and content_length > spec.max_body_bytes:
+            self._send_operation_error(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                request,
+                archive,
+                generation,
+                readiness,
+                "request_too_large",
+                "operation body exceeds the declared bound for this operation",
+            )
+            return
+        if spec is not None and spec.authority is not DaemonAuthority.READ:
+            # The route-level check only proves a read credential. A write or
+            # control operation is a machine-client capability: a first-party
+            # shell cookie must not reach it, and a browser must not be able
+            # to drive it cross-origin.
+            if not self._check_auth(allow_web=False):
+                return
+            if not self._check_cross_origin():
+                return
         if spec is None:
             self._send_operation_error(
                 HTTPStatus.NOT_FOUND,
@@ -5332,6 +5368,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             elif request.operation == "status":
                 self._handle_status({})
+            elif request.operation in _MUTATION_OPERATION_HANDLERS:
+                # Each handler owns its own writer gate; the dispatcher only
+                # re-presents the operation payload as the body it reads.
+                body = _json_bytes(request.payload)
+                self.rfile = BytesIO(body)
+                self.headers = {  # type: ignore[assignment]
+                    "Content-Length": str(len(body)),
+                    "Authorization": original_headers.get("Authorization", ""),
+                }
+                self.path = f"/api/operation#{request.operation}"
+                cast(Callable[[], None], getattr(self, _MUTATION_OPERATION_HANDLERS[request.operation]))()
             else:
                 params = {
                     str(key): [str(item) for item in value] if isinstance(value, list | tuple) else [str(value)]
@@ -5358,6 +5405,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         status, result = captured[-1]
         if int(status) >= 400:
             error = result if isinstance(result, dict) else {"error": "operation_failed"}
+            # A handler's error envelope may carry structured remainder (a
+            # partially applied batch's committed chunk count, say). Dropping
+            # it would report a partial durable effect as a plain refusal.
+            error_data = {key: value for key, value in error.items() if key not in {"ok", "error", "detail", "field"}}
             envelope = DaemonOperationEnvelope(
                 operation=request.operation,
                 archive=archive,
@@ -5370,11 +5421,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "writes": "daemon-owned",
                 },
                 progress={"state": "failed"},
-                outcome="failed",
+                outcome=OperationStatus.FAILED,
                 served_by={"daemon_version": POLYLOGUE_VERSION},
                 timing={"elapsed_ms": 0, "queue_ms": 0},
                 schema_versions={"index": INDEX_SCHEMA_VERSION},
-                error={"code": str(error.get("error", "operation_failed")), "detail": error.get("detail")},
+                error={
+                    "code": str(error.get("error", "operation_failed")),
+                    "detail": error.get("detail"),
+                    "data": error_data,
+                },
                 request_id=request.request_id,
             )
             self._send_json(status, envelope.to_dict())
@@ -5391,7 +5446,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "writes": "daemon-owned",
             },
             progress={"state": "complete"},
-            outcome="complete",
+            outcome=OperationStatus.COMPLETED,
             served_by={"daemon_version": POLYLOGUE_VERSION},
             timing={"elapsed_ms": 0, "queue_ms": 0},
             schema_versions={"index": INDEX_SCHEMA_VERSION},
@@ -5422,7 +5477,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         code: str,
         detail: str,
     ) -> None:
-        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope
+        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, OperationStatus
 
         operation = getattr(request, "operation", "unknown")
         envelope = DaemonOperationEnvelope(
@@ -5432,7 +5487,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             readiness=readiness,
             authority={"mode": "daemon", "writes": "daemon-owned"},
             progress={"state": "failed"},
-            outcome="failed",
+            outcome=OperationStatus.FAILED,
             error={"code": code, "detail": detail},
         )
         self._send_json(status, envelope.to_dict())
@@ -5556,6 +5611,98 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 operation="delete",
                 session_count=deleted,
                 affected_count=deleted,
+            ).model_dump(exclude_none=True),
+        )
+
+    @daemon_safe_handler
+    def _handle_cli_session_tag(self) -> None:
+        """Add tags to a matched selection under the shared mutation authority."""
+
+        request = self._read_cli_session_mutation_request("tags")
+        if request is None:
+            return
+        session_ids, tags = request
+        from polylogue.operations.session_mutations import TAG_CAPABILITY, apply_session_tags
+
+        principal = self._cli_mutation_principal(TAG_CAPABILITY)
+
+        async def _apply(poly: Polylogue) -> int:
+            return apply_session_tags(
+                poly.config.archive_root,
+                session_ids,
+                tuple(str(tag) for tag in tags),
+                principal,
+            )
+
+        self._send_cli_session_mutation("add_tag", _apply, "http.cli.session.tag")
+
+    @daemon_safe_handler
+    def _handle_cli_session_metadata(self) -> None:
+        """Set metadata on a matched selection under the shared mutation authority."""
+
+        request = self._read_cli_session_mutation_request("pairs")
+        if request is None:
+            return
+        session_ids, raw_pairs = request
+        pairs: list[tuple[str, str]] = []
+        for entry in raw_pairs:
+            if not isinstance(entry, list | tuple) or len(entry) != 2:
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+                return
+            key, value = entry
+            if not isinstance(key, str) or not key or not isinstance(value, str):
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+                return
+            pairs.append((key, value))
+        from polylogue.operations.session_mutations import METADATA_CAPABILITY, apply_session_metadata
+
+        principal = self._cli_mutation_principal(METADATA_CAPABILITY)
+
+        async def _apply(poly: Polylogue) -> int:
+            return apply_session_metadata(poly.config.archive_root, session_ids, tuple(pairs), principal)
+
+        self._send_cli_session_mutation("set_meta", _apply, "http.cli.session.metadata")
+
+    def _read_cli_session_mutation_request(self, values_field: str) -> tuple[tuple[str, ...], list[object]] | None:
+        """Read one ``{session_ids, <values_field>}`` matched-selection body."""
+
+        body = self._read_bounded_json_body(_CLI_DELETE_SELECTION_MAX_BYTES)
+        if body is None:
+            return None
+        raw_session_ids = body.get("session_ids")
+        values = body.get(values_field)
+        if (
+            set(body) != {"session_ids", values_field}
+            or not isinstance(raw_session_ids, list)
+            or not raw_session_ids
+            or len(raw_session_ids) > DELETE_PREVIEW_MAX_SESSION_IDS
+            or any(not isinstance(item, str) or not item for item in raw_session_ids)
+            or len(set(raw_session_ids)) != len(raw_session_ids)
+            or not isinstance(values, list)
+            or not values
+        ):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
+            return None
+        return tuple(raw_session_ids), list(values)
+
+    def _send_cli_session_mutation(
+        self,
+        operation: str,
+        apply: Callable[[Polylogue], Awaitable[int]],
+        actor: str,
+    ) -> None:
+        try:
+            with self._write_gate(actor):
+                affected = cast(int, self._sync_run(apply))
+        except ValueError as exc:
+            self._send_error(HTTPStatus.CONFLICT, "mutation_denied", str(exc))
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            MutationResultPayload(
+                status="ok",
+                operation=cast(Any, operation),
+                affected_count=affected,
             ).model_dump(exclude_none=True),
         )
 

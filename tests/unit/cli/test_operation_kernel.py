@@ -68,8 +68,8 @@ def test_non_read_operation_cannot_use_direct_fallback() -> None:
 
     original = tuple(DAEMON_OPERATION_SPECS)
     try:
-        # The production registry currently contains reads only; this law
-        # exercises the guard against a future mutating declaration.
+        # Declared writes use ``DaemonFallback.NEVER``; this law proves the
+        # guard holds even for a write that names a direct fallback.
         from polylogue.operations import daemon_protocol
 
         daemon_protocol.DAEMON_OPERATION_SPECS = original + (

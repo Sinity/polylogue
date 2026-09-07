@@ -18,6 +18,7 @@ from polylogue.operations.daemon_protocol import (
     MAX_OPERATION_RESULT_BYTES,
     DaemonAuthority,
     DaemonOperationSpec,
+    OperationStatus,
     daemon_operation_spec,
 )
 
@@ -37,10 +38,28 @@ class OperationEnvelopeError(OperationKernelError):
 class OperationFailedError(OperationKernelError):
     """The selected executor returned a typed operation error."""
 
-    def __init__(self, code: str, detail: object = None) -> None:
+    def __init__(self, code: str, detail: object = None, data: Mapping[str, object] | None = None) -> None:
         self.code = code
         self.detail = detail
+        self.data: Mapping[str, object] = data or {}
         super().__init__(f"{code}: {detail}" if detail else code)
+
+
+class OperationIndeterminateError(OperationKernelError):
+    """A write request reached the daemon and no receipt came back.
+
+    Distinct from :class:`OperationUnavailableError`: the daemon may have
+    applied the write, so retrying is not safe.
+    """
+
+
+class OperationCancelledError(OperationKernelError):
+    """The operation reached a cancelled terminal state."""
+
+    def __init__(self, operation: str, detail: object = None) -> None:
+        self.operation = operation
+        self.detail = detail
+        super().__init__(f"{operation} was cancelled" if detail is None else f"{operation} was cancelled: {detail}")
 
 
 def _result_size(value: object) -> int:
@@ -100,10 +119,13 @@ class OperationKernel:
         except (TimeoutError, ConnectionError, OSError):
             envelope = None
         except Exception as exc:
-            # The stdlib daemon client uses a protocol error for bounded-result
-            # violations. Keep that distinction visible to callers while
-            # preserving direct fallback for ordinary daemon absence.
-            if type(exc).__name__ == "DaemonOperationProtocolError" and "size" in str(exc):
+            # The stdlib daemon client uses typed transport errors. Keep those
+            # distinctions visible to callers while preserving direct fallback
+            # for ordinary daemon absence.
+            name = type(exc).__name__
+            if name == "DaemonMutationIndeterminateError":
+                raise OperationIndeterminateError(str(exc)) from exc
+            if name == "DaemonOperationProtocolError" and "size" in str(exc):
                 raise OperationFailedError("result_too_large", str(exc)) from exc
             raise OperationFailedError("daemon_transport_error", str(exc)) from exc
         if envelope is not None:
@@ -112,11 +134,18 @@ class OperationKernel:
             error = envelope.get("error")
             if isinstance(error, Mapping):
                 code = error.get("code")
-                raise OperationFailedError(str(code or "operation_failed"), error.get("detail"))
+                data = error.get("data")
+                raise OperationFailedError(
+                    str(code or "operation_failed"),
+                    error.get("detail"),
+                    data if isinstance(data, Mapping) else None,
+                )
             if error is not None:
                 raise OperationEnvelopeError("daemon returned a malformed error envelope")
-            outcome = envelope.get("outcome", "complete")
-            if outcome not in {"complete", "accepted"}:
+            outcome = envelope.get("outcome", OperationStatus.COMPLETED.value)
+            if outcome == OperationStatus.INTERRUPTED.value:
+                raise OperationCancelledError(request.operation, envelope.get("detail"))
+            if outcome not in {OperationStatus.COMPLETED.value, OperationStatus.ACCEPTED.value}:
                 raise OperationFailedError(str(outcome), envelope.get("detail"))
             if "result" not in envelope:
                 raise OperationEnvelopeError("daemon response omitted the operation result")
@@ -151,7 +180,9 @@ class OperationKernel:
 
 
 __all__ = [
+    "OperationCancelledError",
     "OperationFailedError",
+    "OperationIndeterminateError",
     "OperationEnvelopeError",
     "OperationKernel",
     "OperationKernelError",
