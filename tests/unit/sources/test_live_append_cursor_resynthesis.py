@@ -39,9 +39,9 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _session_meta(session_id: str) -> bytes:
@@ -81,7 +81,7 @@ def _processor(tmp_path: Path, cursor: CursorStore, *, source_name: str = Provid
 def test_append_plan_resynthesizes_lost_cursor_from_durable_full_head(tmp_path: Path) -> None:
     """No ops.db cursor, but source.db has a byte-proven 'full' head: append is attempted."""
     session_id = "resynth-proof"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-resynth-proof.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -125,7 +125,7 @@ def test_append_plan_resynthesizes_lost_cursor_from_durable_full_head(tmp_path: 
 def test_append_plan_uses_ops_db_cursor_without_consulting_source_db(tmp_path: Path) -> None:
     """An existing ops.db cursor is used as before; the fallback is never invoked."""
     session_id = "existing-cursor-proof"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-existing-cursor.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     source.write_bytes(baseline)
@@ -166,7 +166,7 @@ def test_append_plan_uses_ops_db_cursor_without_consulting_source_db(tmp_path: P
 
 def test_append_plan_declines_when_neither_cursor_nor_durable_head_exists(tmp_path: Path) -> None:
     """A genuinely new file falls back to full capture exactly as before."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-brand-new.jsonl"
     source.write_bytes(_session_meta("brand-new") + _codex_message("hello"))
 
@@ -186,7 +186,7 @@ def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path
     offset and make ``plan_revision_replay`` mark the whole chain ambiguous.
     """
     session_id = "append-head-proof"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-append-head.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     first_append_delta = _codex_message("first-append")
@@ -238,7 +238,7 @@ def test_append_plan_declines_resynthesis_for_an_append_kind_head(tmp_path: Path
 
 
 def test_source_migration_adds_legacy_append_resynthesis_receipts(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("DROP TABLE raw_legacy_append_resynthesis_receipts")
         conn.execute("PRAGMA user_version = 39")
@@ -257,7 +257,7 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
 ) -> None:
     """A legacy append window is admitted only when its retained bytes prove it."""
     session_id = "legacy-offset-chain"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-legacy-offset-chain.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     delta = _codex_message("legacy append")
@@ -345,7 +345,7 @@ def test_append_plan_reconstructs_pre_offset_append_chain_after_ops_reset(
 
 def test_resynthesis_composes_claude_frontier_from_legacy_append_chain(tmp_path: Path) -> None:
     session_id = "legacy-claude-chain"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "legacy-claude-chain.jsonl"
     header = b'{"sessionId":"legacy-claude-chain","type":"user"}\n'
     baseline_body = b'{"sessionId":"legacy-claude-chain","type":"assistant"}\n'
@@ -412,7 +412,7 @@ def test_append_plan_declines_legacy_reconstruction_when_final_prefix_proof_chan
 ) -> None:
     """Mutation: a rewrite between preliminary windows and promotion cannot become cursor authority."""
     session_id = "legacy-final-prefix-proof"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-legacy-final-prefix-proof.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     rewritten_baseline = _session_meta(session_id) + _codex_message("mutated!")
@@ -470,7 +470,7 @@ def test_append_plan_declines_legacy_reconstruction_when_final_prefix_proof_chan
 def test_append_plan_declines_legacy_reconstruction_when_append_never_materialized(tmp_path: Path) -> None:
     """Mutation: retaining an unparsed legacy delta must not skip its parser/index work."""
     session_id = "legacy-unmaterialized"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-legacy-unmaterialized.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     delta = _codex_message("unmaterialized append")
@@ -514,7 +514,7 @@ def test_append_plan_declines_legacy_reconstruction_when_append_never_materializ
 def test_append_plan_declines_legacy_reconstruction_after_prefix_rewrite(tmp_path: Path) -> None:
     """A matching legacy delta cannot prove a rewritten full prefix."""
     session_id = "legacy-prefix-rewrite"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "rollout-legacy-prefix-rewrite.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     rewritten_baseline = _session_meta(session_id) + _codex_message("mutated!")
@@ -573,7 +573,7 @@ def test_full_head_claude_frontier_requires_the_retained_prefix(tmp_path: Path) 
     prefix still resynthesizes, so the fix cannot be "always refuse".
     """
     session_id = "claude-full-head"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / "claude-full-head.jsonl"
     header = b'{"sessionId":"claude-full-head","type":"user"}\n'
     body = b'{"sessionId":"claude-full-head","type":"assistant"}\n'
@@ -624,7 +624,7 @@ def test_superseded_parser_fingerprint_refuses_append_planning(tmp_path: Path) -
     plans an append, so the fix cannot be "never append".
     """
     session_id = "fingerprint-bump"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / f"rollout-{session_id}.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     appended = _codex_message("grown")
@@ -676,7 +676,7 @@ def test_deferred_planning_leaves_the_legacy_chain_unpromoted(tmp_path: Path) ->
     succeed still promotes -- so the fix cannot be "never promote".
     """
     session_id = "legacy-deferred-chain"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source = tmp_path / f"rollout-{session_id}.jsonl"
     baseline = _session_meta(session_id) + _codex_message("baseline")
     delta = _codex_message("legacy append")

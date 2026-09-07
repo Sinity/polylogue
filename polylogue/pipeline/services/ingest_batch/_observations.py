@@ -85,17 +85,9 @@ def _build_parse_batch_observation(
         "max_write_elapsed_ms": round(batch_summary.max_write_elapsed_s * 1000, 1),
         "flush_elapsed_ms": round(batch_summary.flush_elapsed_s * 1000, 1),
         "commit_elapsed_ms": round(batch_summary.commit_elapsed_s * 1000, 1),
-        "wal_checkpoint_mode": batch_summary.wal_checkpoint_mode,
-        "wal_bytes_before_checkpoint": batch_summary.wal_bytes_before_checkpoint,
-        "wal_bytes_after_checkpoint": batch_summary.wal_bytes_after_checkpoint,
-        "wal_checkpointed_pages": batch_summary.wal_checkpointed_pages,
-        "wal_busy_pages": batch_summary.wal_busy_pages,
-        "wal_checkpoint_elapsed_ms": round(batch_summary.wal_checkpoint_elapsed_s * 1000, 1),
         "executor_teardown_elapsed_ms": round(batch_summary.teardown_elapsed_s * 1000, 1),
         "raw_state_update_elapsed_ms": round(raw_state_update_elapsed_s * 1000, 1),
     }
-    if batch_summary.wal_checkpoint_error is not None:
-        observation["wal_checkpoint_error"] = batch_summary.wal_checkpoint_error
     residual_elapsed_s = _unattributed_batch_elapsed_s(
         elapsed_s=elapsed_s,
         batch_summary=batch_summary,

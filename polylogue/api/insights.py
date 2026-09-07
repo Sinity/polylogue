@@ -32,6 +32,7 @@ from polylogue.analysis.archive import (
 )
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.cost_enrichment import enrich_session_cost_insights
+from polylogue.analysis.lineage_graph import CompactLineageGraph
 from polylogue.analysis.tag_rollups import synthesize_origin_tag_rollups
 from polylogue.analysis.tool_episodes import ToolEpisodeInsight, ToolEpisodeQuery
 from polylogue.analysis.tool_usage import ToolUsageInsight, ToolUsageInsightQuery
@@ -1017,6 +1018,47 @@ class PolylogueInsightsMixin:
             work=lambda archive: _archive_session_topology(archive, session_id),
             projection="topology",
             stable_order="root,depth,session_id",
+        )
+
+    async def compact_lineage(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int | None = None,
+        edge_offset: int = 0,
+        edge_limit: int | None = None,
+        include_accounting: bool = True,
+    ) -> CompactLineageGraph | None:
+        """Return the seed-relative compact lineage graph (polylogue-4ts.9).
+
+        The relation CLI rows, the API and the context preamble share: node and
+        edge roles relative to ``session_id``, link type, inheritance, branch
+        point, derivation method, confidence, resolution state, and
+        unique-versus-inherited message accounting. Nodes and edges page
+        independently; the seed is on every node page.
+        """
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="topology.compact_lineage",
+            arguments={
+                "session_id": session_id,
+                "node_offset": node_offset,
+                "node_limit": node_limit,
+                "edge_offset": edge_offset,
+                "edge_limit": edge_limit,
+                "include_accounting": include_accounting,
+            },
+            work=lambda archive: archive.read_compact_lineage(
+                session_id,
+                node_offset=node_offset,
+                node_limit=node_limit,
+                edge_offset=edge_offset,
+                edge_limit=edge_limit,
+                include_accounting=include_accounting,
+            ),
+            projection="lineage",
+            stable_order="depth,session_id",
         )
 
     async def get_ancestors(self, session_id: str) -> list[SessionRef]:

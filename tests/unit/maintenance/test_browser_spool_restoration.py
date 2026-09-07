@@ -200,6 +200,33 @@ def test_duplicate_logical_identity_converges_on_one_artifact(tmp_path: Path) ->
     assert len(tuple(tmp_path.rglob("*.json"))) == 1
 
 
+def test_replay_keeps_later_richer_capture_when_earlier_update_was_capture_fallback(tmp_path: Path) -> None:
+    fallback_payload = _payload()
+    fallback_payload["provenance"]["captured_at"] = "2026-07-10T18:06:24.501Z"  # type: ignore[index]
+    fallback_payload["session"]["updated_at"] = "2026-07-10T18:06:24.501Z"  # type: ignore[index]
+    fallback_payload["session"]["turns"] = [  # type: ignore[index]
+        {"provider_turn_id": f"fallback-{index}", "role": "assistant", "text": "old"} for index in range(14)
+    ]
+
+    richer_payload = json.loads(json.dumps(fallback_payload))
+    richer_payload["provenance"]["captured_at"] = "2026-07-12T20:59:18.942Z"
+    richer_payload["session"]["updated_at"] = "2026-07-10T18:06:11.776Z"
+    richer_payload["session"]["turns"] = [
+        {"provider_turn_id": f"richer-{index}", "role": "assistant", "text": "new"} for index in range(120)
+    ]
+
+    entries = [(hashlib.sha256(raw).hexdigest(), raw) for raw in (_raw(fallback_payload), _raw(richer_payload))]
+    outcomes = _replay(entries, tmp_path, tmp_path / "ledger")
+
+    assert list(outcomes.values()) == ["admitted", "admitted"]
+    stored = json.loads(next(tmp_path.rglob("*.json")).read_bytes())
+    stored_session = stored.get("session")
+    assert isinstance(stored_session, dict)
+    stored_turns = stored_session.get("turns")
+    assert isinstance(stored_turns, list)
+    assert len(stored_turns) == 120
+
+
 def test_interruption_between_publication_and_receipt_resumes_without_double_admission(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

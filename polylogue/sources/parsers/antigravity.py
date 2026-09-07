@@ -42,8 +42,17 @@ _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversa
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
 _SECTION_RE = re.compile(r"^### (?P<title>User Input|Planner Response)\s*$", re.MULTILINE)
 
-#: Socket budget for one request to the vendor HTTP surface.
+#: Socket budget for one probe or search request to the vendor HTTP surface.
 _REQUEST_TIMEOUT_S = 10.0
+
+#: Socket budget for one trajectory conversion. Conversion is the vendor's own
+#: whole-trajectory work and its cost does not track the protobuf's size: on
+#: this corpus the largest trajectories have spent 4-10s each while a larger
+#: one finished in 0.06s. An expired conversion is a lost conversation, not a
+#: retried probe, so the budget sits far above the observed cost -- and stays
+#: finite, because the caller isolates one item's failure and must not be able
+#: to block the rest of the corpus indefinitely.
+_CONVERSION_TIMEOUT_S = 120.0
 
 #: Sleep between readiness probes.
 _READY_RETRY_SLEEP_S = 0.2
@@ -253,56 +262,58 @@ def census_source(root: Path) -> AntigravitySourceCensus:
         path = Path(error.filename) if error.filename else root
         record_unreadable(path, f"source item is unreadable: {error}")
 
-    for directory, dirnames, filenames in os.walk(root, followlinks=True, onerror=on_walk_error):
-        dirnames.sort()
-        for filename in sorted(filenames):
-            path = Path(directory) / filename
-            try:
-                link_stat = path.lstat()
-            except OSError as exc:
-                record_unreadable(path, f"source item is unreadable: {exc}")
-                continue
-            if not stat_module.S_ISREG(link_stat.st_mode):
-                items.append(
-                    AntigravitySourceItem(
-                        path=path,
-                        relative_path=_relative_path(path, root),
-                        classification=AntigravitySourceClassification(
-                            AntigravitySourceRole.UNKNOWN,
-                            False,
-                            ArtifactKind.UNKNOWN,
-                            "non-regular Antigravity source item",
-                        ),
-                        inspection=AntigravitySourceInspection.NON_REGULAR,
-                        size_bytes=link_stat.st_size,
-                        content_sha256=None,
-                    )
-                )
-                continue
-            try:
-                before = path.stat()
-                digest = _file_digest(path)
-                after = path.stat()
-            except OSError as exc:
-                record_unreadable(path, f"source item is unreadable: {exc}")
-                continue
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            ):
-                raise AntigravitySourceMutationError(f"Antigravity source changed during census: {path}")
+    from polylogue.sources.source_walk import _iter_source_entries
+
+    # Use the same skip-directory traversal as production admission.  Census
+    # still inspects non-regular files (including symlinks) so they remain
+    # accounted for as unsupported evidence, while admission excludes them.
+    for path in _iter_source_entries(root, onerror=on_walk_error):
+        try:
+            link_stat = path.lstat()
+        except OSError as exc:
+            record_unreadable(path, f"source item is unreadable: {exc}")
+            continue
+        if not stat_module.S_ISREG(link_stat.st_mode):
             items.append(
                 AntigravitySourceItem(
                     path=path,
                     relative_path=_relative_path(path, root),
-                    classification=classify_source_path(path),
-                    inspection=AntigravitySourceInspection.REGULAR,
-                    size_bytes=after.st_size,
-                    content_sha256=digest,
+                    classification=AntigravitySourceClassification(
+                        AntigravitySourceRole.UNKNOWN,
+                        False,
+                        ArtifactKind.UNKNOWN,
+                        "non-regular Antigravity source item",
+                    ),
+                    inspection=AntigravitySourceInspection.NON_REGULAR,
+                    size_bytes=link_stat.st_size,
+                    content_sha256=None,
                 )
             )
+            continue
+        try:
+            before = path.stat()
+            digest = _file_digest(path)
+            after = path.stat()
+        except OSError as exc:
+            record_unreadable(path, f"source item is unreadable: {exc}")
+            continue
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise AntigravitySourceMutationError(f"Antigravity source changed during census: {path}")
+        items.append(
+            AntigravitySourceItem(
+                path=path,
+                relative_path=_relative_path(path, root),
+                classification=classify_source_path(path),
+                inspection=AntigravitySourceInspection.REGULAR,
+                size_bytes=after.st_size,
+                content_sha256=digest,
+            )
+        )
     census = AntigravitySourceCensus(root=root, items=tuple(items))
     census.assert_conserved()
     return census
@@ -483,7 +494,7 @@ class AntigravityLanguageServerClient:
         return summaries
 
     def export_markdown(self, cascade_id: str) -> str:
-        payload = self._post(_MARKDOWN_ENDPOINT, {"conversationId": cascade_id})
+        payload = self._post(_MARKDOWN_ENDPOINT, {"conversationId": cascade_id}, timeout=_CONVERSION_TIMEOUT_S)
         markdown = payload.get("markdown")
         if not isinstance(markdown, str) or not markdown:
             raise AntigravityExportError(f"Antigravity returned no markdown for cascade {cascade_id}")
@@ -514,15 +525,16 @@ class AntigravityLanguageServerClient:
             f"Antigravity language server did not become ready after {attempts} probes: {last_error}"
         )
 
-    def _post(self, endpoint: str, payload: JSONDocument) -> JSONDocument:
+    def _post(self, endpoint: str, payload: JSONDocument, *, timeout: float | None = None) -> JSONDocument:
         request = Request(
             f"http://127.0.0.1:{self.port}{endpoint}",
             data=dumps_bytes(payload),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
+        budget = _REQUEST_TIMEOUT_S if timeout is None else timeout
         try:
-            with urlopen(request, timeout=_REQUEST_TIMEOUT_S) as response:
+            with urlopen(request, timeout=budget) as response:
                 loaded = loads(response.read())
         except (OSError, TimeoutError, ValueError) as exc:
             raise AntigravityExportError(str(exc)) from exc

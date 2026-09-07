@@ -1,4 +1,4 @@
-"""Shared magic-byte detection for non-conversational binary payloads.
+"""Shared magic-byte detection for non-conversational payloads.
 
 polylogue-hbtj2: a "detection/parse strictness" bug let binary files
 (concretely, SQLite databases such as Hermes ``state.db``/
@@ -36,13 +36,18 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class BinarySignature:
-    """One recognized non-conversational binary format, by magic bytes."""
+    """One recognized non-conversational format, by its leading bytes."""
 
     name: str
     magic: bytes
 
 
 SQLITE_MAGIC_HEADER = b"SQLite format 3\x00"
+#: The first line of a retained logical export of a mutable SQLite member
+#: (``sources/sqlite_export.py``). It is text, not a binary format, and it is
+#: recognized here for the same reason the page image it replaced was: it is a
+#: database, refused as session content before any decode attempts it.
+SQLITE_LOGICAL_EXPORT_HEADER = b'{"polylogue_sqlite_export":1'
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _GZIP_MAGIC = b"\x1f\x8b"
 _JPEG_MAGIC = b"\xff\xd8\xff"
@@ -54,6 +59,7 @@ ZIP_MAGIC_VARIANTS: tuple[bytes, ...] = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\
 # first. ZIP is intentionally not a member: see module docstring.
 BINARY_SIGNATURES: tuple[BinarySignature, ...] = (
     BinarySignature("sqlite", SQLITE_MAGIC_HEADER),
+    BinarySignature("sqlite-logical-export", SQLITE_LOGICAL_EXPORT_HEADER),
     BinarySignature("png", _PNG_MAGIC),
     BinarySignature("gzip", _GZIP_MAGIC),
     BinarySignature("jpeg", _JPEG_MAGIC),
@@ -85,6 +91,7 @@ def detect_binary_signature(payload: bytes) -> BinarySignature | None:
 
 __all__ = [
     "BINARY_SIGNATURES",
+    "SQLITE_LOGICAL_EXPORT_HEADER",
     "SQLITE_MAGIC_HEADER",
     "ZIP_MAGIC_VARIANTS",
     "BinarySignature",

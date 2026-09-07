@@ -171,6 +171,34 @@ def test_source_census_counts_non_regular_and_unreadable_items(tmp_path: Path, m
     assert census.unexplained_items == ()
 
 
+def test_symlinked_brain_document_is_censused_but_not_admitted(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity"
+    target = tmp_path / "real.md"
+    target.write_text("# linked", encoding="utf-8")
+    linked = root / "brain" / "w" / "linked.md"
+    linked.parent.mkdir(parents=True)
+    linked.symlink_to(target)
+
+    census = antigravity.census_source(root)
+
+    assert census.inspection_counts[antigravity.AntigravitySourceInspection.NON_REGULAR] == 1
+    assert census.unknown_count == 1
+    assert linked in {item.path for item in census.items}
+    assert linked not in antigravity._conversation_pb_paths(root)
+
+
+def test_skip_directories_are_shared_by_census_and_production_walk(tmp_path: Path) -> None:
+    root = tmp_path / "antigravity"
+    skipped = root / "conversations" / "analysis"
+    skipped.mkdir(parents=True)
+    (skipped / "hidden.pb").write_bytes(b"opaque")
+
+    census = antigravity.census_source(root)
+
+    assert census.items == ()
+    assert antigravity._conversation_pb_paths(root) == []
+
+
 def _write_brain_population(root: Path, cascade_id: str, *names: str) -> None:
     """Write one brain directory in the shape a real source root carries.
 

@@ -71,6 +71,7 @@ from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsa
 from polylogue.analysis.confidence import ConfidenceBand
 from polylogue.analysis.confidence import from_score as confidence_from_score
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.lineage_graph import CompactLineageGraph
 from polylogue.analysis.objective_posture import structural_objective_posture
 from polylogue.analysis.readiness import (
     InsightOriginCoverage,
@@ -116,6 +117,7 @@ from polylogue.archive.semantic.subscription_pricing import compute_credit_cost,
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
+from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import require_json_value
@@ -123,6 +125,7 @@ from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
+from polylogue.logging import get_logger
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
@@ -304,7 +307,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
     ArchiveWriteOutcome,
-    PreparedSessionRows,
+    PreparedRows,
+    PreparedSessionShardRows,
+    bind_session_shard,
     read_archive_session_envelope,
     read_archive_session_page,
     read_session_phases,
@@ -315,17 +320,22 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     session_attachment_ids,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
+from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
-    BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PRAGMA_STATEMENTS,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
     open_connection,
     open_readonly_connection,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -624,6 +634,7 @@ class ArchiveStore:
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
+        defer_secondary_indexes: bool = False,
     ) -> None:
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
@@ -635,6 +646,8 @@ class ArchiveStore:
             raise ValueError("a pinned index path is valid only for read-only archive access")
         if opened_index_fd is not None and not read_only:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
+        if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
+            raise ValueError("secondary-index deferral requires an owned inactive writable generation")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
@@ -643,6 +656,7 @@ class ArchiveStore:
         self._pinned_read = frozen_index_path is not None
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
+        self._deferred_secondary_indexes: tuple[str, ...] = ()
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
             from polylogue.storage.archive_identity import assert_writable_archive_identity
@@ -721,6 +735,13 @@ class ArchiveStore:
                 # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
                 bulk_build_profile=owned_inactive_generation is not None,
             )
+            if defer_secondary_indexes:
+                from polylogue.storage.sqlite.runtime_indexes import defer_secondary_indexes_sync
+
+                if self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None:
+                    raise ValueError("secondary-index deferral is only valid for an empty archive generation")
+                self._deferred_secondary_indexes = defer_secondary_indexes_sync(self._conn)
+                self._conn.commit()
         except Exception:
             conn = getattr(self, "_conn", None)
             if conn is not None:
@@ -819,16 +840,18 @@ class ArchiveStore:
             )
             pragma_statements = READ_CONNECTION_PRAGMA_STATEMENTS
         else:
-            require_write_lease(f"ArchiveStore(index={self.index_db_path})")
+            require_write_lease(f"ArchiveStore(index={self.index_db_path})", archive_root=archive_root)
             self._conn = (
                 sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
-                else sqlite3.connect(self.index_db_path)
+                # URI filenames are inert for a plain path -- SQLite only
+                # parses one when it starts with ``file:`` -- and the flag is
+                # what lets this connection ATTACH a stage-A shard read-only
+                # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
+                else sqlite3.connect(self.index_db_path, uri=True)
             )
-            pragma_statements = (
-                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
-                if bulk_build_profile
-                else WRITE_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements = write_connection_pragma_statements(
+                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
@@ -867,6 +890,17 @@ class ArchiveStore:
         """Reject mutations before they can open or use a writable tier."""
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
+
+    def restore_deferred_secondary_indexes(self) -> None:
+        """Recreate deferred reader indexes before publishing a generation."""
+        self._require_writable("restore deferred secondary indexes")
+        if not self._deferred_secondary_indexes:
+            return
+        from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
+
+        restore_deferred_secondary_indexes_sync(self._conn)
+        self._conn.commit()
+        self._deferred_secondary_indexes = ()
 
     @classmethod
     def open_existing(
@@ -936,13 +970,21 @@ class ArchiveStore:
         )
 
     @classmethod
-    def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
+    def open_owned_inactive_generation(
+        cls,
+        archive_root: Path,
+        *,
+        generation_id: str,
+        owner_id: str,
+        defer_secondary_indexes: bool = False,
+    ) -> ArchiveStore:
         """Open a typed inactive generation without weakening normal identity checks."""
         return cls(
             archive_root,
             initialize=True,
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
+            defer_secondary_indexes=defer_secondary_indexes,
         )
 
     @staticmethod
@@ -987,6 +1029,23 @@ class ArchiveStore:
         """
         self._conn.interrupt()
 
+    @property
+    def index_connection(self) -> sqlite3.Connection | None:
+        """The index-tier handle, or ``None`` while the derived tier is closed.
+
+        Acquire-only ingestion and frozen source validation hold no index
+        handle at all, so a derived projection asks here rather than writing
+        through a stale-schema connection.
+        """
+        if isinstance(self._conn, _SourceTierOnlyIndexConnection):
+            return None
+        return self._conn
+
+    @property
+    def source_connection(self) -> sqlite3.Connection:
+        """The durable source-tier handle, opened on first use."""
+        return self._ensure_source_conn()
+
     def _optional_source_conn(self) -> sqlite3.Connection | None:
         """Return the source.db handle for evidence reads, or ``None``.
 
@@ -1007,6 +1066,7 @@ class ArchiveStore:
                 conn = sqlite3.connect(f"file:{self.source_db_path}?mode=ro", uri=True)
                 conn.execute("PRAGMA query_only = ON")
             else:
+                require_write_lease(f"ArchiveStore(source={self.source_db_path})", archive_root=self.archive_root)
                 conn = sqlite3.connect(self.source_db_path)
             conn.execute("PRAGMA foreign_keys = ON")
             self._source_conn = conn
@@ -1059,6 +1119,15 @@ class ArchiveStore:
     def close(self) -> None:
         if self._blob_publisher is not None:
             self._blob_publisher.discard_pending()
+        if self._deferred_secondary_indexes and not self._read_only:
+            # A failed or cancelled cold build must not leave the active
+            # generation without its reader indexes.  Boundary code may call
+            # the public restore method earlier; this is the safety net for
+            # every other exit path.
+            try:
+                self.restore_deferred_secondary_indexes()
+            except Exception:
+                logger.exception("failed to restore deferred secondary indexes during close")
         if self._source_conn is not None:
             self._source_conn.close()
             self._source_conn = None
@@ -1067,7 +1136,38 @@ class ArchiveStore:
             self._active_writer_lease.close()
             self._active_writer_lease = None
 
-    def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
+    @contextmanager
+    def attached_session_shard(self, shard_path: Path | None) -> Iterator[dict[str, PreparedSessionShardRows]]:
+        """Mount a stage-A shard read-only for the body and yield its bindings.
+
+        ``None``, a missing file, or a shard this build refuses all yield an
+        empty mapping: the caller then writes with no prepared rows, which is
+        the unchanged inline path. A shard is only ever a shortcut.
+        """
+        if shard_path is None:
+            yield {}
+            return
+        self._require_writable("attach a session shard")
+        try:
+            shard = open_session_shard(shard_path)
+            attachment = attach_session_shard(self._conn, shard)
+            schema = attachment.__enter__()
+        except (ShardRefusedError, OSError, sqlite3.DatabaseError) as exc:
+            logger.warning("index write: %s; building this session's rows inline", exc)
+            yield {}
+            return
+        try:
+            yield bind_session_shard(schema, shard)
+        finally:
+            attachment.__exit__(None, None, None)
+
+    def write_parsed(
+        self,
+        session: ParsedSession,
+        *,
+        content_hash: str | None = None,
+        fresh_build: bool = False,
+    ) -> str:
         """Write a parsed session to index.db."""
         self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
@@ -1081,6 +1181,7 @@ class ArchiveStore:
             self._conn,
             session,
             content_hash=content_hash,
+            fresh_build=fresh_build,
             preacquired_attachment_blobs=acquired,
             source_conn=self._optional_source_conn(),
         )
@@ -1141,7 +1242,13 @@ class ArchiveStore:
             "content_changed": result.content_changed,
         }
 
-    def write_parsed_result(self, session: ParsedSession, *, content_hash: str | None = None) -> dict[str, int]:
+    def write_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        content_hash: str | None = None,
+        fresh_build: bool = False,
+    ) -> dict[str, int]:
         """Write a parsed session and report whether precedence skipped it."""
         self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
@@ -1156,6 +1263,7 @@ class ArchiveStore:
             self._conn,
             session,
             content_hash=content_hash,
+            fresh_build=fresh_build,
             preacquired_attachment_blobs=acquired,
             source_conn=self._optional_source_conn(),
             write_outcome=outcomes,
@@ -1862,7 +1970,7 @@ class ArchiveStore:
         bulk_build: bool = False,
         defer_fts: bool = False,
         skip_already_applied: bool = False,
-        prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
+        prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(
@@ -2080,6 +2188,34 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id)
+
+    def read_compact_lineage(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int | None = None,
+        edge_offset: int = 0,
+        edge_limit: int | None = None,
+        include_accounting: bool = True,
+    ) -> CompactLineageGraph | None:
+        """Read the seed-relative compact lineage graph (polylogue-4ts.9).
+
+        Reads ``sessions``, ``session_links`` and message counts only, so a
+        large family costs indexed reads rather than a transcript hydration.
+        A ``None`` limit is an unbounded window.
+        """
+        from polylogue.storage.derived.lineage.compact import derive_compact_lineage
+
+        return derive_compact_lineage(
+            self._conn,
+            session_id,
+            node_offset=node_offset,
+            node_limit=node_limit,
+            edge_offset=edge_offset,
+            edge_limit=edge_limit,
+            include_accounting=include_accounting,
+        )
 
     def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
         """Read a bounded ``[offset, offset + limit)`` page of a session's transcript.
@@ -5082,6 +5218,7 @@ class ArchiveStore:
         cost that was never implicated by the incident.
         """
         self._require_writable("delete index.db sessions")
+        require_write_lease(f"ArchiveStore.delete_sessions(index={self.index_db_path})", archive_root=self.archive_root)
         resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
         if not resolved_session_ids:
             return 0
@@ -7771,7 +7908,7 @@ def _session_cost_insight_from_archive_row(
 
 
 def _canonical_json_text(value: object) -> str:
-    return json.dumps(require_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return canonical_bytes(require_json_value(value), REFERENCE).decode("utf-8")
 
 
 def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_tags") -> str:

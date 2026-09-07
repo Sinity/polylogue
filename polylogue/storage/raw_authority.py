@@ -24,6 +24,7 @@ from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 #: Fingerprints previously stamped by ``RAW_AUTHORITY_PARSER_FINGERPRINT``
 #: whose classification semantics are known to have been superseded by a
@@ -1090,6 +1091,7 @@ def record_raw_authority_census(
     residual_digest = _digest(residual)
     scope_json = _canonical_json(scope)
     residual_json = _canonical_json(residual)
+    require_write_lease("raw authority census", archive_root=archive_root)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         # SQLite scopes foreign-key enforcement to each connection. Enable it
         # before the transaction so header compaction preserves the declared
@@ -1573,6 +1575,7 @@ def record_raw_replay_outcome(
     outcome: RawReplayPlanOutcome,
 ) -> None:
     now = int(time.time() * 1000)
+    require_write_lease("raw authority plan", archive_root=archive_root)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         updated = conn.execute(
             """
@@ -1673,6 +1676,7 @@ def finalize_raw_authority_census(
 ) -> RawAuthorityCensusReceipt:
     """Publish a census only after every selected plan has a recorded outcome."""
     now = int(time.time() * 1000)
+    require_write_lease("raw authority census finalize", archive_root=archive_root)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         status = conn.execute(
             "SELECT lifecycle_status FROM raw_authority_censuses WHERE census_id = ?",
@@ -1836,7 +1840,7 @@ def recover_interrupted_raw_authority_censuses(
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return ()
-    with closing(sqlite3.connect(source_db)) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
@@ -2258,6 +2262,7 @@ def reject_stale_raw_replay_plan(
         "resolve the durable raw-authority blocker before automatic convergence resumes",
         json_document({"expected": plan.to_dict(), "observed": observed, "blocker_id": blocker_id}),
     )
+    require_write_lease("raw authority blocker", archive_root=archive_root)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         conn.execute(
             """
@@ -2325,6 +2330,7 @@ def reject_invalid_raw_replay_application(
         "resolve the durable raw-authority blocker before automatic convergence resumes",
         json_document({"expected": plan.to_dict(), "observed": observed, "blocker_id": blocker_id}),
     )
+    require_write_lease("raw authority blocker", archive_root=archive_root)
     with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         conn.execute(
             """
@@ -2390,7 +2396,7 @@ def reset_raw_authority_census_ledger(
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         raise FileNotFoundError(source_db)
-    with closing(sqlite3.connect(source_db)) as conn:
+    with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         counts = {
             "raw_authority_censuses": int(conn.execute("SELECT COUNT(*) FROM raw_authority_censuses").fetchone()[0]),
@@ -2430,7 +2436,7 @@ def prune_orphaned_index_revision_seeds(
     index_db = ArchiveLocation.resolve(archive_root).active_index_path
     if not source_db.is_file() or not index_db.is_file():
         raise FileNotFoundError(source_db if not source_db.is_file() else index_db)
-    with closing(sqlite3.connect(index_db)) as conn:
+    with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as conn:
         conn.execute("ATTACH DATABASE ? AS src", (str(source_db),))
         heads = int(
             conn.execute(

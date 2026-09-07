@@ -124,6 +124,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
         "reference",
     ),
     _entry(
+        "SQLite Connection and WAL Policy",
+        "sqlite-connection-policy.md",
+        "Named timeout classes, checkpoint ownership and escalation, read-frame lifetime, and the connection inventory.",
+        "reference",
+    ),
+    _entry(
         "Provider Package Completeness",
         "provider-completeness.md",
         "Readiness report for provider/importer package modes by origin and capture mode.",

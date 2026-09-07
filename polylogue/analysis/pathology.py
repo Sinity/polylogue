@@ -9,9 +9,12 @@ Detectors operate over structured run-projection evidence (#2482):
 
 - ``wasted_loop`` — repeated ``test_failed``/``command_failed`` outcome events in
   a run, the edit→test-fail→edit cycle that burns turns without converging.
-- ``stale_context`` — a continuation/subagent context boundary inherited context
-  in a lossy mode (``summary``/``prefix``), the stale-context-after-compaction
-  pattern.
+- ``stale_context`` — context the run could no longer see. A ``compaction``
+  boundary reports the message range it replaced, read from
+  ``session_events.boundary_start_position``/``boundary_end_position``, so the
+  finding names the replaced messages themselves. A resume boundary that
+  re-inherited context in a lossy mode (``summary``/``prefix``) is the weaker
+  signal used where no range is recorded.
 
 The former ``missed_review`` detector was removed (#2482): its entire basis was
 the prose-mined ``review_*`` events, which fabricated review lifecycle state from
@@ -35,11 +38,17 @@ from collections.abc import Iterable, Sequence
 from typing import Literal
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
-from polylogue.analysis.run_projection import ObservedEvent, RunProjection
+from polylogue.analysis.run_projection import (
+    COMPACTION_RANGE_END_KEY,
+    COMPACTION_RANGE_START_KEY,
+    ContextSnapshot,
+    ObservedEvent,
+    RunProjection,
+)
 from polylogue.core.refs import EvidenceRef
 
 # Bump when a detector's rule changes so cached/rebuilt output is comparable.
-PATHOLOGY_DETECTOR_VERSION = 4
+PATHOLOGY_DETECTOR_VERSION = 5
 
 PathologyKind = Literal["wasted_loop", "stale_context"]
 PathologySeverity = Literal["low", "medium", "high"]
@@ -165,6 +174,69 @@ def _is_diagnostic_failure_event(event: ObservedEvent) -> bool:
     return bool(event.command and event.command.strip())
 
 
+def _replaced_range(snapshot: ContextSnapshot) -> tuple[int, int] | None:
+    """The inclusive message range a compaction boundary replaced, or ``None``.
+
+    ``None`` means the archive does not record what the boundary replaced. It
+    is never a range of zero messages, and no caller may substitute a bound
+    derived from message shape.
+    """
+    start = snapshot.metadata.get(COMPACTION_RANGE_START_KEY)
+    end = snapshot.metadata.get(COMPACTION_RANGE_END_KEY)
+    if start is None or end is None:
+        return None
+    try:
+        bounds = (int(start), int(end))
+    except ValueError:
+        return None
+    return bounds if bounds[0] <= bounds[1] else None
+
+
+def _detect_compaction_context_loss(projection: RunProjection) -> list[PathologyFinding]:
+    """Compaction boundaries whose replaced range the archive records.
+
+    The finding's evidence is the replaced messages, not the session, so a
+    reader lands on the content the run stopped being able to see.
+    """
+    ranged = [
+        (snapshot, bounds)
+        for snapshot in projection.context_snapshots
+        if snapshot.boundary == "compaction" and (bounds := _replaced_range(snapshot)) is not None
+    ]
+    if not ranged:
+        return []
+    refs = _dedup_refs(ref for snapshot, _ in ranged for ref in snapshot.evidence_refs)
+    replaced_count = sum(end - start + 1 for _, (start, end) in ranged)
+    ranges = ", ".join(f"{start}-{end}" for _, (start, end) in ranged)
+    return [
+        PathologyFinding(
+            kind="stale_context",
+            session_id=projection.session_id,
+            severity="high" if replaced_count >= 20 else "medium",
+            detail=(
+                f"{len(ranged)} compaction boundary(ies) replaced {replaced_count} "
+                f"message(s) at position range(s): {ranges}"
+            ),
+            occurrence_count=len(ranged),
+            evidence_refs=refs,
+        )
+    ]
+
+
+def _dedup_refs(refs: Iterable[EvidenceRef]) -> tuple[EvidenceRef, ...]:
+    seen: set[tuple[str, str | None]] = set()
+    out: list[EvidenceRef] = []
+    for ref in refs:
+        key = (ref.session_id, ref.message_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ref)
+        if len(out) >= _MAX_FINDING_EVIDENCE:
+            break
+    return tuple(out)
+
+
 def _detect_stale_context(projection: RunProjection) -> list[PathologyFinding]:
     """Resume (post-compaction) boundary that re-inherited context lossily."""
     lossy = [
@@ -174,16 +246,7 @@ def _detect_stale_context(projection: RunProjection) -> list[PathologyFinding]:
     ]
     if not lossy:
         return []
-    seen: set[tuple[str, str | None]] = set()
-    refs: list[EvidenceRef] = []
-    for snapshot in lossy:
-        for ref in snapshot.evidence_refs:
-            key = (ref.session_id, ref.message_id)
-            if key not in seen:
-                seen.add(key)
-                refs.append(ref)
-            if len(refs) >= _MAX_FINDING_EVIDENCE:
-                break
+    refs = _dedup_refs(ref for snapshot in lossy for ref in snapshot.evidence_refs)
     modes = sorted({snapshot.inheritance_mode for snapshot in lossy})
     return [
         PathologyFinding(
@@ -192,7 +255,7 @@ def _detect_stale_context(projection: RunProjection) -> list[PathologyFinding]:
             severity="medium",
             detail=(f"{len(lossy)} resume boundary(ies) re-inherited context in lossy mode(s): {', '.join(modes)}"),
             occurrence_count=len(lossy),
-            evidence_refs=tuple(refs),
+            evidence_refs=refs,
         )
     ]
 
@@ -201,7 +264,11 @@ def detect_session_pathologies(projection: RunProjection) -> list[PathologyFindi
     """Run every v1 detector against a single session's run projection."""
     findings: list[PathologyFinding] = []
     findings.extend(_detect_wasted_loops(projection))
-    findings.extend(_detect_stale_context(projection))
+    # A recorded replaced range names the messages the run lost; the lossy-resume
+    # heuristic only says a boundary happened. When both would fire on the same
+    # session the precise one stands alone, so one context loss is one finding.
+    compaction = _detect_compaction_context_loss(projection)
+    findings.extend(compaction or _detect_stale_context(projection))
     return findings
 
 

@@ -203,6 +203,24 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "no compaction boundary"),
     ),
     SessionViewProfile(
+        view_id="lineage",
+        label="Lineage",
+        owner="polylogue.storage.derived.lineage.compact.derive_compact_lineage",
+        purpose=(
+            "Compact seed-relative lineage graph: node/edge roles relative to the requested "
+            "session, link type, inheritance, branch point, derivation method, confidence, "
+            "resolution state, and unique-versus-inherited message accounting."
+        ),
+        input_scope="single session id",
+        included_kinds=("lineage node", "lineage edge", "message accounting"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="session identity, titles and counts only; renders no message content",
+        formats=("json",),
+        machine_payload="compact lineage graph payload",
+        degraded_states=("missing session", "unresolved parent edge", "cycle in the lineage graph"),
+    ),
+    SessionViewProfile(
         view_id="file-edits",
         label="File Edits",
         owner="polylogue.cli.read_views.file_edits.run_read_file_edits",
@@ -375,6 +393,7 @@ READ_VIEW_HTTP_CAPABILITIES: dict[str, ReadViewHttpCapability] = {
         "correlation", ("json",), ("confidence_threshold", "repo_path", "since_hours")
     ),
     "effective_context": ReadViewHttpCapability("effective_context", ("json",), ("at_position",)),
+    "lineage": ReadViewHttpCapability("lineage", ("json",), ("node_offset", "node_limit", "edge_offset", "edge_limit")),
 }
 
 

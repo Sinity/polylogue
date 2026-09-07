@@ -231,9 +231,15 @@ before treating the pass as complete.
 One-time transition tooling for the blob-store maneuver. `plan` is read-only:
 it walks the complete physical namespace and gives every object exactly one
 disposition proven against a configured source — `source_present`,
-`superseded_prefix`, `restore_required`, or `unresolved`. Its digest binds the
-archive identity, the namespace, the denominators, and every member outcome,
-and `accepted` reports whether anything is still unexplained.
+`superseded_prefix`, `restore_required`, `unreferenced`, or `unresolved`. A
+plan is acceptable at zero unresolved members with every non-blob namespace
+entry explained, and its digest binds the archive identity, the namespace, the
+denominators, and every member outcome.
+
+`unreferenced` is the terminal outcome for an object no durable relation
+names. A blob is published before the row that owns it, and reference-dropping
+repairs strand objects by design, so an unnamed object is daemon GC's to
+collect: this plan records it, never removes it, and never blocks on it.
 
 The plan splits the redundant population two ways. `reclaimable_bytes` counts
 the `source_present` and `superseded_prefix` members no durable row
@@ -259,7 +265,13 @@ every `restore_required` carrier into its ordinary spool and reads the
 published material back — the capture receiver publishes acquired bytes
 verbatim, so a restored capture is verified byte-for-byte, while a hook event
 is verified through the production read route that derives the fields the
-spool file does not carry. It then deletes, through the canonical blob-GC
+spool file does not carry. One provider session keeps one capture artifact, so
+a carrier arriving at an occupied artifact name is a revision the spool
+converges: the newer or richer capture is published and the rest report
+`restoration_superseded`, which is a completed restoration because the
+artifact holding that identity carries the material. Only a malformed
+envelope, a genuinely different session claiming the artifact name, or the
+spool quota refuses a carrier. It then deletes, through the canonical blob-GC
 seam, every member no durable row references: the same objects recurring GC
 would take, plus the namespace's non-blob entries (a SQLite `-wal` or `-shm`
 stranded beside a content-addressed object, whose bytes are that object's
@@ -273,7 +285,10 @@ what a durable row still references, and the receipt's `cohorts` block says
 how much of that is still unexplained.
 
 `apply` is a dry rehearsal without `--active`, and the rehearsal reports the
-totals its active twin would. A stale digest, a namespace that is not the
+totals and counts its active twin would: it resolves every restoration
+destination and evaluates the same admission rule, carrying what it would have
+published so a second carrier of one identity converges in the rehearsal
+exactly as it does in the run. A stale digest, a namespace that is not the
 plan's, a drifted denominator, or an active archive writer refuses the run
 before any effect. A carrier whose restoration did not complete keeps its blob
 and reports `blocked`. A pass interrupted part-way is resumed by re-running
@@ -288,6 +303,26 @@ bytes), `totals` (blob count and bytes in the namespace before and after),
 `restorations` (every sole copy and where the spool now holds it), and
 `reference_relations` — the durable relations a deleted member's
 `referenced: false` was decided against.
+
+Hook-event and browser-capture carriers are proven by the owning production
+read route, not by bytes: acquisition derives fields the spool file does not
+carry, so byte equality would misreport reproducible material as a sole copy.
+The same reasoning governs the three provers for material no filesystem walk
+can hash. A payload synthesized from a database row is reproduced by re-running
+the production encoding over the live state database. An attachment extracted
+from an account export is proven against a member of the retained export
+archive, selected by the member's uncompressed size and decided by a fresh
+SHA-256 — pass `--export-archive-root` to `plan`, and again to `restore` and
+`apply`, which cannot revalidate a proof whose prover they were not given. A
+whole-session carrier whose source was rewritten in place is proven by the
+normalized session contribution both sides produce through the live detector,
+parser and admission: the source proves the carrier when it reproduces every
+stored session and no stored axis is missing from it.
+
+A non-blob entry inside the namespace blocks acceptance until it carries
+positive evidence of what it is. The one explained shape is a SQLite sidecar
+named after a blob that is still present, written beside the object by a
+reader that opened the stored database in place.
 
 Deletion trigger: this command, both maintenance modules, and their tests are
 removed with the terminal disposition receipt. The recurring liveness,
@@ -342,7 +377,7 @@ extensible registry):
 | `tier-schema` | Every tier file (source/index/embeddings/user/ops) exists at its current `PRAGMA user_version`. |
 | `pointer-coherence` | The conventional `index.db` path and the active `.index-active-pointer` generation agree (an interrupted blue-green promotion leaves these diverged — polylogue-k8kj class). |
 | `source-index-coverage` | Every raw logical head is materialized, has an explicit terminal disposition, or is quarantined, and every index session's `raw_id` still resolves to a real raw row (orphans). The raw source population, not the derived census ledger, defines the coverage universe. |
-| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. Two rules cite another owner's durable ledger: `authority_blocked_head` (warning) is a raw an unresolved `raw_authority_blockers` row names as the accepted revision head while the index materialized a different raw of the same logical source, and `quarantined_cohort_unmaterialized` (blocking) is a raw whose `raw_session_memberships` rows are all quarantined with no revision of the logical source indexed at all. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. An attachment with no ref splits on `ref_count`: `attachment_unowned` (ref_count 0) is explained and `attachment_unreferenced` (non-zero ref_count) blocks — `ref_count` distinguishes the two only in an archive written throughout by the current sweep, so on a legacy archive `plan_orphaned_attachment_relink` is the instrument that types each ref-less row. Unexplained, unclassified, lost-source, quarantined-cohort, orphan, and phantom terms block; pending and authority-blocked are warnings. The acceptance instrument for a rebuilt archive: zero blocking terms. |
+| `source-conservation` | Every acquired source item (each `raw_sessions` row, hook event, history sidecar) is materialized or carries a typed exclusion citing its rule (revision superseded, byte-duplicate receipt, parse failure, validation rejection, declared non-session artifact kind, decode failure, census verdict, pending); a parsed raw whose content-addressed payload is unavailable is `missing_blob` and names source re-acquisition, while a raw row whose source file no longer exists on disk is `source_missing` when its raw payload bytes are still retained and `source_lost` when they are not. Two rules cite another owner's durable ledger: `authority_blocked_head` (warning) is a raw an unresolved `raw_authority_blockers` row names as the accepted revision head while the index materialized a different raw of the same logical source, and `quarantined_cohort_unmaterialized` (blocking) is a raw whose `raw_session_memberships` rows are all quarantined with no revision of the logical source indexed at all. Reverse: every session traces to a raw row that is not a declared non-session artifact (phantom sessions, polylogue-b508, are reported and never deleted), and every message, block, and attachment ref traces to its owner. An attachment with no ref splits on `ref_count`: `attachment_unowned` (ref_count 0) is explained and `attachment_unreferenced` (non-zero ref_count) blocks — `ref_count` distinguishes the two only in an archive written throughout by the current sweep, so on a legacy archive `plan_orphaned_attachment_relink` is the instrument that types each ref-less row. Unexplained, unclassified, missing-blob, lost-source, quarantined-cohort, orphan, and phantom terms block; pending and authority-blocked are warnings. The acceptance instrument for a rebuilt archive: zero blocking terms. |
 | `reasoning-conservation` | Every reasoning witness inside the acquired bytes of a materialized coding-origin raw reaches a thinking block of the exact session and message that carries it. Witnesses are selected structurally from the payload -- Claude Code `thinking` segments (text-bearing, signature-only, empty) and standalone Codex `reasoning` records (summary-bearing, content-bearing, opaque) -- never from the parser, the index, or any identity in the file. Denominators and outcomes are reported per origin and per variant: material surviving under a non-thinking kind is `reasoning_kind_collapsed`, an absent carrier or lost material blocks, a declared origin that contributed no readable evidence is `origin_evidence_absent`, and a bounded run that truncated is `scan_truncated`. One origin's conserved witnesses can never stand in for another's lost ones. Reads every selected blob of the two largest origins, so it is declared on the cross-tier candidate route only, never the routine live route. |
 | `fts-parity` | `messages_fts`/`blocks_command_trigram` exactly cover their source `blocks` rows, archive-wide, with the worst-offending sessions surfaced by name. |
 | `lineage-sanity` | `session_links.resolved_dst_session_id` and `branch_point_message_id` resolve to real sessions/messages (the latter is deliberately not a foreign key — see the data-model docs). |

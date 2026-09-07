@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from polylogue.core.enums import OperationStatus
+
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
 MAX_OPERATION_BODY_BYTES = 64 * 1024
 MAX_OPERATION_RESULT_BYTES = 8 * 1024 * 1024
@@ -26,14 +28,6 @@ class DaemonAuthority(StrEnum):
 class DaemonFallback(StrEnum):
     DIRECT_READ = "direct-read"
     NEVER = "never"
-
-
-class DaemonOutcome(StrEnum):
-    COMPLETE = "complete"
-    ACCEPTED = "accepted"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-    INDETERMINATE = "indeterminate"
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +48,9 @@ class DaemonOperationSpec:
     accepted_reference: bool = False
     request_contract: str = "object"
     result_contract: str = "object"
+    max_body_bytes: int = MAX_OPERATION_BODY_BYTES
+    """Bound on this operation's request body; a selection carries more than a
+    parameter map, so the limit belongs to the operation, not the transport."""
     error_contract: str = "polylogue.daemon-error/v1"
     authority_metadata: tuple[str, ...] = (
         "archive",
@@ -81,6 +78,7 @@ class DaemonOperationSpec:
             "accepted_reference": self.accepted_reference,
             "request_contract": self.request_contract,
             "result_contract": self.result_contract,
+            "max_body_bytes": self.max_body_bytes,
             "error_contract": self.error_contract,
             "authority_metadata": list(self.authority_metadata),
         }
@@ -98,7 +96,77 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         "completion", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="completion.result/v1"
     ),
     DaemonOperationSpec("facets", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="facets.result/v1"),
+    DaemonOperationSpec(
+        "mutation.session.delete.preview",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_session",
+        deadline_s=30.0,
+        # A preview carries the exact selection: up to
+        # ``DELETE_PREVIEW_MAX_SESSION_IDS`` session ids, not a parameter map.
+        max_body_bytes=64 * 1024 * 1024,
+        request_contract="mutation.session.delete.preview.request/v1",
+        result_contract="mutation.session.delete.preview.result/v1",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.delete.authorize",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        capability="archive.delete_session",
+        deadline_s=30.0,
+        request_contract="mutation.session.delete.authorize.request/v1",
+        result_contract="mutation.session.delete.authorize.result/v1",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.delete.cancel",
+        DaemonAuthority.CONTROL,
+        DaemonFallback.NEVER,
+        capability="archive.delete_session",
+        deadline_s=30.0,
+        request_contract="mutation.session.delete.cancel.request/v1",
+        result_contract="mutation.session.delete.cancel.result/v1",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.delete.execute",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.delete_session",
+        deadline_s=300.0,
+        progress=True,
+        request_contract="mutation.session.delete.execute.request/v1",
+        result_contract="mutation.result/v1",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.tag",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        max_body_bytes=64 * 1024 * 1024,
+        capability="archive.bulk_tag_sessions",
+        deadline_s=120.0,
+        request_contract="mutation.session.tag.request/v1",
+        result_contract="mutation.result/v1",
+    ),
+    DaemonOperationSpec(
+        "mutation.session.metadata",
+        DaemonAuthority.WRITE,
+        DaemonFallback.NEVER,
+        max_body_bytes=64 * 1024 * 1024,
+        capability="archive.set_metadata",
+        deadline_s=120.0,
+        request_contract="mutation.session.metadata.request/v1",
+        result_contract="mutation.result/v1",
+    ),
 )
+
+MAX_DECLARED_OPERATION_BODY_BYTES: int = max(spec.max_body_bytes for spec in DAEMON_OPERATION_SPECS)
+"""Transport-level read bound: the operation is only known after parsing, so
+the socket read is capped by the largest declared body and the operation's own
+``max_body_bytes`` is enforced once the request names it."""
+
+MUTATION_OPERATION_NAMES: frozenset[str] = frozenset(
+    spec.name for spec in DAEMON_OPERATION_SPECS if spec.authority is not DaemonAuthority.READ
+)
+"""Operations a CLI adapter may never execute in its own process."""
 
 if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
     raise RuntimeError("daemon operation names must be unique")
@@ -171,7 +239,7 @@ class DaemonOperationEnvelope:
     readiness: dict[str, object]
     authority: dict[str, object]
     progress: dict[str, object]
-    outcome: DaemonOutcome | str = DaemonOutcome.COMPLETE
+    outcome: OperationStatus | str = OperationStatus.COMPLETED
     served_by: dict[str, object] | None = None
     timing: dict[str, object] | None = None
     degraded_components: tuple[str, ...] = ()
@@ -189,7 +257,7 @@ class DaemonOperationEnvelope:
             "readiness": self.readiness,
             "authority": self.authority,
             "progress": self.progress,
-            "outcome": self.outcome.value if isinstance(self.outcome, DaemonOutcome) else self.outcome,
+            "outcome": self.outcome.value if isinstance(self.outcome, OperationStatus) else self.outcome,
             "served_by": self.served_by or {},
             "timing": self.timing or {},
             "degraded_components": list(self.degraded_components),
@@ -233,14 +301,16 @@ def archive_identity(
 __all__ = [
     "DAEMON_OPERATION_PROTOCOL",
     "DAEMON_OPERATION_SPECS",
+    "MUTATION_OPERATION_NAMES",
+    "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
     "DaemonAuthority",
     "DaemonFallback",
     "DaemonOperationSpec",
     "DaemonOperationEnvelope",
-    "DaemonOutcome",
     "DaemonOperationRequest",
+    "OperationStatus",
     "archive_identity",
     "daemon_operation_spec",
 ]

@@ -49,6 +49,7 @@ from polylogue.storage.blob_ref_liveness import (
     classify_blob_ref_liveness,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     DurableChangeTrain,
@@ -89,7 +90,7 @@ def _immutable_read_connection(path: Path) -> sqlite3.Connection:
     incidental files beside authenticated evidence, so keep those structures
     in SQLite's memory temp store.
     """
-    connection = sqlite3.connect(f"file:{path}?mode=ro&immutable=1", uri=True)
+    connection = open_readonly_connection(path, immutable=True, validate_schema=False)
     connection.execute("PRAGMA temp_store=MEMORY")
     return connection
 

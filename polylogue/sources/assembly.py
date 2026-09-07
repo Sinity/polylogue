@@ -37,14 +37,12 @@ class _CodexSidecarData(TypedDict, total=False):
     thread_names: CodexThreadNames
     history_titles: CodexHistoryTitles
     state_titles: CodexHistoryTitles
-    # bd polylogue-foee / polylogue-zco96: thread_id -> title read from
-    # acquired codex_thread_title raw_hook_events (polylogue-0jf4's durable,
-    # snapshot-safe capture of state_5.sqlite's threads.title). Resolved from
-    # source.db by the routes that own a connection -- the pipeline ingest
-    # worker and retained-raw replay -- never by
-    # CodexAssemblySpec.discover_sidecars itself (file-system only, no DB
-    # access). See assembly_codex.py's ladder step 3b.
-    hook_event_titles: CodexHistoryTitles
+    # thread_id -> title projected from the retained state export into
+    # index.db's codex_thread_state. Resolved by the routes that own a
+    # connection -- the pipeline ingest worker and retained-raw replay --
+    # never by CodexAssemblySpec.discover_sidecars itself (file-system only,
+    # no DB access). See assembly_codex.py's ladder step 3b.
+    retained_state_titles: CodexHistoryTitles
 
 
 class _ClaudeAISidecarData(TypedDict, total=False):
@@ -59,12 +57,12 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     # resolver built once per source scan from conversation_asset_file_names.json
     # + library_files.json. See sources/assembly_chatgpt.py.
     chatgpt_asset_index: ChatGPTAssetIndex
-    # bd polylogue-8ac0: dat asset id -> (blob_hash_hex, size_bytes) for every
-    # ``.dat`` member/sibling file whose bytes were streamed into the blob
+    # bd polylogue-8ac0: asset id -> (blob_hash_hex, size_bytes) for every
+    # export member or sibling file whose bytes were streamed into the blob
     # store during sidecar discovery. Attachment resolution joins against this
-    # so previously-acquired dat bytes are marked "acquired" without
+    # so previously-acquired asset bytes are marked "acquired" without
     # re-hashing (see ``ingest_batch/_core.py``'s ``preacquired_attachment_blobs``).
-    chatgpt_dat_blobs: dict[str, tuple[str, int]]
+    chatgpt_asset_blobs: dict[str, tuple[str, int]]
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, _ClaudeAISidecarData, total=False):

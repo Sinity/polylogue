@@ -1,14 +1,19 @@
 """Post-ingest paste-evidence enrichment from UserPromptSubmit hook events.
 
-#1654: hook events written to the hooks sidecar directory by
-``polylogue-hook`` carry ground-truth paste markers (``[Pasted text #N]``)
-in the UserPromptSubmit payload. These arrive after the session
-JSONL was ingested, so the initial materialization may have missed them.
+#1654: hook events carry ground-truth paste markers (``[Pasted text #N]``) in
+the UserPromptSubmit payload. They arrive after the session JSONL was
+ingested, so the initial materialization may have missed them.
 
-This module provides a lightweight enrichment step that reads hook
-sidecar JSONL files from disk and updates ``has_paste`` on matching
-messages. It is called by the daemon after each live-ingest batch
-completes.
+The evidence is read from the durable source tier's ``raw_hook_events`` rows,
+whose ``payload_json`` is the whole spool envelope the drain committed. That
+is the only carrier an event keeps for its whole life: a pending envelope is
+moved to ``acknowledged`` the moment the drain commits it, so enriching from
+the spool would see an event exactly once and never again. The consequence is
+a drain-cadence lag -- an event enriches on the first batch after the drain
+that admitted it, not on the batch that ingested its session -- which the
+per-batch rescan and the whole-archive pass both absorb.
+
+It is called by the daemon after each live-ingest batch completes.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from polylogue.core.enums import PasteBoundary
 from polylogue.core.hook_payload import hook_record_field, matched_reader_keys
 from polylogue.logging import get_logger
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = get_logger(__name__)
 
@@ -34,52 +40,75 @@ _PASTE_EVENT_TYPE = "UserPromptSubmit"
 _TIMESTAMP_TOLERANCE_MS = 3000
 
 
-def _sidecar_paths(hooks_dir: Path, session_ids: Iterable[str] | None) -> list[Path]:
-    """Sidecar journals to scan: every one, or only the given sessions'.
+def _scoped_hook_keys(session_ids: Iterable[str]) -> list[tuple[str, str]]:
+    """``(origin, native_id)`` pairs addressing one session's hook events each.
 
-    ``polylogue-hook`` journals each session to ``<provider>-<native_id>.jsonl``
-    in the sidecar dir, so a session's paste events live in the one file named
-    by its native id. Scoping to the batch's sessions keeps the scan bounded by
-    the batch instead of by the archive's whole hook history.
+    ``raw_hook_events`` is indexed on ``(origin, session_native_id, ...)``, so
+    an archive session id is split back into both halves rather than matched
+    on the native id alone: the leading column is what keeps the scan bounded
+    by the batch instead of by the archive's whole hook history.
     """
-    if not hooks_dir.exists():
-        return []
-    if session_ids is None:
-        return sorted(hooks_dir.glob("*.jsonl"))
-    paths: dict[Path, None] = {}
+    keys: dict[tuple[str, str], None] = {}
     for session_id in session_ids:
-        native_id = str(session_id).split(":", 1)[-1]
-        if not native_id:
+        origin, separator, native_id = str(session_id).partition(":")
+        if not separator or not origin or not native_id:
             continue
-        for candidate in sorted(hooks_dir.glob(f"*-{native_id}.jsonl")):
-            paths[candidate] = None
-    return list(paths)
+        keys[(origin, native_id)] = None
+    return list(keys)
 
 
-def _iter_hook_paste_events(hooks_dir: Path, session_ids: Iterable[str] | None = None) -> list[dict[str, object]]:
-    """Scan hook sidecar JSONL files, return UserPromptSubmit events with paste."""
+def _iter_hook_paste_events(source_db: Path, session_ids: Iterable[str] | None = None) -> list[dict[str, object]]:
+    """Durable UserPromptSubmit hook envelopes that carry paste evidence.
+
+    ``session_ids`` (archive ``origin:native_id`` ids) bounds the read to those
+    sessions' events; ``None`` reads every UserPromptSubmit event in the tier.
+    """
+    if not source_db.exists():
+        return []
     events: list[dict[str, object]] = []
-    for jsonl_path in _sidecar_paths(hooks_dir, session_ids):
-        try:
-            with open(jsonl_path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(record, dict):
-                        continue
-                    if hook_record_field(record, "event_type") != _PASTE_EVENT_TYPE:
-                        continue
-                    if not has_paste_indicator(record):
-                        continue
-                    events.append(record)
-        except OSError:
-            logger.debug("hook_paste: could not read %s", jsonl_path, exc_info=True)
+    # A read failure on a durable tier is not a per-record condition and is not
+    # swallowed into "this batch has no paste evidence": the caller treats an
+    # enrichment failure as non-fatal and logs it.
+    connection = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+    try:
+        if not _table_exists(connection, "raw_hook_events"):
+            return []
+        queries: list[tuple[str, tuple[str, ...]]]
+        if session_ids is None:
+            queries = [("SELECT payload_json FROM raw_hook_events WHERE event_type = ?", (_PASTE_EVENT_TYPE,))]
+        else:
+            keys = _scoped_hook_keys(session_ids)
+            if not keys:
+                return []
+            queries = [
+                (
+                    "SELECT payload_json FROM raw_hook_events "
+                    "WHERE origin = ? AND session_native_id = ? AND event_type = ?",
+                    (origin, native_id, _PASTE_EVENT_TYPE),
+                )
+                for origin, native_id in keys
+            ]
+        for sql, parameters in queries:
+            for (payload_json,) in connection.execute(sql, parameters):
+                record = _decode_envelope(payload_json)
+                if record is None:
+                    continue
+                if not has_paste_indicator(record):
+                    continue
+                events.append(record)
+    finally:
+        connection.close()
     return events
+
+
+def _decode_envelope(payload_json: object) -> dict[str, object] | None:
+    if not isinstance(payload_json, str):
+        return None
+    try:
+        record = json.loads(payload_json)
+    except ValueError:
+        return None
+    return record if isinstance(record, dict) else None
 
 
 def _hook_epoch_ms(event: dict[str, object]) -> float:
@@ -102,7 +131,14 @@ def _archive_index_path(db_path: Path) -> Path | None:
     return index_db if index_db.exists() else None
 
 
+def _archive_source_path(db_path: Path) -> Path:
+    from polylogue.storage.archive_identity import ArchiveLocation
+
+    return ArchiveLocation.resolve(db_path.parent).active_tier("source").configured_path
+
+
 def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:
+    require_write_lease(f"hook paste enrichment({index_db})", archive_root=index_db.parent)
     conn = sqlite3.connect(str(index_db))
     updated = 0
     updated_sessions: set[str] = set()
@@ -188,20 +224,20 @@ def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, obje
 
 
 def enrich_paste_from_hooks(db_path: Path, *, session_ids: Iterable[str] | None = None) -> int:
-    """Scan hook sidecar files and update has_paste on matching messages.
+    """Read durable hook events and update has_paste on matching messages.
 
     ``db_path`` is the caller's ops.db path (``archive_root / "ops.db"``), so
-    the hook sidecar directory is derived from its parent rather than from an
-    ambient global (polylogue-o7hx): this enrichment always inspects the
-    archive it was actually called for, never a different one that happens to
-    be the process-wide default.
+    both tiers are derived from its parent rather than from an ambient global
+    (polylogue-o7hx): this enrichment always inspects the archive it was
+    actually called for, never a different one that happens to be the
+    process-wide default.
 
-    ``session_ids`` (archive ``origin:native_id`` ids) bounds the scan to those
-    sessions' sidecar journals; ``None`` scans every journal in the directory.
+    ``session_ids`` (archive ``origin:native_id`` ids) bounds the read to those
+    sessions' hook events; ``None`` reads every UserPromptSubmit event.
 
     Returns the number of messages updated.
     """
-    events = _iter_hook_paste_events(db_path.parent / "hooks", session_ids)
+    events = _iter_hook_paste_events(_archive_source_path(db_path), session_ids)
     if not events:
         return 0
 
@@ -210,5 +246,5 @@ def enrich_paste_from_hooks(db_path: Path, *, session_ids: Iterable[str] | None 
         return 0
     updated = _enrich_archive_paste_from_hooks(archive_index, events)
     if updated:
-        logger.info("hook_paste: enriched %d archive message(s) from hook sidecar events", updated)
+        logger.info("hook_paste: enriched %d archive message(s) from hook events", updated)
     return updated

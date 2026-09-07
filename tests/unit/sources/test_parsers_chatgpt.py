@@ -198,6 +198,124 @@ def test_chatgpt_keeps_image_asset_only_nodes() -> None:
     assert messages[0].blocks[0].metadata == {"asset_pointer": "file-service://image-asset-1"}
 
 
+def test_image_asset_pointer_part_becomes_an_attachment() -> None:
+    """bd polylogue-91kys: an asset pointer needs an attachment row to bind to.
+
+    An `image_asset_pointer` part names bytes the export ships. The IMAGE
+    block carries the pointer as metadata, but block metadata is not an
+    acquisition identity — `assembly_chatgpt.py` joins acquired asset members
+    onto attachments by the bare file id, so a pointer with no attachment row
+    leaves its acquired bytes unbindable. Red if the branch goes back to
+    emitting the IMAGE block alone.
+    """
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "image-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "image_asset_pointer",
+                                "asset_pointer": "sediment://file_00000000005061f6be1311c8d48a7716",
+                                "size_bytes": 27100,
+                                "width": 1024,
+                                "height": 768,
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+
+    assert messages[0].blocks[0].type is BlockType.IMAGE
+    assert messages[0].blocks[0].metadata == {
+        "asset_pointer": "sediment://file_00000000005061f6be1311c8d48a7716",
+        "width": "1024",
+        "height": "768",
+        "size_bytes": "27100",
+    }
+
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert attachment.provider_attachment_id == "sediment://file_00000000005061f6be1311c8d48a7716"
+    assert attachment.message_provider_id == "image-msg"
+    # The bare id is the join key the export's asset members are named by.
+    assert attachment.provider_file_id == "file_00000000005061f6be1311c8d48a7716"
+    assert attachment.size_bytes == 27100
+    assert attachment.attachment_kind == "image_asset"
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:image-msg"
+
+
+def test_image_asset_pointer_does_not_duplicate_its_metadata_attachment() -> None:
+    """One upload named twice is one attachment.
+
+    A user upload appears both as a message `metadata.attachments` row (bare
+    `file-<id>`) and as an `image_asset_pointer` part (`file-service://file-<id>`).
+    Both normalize to the same file id, so the pointer must not mint a second
+    row for the same bytes. Red if the dedupe by bare id is dropped.
+    """
+    _messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "upload-msg",
+                    "author": {"role": "user"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "image_asset_pointer",
+                                "asset_pointer": "file-service://file-ABC123",
+                            },
+                            "look at this",
+                        ],
+                    },
+                    "metadata": {
+                        "attachments": [
+                            {"id": "file-ABC123", "name": "photo.png", "mime_type": "image/png", "size": 4096}
+                        ]
+                    },
+                },
+            }
+        }
+    )
+
+    assert len(attachments) == 1
+    assert attachments[0].provider_attachment_id == "file-ABC123"
+    assert attachments[0].name == "photo.png"
+
+
+def test_image_asset_pointer_without_a_pointer_invents_no_attachment() -> None:
+    """No pointer, no asset row -- an attachment is never invented."""
+    _messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "image-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [{"content_type": "image_asset_pointer"}],
+                    },
+                },
+            }
+        }
+    )
+
+    assert attachments == []
+
+
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     session = chatgpt_parse(
         {
@@ -917,6 +1035,10 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
     used to be built with neither, so the address was dropped and ``domain``
     stood in for the name. Removing ``url=`` or restoring ``title=domain`` in
     the retrieval branch turns this red.
+
+    The construct is what this asserts, not the block type that carries it:
+    on a ``role: tool`` node ``_tool_role_result_blocks`` re-types the
+    retrieval block to TOOL_RESULT and keeps the construct.
     """
     content: dict[str, object] = {"content_type": content_type, "text": "retrieved excerpt body", **content_extra}
     mapping = {
@@ -932,8 +1054,8 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
     }
 
     messages, _attachments = extract_messages_from_mapping(mapping)
-    document_blocks = [b for b in messages[0].blocks if b.type == BlockType.DOCUMENT]
-    construct = document_blocks[0].web_constructs[0]
+    retrieval_blocks = [b for b in messages[0].blocks if b.web_constructs]
+    construct = retrieval_blocks[0].web_constructs[0]
     assert construct.url == content_extra["url"]
     assert construct.title == content_extra["title"]
 
@@ -2514,7 +2636,14 @@ def test_computer_output_screenshot_becomes_image_block_and_attachment() -> None
     out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
 
     image = next(b for b in out_msg.blocks if b.type == BlockType.IMAGE)
-    assert image.metadata == {"asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7"}
+    # `blocks` has no dimension columns; the block metadata is projected into a
+    # `chatgpt_block_metadata` event, which is where width/height survive.
+    assert image.metadata == {
+        "asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7",
+        "width": "1024",
+        "height": "768",
+        "size_bytes": "27100",
+    }
     # The structural tool result still leads the message.
     assert out_msg.blocks[0].type == BlockType.TOOL_RESULT
 
@@ -2810,3 +2939,309 @@ def test_content_reference_grouped_webpages_items_become_constructs() -> None:
     assert by_url["https://example.test/a"].group_id == by_url["https://example.test/b"].group_id
     for construct in constructs:
         assert construct.construct_type.value == "content_reference"
+
+
+# -----------------------------------------------------------------------------
+# REDUCED EXPORT SHAPE AND METADATA DISPOSITIONS (bd polylogue-rp91m/-vnucj)
+# -----------------------------------------------------------------------------
+
+
+def _reduced_node(
+    node_id: str,
+    role: str,
+    text: str,
+    parent: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """A node in the reduced export shape: no ``children``, no ``status``.
+
+    The 2026-07 export ships ``{id, message, parent}`` nodes whose messages
+    carry only ``{author, content, create_time, id, metadata}`` — measured
+    over all 29 shards (75,453 nodes, 0 with ``children``).
+    """
+    message: dict[str, Any] = {
+        "id": node_id,
+        "author": {"role": role},
+        "create_time": 1_700_000_000.0,
+        "content": {"content_type": "text", "parts": [text]},
+    }
+    if metadata is not None:
+        message["metadata"] = metadata
+    return {"id": node_id, "parent": parent, "message": message}
+
+
+def test_chatgpt_branch_index_survives_missing_children_array() -> None:
+    """Siblings keep distinct branch indexes when the export omits ``children``.
+
+    Anti-vacuity: delete the ``_sibling_ordinals`` fallback and every
+    regenerated alternative collapses to ``branch_index == 0``, which is what
+    the reduced export shape produced before it existed.
+    """
+    messages, _ = extract_messages_from_mapping(
+        {
+            "root": _reduced_node("root", "user", "Question"),
+            "first": _reduced_node("first", "assistant", "Answer 1", parent="root"),
+            "second": _reduced_node("second", "assistant", "Answer 2", parent="root"),
+            "third": _reduced_node("third", "assistant", "Answer 3", parent="root"),
+        }
+    )
+
+    by_id = {message.provider_message_id: message for message in messages}
+    assert by_id["root"].branch_index == 0
+    assert [by_id[node].branch_index for node in ("first", "second", "third")] == [0, 1, 2]
+
+
+def test_chatgpt_children_array_outranks_arrival_order() -> None:
+    """``children`` states sibling order; the parent-edge fallback yields to it."""
+    messages, _ = extract_messages_from_mapping(
+        {
+            "root": make_chatgpt_node("root", "user", ["Q"], children=["second", "first"]),
+            "first": make_chatgpt_node("first", "assistant", ["A1"], parent="root"),
+            "second": make_chatgpt_node("second", "assistant", ["A2"], parent="root"),
+        }
+    )
+
+    by_id = {message.provider_message_id: message for message in messages}
+    assert by_id["first"].branch_index == 1
+    assert by_id["second"].branch_index == 0
+
+
+def test_chatgpt_reduced_shape_tool_outcome_stays_not_reported() -> None:
+    """No ``status`` field means no outcome verdict, never a guessed one."""
+    mapping = {
+        "call": _reduced_node("call", "assistant", "print(1)"),
+        "out": {
+            "id": "out",
+            "parent": "call",
+            "message": {
+                "id": "out",
+                "author": {"role": "tool"},
+                "create_time": 1_700_000_000.0,
+                "content": {"content_type": "execution_output", "text": "1"},
+            },
+        },
+    }
+    messages, _ = extract_messages_from_mapping(mapping)
+
+    result = next(block for message in messages for block in message.blocks if block.type is BlockType.TOOL_RESULT)
+    assert result.is_error is None
+    assert result.outcome_unknown_reason == "not_reported"
+
+
+def test_chatgpt_command_and_args_carry_a_tool_call_without_recipient() -> None:
+    """``metadata.command``/``args`` name the tool when ``recipient`` is absent.
+
+    Anti-vacuity: drop the metadata fallback and this message lowers to a
+    plain TEXT block — the shape 4,303 of 109,657 messages in the 2026-04
+    export take, since they state ``command`` and no ``recipient``.
+    """
+    messages, _ = extract_messages_from_mapping(
+        {
+            "root": _reduced_node("root", "user", "find it"),
+            "call": _reduced_node(
+                "call",
+                "assistant",
+                "not json",
+                parent="root",
+                metadata={"command": "search", "args": ["interception tools"]},
+            ),
+        }
+    )
+
+    call = next(message for message in messages if message.provider_message_id == "call")
+    block = call.blocks[0]
+    assert block.type is BlockType.TOOL_USE
+    assert block.tool_name == "search"
+    assert block.tool_input == {"args": ["interception tools"]}
+
+
+def test_chatgpt_finish_details_maps_only_exact_stop_reasons() -> None:
+    """``interrupted``/``content_filter`` have no StopReason equivalent."""
+    observed = {}
+    for finish_type in ("stop", "max_tokens", "interrupted", "content_filter", "unknown"):
+        messages, _ = extract_messages_from_mapping(
+            {
+                "turn": _reduced_node(
+                    "turn",
+                    "assistant",
+                    "answer",
+                    metadata={"finish_details": {"type": finish_type}},
+                )
+            }
+        )
+        observed[finish_type] = messages[0].stop_reason
+
+    assert observed == {
+        "stop": "end_turn",
+        "max_tokens": "max_tokens",
+        "interrupted": None,
+        "content_filter": None,
+        "unknown": None,
+    }
+
+
+def test_chatgpt_model_name_falls_back_through_default_slugs() -> None:
+    """``model_slug`` wins, then message ``default_model_slug``, then the conversation's."""
+    payload = {
+        "id": "conv-models",
+        "conversation_id": "conv-models",
+        "create_time": 1_700_000_000.0,
+        "current_node": "bare",
+        "title": "Models",
+        "default_model_slug": "gpt-5-pro",
+        "mapping": {
+            "asked": _reduced_node("asked", "user", "Q"),
+            "exact": _reduced_node("exact", "assistant", "A", parent="asked", metadata={"model_slug": "o3"}),
+            "defaulted": _reduced_node(
+                "defaulted", "assistant", "A", parent="asked", metadata={"default_model_slug": "gpt-4o"}
+            ),
+            "bare": _reduced_node("bare", "assistant", "A", parent="asked"),
+        },
+    }
+
+    session = chatgpt_parse(payload, "fallback")
+
+    by_id = {message.provider_message_id: message for message in session.messages}
+    assert by_id["exact"].model_name == "o3"
+    assert by_id["defaulted"].model_name == "gpt-4o"
+    assert by_id["bare"].model_name == "gpt-5-pro"
+    assert by_id["asked"].model_name is None
+    assert session.models_used == ["gpt-4o", "gpt-5-pro", "o3"]
+
+
+def test_chatgpt_message_metadata_reaches_named_events() -> None:
+    """targeted_reply, delivery state and plugin payloads each get their own event."""
+    payload = {
+        "id": "conv-evidence",
+        "conversation_id": "conv-evidence",
+        "create_time": 1_700_000_000.0,
+        "current_node": "reply",
+        "title": "Evidence",
+        "mapping": {
+            "reply": {
+                "id": "reply",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "reply",
+                    "author": {"role": "user", "metadata": {"real_author": "tool:web.run"}},
+                    "create_time": 1_700_000_000.0,
+                    "weight": 0.0,
+                    "channel": "commentary",
+                    "content": {"content_type": "text", "parts": ["answering"]},
+                    "metadata": {
+                        "targeted_reply": "the words I replied to",
+                        "is_visually_hidden_from_conversation": True,
+                        "jit_plugin_data": {"from_server": {"type": "preview"}},
+                    },
+                },
+            }
+        },
+    }
+
+    session = chatgpt_parse(payload, "fallback")
+
+    events = {event.event_type: event for event in session.session_events}
+    assert events["chatgpt_targeted_reply"].payload == {"targeted_reply": "the words I replied to"}
+    assert events["chatgpt_message_delivery"].payload == {
+        "weight": 0.0,
+        "is_visually_hidden_from_conversation": True,
+        "channel": "commentary",
+    }
+    assert events["chatgpt_jit_plugin_data"].payload == {"from_server": {"type": "preview"}}
+    assert all(event.source_message_provider_id == "reply" for event in events.values())
+    assert session.messages[0].sender_name == "tool:web.run"
+
+
+def test_chatgpt_ada_visualizations_become_attachments() -> None:
+    """Code-interpreter charts and tables are real files with their own ids."""
+    _messages, attachments = extract_messages_from_mapping(
+        {
+            "analysis": _reduced_node(
+                "analysis",
+                "assistant",
+                "here is the table",
+                metadata={
+                    "ada_visualizations": [
+                        {"type": "table", "file_id": "file-XRfd", "title": "Invoices — preview"},
+                        {"type": "chart", "title": "no file id, no attachment"},
+                    ]
+                },
+            )
+        }
+    )
+
+    assert [(a.provider_file_id, a.name, a.attachment_kind) for a in attachments] == [
+        ("file-XRfd", "Invoices — preview", "ada_visualization")
+    ]
+    assert attachments[0].message_provider_id == "analysis"
+
+
+def test_chatgpt_dalle_provenance_rides_the_image_block() -> None:
+    """The edge from a derived image back to its original exists nowhere else."""
+    provenance = {"from_client": {"operation": {"type": "transformation", "original_gen_id": "gen-1"}}}
+    messages, _ = extract_messages_from_mapping(
+        {
+            "image": {
+                "id": "image",
+                "parent": None,
+                "message": {
+                    "id": "image",
+                    "author": {"role": "assistant"},
+                    "create_time": 1_700_000_000.0,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [{"content_type": "image_asset_pointer", "asset_pointer": "file-service://abc"}],
+                    },
+                    "metadata": {"dalle": provenance},
+                },
+            }
+        }
+    )
+
+    block = next(block for block in messages[0].blocks if block.type is BlockType.IMAGE)
+    assert block.metadata == {"asset_pointer": "file-service://abc", "dalle": provenance}
+
+
+def test_chatgpt_conversation_settings_skip_defaults_and_name_the_custom_gpt() -> None:
+    """A bare ``g-<id>`` is a custom GPT, not a project, and reaches its own event."""
+    payload = {
+        "id": "conv-gizmo",
+        "conversation_id": "conv-gizmo",
+        "create_time": 1_700_000_000.0,
+        "current_node": "root",
+        "title": "Gizmo",
+        "conversation_template_id": "g-bo0FiWLY7",
+        "gizmo_type": "gpt",
+        "is_archived": True,
+        "is_starred": False,
+        "moderation_results": [],
+        "memory_scope": "global_enabled",
+        "mapping": {"root": _reduced_node("root", "user", "hi")},
+    }
+
+    session = chatgpt_parse(payload, "fallback")
+
+    events = {event.event_type: event.payload for event in session.session_events}
+    assert session.provider_project_ref is None
+    assert events["chatgpt_custom_gpt"] == {"gizmo_id": "g-bo0FiWLY7", "gizmo_type": "gpt"}
+    # False, empty and account-wide-default settings carry no signal.
+    assert events["chatgpt_conversation_settings"] == {"is_archived": True, "gizmo_type": "gpt"}
+
+
+def test_chatgpt_project_conversation_emits_no_custom_gpt_event() -> None:
+    """``g-p-`` is already ``provider_project_ref``; it is not a custom GPT."""
+    payload = {
+        "id": "conv-project",
+        "conversation_id": "conv-project",
+        "create_time": 1_700_000_000.0,
+        "current_node": "root",
+        "title": "Project",
+        "conversation_template_id": "g-p-6801608e3ebc819184f4e318bf49f5ff",
+        "mapping": {"root": _reduced_node("root", "user", "hi")},
+    }
+
+    session = chatgpt_parse(payload, "fallback")
+
+    assert session.provider_project_ref == "g-p-6801608e3ebc819184f4e318bf49f5ff"
+    assert not [event for event in session.session_events if event.event_type == "chatgpt_custom_gpt"]

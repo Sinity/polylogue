@@ -65,8 +65,13 @@ class DisplayTitleTagsMixin:
         return _metadata_string(self.metadata, "title")
 
     @property
-    def display_title(self) -> str:
-        """Return the read-time display label, preserving provider titles."""
+    def explicit_display_title(self) -> str | None:
+        """Return title-worthy evidence, or ``None`` when the session has none.
+
+        Callers that render a bounded column use this and supply their own
+        identity fallback: a fallback derived here would see one session and
+        so could not stay distinct from its siblings.
+        """
         user_title = self.user_title
         if user_title:
             return user_title
@@ -75,12 +80,13 @@ class DisplayTitleTagsMixin:
         if self.title:
             return self.title
         # polylogue-cgfy: provider-assigned display name (e.g. Claude Code's
-        # slug, "greedy-squishing-hamming") beats the raw id truncation --
-        # the fix for subagent rows showing "<uuid-prefix>" instead of a
-        # human-readable name when no title-worthy sidecar evidence exists.
-        if self.display_name:
-            return self.display_name
-        return self.id[:8]
+        # slug, "greedy-squishing-hamming") is title-worthy evidence.
+        return self.display_name or None
+
+    @property
+    def display_title(self) -> str:
+        """Return the read-time display label, preserving provider titles."""
+        return self.explicit_display_title or str(self.id)
 
     @property
     def summary(self) -> str | None:

@@ -24,6 +24,7 @@ from devtools import repo_root, verify_layering
 
 _SCRATCH_MODULE = "polylogue/cli/scratch_storage_writer_importer.py"
 _STORAGE_WRITER = "polylogue.storage.sqlite.archive_tiers.user_write"
+_MUTATION_EXECUTOR = "polylogue.operations.mutation_transaction"
 
 
 def _shipped_manifest_tree(tmp_path: Path, *, extra_modules: dict[str, str]) -> Path:
@@ -38,10 +39,11 @@ def _shipped_manifest_tree(tmp_path: Path, *, extra_modules: dict[str, str]) -> 
     plans = tmp_path / "docs" / "plans"
     plans.mkdir(parents=True, exist_ok=True)
     shutil.copy(root / "docs" / "plans" / "layering.yaml", plans / "layering.yaml")
-    shutil.copy(
-        root / "docs" / "plans" / "layering-surface-baseline.json",
-        plans / "layering-surface-baseline.json",
-    )
+    for baseline in (
+        "layering-surface-baseline.json",
+        "layering-cli-mutation-authority-baseline.json",
+    ):
+        shutil.copy(root / "docs" / "plans" / baseline, plans / baseline)
     manifest = yaml.safe_load((plans / "layering.yaml").read_text(encoding="utf-8"))
     for rule in manifest.get("rules", []):
         declared = [rule["target"], *rule.get("disallow", {}).get("from", [])]
@@ -103,3 +105,30 @@ def test_baselined_importer_is_not_exempt_at_a_different_import(
     assert any(entry.get("file") == exempt["file"] and entry.get("import") == _STORAGE_WRITER for entry in reported), (
         reported
     )
+
+
+def test_new_cli_module_driving_the_mutation_executor_fails_the_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The daemon is the sole writer: a CLI module cannot hold a second one.
+
+    Anti-vacuity: dropping the mutation-authority rule from ``layering.yaml``,
+    or adding ``polylogue/cli`` wholesale to its baseline, makes this pass a
+    gate it must fail.
+    """
+    _shipped_manifest_tree(
+        tmp_path,
+        extra_modules={_SCRATCH_MODULE: f"from {_MUTATION_EXECUTOR} import OperationExecutor\n"},
+    )
+    reported = _violations(tmp_path, monkeypatch, capsys)
+    assert any(
+        entry.get("file") == _SCRATCH_MODULE and entry.get("import") == _MUTATION_EXECUTOR for entry in reported
+    ), reported
+
+
+def test_query_mutation_route_is_absent_from_the_mutation_authority_baseline() -> None:
+    """The root query's write route gave up its own executor; it may not return."""
+    baseline = json.loads(
+        (repo_root() / "docs" / "plans" / "layering-cli-mutation-authority-baseline.json").read_text()
+    )
+    assert all(entry["file"] != "polylogue/cli/archive_query.py" for entry in baseline), baseline

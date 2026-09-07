@@ -7,15 +7,25 @@ import json
 import os
 import sqlite3
 import tempfile
+from collections.abc import Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING
 
 from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
 from polylogue.logging import get_logger
+from polylogue.sources.sqlite_export import (
+    MemberExportScope,
+    logical_export_digest,
+    looks_like_logical_export_path,
+    write_logical_export,
+)
 from polylogue.storage.blob_store import BlobStore, Heartbeat
+
+if TYPE_CHECKING:
+    from polylogue.sources.origin_specs import DatabaseMemberBinding
 
 logger = get_logger(__name__)
 
@@ -131,133 +141,74 @@ def sqlite_source_revision(path: Path) -> str:
     return hasher.hexdigest()
 
 
-def sqlite_logical_revision(path: Path, *, immutable: bool = False) -> str:
+def declared_database_member(path: Path) -> DatabaseMemberBinding | None:
+    """Return the declared member rule acquisition applies to *path*.
+
+    A staged import copy carries its original path in a provenance sidecar, so
+    the declaration is resolved from the name the operator's install uses.
+    """
+    from polylogue.sources.origin_specs import database_member_for_filename
+
+    original = original_sqlite_source_path(path)
+    return database_member_for_filename((original or path).name)
+
+
+def declared_logical_tables(path: Path) -> tuple[str, ...] | None:
+    """Return the logical tables *path* is acquired for, or ``None`` for all.
+
+    An undeclared database still retains an export rather than a page image:
+    without a declared product every ordinary table is its logical content.
+    """
+    binding = declared_database_member(path)
+    if binding is None or not binding.member.logical_tables:
+        return None
+    return binding.member.logical_tables
+
+
+def member_export_scope(path: Path) -> MemberExportScope:
+    """Return the export scope and header *path* is acquired under.
+
+    Acquisition and the freshness gate must produce byte-identical exports for
+    one database state, so both derive their scope here rather than each
+    naming the member on its own.
+    """
+    binding = declared_database_member(path)
+    return MemberExportScope(
+        tables=declared_logical_tables(path),
+        member=None if binding is None else binding.member.filename,
+        origin=None if binding is None else binding.origin.value,
+        kind=None if binding is None else binding.member.kind,
+    )
+
+
+def sqlite_logical_revision(
+    path: Path,
+    *,
+    tables: Sequence[str] | None = None,
+    immutable: bool = False,
+) -> str:
     """Digest SQLite schema and logical rows, independent of page layout.
 
     Filesystem metadata and SQLite page images change for ordinary commits,
-    checkpoints, and vacuuming. Source continuity therefore needs a digest of
-    the declared database contents. Values are encoded with their SQLite type
-    so text, integers, blobs, and NULL remain distinct.
+    checkpoints, and vacuuming, so source continuity is the digest of the
+    canonical logical export (``sources/sqlite_export.py``) -- the same bytes
+    acquisition retains. ``tables`` scopes the digest to a declared member's
+    logical product; ``None`` digests every ordinary table.
 
     ``immutable`` reads a retained blob, which no writer can reach and whose
     directory need not be writable for a WAL-mode page image.
     """
-    source_uri = f"{path.resolve().as_uri()}?mode=ro"
-    if immutable:
-        source_uri += "&immutable=1"
-    with closing(sqlite3.connect(source_uri, uri=True)) as conn:
-        # SQLite permits arbitrary bytes in a TEXT value.  Preserve those
-        # bytes so a table outside the parser's scope cannot prevent snapshot
-        # acquisition or collapse distinct logical values.
-        conn.text_factory = bytes
-        # Keep schema and every row in one SQLite read snapshot.  Without an
-        # explicit transaction a concurrent WAL commit can make the digest a
-        # combination of two source states.
-        conn.execute("BEGIN")
-        schema_objects = conn.execute(
-            """
-            SELECT type, name, tbl_name, sql
-            FROM sqlite_master
-            WHERE name NOT LIKE 'sqlite_%'
-            ORDER BY type, name
-            """
-        ).fetchall()
+    return logical_export_digest(path, tables=tables, immutable=immutable)
 
-        def schema_text(value: object) -> str:
-            if isinstance(value, bytes):
-                return value.decode("utf-8")
-            return str(value)
 
-        table_sql = {
-            schema_text(row[1]): schema_text(row[3]) for row in schema_objects if schema_text(row[0]) == "table"
-        }
-        digest = hashlib.sha256()
-        for schema_object in schema_objects:
-            digest.update(
-                json.dumps(
-                    [schema_text(value) if value is not None else None for value in schema_object],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode()
-            )
-            digest.update(b"\0")
-        for table, table_sql_text in table_sql.items():
-            if table_sql_text.lstrip().upper().startswith("CREATE VIRTUAL TABLE"):
-                continue
-            quoted = '"' + table.replace('"', '""') + '"'
-            columns = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
-            column_names = [schema_text(row[1]) for row in columns]
-            has_integer_primary_key = any(
-                schema_text(row[2]).upper() == "INTEGER" and int(row[5]) == 1 for row in columns
-            )
-            is_without_rowid = "WITHOUT ROWID" in table_sql_text.upper()
-            selected_column_names = (
-                ["rowid"] if not is_without_rowid and not has_integer_primary_key else []
-            ) + column_names
-            ordered_column_names = [
-                name
-                for _primary_key_position, name in sorted(
-                    ((int(row[5]) if row[5] else 10**9, schema_text(row[1])) for row in columns),
-                )
-            ]
-            if "rowid" in selected_column_names:
-                ordered_column_names.append("rowid")
-            order_terms: list[str] = []
-            for name in ordered_column_names:
-                quoted_column = '"' + name.replace('"', '""') + '"'
-                order_terms.extend((f"typeof({quoted_column}) COLLATE BINARY", f"{quoted_column} COLLATE BINARY"))
-            order = ", ".join(order_terms)
-            digest.update(
-                json.dumps(
-                    [table, selected_column_names],
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode()
-            )
-            digest.update(b"\0")
-            selected_columns = ", ".join(
-                f"typeof({quoted_name}), {quoted_name}"
-                for name in selected_column_names
-                for quoted_name in ('"' + name.replace('"', '""') + '"',)
-            )
-            rows = conn.execute(f"SELECT {selected_columns} FROM {quoted}" + (f" ORDER BY {order}" if order else ""))
-            for row in rows:
-                encoded: list[list[Any]] = []
-                for storage_class, value in zip(row[::2], row[1::2], strict=True):
-                    kind = schema_text(storage_class)
-                    if kind == "blob":
-                        assert isinstance(value, bytes)
-                        encoded.append(["blob", value.hex()])
-                    elif kind == "null":
-                        encoded.append(["null", None])
-                    elif kind == "text":
-                        assert isinstance(value, bytes)
-                        encoded.append(["text", value.hex()])
-                    else:
-                        encoded.append([kind, value])
-                digest.update(json.dumps(encoded, ensure_ascii=False, separators=(",", ":")).encode())
-                digest.update(b"\n")
-        # sqlite_sequence is SQLite-owned, so it is excluded from the schema
-        # and row enumeration above with the rest of the sqlite_% names. Its
-        # contents are still logical database state: an insert-then-delete on
-        # an AUTOINCREMENT table leaves every user row identical while
-        # advancing the stored high-water mark, and without this the digest
-        # reports that database as unchanged.
-        sequence_rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'"
-        ).fetchall()
-        if sequence_rows:
-            digest.update(b"sqlite_sequence\0")
-            for name, seq in conn.execute("SELECT name, seq FROM sqlite_sequence ORDER BY name"):
-                digest.update(
-                    json.dumps(
-                        [schema_text(name), schema_text(seq) if seq is not None else None],
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode()
-                )
-                digest.update(b"\n")
-    return digest.hexdigest()
+def sqlite_member_revision(path: Path, *, immutable: bool = False) -> str:
+    """Digest the logical revision acquisition records for *path*.
+
+    Acquisition retains one export per declared member, so the freshness gate
+    and the raw identity must both be scoped to that member's logical tables.
+    A whole-database digest would move for a commit in a table nothing reads.
+    """
+    return logical_export_digest(path, scope=member_export_scope(path), immutable=immutable)
 
 
 def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
@@ -270,10 +221,16 @@ def retained_content_revision(blob_path: Path, blob_hash: str) -> str:
     SQLite database is already identified by its bytes, and its blob hash is
     that term.
 
+    A retained export is already the canonical form of its member's logical
+    revision, so its blob hash -- sha256 over exactly those bytes -- is that
+    term with nothing to recompute.
+
     An unreadable or damaged blob falls back to the blob hash: identity must
     stay derivable so the raw remains addressable and its parse failure is
     reported as a parse failure rather than as a missing acquisition.
     """
+    if looks_like_logical_export_path(blob_path):
+        return blob_hash
     try:
         with blob_path.open("rb") as handle:
             header = handle.read(len(SQLITE_MAGIC_HEADER))
@@ -363,34 +320,30 @@ def snapshot_sqlite_to_blob(
     *,
     heartbeat: Heartbeat | None = None,
 ) -> SQLiteBlobSnapshot:
-    """Back up *source* and return its logical revision.
+    """Retain *source* as one canonical logical export and return its revision.
 
-    The backup bytes remain available as immutable parser input, but source
-    continuity is based on schema and logical rows.  Re-reading the logical
-    revision after the backup prevents a concurrent commit from being
-    presented as a complete source observation.
+    The retained material is the export, never a page image: a page image
+    differs after every commit, checkpoint and vacuum, so an unchanged
+    database would mint a second whole copy of content the archive already
+    holds, and no reader could prove those bytes against the live database.
+
+    The export is taken inside one SQLite read transaction, so a concurrent
+    commit cannot make it a combination of two source states, and its blob
+    hash -- sha256 over exactly the exported bytes -- is the member's logical
+    revision with nothing to recompute.
     """
-    source_revision = sqlite_logical_revision(source)
-    temporary_path = blob_store.allocate_staging_path(
-        prefix=".sqlite-snapshot.",
-        suffix=source.suffix or ".db",
-    )
+    temporary_path = blob_store.allocate_staging_path(prefix=".sqlite-export.", suffix=".jsonl")
     try:
-        snapshot_sqlite_database(source, temporary_path)
-        if sqlite_logical_revision(source) != source_revision:
-            raise OSError("SQLite source changed during backup")
-        if sqlite_logical_revision(temporary_path) != source_revision:
-            raise OSError("SQLite backup does not match source logical revision")
+        with temporary_path.open("wb") as handle:
+            write_logical_export(source, handle, scope=member_export_scope(source))
         source_fingerprint = sqlite_source_revision(source)
-        if sqlite_logical_revision(source) != source_revision:
-            raise OSError("SQLite source changed during backup")
         blob_hash, blob_size = blob_store.write_from_path(temporary_path, heartbeat=heartbeat)
         from polylogue.storage.blob_publication import publication_receipt_id
 
         return SQLiteBlobSnapshot(
             blob_hash=blob_hash,
             blob_size=blob_size,
-            source_revision=source_revision,
+            source_revision=blob_hash,
             source_fingerprint=source_fingerprint,
             blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         )
@@ -404,6 +357,9 @@ def snapshot_sqlite_to_blob(
 __all__ = [
     "SQLiteBlobSnapshot",
     "codex_state_raw_id",
+    "declared_database_member",
+    "declared_logical_tables",
+    "member_export_scope",
     "hermes_profile_raw_id",
     "is_sqlite_path",
     "original_sqlite_source_path",
@@ -414,5 +370,6 @@ __all__ = [
     "stage_sqlite_snapshot",
     "sqlite_database_for_sidecar",
     "sqlite_logical_revision",
+    "sqlite_member_revision",
     "sqlite_source_revision",
 ]

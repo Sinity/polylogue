@@ -165,6 +165,75 @@ async def test_parse_stage_flag_on_and_off_produce_identical_archive_content(tmp
 
 
 @pytest.mark.asyncio
+async def test_shard_building_parse_stage_produces_identical_archive_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-bp12n.6: a stage that also writes shards changes nothing durable.
+
+    The writer copies each raw's message and block rows out of the shard its
+    parse worker sealed instead of binding them one at a time. The archive
+    that comes out must be the one the inline path writes, to the row.
+
+    Anti-vacuity is the copy counter: with the shard path removed (or the
+    binding rejected) ``copy_shard_session_rows`` never runs and the
+    ``copies`` assertion is red while the equivalence assertion stays green.
+    """
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    baseline_root = tmp_path / "baseline"
+    shard_root = tmp_path / "sharded"
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=6)
+
+    await _ingest(baseline_root, paths, parse_stage=None)
+
+    copies = 0
+    real_copy = archive_tier_write.copy_shard_session_rows
+
+    def counting_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copies
+        copies += 1
+        return real_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
+
+    shard_directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=3, max_inflight_bytes=10_000_000, shard_directory=shard_directory)
+    try:
+        await _ingest(shard_root, paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+
+    assert len(stage.cache) == 0
+    assert copies == len(paths), f"the writer copied {copies} shard sessions, expected {len(paths)}"
+    assert _canonical_snapshot(baseline_root) == _canonical_snapshot(shard_root)
+    # Shards are scratch with a named end: none may outlive the pass.
+    assert list(shard_directory.glob("shard-*")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_shard_the_writer_refuses_still_writes_the_session(tmp_path: Path) -> None:
+    """A truncated shard is a miss, not a failure: the rows get built inline."""
+    baseline_root = tmp_path / "baseline"
+    corrupt_root = tmp_path / "corrupt"
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
+
+    await _ingest(baseline_root, paths, parse_stage=None)
+
+    shard_directory = tmp_path / "parse-shards"
+    stage = LiveParseStage(max_workers=2, max_inflight_bytes=10_000_000, shard_directory=shard_directory)
+    try:
+        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
+        assert stage.warm(candidates) == len(paths)
+        for shard_path in shard_directory.glob("shard-*"):
+            shard_path.write_bytes(b"not a database at all")
+        await _ingest(corrupt_root, paths, parse_stage=stage)
+    finally:
+        stage.shutdown()
+
+    assert _canonical_snapshot(baseline_root) == _canonical_snapshot(corrupt_root)
+
+
+@pytest.mark.asyncio
 async def test_parse_stage_out_of_order_completion_preserves_archive_write_order(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
