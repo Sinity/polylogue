@@ -305,9 +305,9 @@ def test_daemon_mutation_timeout_is_typed_indeterminate(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", TimedOutConnection)
 
-    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/cli/delete"):
-        DaemonClient(socket_path, timeout_s=0.01).request_mutation_json(
-            "POST", "/api/cli/delete", {"session_ids": ["s1"]}
+    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
+        DaemonClient(socket_path, timeout_s=0.01).operation(
+            "mutation.session.delete.execute", {"authorization_tokens": ["t1"]}
         )
 
 
@@ -338,5 +338,5 @@ def test_daemon_mutation_interrupt_after_connect_is_typed_indeterminate(
 
     monkeypatch.setattr("polylogue.daemon_client._UnixHTTPConnection", InterruptedConnection)
 
-    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/cli/delete"):
-        DaemonClient(socket_path).request_mutation_json("POST", "/api/cli/delete", {"session_ids": ["s1"]})
+    with pytest.raises(DaemonMutationIndeterminateError, match="POST /api/operation"):
+        DaemonClient(socket_path).operation("mutation.session.delete.execute", {"authorization_tokens": ["t1"]})

@@ -161,11 +161,11 @@ def _daemon_delete_route(archive_root: Path) -> Any:
     """
     prepared: dict[str, list[str]] = {}
 
-    def _route(_config: Any, path: str, *, body: dict[str, object]) -> dict[str, object]:
-        if path.endswith("/prepare"):
-            prepared["ids"] = [str(item) for item in cast(list[Any], body["session_ids"])]
+    def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        if operation.endswith(".preview"):
+            prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
             return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
-        if path.endswith("/authorize"):
+        if operation.endswith(".authorize"):
             return {"status": "authorized", "authorization_token": "test-authorization"}
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             affected = archive.delete_sessions(tuple(prepared["ids"]))
@@ -309,7 +309,7 @@ def test_query_algebra_cardinality_survives_real_read_and_action_routes(
     assert preview["session_count"] == len(manifest.matching_session_ids())
 
     with patch(
-        "polylogue.cli.archive_query._submit_daemon_mutation",
+        "polylogue.cli.archive_query._submit_mutation_operation",
         side_effect=_daemon_delete_route(mutation_root),
     ):
         apply_result = runner.invoke(
