@@ -31,6 +31,7 @@ from polylogue.archive.message.roles import MessageRoleFilter, Role
 from polylogue.archive.message.types import MessageType, validate_message_type_filter
 from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
 from polylogue.archive.query.spec import (
+    DEFAULT_SESSION_LIST_LIMIT,
     normalize_action_sequence,
     normalize_action_terms,
     parse_query_date,
@@ -5365,7 +5366,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         def read(archive: ArchiveStore) -> list[Session]:
             summaries = archive.list_summaries(
                 origin=origin,
-                limit=50 if limit is None else limit,
+                limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
             )
             sessions = [
                 _archive_session_to_session(
@@ -5391,7 +5392,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     async def list_summaries(
         self,
         *,
-        limit: int | None = 50,
+        limit: int | None = DEFAULT_SESSION_LIST_LIMIT,
         offset: int = 0,
         origin: str | None = None,
     ) -> builtins.list[SessionSummary]:
@@ -5409,7 +5410,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 _archive_summary_to_domain(summary)
                 for summary in archive.list_summaries(
                     origin=origin,
-                    limit=50 if limit is None else limit,
+                    limit=DEFAULT_SESSION_LIST_LIMIT if limit is None else limit,
                     offset=offset,
                 )
             ],
@@ -6687,7 +6688,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="archive.sessions.query",
             arguments={"origin": origin, "tag": tag, "since": since, "until": until, "sort": sort, **kwargs},
-            work=lambda archive: _archive_list_summaries_for_spec(archive, spec, default_limit=50),
+            work=lambda archive: _archive_list_summaries_for_spec(
+                archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT
+            ),
             page_size=limit,
             offset=offset,
             projection="session-summary",
