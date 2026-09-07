@@ -96,6 +96,35 @@ def test_capture_spool_does_not_replace_richer_snapshot_with_stale_snapshot(tmp_
     assert len(stored_turns) == 3
 
 
+def test_capture_spool_accepts_later_richer_snapshot_when_existing_update_is_fallback(tmp_path: Path) -> None:
+    fallback = _capture_payload()
+    fallback["provenance"]["captured_at"] = "2026-07-10T18:06:24.501Z"  # type: ignore[index]
+    fallback["session"]["updated_at"] = "2026-07-10T18:06:24.501Z"  # type: ignore[index]
+    fallback["session"]["turns"] = [  # type: ignore[index]
+        {"provider_turn_id": f"fallback-{index}", "role": "user", "text": "old", "ordinal": index}
+        for index in range(14)
+    ]
+
+    richer = json.loads(json.dumps(fallback))
+    richer["provenance"]["captured_at"] = "2026-07-12T20:59:18.942Z"
+    richer["session"]["updated_at"] = "2026-07-10T18:06:11.776Z"
+    richer["session"]["turns"] = [
+        {"provider_turn_id": f"richer-{index}", "role": "user", "text": "new", "ordinal": index} for index in range(120)
+    ]
+
+    root = tmp_path / "browser-capture"
+    write_capture_envelope(BrowserCaptureEnvelope.model_validate(fallback), spool_path=root)
+    result = write_capture_envelope(BrowserCaptureEnvelope.model_validate(richer), spool_path=root)
+
+    assert result.deduplicated is False
+    stored = json.loads(result.path.read_bytes())
+    stored_session = stored.get("session")
+    assert isinstance(stored_session, dict)
+    stored_turns = stored_session.get("turns")
+    assert isinstance(stored_turns, list)
+    assert len(stored_turns) == 120
+
+
 def test_browser_capture_parses_session_metadata_and_deduplicates_turns() -> None:
     parsed = parse_payload(Provider.CHATGPT, _capture_payload(), "fallback")
 

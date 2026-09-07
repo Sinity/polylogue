@@ -106,6 +106,16 @@ def derive_tool_outcomes(
                         f"tool outcome derivation refused for origin {origin.value!r}: "
                         f"unsupported tool_result block shape tool_id={block.tool_id!r}"
                     )
+                if outcome is ToolOutcome.UNKNOWN and unknown_reason is None:
+                    raise ValueError(
+                        f"tool outcome derivation refused for origin {origin.value!r}: "
+                        f"unknown outcome without a structural reason for tool_id={block.tool_id!r}"
+                    )
+                if outcome is not ToolOutcome.UNKNOWN and unknown_reason is not None:
+                    raise ValueError(
+                        f"tool outcome derivation refused for origin {origin.value!r}: "
+                        f"known outcome carries unknown reason for tool_id={block.tool_id!r}"
+                    )
                 exit_code = block.exit_code
                 if exit_code is None and block.tool_id in sidecar_exit_codes:
                     exit_code = sidecar_exit_codes[block.tool_id]
