@@ -5,6 +5,7 @@ import {
   chatGptCaptureNeedsFollowUp,
   claimDueFreshness,
   completeFreshnessClaim,
+  extendProviderCooldown,
   failureRetryDelayMs,
   normalizeFreshnessQueue,
   runningPollDelayMs,
@@ -73,15 +74,53 @@ describe("capture freshness queue", () => {
     expect(claimDueFreshness(first.queue, { nowMs: 6001, owner: "two", leaseMs: 5000 }).claim.native_id).toBe("due");
   });
 
-  it("does not erase a newer hint when an older claim completes", () => {
-    const initial = hint(null, "conversation-1", 1000, { delayMs: 0 });
+  it("settles a terminal claim after an unchanged native observation", () => {
+    const initial = hint(null, "conversation-1", 1000, {
+      delayMs: 0,
+      providerUpdatedAt: "2026-07-16T00:00:00Z",
+    });
     const { queue: leased, claim } = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
-    const updated = hint(leased, "conversation-1", 1500, { reason: "provider_native_observed" });
+    const updated = hint(leased, "conversation-1", 1500, {
+      reason: "provider_native_observed",
+      providerUpdatedAt: "2026-07-16T00:00:00Z",
+    });
     const completed = completeFreshnessClaim(updated, claim, {
       nowMs: 2000,
       needsFollowUp: false,
     });
-    expect(completed.entries["chatgpt:conversation-1"].generation).toBe(2);
+    expect(completed.entries["chatgpt:conversation-1"]).toBeUndefined();
+  });
+
+  it("retains a newer revision or observation that arrives during a claim", () => {
+    const initial = hint(null, "conversation-1", 1000, {
+      delayMs: 0,
+      providerUpdatedAt: "2026-07-16T00:00:00Z",
+    });
+    const { queue: leased, claim } = claimDueFreshness(initial, { nowMs: 1000, owner: "one", leaseMs: 5000 });
+    const updated = hint(leased, "conversation-1", 1500, {
+      providerUpdatedAt: "2026-07-16T00:01:00Z",
+      generationObservations: [{ observation_id: "conversation-1:turn-2:completed", state: "completed" }],
+    });
+    const completed = completeFreshnessClaim(updated, claim, {
+      nowMs: 2000,
+      needsFollowUp: false,
+    });
+    expect(completed.entries["chatgpt:conversation-1"]).toMatchObject({
+      generation: 2,
+      provider_updated_at: "2026-07-16T00:01:00Z",
+      generation_observations: [{ observation_id: "conversation-1:turn-2:completed" }],
+    });
+  });
+
+  it("holds every conversation for a provider until its throttle deadline", () => {
+    let queue = hint(null, "conversation-1", 1000, { delayMs: 0 });
+    queue = hint(queue, "conversation-2", 1000, { delayMs: 0 });
+    queue = extendProviderCooldown(queue, { provider: "chatgpt", untilMs: 61_000 });
+    queue = hint(queue, "conversation-3", 2000, { delayMs: 0 });
+
+    expect(claimDueFreshness(queue, { nowMs: 60_999, owner: "one", leaseMs: 5000 }).claim).toBeNull();
+    expect(claimDueFreshness(queue, { nowMs: 61_000, owner: "one", leaseMs: 5000 }).claim?.native_id)
+      .toBe("conversation-1");
   });
 
   it("removes terminal captures and adaptively reschedules running replies", () => {

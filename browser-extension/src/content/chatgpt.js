@@ -233,7 +233,9 @@
     nativeCaptures.push(data.capture);
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
     const identity = nativeCaptureIdentity(data.capture);
-    if (identity) queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
+    if (identity && data.capture.source !== "polylogue_native_fetch") {
+      queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
+    }
   });
 
   navigator.serviceWorker?.addEventListener?.("message", (event) => {
@@ -452,6 +454,38 @@
     return responsePromise;
   }
 
+  function retryAfterMilliseconds(value) {
+    if (typeof value !== "string" || !value.trim()) return null;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1000);
+    const deadline = Date.parse(value || "");
+    return Number.isFinite(deadline) ? Math.max(0, deadline - Date.now()) : null;
+  }
+
+  function rateLimitedNativeFetch(retryAfter) {
+    return { payload: null, rateLimited: true, retryAfterMs: retryAfterMilliseconds(retryAfter) };
+  }
+
+  async function providerThrottle() {
+    try {
+      return await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "chatgpt" });
+    } catch {
+      return { outcome: "provider_throttle_authority_unavailable" };
+    }
+  }
+
+  async function recordProviderRateLimit(retryAfterMs) {
+    try {
+      return await chrome.runtime.sendMessage({
+        type: "polylogue.providerRateLimited",
+        provider: "chatgpt",
+        retry_after_seconds: retryAfterMs === null ? null : Math.ceil(retryAfterMs / 1000),
+      });
+    } catch {
+      return { ok: false, outcome: "provider_throttle_authority_unavailable" };
+    }
+  }
+
   async function fetchNativePayloadFromContentScript(conversationId) {
     try {
       const controller = new globalThis.AbortController();
@@ -467,6 +501,17 @@
         window.clearTimeout(timeoutId);
       }
       const contentType = response.headers.get("content-type") || "";
+      if (response.status === 429) {
+        rememberNativeAttempt({
+          stage: "content_script_fetch",
+          ok: false,
+          status: response.status,
+          content_type: contentType,
+          accepted: false,
+          outcome: "rate_limited",
+        });
+        return rateLimitedNativeFetch(response.headers.get("retry-after"));
+      }
       if (!response.ok || !contentType.includes("application/json")) {
         rememberNativeAttempt({
           stage: "content_script_fetch",
@@ -475,7 +520,7 @@
           content_type: contentType,
           accepted: false
         });
-        return null;
+        return { payload: null, retryAfterMs: null };
       }
       const payload = await withTimeout(response.clone().json(), "content_script_json");
       if (!payload || typeof payload !== "object" || !payload.mapping) {
@@ -487,7 +532,7 @@
           accepted: false,
           reason: "missing_mapping"
         });
-        return null;
+        return { payload: null, retryAfterMs: null };
       }
       const payloadConversationId = payload.conversation_id || payload.id;
       if (payloadConversationId && String(payloadConversationId) !== conversationId) {
@@ -499,7 +544,7 @@
           accepted: false,
           reason: "conversation_id_mismatch"
         });
-        return null;
+        return { payload: null, retryAfterMs: null };
       }
       rememberNativeAttempt({
         stage: "content_script_fetch",
@@ -508,14 +553,14 @@
         content_type: contentType,
         accepted: true
       });
-      return payload;
+      return { payload, retryAfterMs: null };
     } catch (error) {
       rememberNativeAttempt({
         stage: "content_script_fetch",
         accepted: false,
         error: String(error && error.message ? error.message : error)
       });
-      return null;
+      return { payload: null, retryAfterMs: null };
     }
   }
 
@@ -550,8 +595,8 @@
     if (!conversationId && !requestedConversationId && !isTemporaryChatUrl()) {
       conversationId = await waitForConversationId();
     }
-    if (!conversationId) return null;
-    if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return null;
+    if (!conversationId) return { payload: null, retryAfterMs: null };
+    if (!/^[A-Za-z0-9_-]{1,256}$/.test(conversationId)) return { payload: null, retryAfterMs: null };
     const pageResult = await requestNativeCaptureFromPage(conversationId);
     const pageCapture = pageResult && pageResult.capture;
     const pagePayload = parseNativeCapture(pageCapture, conversationId);
@@ -564,7 +609,8 @@
       accepted: Boolean(pagePayload),
       error: pageResult?.error || null
     });
-    if (pagePayload) return pagePayload;
+    if (pagePayload) return { payload: pagePayload, retryAfterMs: null };
+    if (pageCapture?.status === 429) return rateLimitedNativeFetch(pageCapture.retryAfter);
     return fetchNativePayloadFromContentScript(conversationId);
   }
 
@@ -875,6 +921,21 @@
     nativePayloadOverride = null,
     generationObservationsOverride = [],
   ) {
+    const throttle = await providerThrottle();
+    if (throttle?.outcome === "provider_throttle_authority_unavailable") {
+      return { ok: false, error: "provider_throttle_authority_unavailable" };
+    }
+    if (throttle?.outcome === "rate_limited") {
+      return {
+        ok: false,
+        error: "rate_limited",
+        outcome: "rate_limited",
+        retry_after_seconds: throttle.retry_after_seconds ?? null,
+      };
+    }
+    if (throttle?.ok !== true) {
+      return { ok: false, error: "provider_throttle_authority_unavailable" };
+    }
     // Intercepted responses are only a bootstrap/fallback cache. A long-running
     // conversation can grow substantially after the response observed at page
     // load, so every explicit capture first asks ChatGPT for current native
@@ -890,9 +951,20 @@
         throw new Error("provided_native_payload_identity_mismatch");
       }
     } else {
-      nativePayload =
-        (await fetchNativePayloadOnDemand(requestedConversationId))
-        || latestNativePayload(requestedConversationId || conversationIdFromUrl());
+      const nativeFetch = await fetchNativePayloadOnDemand(requestedConversationId);
+      if (nativeFetch.rateLimited) {
+        const recorded = await recordProviderRateLimit(nativeFetch.retryAfterMs);
+        if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
+        return {
+          ok: false,
+          error: "rate_limited",
+          outcome: "rate_limited",
+          retry_after_seconds: nativeFetch.retryAfterMs === null
+            ? null
+            : Math.ceil(nativeFetch.retryAfterMs / 1000),
+        };
+      }
+      nativePayload = nativeFetch.payload || latestNativePayload(requestedConversationId || conversationIdFromUrl());
     }
     let assetAcquisition = null;
     if (nativePayload) {

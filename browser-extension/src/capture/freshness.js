@@ -5,6 +5,15 @@ function entryKey(provider, nativeId) {
   return `${provider}:${nativeId}`;
 }
 
+function isNewerProviderRevision(previous, candidate) {
+  if (!candidate) return false;
+  if (!previous) return true;
+  const previousMs = Date.parse(previous);
+  const candidateMs = Date.parse(candidate);
+  if (Number.isFinite(previousMs) && Number.isFinite(candidateMs)) return candidateMs > previousMs;
+  return candidate !== previous;
+}
+
 export function normalizeFreshnessQueue(value) {
   const entries = value?.version === CAPTURE_FRESHNESS_QUEUE_VERSION
     && value.entries && typeof value.entries === "object"
@@ -13,6 +22,11 @@ export function normalizeFreshnessQueue(value) {
   return {
     version: CAPTURE_FRESHNESS_QUEUE_VERSION,
     entries: { ...entries },
+    provider_cooldowns: {
+      ...(value?.provider_cooldowns && typeof value.provider_cooldowns === "object"
+        ? value.provider_cooldowns
+        : {}),
+    },
     dropped_count: Number(value?.dropped_count) || 0,
     sweep_partition: Number(value?.sweep_partition) || 0,
     sweep_not_before_ms: Number(value?.sweep_not_before_ms) || 0,
@@ -34,6 +48,14 @@ export function scheduleFreshnessHint(queueValue, {
   const key = entryKey(provider, nativeId);
   const previous = queue.entries[key] || null;
   const requestedAt = nowMs + Math.max(0, delayMs);
+  const previousObservations = new Set(
+    (previous?.generation_observations || []).map((observation) => observation?.observation_id).filter(Boolean),
+  );
+  const hasNewObservation = generationObservations.some((observation) => (
+    observation?.observation_id && !previousObservations.has(observation.observation_id)
+  ));
+  const hasNewRevision = isNewerProviderRevision(previous?.provider_updated_at, providerUpdatedAt);
+  if (previous && reason === "provider_native_observed" && !hasNewObservation && !hasNewRevision) return queue;
   const observationsById = new Map(
     [...(previous?.generation_observations || []), ...generationObservations]
       .filter((observation) => observation?.observation_id)
@@ -44,7 +66,7 @@ export function scheduleFreshnessHint(queueValue, {
     provider,
     native_id: nativeId,
     reasons: [...new Set([...(previous?.reasons || []), reason].filter(Boolean))].slice(-8),
-    provider_updated_at: providerUpdatedAt || previous?.provider_updated_at || null,
+    provider_updated_at: hasNewRevision ? providerUpdatedAt : previous?.provider_updated_at || providerUpdatedAt || null,
     generation_observations: [...observationsById.values()].slice(-64),
     generation: (previous?.generation || 0) + 1,
     hinted_at: new Date(nowMs).toISOString(),
@@ -74,10 +96,23 @@ export function scheduleFreshnessHint(queueValue, {
   return { ...queue, entries, dropped_count: dropped };
 }
 
+export function extendProviderCooldown(queueValue, { provider, untilMs }) {
+  const queue = normalizeFreshnessQueue(queueValue);
+  const current = Number(queue.provider_cooldowns[provider]) || 0;
+  const deadline = Math.max(current, Number(untilMs) || 0);
+  if (deadline === current) return queue;
+  return {
+    ...queue,
+    provider_cooldowns: { ...queue.provider_cooldowns, [provider]: deadline },
+  };
+}
+
 export function claimDueFreshness(queueValue, { nowMs, owner, leaseMs }) {
   const queue = normalizeFreshnessQueue(queueValue);
   const due = Object.values(queue.entries)
     .filter((entry) => (
+      (queue.provider_cooldowns[entry.provider] || 0) <= nowMs
+      &&
       (entry.lease_owner === null || (entry.lease_expires_at_ms || 0) <= nowMs)
       && (entry.next_attempt_at_ms || 0) <= nowMs
     ))
