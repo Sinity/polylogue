@@ -67,6 +67,7 @@ class _StandaloneWriteRuntime:
         self.thread.start()
         if not ready.wait(5.0):
             raise RuntimeError("standalone daemon UDS writer loop failed to start")
+        assert self.coordinator is not None
         self.bridge = DaemonWriteThreadBridge(self.coordinator, self.loop)
 
     def close(self) -> None:

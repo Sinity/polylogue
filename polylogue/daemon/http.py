@@ -5508,7 +5508,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._remember_operation_result(request, int(status), payload)
             self._send_json(status, payload)
             return
-        accepted_reference = None
+        accepted_reference: dict[str, object] | None = None
         if spec.accepted_reference and isinstance(result, dict):
             operation_id = result.get("operation_id") or result.get("id")
             if isinstance(operation_id, str) and operation_id:
