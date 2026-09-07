@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -42,12 +43,20 @@ def bench_daemon_uds_archive_root(tmp_path_factory: pytest.TempPathFactory) -> P
     return archive_root
 
 
+@dataclass(frozen=True, slots=True)
+class DaemonUdsStack:
+    """The live server and its matching client, so a profile can read both."""
+
+    server: object
+    client: object
+
+
 @pytest.fixture
-def bench_daemon_uds_client(
+def bench_daemon_uds_stack(
     bench_daemon_uds_archive_root: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> Iterator[object]:
+) -> Iterator[DaemonUdsStack]:
     """A live production UDS daemon server + matching ``DaemonClient``.
 
     ``AF_UNIX`` paths are capped at ~108 bytes on Linux; pytest's default
@@ -88,12 +97,17 @@ def bench_daemon_uds_client(
         pytest.fail("daemon UDS server did not become ready")
 
     try:
-        yield client
+        yield DaemonUdsStack(server=server, client=client)
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
         shutil.rmtree(runtime_dir, ignore_errors=True)
+
+
+@pytest.fixture
+def bench_daemon_uds_client(bench_daemon_uds_stack: DaemonUdsStack) -> object:
+    return bench_daemon_uds_stack.client
 
 
 @pytest.mark.benchmark
