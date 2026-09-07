@@ -2,6 +2,34 @@ import { describe, expect, it, vi } from "vitest";
 import { CaptureJobClient, canonicalJson, deriveAccountScope } from "../src/backfill/capture_jobs.js";
 
 describe("CaptureJob extension recovery", () => {
+  it("binds the default fetch to the worker global", async () => {
+    const previousFetch = globalThis.fetch;
+    const fetchImpl = vi.fn(function fetchWithReceiver() {
+      expect(this).toBe(globalThis);
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          schema: "polylogue.capture-jobs.capabilities.v1",
+          protocol_min: 1,
+          protocol_max: 1,
+          scope_namespace: "cjs1:worker-global",
+        }),
+      });
+    });
+    globalThis.fetch = fetchImpl;
+    try {
+      const client = new CaptureJobClient({
+        baseUrl: "http://receiver",
+        token: "receiver-token",
+        cache: { get: vi.fn(), set: vi.fn() },
+      });
+      await expect(client.scopeNamespace()).resolves.toBe("cjs1:worker-global");
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it("derives opaque scopes and rehydrates after chrome.storage cache loss", async () => {
     const cache = { values: {}, get: vi.fn(async (keys) => Object.fromEntries(Object.keys(keys).map((key) => [key, cache.values[key] ?? null]))), set: vi.fn(async (patch) => Object.assign(cache.values, patch)) };
     const scope = await deriveAccountScope("receiver-token", "chatgpt", "account@example.test");
