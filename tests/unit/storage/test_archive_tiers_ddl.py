@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
@@ -12,6 +13,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     initialize_archive_tier,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 from tests.infra.identity import archive_message_id
 
 _HASH = b"x" * 32
@@ -40,6 +42,23 @@ def test_archive_tiers_tier_ddl_builds_fresh_database(tmp_path: Path, tier: Arch
     _apply_tier(conn, tier)
 
     assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_schema_manifest_drift_is_typed_and_actionable() -> None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        _apply_tier(conn, ArchiveTier.INDEX)
+        conn.execute("CREATE TABLE manifest_drift (id INTEGER)")
+
+        with pytest.raises(SchemaVersionMismatchError) as caught:
+            assert_schema_manifest(conn, ArchiveTier.INDEX)
+
+        refusal = caught.value
+        assert refusal.current_version == refusal.expected_version
+        assert refusal.lifecycle_action == "rebuild_index"
+        assert "manifest_drift" in str(refusal)
+    finally:
+        conn.close()
 
 
 def test_archive_tiers_generated_ids_are_unique_not_primary_keys() -> None:
