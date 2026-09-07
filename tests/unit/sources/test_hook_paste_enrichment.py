@@ -12,11 +12,78 @@ from polylogue.sources.live import hook_paste_enrichment
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
+_HOOK_TIME_MS = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
+
+
+def _source_tier(archive_root: Path) -> Path:
+    source_db = archive_root / "source.db"
+    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    return source_db
+
+
+def _seed_hook_event(
+    source_db: Path,
+    *,
+    origin: str,
+    session_native_id: str,
+    record: dict[str, object],
+    event_id: str,
+    observed_at_ms: int = _HOOK_TIME_MS,
+) -> None:
+    """Write one durable hook event the way the spool drain commits it."""
+    with sqlite3.connect(source_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_hook_events (
+                hook_event_id, origin, native_id, session_native_id,
+                source_path, event_type, payload_json, observed_at_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                f"hook:{event_id}",
+                origin,
+                f"{session_native_id}:{record['event_type']}:{event_id}",
+                session_native_id,
+                f"/spool/pending/{event_id}.json",
+                str(record["event_type"]),
+                json.dumps(record, ensure_ascii=False, sort_keys=True),
+                observed_at_ms,
+            ),
+        )
+
+
+def _paste_record(session_key: str, session_value: str, **envelope: object) -> dict[str, object]:
+    return {
+        "event_type": "UserPromptSubmit",
+        "timestamp": "2026-05-07T12:00:00Z",
+        **envelope,
+        "payload": {session_key: session_value, "prompt": "Inspect [Pasted text #1]"},
+    }
+
+
+def _seed_paste_candidate(index_db: Path, native_id: str, hook_time_ms: int = _HOOK_TIME_MS) -> None:
+    with sqlite3.connect(index_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                native_id, origin, content_hash, created_at_ms, updated_at_ms
+            ) VALUES (?, 'codex-session', ?, ?, ?)
+            """,
+            (native_id, native_id.encode().ljust(32, b"s")[:32], hook_time_ms, hook_time_ms),
+        )
+        conn.execute(
+            """
+            INSERT INTO messages (
+                session_id, native_id, position, role, content_hash, occurred_at_ms
+            ) VALUES (?, 'm1', 0, 'user', ?, ?)
+            """,
+            (f"codex-session:{native_id}", native_id.encode().ljust(32, b"m")[:32], hook_time_ms + 100),
+        )
+
 
 def test_hook_paste_enrichment_updates_archive_messages(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
     with sqlite3.connect(index_db) as conn:
         conn.execute(
             """
@@ -24,7 +91,7 @@ def test_hook_paste_enrichment_updates_archive_messages(tmp_path: Path) -> None:
                 native_id, origin, content_hash, created_at_ms, updated_at_ms
             ) VALUES ('codex-native-1', 'codex-session', ?, ?, ?)
             """,
-            (b"s" * 32, hook_time_ms, hook_time_ms),
+            (b"s" * 32, _HOOK_TIME_MS, _HOOK_TIME_MS),
         )
         conn.execute(
             """
@@ -32,24 +99,16 @@ def test_hook_paste_enrichment_updates_archive_messages(tmp_path: Path) -> None:
                 session_id, native_id, position, role, content_hash, occurred_at_ms
             ) VALUES ('codex-session:codex-native-1', 'm1', 0, 'user', ?, ?)
             """,
-            (b"m" * 32, hook_time_ms + 100),
+            (b"m" * 32, _HOOK_TIME_MS + 100),
         )
-    hooks_dir = tmp_path / "hooks"
-    hooks_dir.mkdir()
-    (hooks_dir / "events.jsonl").write_text(
-        json.dumps(
-            {
-                "event_type": "UserPromptSubmit",
-                "timestamp": "2026-05-07T12:00:00Z",
-                "payload": {
-                    "session_id": "codex-native-1",
-                    "prompt": "Inspect [Pasted text #1]",
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    _seed_hook_event(
+        _source_tier(tmp_path),
+        origin="codex-session",
+        session_native_id="codex-native-1",
+        record=_paste_record("session_id", "codex-native-1"),
+        event_id="e1",
     )
+
     updated = hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db")
 
     assert updated == 1
@@ -76,32 +135,26 @@ def test_hook_paste_enrichment_updates_archive_messages(tmp_path: Path) -> None:
         assert span == (0, 0, "hash_only")
 
 
-def test_hook_paste_enrichment_never_reads_a_sibling_archives_hooks_dir(
+def test_hook_paste_enrichment_never_reads_a_sibling_archives_source_tier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """(polylogue-o7hx) The hooks dir is derived from ``db_path.parent``, never
-    from an ambient global -- a different archive's hook events (including
-    one that happens to sit at the real XDG hooks location) must never leak
-    into this archive's paste enrichment."""
+    """(polylogue-o7hx) Both tiers are derived from ``db_path.parent``, never
+    from an ambient global -- a different archive's hook events (including one
+    that happens to sit at the configured archive root) must never leak into
+    this archive's paste enrichment."""
 
     real_archive = tmp_path / "real-archive"
     real_archive.mkdir()
-    real_hooks = real_archive / "hooks"
-    real_hooks.mkdir()
-    (real_hooks / "decoy.jsonl").write_text(
-        json.dumps(
-            {
-                "event_type": "UserPromptSubmit",
-                "timestamp": "2026-05-07T12:00:00Z",
-                "payload": {"session_id": "codex-native-1", "prompt": "Inspect [Pasted text #1]"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    _seed_hook_event(
+        _source_tier(real_archive),
+        origin="codex-session",
+        session_native_id="codex-native-1",
+        record=_paste_record("session_id", "codex-native-1"),
+        event_id="decoy",
     )
     # An ambient env override, if the implementation still read one, would
-    # point at ``real_hooks`` here -- it must have no effect.
+    # point at ``real_archive`` here -- it must have no effect.
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(real_archive))
 
     scratch_ops_db = tmp_path / "scratch-archive" / "ops.db"
@@ -112,61 +165,33 @@ def test_hook_paste_enrichment_never_reads_a_sibling_archives_hooks_dir(
     assert updated == 0
 
 
-def _seed_paste_candidate(index_db: Path, native_id: str, hook_time_ms: int) -> None:
-    with sqlite3.connect(index_db) as conn:
-        conn.execute(
-            """
-            INSERT INTO sessions (
-                native_id, origin, content_hash, created_at_ms, updated_at_ms
-            ) VALUES (?, 'codex-session', ?, ?, ?)
-            """,
-            (native_id, native_id.encode().ljust(32, b"s")[:32], hook_time_ms, hook_time_ms),
-        )
-        conn.execute(
-            """
-            INSERT INTO messages (
-                session_id, native_id, position, role, content_hash, occurred_at_ms
-            ) VALUES (?, 'm1', 0, 'user', ?, ?)
-            """,
-            (f"codex-session:{native_id}", native_id.encode().ljust(32, b"m")[:32], hook_time_ms + 100),
-        )
+def test_hook_paste_enrichment_reads_only_the_batch_sessions_events(tmp_path: Path) -> None:
+    """Anti-vacuity: an unscoped read would enrich the untouched session too.
 
-
-def _write_sidecar(hooks_dir: Path, native_id: str) -> Path:
-    path = hooks_dir / f"codex-{native_id}.jsonl"
-    path.write_text(
-        json.dumps(
-            {
-                "event_type": "UserPromptSubmit",
-                "timestamp": "2026-05-07T12:00:00Z",
-                "payload": {"session_id": native_id, "prompt": "Inspect [Pasted text #1]"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return path
-
-
-def test_hook_paste_enrichment_reads_only_the_batch_sessions_sidecars(tmp_path: Path) -> None:
-    """Anti-vacuity: a scan of every sidecar journal would enrich the untouched session too.
-
-    A session's hook journal is ``<provider>-<native_id>.jsonl``; the batch
-    passes its archive session ids and only those journals are read, so the
-    scan is bounded by the batch instead of the archive's whole hook history.
+    ``raw_hook_events`` is keyed by ``(origin, session_native_id)``; the batch
+    passes its archive session ids and only those sessions' events are read, so
+    the read is bounded by the batch instead of the archive's whole hook
+    history.
     """
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
-    _seed_paste_candidate(index_db, "batch-native", hook_time_ms)
-    _seed_paste_candidate(index_db, "other-native", hook_time_ms)
-    hooks_dir = tmp_path / "hooks"
-    hooks_dir.mkdir()
-    batch_sidecar = _write_sidecar(hooks_dir, "batch-native")
-    _write_sidecar(hooks_dir, "other-native")
+    _seed_paste_candidate(index_db, "batch-native")
+    _seed_paste_candidate(index_db, "other-native")
+    source_db = _source_tier(tmp_path)
+    for native_id in ("batch-native", "other-native"):
+        _seed_hook_event(
+            source_db,
+            origin="codex-session",
+            session_native_id=native_id,
+            record=_paste_record("session_id", native_id),
+            event_id=f"e-{native_id}",
+        )
 
-    assert hook_paste_enrichment._sidecar_paths(hooks_dir, ("codex-session:batch-native",)) == [batch_sidecar]
-    assert len(hook_paste_enrichment._sidecar_paths(hooks_dir, None)) == 2
+    assert hook_paste_enrichment._scoped_hook_keys(("codex-session:batch-native",)) == [
+        ("codex-session", "batch-native")
+    ]
+    assert len(hook_paste_enrichment._iter_hook_paste_events(source_db, ("codex-session:batch-native",))) == 1
+    assert len(hook_paste_enrichment._iter_hook_paste_events(source_db, None)) == 2
 
     updated = hook_paste_enrichment.enrich_paste_from_hooks(
         tmp_path / "ops.db", session_ids=("codex-session:batch-native",)
@@ -187,26 +212,23 @@ def test_camelcase_hook_payload_sets_has_paste(tmp_path: Path) -> None:
     """
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
-    _seed_paste_candidate(index_db, "camel-native", hook_time_ms)
-    hooks_dir = tmp_path / "hooks"
-    hooks_dir.mkdir()
-    (hooks_dir / "claude-code-camel-native.jsonl").write_text(
-        json.dumps(
-            {
-                "event_type": "UserPromptSubmit",
-                "payload": {
-                    "sessionId": "camel-native",
-                    "promptId": "p-1",
-                    "permissionMode": "auto",
-                    "hookEventName": "UserPromptSubmit",
-                    "timestamp": "2026-05-07T12:00:00Z",
-                    "prompt": "Inspect [Pasted text #1]",
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    _seed_paste_candidate(index_db, "camel-native")
+    _seed_hook_event(
+        _source_tier(tmp_path),
+        origin="codex-session",
+        session_native_id="camel-native",
+        record={
+            "event_type": "UserPromptSubmit",
+            "payload": {
+                "sessionId": "camel-native",
+                "promptId": "p-1",
+                "permissionMode": "auto",
+                "hookEventName": "UserPromptSubmit",
+                "timestamp": "2026-05-07T12:00:00Z",
+                "prompt": "Inspect [Pasted text #1]",
+            },
+        },
+        event_id="camel",
     )
 
     updated = hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db")
@@ -234,21 +256,18 @@ def test_an_unkeyable_paste_record_is_reported_not_dropped_silently(
     """
     index_db = tmp_path / "index.db"
     initialize_archive_database(index_db, ArchiveTier.INDEX)
-    hook_time_ms = int(datetime(2026, 5, 7, 12, 0, tzinfo=UTC).timestamp() * 1000)
-    _seed_paste_candidate(index_db, "unknown-native", hook_time_ms)
-    hooks_dir = tmp_path / "hooks"
-    hooks_dir.mkdir()
+    _seed_paste_candidate(index_db, "unknown-native")
     # The record has to reach the enrichment loop to be reported, so its paste
     # marker sits in a field the detector reads while its session key does not.
-    (hooks_dir / "claude-code-unknown-native.jsonl").write_text(
-        json.dumps(
-            {
-                "event_type": "UserPromptSubmit",
-                "payload": {"session.id": "unknown-native", "prompt": "Inspect [Pasted text #1]"},
-            }
-        )
-        + "\n",
-        encoding="utf-8",
+    _seed_hook_event(
+        _source_tier(tmp_path),
+        origin="codex-session",
+        session_native_id="unknown-native",
+        record={
+            "event_type": "UserPromptSubmit",
+            "payload": {"session.id": "unknown-native", "prompt": "Inspect [Pasted text #1]"},
+        },
+        event_id="unkeyable",
     )
 
     with caplog.at_level(logging.WARNING, logger="polylogue.sources.live.hook_paste_enrichment"):
@@ -258,3 +277,23 @@ def test_an_unkeyable_paste_record_is_reported_not_dropped_silently(
     message = next(record.getMessage() for record in caplog.records if "no readable session key" in record.getMessage())
     assert "reader keys matched=['prompt']" in message
     assert "payload keys=['prompt', 'session.id']" in message
+
+
+def test_a_journal_file_is_no_longer_a_paste_evidence_carrier(tmp_path: Path) -> None:
+    """The retired ``<provider>-<native_id>.jsonl`` journal carries nothing.
+
+    Anti-vacuity: with the journal reader still wired, this record enriches the
+    seeded message and ``updated`` is 1.
+    """
+    index_db = tmp_path / "index.db"
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
+    _seed_paste_candidate(index_db, "journal-native")
+    _source_tier(tmp_path)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    (hooks_dir / "codex-journal-native.jsonl").write_text(
+        json.dumps(_paste_record("session_id", "journal-native")) + "\n",
+        encoding="utf-8",
+    )
+
+    assert hook_paste_enrichment.enrich_paste_from_hooks(tmp_path / "ops.db") == 0
