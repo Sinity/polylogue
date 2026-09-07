@@ -14,11 +14,11 @@ from polylogue.storage.derived.session.status import (
     _COUNT_DESCRIPTORS,
     _FTS_DESCRIPTORS,
     _TABLE_DESCRIPTORS,
+    SESSION_PROFILE_UNBUILT_CANDIDATES_SQL,
     SessionInsightCountDescriptor,
     SessionInsightFtsDescriptor,
     session_insight_status_async,
     session_insight_status_sync,
-    session_profile_repair_candidate_ids_sync,
 )
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -104,157 +104,101 @@ def test_count_descriptor_uses_fallback_when_freshness_is_disabled() -> None:
         ) == ("expected_rows", 7)
 
 
-def test_profile_repair_candidates_match_sort_key_freshness() -> None:
+def _unbuilt_candidates(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(SESSION_PROFILE_UNBUILT_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
+    return [str(row[0]) for row in rows]
+
+
+def _unbuilt_scope_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            sort_key_ms INTEGER,
+            updated_at_ms INTEGER
+        );
+        CREATE TABLE session_profiles (
+            session_id TEXT PRIMARY KEY,
+            materializer_version INTEGER NOT NULL,
+            source_sort_key REAL,
+            source_updated_at TEXT
+        );
+        """
+    )
+
+
+def test_unbuilt_scope_names_absent_and_outdated_builds() -> None:
+    """The scope selector answers "never built", and only that.
+
+    Vacuous if it returned every session or none: ``built`` is present at the
+    current materializer version and must not appear, while a build from an
+    older materializer must.
+    """
     with sqlite3.connect(":memory:") as conn:
-        conn.row_factory = sqlite3.Row
+        _unbuilt_scope_schema(conn)
         conn.executescript(
             """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                sort_key_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                source_updated_at TEXT
-            );
-
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('ready-even-if-updated-at-differs', 1000, 1777636800000);
-
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('stale-sort-key', 2000, 1777636800000);
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('missing-profile', 3000, 1777636800000);
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('hot-missing-profile', 4102444800000, 4102444800000);
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('hot-stale-sort-key', 4102444800000, 4102444800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('built', 1000, 1777636800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('never-built', 3000, 1777636800000);
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('old-version', 2000, 1777636800000);
             """
+        )
+        conn.executemany(
+            "INSERT INTO session_profiles (session_id, materializer_version) VALUES (?, ?)",
+            [
+                ("built", SESSION_INSIGHT_MATERIALIZER_VERSION),
+                ("old-version", SESSION_INSIGHT_MATERIALIZER_VERSION - 1),
+            ],
+        )
+
+        assert _unbuilt_candidates(conn) == ["never-built", "old-version"]
+
+
+def test_unbuilt_scope_cannot_see_a_value_change() -> None:
+    """It certifies nothing about a built partition, and must not pretend to.
+
+    A profile whose cached sort key disagrees with its session is still a built
+    partition. Naming it here would put a second, identity-only freshness
+    answer beside the value-complete inspection that decides.
+    """
+    with sqlite3.connect(":memory:") as conn:
+        _unbuilt_scope_schema(conn)
+        conn.execute(
+            "INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('drifted', 2000, 1777636800000)"
         )
         conn.execute(
             """
-            INSERT INTO session_profiles (
-                session_id, materializer_version, source_sort_key, source_updated_at
-            ) VALUES (?, ?, ?, ?)
+            INSERT INTO session_profiles (session_id, materializer_version, source_sort_key, source_updated_at)
+            VALUES ('drifted', ?, 1.5, '2026-05-01T12:00:00Z')
             """,
-            (
-                "ready-even-if-updated-at-differs",
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
-                1.0,
-                "2026-04-30T12:00:00Z",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, materializer_version, source_sort_key, source_updated_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (
-                "stale-sort-key",
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
-                1.5,
-                "2026-05-01T12:00:00Z",
-            ),
-        )
-        conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, materializer_version, source_sort_key, source_updated_at
-            ) VALUES (?, ?, ?, ?)
-            """,
-            (
-                "hot-stale-sort-key",
-                SESSION_INSIGHT_MATERIALIZER_VERSION,
-                1.5,
-                "2100-01-01T00:00:00Z",
-            ),
+            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
         )
 
-        candidates = session_profile_repair_candidate_ids_sync(conn)
-
-    assert candidates == ["missing-profile", "stale-sort-key"]
+        assert _unbuilt_candidates(conn) == []
 
 
-def test_profile_repair_candidates_do_not_require_row_factory() -> None:
+def test_unbuilt_scope_does_not_require_row_factory() -> None:
     with sqlite3.connect(":memory:") as conn:
+        _unbuilt_scope_schema(conn)
+        conn.execute(
+            "INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('never-built', 3000, 1777636800000)"
+        )
+
+        assert _unbuilt_candidates(conn) == ["never-built"]
+
+
+def test_unbuilt_scope_defers_a_source_still_being_written() -> None:
+    with sqlite3.connect(":memory:") as conn:
+        _unbuilt_scope_schema(conn)
         conn.executescript(
             """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                sort_key_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                source_updated_at TEXT
-            );
-
+            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms) VALUES ('cold', 3000, 1777636800000);
             INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('missing-profile', 3000, 1777636800000);
+            VALUES ('hot', strftime('%s', 'now') * 1000, strftime('%s', 'now') * 1000);
             """
         )
 
-        candidates = session_profile_repair_candidate_ids_sync(conn)
-
-    assert candidates == ["missing-profile"]
-
-
-def test_profile_repair_candidates_ignore_hot_recent_sources() -> None:
-    with sqlite3.connect(":memory:") as conn:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                parent_session_id TEXT,
-                origin TEXT,
-                branch_type TEXT,
-                title TEXT,
-                git_branch TEXT,
-                native_id TEXT,
-                message_count INTEGER,
-                tool_use_count INTEGER,
-                sort_key_ms INTEGER,
-                created_at_ms INTEGER,
-                updated_at_ms INTEGER
-            );
-            CREATE TABLE blocks (
-                block_id TEXT PRIMARY KEY,
-                session_id TEXT,
-                block_type TEXT,
-                message_id TEXT,
-                position INTEGER,
-                semantic_type TEXT,
-                tool_command TEXT,
-                tool_id TEXT,
-                tool_name TEXT,
-                tool_result_exit_code INTEGER,
-                tool_result_is_error INTEGER,
-                tool_outcome TEXT,
-                search_text TEXT
-            );
-            CREATE TABLE session_profiles (
-                session_id TEXT PRIMARY KEY,
-                materializer_version INTEGER NOT NULL,
-                source_sort_key REAL,
-                source_updated_at TEXT
-            );
-
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('cold-missing-profile', 3000, 1777636800000);
-            INSERT INTO sessions (session_id, sort_key_ms, updated_at_ms)
-            VALUES ('hot-missing-profile', strftime('%s', 'now') * 1000, strftime('%s', 'now') * 1000);
-            """
-        )
-
-        candidates = session_profile_repair_candidate_ids_sync(conn)
-
-    assert candidates == ["cold-missing-profile"]
+        assert _unbuilt_candidates(conn) == ["cold"]
 
 
 async def test_status_sync_and_async_match_when_product_tables_are_absent(tmp_path: Path) -> None:

@@ -30,12 +30,15 @@ import hashlib
 import sqlite3
 from collections.abc import Mapping, Sequence
 
+import aiosqlite
+
 __all__ = [
     "SESSION_INPUT_PROJECTION_COLUMNS",
     "SESSION_ROW_PROJECTION_COLUMNS",
     "SessionInputDigest",
     "SESSION_INPUT_RECIPE_VERSION",
     "session_input_bindings",
+    "session_input_bindings_async",
     "session_input_binding_sql",
     "session_row_binding_sql",
 ]
@@ -205,4 +208,26 @@ def session_input_bindings(
                 digest.add_row(row)
         finally:
             cursor.close()
+    return digest.result()
+
+
+async def session_input_bindings_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+) -> dict[str, str]:
+    """The same binding over an async connection.
+
+    The two connection types cannot share a cursor loop, so they share the
+    digest definition and the projection SQL instead. Nothing else differs, and
+    a route that computed its own digest would report false staleness against
+    whichever route it drifted from.
+    """
+    unique = tuple(dict.fromkeys(str(session_id) for session_id in session_ids))
+    if not unique:
+        return {}
+    digest = SessionInputDigest(unique)
+    for sql in (session_row_binding_sql(len(unique)), session_input_binding_sql(len(unique))):
+        async with conn.execute(sql, unique) as cursor:
+            async for row in cursor:
+                digest.add_row(row)
     return digest.result()

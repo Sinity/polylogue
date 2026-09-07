@@ -36,8 +36,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
 )
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.derived.session.runtime import session_profile_candidates, session_profile_stale_predicate
-from polylogue.storage.introspection import column_exists as _column_exists
+from polylogue.storage.derived.session.runtime import session_profile_candidates
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.source_sessions import (
@@ -1471,11 +1470,18 @@ def _record_fts_freshness_after_insights(conn: sqlite3.Connection) -> bool:
 
 
 def _session_ids_missing_profiles(conn: sqlite3.Connection) -> list[str]:
-    """Sessions whose session_profile is missing or stale (#1620)."""
-    from polylogue.storage.derived.session.status import SESSION_PROFILE_REPAIR_CANDIDATES_SQL
+    """Cold sessions with no profile built by the current materializer.
+
+    The archive-wide fallback scope, reached only when a changed source path
+    resolves to no session of its own. It answers "what was never built", which
+    a row's absence settles outright; whether a built partition is still current
+    is decided per session by :func:`_stale_session_profile_ids`, against the
+    input values rather than against a sort key.
+    """
+    from polylogue.storage.derived.session.status import SESSION_PROFILE_UNBUILT_CANDIDATES_SQL
     from polylogue.storage.runtime.store_constants import SESSION_INSIGHT_MATERIALIZER_VERSION
 
-    rows = conn.execute(SESSION_PROFILE_REPAIR_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
+    rows = conn.execute(SESSION_PROFILE_UNBUILT_CANDIDATES_SQL, (SESSION_INSIGHT_MATERIALIZER_VERSION,)).fetchall()
     return [str(row[0]) for row in rows]
 
 
@@ -1551,54 +1557,23 @@ def _source_path_is_hot_for_insights(path: Path, *, now: float | None = None) ->
     return current - stat.st_mtime < _HOT_INSIGHT_QUIET_SECONDS
 
 
-def _identity_prefilter_stale_ids(
-    conn: sqlite3.Connection,
-    unique_ids: tuple[str, ...],
-    *,
-    sessions_alias: str,
-) -> list[str]:
-    """Identity-only staleness, for an archive predating the binding column.
-
-    Such an archive cannot store a value-complete binding, so this is the most
-    it can decide. Reporting every session stale instead would livelock the
-    derived stage; reporting none would hide real work.
-    """
-    placeholders = ", ".join("?" for _ in unique_ids)
-    predicate = session_profile_stale_predicate(sessions_alias, "sp")
-    rows = conn.execute(
-        f"""
-        SELECT {sessions_alias}.session_id
-        FROM sessions AS {sessions_alias}
-        LEFT JOIN session_profiles AS sp ON sp.session_id = {sessions_alias}.session_id
-        WHERE {sessions_alias}.session_id IN ({placeholders})
-          AND (
-              sp.session_id IS NULL
-              OR sp.materializer_version != ?
-              OR {predicate}
-          )
-        ORDER BY {sessions_alias}.session_id
-        """,
-        unique_ids + (SESSION_INSIGHT_MATERIALIZER_VERSION,),
-    ).fetchall()
-    return [str(row[0]) for row in rows]
-
-
 def _stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    """The batch's sessions whose profile is not valid.
+    """The sessions whose partition is not valid. The only freshness authority.
 
     Value-complete: it recomputes each session's input binding from the message
-    projection the profile reads. The identity-only SQL predicate this replaced
-    could not see a changed role, model, or token count, so a mutation that
-    changed the profile's output left it reporting fresh (polylogue-ylh7v).
+    projection the profile reads, and checks the partition's sibling relations
+    against what the profile declares. Both the source-path route and the
+    archive route land here, so the two cannot disagree about whether a
+    partition is current.
 
-    Cost is bounded by the batch, which is what makes an authoritative check
-    affordable here; an archive-wide pass belongs at the quiescence boundary.
+    Cost is bounded by the caller's session set, which is what makes an
+    authoritative check affordable on the ingest path.
     """
     unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
         return []
-    if not _column_exists(conn, "session_profiles", "input_content_hash") or not _table_exists(conn, "messages"):
-        return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="c")
+    if not _table_exists(conn, "messages"):
+        return []
     return session_profile_candidates(
         conn,
         unique_ids,
@@ -2328,55 +2303,12 @@ def _archive_hot_insight_session_ids(
     }
 
 
-def _archive_stale_session_profile_ids(conn: sqlite3.Connection, session_ids: Sequence[str]) -> list[str]:
-    """The archive route's twin of :func:`_stale_session_profile_ids`.
-
-    Both reach the same value-complete inspection, so the two routes cannot
-    disagree about whether a profile is current.
-    """
-    unique_ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
-    if not unique_ids or not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
-        return []
-    if not _column_exists(conn, "session_profiles", "input_content_hash") or not _table_exists(conn, "messages"):
-        return _identity_prefilter_stale_ids(conn, unique_ids, sessions_alias="s")
-    return session_profile_candidates(
-        conn,
-        unique_ids,
-        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
-    )
-
-
-def _schema_archive_session_ids_missing_profiles(conn: sqlite3.Connection, *, limit: int | None = None) -> list[str]:
-    if not _table_exists(conn, "sessions") or not _table_exists(conn, "session_profiles"):
-        return []
-    # An archive-wide identity prefilter: unbounded, so it narrows candidates
-    # rather than certifying them. The value-complete inspection that decides
-    # each candidate runs per batch in _stale_session_profile_ids.
-    stale_predicate = session_profile_stale_predicate("s", "sp")
-    sql = f"""
-        SELECT s.session_id
-        FROM sessions AS s
-        LEFT JOIN session_profiles AS sp ON sp.session_id = s.session_id
-        WHERE
-          sp.session_id IS NULL
-          OR sp.materializer_version != ?
-          OR {stale_predicate}
-        ORDER BY s.session_id
-    """
-    params: tuple[object, ...] = (SESSION_INSIGHT_MATERIALIZER_VERSION,)
-    if limit is not None:
-        sql += " LIMIT ?"
-        params = params + (max(0, int(limit)),)
-    rows = conn.execute(sql, params).fetchall()
-    return [str(row[0]) for row in rows]
-
-
 def _archive_insights_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
-            return bool(session_ids) and bool(_archive_stale_session_profile_ids(conn, session_ids))
+            return bool(session_ids) and bool(_stale_session_profile_ids(conn, session_ids))
         finally:
             conn.close()
     except Exception:
@@ -2417,7 +2349,7 @@ def _archive_insights_check_many(
             result = {
                 path
                 for path, session_ids in by_path.items()
-                if session_ids and _archive_stale_session_profile_ids(conn, session_ids)
+                if session_ids and _stale_session_profile_ids(conn, session_ids)
             }
             return result
         finally:
@@ -2460,7 +2392,7 @@ def _archive_insights_check_sessions(db_path: Path, session_ids: Sequence[str]) 
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
-            return set(_archive_stale_session_profile_ids(conn, ids))
+            return set(_stale_session_profile_ids(conn, ids))
         finally:
             conn.close()
     except Exception:
@@ -2544,7 +2476,7 @@ def _archive_insights_execute_ids(
     # The rebuild commits its own rows; the exact archive-wide FTS audit is
     # published once per whole-archive pass by ``make_fts_readiness_stage``.
     conn.commit()
-    remaining = _archive_stale_session_profile_ids(conn, list(session_ids))
+    remaining = _stale_session_profile_ids(conn, list(session_ids))
     logger.info(
         "insights: archive refreshed sessions=%d profiles=%d work_events=%d phases=%d threads=%d remaining=%d",
         len(tuple(dict.fromkeys(session_ids))),

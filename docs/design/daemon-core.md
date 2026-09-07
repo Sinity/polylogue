@@ -291,6 +291,32 @@ derivation, not of the caller's mood. Together these remove the quadratic term
 Debt is the pending set, recomputed; `convergence_debt` rows in `ops.db` are
 retry hints and carry no correctness authority.
 
+### The aggregate families
+
+There is one materialized aggregate family, keyed by `session_id`: the session
+partition — `session_profiles` plus the `session_latency_profiles`,
+`session_work_events` and `session_phases` rows written in the same
+replacement. Its binding is `session_profiles.input_content_hash`, a digest over
+the session-row and message projections declared in
+`storage/derived/session/input_binding.py`; its recipe version is
+`SESSION_INPUT_RECIPE_VERSION`. Inspection compares that digest and the
+partition's sibling row counts, so a half-replaced partition and a partition
+whose input values moved are both non-valid.
+
+Threads, tag rollups and provider/day rollups are SQL views over that relation.
+They have no output of their own to inspect and no partition to publish: they
+are current exactly when the partitions feeding them are, which is how status
+counts them. A freshness column on a view — `session_tag_rollups.materialized_at`
+is the literal `'query-time'` — can only ever compare equal to itself.
+
+Freshness is decided in exactly one place,
+`storage/derived/session/derivation.py`. The archive-wide route and the
+per-batch route call the same inspection over different key sets, and the
+async route shares its SQL and classification with the sync one. Identity —
+a sort key, an updated-at, a row count — narrows nothing and certifies nothing:
+what a scope query may still answer is whether a partition was ever built, and
+`SESSION_PROFILE_UNBUILT_CANDIDATES_SQL` answers only that.
+
 ## 7. Service lifecycle
 
 polylogue-avmq's acceptance criteria are the runner design. One

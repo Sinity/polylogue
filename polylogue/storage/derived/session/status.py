@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
 import aiosqlite
 
 from polylogue.storage.derived.session.aggregates import _PROFILE_BUCKET_DAY_SQL
-from polylogue.storage.derived.session.runtime import (
-    SessionInsightStatusSnapshot,
-    session_profile_stale_predicate,
+from polylogue.storage.derived.session.derivation import (
+    SESSION_PARTITION_INSPECT_CHUNK,
+    inspect_session_profiles,
+    inspect_session_profiles_async,
 )
+from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 from polylogue.storage.sqlite.run_projection_relations import (
     context_snapshot_relation_sql,
@@ -36,6 +39,16 @@ _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     "threads": ("session_profiles", "session_work_events"),
     "session_tag_rollups": ("session_profiles",),
 }
+
+
+#: The output relations one session partition is replaced across. Inspection
+#: reads all of them, so all of them must be present before it can run.
+_PARTITION_RELATION_KEYS: tuple[str, ...] = (
+    "session_profiles",
+    "session_latency_profiles",
+    "session_work_events",
+    "session_phases",
+)
 
 
 def _relations_readable(tables: TablePresence, keys: Sequence[str]) -> bool:
@@ -136,13 +149,21 @@ class SessionInsightCountDescriptor:
     table_keys: tuple[str, ...] = ()
     params: tuple[object, ...] = ()
     requires_freshness: bool = False
+    #: The query takes the inspection's non-valid key set as its last bound
+    #: parameter, so it can only run once that inspection has been taken.
+    requires_inspection: bool = False
     fallback_count_key: str | None = None
     fallback_value: int = 0
 
-    def _should_query(self, tables: TablePresence, *, verify_freshness: bool) -> bool:
+    def _should_query(self, tables: TablePresence, *, verify_freshness: bool, non_valid: str | None) -> bool:
         if self.requires_freshness and not verify_freshness:
             return False
+        if self.requires_inspection and non_valid is None:
+            return False
         return _relations_readable(tables, self.table_keys)
+
+    def _params(self, non_valid: str | None) -> tuple[object, ...]:
+        return (*self.params, non_valid) if self.requires_inspection else self.params
 
     def _fallback(self, counts: StatusCounts) -> int:
         if self.fallback_count_key is not None:
@@ -156,9 +177,10 @@ class SessionInsightCountDescriptor:
         counts: StatusCounts,
         *,
         verify_freshness: bool,
+        non_valid: str | None,
     ) -> tuple[str, int]:
-        if self._should_query(tables, verify_freshness=verify_freshness):
-            return (self.count_key, _count_sync(conn, self.sql, *self.params))
+        if self._should_query(tables, verify_freshness=verify_freshness, non_valid=non_valid):
+            return (self.count_key, _count_sync(conn, self.sql, *self._params(non_valid)))
         return (self.count_key, self._fallback(counts))
 
     async def count_async(
@@ -168,9 +190,10 @@ class SessionInsightCountDescriptor:
         counts: StatusCounts,
         *,
         verify_freshness: bool,
+        non_valid: str | None,
     ) -> tuple[str, int]:
-        if self._should_query(tables, verify_freshness=verify_freshness):
-            return (self.count_key, await _count_async(conn, self.sql, *self.params))
+        if self._should_query(tables, verify_freshness=verify_freshness, non_valid=non_valid):
+            return (self.count_key, await _count_async(conn, self.sql, *self._params(non_valid)))
         return (self.count_key, self._fallback(counts))
 
 
@@ -225,15 +248,10 @@ MISSING_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
     WHERE slp.session_id IS NULL
       AND COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
 """
-STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = f"""
+STALE_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
-    FROM session_latency_profiles slp
-    JOIN sessions c ON c.session_id = slp.session_id
-    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-      AND (
-           slp.materializer_version != ?
-        OR {session_profile_stale_predicate("c", "slp")}
-      )
+    FROM json_each(?) n
+    JOIN session_latency_profiles slp ON slp.session_id = n.value
 """
 ORPHAN_SESSION_LATENCY_PROFILE_COUNT_SQL = """
     SELECT COUNT(*)
@@ -255,7 +273,7 @@ ORPHAN_SESSION_PHASE_COUNT_SQL = """
     LEFT JOIN sessions c ON c.session_id = sph.session_id
     WHERE c.session_id IS NULL
 """
-STALE_THREAD_COUNT_SQL = f"""
+STALE_THREAD_COUNT_SQL = """
     WITH RECURSIVE roots(root_id) AS (
         SELECT c.session_id
         FROM sessions c
@@ -274,14 +292,8 @@ STALE_THREAD_COUNT_SQL = f"""
     WHERE EXISTS (
         SELECT 1
         FROM descendants d
-        LEFT JOIN session_profiles sp ON sp.session_id = d.session_id
-        JOIN sessions c ON c.session_id = d.session_id
+        JOIN json_each(?) n ON n.value = d.session_id
         WHERE d.root_id = r.root_id
-          AND (
-              sp.session_id IS NULL
-              OR sp.materializer_version != ?
-              OR {session_profile_stale_predicate("c", "sp")}
-          )
     )
 """
 ORPHAN_THREAD_COUNT_SQL = """
@@ -306,80 +318,54 @@ EXPECTED_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
         GROUP BY source_name, bucket_day, tag
     )
 """
+#: A tag rollup is a query-time projection of ``session_profiles``: it has no
+#: output relation of its own to inspect, so its partition is current exactly
+#: when every profile contributing to it is. Comparing the projection's
+#: ``materialized_at`` against the profiles' -- the shape this replaced --
+#: could not say anything at all, because the view emits the literal
+#: ``'query-time'`` for that column on every row.
 STALE_SESSION_TAG_ROLLUP_COUNT_SQL = f"""
     WITH tag_rows AS (
-        SELECT
-            sp.source_name AS source_name,
-            {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
-            tag.value AS tag,
-            sp.materialized_at AS profile_materialized_at
+        SELECT sp.source_name AS source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag, sp.session_id AS session_id
         FROM session_profiles sp, json_each(COALESCE(sp.tags_json, '[]')) tag
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
         UNION ALL
-        SELECT
-            sp.source_name AS source_name,
-            {_PROFILE_BUCKET_DAY_SQL} AS bucket_day,
-            tag.value AS tag,
-            sp.materialized_at AS profile_materialized_at
+        SELECT sp.source_name AS source_name, {_PROFILE_BUCKET_DAY_SQL} AS bucket_day, tag.value AS tag, sp.session_id AS session_id
         FROM session_profiles sp, json_each(COALESCE(sp.auto_tags_json, '[]')) tag
         WHERE {_PROFILE_BUCKET_DAY_SQL} IS NOT NULL AND tag.value IS NOT NULL AND tag.value != ''
-    ),
-    expected AS (
-        SELECT source_name, bucket_day, tag, MAX(profile_materialized_at) AS max_profile_materialized_at
-        FROM tag_rows
-        GROUP BY source_name, bucket_day, tag
     )
-    SELECT COUNT(*)
-    FROM session_tag_rollups str
-    LEFT JOIN expected e
-      ON e.source_name = str.source_name
-     AND e.bucket_day = str.bucket_day
-     AND e.tag = str.tag
-    WHERE str.materializer_version != ?
-       OR e.tag IS NULL
-       OR COALESCE(e.max_profile_materialized_at, '') > COALESCE(str.materialized_at, '')
+    SELECT COUNT(*) FROM (
+        SELECT t.source_name, t.bucket_day, t.tag
+        FROM tag_rows t
+        JOIN json_each(?) n ON n.value = t.session_id
+        GROUP BY t.source_name, t.bucket_day, t.tag
+    )
 """
-SESSION_PROFILE_REPAIR_CANDIDATES_SQL = f"""
+#: Cold sessions with no profile row built by the current materializer.
+#:
+#: A scope selector, never a freshness answer: it can see that nothing was
+#: built and that a build predates the materializer, and nothing else. Whether
+#: a built partition is current is decided only by the value-complete
+#: inspection in ``derived/session/derivation.py``, which every caller runs on
+#: the sessions this narrows to.
+SESSION_PROFILE_UNBUILT_CANDIDATES_SQL = f"""
     SELECT c.session_id
     FROM sessions c
     LEFT JOIN session_profiles sp ON sp.session_id = c.session_id
-    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {{cutoff}}
-      AND (
-           sp.session_id IS NULL
-        OR sp.materializer_version != ?
-        OR {session_profile_stale_predicate("c", "sp")}
-      )
+    WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+      AND (sp.session_id IS NULL OR sp.materializer_version != ?)
     ORDER BY c.session_id
 """
-SESSION_PROFILE_REPAIR_CANDIDATES_SQL = SESSION_PROFILE_REPAIR_CANDIDATES_SQL.format(cutoff=HOT_SOURCE_READY_CUTOFF_SQL)
 
-
-def _stale_session_profile_count_sql(conn: sqlite3.Connection) -> str:
-    predicate = session_profile_stale_predicate(
-        "c",
-        "sp",
-    )
-    return f"""
-        SELECT COUNT(*)
-        FROM sessions AS c
-        JOIN session_profiles AS sp ON sp.session_id = c.session_id
-        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-          AND (sp.materializer_version != ? OR {predicate})
-    """
-
-
-async def _stale_session_profile_count_sql_async(conn: aiosqlite.Connection) -> str:
-    predicate = session_profile_stale_predicate(
-        "c",
-        "sp",
-    )
-    return f"""
-        SELECT COUNT(*)
-        FROM sessions AS c
-        JOIN session_profiles AS sp ON sp.session_id = c.session_id
-        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-          AND (sp.materializer_version != ? OR {predicate})
-    """
+#: Cold sessions, the scope every freshness count is computed over. "Cold"
+#: is the quiet-window policy already applied to missing-profile accounting:
+#: a source still being written is deferred, not reported as debt.
+COLD_SESSION_IDS_SQL = f"""
+    SELECT session_id
+    FROM sessions
+    WHERE COALESCE(CAST(sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
+    ORDER BY session_id
+"""
 
 
 _TABLE_DESCRIPTORS: tuple[SessionInsightTableDescriptor, ...] = (
@@ -485,8 +471,8 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="stale_latency_profile_row_count",
         table_keys=("session_latency_profiles",),
         sql=STALE_SESSION_LATENCY_PROFILE_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
         requires_freshness=True,
+        requires_inspection=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_latency_profile_row_count",
@@ -520,8 +506,8 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
         count_key="stale_thread_count",
         table_keys=("session_profiles",),
         sql=STALE_THREAD_COUNT_SQL,
-        params=(SESSION_INSIGHT_MATERIALIZER_VERSION,),
         requires_freshness=True,
+        requires_inspection=True,
     ),
     SessionInsightCountDescriptor(
         count_key="orphan_thread_count",
@@ -538,9 +524,10 @@ _COUNT_DESCRIPTORS: tuple[SessionInsightCountDescriptor, ...] = (
     ),
     SessionInsightCountDescriptor(
         count_key="stale_tag_rollup_count",
-        table_keys=("session_tag_rollups",),
-        sql="SELECT COUNT(*) FROM session_tag_rollups WHERE materialized_at != 'query-time'",
+        table_keys=("session_profiles",),
+        sql=STALE_SESSION_TAG_ROLLUP_COUNT_SQL,
         requires_freshness=True,
+        requires_inspection=True,
     ),
 )
 
@@ -696,14 +683,63 @@ def _descriptor_counts_sync(
     counts: StatusCounts,
     *,
     verify_freshness: bool,
+    non_valid: str | None,
 ) -> StatusCounts:
     descriptor_counts: StatusCounts = {}
     for descriptor in _COUNT_DESCRIPTORS:
         key, value = descriptor.count_sync(
-            conn, tables, {**counts, **descriptor_counts}, verify_freshness=verify_freshness
+            conn,
+            tables,
+            {**counts, **descriptor_counts},
+            verify_freshness=verify_freshness,
+            non_valid=non_valid,
         )
         descriptor_counts[key] = value
     return descriptor_counts
+
+
+def _inspectable(conn: sqlite3.Connection, tables: TablePresence) -> bool:
+    """Whether a value-complete inspection can run against this connection.
+
+    The inspection reads the message projection the profile is computed from.
+    An archive that has no ``messages`` relation has no inputs to bind to, so
+    every freshness count over it is zero rather than a guess.
+    """
+    if not _relations_readable(tables, _PARTITION_RELATION_KEYS):
+        return False
+    return bool(conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'").fetchone())
+
+
+@dataclass(frozen=True, slots=True)
+class _Inspection:
+    """One value-complete pass, as the freshness counts consume it.
+
+    ``non_valid`` is a JSON array bound as one parameter rather than written to
+    a scratch relation: the status surface reads through connections that may
+    forbid even temporary writes, and a result that needs somewhere to live is
+    a result that can be mistaken for authority.
+    """
+
+    stale: int
+    non_valid: str
+
+
+def _inspection(statuses: Mapping[str, str]) -> _Inspection:
+    return _Inspection(
+        stale=sum(1 for status in statuses.values() if status == "stale"),
+        non_valid=json.dumps(sorted(key for key, status in statuses.items() if status != "valid")),
+    )
+
+
+def _inspect_sync(conn: sqlite3.Connection) -> _Inspection:
+    session_ids = [str(row[0]) for row in conn.execute(COLD_SESSION_IDS_SQL).fetchall()]
+    statuses: dict[str, str] = {}
+    for start in range(0, len(session_ids), SESSION_PARTITION_INSPECT_CHUNK):
+        chunk = session_ids[start : start + SESSION_PARTITION_INSPECT_CHUNK]
+        statuses.update(
+            inspect_session_profiles(conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
+        )
+    return _inspection(statuses)
 
 
 def _status_counts_sync(
@@ -713,12 +749,10 @@ def _status_counts_sync(
     verify_freshness: bool,
 ) -> StatusCounts:
     counts = _materialized_counts_sync(conn, tables, verify_freshness=verify_freshness)
-    counts.update(_descriptor_counts_sync(conn, tables, counts, verify_freshness=verify_freshness))
-    counts["stale_profile_row_count"] = (
-        _count_sync(conn, _stale_session_profile_count_sql(conn), SESSION_INSIGHT_MATERIALIZER_VERSION)
-        if verify_freshness and tables["session_profiles"]
-        else 0
-    )
+    inspection = _inspect_sync(conn) if verify_freshness and _inspectable(conn, tables) else None
+    non_valid = None if inspection is None else inspection.non_valid
+    counts.update(_descriptor_counts_sync(conn, tables, counts, verify_freshness=verify_freshness, non_valid=non_valid))
+    counts["stale_profile_row_count"] = 0 if inspection is None else inspection.stale
     return counts
 
 
@@ -729,48 +763,6 @@ def _status_payload(
     return SessionInsightStatusSnapshot(
         **counts,
     )
-
-
-def session_profile_repair_candidate_ids_sync(conn: sqlite3.Connection) -> list[str]:
-    predicate = session_profile_stale_predicate(
-        "c",
-        "sp",
-    )
-    sql = f"""
-        SELECT c.session_id
-        FROM sessions AS c
-        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
-        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
-        ORDER BY c.session_id
-    """
-    rows = conn.execute(
-        sql,
-        (SESSION_INSIGHT_MATERIALIZER_VERSION,),
-    ).fetchall()
-    return [str(row["session_id"] if isinstance(row, sqlite3.Row) else row[0]) for row in rows]
-
-
-async def session_profile_repair_candidate_ids_async(conn: aiosqlite.Connection) -> list[str]:
-    predicate = session_profile_stale_predicate(
-        "c",
-        "sp",
-    )
-    sql = f"""
-        SELECT c.session_id
-        FROM sessions AS c
-        LEFT JOIN session_profiles AS sp ON sp.session_id = c.session_id
-        WHERE COALESCE(CAST(c.sort_key_ms AS REAL)/1000.0, 0.0) < {HOT_SOURCE_READY_CUTOFF_SQL}
-          AND (sp.session_id IS NULL OR sp.materializer_version != ? OR {predicate})
-        ORDER BY c.session_id
-    """
-    rows = await (
-        await conn.execute(
-            sql,
-            (SESSION_INSIGHT_MATERIALIZER_VERSION,),
-        )
-    ).fetchall()
-    return [str(row["session_id"]) for row in rows]
 
 
 def session_insight_status_sync(
@@ -806,6 +798,7 @@ async def _descriptor_counts_async(
     counts: StatusCounts,
     *,
     verify_freshness: bool,
+    non_valid: str | None,
 ) -> StatusCounts:
     descriptor_counts: StatusCounts = {}
     for descriptor in _COUNT_DESCRIPTORS:
@@ -814,9 +807,30 @@ async def _descriptor_counts_async(
             tables,
             {**counts, **descriptor_counts},
             verify_freshness=verify_freshness,
+            non_valid=non_valid,
         )
         descriptor_counts[key] = value
     return descriptor_counts
+
+
+async def _inspectable_async(conn: aiosqlite.Connection, tables: TablePresence) -> bool:
+    if not _relations_readable(tables, _PARTITION_RELATION_KEYS):
+        return False
+    return bool(
+        await (await conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages'")).fetchone()
+    )
+
+
+async def _inspect_async(conn: aiosqlite.Connection) -> _Inspection:
+    async with conn.execute(COLD_SESSION_IDS_SQL) as cursor:
+        session_ids = [str(row[0]) async for row in cursor]
+    statuses: dict[str, str] = {}
+    for start in range(0, len(session_ids), SESSION_PARTITION_INSPECT_CHUNK):
+        chunk = session_ids[start : start + SESSION_PARTITION_INSPECT_CHUNK]
+        statuses.update(
+            await inspect_session_profiles_async(conn, chunk, materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION)
+        )
+    return _inspection(statuses)
 
 
 async def _status_counts_async(
@@ -826,14 +840,12 @@ async def _status_counts_async(
     verify_freshness: bool,
 ) -> StatusCounts:
     counts = await _materialized_counts_async(conn, tables, verify_freshness=verify_freshness)
-    counts.update(await _descriptor_counts_async(conn, tables, counts, verify_freshness=verify_freshness))
-    counts["stale_profile_row_count"] = (
-        await _count_async(
-            conn, await _stale_session_profile_count_sql_async(conn), SESSION_INSIGHT_MATERIALIZER_VERSION
-        )
-        if verify_freshness and tables["session_profiles"]
-        else 0
+    inspection = await _inspect_async(conn) if verify_freshness and await _inspectable_async(conn, tables) else None
+    non_valid = None if inspection is None else inspection.non_valid
+    counts.update(
+        await _descriptor_counts_async(conn, tables, counts, verify_freshness=verify_freshness, non_valid=non_valid)
     )
+    counts["stale_profile_row_count"] = 0 if inspection is None else inspection.stale
     return counts
 
 
@@ -861,6 +873,4 @@ __all__ = [
     "SessionInsightTableDescriptor",
     "session_insight_status_async",
     "session_insight_status_sync",
-    "session_profile_repair_candidate_ids_async",
-    "session_profile_repair_candidate_ids_sync",
 ]
