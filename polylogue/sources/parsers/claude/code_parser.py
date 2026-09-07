@@ -902,6 +902,55 @@ def _thinking_budget_payload(item: Mapping[str, object]) -> dict[str, object] | 
     return payload
 
 
+_CAPABILITY_ATTRIBUTION_FIELDS: tuple[tuple[str, str], ...] = (
+    ("attributionSkill", "skill"),
+    ("attributionPlugin", "plugin"),
+    ("attributionMcpServer", "mcp_server"),
+    ("attributionMcpTool", "mcp_tool"),
+    ("attributionAgent", "agent"),
+)
+
+
+def _capability_attribution_payload(item: Mapping[str, object]) -> dict[str, object] | None:
+    """Project the ``attribution*`` cluster: which capability produced this turn.
+
+    Claude Code stamps these five as top-level strings on ``assistant``
+    records and on no other record type (full-corpus census 2026-09-07,
+    14,684 session files: attributionAgent 517,881, attributionSkill 50,586,
+    attributionMcpServer and attributionMcpTool 7,683 each and never one
+    without the other, attributionPlugin 5,430). They are read off the record
+    itself rather than inside the usage-gated ``message_usage`` payload so an
+    assistant turn carrying no ``message.usage`` -- an API-error record, an
+    aborted stream -- keeps its attribution.
+
+    ``attributionAgent`` is a per-turn fact, not a session constant: it occurs
+    only in subagent (``agent-*.jsonl``) transcripts, and where such a
+    transcript replays a parent's prefix it carries the parent's agent on the
+    contiguous replayed head and its own on the divergent tail (measured on
+    every multi-valued file in a 300-file walk, e.g. 8 ``triage`` turns then
+    52 ``fork`` turns). A session-level projection would erase that split.
+    """
+    payload: dict[str, object] = {}
+    for wire_key, payload_key in _CAPABILITY_ATTRIBUTION_FIELDS:
+        value = item.get(wire_key)
+        if isinstance(value, str) and value:
+            payload[payload_key] = value
+    if not payload:
+        return None
+    mcp_server = payload.get("mcp_server")
+    mcp_tool = payload.get("mcp_tool")
+    if mcp_server is not None and mcp_tool is not None:
+        payload["summary"] = f"{mcp_server}:{mcp_tool}"
+        return payload
+    # Most specific capability first; the payload keeps every field it read.
+    for key in ("mcp_server", "mcp_tool", "skill", "plugin", "agent"):
+        value = payload.get(key)
+        if value is not None:
+            payload["summary"] = str(value)
+            break
+    return payload
+
+
 @dataclass
 class _DelegationProgressStats:
     count: int = 0
@@ -2003,8 +2052,8 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         acc.updated_at = timestamp if acc.updated_at is None or timestamp > acc.updated_at else acc.updated_at
 
     # Emitted before the empty-content drop below: the turn's thinking
-    # configuration is a fact about the record, not about whether its message
-    # survived parsing.
+    # configuration and its capability attribution are facts about the record,
+    # not about whether its message survived parsing.
     thinking_budget = _thinking_budget_payload(item)
     if thinking_budget is not None:
         acc.session_events.append(
@@ -2013,6 +2062,17 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 timestamp=timestamp,
                 source_message_provider_id=record_uuid or None,
                 payload=thinking_budget,
+            )
+        )
+
+    capability_attribution = _capability_attribution_payload(item)
+    if capability_attribution is not None:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_capability_attribution",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload=capability_attribution,
             )
         )
 
