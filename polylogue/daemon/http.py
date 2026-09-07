@@ -1645,25 +1645,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return await handler(polylogue)
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
-        if getattr(self, "_write_gate_depth", 0) > 0:
-            # The read executor deliberately leaves timed-out work running.
-            # A mutation cannot use that contract: its route-level writer
-            # lease must remain held until the real substrate call finishes.
-            return asyncio.run(self._run_archive_query(handler))
+        """Run one route body through the daemon's single bounded scheduler.
 
-        # Route through the daemon's single bounded compute adapter. Test
-        # doubles that predate the adapter retain the old attributes below;
-        # production servers always take this path.
+        Reads carry the interactive class and the request-thread timeout;
+        mutations carry the control class and wait for the substrate call,
+        because a route-level writer lease may not outlive its own work.
+        """
+
         kernel = getattr(self.server, "execution_kernel", None)
+        mutating = getattr(self, "_write_gate_depth", 0) > 0
         if isinstance(kernel, BoundedComputeAdapter):
             from polylogue.daemon.execution import CancellationHandle
 
             cancellation = CancellationHandle()
             submitted = kernel.submit(
                 lambda: asyncio.run(self._run_archive_query(handler)),
-                admission_class="interactive-read",
+                admission_class="control" if mutating else "interactive-read",
                 cancellation=cancellation,
             )
+            if mutating:
+                # A mutation may not use the read contract, which deliberately
+                # leaves timed-out work running: its route-level writer lease
+                # must stay held until the substrate call finishes. The control
+                # class reserves capacity precisely so this wait is bounded by
+                # the mutation itself rather than by read pressure.
+                return submitted.future.result()
             try:
                 return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
             except FutureTimeoutError as exc:
@@ -1673,48 +1679,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     "the daemon may be busy with catch-up ingestion/embedding"
                 ) from exc
 
-        # Compatibility path for narrow in-process handler doubles. The real
-        # server never uses this branch.
-        # Route through the server's bounded archive-query executor (#0hqs)
-        # rather than running asyncio.run() directly on this connection's own
-        # thread: caps concurrent DB work at _ARCHIVE_QUERY_MAX_WORKERS
-        # regardless of how many connections are open, and the timeout below
-        # means a stalled query returns an honest error instead of blocking
-        # this thread (and the client) forever.
-        #
-        # admission is acquired here (non-blocking) and released inside the
-        # submitted closure once the work actually finishes -- not when this
-        # request thread stops waiting on it. That keeps the semaphore an
-        # honest count of in-flight-or-queued work regardless of whether the
-        # caller gave up, so a backlog of wedged queries saturates admission
-        # and new requests get rejected immediately instead of queuing behind
-        # ThreadPoolExecutor's own unbounded work queue (CodeRabbit, #2628).
-        admission = self.server.archive_query_admission
-        if not admission.acquire(blocking=False):
-            logger.warning(
-                "archive query rejected: admission saturated (%d workers + %d queue slots all in use)",
-                _ARCHIVE_QUERY_MAX_WORKERS,
-                _ARCHIVE_QUERY_MAX_QUEUED,
-            )
-            raise TimeoutError(
-                "archive query rejected: the daemon is already handling the maximum number of "
-                "concurrent/queued archive queries; retry shortly"
-            )
-
-        def _run_and_release() -> object:
-            try:
-                return asyncio.run(self._run_archive_query(handler))
-            finally:
-                admission.release()
-
-        future = self.server.archive_query_executor.submit(_run_and_release)
-        try:
-            return future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-        except FutureTimeoutError as exc:
-            raise TimeoutError(
-                f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                "the daemon may be busy with catch-up ingestion/embedding"
-            ) from exc
+        # Narrow in-process handler doubles construct no kernel. They have no
+        # concurrency to schedule, so the work runs on this thread.
+        return asyncio.run(self._run_archive_query(handler))
 
     @contextlib.contextmanager
     def _write_gate(self, actor: str) -> Iterator[None]:
@@ -5872,26 +5839,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": with_overlays})
 
 
-# Bound for concurrent archive-query execution (polylogue-0hqs). ThreadingHTTPServer
-# spawns one raw OS thread per accepted connection with no cap; under sustained
-# concurrent load (or a query that stalls) that grows unbounded (64+ threads
-# observed live, py-spy showing dozens permanently stuck at the same SQL fetch).
-# Routing the actual archive-query work through a small, fixed-size executor
-# caps concurrent DB work regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S
-# below bounds each request's wait so a stalled query returns an honest error
-# instead of occupying a connection thread forever.
+# Bound for concurrent archive-query execution. ThreadingHTTPServer spawns one
+# raw OS thread per accepted connection with no cap, so the archive work itself
+# is what must be bounded: the compute adapter caps concurrent DB work
+# regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S bounds each
+# request's wait so a stalled query returns an honest error instead of
+# occupying a connection thread forever.
 _ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_TIMEOUT_S = 30.0
-# ThreadPoolExecutor's own work queue is unbounded (CodeRabbit review, #2628):
-# once all workers are individually wedged, submit() would still accept every
-# new request into that queue, and a request thread giving up after
-# _ARCHIVE_QUERY_TIMEOUT_S does NOT cancel the queued/running closure -- it
-# keeps consuming a worker slot for a client that was already told it timed
-# out. _archive_query_admission below is a bounded semaphore covering both
-# running AND queued work; once it is exhausted, a new request is rejected
-# immediately (503, no executor submission at all) instead of queuing behind
-# an unbounded backlog. This bounds the worst case to a fixed backlog rather
-# than a slow, wedged-query-driven memory/latency spiral.
+# Queue depth beyond the worker count. The adapter's admission is finite in
+# both work units and estimated bytes, so an exhausted queue rejects with typed
+# backpressure instead of accumulating behind an unbounded executor queue.
 _ARCHIVE_QUERY_MAX_QUEUED = 16
 
 
@@ -5929,13 +5887,8 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )
-        # Compatibility attributes are retained for existing narrow handler
-        # doubles and diagnostics; production submission goes through the
-        # adapter above.
+        # Diagnostic alias; every submission goes through the adapter above.
         self.archive_query_executor = self.execution_kernel.executor
-        self.archive_query_admission = threading.BoundedSemaphore(
-            _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
-        )
         self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
         self.coordination_cache_lock = threading.Lock()
         self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)

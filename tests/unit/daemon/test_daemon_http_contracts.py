@@ -44,6 +44,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from polylogue.daemon.execution import BoundedComputeAdapter, DaemonBackpressureError
 from polylogue.operations import build_declared_operation_catalog, build_runtime_operation_catalog
 
 if TYPE_CHECKING:
@@ -127,8 +128,10 @@ REQUIRED_HEALTH_KEYS: frozenset[str] = frozenset(
 class _MockServer:
     auth_token = ""  # local-dev default: no auth needed for these contracts
     api_host = "127.0.0.1"
-    archive_query_executor = ThreadPoolExecutor(max_workers=1)
-    archive_query_admission = threading.BoundedSemaphore(64)  # generous: not under test here
+    # A real bounded adapter: the timeout and backpressure contracts below are
+    # about the production scheduler, so the double must not substitute one.
+    execution_kernel = BoundedComputeAdapter(max_workers=2, queue_units=4)
+    archive_query_executor = execution_kernel.executor
 
 
 class _MockHeaders:
@@ -974,52 +977,75 @@ class TestBoundedArchiveQueryExecutor:
         assert _ARCHIVE_QUERY_MAX_WORKERS > 0
         assert _ARCHIVE_QUERY_MAX_WORKERS < 100  # sanity: a bound, not effectively unbounded
 
-    def test_saturated_admission_rejects_immediately_without_submitting(self) -> None:
-        """Regression for the CodeRabbit #2628 follow-up: the executor's own
-        work queue is unbounded, so admission must be checked (and rejected)
-        BEFORE submit() -- not after -- once capacity is exhausted, rather
-        than letting requests queue behind an already-wedged backlog.
+    def test_saturated_admission_rejects_before_the_body_runs(self) -> None:
+        """Admission is decided before submission, so a saturated queue never
+        accumulates work behind an already-wedged backlog.
+
+        Anti-vacuity: an adapter that submitted first and rejected afterwards
+        would run the handler below and fail on its assertion instead.
         """
 
         class _SaturatedServer:
             auth_token = ""
             api_host = "127.0.0.1"
-            archive_query_executor = ThreadPoolExecutor(max_workers=1)
-            archive_query_admission = threading.BoundedSemaphore(1)
+            execution_kernel = BoundedComputeAdapter(max_workers=1, queue_units=0)
 
         server = _SaturatedServer()
-        server.archive_query_admission.acquire()  # simulate capacity already fully consumed
+        occupied = threading.Event()
+        release = threading.Event()
+
+        def _hold() -> bool:
+            occupied.set()
+            return release.wait(5)
+
+        server.execution_kernel.submit(_hold)
+        assert occupied.wait(5)
         try:
             handler = _make_handler("GET", "/api/facets")
             handler.server = cast("DaemonAPIHTTPServer", server)
 
             async def _unused_handler(poly: object) -> object:
-                # If admission were checked AFTER (or not at all before)
-                # submit(), this would run on the executor thread and this
-                # assertion would surface as the test failure instead of the
-                # expected fast rejection below -- proving submit() never
-                # happened.
-                raise AssertionError("must not run: admission should reject before submit()")
+                raise AssertionError("must not run: admission should reject before submission")
 
-            with pytest.raises(TimeoutError, match="rejected"):
+            with pytest.raises(DaemonBackpressureError, match="saturated"):
                 handler._sync_run(_unused_handler)
         finally:
-            server.archive_query_admission.release()
+            release.set()
+            server.execution_kernel.shutdown(wait=True)
 
     def test_admission_is_released_after_successful_query(self) -> None:
-        """A completed query frees its admission slot for the next request."""
+        """A completed query frees its admission units for the next request."""
         handler = _make_handler("GET", "/api/facets")
-        admission = handler.server.archive_query_admission
+        kernel = handler.server.execution_kernel
 
         async def _fast_handler(poly: object) -> object:
             return {"ok": True}
 
         result = handler._sync_run(_fast_handler)
         assert result == {"ok": True}
-        # Semaphore is back to its starting capacity -- acquiring once more
-        # must succeed without blocking.
-        assert admission.acquire(blocking=False)
-        admission.release()
+        assert kernel.snapshot().used_units == 0
+        assert kernel.snapshot().by_class("interactive-read").used_units == 0
+
+    def test_mutating_route_carries_the_control_admission_class(self) -> None:
+        """A route holding the writer lease is scheduled as control, not as a read.
+
+        Anti-vacuity: dropping the class selection in ``_sync_run`` records the
+        work under ``interactive-read`` and this assertion fails.
+        """
+
+        handler = _make_handler("POST", "/api/user/tags")
+        kernel = handler.server.execution_kernel
+        before = kernel.snapshot().by_class("control").admitted
+        handler._write_gate_depth = 1
+
+        async def _mutation(poly: object) -> object:
+            return {"written": True}
+
+        try:
+            assert handler._sync_run(_mutation) == {"written": True}
+        finally:
+            handler._write_gate_depth = 0
+        assert kernel.snapshot().by_class("control").admitted == before + 1
 
     def test_server_close_shuts_down_archive_query_executor(self) -> None:
         from polylogue.daemon.http import DaemonAPIHTTPServer

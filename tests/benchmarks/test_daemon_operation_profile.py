@@ -13,13 +13,16 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import Path
-from time import perf_counter
+from time import perf_counter, sleep
 
 import pytest
 
 from polylogue.cli.daemon_client import DaemonClient
+from polylogue.daemon.execution import MAX_BACKGROUND_STARVATION_S, DaemonBackpressureError
 from tests.benchmarks.cli_profile import INTERACTION_WORKLOADS, record_metrics
 from tests.benchmarks.helpers import BenchmarkFixture, benchmark_one_shot
 
@@ -134,6 +137,77 @@ def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon
     assert len(results) == 4
     assert all(result["error"] is None for result in results)
     record_metrics(benchmark, concurrent_interference_p95_ms=max(elapsed, default=0))
+
+
+@pytest.mark.benchmark
+def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_daemon_uds_stack: object) -> None:
+    """Interactive reads and background units share the one bounded scheduler.
+
+    The background denominator is completed background operations per mixed-load
+    second, measured on the same kernel the interactive requests are admitted
+    to; queue delay is that kernel's own longest admission-to-dispatch wait.
+    """
+
+    server = bench_daemon_uds_stack.server  # type: ignore[attr-defined]
+    kernel = server.execution_kernel
+    socket_path = bench_daemon_uds_stack.client.socket_path  # type: ignore[attr-defined]
+    stop = threading.Event()
+    background_completed = 0
+
+    def background_unit() -> None:
+        sleep(0.005)
+
+    def keep_background_busy() -> None:
+        nonlocal background_completed
+        while not stop.is_set():
+            try:
+                submitted = kernel.submit(background_unit, admission_class="bulk-candidate")
+            except DaemonBackpressureError:
+                sleep(0.005)
+                continue
+            with suppress(Exception):
+                submitted.future.result(timeout=5)
+                background_completed += 1
+
+    elapsed: list[int] = []
+
+    def run() -> list[dict[str, object]]:
+        def one() -> dict[str, object]:
+            client = DaemonClient(socket_path, timeout_s=5)
+            result = _operation(client, "cli.query", {"params": {"limit": 5}})
+            elapsed.append(client.last_elapsed_ms or 0)
+            return result
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            return list(pool.map(lambda _index: one(), range(8)))
+
+    feeders = [threading.Thread(target=keep_background_busy, daemon=True) for _ in range(2)]
+    started = perf_counter()
+    for feeder in feeders:
+        feeder.start()
+    try:
+        results = benchmark_one_shot(benchmark, run)
+    finally:
+        stop.set()
+        for feeder in feeders:
+            feeder.join(timeout=10)
+    duration_s = max(perf_counter() - started, 1e-6)
+
+    snapshot = kernel.snapshot()
+    assert len(results) == 8
+    assert all(result["error"] is None for result in results)
+    # Mixed-load progress: background work completed while every interactive
+    # read was served, and no background unit waited past the declared window.
+    assert background_completed > 0
+    assert snapshot.background_max_wait_s < MAX_BACKGROUND_STARVATION_S
+    assert snapshot.used_units == 0
+    record_metrics(
+        benchmark,
+        concurrent_interference_p95_ms=max(elapsed, default=0),
+        background_operations=background_completed,
+        background_throughput=background_completed / duration_s,
+        queue_delay_ms=int(snapshot.background_max_wait_s * 1000),
+    )
 
 
 def test_profile_declares_all_packet_workloads() -> None:
