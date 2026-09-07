@@ -172,35 +172,11 @@ QUERY_LAW_EXEMPTIONS: tuple[LawExemption, ...] = (
         reason="the context-snapshot descriptor declares no aggregate group fields",
     ),
     LawExemption(
-        "group-count-population",
-        unit="observed-event",
-        reason=(
-            "observed-event group keys are runtime-projected from the event relation, "
-            "not columns the count lowerer groups on"
-        ),
-    ),
-    LawExemption(
-        "group-count-population",
-        unit="assertion",
-        reason=(
-            "assertion group keys live in the durable user tier, which the index-tier count "
-            "lowerer does not join for grouping"
-        ),
-    ),
-    LawExemption(
         "continuation-progress",
         surface="cli",
         reason=(
             "the CLI emits pages through query_unit_rows without a QueryTransaction, so it has no "
             "continuation token; its paging is covered by page-concatenation over explicit offsets"
-        ),
-    ),
-    LawExemption(
-        "cross-surface-selection",
-        surface="cli",
-        reason=(
-            "the CLI clamps its own default page size and reports total as the emitted page size; "
-            "its selection is compared at an explicit limit instead of at surface defaults"
         ),
     ),
 )
@@ -284,6 +260,53 @@ UNIT_IDENTITIES: tuple[UnitIdentity, ...] = (
 )
 
 UNIT_IDENTITY_BY_UNIT: Mapping[QueryUnitName, UnitIdentity] = {identity.unit: identity for identity in UNIT_IDENTITIES}
+
+
+@dataclass(frozen=True, slots=True)
+class UnitProbe:
+    """The generated request shape one unit's laws are executed with.
+
+    ``scope`` selects the whole corpus at this unit's grain and ``narrowing``
+    selects a strict, non-empty subset of it, so a conjunction law cannot hold
+    vacuously by both conjuncts selecting the same rows. ``group_field`` is the
+    aggregate group key the population law sums over; ``None`` requires a
+    ``group-count-population`` exemption for the unit.
+    """
+
+    unit: QueryUnitName
+    source: str
+    scope: str
+    narrowing: str
+    group_field: str | None
+
+    @property
+    def scoped_expression(self) -> str:
+        return f"{self.source} where {self.scope}"
+
+    def conjunction(self, first: str, second: str) -> str:
+        return f"{self.source} where {first} AND {second}"
+
+
+#: The corpus origin every probe scopes on. Declared here so the corpus and
+#: the probes cannot drift apart silently.
+PROBE_SCOPE = "session.origin:claude-code-session"
+
+UNIT_PROBES: tuple[UnitProbe, ...] = (
+    UnitProbe("message", "messages", PROBE_SCOPE, "role:assistant", "role"),
+    UnitProbe("action", "actions", PROBE_SCOPE, "tool:Bash", "tool"),
+    UnitProbe("block", "blocks", PROBE_SCOPE, "type:tool_use", "type"),
+    UnitProbe("assertion", "assertions", PROBE_SCOPE, "kind:tag", "kind"),
+    UnitProbe("file", "files", PROBE_SCOPE, "tool:Edit", "path"),
+    UnitProbe("run", "runs", PROBE_SCOPE, "session.messages:>4", None),
+    UnitProbe("observed-event", "observed-events", PROBE_SCOPE, "tool:Bash", "kind"),
+    UnitProbe("context-snapshot", "context-snapshots", PROBE_SCOPE, "boundary:session_start", None),
+    UnitProbe("delegation", "delegations", PROBE_SCOPE, "mapping_state:unresolved", "mapping_state"),
+)
+
+UNIT_PROBE_BY_UNIT: Mapping[QueryUnitName, UnitProbe] = {probe.unit: probe for probe in UNIT_PROBES}
+
+#: An expression no unit can compile. Every surface must refuse it identically.
+UNCOMPILABLE_EXPRESSION = "messages where nosuchfield:1"
 
 
 RefShape = Literal["object-ref", "evidence-ref", "archive-id"]
@@ -601,6 +624,11 @@ class CensusFamily:
     #: correct primitive. The census compares the routed answer against it.
     cheapest_primitive_sql: str
     cheapest_primitive_identity: str
+    #: The lowered restriction this family's selectivity depends on. The census
+    #: requires it to appear in the routed SQL *before* the first ``ORDER BY``:
+    #: a selective predicate applied only after a global window or group is the
+    #: shape that made a one-coordinator page read the whole archive.
+    pushdown_marker: str
     budgets: tuple[WorkloadBudget, ...]
     scan_allowances: tuple[ScanAllowance, ...] = ()
 
@@ -659,21 +687,39 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
             "WHERE s.origin = 'claude-code-session'"
         ),
         cheapest_primitive_identity="message_id",
+        pushdown_marker="WHERE s.origin IN ('claude-code-session')",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=4_000_000),
         scan_allowances=(
             ScanAllowance(
                 family_id="query:messages:origin-scope",
-                detail="messages",
+                detail="SCAN sqlite_master",
                 disposition="expected",
-                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
-                reason="an origin-wide message selection has no narrower index than the session join",
+                owner="polylogue.storage.sqlite.connection_profile",
+                reason="opening a tier reads its schema inventory once to validate identity and find the FTS table",
             ),
             ScanAllowance(
                 family_id="query:messages:origin-scope",
-                detail="sessions",
+                detail="USE TEMP B-TREE FOR ORDER BY",
                 disposition="expected",
                 owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
-                reason="the session scope is resolved by joining every in-scope session row",
+                reason=(
+                    "the stable order is a COALESCE across the unit and its owning session, which no single "
+                    "index covers; the sort is over the bounded page, not the archive"
+                ),
+            ),
+            ScanAllowance(
+                family_id="query:messages:origin-scope",
+                detail="SCAN (subquery-1)",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason="the repo rollup is a correlated per-row subquery over one session's repo edges",
+            ),
+            ScanAllowance(
+                family_id="query:messages:origin-scope",
+                detail="SCAN ordered",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason="the message text is concatenated from one message's own ordered blocks",
             ),
         ),
     ),
@@ -687,14 +733,56 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
             "SELECT u.block_id FROM blocks u WHERE u.block_type = 'tool_use' AND lower(u.tool_name) = 'workflow'"
         ),
         cheapest_primitive_identity="tool_use_block_id",
+        pushdown_marker="WHERE lower(a.tool_name) = 'workflow'",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=2_000_000),
         scan_allowances=(
             ScanAllowance(
                 family_id="query:actions:tool-scope",
-                detail="blocks",
+                detail="SCAN sqlite_master",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.connection_profile",
+                reason="opening a tier reads its schema inventory once to validate identity and find the FTS table",
+            ),
+            ScanAllowance(
+                family_id="query:actions:tool-scope",
+                detail="USE TEMP B-TREE FOR ORDER BY",
                 disposition="expected",
                 owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
-                reason="the actions view pairs tool_use and tool_result blocks by tool id",
+                reason=(
+                    "the stable order is a COALESCE across the unit and its owning session, which no single "
+                    "index covers; the sort is over the bounded page, not the archive"
+                ),
+            ),
+            ScanAllowance(
+                family_id="query:actions:tool-scope",
+                detail="SCAN ap USING INDEX sqlite_autoindex_action_pairs_1",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.index",
+                reason="the actions view pairs tool_use with tool_result through the action_pairs relation",
+            ),
+            ScanAllowance(
+                family_id="query:actions:tool-scope",
+                detail="SCAN a",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason=(
+                    "`a` is the selected_actions CTE, already restricted by the pushed-down tool predicate "
+                    "and the page limit, not the archive-wide action relation"
+                ),
+            ),
+            ScanAllowance(
+                family_id="query:actions:tool-scope",
+                detail="SCAN ordered",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason="follow-up classification reads one selected action's own message tail",
+            ),
+            ScanAllowance(
+                family_id="query:actions:tool-scope",
+                detail="USE TEMP B-TREE FOR LAST TERM OF ORDER BY",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason="the follow-up lookups tie-break on message_id, which the position index does not carry",
             ),
         ),
     ),
@@ -711,14 +799,25 @@ CENSUS_FAMILIES: tuple[CensusFamily, ...] = (
             "WHERE s.origin = 'claude-code-session'"
         ),
         cheapest_primitive_identity="delegation_ref",
+        pushdown_marker="WHERE s.origin IN ('claude-code-session')",
         budgets=_family_budgets(vm_steps=4_000_000, response_bytes=2_000_000),
         scan_allowances=(
             ScanAllowance(
                 family_id="query:delegations:coordinator-scope",
-                detail="delegation_facts",
+                detail="SCAN sqlite_master",
                 disposition="expected",
-                owner="polylogue.storage.sqlite.delegation_facts",
-                reason="the delegation read model is a materialized per-parent cohort scanned in full",
+                owner="polylogue.storage.sqlite.connection_profile",
+                reason="opening a tier reads its schema inventory once to validate identity and find the FTS table",
+            ),
+            ScanAllowance(
+                family_id="query:delegations:coordinator-scope",
+                detail="USE TEMP B-TREE FOR ORDER BY",
+                disposition="expected",
+                owner="polylogue.storage.sqlite.archive_tiers.archive_query_reads",
+                reason=(
+                    "the stable order is a COALESCE across the unit and its owning session, which no single "
+                    "index covers; the sort is over the bounded page, not the archive"
+                ),
             ),
         ),
     ),
@@ -781,6 +880,7 @@ __all__ = [
     "CORPUS_SHAPE_ANCHORS_BY_DIMENSION",
     "NON_REF_FIELDS",
     "PIPELINE_STAGE_EXEMPTIONS",
+    "PROBE_SCOPE",
     "PIPELINE_STAGE_KINDS",
     "PIPELINE_STAGE_LAWS",
     "PROJECTION_COVERAGE",
@@ -791,8 +891,11 @@ __all__ = [
     "REF_FAMILIES_BY_UNIT",
     "REQUIRED_PATHOLOGIES",
     "SURFACE_NAMES",
+    "UNCOMPILABLE_EXPRESSION",
     "UNIT_IDENTITIES",
     "UNIT_IDENTITY_BY_UNIT",
+    "UNIT_PROBES",
+    "UNIT_PROBE_BY_UNIT",
     "CensusFamily",
     "LawExemption",
     "PathologyName",
@@ -804,6 +907,7 @@ __all__ = [
     "ShapeAnchor",
     "SurfaceName",
     "UnitIdentity",
+    "UnitProbe",
     "exemption_reason",
     "law_applies",
     "ref_suspected_fields",

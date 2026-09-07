@@ -827,6 +827,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     payload = await hooks.get_polylogue().query_units(
                         expression,
                         limit=limit,
+                        offset=offset,
                         continuation=continuation,
                         origin=origin,
                         tag=tag,
