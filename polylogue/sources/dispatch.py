@@ -690,42 +690,64 @@ def _title_evidence_rank(session: ParsedSession) -> int:
 def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
     """Merge repeated provider-native sessions produced by streaming chunks."""
 
-    def merge_claude_coverage_events(
+    def merge_claude_count_summary_events(
         events: list[ParsedSessionEvent],
         *,
+        event_type: str,
+        payload_keys: tuple[str, ...],
         timestamp: str | None,
+        keep_empty_keys: bool,
     ) -> list[ParsedSessionEvent]:
-        """Reduce chunk-local Claude coverage into one session event.
+        """Reduce chunk-local rows of one count-summary event into a single one.
 
-        Coverage is a complete-input summary.  Keeping chunk rows would make
-        event identity, position, and totals depend on the stream schedule.
-        Other event types remain untouched and retain their merge order.
+        A count summary describes the complete input.  Keeping chunk rows would
+        make event identity, position, and totals depend on the stream
+        schedule.  Other event types remain untouched and retain their merge
+        order.
         """
-        coverage = [event for event in events if event.event_type == "claude_parse_coverage"]
-        if not coverage:
+        summaries = [event for event in events if event.event_type == event_type]
+        if not summaries:
             return events
 
         def count_map(key: str) -> dict[str, int]:
             totals: dict[str, int] = {}
-            for event in coverage:
+            for event in summaries:
                 values = event.payload.get(key, {})
                 if not isinstance(values, dict):
                     continue
-                for record_type, count in values.items():
-                    if isinstance(record_type, str) and isinstance(count, int) and not isinstance(count, bool):
-                        totals[record_type] = totals.get(record_type, 0) + count
+                for name, count in values.items():
+                    if isinstance(name, str) and isinstance(count, int) and not isinstance(count, bool):
+                        totals[name] = totals.get(name, 0) + count
             return dict(sorted(totals.items()))
 
-        reduced = ParsedSessionEvent(
-            event_type="claude_parse_coverage",
+        payload: dict[str, object] = {}
+        for key in payload_keys:
+            totals = count_map(key)
+            if totals or keep_empty_keys:
+                payload[key] = totals
+        reduced = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=payload)
+        return [event for event in events if event.event_type != event_type] + [reduced]
+
+    def merge_claude_session_summaries(
+        events: list[ParsedSessionEvent],
+        *,
+        timestamp: str | None,
+    ) -> list[ParsedSessionEvent]:
+        """Reduce both of the Claude Code parser's per-session count summaries."""
+        events = merge_claude_count_summary_events(
+            events,
+            event_type="claude_session_environment",
+            payload_keys=("entrypoints", "cli_versions", "permission_modes", "prompt_sources"),
             timestamp=timestamp,
-            payload={
-                "sidecar_seen": count_map("sidecar_seen"),
-                "sidecar_persisted": count_map("sidecar_persisted"),
-                "empty_dropped_by_record_type": count_map("empty_dropped_by_record_type"),
-            },
+            keep_empty_keys=False,
         )
-        return [event for event in events if event.event_type != "claude_parse_coverage"] + [reduced]
+        return merge_claude_count_summary_events(
+            events,
+            event_type="claude_parse_coverage",
+            payload_keys=("sidecar_seen", "sidecar_persisted", "empty_dropped_by_record_type"),
+            timestamp=timestamp,
+            keep_empty_keys=True,
+        )
 
     merged: dict[str, ParsedSession] = {}
     for session in sessions:
@@ -793,7 +815,7 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
         )
         session_events = [*existing.session_events, *session.session_events]
         if existing.source_name is Provider.CLAUDE_CODE:
-            session_events = merge_claude_coverage_events(
+            session_events = merge_claude_session_summaries(
                 session_events, timestamp=chronological(updated_values, newest=True)
             )
         merged[session.provider_session_id] = existing.model_copy(
