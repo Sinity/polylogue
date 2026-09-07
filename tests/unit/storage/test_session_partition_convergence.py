@@ -172,18 +172,46 @@ def test_a_half_replaced_partition_is_stale(archive_root: Path) -> None:
     """Removing one sibling row must not leave the partition certified.
 
     Red when inspection reads the profile row alone: the profile still carries
-    a matching binding and the current materializer version, and only its own
-    declared work-event count contradicts what is stored.
+    a matching binding and the current materializer version, and nothing about
+    the profile row itself records that a sibling relation lost its rows.
+
+    The latency profile is the sibling every replacement writes exactly once,
+    so removing it is the one half-replacement that does not depend on what the
+    session's content happened to infer.
     """
     index_db = _index_db(archive_root)
     session_id = _seed(index_db, "half", messages=[("user", "run the thing"), ("assistant", "ran it")])
     _converge_to_fixpoint(index_db)
 
     with write_lease("test.delete"), closing(_write_connection(index_db)) as conn:
-        deleted = conn.execute("DELETE FROM session_work_events WHERE session_id = ?", (session_id,)).rowcount
+        removed = conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (session_id,)).rowcount
         conn.commit()
-    if deleted == 0:
-        pytest.skip("this session produced no work events, so there is no sibling row to remove")
+    assert removed == 1, "every replaced partition writes exactly one latency profile"
+
+    with closing(_read_connection(index_db)) as conn:
+        assert inspect_session_profiles(conn, [session_id], materializer_version=_MATERIALIZER_VERSION) == {
+            session_id: "stale"
+        }
+
+
+def test_a_partition_missing_its_inferred_rows_is_stale(archive_root: Path) -> None:
+    """The same law for the count-bearing siblings, when the content has them."""
+    index_db = _index_db(archive_root)
+    session_id = _seed(index_db, "counted", messages=[("user", "run the thing"), ("assistant", "ran it")])
+    _converge_to_fixpoint(index_db)
+
+    with closing(_read_connection(index_db)) as conn:
+        declared = conn.execute(
+            "SELECT work_event_count, phase_count FROM session_profiles WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+    relation = "session_work_events" if declared[0] else "session_phases" if declared[1] else None
+    if relation is None:
+        pytest.skip("this session inferred no work events or phases to remove")
+
+    with write_lease("test.delete-inferred"), closing(_write_connection(index_db)) as conn:
+        conn.execute(f"DELETE FROM {relation} WHERE session_id = ?", (session_id,))
+        conn.commit()
 
     with closing(_read_connection(index_db)) as conn:
         assert inspect_session_profiles(conn, [session_id], materializer_version=_MATERIALIZER_VERSION) == {
