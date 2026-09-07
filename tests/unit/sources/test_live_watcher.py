@@ -4337,6 +4337,132 @@ async def test_ingest_files_max_pass_seconds_bounds_one_pass_and_preserves_progr
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
 
 
+@pytest.mark.asyncio
+async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-ipyvj: the budget must be checked at every work item.
+
+    Acquisition -- read, fingerprint, publish the blob -- runs under the same
+    writer hold as the archive write and dominates it on real transcripts:
+    a 15 MB catch-up chunk of three files spent 39.7 s there before the
+    archive-write loop reached its first checkpoint, and the hold released
+    44.7 s into a 30 s bound. Checking between acquired files bounds that
+    overshoot by one file.
+
+    Anti-vacuity: delete the ``full_acquisition_file`` checkpoint and all
+    three files are read and blob-published before anything is refused, so
+    the two deferred files come back as ``archive write skipped this raw``
+    with every byte already read.
+    """
+    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"session-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        _write_jsonl(
+            path,
+            [
+                _codex_session_meta(f"acquisition-session-{index}"),
+                _codex_message(
+                    message_id=f"acquisition-message-{index}",
+                    role="user",
+                    text=f"acquisition checkpoint {index}",
+                    timestamp="2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    # A zero pass budget still admits the first item (the forward-progress
+    # guarantee), then refuses the next item at the per-file checkpoint. This
+    # avoids replacing the process-wide clock used by asyncio's executor
+    # shutdown.
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=0.0)
+
+    assert bounded.succeeded_file_count == 1
+    assert bounded.failed_file_count == 0
+    assert bounded.time_budget_exceeded is True
+    assert bounded.excluded_reasons == {REFUSED_UNATTEMPTED_TIME_BUDGET: 2}
+    # Two files were refused before a byte of them was read.
+    one_file_bytes = paths[0].stat().st_size
+    assert bounded.source_payload_read_bytes < 2 * one_file_bytes
+    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+
+
+@pytest.mark.asyncio
+async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> None:
+    """polylogue-ipyvj: past the bound the unit of work ends, typed.
+
+    The writer gate declares how long an admitted unit may hold the sole
+    archive writer. A unit that reaches a checkpoint already past it stops
+    there instead of finishing and being warned about afterwards, and the
+    files it never reached stay ordinary backlog -- no cursor, no failure
+    count, no retry backoff.
+
+    Anti-vacuity: drop ``check_write_hold_budget`` from
+    ``_ingest_pass_exhausted`` and this pass runs all three files to
+    completion with no bound in force, since ``max_pass_seconds`` is None.
+    """
+    from polylogue.core.write_hold import WriteHoldBudgetError, enter_write_hold, exit_write_hold
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"session-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        _write_jsonl(
+            path,
+            [
+                _codex_session_meta(f"hold-session-{index}"),
+                _codex_message(
+                    message_id=f"hold-message-{index}",
+                    role="user",
+                    text=f"hold bound {index}",
+                    timestamp="2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    polylogue = SimpleNamespace(archive_root=tmp_path, backend=None)
+    processor = LiveBatchProcessor(
+        cast(Any, polylogue),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    token = enter_write_hold("watcher.catch_up.chunk", 0.0)
+    try:
+        with pytest.raises(WriteHoldBudgetError) as raised:
+            await processor.ingest_files(paths, emit_event=False)
+    finally:
+        exit_write_hold(token)
+
+    assert raised.value.actor == "watcher.catch_up.chunk"
+    assert raised.value.checkpoint == "full_acquisition_file"
+    assert raised.value.budget_s == 0.0
+    for path in paths:
+        assert cursor.get_record(path) is None
+
+    recovered = await processor.ingest_files(paths, emit_event=False)
+
+    assert recovered.succeeded_file_count == 3
+    assert recovered.failed_file_count == 0
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 3
+
+
 def test_lock_contention_is_retryable_and_corruption_is_not() -> None:
     """Anti-vacuity: treating every OperationalError as retryable would hide a
     malformed database behind a warning; treating none as retryable killed

@@ -65,6 +65,7 @@ from polylogue.core.raw_failure_evidence import (
 )
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.timestamp_authority import timestamp_millis
+from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
 from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size
 from polylogue.pipeline.ids import session_revision_projection
@@ -114,6 +115,7 @@ from polylogue.sources.live.batch_support import (
     _full_parse_progress_groups,
     _FullIngestHeartbeat,
     _FullIngestResult,
+    _ingest_pass_exhausted,
     _jsonl_provider_and_session_artifact,
     _parse_path_as_session_artifact,
     _parse_payload_as_session_artifact,
@@ -1056,10 +1058,10 @@ class LiveBatchProcessor:
                     break
                 if is_fully_degraded():
                     break
-                if (
-                    processed_any_full_group
-                    and max_pass_seconds is not None
-                    and (time.monotonic() - pass_started_monotonic) > max_pass_seconds
+                if processed_any_full_group and _ingest_pass_exhausted(
+                    max_pass_seconds=max_pass_seconds,
+                    pass_started=pass_started_monotonic,
+                    checkpoint="full_parse_progress_group",
                 ):
                     full_ingest_time_budget_exceeded = True
                     break
@@ -1143,6 +1145,11 @@ class LiveBatchProcessor:
                         error=str(exc),
                     )
                     break
+                except WriteHoldBudgetError:
+                    # A spent writer hold is a property of the pass, not of
+                    # these files: marking them failed would put ordinary
+                    # backlog into retry backoff. The watcher ends the unit.
+                    raise
                 except Exception as exc:
                     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
                         # Archive contention is infrastructure state, not a
@@ -2198,7 +2205,34 @@ class LiveBatchProcessor:
         # that reaches neither ``ingested`` nor ``failed`` is invisible in the
         # batch counters, which reads exactly like an idle source.
         excluded_paths: dict[Path, str] = {}
+        # Acquisition -- read, fingerprint, publish the blob -- is charged to
+        # the same writer hold as the archive write below, and on real
+        # transcripts it dominates: 3 files of 15 MB spent 39.7 s here before
+        # the archive-write loop reached its first checkpoint. Each file is
+        # therefore its own checkpoint; the first always runs, so a pass
+        # always makes progress.
+        acquisition_time_budget_exceeded = False
+        reached_any_path = False
         for path in (path for path in paths if path not in antigravity_pb_paths):
+            if reached_any_path:
+                try:
+                    pass_exhausted = _ingest_pass_exhausted(
+                        max_pass_seconds=max_pass_seconds,
+                        pass_started=pass_clock_started,
+                        checkpoint="full_acquisition_file",
+                    )
+                except WriteHoldBudgetError:
+                    # This pass will publish none of the blobs it has
+                    # prepared so far, so its temporaries go with it.
+                    blob_store.discard_pending()
+                    raise
+                if pass_exhausted:
+                    # Nothing was read for this file, so it stays ordinary
+                    # backlog: no cursor, no failure count, no retry backoff.
+                    acquisition_time_budget_exceeded = True
+                    excluded_paths[path] = REFUSED_UNATTEMPTED_TIME_BUDGET
+                    continue
+            reached_any_path = True
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
             try:
@@ -2738,9 +2772,18 @@ class LiveBatchProcessor:
             raw_source_revisions.setdefault(path, raw_id)
             raw_by_id[raw_id] = path
 
+        # A one-item pass has no next-item checkpoint. Check once after the
+        # acquisition loop so its final item cannot release an over-budget
+        # hold as a successful unit.
+        try:
+            check_write_hold_budget("full_acquisition_complete")
+        except WriteHoldBudgetError:
+            blob_store.discard_pending()
+            raise
+
         summary: _IngestBatchSummary | None = None
         skipped_paths: set[Path] = set()
-        time_budget_exceeded = False
+        time_budget_exceeded = acquisition_time_budget_exceeded
         if raw_records:
             blob_store.flush()
             available_records = [record for record in raw_records if record.raw_id in raw_payloads]
@@ -2819,7 +2862,7 @@ class LiveBatchProcessor:
                 changed_session_ids=archive_write.session_ids,
                 stage_timings_s=archive_write.stage_timings_s,
             )
-            time_budget_exceeded = archive_write.time_budget_exceeded
+            time_budget_exceeded = time_budget_exceeded or archive_write.time_budget_exceeded
 
         failed_set = set(failed)
         raw_fingerprints = {path: raw_id for raw_id, path in raw_by_id.items()}
@@ -2943,10 +2986,10 @@ class LiveBatchProcessor:
                 # guarantee, same shape as de2a's raw-materialization
                 # checkpoint and qlae's drive-catchup batch checkpoint) --
                 # only records after the first are ever skipped for time.
-                if (
-                    record_index > 0
-                    and max_pass_seconds is not None
-                    and (time.monotonic() - pass_clock_started) > max_pass_seconds
+                if record_index > 0 and _ingest_pass_exhausted(
+                    max_pass_seconds=max_pass_seconds,
+                    pass_started=pass_clock_started,
+                    checkpoint="archive_write_record",
                 ):
                     for remaining in records[record_index:]:
                         result.skipped_raw_ids.add(remaining.raw_id)
@@ -3627,6 +3670,9 @@ class LiveBatchProcessor:
                         exc,
                         exc_info=True,
                     )
+        # The loop checks before each later record, but a one-record pass has
+        # no such boundary. Make the final record obey the same hard bound.
+        check_write_hold_budget("archive_write_complete")
         return result
 
     def _parse_raw_revision_chain(

@@ -26,6 +26,7 @@ from polylogue.archive.raw_payload.decode import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
+from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
@@ -630,6 +631,27 @@ def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: i
                 return start + newline_at + 1, bytes_read
             end = start
     return 0, bytes_read
+
+
+def _ingest_pass_exhausted(
+    *,
+    max_pass_seconds: float | None,
+    pass_started: float,
+    checkpoint: str,
+) -> bool:
+    """Whether this pass must stop taking new work at ``checkpoint``.
+
+    Two bounds meet here. The caller's ``max_pass_seconds`` is the graceful
+    one: remaining work stays ordinary backlog for the next tick. The writer
+    hold's declared bound is the hard one: past it the unit of work ends with
+    a typed ``WriteHoldBudgetError``, because a hold that keeps running
+    past its bound is one every non-gated writer is already timing out
+    against.
+
+    Call it at every work item so overshoot past either bound is one item.
+    """
+    check_write_hold_budget(checkpoint)
+    return max_pass_seconds is not None and (time.monotonic() - pass_started) > max_pass_seconds
 
 
 def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
