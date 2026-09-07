@@ -243,7 +243,7 @@ async def test_ingest_files_short_circuits_when_degraded(tmp_path: Path) -> None
     )()
 
     processor = LiveBatchProcessor(
-        _StubPolylogue(),  # type: ignore[arg-type]
+        _StubPolylogue(),
         [sources_root],
         cursor=cursor,  # type: ignore[arg-type]
         parser_fingerprint="test-fp",
@@ -347,7 +347,7 @@ async def test_ingest_files_short_circuits_under_burst_after_degraded(
 
     sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
     processor = LiveBatchProcessor(
-        _StubPolylogue(),  # type: ignore[arg-type]
+        _StubPolylogue(),
         [sources_root],
         cursor=cursor,  # type: ignore[arg-type]
         parser_fingerprint="test-fp",
@@ -386,7 +386,7 @@ async def test_live_batch_marks_structural_database_error_degraded(
 
     sources_root = type("SourceRoot", (), {"name": "claude-code", "root": tmp_path})()
     processor = LiveBatchProcessor(
-        _StubPolylogue(),  # type: ignore[arg-type]
+        _StubPolylogue(),
         [sources_root],
         cursor=cursor,  # type: ignore[arg-type]
         parser_fingerprint="test-fp",
