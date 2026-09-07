@@ -17,6 +17,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from pathlib import Path
+from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
 
 import pytest
@@ -207,6 +208,7 @@ def test_bench_daemon_mixed_load(benchmark: BenchmarkFixture, bench_daemon_uds_s
         background_operations=background_completed,
         background_throughput=background_completed / duration_s,
         queue_delay_ms=int(snapshot.background_max_wait_s * 1000),
+        peak_rss_kib=getrusage(RUSAGE_SELF).ru_maxrss,
     )
 
 

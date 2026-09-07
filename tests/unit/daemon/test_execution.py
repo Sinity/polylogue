@@ -156,6 +156,10 @@ def test_bulk_saturation_cannot_consume_interactive_or_control_capacity() -> Non
             snapshot = adapter.snapshot()
             assert snapshot.by_class("interactive-read").dispatched == 1
             assert snapshot.by_class("control").dispatched == 1
+            # Control never queues behind bulk work. The daemon holds its
+            # route-level writer lease across this submission, so a queue wait
+            # here would extend an exclusive hold.
+            assert snapshot.by_class("control").max_wait_s < 0.1
             assert snapshot.by_class("bulk-candidate").active_units <= snapshot.by_class("bulk-candidate").ceiling_slots
         finally:
             blocker.release.set()

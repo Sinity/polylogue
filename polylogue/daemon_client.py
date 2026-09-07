@@ -164,9 +164,6 @@ class DaemonClient:
         finally:
             connection.close()
 
-    def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
-        return self.request_json("POST", "/api/cli/query", {"params": params})
-
     def operation(
         self,
         operation: str,
@@ -208,35 +205,6 @@ class DaemonClient:
         if archive_root is not None and (not isinstance(archive, dict) or archive.get("root") != archive_root):
             raise DaemonOperationProtocolError("daemon returned a different archive identity")
         return response
-
-    def probe(
-        self,
-        *,
-        archive_root: str,
-        index_schema_version: int,
-        daemon_version: str,
-        accept_degraded: bool = False,
-    ) -> dict[str, Any] | None:
-        """Return identity only for the daemon serving the requested archive."""
-
-        response = self._request_json_response("GET", "/api/health")
-        if response is None:
-            return None
-        status, health = response
-        if status == 503:
-            if not accept_degraded or health is None or health.get("raw_failure_lifecycle_state") != "degraded":
-                return None
-        elif status != 200:
-            return None
-        if health is None:
-            return None
-        if health.get("archive_root") != archive_root:
-            return None
-        if health.get("index_schema_version") != index_schema_version:
-            return None
-        if health.get("daemon_version") != daemon_version:
-            return None
-        return health
 
 
 __all__ = [
