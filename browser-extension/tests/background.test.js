@@ -2606,6 +2606,12 @@ describe("capture retry queue", () => {
     expect(response.queued).toBe(false);
     expect(stored.polylogueCaptureQueue.entries).toHaveLength(0);
     expect(stored.polylogueConversationTimeline["chatgpt:conv-oversized"][0].detail).toBe("capture_queue_entry_over_budget");
+    expect(stored.polylogueCaptureLog[0]).toMatchObject({
+      reason: "capture_queue_entry_over_budget",
+      provider: "chatgpt",
+      provider_session_id: "conv-oversized",
+    });
+    expect(stored.polylogueCaptureLog[0].byte_size).toBeGreaterThan(40 * 1024 * 1024);
   });
 
   it("drops a retry after a later non-retryable receiver rejection", async () => {
