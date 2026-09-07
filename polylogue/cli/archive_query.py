@@ -1525,7 +1525,7 @@ def _emit_daemon_list_payload(
         "next_cursor": None,
         "source": "daemon",
     }
-    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line, fields=fields)
+    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
 
 
 def _daemon_preview_refs(payload: Mapping[str, object]) -> tuple[str, ...] | None:
@@ -2351,7 +2351,7 @@ def _emit_list(
     # Browse/list mode emits an empty envelope (exit 0) when the archive has no
     # matching rows: "show me everything, there is nothing" is a valid success.
     # Only search mode (a lexical/semantic query that matched nothing) exits 2.
-    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line, fields=fields)
+    _emit_rows(envelope, items, output_format=output_format, text_line=_summary_line_renderer(items), fields=fields)
 
 
 def _search_miss_diagnostics(
@@ -3028,12 +3028,24 @@ def _session_summary_text(envelope: ArchiveSessionEnvelope) -> str:
     return "\n".join(lines).rstrip()
 
 
-def _summary_line(item: dict[str, object]) -> str:
-    from polylogue.surfaces.query_rows import session_row
+def _summary_line_renderer(items: list[dict[str, object]]) -> Callable[[dict[str, object]], str]:
+    """Bind one identity frame to the whole rendered result set."""
+    from polylogue.rendering.identity import identity_frame
 
-    row = session_row(item)
-    line = f"{row.id[:24]:24s}  {(row.date or 'unknown'):10s}  {row.origin:24s}  {row.title} ({row.message_count} msgs)"
-    return line + _attached_units_suffix(item)
+    frame = identity_frame(str(item.get("id", "")) for item in items)
+
+    def render(item: dict[str, object]) -> str:
+        from polylogue.surfaces.query_rows import session_row
+
+        row = session_row(item)
+        identity = frame.display(row.id)
+        line = (
+            f"{identity:{frame.column_width}s}  {(row.date or 'unknown'):10s}  "
+            f"{row.origin:24s}  {row.title} ({row.message_count} msgs)"
+        )
+        return line + _attached_units_suffix(item)
+
+    return render
 
 
 def _attached_units_suffix(item: dict[str, object]) -> str:

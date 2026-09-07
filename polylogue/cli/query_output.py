@@ -40,6 +40,7 @@ from polylogue.core.localtime import format_local_datetime
 from polylogue.logging import get_logger
 from polylogue.operations.authority import authority_for_config
 from polylogue.rendering.formatting import format_session
+from polylogue.rendering.identity import IdentityFrame, identity_frame
 from polylogue.surfaces.authority import AuthorityEnvelope
 from polylogue.surfaces.payloads import (
     SearchCursor,
@@ -48,7 +49,7 @@ from polylogue.surfaces.payloads import (
     model_json_document,
     session_list_envelope_from_summary,
 )
-from polylogue.surfaces.query_rows import search_row, session_row
+from polylogue.surfaces.query_rows import TITLE_BUDGET, search_row, session_row
 
 logger = get_logger(__name__)
 
@@ -86,6 +87,11 @@ def _single_line(value: str) -> str:
 def _display_title(value: str | None, fallback: str, *, max_width: int) -> str:
     title = _single_line(value or fallback)
     return _ellipsize(title, max_width)
+
+
+def _explicit_title(item: object) -> str | None:
+    """Title-worthy evidence only -- never an identity the frame owns."""
+    return getattr(item, "explicit_display_title", None)
 
 
 class _LayoutBreakpoints:
@@ -155,20 +161,26 @@ def _title_budget(width: int) -> int:
     return max(12, width - 2)
 
 
-def _session_list_line(conv: Session) -> str:
+def _session_list_line(conv: Session, frame: IdentityFrame) -> str:
     date = _display_date(conv.display_date) or "unknown"
-    title = _display_title(conv.display_title, conv.id[:20], max_width=50)
-    return f"{conv.id[:24]:24s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
+    identity = frame.display(conv.id)
+    title = _display_title(_explicit_title(conv), identity, max_width=50)
+    return f"{identity:{frame.column_width}s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
 
 
-def _summary_list_line(summary: SessionSummary, message_count: int) -> str:
+def _summary_list_line(summary: SessionSummary, message_count: int, frame: IdentityFrame) -> str:
     row = session_row(summary, message_count=message_count)
     date = _display_date(summary.display_date) or "unknown"
-    return f"{row.id[:24]:24s}  {date:10s}  {row.origin:20s}  {row.title} ({row.message_count} msgs) [{row.outcome}]"
+    identity = frame.display(row.id)
+    title = _display_title(_explicit_title(summary), identity, max_width=TITLE_BUDGET)
+    return (
+        f"{identity:{frame.column_width}s}  {date:10s}  {row.origin:20s}  "
+        f"{title} ({row.message_count} msgs) [{row.outcome}]"
+    )
 
 
-def _search_hit_list_line(hit: SessionSearchHit, message_count: int) -> str:
-    base = _summary_list_line(hit.summary, message_count)
+def _search_hit_list_line(hit: SessionSearchHit, message_count: int, frame: IdentityFrame) -> str:
+    base = _summary_list_line(hit.summary, message_count, frame)
     evidence_parts = [hit.match_surface, hit.retrieval_lane]
     if hit.message_id:
         evidence_parts.append(f"message {hit.message_id}")
@@ -225,7 +237,8 @@ def format_list(
     if output_format == "csv":
         return sessions_to_csv(results)
 
-    return "\n".join(_session_list_line(conv) for conv in results)
+    frame = identity_frame(str(conv.id) for conv in results)
+    return "\n".join(_session_list_line(conv, frame) for conv in results)
 
 
 def render_session_rich(env: AppEnv, conv: Session) -> None:
@@ -437,6 +450,7 @@ def format_summary_list(
 ) -> str:
     """Format summary-list output for deterministic machine/plain surfaces."""
     message_counts = message_counts or {}
+    frame = identity_frame(str(summary.id) for summary in summaries)
     document = StructuredRowsDocument(
         rows=tuple(summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
         csv_headers=("id", "date", "origin", "title", "messages", "tags", "summary"),
@@ -452,7 +466,9 @@ def format_summary_list(
             )
             for summary in summaries
         ),
-        text_lines=tuple(_summary_list_line(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
+        text_lines=tuple(
+            _summary_list_line(summary, message_counts.get(str(summary.id), 0), frame) for summary in summaries
+        ),
     )
     return document.with_selected_fields(fields).render(output_format)
 
@@ -486,6 +502,7 @@ def format_search_hit_list(
     """Format evidence-bearing search hits for deterministic surfaces."""
     message_counts = message_counts or {}
     bounded_hits = [_bounded_search_hit(hit) for hit in hits]
+    frame = identity_frame(str(hit.summary.id) for hit in bounded_hits)
     document = StructuredRowsDocument(
         rows=tuple(
             _search_hit_to_payload(
@@ -522,7 +539,7 @@ def format_search_hit_list(
             for hit in bounded_hits
         ),
         text_lines=tuple(
-            _search_hit_list_line(hit, message_counts.get(hit.session_id, hit.summary.message_count or 0))
+            _search_hit_list_line(hit, message_counts.get(hit.session_id, hit.summary.message_count or 0), frame)
             for hit in bounded_hits
         ),
     )
@@ -643,11 +660,12 @@ async def output_search_hits(
     columns = _search_hit_layout(width)
     title_budget = _title_budget(width)
     snippet_budget = max(20, min(80, width - 24))
+    frame = identity_frame(str(hit.summary.id) for hit in hits)
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
     for column in columns:
         if column == "id":
-            table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+            table.add_column("ID", style="dim", width=frame.column_width or None, no_wrap=True)
         elif column == "date":
             table.add_column("Date", style="dim")
         elif column == "origin":
@@ -662,7 +680,8 @@ async def output_search_hits(
     for hit in (_bounded_search_hit(hit) for hit in hits):
         summary = hit.summary
         date = _display_date(summary.display_date)
-        title = _display_title(summary.display_title, str(summary.id)[:20], max_width=title_budget)
+        identity = frame.display(summary.id)
+        title = _display_title(_explicit_title(summary), identity, max_width=title_budget)
         count = msg_counts.get(hit.session_id, summary.message_count or 0)
         origin_text = Text(
             str(summary.origin),
@@ -677,7 +696,7 @@ async def output_search_hits(
         row: list[str | Text] = []
         for column in columns:
             if column == "id":
-                row.append(str(summary.id)[:24])
+                row.append(identity)
             elif column == "date":
                 row.append(date)
             elif column == "origin":
@@ -724,11 +743,12 @@ async def output_summary_list(
     width = _terminal_width(env)
     columns = _summary_list_layout(width)
     title_budget = _title_budget(width)
+    frame = identity_frame(str(summary.id) for summary in summaries)
 
     table = Table(show_header=True, header_style="bold", box=None, pad_edge=False, show_edge=False)
     for column in columns:
         if column == "id":
-            table.add_column("ID", style="dim", max_width=24, no_wrap=True)
+            table.add_column("ID", style="dim", width=frame.column_width or None, no_wrap=True)
         elif column == "date":
             table.add_column("Date", style="dim")
         elif column == "origin":
@@ -740,7 +760,8 @@ async def output_summary_list(
 
     for summary in summaries:
         date = _display_date(summary.display_date)
-        title = _display_title(summary.display_title, str(summary.id)[:20], max_width=title_budget)
+        identity = frame.display(summary.id)
+        title = _display_title(_explicit_title(summary), identity, max_width=title_budget)
         count = msg_counts.get(str(summary.id), 0)
         origin_text = Text(
             str(summary.origin),
@@ -749,7 +770,7 @@ async def output_summary_list(
         row: list[str | Text] = []
         for column in columns:
             if column == "id":
-                row.append(str(summary.id)[:24])
+                row.append(identity)
             elif column == "date":
                 row.append(date)
             elif column == "origin":
@@ -838,7 +859,7 @@ def render_stream_header(
     display_date_text, display_date_value = _stream_date_parts(display_date)
 
     if output_format == "markdown":
-        lines = [f"# {title or session_id[:24]}", ""]
+        lines = [f"# {title or session_id}", ""]
         if display_date_text is not None:
             lines.append(f"**Date**: {display_date_text}")
         if origin:

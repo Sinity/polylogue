@@ -253,8 +253,11 @@ class TestSessionMetadataAndAggregation:
         provider_labeled = session_with_metadata.model_copy(update={"title": "gemini-20250422-1234"})
         assert provider_labeled.display_title == "gemini-20250422-1234"
 
+        # No title-worthy evidence leaves the identity itself, whole: a
+        # truncated id is not distinct from a sibling's (polylogue-g0s6k.3).
         fallback = make_conv(id="abc123def456", provider="test", title=None, messages=MessageCollection(messages=[]))
-        assert fallback.display_title == "abc123de"
+        assert fallback.explicit_display_title is None
+        assert fallback.display_title == "abc123def456"
         assert fallback.tags == []
 
     def test_cost_duration_branch_and_equality_contract(self, session_with_metadata: Session) -> None:

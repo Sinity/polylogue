@@ -30,6 +30,7 @@ import click
 from polylogue.cli.shared.embed_stats import show_embedding_stats
 from polylogue.cli.shared.types import AppEnv
 from polylogue.core.enums import OperationStatus
+from polylogue.rendering.identity import identity_frame
 
 if TYPE_CHECKING:
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -755,6 +756,7 @@ def _run_archive_backfill(
     started_at = time.monotonic()
     stopped_reason: str | None = None
     typed_provider = cast(VectorProvider, vec_provider)
+    identities = identity_frame(item.session_id for item in pending)
 
     for index, item in enumerate(pending, start=1):
         if stop_after_seconds is not None and time.monotonic() - started_at >= stop_after_seconds:
@@ -767,7 +769,7 @@ def _run_archive_backfill(
             stopped_reason = f"cost cap would be exceeded (~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f})"
             if output_format == "text":
                 console.print(
-                    f"[yellow]Cost cap would be exceeded by {item.title or item.session_id[:12]} "
+                    f"[yellow]Cost cap would be exceeded by {item.title or identities.display(item.session_id)} "
                     f"(~${cumulative_cost + estimated_batch_cost:.4f} > ${cap:.2f}). Stopping.[/yellow]"
                 )
             break
@@ -784,7 +786,7 @@ def _run_archive_backfill(
             cumulative_cost += batch_cost
             if output_format == "text":
                 console.print(
-                    f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: "
+                    f"  [{index}/{len(pending)}] {item.title or identities.display(item.session_id)}: "
                     f"{outcome.embedded_message_count} msgs (~${batch_cost:.4f}, cumulative ~${cumulative_cost:.4f})"
                 )
             if cap > 0 and cumulative_cost > cap:
@@ -798,7 +800,7 @@ def _run_archive_backfill(
             skipped += 1
             if output_format == "text":
                 console.print(
-                    f"  [{index}/{len(pending)}] {item.title or item.session_id[:12]}: no embeddable messages"
+                    f"  [{index}/{len(pending)}] {item.title or identities.display(item.session_id)}: no embeddable messages"
                 )
         elif outcome.status == "error":
             errors += 1
