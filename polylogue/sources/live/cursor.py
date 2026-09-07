@@ -19,8 +19,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.enums import Origin
 from polylogue.core.sources import origin_from_provider, provider_from_origin
+from polylogue.logging import get_logger
 from polylogue.pipeline.ingest_outcomes import IngestAttemptDisposition
 from polylogue.sources.live.convergence_debt_retry import (
     convergence_debt_retry_at,
@@ -50,6 +52,7 @@ from polylogue.storage.sqlite.connection_profile import open_connection
 
 _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE = 5
 _FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S = 60
+logger = get_logger(__name__)
 
 # Per-source-family cursor-lag sample history (#1349). Daemon-runtime state,
 # not part of SCHEMA_VERSION — same lifecycle as live_cursor / live_convergence_debt.
@@ -376,6 +379,70 @@ class CursorStore:
                 subject_id=source_path,
                 error="daemon stopped before completing this ingest attempt",
             )
+        self._rewind_interrupted_unparsed_cursors(interrupted_source_paths)
+
+    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> None:
+        """Reopen cursors that outran a raw row left unparsed by interruption.
+
+        Full ingest admits source bytes before parsing them. If the daemon
+        stops after that admission, the ops cursor can claim the file is
+        complete even though ``raw_sessions`` has no parsed timestamp. Keep
+        the durable raw as the recovery input, but rewind the cursor so
+        frontier checks and catch-up cannot treat the path as consumed.
+        Decided ambiguous membership is already terminal authority and stays
+        cursor-complete.
+        """
+        paths = tuple(dict.fromkeys(path for path in source_paths if path))
+        if not paths:
+            return
+        source_db = self._ops_db_path.with_name("source.db")
+        if not source_db.exists():
+            return
+        try:
+            with sqlite3.connect(f"file:{source_db}?mode=ro", uri=True) as conn:
+                placeholders = ",".join("?" for _ in paths)
+                rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT r.source_path
+                    FROM raw_sessions AS r
+                    WHERE r.source_path IN ({placeholders})
+                      AND r.parsed_at_ms IS NULL
+                      AND r.parse_error IS NULL
+                      AND NOT ({decided_unresolved_membership_sql("r")})
+                    """,
+                    paths,
+                ).fetchall()
+        except sqlite3.Error:
+            logger.warning(
+                "archive ops interrupted recovery: could not inspect source parse state",
+                exc_info=True,
+            )
+            return
+        unparsed = {str(row[0]) for row in rows}
+        if not unparsed:
+            return
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                for source_path in unparsed:
+                    current = self._get_record_on_conn(conn, Path(source_path))
+                    if current is None or current.excluded or current.byte_offset == 0:
+                        continue
+                    self._write_cursor_record_on_conn(
+                        conn,
+                        replace(
+                            current,
+                            byte_offset=0,
+                            last_complete_newline=0,
+                            content_fingerprint=None,
+                            tail_hash=None,
+                            deferred_end_offset=None,
+                            updated_at=datetime.now(UTC).isoformat(),
+                        ),
+                    )
+
+        best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
 
     def _migrate_legacy_convergence_debt_stages(self) -> None:
         """Move retired session-insight debt onto the derived stage."""

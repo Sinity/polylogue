@@ -531,6 +531,45 @@ def test_daemon_restart_resumes_parsing_of_an_interrupted_batch(tmp_path: Path) 
     assert rows[0][0] == "conv-stuck"
 
 
+def test_restart_rewinds_cursor_that_outran_unparsed_raw(tmp_path: Path) -> None:
+    """An interrupted full admission cannot leave its cursor at file end.
+
+    The source row is durable before parse/index work starts.  Reopening the
+    cursor store after a simulated kill must rewind the incomplete observation
+    while retaining the recovery debt that drives raw materialization.
+    """
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "cursor-ahead.json"
+    source_path.write_text("placeholder")
+    _write_stuck_raw(tmp_path, source_path=str(source_path))
+
+    live_db = tmp_path / "live.sqlite"
+    store = CursorStore(live_db, ops_db_path=tmp_path / "ops.db")
+    store.set(
+        source_path,
+        source_path.stat().st_size,
+        byte_offset=source_path.stat().st_size,
+        last_complete_newline=source_path.stat().st_size,
+        parser_fingerprint="test-parser",
+        content_fingerprint="claimed-complete",
+        tail_hash="claimed-complete",
+    )
+    store.begin_ingest_attempt(paths=[source_path], input_bytes=source_path.stat().st_size, queued_file_count=1)
+
+    restarted_store = CursorStore(live_db, ops_db_path=tmp_path / "ops.db")
+
+    cursor = restarted_store.get_record(source_path)
+    assert cursor is not None
+    assert cursor.byte_offset == 0
+    assert cursor.last_complete_newline == 0
+    assert cursor.content_fingerprint is None
+    assert cursor.tail_hash is None
+    assert any(
+        debt.stage == "raw_parse_recovery" and debt.subject_id == str(source_path)
+        for debt in restarted_store.list_convergence_debt(limit=50)
+    )
+
+
 __all__: list[str] = []
 
 
