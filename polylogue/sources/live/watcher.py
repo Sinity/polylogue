@@ -26,6 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.source_halts import halted_sources, source_halt
@@ -1694,6 +1695,40 @@ class LiveWatcher:
             None,
         )
 
+    @staticmethod
+    def _decided_unresolved_cursor_row(
+        path: Path,
+        *,
+        source_conn: sqlite3.Connection,
+    ) -> tuple[object, ...] | None:
+        """Newest raw for ``path`` whose membership arbitration decided unresolved.
+
+        Such a raw is never parsed and never reaches the index, so
+        :meth:`_archived_cursor_row` cannot see it; without this the cursor
+        can never be restored from it and every start re-reads the whole
+        file to reach the same decided verdict. Its retained bytes are still
+        proof of what was consumed, and the caller re-verifies them against
+        the archived blob hash before advancing, so a changed observation
+        still returns through full ingest -- the only route that can carry
+        the new evidence the verdict needs.
+        """
+        return cast(
+            "tuple[object, ...] | None",
+            source_conn.execute(
+                f"""
+                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size
+                FROM raw_sessions AS r
+                WHERE r.source_path = ?
+                  AND COALESCE(r.source_index, 0) >= 0
+                  AND r.parse_error IS NULL
+                  AND ({decided_unresolved_membership_sql("r")})
+                ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                LIMIT 1
+                """,
+                (str(path),),
+            ).fetchone(),
+        )
+
     @classmethod
     def _path_corroborated_by_index(
         cls,
@@ -1772,7 +1807,9 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
             if shared is not None:
-                row = self._archived_cursor_row(path, source_conn=shared[0], index_conn=shared[1])
+                row = self._archived_cursor_row(
+                    path, source_conn=shared[0], index_conn=shared[1]
+                ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
             else:
                 source_db = archive_root / "source.db"
                 index_db = resolve_active_index_path(archive_root)
@@ -1782,7 +1819,9 @@ class LiveWatcher:
                     closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
                     closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
                 ):
-                    row = self._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn)
+                    row = self._archived_cursor_row(
+                        path, source_conn=source_conn, index_conn=index_conn
+                    ) or self._decided_unresolved_cursor_row(path, source_conn=source_conn)
         except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:

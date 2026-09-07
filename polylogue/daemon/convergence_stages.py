@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import OperationStatus, Provider
 from polylogue.core.raw_failure_evidence import (
@@ -856,6 +857,14 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
     ``execute``; this is only a cheap "is there plausibly pending work here"
     probe so ``check`` stays fast and false positives just cost one wasted
     ``execute`` call rather than silently missing real backlog.
+
+    The one classification it must share is
+    ``decided_unresolved_membership_sql``. That state carries no
+    ``parse_error`` and no session, so the shape above reads it as pending
+    forever while ``converge_raw_materialization`` reports it converged and
+    quarantined -- ``execute`` then returns False on every pass and the
+    ``raw_parse_recovery`` debt registered for the path is retried
+    indefinitely with an unchanging count.
     """
     durable_root = archive_root or db_path.parent
     source_db = durable_root / "source.db"
@@ -932,6 +941,7 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
                       AND failure_evidence.support_status = ?
                 )
               )
+              AND NOT ({decided_unresolved_membership_sql("r")})
               {materialized_where}
             """,
             (
