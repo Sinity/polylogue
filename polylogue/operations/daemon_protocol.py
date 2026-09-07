@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
 from polylogue.core.enums import OperationStatus
 
 DAEMON_OPERATION_PROTOCOL = "polylogue.daemon-operation/v1"
@@ -46,6 +48,94 @@ class DaemonOperationOutcome(StrEnum):
     INDETERMINATE = "indeterminate"
     RESTARTED = "restarted"
     REJECTED = "rejected"
+
+
+class _OperationPayload(BaseModel):
+    """Base for a concrete machine-operation payload type."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class StatusRequest(_OperationPayload):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class QueryRequest(_OperationPayload):
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class QueryUnitsRequest(QueryRequest):
+    pass
+
+
+class CompletionRequest(_OperationPayload):
+    pass
+
+
+class FacetsRequest(QueryRequest):
+    pass
+
+
+class IngestRequest(_OperationPayload):
+    pass
+
+
+class DeletePreviewRequest(_OperationPayload):
+    pass
+
+
+class DeleteAuthorizeRequest(_OperationPayload):
+    pass
+
+
+class DeleteCancelRequest(_OperationPayload):
+    pass
+
+
+class DeleteExecuteRequest(_OperationPayload):
+    pass
+
+
+class SessionTagRequest(_OperationPayload):
+    pass
+
+
+class SessionMetadataRequest(_OperationPayload):
+    pass
+
+
+class _OperationResult(BaseModel):
+    """Base for declared result payloads; envelopes own authority metadata."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class StatusResult(_OperationResult):
+    pass
+
+
+class QueryResult(_OperationResult):
+    pass
+
+
+class QueryUnitsResult(_OperationResult):
+    pass
+
+
+class CompletionResult(_OperationResult):
+    pass
+
+
+class FacetsResult(_OperationResult):
+    pass
+
+
+class IngestResult(_OperationResult):
+    pass
+
+
+class MutationResult(_OperationResult):
+    pass
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,6 +226,8 @@ class DaemonOperationSpec:
     )
     request_type: str = ""
     result_type: str = ""
+    request_model: type[_OperationPayload] = _OperationPayload
+    result_model: type[_OperationResult] = _OperationResult
     idempotent: bool = False
     cancellation_outcomes: tuple[str, ...] = (
         "cancelled",
@@ -174,6 +266,8 @@ class DaemonOperationSpec:
             "authority_metadata": list(self.authority_metadata),
             "request_type": self.request_type,
             "result_type": self.result_type,
+            "request_model": self.request_model.__name__,
+            "result_model": self.result_model.__name__,
             "idempotent": self.idempotent,
             "cancellation_outcomes": list(self.cancellation_outcomes),
         }
@@ -187,6 +281,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="cli.query.result/v1",
         request_type="QueryRequest",
         result_type="QueryResult",
+        request_model=QueryRequest,
+        result_model=QueryResult,
     ),
     DaemonOperationSpec(
         "query.units",
@@ -195,6 +291,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="query.units.result/v1",
         request_type="QueryUnitsRequest",
         result_type="QueryUnitsResult",
+        request_model=QueryUnitsRequest,
+        result_model=QueryUnitsResult,
     ),
     DaemonOperationSpec(
         "status",
@@ -203,6 +301,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="status.result/v1",
         request_type="StatusRequest",
         result_type="StatusResult",
+        request_model=StatusRequest,
+        result_model=StatusResult,
     ),
     DaemonOperationSpec(
         "completion",
@@ -211,6 +311,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="completion.result/v1",
         request_type="CompletionRequest",
         result_type="CompletionResult",
+        request_model=CompletionRequest,
+        result_model=CompletionResult,
     ),
     DaemonOperationSpec(
         "facets",
@@ -219,6 +321,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="facets.result/v1",
         request_type="FacetsRequest",
         result_type="FacetsResult",
+        request_model=FacetsRequest,
+        result_model=FacetsResult,
     ),
     DaemonOperationSpec(
         "ingest",
@@ -232,6 +336,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="ingest.result/v1",
         request_type="IngestRequest",
         result_type="IngestResult",
+        request_model=IngestRequest,
+        result_model=IngestResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.preview",
@@ -244,6 +350,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         max_body_bytes=64 * 1024 * 1024,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",
+        request_type="DeletePreviewRequest",
+        result_type="MutationResult",
+        request_model=DeletePreviewRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",
@@ -253,6 +363,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=30.0,
         request_contract="mutation.session.delete.authorize.request/v1",
         result_contract="mutation.session.delete.authorize.result/v1",
+        request_type="DeleteAuthorizeRequest",
+        result_type="MutationResult",
+        request_model=DeleteAuthorizeRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.cancel",
@@ -262,6 +376,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=30.0,
         request_contract="mutation.session.delete.cancel.request/v1",
         result_contract="mutation.session.delete.cancel.result/v1",
+        request_type="DeleteCancelRequest",
+        result_type="MutationResult",
+        request_model=DeleteCancelRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.execute",
@@ -273,6 +391,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         accepted_reference=True,
         request_contract="mutation.session.delete.execute.request/v1",
         result_contract="mutation.result/v1",
+        request_type="DeleteExecuteRequest",
+        result_type="MutationResult",
+        request_model=DeleteExecuteRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.tag",
@@ -283,6 +405,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=120.0,
         request_contract="mutation.session.tag.request/v1",
         result_contract="mutation.result/v1",
+        request_type="SessionTagRequest",
+        result_type="MutationResult",
+        request_model=SessionTagRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.metadata",
@@ -293,6 +419,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=120.0,
         request_contract="mutation.session.metadata.request/v1",
         result_contract="mutation.result/v1",
+        request_type="SessionMetadataRequest",
+        result_type="MutationResult",
+        request_model=SessionMetadataRequest,
+        result_model=MutationResult,
     ),
 )
 
@@ -346,8 +476,13 @@ class DaemonOperationRequest:
             raise ValueError("payload must be an object")
         if protocol != DAEMON_OPERATION_PROTOCOL:
             raise ValueError("unsupported daemon operation protocol")
-        if daemon_operation_spec(operation) is None:
+        spec = daemon_operation_spec(operation)
+        if spec is None:
             raise ValueError(f"operation is not declared: {operation}")
+        try:
+            validated_payload = spec.request_model.model_validate(payload).model_dump(mode="json")
+        except ValidationError as exc:
+            raise ValueError(f"invalid {spec.request_type} payload: {exc}") from exc
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
@@ -385,7 +520,7 @@ class DaemonOperationRequest:
             raise ValueError("cancellation_token must be a non-empty string")
         return cls(
             operation.strip(),
-            dict(payload),
+            validated_payload,
             archive_root,
             schema,
             version,

@@ -1,4 +1,10 @@
-"""Unix-domain transport for the daemon's existing HTTP handler."""
+"""The daemon's bounded, archive-scoped machine HTTP endpoint.
+
+The UDS listener is deliberately a different ``BaseHTTPRequestHandler`` from
+the browser listener.  It has one route and never constructs a browser route
+table.  ``operation_adapter`` is a temporary semantic adapter: it supplies
+the canonical operation implementations, not HTTP dispatch.
+"""
 
 from __future__ import annotations
 
@@ -20,23 +26,29 @@ _ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_MAX_QUEUED = 16
 
 
-def machine_operation_handler() -> type[BaseHTTPRequestHandler]:
+def machine_operation_handler(operation_adapter: type[object] | None = None) -> type[BaseHTTPRequestHandler]:
     """Return the single-route machine handler without exposing browser GETs.
 
-    The import is lazy so importing the machine transport does not import the
-    browser route registry.  The returned adapter deliberately admits only
-    ``POST /api/operation``; browser routes remain on the TCP listener.
+    The handler deliberately admits only ``POST /api/operation``; browser
+    routes remain on the TCP listener.  An adapter is copied as a set of
+    operation methods rather than inherited.  This is important: Python's
+    MRO must not make browser ``do_*`` methods or its route registry reachable
+    from the machine socket.
     """
-    from polylogue.daemon.http import DaemonAPIHandler
 
-    class MachineOperationHandler(DaemonAPIHandler):
-        def do_GET(self) -> None:  # noqa: N802
+    class MachineOperationHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, _format: str, *_args: object) -> None:
+            """Machine clients receive typed errors; do not emit access logs."""
+
+        def do_GET(self) -> None:
             self.send_error(405, "machine endpoint accepts POST only")
 
-        def do_HEAD(self) -> None:  # noqa: N802
+        def do_HEAD(self) -> None:
             self.send_error(405, "machine endpoint accepts POST only")
 
-        def do_POST(self) -> None:  # noqa: N802
+        def do_POST(self) -> None:
             path = self.path.split("?", 1)[0]
             if path != "/api/operation":
                 self.send_error(404, "machine route not found")
@@ -51,6 +63,30 @@ def machine_operation_handler() -> type[BaseHTTPRequestHandler]:
             if not self._check_auth("read", allow_web=False):
                 return
             self._handle_daemon_operation()
+
+    if operation_adapter is not None:
+        # The operation code has a large set of small private helpers.  Bind
+        # one only when the canonical implementation asks for it; copying the
+        # browser class's route methods would make the machine handler's
+        # surface depend on that registry again.
+        def _machine_getattr(self: BaseHTTPRequestHandler, name: str) -> object:
+            adapter = getattr(self.server, "operation_adapter", None)
+            if adapter is None:
+                raise AttributeError(name)
+            member = getattr(adapter, name)
+            descriptor = getattr(member, "__get__", None)
+            return descriptor(self, type(self)) if descriptor is not None else member
+
+        MachineOperationHandler.__getattr__ = _machine_getattr  # type: ignore[attr-defined]
+    else:
+
+        def unavailable(self: BaseHTTPRequestHandler) -> None:
+            self.send_error(503, "machine operation executor is unavailable")
+
+        MachineOperationHandler._check_host_admission = lambda self: True  # type: ignore[attr-defined]
+        MachineOperationHandler._reject_credential_query = lambda self: False  # type: ignore[attr-defined]
+        MachineOperationHandler._check_auth = lambda self, *_args, **_kwargs: True  # type: ignore[attr-defined]
+        MachineOperationHandler._handle_daemon_operation = unavailable  # type: ignore[attr-defined]
 
     return MachineOperationHandler
 
@@ -123,9 +159,12 @@ class DaemonAPIUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStre
         socket_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         with __import__("contextlib").suppress(FileNotFoundError):
             socket_path.unlink()
-        if handler_class is None:
-            handler_class = machine_operation_handler()
-        super().__init__(str(socket_path), handler_class)
+        # ``handler_class`` remains a source-compatible constructor argument
+        # for embedding tests.  It is an operation adapter, never the UDS
+        # request handler itself.
+        adapter = None if handler_class is BaseHTTPRequestHandler else handler_class
+        super().__init__(str(socket_path), machine_operation_handler(adapter))
+        self.operation_adapter = adapter
         self.auth_token = auth_token
         self.api_host = "127.0.0.1"
         self.started_at = datetime.now(UTC).isoformat()

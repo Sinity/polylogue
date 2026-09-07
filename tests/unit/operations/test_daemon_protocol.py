@@ -8,7 +8,9 @@ import pytest
 
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
+    DAEMON_OPERATION_SPECS,
     DaemonOperationRequest,
+    StatusRequest,
     archive_identity,
 )
 
@@ -46,6 +48,25 @@ def test_operation_request_requires_a_declared_operation_and_exchange_identity()
         DaemonOperationRequest.from_dict({**request, "index_schema_version": True})
     with pytest.raises(ValueError, match="deadline_ms must be a positive integer"):
         DaemonOperationRequest.from_dict({**request, "deadline_ms": True})
+
+
+def test_operation_specs_bind_concrete_payload_models() -> None:
+    """A string label alone cannot be the machine contract."""
+
+    status = next(spec for spec in DAEMON_OPERATION_SPECS if spec.name == "status")
+
+    assert status.request_model is StatusRequest
+    assert status.request_model.__name__ == status.request_type
+    assert status.result_model.__name__ == status.result_type
+    with pytest.raises(ValueError, match="invalid StatusRequest payload"):
+        DaemonOperationRequest.from_dict(
+            {
+                "protocol": DAEMON_OPERATION_PROTOCOL,
+                "operation": "status",
+                "payload": {"unexpected": True},
+                "request_id": "bad-status",
+            }
+        )
 
 
 def test_operation_request_binds_an_optional_prior_authority_snapshot() -> None:
