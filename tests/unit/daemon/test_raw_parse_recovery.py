@@ -22,8 +22,10 @@ These tests pin:
 
 from __future__ import annotations
 
+import re
 import shutil
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -61,19 +63,21 @@ _CHATGPT_CONVERSATION = {
 }
 
 
-def _write_stuck_raw(archive_root: Path, *, source_path: str) -> str:
+def _write_stuck_raw(archive_root: Path, *, source_path: str, native_id: str = "conv-stuck") -> str:
     """Write a raw row with real conversational content that is never parsed.
 
     Mirrors an ingest attempt that acquired bytes but was interrupted before
     validation/parse ever ran: ``parsed_at_ms``/``validated_at_ms`` stay NULL
-    and no index session exists for it.
+    and no index session exists for it. ``native_id`` distinguishes payloads:
+    the archive is content-addressed, so two identical bodies are one raw row.
     """
     import json
 
+    conversation = {**_CHATGPT_CONVERSATION, "id": native_id}
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         return archive.write_raw_payload(
             provider=Provider.CHATGPT,
-            payload=json.dumps([_CHATGPT_CONVERSATION]).encode(),
+            payload=json.dumps([conversation]).encode(),
             source_path=source_path,
             acquired_at_ms=1,
         )
@@ -473,12 +477,14 @@ def test_raw_parse_recovery_sqlite_probe_failure_is_failed_and_closes_connection
         closed = False
 
         def execute(self, sql: str, *_args: object, **_kwargs: object) -> object:
-            if failure == "attach" or sql.lstrip().startswith("SELECT"):
-                raise sqlite3.OperationalError(f"{failure} failed")
-            return self
+            if sql.lstrip().upper().startswith("ATTACH"):
+                if failure == "attach":
+                    raise sqlite3.OperationalError("attach failed")
+                return self
+            raise sqlite3.OperationalError("query failed")
 
-        def fetchone(self) -> tuple[int]:
-            raise AssertionError("failed probe should not fetch a row")
+        def fetchall(self) -> list[tuple[str]]:
+            raise AssertionError("failed probe should not fetch rows")
 
         def close(self) -> None:
             self.closed = True
@@ -494,6 +500,130 @@ def test_raw_parse_recovery_sqlite_probe_failure_is_failed_and_closes_connection
     assert state.converged is False
     assert state.error_count == 1
     assert connection.closed is True
+
+
+class _PlanRecordingConnection:
+    """Records the query plan of every ``raw_sessions`` statement the probe runs."""
+
+    def __init__(self, conn: sqlite3.Connection, plans: list[list[str]]) -> None:
+        self._conn = conn
+        self._plans = plans
+
+    def execute(self, sql: str, parameters: Sequence[str] = ()) -> sqlite3.Cursor:
+        if "raw_sessions" in sql:
+            self._plans.append([row[3] for row in self._conn.execute("EXPLAIN QUERY PLAN " + sql, parameters)])
+        return self._conn.execute(sql, parameters)
+
+    def close(self) -> None:
+        self._conn.close()
+
+
+def _record_probe_plans(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    plans: list[list[str]] = []
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(
+        "polylogue.daemon.convergence_stages.sqlite3.connect",
+        lambda *args, **kwargs: _PlanRecordingConnection(real_connect(*args, **kwargs), plans),
+    )
+    return plans
+
+
+def test_raw_parse_recovery_probe_seeks_the_source_path_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pending probe seeks ``source_path``; it never scans ``raw_sessions``.
+
+    A scan here costs one full ``raw_sessions`` pass per ingested file, so a
+    cold rebuild pays a term quadratic in archive size. Anti-vacuity: the
+    ``source_path = ? OR source_path LIKE ?`` filter this replaces plans as
+    ``SCAN r`` (and, with the equality dropped, as a covering-index scan),
+    both of which this assertion rejects.
+    """
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "seek.json"
+    _write_stuck_raw(tmp_path, source_path=str(path))
+    plans = _record_probe_plans(monkeypatch)
+
+    assert make_raw_parse_recovery_stage(tmp_path / "index.db").check(path) is True
+
+    assert len(plans) == 1, f"expected exactly one raw_sessions probe, got {plans}"
+    steps = plans[0]
+    assert not [step for step in steps if re.match(r"^SCAN r\b", step)], steps
+    assert [step for step in steps if "SEARCH r USING INDEX idx_raw_sessions_source_path" in step], steps
+
+
+def test_raw_parse_recovery_probes_a_whole_batch_in_one_statement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One converger chunk costs one probe, not one probe per file.
+
+    Anti-vacuity: without ``check_many``/``execute_many`` the converger falls
+    back to the per-path ``check`` and this records four statements.
+    """
+    initialize_active_archive_root(tmp_path)
+    paths = [tmp_path / f"batched-{index}.json" for index in range(4)]
+    plans = _record_probe_plans(monkeypatch)
+
+    converger = DaemonConverger(stages=(make_raw_parse_recovery_stage(tmp_path / "index.db"),))
+    states, _timings = converger.converge_batch(paths)
+
+    assert len(plans) == 1, f"expected one batched probe, got {len(plans)}"
+    for path in paths:
+        assert states[path].stages["raw_parse_recovery"] is StageState.DONE
+        assert states[path].error_count == 0
+
+
+def test_raw_parse_recovery_matches_descendants_of_a_directory_root(tmp_path: Path) -> None:
+    """Debt registered for a directory root still finds the raws beneath it."""
+    initialize_active_archive_root(tmp_path)
+    nested = tmp_path / "inbox" / "conv.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(nested))
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(tmp_path / "inbox") is True
+    assert bool(stage.execute(tmp_path / "inbox")) is True
+    assert len(_sessions_for_raw(tmp_path, raw_id)) == 1
+
+
+@pytest.mark.parametrize(
+    ("root_name", "stuck_dir"),
+    [
+        # ``LIKE '<root>/%'`` reads ``%`` in the root as a wildcard, so the
+        # pre-fix filter claimed every sibling sharing the literal prefix.
+        ("100%", "1000"),
+        # Default ``LIKE`` folds ASCII case; filesystem paths do not.
+        ("Case", "case"),
+    ],
+)
+def test_raw_parse_recovery_scope_is_a_literal_case_sensitive_prefix(
+    tmp_path: Path, root_name: str, stuck_dir: str
+) -> None:
+    """A root's scope is its own descendants, not everything ``LIKE`` accepts."""
+    initialize_active_archive_root(tmp_path)
+    stuck = tmp_path / stuck_dir / "conv.json"
+    _write_stuck_raw(tmp_path, source_path=str(stuck))
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    assert stage.check(tmp_path / root_name) is False
+    assert stage.check(tmp_path / stuck_dir) is True
+
+
+def test_raw_parse_recovery_drains_several_paths_in_one_batch(tmp_path: Path) -> None:
+    """``execute_many`` repairs every pending path the chunk carries."""
+    initialize_active_archive_root(tmp_path)
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    first_raw = _write_stuck_raw(tmp_path, source_path=str(first), native_id="conv-first")
+    second_raw = _write_stuck_raw(tmp_path, source_path=str(second), native_id="conv-second")
+    assert first_raw != second_raw
+
+    converger = DaemonConverger(stages=(make_raw_parse_recovery_stage(tmp_path / "index.db"),))
+    states, _timings = converger.converge_batch([first, second])
+
+    assert states[first].converged is True
+    assert states[second].converged is True
+    assert len(_sessions_for_raw(tmp_path, first_raw)) == 1
+    assert len(_sessions_for_raw(tmp_path, second_raw)) == 1
 
 
 def test_daemon_restart_resumes_parsing_of_an_interrupted_batch(tmp_path: Path) -> None:
