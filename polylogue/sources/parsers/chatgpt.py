@@ -262,25 +262,6 @@ _CHATGPT_AGGREGATE_RESULT_STATES: dict[str, bool] = {
     "failed_with_in_kernel_exception": True,
 }
 
-#: ``metadata.finish_details.type`` tokens that name the same fact as a
-#: :class:`StopReason` member. Only exact equivalences map: ``interrupted``
-#: is the operator stopping generation and ``content_filter`` is a
-#: provider-side filter rather than the model's own refusal, so both leave
-#: the column NULL instead of widening a guess into it -- the same rule
-#: ``hermes_finish_reason`` applies to OpenAI's ``finish_reason``.
-_CHATGPT_FINISH_STOP_REASONS: dict[str, StopReason] = {
-    "stop": StopReason.END_TURN,
-    "max_tokens": StopReason.MAX_TOKENS,
-}
-
-
-def _stop_reason_from_finish_details(finish_details: object) -> str | None:
-    """Return ``messages.stop_reason`` for a ChatGPT ``finish_details`` record."""
-    if not isinstance(finish_details, Mapping):
-        return None
-    mapped = _CHATGPT_FINISH_STOP_REASONS.get(str(finish_details.get("type")))
-    return mapped.value if mapped is not None else None
-
 
 def _author_display_name(author: object) -> str | None:
     """Who the export says sent this message.
@@ -1203,23 +1184,25 @@ def extract_messages_from_mapping(
         # analysis prose and no record that the artifact it describes
         # exists. ``attachment_kind`` keeps them distinguishable from
         # operator uploads.
-        for visualization in msg_metadata.get("ada_visualizations") or []:
-            if not isinstance(visualization, Mapping):
-                continue
-            file_id = _string_value(visualization, "file_id")
-            if file_id is None:
-                continue
-            attachments.append(
-                ParsedAttachment(
-                    provider_attachment_id=file_id,
-                    provider_file_id=file_id,
-                    message_provider_id=str(msg_id),
-                    name=_string_value(visualization, "title"),
-                    attachment_kind="ada_visualization",
-                    direction="model_output",
-                    producer_ref=f"message:{msg_id}",
+        raw_visualizations = msg_metadata.get("ada_visualizations")
+        if isinstance(raw_visualizations, list):
+            for visualization in raw_visualizations:
+                if not isinstance(visualization, Mapping):
+                    continue
+                file_id = _string_value(visualization, "file_id")
+                if file_id is None:
+                    continue
+                attachments.append(
+                    ParsedAttachment(
+                        provider_attachment_id=file_id,
+                        provider_file_id=file_id,
+                        message_provider_id=str(msg_id),
+                        name=_string_value(visualization, "title"),
+                        attachment_kind="ada_visualization",
+                        direction="model_output",
+                        producer_ref=f"message:{msg_id}",
+                    )
                 )
-            )
 
         # Assistant-generated downloadable files (#sandbox links). Code
         # Interpreter deliverables surface only as `sandbox:/mnt/data/...`
