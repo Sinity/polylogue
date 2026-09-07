@@ -93,12 +93,33 @@ agent on stdin. The wrapper fields (`event_type`, `session_id`, `timestamp`,
 ```
 <archive_root>/hooks/                   # Default archive root: ~/.local/share/polylogue
 ├── pending/
-│   └── <event-id>.json                 # Atomic producer envelopes
+│   └── <YYYY-MM-DD>/<event-id>.json    # Atomic producer envelopes — the ingest surface
 ├── acknowledged/
-│   └── <event-id>.json                 # Source-tier receipt after commit
-├── claude-code-<session-id>.jsonl      # Legacy Claude journal
-└── codex-<session-id>.jsonl            # Legacy Codex journal
+│   └── <YYYY-MM-DD>/<event-id>.json    # Source-tier receipt after commit
+├── claude-code-<session-id>.jsonl      # Retired journal — not an ingest surface
+└── codex-<session-id>.jsonl            # Retired journal — not an ingest surface
 ```
+
+`pending/` is the only ingest surface. `drain_hook_event_spool` and the live
+watcher both read it and nothing else, so an event reaches `source.db` only
+from there. An `acknowledged/` file is a commit receipt for the `source.db`
+that consumed it: a rebuilt archive re-ingests nothing from that directory,
+and an envelope that exists only there needs restoring into `pending/` before
+the rebuild (`polylogue maintenance blob-disposition restore`).
+
+The per-session `*.jsonl` journals are not an ingest surface either. Their
+envelope carries no `event_id`, and the spool's idempotence is keyed on one
+(`hook:<event_id>` is the source-tier key a replay reuses), so the drain
+refuses the shape. No journal record is the only copy of its event: measured
+2026-09-07 across both declared roots, 635 journals holding 995,699 records,
+995,697 have a content-identical envelope in `pending/` or `acknowledged/`
+(identity `sha256(session_id + event_type + timestamp + canonical payload)`,
+both sides canonically re-serialized). The remaining two are one torn
+concurrent append each — two records interleaved into one line — and the
+spool carries all four of their events intact under their own ids. Those torn
+lines are why the spool is file-per-event: an append-only journal cannot
+guarantee atomic concurrent appends above `PIPE_BUF`, and hook payloads are
+not reliably under it.
 
 The hooks sidecar directory always lives under the resolved archive root
 (`POLYLOGUE_ARCHIVE_ROOT`, default `~/.local/share/polylogue`), the same as
