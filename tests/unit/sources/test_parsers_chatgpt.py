@@ -917,6 +917,10 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
     used to be built with neither, so the address was dropped and ``domain``
     stood in for the name. Removing ``url=`` or restoring ``title=domain`` in
     the retrieval branch turns this red.
+
+    The construct is what this asserts, not the block type that carries it:
+    on a ``role: tool`` node ``_tool_role_result_blocks`` re-types the
+    retrieval block to TOOL_RESULT and keeps the construct.
     """
     content: dict[str, object] = {"content_type": content_type, "text": "retrieved excerpt body", **content_extra}
     mapping = {
@@ -932,8 +936,8 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
     }
 
     messages, _attachments = extract_messages_from_mapping(mapping)
-    document_blocks = [b for b in messages[0].blocks if b.type == BlockType.DOCUMENT]
-    construct = document_blocks[0].web_constructs[0]
+    retrieval_blocks = [b for b in messages[0].blocks if b.web_constructs]
+    construct = retrieval_blocks[0].web_constructs[0]
     assert construct.url == content_extra["url"]
     assert construct.title == content_extra["title"]
 
