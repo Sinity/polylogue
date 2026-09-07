@@ -89,7 +89,7 @@ def run_messages(
                         lineage_truncation_reason=completeness.truncation_reason,
                         authority=authority_for_config(api.config, server_identity="direct", started_at=started_at),
                         outcome=lineage_page_outcome(
-                            matched=len(messages),
+                            matched=total,
                             complete=completeness.complete,
                             truncation_reason=completeness.truncation_reason,
                         ),

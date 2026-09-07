@@ -90,7 +90,7 @@ class TUIReadSurface:
             offset=spec.offset,
             query_description=list(spec.describe()),
             diagnostics=diagnostics,
-            outcome=decide_outcome(matched=len(sessions), degraded=gaps),
+            outcome=decide_outcome(matched=total, degraded=gaps),
         )
 
     async def search_sessions(self, spec: SessionQuerySpec) -> SessionListResponse:

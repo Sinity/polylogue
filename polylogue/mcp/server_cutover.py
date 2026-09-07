@@ -921,7 +921,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             server_identity="direct",
                         ),
                         outcome=lineage_page_outcome(
-                            matched=len(messages),
+                            matched=total,
                             complete=completeness.complete,
                             truncation_reason=completeness.truncation_reason,
                         ),

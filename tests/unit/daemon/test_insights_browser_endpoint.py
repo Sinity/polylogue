@@ -367,17 +367,15 @@ class TestUnavailableInsightSurface:
         handler = _make_handler("GET", f"/api/insights/sessions/{session_id}?include=timeline,phases")
         _, send_json = _capture_responses(handler)
         if fail:
+            from polylogue.api import Polylogue
+
             monkeypatch = _pytest.MonkeyPatch()
 
             async def _unavailable(*_args: object, **_kwargs: object) -> object:
                 raise ArchiveInsightUnavailableError("work-event insight surface is unavailable")
 
             try:
-                monkeypatch.setattr(
-                    "polylogue.api.archive.Polylogue.list_session_work_event_insights",
-                    _unavailable,
-                    raising=True,
-                )
+                monkeypatch.setattr(Polylogue, "list_session_work_event_insights", _unavailable, raising=True)
                 handler.do_GET()
             finally:
                 monkeypatch.undo()

@@ -3838,7 +3838,7 @@ def build_search_envelope(
         gaps.extend(f"lane_failed:{failure.lane}" for failure in execution.failed_lanes)
         gaps.extend(f"lane_unavailable:{lane}" for lane in execution.unavailable_lanes)
     return SearchEnvelope(
-        outcome=decide_outcome(matched=len(hits_tuple), degraded=gaps),
+        outcome=decide_outcome(matched=total if total is not None else len(hits_tuple), degraded=gaps),
         hits=hits_tuple,
         total=total,
         limit=limit,
