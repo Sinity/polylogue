@@ -452,7 +452,6 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     message, *args = logger.info.call_args.args
     assert "read=%.1f MB input=%.1f MB read_amp=%.6fx" in message
     assert "stages=%s" in message
-    assert "wal_before_checkpoint=%.1f MB" in message
     assert "excluded=%d" in message
     assert args[:6] == [
         "live.watcher: changed-file batch",
@@ -465,7 +464,7 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
     # succeeded, failed, excluded: a planned path lands in exactly one, so the
     # three counts are reported together.
     assert args[6:9] == [2, 0, 0]
-    assert args[11:] == ["full_parse:0.450,derived:0.200,fts:0.050", 8.0, 1.0, 3, False]
+    assert args[11:] == ["full_parse:0.450,derived:0.200,fts:0.050", False]
 
 
 def test_live_ingest_stage_timing_summary_is_bounded_and_sorted() -> None:
