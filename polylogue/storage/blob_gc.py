@@ -71,6 +71,7 @@ from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatc
 from polylogue.storage.introspection import table_exists as _table_exists
 from polylogue.storage.sqlite.connection_profile import open_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
+from polylogue.storage.sqlite.write_lease import require_write_lease
 
 logger = logging.getLogger(__name__)
 
@@ -732,6 +733,7 @@ def _execute_gc_generation_members(
         ]
     deleted_now = 0
     reclaimed_bytes_now = 0
+    require_write_lease(f"blob GC({control_db_path})", archive_root=control_db_path.parent)
     source_conn = sqlite3.connect(control_db_path)
     index_conn: sqlite3.Connection | None = None
     try:

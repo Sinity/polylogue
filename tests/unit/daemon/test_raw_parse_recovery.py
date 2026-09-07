@@ -12,8 +12,8 @@ These tests pin:
    convergence debt for every source path it covered (including the legacy
    single-``source_path`` fallback for rows without ``source_paths_json``).
 2. ``make_raw_parse_recovery_stage``'s ``check``/``execute`` correctly
-   detects and drains a stuck raw row (acquired, never parsed, no
-   materialized session) for a given source path.
+   detects and drains a stuck raw row (acquired, never parsed, or parsed but
+   not indexed, with no materialized session) for a given source path.
 3. End to end: a simulated daemon kill mid-batch (SIGKILL -> reopen
    ``CursorStore``) demonstrably resumes parsing on next start once the
    registered debt is drained by the daemon's convergence loop -- the
@@ -41,6 +41,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.archive_templates import bootstrap_archive_root
 
 _CHATGPT_CONVERSATION = {
@@ -151,6 +152,33 @@ def test_raw_parse_recovery_stage_drains_a_stuck_raw_row(tmp_path: Path) -> None
     rows = _sessions_for_raw(tmp_path, raw_id)
     assert len(rows) == 1
     assert rows[0][0] == "conv-stuck"
+
+
+def test_raw_parse_recovery_stage_drains_a_parsed_but_unindexed_raw(tmp_path: Path) -> None:
+    """A completed parse must still be retried when index projection was lost."""
+    initialize_active_archive_root(tmp_path)
+    path = tmp_path / "parsed-before-index.json"
+    raw_id = _write_stuck_raw(tmp_path, source_path=str(path))
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            UPDATE raw_sessions
+            SET parsed_at_ms = 1000, validated_at_ms = 1000,
+                validation_status = 'passed', parse_error = NULL
+            WHERE raw_id = ?
+            """,
+            (raw_id,),
+        )
+        conn.commit()
+
+    stage = make_raw_parse_recovery_stage(tmp_path / "index.db")
+
+    # Anti-vacuity: the old probe only considered parsed_at_ms IS NULL rows,
+    # so this stranded raw was incorrectly declared converged.
+    assert stage.check(path) is True
+    assert stage.execute(path) is True
+    assert stage.check(path) is False
+    assert _sessions_for_raw(tmp_path, raw_id) == [("conv-stuck", raw_id)]
 
 
 @pytest.mark.parametrize("refusal_shape", ["unattributed", "own_path"])
