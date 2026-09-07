@@ -28,7 +28,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run devtools render all --check
       - run: uv run devtools gate schema-manifest
       # Surface-to-substrate import ratchet (polylogue-2ciy): the baseline in
@@ -48,7 +48,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run pytest -q -n 0 tests/unit/cli/test_interactive_cli.py
         env:
           POLYLOGUE_PYTEST_BASETEMP_ROOT: ${{ runner.temp }}/polylogue-pytest
@@ -74,7 +74,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: ${{ matrix.python-version }}
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run devtools verify --all
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
@@ -92,7 +92,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run mypy polylogue/
 
   demo-visual-verify:
@@ -103,7 +103,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run pytest -q tests/unit/cli/test_demo_command.py tests/unit/demo/test_demo_seed_verify.py tests/visual
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
@@ -116,7 +116,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -158,7 +158,7 @@ jobs:
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           python-version: "3.14"
-      - run: uv sync --extra dev --frozen
+      - run: uv sync --extra dev --group audit --frozen
       - run: uv run devtools gate distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
           POLYLOGUE_FORCE_PLAIN: "1"
