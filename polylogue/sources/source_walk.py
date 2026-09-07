@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import stat
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -137,13 +139,32 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
 
 def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
     paths: list[Path] = []
-    for root, dirs, files in os.walk(base, followlinks=True):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for filename in files:
-            file_path = Path(root) / filename
-            if _is_supported_source_path(file_path, provider=provider):
-                paths.append(file_path)
+    for file_path in _iter_source_entries(base):
+        # Admission and census both treat symlinks, FIFOs, sockets, and other
+        # non-regular entries as unsupported evidence.  lstat is deliberate:
+        # following a symlink here would make production admission disagree
+        # with the census denominator.
+        try:
+            if not stat.S_ISREG(os.stat(file_path, follow_symlinks=False).st_mode):
+                continue
+        except OSError:
+            continue
+        if _is_supported_source_path(file_path, provider=provider):
+            paths.append(file_path)
     return sorted(paths)
+
+
+def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | None = None) -> list[Path]:
+    """Enumerate source files under the canonical traversal policy.
+
+    Both admission and census use this helper so skipped directories and
+    follow-link behavior cannot drift between the two routes.
+    """
+    entries: list[Path] = []
+    for root, dirs, files in os.walk(base, followlinks=True, onerror=onerror):
+        dirs[:] = [directory for directory in dirs if directory not in _SKIP_DIRS]
+        entries.extend(Path(root) / filename for filename in files)
+    return sorted(entries)
 
 
 def _resolve_source_paths(source: Source) -> list[Path]:
@@ -207,6 +228,7 @@ __all__ = [
     "_SKIP_DIRS",
     "_has_supported_extension",
     "_is_supported_source_path",
+    "_iter_source_entries",
     "_resolve_source_paths",
     "_setup_source_walk",
     "_walk_source_paths",
