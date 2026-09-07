@@ -70,6 +70,72 @@ def test_durable_evolution_compares_rendered_ddl_transformations(
     assert "source: rendered DDL changed without a schema-version bump" in violations
 
 
+_RETIRED_DDL = """
+CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;
+CREATE TABLE raw_membership_writeback_receipts (raw_id TEXT PRIMARY KEY) STRICT;
+CREATE INDEX idx_raw_membership_writeback_receipts_promoted_at
+ON raw_membership_writeback_receipts(raw_id);
+"""
+_AFTER_RETIREMENT_DDL = "CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;"
+
+
+def test_durable_evolution_accepts_only_declared_retired_removals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting explicitly retired objects needs no durable migration."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=_RETIRED_DDL if ref == "base" else _AFTER_RETIREMENT_DDL),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_rejects_removing_an_undeclared_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The retirement allowance cannot hide an unclassified removal."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_ddl=_RETIRED_DDL
+            if ref == "base"
+            else "CREATE TABLE raw_membership_writeback_receipts (raw_id TEXT PRIMARY KEY) STRICT;"
+        ),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    assert "source: rendered DDL changed without a schema-version bump" in violations
+
+
+def test_durable_evolution_rejects_adding_an_object_alongside_retirement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A retirement cannot smuggle an added durable object past the gate."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(
+            source_ddl=_RETIRED_DDL
+            if ref == "base"
+            else _AFTER_RETIREMENT_DDL + "\nCREATE TABLE newcomer (b TEXT PRIMARY KEY) STRICT;"
+        ),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    assert "source: rendered DDL changed without a schema-version bump" in violations
+
+
 def test_durable_evolution_accepts_a_complete_contiguous_migration_chain(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
