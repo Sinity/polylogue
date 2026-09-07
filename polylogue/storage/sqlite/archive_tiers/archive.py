@@ -632,6 +632,7 @@ class ArchiveStore:
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
+        defer_secondary_indexes: bool = False,
     ) -> None:
         if not validate_index_layout and not read_only:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
@@ -643,6 +644,8 @@ class ArchiveStore:
             raise ValueError("a pinned index path is valid only for read-only archive access")
         if opened_index_fd is not None and not read_only:
             raise ValueError("an opened index descriptor is valid only for read-only archive access")
+        if defer_secondary_indexes and (read_only or owned_inactive_generation is None):
+            raise ValueError("secondary-index deferral requires an owned inactive writable generation")
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
         self._frozen_source_validation = frozen_source_validation
@@ -651,6 +654,7 @@ class ArchiveStore:
         self._pinned_read = frozen_index_path is not None
         self._inactive_candidate_durable_read_only = owned_inactive_generation is not None or frozen_source_validation
         self._active_writer_lease = None
+        self._deferred_secondary_indexes: tuple[str, ...] = ()
         if not read_only:
             from polylogue.paths import archive_root as configured_archive_root
             from polylogue.storage.archive_identity import assert_writable_archive_identity
@@ -729,6 +733,13 @@ class ArchiveStore:
                 # BULK_BUILD_WRITE_CONNECTION_PROFILE's docstring.
                 bulk_build_profile=owned_inactive_generation is not None,
             )
+            if defer_secondary_indexes:
+                from polylogue.storage.sqlite.runtime_indexes import defer_secondary_indexes_sync
+
+                if self._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None:
+                    raise ValueError("secondary-index deferral is only valid for an empty archive generation")
+                self._deferred_secondary_indexes = defer_secondary_indexes_sync(self._conn)
+                self._conn.commit()
         except Exception:
             conn = getattr(self, "_conn", None)
             if conn is not None:
@@ -878,6 +889,17 @@ class ArchiveStore:
         if self._read_only:
             raise ReadOnlyArchiveError(f"read-only archive evidence cannot {operation}")
 
+    def restore_deferred_secondary_indexes(self) -> None:
+        """Recreate deferred reader indexes before publishing a generation."""
+        self._require_writable("restore deferred secondary indexes")
+        if not self._deferred_secondary_indexes:
+            return
+        from polylogue.storage.sqlite.runtime_indexes import restore_deferred_secondary_indexes_sync
+
+        restore_deferred_secondary_indexes_sync(self._conn)
+        self._conn.commit()
+        self._deferred_secondary_indexes = ()
+
     @classmethod
     def open_existing(
         cls,
@@ -946,13 +968,21 @@ class ArchiveStore:
         )
 
     @classmethod
-    def open_owned_inactive_generation(cls, archive_root: Path, *, generation_id: str, owner_id: str) -> ArchiveStore:
+    def open_owned_inactive_generation(
+        cls,
+        archive_root: Path,
+        *,
+        generation_id: str,
+        owner_id: str,
+        defer_secondary_indexes: bool = False,
+    ) -> ArchiveStore:
         """Open a typed inactive generation without weakening normal identity checks."""
         return cls(
             archive_root,
             initialize=True,
             read_only=False,
             owned_inactive_generation=(generation_id, owner_id),
+            defer_secondary_indexes=defer_secondary_indexes,
         )
 
     @staticmethod
@@ -1069,6 +1099,15 @@ class ArchiveStore:
     def close(self) -> None:
         if self._blob_publisher is not None:
             self._blob_publisher.discard_pending()
+        if self._deferred_secondary_indexes and not self._read_only:
+            # A failed or cancelled cold build must not leave the active
+            # generation without its reader indexes.  Boundary code may call
+            # the public restore method earlier; this is the safety net for
+            # every other exit path.
+            try:
+                self.restore_deferred_secondary_indexes()
+            except Exception:
+                logger.exception("failed to restore deferred secondary indexes during close")
         if self._source_conn is not None:
             self._source_conn.close()
             self._source_conn = None
@@ -1102,7 +1141,13 @@ class ArchiveStore:
         finally:
             attachment.__exit__(None, None, None)
 
-    def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
+    def write_parsed(
+        self,
+        session: ParsedSession,
+        *,
+        content_hash: str | None = None,
+        fresh_build: bool = False,
+    ) -> str:
         """Write a parsed session to index.db."""
         self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
@@ -1116,6 +1161,7 @@ class ArchiveStore:
             self._conn,
             session,
             content_hash=content_hash,
+            fresh_build=fresh_build,
             preacquired_attachment_blobs=acquired,
             source_conn=self._optional_source_conn(),
         )
@@ -1176,7 +1222,13 @@ class ArchiveStore:
             "content_changed": result.content_changed,
         }
 
-    def write_parsed_result(self, session: ParsedSession, *, content_hash: str | None = None) -> dict[str, int]:
+    def write_parsed_result(
+        self,
+        session: ParsedSession,
+        *,
+        content_hash: str | None = None,
+        fresh_build: bool = False,
+    ) -> dict[str, int]:
         """Write a parsed session and report whether precedence skipped it."""
         self._require_writable("write index.db")
         acquired, refs = self._preacquire_attachment_blobs(
@@ -1191,6 +1243,7 @@ class ArchiveStore:
             self._conn,
             session,
             content_hash=content_hash,
+            fresh_build=fresh_build,
             preacquired_attachment_blobs=acquired,
             source_conn=self._optional_source_conn(),
             write_outcome=outcomes,

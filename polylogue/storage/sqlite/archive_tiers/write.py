@@ -530,6 +530,8 @@ def write_parsed_session_to_archive(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
     source_conn: sqlite3.Connection | None = None,
@@ -581,7 +583,15 @@ def write_parsed_session_to_archive(
     owns one targeted repair and exactness proof after its writes. It avoids
     rebuilding the same session's FTS surfaces twice in the same transaction.
     Direct callers retain the immediate-ready default.
+
+    ``fresh_build`` is restricted to a from-empty index generation.  It keeps
+    identity and content hashing, but skips compare/replace preparation after
+    proving that this session id has not been written in the generation.  A
+    repeated id is an assertion failure rather than an implicit duplicate or
+    overwrite; live ingest never enables this mode.
     """
+    if fresh_build and (merge_append or force_replace):
+        raise ValueError("fresh_build is only valid for an untouched full-replace session")
     t0 = time.perf_counter()
 
     admission = unit_accounting or session.unit_accounting
@@ -803,13 +813,25 @@ def write_parsed_session_to_archive(
             # to know whether its ~14-table point-DELETE cascade has anything
             # to do at all.
             session_row_existed = False
-            if not merge_append:
+            if not merge_append and not fresh_build:
                 existing_raw_id_row = conn.execute(
                     "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
                 if existing_raw_id_row is not None:
                     session_row_existed = True
                     existing_session_raw_id = existing_raw_id_row[0]
+            elif fresh_build and not merge_append:
+                # Fresh mode is a correctness contract, not a hint.  Keep the
+                # absence check even when the caller batches transactions so a
+                # duplicate session can never silently replace rows.
+                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None:
+                    raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
+                if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
+                    "SELECT 1 FROM sessions LIMIT 1"
+                ).fetchone() is not None:
+                    raise AssertionError("fresh_build requires an empty archive generation")
+                if fresh_build_batch is not None:
+                    fresh_build_batch.add(session_id)
             t0 = time.perf_counter()
             session_row_values = {
                 "native_id": native_id,
