@@ -589,7 +589,8 @@ def _codex_state_db(path: Path, *, title: str = "a thread title") -> Path:
 
 def _codex_logical_export_bytes(state_db: Path) -> bytes:
     """The canonical logical export retained for one state snapshot."""
-    from polylogue.sources.sqlite_export import member_export_scope, write_logical_export
+    from polylogue.sources.sqlite_export import write_logical_export
+    from polylogue.sources.sqlite_snapshot import member_export_scope
 
     output = BytesIO()
     write_logical_export(state_db, output, scope=member_export_scope(state_db), immutable=True)

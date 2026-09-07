@@ -689,7 +689,7 @@ def _delete_invalid_entries(
                     outcome=MemberOutcome.BLOCKED,
                     detail=f"unreadable namespace-entry record: {entry}",
                     cohort=INVALID_ENTRY_COHORT,
-                    from_path=entry.relative_path if isinstance(entry, InvalidNamespaceEntry) else entry,
+                    from_path=entry.relative_path,
                 )
             )
             continue

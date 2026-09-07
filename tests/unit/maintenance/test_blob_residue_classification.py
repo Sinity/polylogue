@@ -3,7 +3,7 @@
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from pytest import MonkeyPatch
 
@@ -180,13 +180,14 @@ def test_sqlite_route_uses_immutable_read_only_connections(tmp_path: Path, monke
         connection.execute("CREATE TABLE thread_spawn_edges (id TEXT)")
 
     immutable_args: list[bool] = []
-    original_shape = codex_state.logical_source_shape
+    codex_state_module = cast(Any, codex_state)
+    original_shape = codex_state_module.logical_source_shape
 
     def logical_shape(path: Path, *, immutable: bool = False) -> dict[str, tuple[str, ...]]:
         immutable_args.append(immutable)
         return original_shape(path, immutable=immutable)
 
-    monkeypatch.setattr(codex_state, "logical_source_shape", logical_shape)
+    monkeypatch.setattr(codex_state_module, "logical_source_shape", logical_shape)
 
     route, _observation = parse_production_route(path, provider_hint=Provider.CODEX)
 
