@@ -170,6 +170,9 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                 archive.source_connection,
                 blob_path_for_hash=archive.blob_path_for_hash,
             )
+        # ``close`` does not commit, and the projection is the last write in
+        # this pass: without this the recomputed rows are discarded.
+        archive.commit()
     if resolved:
         logger.info("codex state: finalized %d retained export(s) without a terminal receipt", resolved)
     return resolved
