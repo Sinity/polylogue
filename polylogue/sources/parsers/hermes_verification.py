@@ -81,6 +81,7 @@ from typing import Literal, TypeAlias
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
 from polylogue.core.json import JSONDocument
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_identity import profile_key as _profile_key
@@ -191,10 +192,7 @@ def looks_like_verification_evidence_db_path(path: Path, *, immutable: bool = Fa
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    uri = path.resolve().as_uri() + "?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    conn = open_readonly_connection(path.resolve(), immutable=immutable, validate_schema=False)
     conn.row_factory = sqlite3.Row
     return conn
 

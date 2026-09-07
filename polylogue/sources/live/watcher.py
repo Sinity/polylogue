@@ -163,7 +163,7 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
         "succeeded=%d failed=%d excluded=%d parse_s=%.3f convergence_s=%.3f stages=%s "
-        "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d time_budget_exceeded=%s",
+        "time_budget_exceeded=%s",
         prefix,
         source_payload_read_bytes / 1e6,
         input_bytes / 1e6,
@@ -176,9 +176,6 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "parse_time_s", 0.0),
         getattr(metrics, "convergence_time_s", 0.0),
         stage_summary,
-        getattr(metrics, "wal_bytes_before_checkpoint_max", 0) / 1e6,
-        getattr(metrics, "wal_bytes_after_checkpoint_max", 0) / 1e6,
-        getattr(metrics, "wal_busy_pages_total", 0),
         getattr(metrics, "time_budget_exceeded", False),
     )
     excluded_reasons = getattr(metrics, "excluded_reasons", {})

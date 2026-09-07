@@ -20,13 +20,6 @@ class LiveFullIngestMetricKwargs(TypedDict):
     ingested_session_count: int
     ingested_message_count: int
     changed_session_count: int
-    wal_bytes_before_checkpoint_max: int
-    wal_bytes_after_checkpoint_max: int
-    wal_checkpointed_pages_total: int
-    wal_busy_pages_total: int
-    wal_checkpoint_elapsed_s: float
-    wal_checkpoint_modes: dict[str, int]
-    wal_checkpoint_errors: list[str]
 
 
 def split_offered_bytes(
@@ -104,13 +97,6 @@ class LiveBatchMetrics:
     ingested_session_count: int = 0
     ingested_message_count: int = 0
     changed_session_count: int = 0
-    wal_bytes_before_checkpoint_max: int = 0
-    wal_bytes_after_checkpoint_max: int = 0
-    wal_checkpointed_pages_total: int = 0
-    wal_busy_pages_total: int = 0
-    wal_checkpoint_elapsed_s: float = 0.0
-    wal_checkpoint_modes: dict[str, int] = field(default_factory=dict)
-    wal_checkpoint_errors: list[str] = field(default_factory=list)
     rss_current_mb: float | None = None
     rss_peak_self_mb: float | None = None
     rss_peak_children_mb: float | None = None
@@ -190,13 +176,6 @@ class LiveBatchMetrics:
             "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
             "changed_session_count": self.changed_session_count,
-            "wal_bytes_before_checkpoint_max": self.wal_bytes_before_checkpoint_max,
-            "wal_bytes_after_checkpoint_max": self.wal_bytes_after_checkpoint_max,
-            "wal_checkpointed_pages_total": self.wal_checkpointed_pages_total,
-            "wal_busy_pages_total": self.wal_busy_pages_total,
-            "wal_checkpoint_elapsed_s": self.wal_checkpoint_elapsed_s,
-            "wal_checkpoint_modes": self.wal_checkpoint_modes,
-            "wal_checkpoint_errors": self.wal_checkpoint_errors,
             "parse_time_s": self.parse_time_s,
             "convergence_time_s": self.convergence_time_s,
             "total_time_s": self.total_time_s,
@@ -225,47 +204,17 @@ class LiveFullIngestAggregate:
     ingested_session_count: int = 0
     ingested_message_count: int = 0
     changed_session_count: int = 0
-    wal_bytes_before_checkpoint_max: int = 0
-    wal_bytes_after_checkpoint_max: int = 0
-    wal_checkpointed_pages_total: int = 0
-    wal_busy_pages_total: int = 0
-    wal_checkpoint_elapsed_s: float = 0.0
-    wal_checkpoint_modes: dict[str, int] = field(default_factory=dict)
-    wal_checkpoint_errors: list[str] = field(default_factory=list)
 
     def add(self, result: object) -> None:
         self.ingested_session_count += int(getattr(result, "ingested_session_count", 0))
         self.ingested_message_count += int(getattr(result, "ingested_message_count", 0))
         self.changed_session_count += int(getattr(result, "changed_session_count", 0))
-        self.wal_bytes_before_checkpoint_max = max(
-            self.wal_bytes_before_checkpoint_max,
-            int(getattr(result, "wal_bytes_before_checkpoint", 0)),
-        )
-        self.wal_bytes_after_checkpoint_max = max(
-            self.wal_bytes_after_checkpoint_max,
-            int(getattr(result, "wal_bytes_after_checkpoint", 0)),
-        )
-        self.wal_checkpointed_pages_total += int(getattr(result, "wal_checkpointed_pages", 0))
-        self.wal_busy_pages_total += int(getattr(result, "wal_busy_pages", 0))
-        self.wal_checkpoint_elapsed_s += float(getattr(result, "wal_checkpoint_elapsed_s", 0.0))
-        mode = str(getattr(result, "wal_checkpoint_mode", "none"))
-        self.wal_checkpoint_modes[mode] = self.wal_checkpoint_modes.get(mode, 0) + 1
-        error = getattr(result, "wal_checkpoint_error", None)
-        if error is not None:
-            self.wal_checkpoint_errors.append(str(error))
 
     def to_metric_kwargs(self) -> LiveFullIngestMetricKwargs:
         return {
             "ingested_session_count": self.ingested_session_count,
             "ingested_message_count": self.ingested_message_count,
             "changed_session_count": self.changed_session_count,
-            "wal_bytes_before_checkpoint_max": self.wal_bytes_before_checkpoint_max,
-            "wal_bytes_after_checkpoint_max": self.wal_bytes_after_checkpoint_max,
-            "wal_checkpointed_pages_total": self.wal_checkpointed_pages_total,
-            "wal_busy_pages_total": self.wal_busy_pages_total,
-            "wal_checkpoint_elapsed_s": round(self.wal_checkpoint_elapsed_s, 6),
-            "wal_checkpoint_modes": self.wal_checkpoint_modes,
-            "wal_checkpoint_errors": self.wal_checkpoint_errors,
         }
 
 

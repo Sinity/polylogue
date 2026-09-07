@@ -1,4 +1,4 @@
-"""WAL checkpoint observation tests for sync ingest batches."""
+"""Ingest-batch upkeep: planner statistics, and no checkpointing of its own."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.wal_checkpoint import (
     WalCheckpointObservation,
-    maybe_checkpoint_archive_wals,
-    maybe_checkpoint_wal,
+    checkpoint_archive_wals,
+    checkpoint_wal,
 )
 
 
@@ -111,10 +111,16 @@ def test_scoped_foreign_key_check_reports_current_session_orphans(tmp_path: Path
     ]
 
 
-def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
+def test_process_ingest_batch_sync_does_not_checkpoint(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Ingest publishes; the recurring coordinator checkpoints.
+
+    A checkpoint reintroduced here would run inside the batch's own writer
+    hold, where it is charged to publication and invisible to the checkpoint
+    budget -- which is exactly what this asserts cannot happen.
+    """
     db_path = tmp_path / "index.db"
     archive_root = tmp_path / "archive"
     blob_root = tmp_path / "blob"
@@ -160,20 +166,8 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         del record, archive_root_str, validation_mode, measure_ingest_result_size, blob_root_str
         return IngestRecordResult(raw_id=raw_record.raw_id, sessions=[])
 
-    def fake_checkpoint(db: Path, *, reason: str, allow_truncate: bool = True, **_: object) -> WalCheckpointObservation:
-        assert db == db_path
-        assert reason == "ingest_batch_commit"
-        assert allow_truncate is False
-        return WalCheckpointObservation(
-            reason=reason,
-            mode="passive",
-            wal_bytes_before=900,
-            wal_bytes_after=900,
-            busy_pages=0,
-            log_pages=7,
-            checkpointed_pages=7,
-            elapsed_s=0.25,
-        )
+    def refuse_checkpoint(*_args: object, **_kwargs: object) -> WalCheckpointObservation:
+        raise AssertionError("the ingest path must not checkpoint")
 
     optimize_calls: list[str] = []
 
@@ -190,7 +184,8 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         ensure_transaction()
 
     monkeypatch.setattr(ingest_batch_core, "_drain_ingest_result", fake_drain)
-    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.checkpoint_wal", refuse_checkpoint)
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.checkpoint_archive_wals", refuse_checkpoint)
     monkeypatch.setattr("polylogue.storage.sqlite.maintenance.maybe_optimize_sqlite", fake_optimize)
 
     summary = _process_ingest_batch_sync(
@@ -203,11 +198,7 @@ def test_process_ingest_batch_sync_records_wal_checkpoint_observation(
         measure_ingest_result_size=False,
     )
 
-    assert summary.wal_checkpoint_mode == "passive"
-    assert summary.wal_bytes_before_checkpoint == 900
-    assert summary.wal_bytes_after_checkpoint == 900
-    assert summary.wal_checkpointed_pages == 7
-    assert summary.wal_checkpoint_elapsed_s == 0.25
+    assert summary.raw_record_count == 1
     assert optimize_calls == ["ingest_batch_commit"]
 
 
@@ -266,7 +257,7 @@ def test_maybe_optimize_archive_tiers_covers_existing_split_tiers(
     assert all(conn.closed for conn in opened)
 
 
-def test_maybe_checkpoint_archive_wals_covers_existing_split_tiers(
+def test_checkpoint_archive_wals_covers_existing_split_tiers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -275,30 +266,31 @@ def test_maybe_checkpoint_archive_wals_covers_existing_split_tiers(
     for filename in ("source.db", "index.db", "user.db"):
         (archive_root / filename).write_bytes(b"sqlite placeholder")
 
-    calls: list[tuple[Path, str, bool]] = []
+    calls: list[tuple[Path, str, str]] = []
 
     def fake_checkpoint(
         db: Path,
         *,
         reason: str,
-        allow_truncate: bool = True,
+        escalation: str = "recurring",
         **_: object,
     ) -> WalCheckpointObservation:
-        calls.append((db, reason, allow_truncate))
+        calls.append((db, reason, escalation))
         return WalCheckpointObservation(
             reason=reason,
             mode="passive",
+            escalation=escalation,  # type: ignore[arg-type]
             wal_bytes_before=100,
             wal_bytes_after=0,
         )
 
-    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.maybe_checkpoint_wal", fake_checkpoint)
+    monkeypatch.setattr("polylogue.storage.sqlite.wal_checkpoint.checkpoint_wal", fake_checkpoint)
 
-    observations = maybe_checkpoint_archive_wals(archive_root, reason="periodic", allow_truncate=True)
+    observations = checkpoint_archive_wals(archive_root, reason="periodic")
 
-    assert [path.name for path, _reason, _allow in calls] == ["source.db", "index.db", "user.db"]
-    assert {reason for _path, reason, _allow in calls} == {"periodic"}
-    assert {allow for _path, _reason, allow in calls} == {True}
+    assert [path.name for path, _reason, _escalation in calls] == ["source.db", "index.db", "user.db"]
+    assert {reason for _path, reason, _escalation in calls} == {"periodic"}
+    assert {escalation for _path, _reason, escalation in calls} == {"recurring"}
     assert [observation.mode for observation in observations] == ["passive", "passive", "passive"]
 
 
@@ -371,7 +363,7 @@ def test_process_ingest_batch_sync_does_not_force_memory_release_before_returnin
     assert summary.total_blob_mb >= 1024.0
 
 
-def test_maybe_checkpoint_wal_reports_blocking_processes_when_busy(
+def test_checkpoint_wal_reports_blocking_processes_when_the_route_asks(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -397,7 +389,7 @@ def test_maybe_checkpoint_wal_reports_blocking_processes_when_busy(
         lambda db: ("1234:polylogue-mcp",) if db == db_path else (),
     )
 
-    observation = maybe_checkpoint_wal(db_path, reason="test", warn_bytes=0, truncate_bytes=0)
+    observation = checkpoint_wal(db_path, reason="test", warn_bytes=0, escalation_bytes=0, collect_blockers=True)
 
     assert observation.busy_pages == 1
     assert observation.blocking_processes == ("1234:polylogue-mcp",)

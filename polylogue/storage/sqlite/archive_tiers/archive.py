@@ -321,11 +321,12 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
-    BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PRAGMA_STATEMENTS,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
     open_connection,
     open_readonly_connection,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -836,10 +837,8 @@ class ArchiveStore:
                 # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
                 else sqlite3.connect(self.index_db_path, uri=True)
             )
-            pragma_statements = (
-                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
-                if bulk_build_profile
-                else WRITE_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements = write_connection_pragma_statements(
+                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:

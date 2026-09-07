@@ -81,28 +81,26 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     record_excised_blob_hash,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, TIMEOUT_PROFILES, open_profiled_connection
+from polylogue.storage.sqlite.connection_profile import (
+    READ_PROFILES,
+    open_isolated_write_connection,
+    open_profiled_connection,
+)
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
-# One-shot excision connections open each tier directly (not via
-# open_connection/open_profiled_connection) because they must NOT attach
-# sibling tiers -- excision deliberately opens and commits one tier at a
-# time so a mid-apply failure leaves at most one tier mutated, never a
-# half-written cross-tier transaction. Reads use the named background
-# profile; writes retain the local busy timeout.
-_WRITE_BUSY_TIMEOUT_MS = DB_TIMEOUT * 1000
+# Excision opens and commits one tier at a time so a mid-apply failure leaves
+# at most one tier mutated, never a half-written cross-tier transaction. Both
+# factories below are the declared no-sibling-attach routes for exactly that.
 
 
 def _connect_ro(path: Path) -> sqlite3.Connection:
     """Open a one-shot read-only tier connection with the background profile."""
-    return open_profiled_connection(path, profile=TIMEOUT_PROFILES["background-read"])
+    return open_profiled_connection(path, profile=READ_PROFILES["background-read"])
 
 
 def _connect_rw(path: Path) -> sqlite3.Connection:
-    """Open a one-shot read-write tier connection with the shared busy_timeout."""
-    conn = sqlite3.connect(path)
-    conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
-    return conn
+    """Open a one-shot writable tier connection, attaching no sibling tier."""
+    return open_isolated_write_connection(path, purpose=f"excision apply({path})")
 
 
 @dataclass(frozen=True, slots=True)

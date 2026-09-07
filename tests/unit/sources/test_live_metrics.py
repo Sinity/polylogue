@@ -26,13 +26,6 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
         ingested_session_count=2,
         ingested_message_count=12,
         changed_session_count=1,
-        wal_bytes_before_checkpoint_max=4096,
-        wal_bytes_after_checkpoint_max=1024,
-        wal_checkpointed_pages_total=3,
-        wal_busy_pages_total=1,
-        wal_checkpoint_elapsed_s=0.04,
-        wal_checkpoint_modes={"passive": 1},
-        wal_checkpoint_errors=["database is locked"],
         cgroup_path="/user.slice/test.scope",
         cgroup_memory_peak_mb=128.0,
         new_sessions=(("codex", "codex:conv-1"),),
@@ -46,13 +39,6 @@ def test_live_batch_metrics_payload_includes_memory_pressure_fields() -> None:
     assert payload["ingested_session_count"] == 2
     assert payload["ingested_message_count"] == 12
     assert payload["changed_session_count"] == 1
-    assert payload["wal_bytes_before_checkpoint_max"] == 4096
-    assert payload["wal_bytes_after_checkpoint_max"] == 1024
-    assert payload["wal_checkpointed_pages_total"] == 3
-    assert payload["wal_busy_pages_total"] == 1
-    assert payload["wal_checkpoint_elapsed_s"] == 0.04
-    assert payload["wal_checkpoint_modes"] == {"passive": 1}
-    assert payload["wal_checkpoint_errors"] == ["database is locked"]
     # Identity-scoped session touches (polylogue-20d.13): real refs, not an
     # unscoped aggregate, so consumers can tell session A from session B.
     assert payload["new_sessions"] == [{"source_name": "codex", "session_id": "codex:conv-1"}]

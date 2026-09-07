@@ -15,6 +15,7 @@ from pathlib import Path
 
 from polylogue.core.durable_fs import atomic_replace, sync_directory, write_once
 from polylogue.storage.sqlite.archive_tiers.embeddings import EMBEDDING_DIMENSION
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 
 _VECTOR_TABLES = (
@@ -64,8 +65,11 @@ class EmbeddingPreservationReceipt:
 
 
 def _connect(path: Path, *, readonly: bool, immutable: bool = False) -> sqlite3.Connection:
-    uri = f"file:{path}?mode=ro" + ("&immutable=1" if immutable else "")
-    conn = sqlite3.connect(uri, uri=True) if readonly else sqlite3.connect(path)
+    conn = (
+        open_readonly_connection(path, immutable=immutable, validate_schema=False)
+        if readonly
+        else sqlite3.connect(path)
+    )
     loaded, error = try_load_sqlite_vec(conn)
     if not loaded:
         conn.close()

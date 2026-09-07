@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 from .base import ParsedSessionEvent
 
@@ -162,10 +163,7 @@ IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
 
 def _connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
     """Open *path* read-only. Never takes a write lock against a live Codex."""
-    uri = path.resolve().as_uri() + "?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    return sqlite3.connect(uri, uri=True, timeout=timeout)
+    return open_readonly_connection(path.resolve(), timeout=timeout, immutable=immutable, validate_schema=False)
 
 
 def _table_names(conn: sqlite3.Connection) -> frozenset[str]:

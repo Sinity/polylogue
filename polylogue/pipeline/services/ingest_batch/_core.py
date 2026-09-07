@@ -93,7 +93,8 @@ from polylogue.storage.sqlite.archive_tiers.write import (
 from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 
@@ -160,7 +161,7 @@ def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
-    for statement in WRITE_CONNECTION_PRAGMA_STATEMENTS:
+    for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
         conn.execute(statement)
     if db_path.name == "index.db":
         ensure_runtime_indexes_sync(conn)
@@ -1957,26 +1958,6 @@ def _process_ingest_batch_sync(
                     for publication_id, blob_hash in pending_attachment_receipts:
                         consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
             summary.commit_elapsed_s = time.perf_counter() - commit_started
-            from polylogue.storage.sqlite.wal_checkpoint import maybe_checkpoint_wal
-
-            wal_observation = maybe_checkpoint_wal(db_path, reason="ingest_batch_commit", allow_truncate=False)
-            summary.wal_checkpoint_mode = wal_observation.mode
-            summary.wal_bytes_before_checkpoint = wal_observation.wal_bytes_before
-            summary.wal_bytes_after_checkpoint = wal_observation.wal_bytes_after
-            summary.wal_checkpointed_pages = wal_observation.checkpointed_pages
-            summary.wal_busy_pages = wal_observation.busy_pages
-            summary.wal_checkpoint_elapsed_s = wal_observation.elapsed_s
-            summary.wal_checkpoint_error = wal_observation.error
-            if wal_observation.blocking_processes:
-                logger.warning(
-                    "wal_checkpoint_blocked",
-                    reason=wal_observation.reason,
-                    mode=wal_observation.mode,
-                    wal_bytes_before=wal_observation.wal_bytes_before,
-                    wal_bytes_after=wal_observation.wal_bytes_after,
-                    busy_pages=wal_observation.busy_pages,
-                    blocking_processes=wal_observation.blocking_processes[:5],
-                )
             from polylogue.storage.sqlite.maintenance import maybe_optimize_sqlite
 
             optimize_observation = maybe_optimize_sqlite(conn, reason="ingest_batch_commit")
@@ -2122,10 +2103,6 @@ async def process_ingest_batch(
             write_s=round(batch_summary.write_elapsed_s, 2),
             max_write_s=round(batch_summary.max_write_elapsed_s, 2),
             commit_s=round(batch_summary.commit_elapsed_s, 2),
-            wal_mode=batch_summary.wal_checkpoint_mode,
-            wal_before=batch_summary.wal_bytes_before_checkpoint,
-            wal_after=batch_summary.wal_bytes_after_checkpoint,
-            wal_busy=batch_summary.wal_busy_pages,
             drain_s=round(batch_summary.drain_elapsed_s, 2),
             flush_s=round(batch_summary.flush_elapsed_s, 2),
             wait_s=round(batch_summary.result_wait_s, 2),

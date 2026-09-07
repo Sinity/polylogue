@@ -37,6 +37,7 @@ from polylogue.storage.archive_identity import (
     TierFileIdentity,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.durable_change_train import (
     DURABLE_MIGRATION_ADOPTION_FLOORS,
     DurableChangeTrainError,
@@ -399,7 +400,7 @@ def _tier_snapshot(
     else:
         metadata = _real_file(path, label=f"{tier.value} tier")
     try:
-        with closing(sqlite3.connect(f"file:{resolved_path}?mode=ro&immutable=1", uri=True)) as connection:
+        with closing(open_readonly_connection(resolved_path, immutable=True, validate_schema=False)) as connection:
             if tier is ArchiveTier.EMBEDDINGS:
                 loaded, error = try_load_sqlite_vec(connection)
                 if not loaded:
