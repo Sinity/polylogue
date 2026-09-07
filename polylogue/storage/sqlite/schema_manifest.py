@@ -16,6 +16,7 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from polylogue.core.errors import SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
@@ -208,7 +209,13 @@ def assert_schema_manifest(conn: sqlite3.Connection, tier: ArchiveTier) -> Schem
     if actual.version != expected.version:
         diff["version"] = {"expected": expected.version, "actual": actual.version}
     if any(diff.values()):
-        raise RuntimeError(f"{tier.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)}")
+        raise SchemaVersionMismatchError(
+            f"{tier.value} schema semantic manifest mismatch: {json.dumps(diff, sort_keys=True)} "
+            "Reset the derived index and let `polylogued run` rebuild it from source.",
+            current_version=actual.version,
+            expected_version=expected.version,
+            lifecycle_action="rebuild_index",
+        )
     return actual
 
 
