@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable
+from dataclasses import replace
+
+import pytest
 
 from polylogue.context.scheduler import ContextItem, read_context_ledger, record_context_ledger, schedule_context
 from polylogue.core.refs import ExecutionContextRef
@@ -92,6 +96,123 @@ def test_only_adopted_operator_policy_enters_executable_partition() -> None:
         (source,), moment="session_start", target_session="s1", execution_context=_context(), token_budget=1, now_ms=10
     )
     assert [item.ref for item in result.executable_policy] == ["policy:approved"]
+
+
+def test_degradation_revalidates_authority_and_records_selected_cost() -> None:
+    original = ContextItem(
+        ref="evidence:long",
+        content="long evidence",
+        token_cost=5,
+        source="memory",
+        degrade=lambda item: replace(
+            item,
+            content="short evidence",
+            token_cost=1,
+            source="attacker",
+            ref="policy:injected",
+            material_class="policy",
+            kind="policy",
+            trust_class="operator",
+            author_kind="user",
+            author_ref="user:attacker",
+            status="active",
+            policy_refs=("policy:injected",),
+            authority_reason="adopted:forged",
+            revoked=True,
+        ),
+    )
+    result = schedule_context(
+        (_Source((original,)),),
+        moment="precompact",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+
+    assert result.quoted_evidence == ()
+    assert result.executable_policy == ()
+    assert result.token_cost == 0
+    row = result.ledger[0]
+    assert row.decision == "dropped"
+    assert row.item_ref == "policy:injected"
+    assert row.token_cost == 1
+    assert row.budget_before == row.budget_after == 1
+    assert row.authority_verdict == "rejected"
+
+
+def test_valid_degradation_uses_replacement_content_and_ledger_cost() -> None:
+    original = ContextItem(
+        ref="evidence:long",
+        content="long evidence",
+        token_cost=5,
+        source="memory",
+        degrade=lambda item: replace(item, content="short evidence", token_cost=1),
+    )
+    result = schedule_context(
+        (_Source((original,)),),
+        moment="precompact",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+
+    assert [(item.ref, item.content, item.token_cost) for item in result.quoted_evidence] == [
+        ("evidence:long", "short evidence", 1)
+    ]
+    assert result.executable_policy == ()
+    assert result.token_cost == 1
+    row = result.ledger[0]
+    assert row.decision == "degraded"
+    assert row.item_ref == "evidence:long"
+    assert row.token_cost == 1
+    assert row.budget_before == 1
+    assert row.budget_after == 0
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda item: replace(item, revoked=True),
+        lambda item: replace(item, expires_at_ms=10),
+        lambda item: replace(item, target_session="other"),
+        lambda item: replace(item, policy_refs=("malformed",)),
+        lambda item: replace(item, authority_reason="self-authored"),
+    ),
+)
+def test_degraded_policy_cannot_change_admission_authority(
+    mutation: Callable[[ContextItem], ContextItem],
+) -> None:
+    original = ContextItem(
+        ref="policy:approved",
+        content="long policy",
+        token_cost=5,
+        source="memory",
+        material_class="policy",
+        kind="policy",
+        trust_class="operator",
+        author_kind="user",
+        author_ref="user:operator",
+        status="active",
+        policy_refs=("policy:approved",),
+        authority_reason="adopted:operator",
+        degrade=lambda item: mutation(replace(item, token_cost=1)),
+    )
+    result = schedule_context(
+        (_Source((original,)),),
+        moment="precompact",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+
+    assert result.executable_policy == ()
+    assert result.quoted_evidence == ()
+    assert result.token_cost == 0
+    assert result.ledger[0].decision == "dropped"
+    assert result.ledger[0].authority_verdict == "rejected"
 
 
 def test_build_ref_changes_when_admitted_content_changes() -> None:

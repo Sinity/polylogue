@@ -175,6 +175,71 @@ def _policy_is_authorized(item: ContextItem, *, target_session: str | None, now_
     return True, "adopted policy scope and expiry valid"
 
 
+def _validate_degraded_item(
+    original: ContextItem,
+    replacement: object,
+    *,
+    source_name: str,
+    target_session: str | None,
+    now_ms: int,
+) -> tuple[ContextItem | None, str, str, str]:
+    """Re-admit a degradation without allowing it to change authority.
+
+    Degraders may change the representation and its token cost only.  The
+    source, identity, scope, and all policy provenance stay bound to the
+    candidate that crossed the first admission check.  The ordinary validity
+    checks are repeated as well so a callback cannot return an expired or
+    revoked replacement.
+    """
+
+    if not isinstance(replacement, ContextItem):
+        return None, "invalid", "rejected", "degraded candidate is malformed"
+    if replacement.source != source_name or replacement.source != original.source:
+        return None, "invalid", "rejected", "degraded candidate source identity changed"
+    if not replacement.ref:
+        return None, "invalid", "rejected", "degraded candidate reference is empty"
+    if replacement.ref != original.ref:
+        return None, "invalid", "rejected", "degraded candidate reference identity changed"
+    if type(replacement.token_cost) is not int:
+        return None, "invalid", "rejected", "degraded candidate token cost is malformed"
+    if replacement.token_cost < 0:
+        return None, "invalid", "rejected", "degraded candidate token cost is negative"
+    if replacement.expires_at_ms is not None and replacement.expires_at_ms <= now_ms:
+        return None, "expired", "rejected", "degraded candidate expired"
+    if replacement.revoked:
+        return None, "revoked", "rejected", "degraded candidate revoked"
+    if replacement.trust_class not in {"operator", "system", "quoted"}:
+        return None, "malformed", "rejected", "degraded candidate trust class is unknown"
+
+    # These fields are the admission identity and authority decision.  A
+    # callback is allowed to rewrite content and cost, never provenance.
+    authority_fields = (
+        "ordinal_score",
+        "priority_class",
+        "trust_class",
+        "material_class",
+        "source",
+        "expires_at_ms",
+        "target_session",
+        "policy_refs",
+        "kind",
+        "author_kind",
+        "author_ref",
+        "status",
+        "revoked",
+        "authority_reason",
+    )
+    if any(getattr(replacement, name) != getattr(original, name) for name in authority_fields):
+        return None, "invalid", "rejected", "degraded candidate authority or scope changed"
+    if replacement.target_session != target_session and replacement.material_class == "policy":
+        return None, "policy", "rejected", "degraded policy target scope mismatch"
+
+    authority_ok, authority_reason = _policy_is_authorized(replacement, target_session=target_session, now_ms=now_ms)
+    if replacement.material_class == "policy" and not authority_ok:
+        return None, "policy", "rejected", authority_reason
+    return replacement, "accepted", "accepted" if authority_ok else "quoted", authority_reason or "quoted evidence"
+
+
 def schedule_context(
     sources: Sequence[ContextSource],
     *,
@@ -300,33 +365,61 @@ def schedule_context(
                 )
                 continue
             chosen: ContextItem | None = item
+            row_item = item
+            row_disclosure = "accepted"
+            row_authority = "accepted" if authority_ok else "quoted"
+            row_reason = authority_reason or "quoted evidence"
             if item.token_cost > remaining and item.degrade is not None:
-                chosen = item.degrade(item)
-                if chosen is not None and 0 <= chosen.token_cost <= remaining:
+                try:
+                    degraded = item.degrade(item)
+                except Exception:
+                    degraded = None
+                    row_disclosure = "invalid"
+                    row_authority = "rejected"
+                    row_reason = "degraded candidate callback failed"
+                validated, replacement_disclosure, replacement_authority, replacement_reason = _validate_degraded_item(
+                    item,
+                    degraded,
+                    source_name=source.name,
+                    target_session=target_session,
+                    now_ms=now,
+                )
+                if validated is not None and validated.token_cost <= remaining:
+                    chosen = validated
                     decision: Decision = "degraded"
                 else:
                     chosen = None
                     decision = "dropped"
+                    if isinstance(degraded, ContextItem):
+                        row_item = degraded
+                    if row_reason == authority_reason or row_reason == "quoted evidence":
+                        row_disclosure = replacement_disclosure if validated is None else "budget"
+                        row_authority = replacement_authority if validated is None else "accepted"
+                        row_reason = replacement_reason if validated is None else "degraded candidate exceeds budget"
             elif item.token_cost <= remaining:
                 decision = "included"
             else:
                 chosen = None
                 decision = "dropped"
+                row_disclosure = "budget"
+                row_authority = "accepted" if authority_ok else "quoted"
+                row_reason = authority_reason or "quoted evidence"
             after = remaining - (chosen.token_cost if chosen is not None else 0)
             if chosen is not None:
                 remaining = after
                 used_by_source += chosen.token_cost
                 (included_policy if chosen.material_class == "policy" else included_evidence).append(chosen)
+                row_item = chosen
             rows.append(
                 _row(
                     decision,
-                    item,
+                    row_item,
                     rank,
                     before,
                     after,
-                    "accepted" if chosen else "budget",
-                    "accepted" if authority_ok else "quoted",
-                    authority_reason or "quoted evidence",
+                    row_disclosure if chosen else row_disclosure,
+                    row_authority,
+                    row_reason,
                     execution_context,
                     target_session,
                 )
