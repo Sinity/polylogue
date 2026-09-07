@@ -94,6 +94,9 @@ from polylogue.storage.sqlite.connection import _load_sqlite_vec
 from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     WRITE_CONNECTION_PROFILE,
+    open_connection,
+    open_isolated_write_connection,
+    open_readonly_connection,
     write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
@@ -152,14 +155,23 @@ _INGEST_RESULT_CHUNK_SIZE = 100
 # ---------------------------------------------------------------------------
 
 
-def _open_sync_connection(db_path: Path) -> sqlite3.Connection:
+def _open_sync_connection(db_path: Path, *, archive_root: Path | None = None) -> sqlite3.Connection:
     """Open a sync sqlite3 connection with the same pragmas as the async backend."""
+    bound_root = archive_root if archive_root is not None else db_path.parent
+    # Bootstrap can create the archive before a SQLite connection exists, so
+    # enforce the same lease boundary before that filesystem/database mutation.
+    from polylogue.storage.sqlite.write_lease import require_write_lease
+
+    require_write_lease("ingest archive bootstrap", archive_root=bound_root)
     if db_path.name == "index.db":
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
-        initialize_active_archive_root(db_path.parent)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(db_path), timeout=DB_TIMEOUT)
+        initialize_active_archive_root(bound_root)
+    bound_root.mkdir(parents=True, exist_ok=True)
+    # This is the index publication connection.  Route it through the
+    # canonical writer factory so daemon-owned batches cannot open a second
+    # write door outside the archive-bound coordinator lease.
+    conn = open_connection(db_path, timeout=DB_TIMEOUT, archive_root=bound_root)
     conn.row_factory = sqlite3.Row
     for statement in write_connection_pragma_statements(WRITE_CONNECTION_PROFILE):
         conn.execute(statement)
@@ -1927,7 +1939,7 @@ def _process_ingest_batch_sync(
         else None
     )
     setup_started = time.perf_counter()
-    conn = _open_sync_connection(db_path)
+    conn = _open_sync_connection(db_path, archive_root=archive_root)
     summary.setup_elapsed_s = time.perf_counter() - setup_started
     materialized_ids: set[str] = set()
     blob_publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
@@ -1940,7 +1952,14 @@ def _process_ingest_batch_sync(
     source_db_path = archive_root / "source.db"
     source_conn: sqlite3.Connection | None = None
     if source_db_path.exists():
-        source_conn = sqlite3.connect(str(source_db_path), timeout=DB_TIMEOUT)
+        # Membership/precedence checks only read source.db.  A read-only
+        # profile avoids taking a writer lock while the index publication is
+        # admitted, and makes an accidental mutation fail at SQLite level.
+        source_conn = open_readonly_connection(
+            source_db_path,
+            timeout_class="background-read",
+            validate_schema=False,
+        )
     _observe_current_rss(summary)
     transaction_started = False
     try:
@@ -1989,7 +2008,19 @@ def _process_ingest_batch_sync(
                 repair_message_fts=repair_message_fts,
             )
             if pending_attachment_receipts:
-                with closing(sqlite3.connect(archive_root / "source.db")) as source_conn, source_conn:
+                # Receipt consumption is a real source-tier mutation and must
+                # use the same archive-bound lease as the index publication.
+                with (
+                    closing(
+                        open_isolated_write_connection(
+                            archive_root / "source.db",
+                            purpose="ingest blob publication receipt",
+                            timeout=DB_TIMEOUT,
+                            archive_root=archive_root,
+                        )
+                    ) as source_conn,
+                    source_conn,
+                ):
                     source_conn.execute("BEGIN IMMEDIATE")
                     for publication_id, blob_hash in pending_attachment_receipts:
                         consume_blob_publication_receipt(source_conn, publication_id, blob_hash)
