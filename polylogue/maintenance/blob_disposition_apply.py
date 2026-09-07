@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import stat
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
@@ -1018,14 +1020,26 @@ def apply_disposition_plan(
     results = [result for result, _ in classified]
 
     seam_blockers: tuple[str, ...] = ()
-    if not dry_run and candidates:
-        results, seam_blockers = _delete_candidates(
-            results,
-            candidates=candidates,
-            context=context,
-            source_db=source_db,
-            index_db=index_db,
-        )
+    if candidates:
+        if dry_run:
+            # Rehearse the same source+index liveness decision used by the
+            # legacy active fallback, without touching the namespace.
+            results, seam_blockers = _delete_candidates_directly(
+                results,
+                candidates=candidates,
+                context=context,
+                source_db=source_db,
+                index_db=index_db,
+                dry_run=True,
+            )
+        else:
+            results, seam_blockers = _delete_candidates(
+                results,
+                candidates=candidates,
+                context=context,
+                source_db=source_db,
+                index_db=index_db,
+            )
 
     synced: set[Path] = set()
     results.extend(_delete_invalid_entries(plan, blob_root=context.blob_store.root, dry_run=dry_run, synced=synced))
@@ -1059,35 +1073,118 @@ def _delete_candidates_directly(
     candidates: list[MemberResult],
     context: BlobDispositionContext,
     source_db: Path,
+    index_db: Path,
+    dry_run: bool = False,
 ) -> tuple[list[MemberResult], tuple[str, ...]]:
     """Unlink unreferenced candidates without the GC generation ledger.
 
     Used only when the source tier has no ``gc_generation_members`` table.
-    Publishers are excluded for the whole pass; a hash that is referenced now
-    stays on disk and is reported retained.
+    Active runs exclude publishers for the whole pass; a hash that is
+    referenced now stays on disk and is reported retained. Dry runs perform
+    the same checks read-only without taking the publisher lock.
     """
+    from polylogue.storage.blob_liveness import LivenessState, inspect_blob_liveness, inspect_blob_reservation
     from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
     errors: list[str] = []
     deleted: set[str] = set()
     retained: set[str] = set()
+    blocked: set[str] = set()
     touched: set[Path] = set()
-    with exclude_archive_blob_publishers(source_db):
-        for result in candidates:
-            if result.blob_hash in context.referenced_hashes:
-                retained.add(result.blob_hash)
-                continue
-            path = context.blob_store.blob_path(result.blob_hash)
+    exclusion = exclude_archive_blob_publishers(source_db) if not dry_run else nullcontext()
+    with exclusion:
+        source_conn: sqlite3.Connection | None = None
+        index_conn: sqlite3.Connection | None = None
+        try:
+            if not dry_run:
+                require_write_lease(f"blob disposition({source_db})", archive_root=source_db.parent)
+            mode = "rw" if not dry_run else "ro"
+            source_conn = sqlite3.connect(f"file:{source_db}?mode={mode}", uri=True)
+            index_conn = sqlite3.connect(f"file:{index_db}?mode={mode}", uri=True)
+        except (OSError, RuntimeError, sqlite3.Error) as exc:
+            errors.append(f"blob liveness tiers are unavailable: {exc}")
+            blocked.update(result.blob_hash for result in candidates)
+            if source_conn is not None:
+                source_conn.close()
+        else:
             try:
-                path.unlink()
-            except FileNotFoundError:
-                deleted.add(result.blob_hash)
-                continue
-            except OSError as exc:
-                errors.append(f"{result.blob_hash[:16]}: {exc}")
-                continue
-            deleted.add(result.blob_hash)
-            touched.add(path.parent)
+                if not dry_run:
+                    source_conn.execute("BEGIN IMMEDIATE")
+                    index_conn.execute("BEGIN IMMEDIATE")
+                # Run the same schema preflight as recurring GC before any
+                # unlink.  An unreadable owner tier is never an empty set.
+                preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
+                if preflight.state is LivenessState.BLOCKED:
+                    # Archives from before typed blob references and index
+                    # attachments have no canonical owner surface to query;
+                    # retain the historical plan snapshot as their only
+                    # available liveness evidence.  A readable index that
+                    # advertises attachments, or any tier-open failure, stays
+                    # fail-closed through the canonical blockers above.
+                    legacy_minimal = "index.attachments is missing" in preflight.blockers and any(
+                        "source.blob_refs is missing columns" in blocker for blocker in preflight.blockers
+                    )
+                    if legacy_minimal:
+                        for result in candidates:
+                            if result.blob_hash in context.referenced_hashes:
+                                retained.add(result.blob_hash)
+                            elif dry_run:
+                                deleted.add(result.blob_hash)
+                            else:
+                                path = context.blob_store.blob_path(result.blob_hash)
+                                try:
+                                    path.unlink()
+                                except FileNotFoundError:
+                                    pass
+                                except OSError as exc:
+                                    errors.append(f"{result.blob_hash[:16]}: {exc}")
+                                    continue
+                                deleted.add(result.blob_hash)
+                                touched.add(path.parent)
+                    else:
+                        errors.extend(preflight.blockers)
+                        blocked.update(result.blob_hash for result in candidates)
+                else:
+                    for result in candidates:
+                        liveness = inspect_blob_liveness(
+                            source_conn, result.blob_hash, index_conn=index_conn, require_index=True
+                        )
+                        reservation = inspect_blob_reservation(source_conn, result.blob_hash)
+                        if liveness.state is LivenessState.BLOCKED or reservation.state is LivenessState.BLOCKED:
+                            blocked.add(result.blob_hash)
+                            errors.extend(liveness.blockers)
+                            errors.extend(reservation.blockers)
+                            continue
+                        if liveness.state is LivenessState.LIVE or reservation.state is LivenessState.LIVE:
+                            retained.add(result.blob_hash)
+                            continue
+                        path = context.blob_store.blob_path(result.blob_hash)
+                        if dry_run:
+                            deleted.add(result.blob_hash)
+                            continue
+                        try:
+                            path.unlink()
+                        except FileNotFoundError:
+                            deleted.add(result.blob_hash)
+                            continue
+                        except OSError as exc:
+                            errors.append(f"{result.blob_hash[:16]}: {exc}")
+                            continue
+                        deleted.add(result.blob_hash)
+                        touched.add(path.parent)
+                if not dry_run:
+                    source_conn.commit()
+                    index_conn.commit()
+            except (sqlite3.Error, OSError) as exc:
+                if source_conn.in_transaction:
+                    source_conn.rollback()
+                if index_conn.in_transaction:
+                    index_conn.rollback()
+                errors.append(f"blob liveness query is unreadable: {exc}")
+            finally:
+                index_conn.close()
+                source_conn.close()
     for directory in sorted(touched):
         _fsync_directory(directory)
     updated = [
@@ -1097,6 +1194,8 @@ def _delete_candidates_directly(
             result, outcome=MemberOutcome.RETAINED_REFERENCED, detail="referenced by a durable row at unlink time"
         )
         if result.blob_hash in retained and result.outcome is MemberOutcome.DELETED
+        else replace(result, outcome=MemberOutcome.BLOCKED, detail="blob liveness evidence unavailable")
+        if result.blob_hash in blocked and result.outcome is MemberOutcome.DELETED
         else result
         for result in results
     ]
@@ -1133,7 +1232,7 @@ def _delete_candidates(
         # decision and this pass re-read the reference set; unlink directly
         # and say so on every member.
         results, errors = _delete_candidates_directly(
-            results, candidates=candidates, context=context, source_db=source_db
+            results, candidates=candidates, context=context, source_db=source_db, index_db=index_db
         )
     declined = {result.blob_hash for result in candidates if context.blob_store.blob_path(result.blob_hash).exists()}
     if not declined:

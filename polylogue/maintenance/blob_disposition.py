@@ -946,7 +946,7 @@ def _open_ro(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
-def referenced_blob_hashes(source_db: Path) -> frozenset[str]:
+def referenced_blob_hashes(source_db: Path, index_db: Path | None = None) -> frozenset[str]:
     """Union every durable relation that names a physical blob hash.
 
     A relation that exists but cannot be read is a failure, never an empty
@@ -975,6 +975,25 @@ def referenced_blob_hashes(source_db: Path) -> frozenset[str]:
             except sqlite3.Error as exc:
                 raise BlobDispositionError(f"reference relation {table} is unreadable: {exc}") from exc
             hashes.update(str(row[0]) for row in rows)
+    # Attachments are owned directly by the rebuildable index tier and do not
+    # appear in the source blob_refs ledger.  A disposition plan still needs
+    # them in its denominator so an index-only attachment cannot be treated as
+    # an orphan by the legacy apply fallback.
+    if index_db is not None:
+        with closing(_open_ro(index_db)) as conn:
+            try:
+                present = {
+                    str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")
+                }
+                if "attachments" in present:
+                    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(attachments)").fetchall()}
+                    if "blob_hash" in columns:
+                        rows = conn.execute(
+                            "SELECT DISTINCT lower(hex(blob_hash)) FROM attachments WHERE blob_hash IS NOT NULL"
+                        ).fetchall()
+                        hashes.update(str(row[0]) for row in rows)
+            except sqlite3.Error as exc:
+                raise BlobDispositionError(f"index attachment relation is unreadable: {exc}") from exc
     return frozenset(hashes)
 
 
@@ -1144,6 +1163,7 @@ def build_disposition_context(
     archive_root: Path,
     blob_root: Path,
     source_db: Path,
+    index_db: Path | None = None,
     hook_spool_sources: Sequence[tuple[str, Path]],
     browser_capture_spool: Path,
     export_archive_roots: Sequence[Path] = (),
@@ -1155,6 +1175,8 @@ def build_disposition_context(
     before the ones that decompress an export or reparse a whole session.
     """
     store = BlobStore(blob_root)
+    if index_db is None:
+        index_db = archive_root / "index.db"
     hook_prover = HookEventSpoolProver(hook_spool_sources)
     capture_prover = BrowserCaptureSpoolProver(browser_capture_spool)
     raw_carriers = raw_source_carriers_by_hash(source_db)
@@ -1170,7 +1192,7 @@ def build_disposition_context(
     return BlobDispositionContext(
         blob_store=store,
         provers=provers,
-        referenced_hashes=referenced_blob_hashes(source_db),
+        referenced_hashes=referenced_blob_hashes(source_db, index_db),
         restoration_provers=(hook_prover, capture_prover),
     )
 
@@ -1180,6 +1202,7 @@ def compile_disposition_plan(
     archive_root: Path,
     blob_root: Path,
     source_db: Path,
+    index_db: Path | None = None,
     context: BlobDispositionContext | None = None,
     hook_spool_sources: Sequence[tuple[str, Path]] | None = None,
     browser_capture_spool: Path | None = None,
@@ -1194,6 +1217,7 @@ def compile_disposition_plan(
             archive_root=archive_root,
             blob_root=blob_root,
             source_db=source_db,
+            index_db=index_db,
             hook_spool_sources=hook_spool_sources,
             browser_capture_spool=browser_capture_spool,
             export_archive_roots=export_archive_roots,
