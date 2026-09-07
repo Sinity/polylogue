@@ -39,6 +39,7 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 # Mirrors the exact WHEN-clause guard names the real triggers gate on (see
 # ``blocks_action_pairs_ad`` and ``blocks_command_trigram_ad`` in
@@ -207,7 +208,7 @@ def test_delete_sessions_bulk_leaves_fts_trigram_and_action_pairs_coherent(tmp_p
     session_ids: list[str] = []
     with ArchiveStore(root) as facade:
         for i in range(3):
-            session_ids.append(facade.write_parsed(_tool_session(f"bulk-delete-{i}", n_pairs=4)))
+            session_ids.append(write_index_session(facade, _tool_session(f"bulk-delete-{i}", n_pairs=4)))
 
     index_db_path = root / "index.db"
     conn = sqlite3.connect(index_db_path)
@@ -307,7 +308,7 @@ def test_delete_sessions_bulk_never_fires_unguarded_per_row_canary(
     session_ids: list[str] = []
     with ArchiveStore(root) as facade:
         for i in range(2):
-            session_ids.append(facade.write_parsed(_tool_session(f"canary-delete-{i}", n_pairs=3)))
+            session_ids.append(write_index_session(facade, _tool_session(f"canary-delete-{i}", n_pairs=3)))
 
     index_db_path = root / "index.db"
     counts: dict[str, int] = {"session_write": 0, "fts_bulk": 0}
@@ -370,7 +371,7 @@ def test_delete_sessions_bulk_falls_back_safely_on_pre_guard_archive(tmp_path: P
     session_ids: list[str] = []
     with ArchiveStore(root) as facade:
         for i in range(2):
-            session_ids.append(facade.write_parsed(_tool_session(f"legacy-delete-{i}", n_pairs=3)))
+            session_ids.append(write_index_session(facade, _tool_session(f"legacy-delete-{i}", n_pairs=3)))
 
         _downgrade_trigram_trigger_to_ungated(facade._conn)
         deleted = facade.delete_sessions(tuple(session_ids))

@@ -23,8 +23,10 @@ class FallbackReason(str, Enum):
     Members are grouped by materialization scope:
 
     Profile inference (``SessionInferencePayload.fallback_reasons``):
-      - ``ENGAGED_DURATION_SESSION_TOTAL`` — engaged duration computed
-        from session totals because no phase had a positive duration.
+      - ``ENGAGED_DURATION_SESSION_TOTAL`` — legacy payload marker for
+        historical rows whose engaged duration came from session totals.
+        New materialization leaves the value unknown when no phase has a
+        positive duration.
       - ``NO_WORK_EVENTS_AND_NO_PHASES`` — the profile carries no
         work-event or phase rows, so support level uses a synthetic
         fallback floor.

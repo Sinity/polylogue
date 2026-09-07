@@ -79,6 +79,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.identity import archive_message_id
+from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import db_setup
 
 # ---------------------------------------------------------------------------
@@ -557,7 +558,8 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
     configured_root.mkdir()
     active_root.mkdir()
     with ArchiveStore(active_root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="override-root",
@@ -570,7 +572,7 @@ async def test_archive_tiers_facade_reads_active_db_override_root(tmp_path: Path
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="override root needle")],
                     )
                 ],
-            )
+            ),
         )
 
     archive = Polylogue(archive_root=configured_root, db_path=active_root / "index.db")
@@ -584,7 +586,8 @@ async def _seed_two_sessions(db_path: Path) -> None:
     """Seed two minimal sessions for happy-path read assertions."""
     root = db_path.parent
     with ArchiveStore(root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_AI,
                 provider_session_id="conv-alpha",
@@ -604,9 +607,10 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha reply")],
                     ),
                 ],
-            )
+            ),
         )
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="conv-beta",
@@ -619,7 +623,7 @@ async def _seed_two_sessions(db_path: Path) -> None:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="beta body")],
                     )
                 ],
-            )
+            ),
         )
 
 
@@ -834,7 +838,7 @@ async def test_health_check_warns_when_session_insight_row_counts_do_not_match(t
     )
     try:
         with ArchiveStore(tmp_path) as store:
-            store.write_parsed(session)
+            write_index_session(store, session)
         await archive.rebuild_insights()
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute("UPDATE session_profiles SET work_event_count = work_event_count + 1")
@@ -1090,8 +1094,8 @@ async def test_session_digest_resolves_subagent_child_links(tmp_path: Path) -> N
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_id = archive_db.write_parsed(parent)
-            child_id = archive_db.write_parsed(child)
+            parent_id = write_index_session(archive_db, parent)
+            child_id = write_index_session(archive_db, child)
 
         digest = await archive._session_digest(parent_id)
 
@@ -1950,7 +1954,8 @@ async def test_get_actions_batch_derives_from_archive_blocks(tmp_path: Path) -> 
     """
     archive = _archive(tmp_path)
     with ArchiveStore(archive.config.archive_root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="tooluse-conv",
@@ -1970,7 +1975,7 @@ async def test_get_actions_batch_derives_from_archive_blocks(tmp_path: Path) -> 
                         ],
                     )
                 ],
-            )
+            ),
         )
     try:
         summaries = await archive.list_summaries()
@@ -1989,7 +1994,8 @@ async def test_get_actions_batch_derives_from_archive_blocks(tmp_path: Path) -> 
 async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     with ArchiveStore(archive.config.archive_root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="session-wide-action-results",
@@ -2075,7 +2081,7 @@ async def test_get_actions_batch_pairs_session_wide_and_exposes_result_state(tmp
                         ],
                     ),
                 ],
-            )
+            ),
         )
     try:
         summaries = await archive.list_summaries()
@@ -2131,14 +2137,16 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
+            parent_session_id = write_index_session(
+                archive_db,
                 _delegation_parent_session(
                     provider_session_id="fable-facade-parent-v1",
                     with_dispatch=True,
                     child_provider_session_id="fable-facade-child-v1",
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="fable-facade-child-v1",
@@ -2146,7 +2154,7 @@ async def test_regenerate_private_fable_packet_reads_real_delegations_and_labels
                     messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="fable-facade-parent-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
 
         initialize_archive_database(archive.config.archive_root / "user.db", ArchiveTier.USER)
@@ -2292,7 +2300,8 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
     archive = _archive(tmp_path)
     body = "Alpha\n\n```python\nprint('x')\n```\n\nOmega"
     with ArchiveStore(tmp_path) as archive_db:
-        session_id = archive_db.write_parsed(
+        session_id = write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="projected-messages",
@@ -2305,7 +2314,7 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
                         blocks=[],
                     )
                 ],
-            )
+            ),
         )
     try:
         messages, total, _completeness = await archive.get_messages_paginated(
@@ -2324,7 +2333,8 @@ async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tm
 
     archive = _archive(tmp_path)
     with ArchiveStore(tmp_path) as archive_db:
-        session_id = archive_db.write_parsed(
+        session_id = write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="semantic-card-hydration",
@@ -2351,7 +2361,7 @@ async def test_message_hydration_preserves_origin_and_structural_tool_outcome(tm
                         ],
                     )
                 ],
-            )
+            ),
         )
     try:
         messages, total, _completeness = await archive.get_messages_paginated(session_id, limit=10)
@@ -2372,7 +2382,8 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
 
     archive = _archive(tmp_path)
     with ArchiveStore(tmp_path) as archive_db:
-        session_id = archive_db.write_parsed(
+        session_id = write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="material-origin-messages",
@@ -2391,7 +2402,7 @@ async def test_get_messages_paginated_filters_material_origin(tmp_path: Path) ->
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     ),
                 ],
-            )
+            ),
         )
     try:
         role_messages, role_total, _role_completeness = await archive.get_messages_paginated(
@@ -2426,7 +2437,8 @@ async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Pa
 
     archive = _archive(tmp_path)
     with ArchiveStore(tmp_path) as archive_db:
-        session_id = archive_db.write_parsed(
+        session_id = write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="checkout-commit-session",
@@ -2443,7 +2455,7 @@ async def test_session_correlation_payload_surfaces_checkout_commit(tmp_path: Pa
                         text="hello",
                     )
                 ],
-            )
+            ),
         )
     try:
         # No github_api toggle on this facade method -- it never shells to
@@ -2552,7 +2564,8 @@ async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: P
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="role-count-hit",
@@ -2577,9 +2590,10 @@ async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: P
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
                         ),
                     ],
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="role-count-miss",
@@ -2598,7 +2612,7 @@ async def test_search_envelope_executes_role_count_boolean_predicate(tmp_path: P
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="one two three four five")],
                         ),
                     ],
-                )
+                ),
             )
 
         envelope = await archive.search_envelope(
@@ -2616,7 +2630,8 @@ async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
             for index in range(3):
-                archive_db.write_parsed(
+                write_index_session(
+                    archive_db,
                     ParsedSession(
                         source_name=Provider.CODEX,
                         provider_session_id=f"role-count-page-{index}",
@@ -2634,7 +2649,7 @@ async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path
                                 ],
                             )
                         ],
-                    )
+                    ),
                 )
 
         query = "sessions where user_messages >= 1"
@@ -2657,7 +2672,8 @@ async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Pa
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="sampled-text-query",
@@ -2670,7 +2686,7 @@ async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Pa
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="sampled needle")],
                         )
                     ],
-                )
+                ),
             )
 
         rows = await archive.query_sessions(query="sampled needle", sample=1, limit=5)
@@ -2700,7 +2716,8 @@ async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="unit-filter-codex",
@@ -2713,9 +2730,10 @@ async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared terminal needle")],
                         )
                     ],
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id="unit-filter-chatgpt",
@@ -2728,7 +2746,7 @@ async def test_query_units_applies_session_scope_filters(tmp_path: Path) -> None
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared terminal needle")],
                         )
                     ],
-                )
+                ),
             )
 
         envelope = await archive.query_units("messages where text:needle", origin="codex-session")
@@ -2743,7 +2761,8 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="unit-pipeline-codex",
@@ -2762,7 +2781,7 @@ async def test_query_units_reports_pipeline_stages(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="second terminal pipeline row")],
                         ),
                     ],
-                )
+                ),
             )
 
         envelope = await archive.query_units(
@@ -2803,7 +2822,8 @@ async def test_query_units_returns_aggregate_envelope(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="unit-aggregate-codex",
@@ -2828,7 +2848,7 @@ async def test_query_units_returns_aggregate_envelope(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="aggregate facade two")],
                         ),
                     ],
-                )
+                ),
             )
 
         envelope = await archive.query_units(
@@ -2847,7 +2867,8 @@ async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="unit-inline-codex",
@@ -2860,9 +2881,10 @@ async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared inline needle")],
                         )
                     ],
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id="unit-inline-chatgpt",
@@ -2875,7 +2897,7 @@ async def test_query_units_accepts_inline_session_scope(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="shared inline needle")],
                         )
                     ],
-                )
+                ),
             )
 
         envelope = await archive.query_units("messages where session.origin:codex-session AND text:needle")
@@ -2896,7 +2918,8 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="unit-assertion-codex",
@@ -2909,9 +2932,10 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion target")],
                         )
                     ],
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id="unit-assertion-chatgpt",
@@ -2924,7 +2948,7 @@ async def test_query_units_returns_assertion_rows(tmp_path: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="assertion target")],
                         )
                     ],
-                )
+                ),
             )
         user_db = archive.config.archive_root / "user.db"
         initialize_archive_database(user_db, ArchiveTier.USER)
@@ -2985,7 +3009,8 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="facade-context-snapshot-v1",
@@ -2998,7 +3023,7 @@ async def test_query_units_returns_context_snapshot_rows(tmp_path: Path) -> None
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="facade context snapshot seed")],
                         )
                     ],
-                )
+                ),
             )
 
         envelope = await archive.query_units(
@@ -3020,7 +3045,8 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(
+            session_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="ref-resolution-v1",
@@ -3034,7 +3060,7 @@ async def test_resolve_ref_returns_bounded_session_message_block_and_runtime_pay
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="resolve this public ref")],
                         )
                     ],
-                )
+                ),
             )
 
         session_payload = await archive.resolve_ref(f"session:{session_id}")
@@ -3630,8 +3656,8 @@ def _delegation_parent_session(
     child_provider_session_id: str | None = None,
 ) -> ParsedSession:
     """Ingest-shaped parent fixture: writes real session/message/block rows
-    through the live archive writer (``ArchiveStore.write_parsed`` ->
-    ``write_parsed_session_to_archive``), the same seam the daemon uses --
+    through the live index-only seam (``write_index_session`` ->
+    ``write_parsed_session_to_archive``), the same writer the daemon uses --
     not a hand-inserted SQL row. A Task ``tool_use``/``tool_result`` pair
     gets classified ``semantic_type='subagent'`` at write time
     (``polylogue/storage/sqlite/archive_tiers/write.py:_semantic_type``),
@@ -3709,14 +3735,16 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
+            parent_session_id = write_index_session(
+                archive_db,
                 _delegation_parent_session(
                     provider_session_id="delegation-parent-v1",
                     with_dispatch=True,
                     child_provider_session_id="delegation-child-v1",
-                )
+                ),
             )
-            child_session_id = archive_db.write_parsed(
+            child_session_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-child-v1",
@@ -3726,7 +3754,7 @@ async def test_resolve_ref_returns_resolved_delegation_attempt_payload(tmp_path:
                     ],
                     parent_session_provider_id="delegation-parent-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
 
         # blocks.block_id derives from messages.message_id, which is generated
@@ -3761,8 +3789,9 @@ async def test_query_units_returns_bounded_delegation_rows(tmp_path: Path) -> No
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="delegation-query-api-v1", with_dispatch=True)
+            parent_session_id = write_index_session(
+                archive_db,
+                _delegation_parent_session(provider_session_id="delegation-query-api-v1", with_dispatch=True),
             )
 
         envelope = await archive.query_units(
@@ -3788,10 +3817,12 @@ async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="delegation-edge-parent-v1", with_dispatch=False)
+            parent_session_id = write_index_session(
+                archive_db,
+                _delegation_parent_session(provider_session_id="delegation-edge-parent-v1", with_dispatch=False),
             )
-            child_session_id = archive_db.write_parsed(
+            child_session_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-edge-child-v1",
@@ -3799,7 +3830,7 @@ async def test_resolve_ref_returns_edge_only_delegation_attempt_payload(tmp_path
                     messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="delegation-edge-parent-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
 
         edge_ref = f"delegation:{delegation_edge_object_id(parent_session_id, child_session_id)}"
@@ -3831,10 +3862,12 @@ async def test_delegation_authority_contradiction_survives_public_reads(tmp_path
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="delegation-authority-parent-v1", with_dispatch=False)
+            parent_session_id = write_index_session(
+                archive_db,
+                _delegation_parent_session(provider_session_id="delegation-authority-parent-v1", with_dispatch=False),
             )
-            child_session_id = archive_db.write_parsed(
+            child_session_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-authority-child-v1",
@@ -3842,7 +3875,7 @@ async def test_delegation_authority_contradiction_survives_public_reads(tmp_path
                     messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="delegation-authority-parent-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
             archive_db._conn.execute(
                 "UPDATE session_links SET status = 'authority-contradicted' WHERE src_session_id = ?",
@@ -3880,7 +3913,8 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
+            parent_session_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-unresolved-parent-v1",
@@ -3905,9 +3939,10 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                             ],
                         ),
                     ],
-                )
+                ),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-unresolved-child-v1",
@@ -3915,7 +3950,7 @@ async def test_resolve_ref_returns_unresolved_delegation_attempt_payload_without
                     messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="delegation-unresolved-parent-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
 
         instruction_block_id = f"{parent_session_id}:n:dispatch-a:0"
@@ -3959,14 +3994,16 @@ async def test_resolve_ref_returns_delegation_ancestry_and_subtree_payloads(tmp_
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            root_id = archive_db.write_parsed(
+            root_id = write_index_session(
+                archive_db,
                 _delegation_parent_session(
                     provider_session_id="delegation-tree-root-v1",
                     with_dispatch=True,
                     child_provider_session_id="delegation-tree-mid-v1",
-                )
+                ),
             )
-            mid_id = archive_db.write_parsed(
+            mid_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-tree-mid-v1",
@@ -3989,9 +4026,10 @@ async def test_resolve_ref_returns_delegation_ancestry_and_subtree_payloads(tmp_
                     ],
                     parent_session_provider_id="delegation-tree-root-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
-            leaf_id = archive_db.write_parsed(
+            leaf_id = write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="delegation-tree-leaf-v1",
@@ -3999,7 +4037,7 @@ async def test_resolve_ref_returns_delegation_ancestry_and_subtree_payloads(tmp_
                     messages=[ParsedMessage(provider_message_id="leaf-0", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="delegation-tree-mid-v1",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
 
         ancestry_ref = f"delegation:{delegation_ancestry_object_id(leaf_id)}"
@@ -4196,7 +4234,8 @@ async def test_query_units_rejects_session_expression(tmp_path: Path) -> None:
 
 
 def _write_facade_continuation_message(archive_db: ArchiveStore, native_id: str, text: str) -> None:
-    archive_db.write_parsed(
+    write_index_session(
+        archive_db,
         ParsedSession(
             source_name=Provider.CODEX,
             provider_session_id=native_id,
@@ -4209,7 +4248,7 @@ def _write_facade_continuation_message(archive_db: ArchiveStore, native_id: str,
                     blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                 )
             ],
-        )
+        ),
     )
 
 
@@ -4345,7 +4384,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
             archive_db.add_user_tags((session_id,), ("api-v1",))
 
         count = await archive.archive_count_sessions(
@@ -4522,8 +4561,8 @@ async def test_archive_tiers_api_reads_session_topology(tmp_path: Path) -> None:
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            root_id = archive_db.write_parsed(root)
-            child_id = archive_db.write_parsed(child)
+            root_id = write_index_session(archive_db, root)
+            child_id = write_index_session(archive_db, child)
 
         topology = await archive.get_session_topology(child_id)
         ancestors = await archive.get_ancestors(child_id)
@@ -4634,7 +4673,7 @@ async def test_archive_tiers_api_user_mutations_write_user_tier(tmp_path: Path) 
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
 
         added = await archive.add_tag(session_id, "Review")
         duplicate = await archive.add_tag(session_id, "review")
@@ -4738,8 +4777,8 @@ async def test_archive_tiers_api_tag_rollups_read_index_and_user_tiers(tmp_path:
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            first_id = archive_db.write_parsed(first)
-            second_id = archive_db.write_parsed(second)
+            first_id = write_index_session(archive_db, first)
+            second_id = write_index_session(archive_db, second)
             assert archive_db.add_user_tags((first_id,), ("focus",)) == 1
         with sqlite3.connect(tmp_path / "index.db") as conn:
             upsert_session_tag(
@@ -4821,8 +4860,8 @@ async def test_archive_tiers_api_archive_coverage_reads_index_tier(tmp_path: Pat
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            codex_id = archive_db.write_parsed(codex)
-            archive_db.write_parsed(chatgpt)
+            codex_id = write_index_session(archive_db, codex)
+            write_index_session(archive_db, chatgpt)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.row_factory = sqlite3.Row
             from polylogue.storage.derived.session.rebuild import rebuild_session_insights_sync
@@ -4946,8 +4985,8 @@ async def test_archive_tiers_api_tool_usage_reads_index_actions(tmp_path: Path) 
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            archive_db.write_parsed(codex)
-            archive_db.write_parsed(chatgpt)
+            write_index_session(archive_db, codex)
+            write_index_session(archive_db, chatgpt)
 
         [insight] = await archive.list_tool_usage_insights(
             ToolUsageInsightQuery(origin=Origin.CODEX_SESSION.value, tool="read")
@@ -5001,7 +5040,7 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(t
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
         await archive.add_tag(session_id, "keep-user-state")
 
         deleted = await archive.delete_session_safe(session_id)
@@ -5143,7 +5182,7 @@ async def test_archive_tiers_api_timeline_insights_read_index_tier(tmp_path: Pat
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             upsert_session_work_event(
                 conn,
@@ -5266,8 +5305,8 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_id = archive_db.write_parsed(parent)
-            child_id = archive_db.write_parsed(child)
+            parent_id = write_index_session(archive_db, parent)
+            child_id = write_index_session(archive_db, child)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(
                 """
@@ -5437,8 +5476,8 @@ async def test_archive_tiers_api_session_costs_read_index_tier(tmp_path: Path) -
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            priced_id = archive_db.write_parsed(priced_session)
-            archive_db.write_parsed(unpriced_session)
+            priced_id = write_index_session(archive_db, priced_session)
+            write_index_session(archive_db, unpriced_session)
         # Materialize the profile rows so the provenance assertion below reads
         # the version the materializer stamped. Without a row the read path
         # falls back to the declared constant and the assertion compares that
@@ -5557,7 +5596,7 @@ async def test_archive_tiers_api_latency_profiles_read_index_tier(tmp_path: Path
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
         # See the cost test above: the provenance assertion is only a contract
         # check once a materialized row carries the stamped version.
         await archive.rebuild_insights()
@@ -5615,7 +5654,7 @@ async def test_archive_tiers_api_archive_debt_reads_archive_consistency(tmp_path
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
             assert archive_db.add_user_tags((session_id,), ("valid",)) == 1
             assert session_id
         with sqlite3.connect(tmp_path / "user.db") as conn:
@@ -5674,7 +5713,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(
                 """
@@ -5766,7 +5805,7 @@ async def test_archive_tiers_api_hydrates_unknown_temporal_provenance_without_ma
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(
                 """
@@ -5834,8 +5873,8 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            first_id = archive_db.write_parsed(first)
-            archive_db.write_parsed(second)
+            first_id = write_index_session(archive_db, first)
+            write_index_session(archive_db, second)
         with sqlite3.connect(tmp_path / "index.db") as conn:
             conn.execute(
                 """
@@ -5903,7 +5942,7 @@ async def test_archive_tiers_api_marks_and_annotations_write_user_tier(tmp_path:
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
 
         mark_added = await archive.add_mark(session_id, "star")
         mark_duplicate = await archive.add_mark(session_id, "star")
@@ -5981,7 +6020,7 @@ async def test_archive_tiers_api_reader_artifacts_write_user_tier(tmp_path: Path
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
 
         view_created = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex"}')
         view_updated = await archive.save_view("view-v1", "Needs Review", '{"provider":"codex","tag":"review"}')
@@ -6100,7 +6139,7 @@ async def test_facade_import_annotation_batch_persists_candidate_provenance(tmp_
             messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
         )
         with ArchiveStore(active_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
 
         registry = AnnotationSchemaRegistry()
         registry.register(
@@ -6173,10 +6212,12 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
     archive = _archive(tmp_path)
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            parent_session_id = archive_db.write_parsed(
-                _delegation_parent_session(provider_session_id="annotation-default-parent", with_dispatch=True)
+            parent_session_id = write_index_session(
+                archive_db,
+                _delegation_parent_session(provider_session_id="annotation-default-parent", with_dispatch=True),
             )
-            archive_db.write_parsed(
+            write_index_session(
+                archive_db,
                 ParsedSession(
                     source_name=Provider.CLAUDE_CODE,
                     provider_session_id="annotation-default-child",
@@ -6184,7 +6225,7 @@ async def test_facade_import_annotation_batch_uses_default_registry(tmp_path: Pa
                     messages=[ParsedMessage(provider_message_id="child-1", role=Role.ASSISTANT, text="on it")],
                     parent_session_provider_id="annotation-default-parent",
                     branch_type=BranchType.SUBAGENT,
-                )
+                ),
             )
         delegation_ref = f"delegation:{parent_session_id}:n:dispatch:0"
         request = AnnotationBatchImportRequest(
@@ -6253,7 +6294,7 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path) -> 
     )
     try:
         with ArchiveStore(archive.config.archive_root) as archive_db:
-            session_id = archive_db.write_parsed(session)
+            session_id = write_index_session(archive_db, session)
 
         recorded = await archive.record_correction(session_id, "tag_accept", {"tag": "archive"}, note="operator")
         updated = await archive.record_correction(session_id, "tag_accept", {"tag": "archive-updated"})

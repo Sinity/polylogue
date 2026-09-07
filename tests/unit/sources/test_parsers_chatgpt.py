@@ -17,7 +17,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.scenarios import CorpusSpec
 from polylogue.sources.parsers import chatgpt as chatgpt_parser
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.chatgpt import (
     SHARED_CONVERSATION_INDEX_INGEST_FLAG,
     _coerce_float,
@@ -1031,11 +1031,10 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
 ) -> None:
     """A retrieved source keeps its address and its own name.
 
-    Both shapes carry ``url`` and ``title`` on every record; the construct
-    used to be built with neither, so the address was dropped and ``domain``
-    stood in for the name. Removing ``url=`` or restoring ``title=domain`` in
-    the retrieval branch turns this red.
-
+    Both shapes carry ``url`` and ``title`` on every record. Removing ``url=``
+    or restoring ``title=domain`` in the retrieval branch turns this red. The
+    construct is located by its own type, not by its carrier block: a
+    ``role: tool`` node's carrier is re-typed to TOOL_RESULT.
     The construct is what this asserts, not the block type that carries it:
     on a ``role: tool`` node ``_tool_role_result_blocks`` re-types the
     retrieval block to TOOL_RESULT and keeps the construct.
@@ -1054,8 +1053,12 @@ def test_retrieved_source_constructs_conserve_url_and_own_title(
     }
 
     messages, _attachments = extract_messages_from_mapping(mapping)
-    retrieval_blocks = [b for b in messages[0].blocks if b.web_constructs]
-    construct = retrieval_blocks[0].web_constructs[0]
+    construct = next(
+        construct
+        for block in messages[0].blocks
+        for construct in block.web_constructs
+        if construct.provider_key == content_type
+    )
     assert construct.url == content_extra["url"]
     assert construct.title == content_extra["title"]
 
@@ -1422,9 +1425,15 @@ _METADATA_PERMUTATION_CASES: list[tuple[dict[str, object], str, dict[str, object
     ),
     # --- code execution ---
     (
-        {"model_slug": "gpt-4", "aggregate_result": {"exit_code": 0, "output": "ok"}},
+        {
+            "model_slug": "gpt-4",
+            "aggregate_result": {"status": "success", "run_id": "run-9", "code": "print('ok')"},
+        },
         "single: code_execution aggregate_result",
-        {"chatgpt_model": "gpt-4", "chatgpt_code_execution": {"exit_code": 0, "output": "ok"}},
+        {
+            "chatgpt_model": "gpt-4",
+            "chatgpt_code_execution": {"status": "success", "run_id": "run-9", "code": "print('ok')"},
+        },
     ),
     # --- user context ---
     (
@@ -1440,7 +1449,7 @@ _METADATA_PERMUTATION_CASES: list[tuple[dict[str, object], str, dict[str, object
             "message_status": "finished_successfully",
             "end_turn": True,
             "citations": [{"title": "A", "url": "https://a.com"}],
-            "aggregate_result": {"exit_code": 0, "output": "done"},
+            "aggregate_result": {"status": "success", "run_id": "run-11", "code": "print('done')"},
             "user_context_message_data": {"about_user_message": "needs help"},
         },
         "full: all metadata fields combined",
@@ -1451,7 +1460,7 @@ _METADATA_PERMUTATION_CASES: list[tuple[dict[str, object], str, dict[str, object
             "chatgpt_status": "finished_successfully",
             "chatgpt_end_turn": True,
             "chatgpt_citations": [{"title": "A", "url": "https://a.com"}],
-            "chatgpt_code_execution": {"exit_code": 0, "output": "done"},
+            "chatgpt_code_execution": {"status": "success", "run_id": "run-11", "code": "print('done')"},
             "chatgpt_user_context": {"about_user_message": "needs help"},
         },
     ),
@@ -1535,7 +1544,11 @@ def test_chatgpt_metadata_permutation_extracted_by_parser(
         assert reference.title == "Ref" or reference.title == "A", desc
     if "aggregate_result" in meta_spec:
         task = next(construct for construct in constructs if construct.construct_type.value == "async_task")
-        assert task.text in {"ok", "done"}, desc
+        # The construct carries the executed program, its run id and the run's
+        # own status. `output`/`exit_code` appear on no measured record.
+        assert task.text in {"print('ok')", "print('done')"}, desc
+        assert task.task_id in {"run-9", "run-11"}, desc
+        assert task.status == "success", desc
     if "user_context_message_data" in meta_spec:
         assert message.user_context_text in {"likes cats", "needs help"}, desc
 
@@ -2939,6 +2952,404 @@ def test_content_reference_grouped_webpages_items_become_constructs() -> None:
     assert by_url["https://example.test/a"].group_id == by_url["https://example.test/b"].group_id
     for construct in constructs:
         assert construct.construct_type.value == "content_reference"
+
+
+# =============================================================================
+# CODE-INTERPRETER RUN RECORD, SEARCH RESULTS, AUTHORSHIP AND TERMINAL STATE
+# =============================================================================
+
+
+def _tool_node(
+    *,
+    content: Mapping[str, object],
+    metadata: Mapping[str, object] | None = None,
+    status: str = "finished_successfully",
+) -> ChatGPTMapping:
+    return {
+        "call": {
+            "id": "call",
+            "parent": None,
+            "children": ["result"],
+            "message": {
+                "id": "call",
+                "author": {"role": "assistant"},
+                "recipient": "python",
+                "create_time": 1,
+                "content": {"content_type": "code", "text": ""},
+            },
+        },
+        "result": {
+            "id": "result",
+            "parent": "call",
+            "children": [],
+            "message": {
+                "id": "result",
+                "author": {"role": "tool"},
+                "create_time": 2,
+                "status": status,
+                "content": dict(content),
+                "metadata": dict(metadata or {}),
+            },
+        },
+    }
+
+
+def _tool_result_block(messages: Sequence[ParsedMessage]) -> ParsedContentBlock:
+    return next(block for message in messages for block in message.blocks if block.type is BlockType.TOOL_RESULT)
+
+
+# A ChatGPT node reports message delivery in `status` and the run's own
+# verdict in `metadata.aggregate_result`. Reading only `status` -- what the
+# parser used to do -- makes every one of these cases `ok`.
+_AGGREGATE_RESULT_OUTCOME_CASES: list[tuple[dict[str, object], bool | None, str | None, str]] = [
+    ({"status": "success"}, False, None, "a completed run is a success"),
+    (
+        {"status": "failed_with_in_kernel_exception", "in_kernel_exception": {"name": "PermissionError"}},
+        True,
+        None,
+        "an in-kernel exception is an error",
+    ),
+    ({"status": "cancelled"}, None, "unsupported_construct", "a cancelled run states no verdict"),
+    ({"status": "running"}, None, "unsupported_construct", "an unfinished run states no verdict"),
+    (
+        {"status": "success", "timeout_triggered": 60},
+        False,
+        None,
+        "timeout_triggered is an integer the wire sets on successful runs too",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("aggregate_result", "expected_is_error", "expected_unknown_reason", "desc"),
+    _AGGREGATE_RESULT_OUTCOME_CASES,
+    ids=[case[3] for case in _AGGREGATE_RESULT_OUTCOME_CASES],
+)
+def test_chatgpt_execution_output_outcome_reads_the_run_record(
+    aggregate_result: dict[str, object],
+    expected_is_error: bool | None,
+    expected_unknown_reason: str | None,
+    desc: str,
+) -> None:
+    messages, _attachments = extract_messages_from_mapping(
+        _tool_node(
+            content={"content_type": "execution_output", "text": "out"},
+            metadata={"aggregate_result": aggregate_result},
+        )
+    )
+
+    block = _tool_result_block(messages)
+    assert block.is_error is expected_is_error, desc
+    assert block.outcome_unknown_reason == expected_unknown_reason, desc
+
+
+def test_chatgpt_tool_role_text_result_reads_the_run_record() -> None:
+    """The role-dispatched carrier path reaches the same verdict as execution_output."""
+    messages, _attachments = extract_messages_from_mapping(
+        _tool_node(
+            content={"content_type": "text", "parts": ["out"]},
+            metadata={
+                "aggregate_result": {
+                    "status": "failed_with_in_kernel_exception",
+                    "in_kernel_exception": {"name": "ValueError"},
+                }
+            },
+        )
+    )
+
+    assert _tool_result_block(messages).is_error is True
+
+
+def test_chatgpt_failed_run_materializes_as_an_error_outcome() -> None:
+    """End to end: the derived tool_outcome, not just the parser's is_error."""
+    from polylogue.core.enums import Origin, ToolOutcome
+    from polylogue.sources.tool_outcomes import derive_tool_outcomes
+
+    messages, _attachments = extract_messages_from_mapping(
+        _tool_node(
+            content={"content_type": "execution_output", "text": "Traceback"},
+            metadata={
+                "aggregate_result": {
+                    "status": "failed_with_in_kernel_exception",
+                    "in_kernel_exception": {"name": "PermissionError"},
+                }
+            },
+        )
+    )
+
+    resolved = derive_tool_outcomes(list(messages), [], origin=Origin.CHATGPT_EXPORT)
+    outcomes = [
+        block.tool_outcome for message in resolved for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    ]
+    assert outcomes == [ToolOutcome.ERROR]
+
+
+def test_chatgpt_aggregate_result_conserves_the_executed_program() -> None:
+    """The run's code exists only here: the calling node's own text is empty."""
+    payload: ChatGPTMapping = {
+        "id": "conv-run",
+        "conversation_id": "conv-run",
+        "create_time": 1.0,
+        "mapping": _tool_node(
+            content={"content_type": "execution_output", "text": "out\n"},
+            metadata={
+                "aggregate_result": {
+                    "status": "success",
+                    "code": "print('hello')",
+                    "run_id": "run-1",
+                    "start_time": 1.0,
+                    "end_time": 2.0,
+                    "timeout_triggered": 60,
+                    "messages": [{"message_type": "stream", "stream_name": "stdout", "text": "out\n"}],
+                }
+            },
+        ),
+    }
+
+    session = chatgpt_parse(payload, "conv-run")
+
+    construct = next(
+        construct
+        for message in session.messages
+        for block in message.blocks
+        for construct in block.web_constructs
+        if construct.provider_key == "aggregate_result"
+    )
+    assert construct.text == "print('hello')"
+    assert construct.task_id == "run-1"
+    assert construct.status == "success"
+
+    event = next(event for event in session.session_events if event.event_type == "chatgpt_code_interpreter_run")
+    assert event.source_message_provider_id == "result"
+    assert event.payload["run_id"] == "run-1"
+    assert event.payload["timeout_triggered"] == 60
+    # The stream repeats the result node's own text, so only its size is kept.
+    assert event.payload["stream_chars"] == len("out\n")
+    assert event.payload["stream_retained_as_message_text"] is True
+    assert "stream_text" not in event.payload
+
+
+def test_chatgpt_run_stream_text_is_kept_when_it_is_not_the_message_text() -> None:
+    payload: ChatGPTMapping = {
+        "id": "conv-run",
+        "conversation_id": "conv-run",
+        "create_time": 1.0,
+        "mapping": _tool_node(
+            content={"content_type": "execution_output", "text": "rendered"},
+            metadata={
+                "aggregate_result": {
+                    "status": "failed_with_in_kernel_exception",
+                    "in_kernel_exception": {"name": "ValueError", "args": ["bad"]},
+                    "jupyter_messages": [{"msg_type": "stream", "content": {"name": "stdout", "text": "raw"}}],
+                }
+            },
+        ),
+    }
+
+    event = next(
+        event
+        for event in chatgpt_parse(payload, "conv-run").session_events
+        if event.event_type == "chatgpt_code_interpreter_run"
+    )
+    assert event.payload["stream_text"] == "raw"
+    assert event.payload["stream_retained_as_message_text"] is False
+    assert event.payload["in_kernel_exception_name"] == "ValueError"
+    assert event.payload["in_kernel_exception_args"] == ["bad"]
+
+
+_SEARCH_RESULT_GROUP = {
+    "type": "search_result_group",
+    "domain": "example.test",
+    "entries": [
+        {
+            "type": "search_result",
+            "url": "https://example.test/page",
+            "title": "Page",
+            "snippet": "A snippet.",
+            "ref_id": {"turn_index": 0, "ref_type": "search", "ref_index": 4},
+            "attribution": "example.test",
+        }
+    ],
+}
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_provider_key"),
+    [
+        ({"search_result_groups": [_SEARCH_RESULT_GROUP]}, "search_result_groups"),
+        (
+            {"inline_cot_expandable_content": {"search_result_groups": [_SEARCH_RESULT_GROUP]}},
+            "inline_cot_expandable_content.search_result_groups",
+        ),
+    ],
+    ids=["answer metadata", "reasoning-trace metadata"],
+)
+def test_chatgpt_search_result_group_entries_become_search_results(
+    metadata: dict[str, object], expected_provider_key: str
+) -> None:
+    """`entries` is the wire's key; reading only results/items/sources drops every result."""
+    messages, _attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Answer"]},
+                    "metadata": metadata,
+                },
+            }
+        }
+    )
+
+    results = [
+        construct
+        for block in messages[0].blocks
+        for construct in block.web_constructs
+        if construct.construct_type.value == "search_result"
+    ]
+    assert len(results) == 1
+    assert results[0].provider_key == expected_provider_key
+    assert results[0].url == "https://example.test/page"
+    assert results[0].title == "Page"
+    assert results[0].text == "A snippet."
+    assert results[0].group_title == "example.test"
+    # The ref_id triple spells the token the answer's inline citation markers
+    # carry, which is what joins a citation anchor back to its result.
+    assert results[0].source_id == "turn0search4"
+
+
+_FINISH_DETAILS_CASES: list[tuple[object, str | None, str]] = [
+    ({"type": "stop", "stop_tokens": [200002]}, "end_turn", "a natural stop is end_turn"),
+    ({"type": "max_tokens"}, "max_tokens", "a length cut is max_tokens"),
+    ({"type": "interrupted"}, None, "interruption names no StopReason member"),
+    ({"type": "skipped"}, None, "a skipped turn names no StopReason member"),
+    (None, None, "a node with no finish details reports nothing"),
+]
+
+
+@pytest.mark.parametrize(
+    ("finish_details", "expected", "desc"),
+    _FINISH_DETAILS_CASES,
+    ids=[case[2] for case in _FINISH_DETAILS_CASES],
+)
+def test_chatgpt_finish_details_map_onto_stop_reason(finish_details: object, expected: str | None, desc: str) -> None:
+    metadata: dict[str, object] = {} if finish_details is None else {"finish_details": finish_details}
+    messages, _attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Answer"]},
+                    "metadata": metadata,
+                },
+            }
+        }
+    )
+
+    assert messages[0].stop_reason == expected, desc
+
+
+def test_chatgpt_channel_and_real_author_are_conserved() -> None:
+    """A tool-authored message in an assistant envelope is tool material, not model output."""
+    payload: ChatGPTMapping = {
+        "id": "conv-auth",
+        "conversation_id": "conv-auth",
+        "create_time": 1.0,
+        "mapping": {
+            "node-1": {
+                "id": "node-1",
+                "parent": None,
+                "children": [],
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant", "metadata": {"real_author": "tool:web.run"}},
+                    "channel": "commentary",
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Retrieved page"]},
+                },
+            }
+        },
+    }
+
+    session = chatgpt_parse(payload, "conv-auth")
+
+    assert session.messages[0].material_origin is MaterialOrigin.TOOL_RESULT
+    event = next(event for event in session.session_events if event.event_type == "chatgpt_message_authorship")
+    assert event.source_message_provider_id == "msg-1"
+    assert event.payload == {"channel": "commentary", "real_author": "tool:web.run"}
+
+
+def test_chatgpt_ordinary_assistant_message_stays_model_output() -> None:
+    """Anti-vacuity for the override above: no real_author, no reclassification."""
+    messages, _attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "channel": "final",
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Answer"]},
+                },
+            }
+        }
+    )
+
+    assert messages[0].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+
+
+def test_chatgpt_memory_citation_conserves_the_cited_conversation() -> None:
+    messages, _attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {"content_type": "text", "parts": ["Answer"]},
+                    "metadata": {
+                        "conversation_context_citation_metadata": [
+                            {
+                                "citation_uuid": "cite-1",
+                                "retrieval_origin": "pca",
+                                "citation": {
+                                    "url": "https://chatgpt.com/c/11111111-2222-3333-4444-555555555555",
+                                    "conversation_title": "Earlier chat",
+                                    "snippet": "what we decided",
+                                    "category": "memory",
+                                    "start_idx": 3,
+                                    "end_idx": 9,
+                                },
+                            }
+                        ]
+                    },
+                },
+            }
+        }
+    )
+
+    citation = next(
+        construct
+        for block in messages[0].blocks
+        for construct in block.web_constructs
+        if construct.provider_key == "conversation_context_citation_metadata"
+    )
+    assert citation.url == "https://chatgpt.com/c/11111111-2222-3333-4444-555555555555"
+    assert citation.title == "Earlier chat"
+    assert citation.text == "what we decided"
+    assert citation.group_title == "memory"
+    assert citation.start_index == 3
+    assert citation.end_index == 9
+    # The cited conversation's own native id: the join key an archive-internal
+    # edge needs, kept resolvable without reparsing the source.
+    assert citation.source_id == "11111111-2222-3333-4444-555555555555"
 
 
 # -----------------------------------------------------------------------------

@@ -38,6 +38,7 @@ from polylogue.storage.embeddings.preflight import (
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.live_ingest import write_index_session
 
 # ---------------------------------------------------------------------------
 # Splicer
@@ -212,7 +213,8 @@ class TestPreflightCommand:
         archive_root = tmp_path / "archive"
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         with ArchiveStore(archive_root) as archive:
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="preflight-v1",
@@ -231,7 +233,7 @@ class TestPreflightCommand:
                             material_origin=MaterialOrigin.HUMAN_AUTHORED,
                         )
                     ],
-                )
+                ),
             )
 
         db_anchor = tmp_path / "data" / "polylogue" / "custom.sqlite"
@@ -261,7 +263,8 @@ class TestPreflightCommand:
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         with ArchiveStore(archive_root) as archive:
             for index in range(3):
-                archive.write_parsed(
+                write_index_session(
+                    archive,
                     ParsedSession(
                         source_name=Provider.CODEX,
                         provider_session_id=f"preflight-window-{index}",
@@ -280,7 +283,7 @@ class TestPreflightCommand:
                                 material_origin=MaterialOrigin.HUMAN_AUTHORED,
                             )
                         ],
-                    )
+                    ),
                 )
 
         db_anchor = tmp_path / "data" / "polylogue" / "custom.sqlite"

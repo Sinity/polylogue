@@ -25,12 +25,14 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import put_query, put_query_name
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed_archive_with_one_codex_session(archive_root: Path) -> str:
     archive_root.mkdir(parents=True, exist_ok=True)
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="codex-1",
@@ -46,7 +48,7 @@ def _seed_archive_with_one_codex_session(archive_root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
                     )
                 ],
-            )
+            ),
         )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
     return session_id

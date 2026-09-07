@@ -49,8 +49,13 @@ class Gate:
 
 
 def mypy_command(*, root: Path = ROOT) -> list[str]:
-    """Use the checkout-local foreground checker owned by the verify task."""
-    return [venv_bin("mypy", root=root)]
+    """Run the checker through the shared, serialized incremental gate.
+
+    Batch lanes have independent trees but type-check the same repository.  The
+    wrapper serializes cold checks and shares mypy's content-addressed cache,
+    so one lane does the expensive scan and siblings reuse its module results.
+    """
+    return [venv_python(root=root), "-m", "devtools.mypy_gate"]
 
 
 GATES: tuple[Gate, ...] = (

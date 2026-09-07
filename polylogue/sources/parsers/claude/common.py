@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MessageType, WebConstructType
+from polylogue.core.enums import BlockType, MessageType, StopReason, WebConstructType
 from polylogue.core.hashing import hash_payload
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
@@ -67,6 +67,7 @@ class _ClaudeMessageEvidence:
     duration_ms: int | None
     delivery_status: str | None
     end_turn: bool | None
+    stop_reason: str | None
     thinking_configuration: dict[str, object] | None
     owner_stable_key: str | None
 
@@ -172,6 +173,21 @@ def _message_delivery_status(item: Mapping[str, object]) -> str | None:
 
 def _message_end_turn(item: Mapping[str, object]) -> bool | None:
     return _first_bool_field(item, "end_turn", "endTurn")
+
+
+#: ``chat_messages[].stop_reason`` -> ``messages.stop_reason``. The web wire
+#: carries Anthropic's own vocabulary plus product-surface additions
+#: (``user_canceled``, ``conversation_length_limit``, ``tool_use_limit``,
+#: ``error``) that name no :class:`StopReason` member, so those leave the
+#: column NULL rather than widening a guess into it.
+_CLAUDE_WEB_STOP_REASONS: dict[str, StopReason] = {member.value: member for member in StopReason}
+
+
+def _message_stop_reason(item: Mapping[str, object]) -> str | None:
+    """Return the provider's own terminal-state signal for this turn."""
+    raw = item.get("stop_reason") or item.get("stopReason")
+    mapped = _CLAUDE_WEB_STOP_REASONS.get(raw) if isinstance(raw, str) else None
+    return mapped.value if mapped is not None else None
 
 
 def _raw_role(item: Mapping[str, object]) -> object:
@@ -1084,6 +1100,7 @@ def normalize_chat_messages(
                 duration_ms=_message_duration_ms(item),
                 delivery_status=_message_delivery_status(item),
                 end_turn=_message_end_turn(item),
+                stop_reason=_message_stop_reason(item),
                 thinking_configuration=_thinking_configuration(item),
                 owner_stable_key=_owner_stable_key(
                     item,
@@ -1223,6 +1240,7 @@ def normalize_chat_messages(
             duration_ms=evidence.duration_ms,
             delivery_status=evidence.delivery_status,
             end_turn=evidence.end_turn,
+            stop_reason=evidence.stop_reason,
             message_type=(message_type := _evidence_message_type(evidence)),
             # polylogue-gzgyl: ordinary claude.ai chat_messages carries no
             # agent/subagent ambiguity -- a plain role=user message here IS

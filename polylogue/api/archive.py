@@ -2606,6 +2606,7 @@ class _ArchiveInsightExportOperations:
                 origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 workflow_shape=getattr(query, "workflow_shape", None),
                 terminal_state=getattr(query, "terminal_state", None),
+                query=getattr(query, "query", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
                 first_message_since=getattr(query, "first_message_since", None),
@@ -2624,6 +2625,7 @@ class _ArchiveInsightExportOperations:
                 session_id=getattr(query, "session_id", None),
                 origin=str(origin) if (origin := getattr(query, "origin", None)) is not None else None,
                 heuristic_label=getattr(query, "heuristic_label", None),
+                query=getattr(query, "query", None),
                 since_ms=_archive_query_date_ms("since", getattr(query, "since", None)),
                 until_ms=_archive_query_date_ms("until", getattr(query, "until", None)),
                 limit=getattr(query, "limit", None),
@@ -5893,6 +5895,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 "session_date_since": request.session_date_since,
                 "session_date_until": request.session_date_until,
                 "tier": request.tier,
+                "query": request.query,
             },
             work=lambda archive: archive.list_session_profile_insights(
                 origin=request.origin,
@@ -5907,6 +5910,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 session_date_since=request.session_date_since,
                 session_date_until=request.session_date_until,
                 tier=request.tier,
+                query=request.query,
                 limit=request.limit,
                 offset=request.offset,
                 min_wallclock_seconds=request.min_wallclock_seconds,
@@ -6040,6 +6044,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.archive.query.facets import (
             compute_idf,
         )
+        from polylogue.surfaces.outcome import decide_outcome
         from polylogue.surfaces.payloads import (
             FacetBucketsPayload,
             FacetsResponse,
@@ -6089,8 +6094,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         active = scoped_buckets if scoped_to_query else global_buckets
         complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
         deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
+        # A projection that missed its budget or lost a prerequisite is a named
+        # gap: without it, zero facet rows at live scale reads identically to a
+        # genuinely empty archive. Deferral is declared scope, not a gap.
+        facet_gaps: list[str] = []
+        if availability.state != "ready":
+            facet_gaps.append(f"facets_{availability.state}")
         return FacetsResponse.model_validate(
             {
+                "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),
                 "scoped_to_query": scoped_to_query,
                 "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "stale": False,

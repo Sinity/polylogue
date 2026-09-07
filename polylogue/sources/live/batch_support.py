@@ -26,6 +26,7 @@ from polylogue.archive.raw_payload.decode import (
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
+from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
 from polylogue.sources.parsers import hermes_state, hermes_verification
@@ -613,6 +614,27 @@ def last_complete_newline_from_tail(path: Path, byte_size: int, *, chunk_size: i
     return 0, bytes_read
 
 
+def _ingest_pass_exhausted(
+    *,
+    max_pass_seconds: float | None,
+    pass_started: float,
+    checkpoint: str,
+) -> bool:
+    """Whether this pass must stop taking new work at ``checkpoint``.
+
+    Two bounds meet here. The caller's ``max_pass_seconds`` is the graceful
+    one: remaining work stays ordinary backlog for the next tick. The writer
+    hold's declared bound is the hard one: past it the unit of work ends with
+    a typed ``WriteHoldBudgetError``, because a hold that keeps running
+    past its bound is one every non-gated writer is already timing out
+    against.
+
+    Call it at every work item so overshoot past either bound is one item.
+    """
+    check_write_hold_budget(checkpoint)
+    return max_pass_seconds is not None and (time.monotonic() - pass_started) > max_pass_seconds
+
+
 def _full_parse_progress_groups(paths: list[Path]) -> Iterable[list[Path]]:
     small_paths: list[Path] = []
     small_bytes = 0
@@ -866,15 +888,27 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
-def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
-    if path.suffix.lower() != ".json":
-        return False
-    return provider in {
+#: Providers whose sessions arrive as one ``.json`` document that can exceed
+#: ``_STREAMING_FULL_INGEST_BYTES``. Above that bound the payload is never read
+#: for admission, so membership here is the only thing that admits such a file:
+#: a provider missing from this set loses its large sessions silently, with the
+#: cursor advanced to EOF and no failure recorded. Every provider whose parser
+#: accepts a whole-document ``.json`` session belongs here.
+_LARGE_JSON_DOCUMENT_PROVIDERS: frozenset[Provider] = frozenset(
+    {
         Provider.CHATGPT,
         Provider.CLAUDE_AI,
         Provider.DRIVE,
         Provider.GEMINI,
+        Provider.GEMINI_CLI,
     }
+)
+
+
+def _large_non_jsonl_path_can_stream(path: Path, *, provider: Provider) -> bool:
+    if path.suffix.lower() != ".json":
+        return False
+    return provider in _LARGE_JSON_DOCUMENT_PROVIDERS
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

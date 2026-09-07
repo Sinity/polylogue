@@ -29,11 +29,13 @@ from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionEventId, SessionId
+from polylogue.storage.derived.session.profiles import profile_inference_payload
 from tests.infra.builders import make_conv, make_msg
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 EXPECTED_REPO_NAME = REPO_ROOT.name
 README_PATH = REPO_ROOT / "README.md"
+WORK_EVENT_SUMMARY_PATH = Path("/repo/README.md")
 ARCHIVE_SESSION_PATH = REPO_ROOT / "polylogue" / "archive" / "session"
 ARCHIVE_ACTION_EVENTS_PATH = REPO_ROOT / "polylogue" / "archive" / "action" / "events.py"
 
@@ -99,7 +101,7 @@ def _protocol_summary_session() -> SessionModel:
                     role="user",
                     origin="claude-code",
                     text="<system-reminder>skip this</system-reminder>\n"
-                    + (f"Please inspect {README_PATH} and summarize the findings clearly. " * 3),
+                    + (f"Please inspect {WORK_EVENT_SUMMARY_PATH} and summarize the findings clearly. " * 3),
                     timestamp=datetime(2026, 3, 23, 10, 0, tzinfo=timezone.utc),
                     material_origin=MaterialOrigin.HUMAN_AUTHORED,
                 ),
@@ -193,10 +195,32 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.timestamp_coverage == "complete"
     assert profile.canonical_session_date is not None
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
-    assert profile.engaged_duration_ms > 0
+    assert profile.engaged_duration_ms == profile.wall_duration_ms
     assert profile.phases[0].phase_idle_threshold_ms == PHASE_IDLE_THRESHOLD_MS
     assert profile.to_dict()["phases"][0]["phase_idle_threshold_ms"] == PHASE_IDLE_THRESHOLD_MS
     assert profile.wall_duration_ms == 240000
+
+
+def test_build_session_profile_excludes_long_idle_gap_from_engaged_duration() -> None:
+    start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    end = start.replace(minute=10)
+    session = make_conv(
+        id="conv-long-idle-gap",
+        origin=Provider.CODEX,
+        title="Long idle gap",
+        messages=MessageCollection(
+            messages=[
+                make_msg(id="u1", role="user", origin="codex", text="Start", timestamp=start),
+                make_msg(id="a1", role="assistant", origin="codex", text="Resume", timestamp=end),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.wall_duration_ms == 600_000
+    assert profile.engaged_duration_ms == 0
+    assert profile_inference_payload(profile).engaged_duration_source == "unknown"
 
 
 def test_build_session_profile_derives_terminal_state_from_stop_reason_refusal() -> None:
@@ -1075,7 +1099,7 @@ def test_extract_work_events_strips_protocol_noise_and_respects_summary_cap() ->
     summary = events[0].summary
     assert "<system-reminder>" not in summary
     assert "skip this" not in summary
-    assert f"Please inspect {README_PATH}" in summary
+    assert f"Please inspect {WORK_EVENT_SUMMARY_PATH}" in summary
     assert "This trailing note should be truncated away" not in summary
     assert len(summary) <= 200
 

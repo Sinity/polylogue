@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.durable_fs import atomic_replace
+from polylogue.storage.archive_identity import MAINTENANCE_STATE_DIRNAME
 
 
 class MaintenanceReceiptPathError(RuntimeError):
@@ -51,14 +52,14 @@ def _remove_created_empty_child(parent_fd: int, name: str, *, expected: os.stat_
 
 @contextmanager
 def _maintenance_receipt_directory(archive_root: Path, directory_name: str, *, create: bool) -> Iterator[int | None]:
-    """Yield a pinned child of an existing, non-symlink ``.maintenance-state``."""
+    """Yield a pinned child of an existing, non-symlink maintenance-state directory."""
     child_name = _simple_name(directory_name, label="maintenance receipt directory name")
     root_fd = _open_directory(archive_root, label="archive root")
     state_fd = -1
     child_fd = -1
     try:
         try:
-            state_fd = _open_directory(".maintenance-state", label="maintenance state", parent_fd=root_fd)
+            state_fd = _open_directory(MAINTENANCE_STATE_DIRNAME, label="maintenance state", parent_fd=root_fd)
         except MaintenanceReceiptPathError as exc:
             if not create and isinstance(exc.__cause__, FileNotFoundError):
                 yield None

@@ -5,16 +5,18 @@ import pytest
 from polylogue.core.enums import Provider, Role
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 
 def test_agent_work_event_uses_append_ingest_and_is_idempotent(tmp_path: Path) -> None:
     with ArchiveStore(tmp_path, initialize=True, read_only=False) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="work-event-session",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
-            )
+            ),
         )
         archive.append_work_event(
             session_id=session_id,
@@ -56,12 +58,13 @@ def test_agent_work_event_uses_append_ingest_and_is_idempotent(tmp_path: Path) -
             == 1
         )
 
-        other_session_id = archive.write_parsed(
+        other_session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="other-work-event-session",
                 messages=[ParsedMessage(provider_message_id="m2", role=Role.USER, text="continue")],
-            )
+            ),
         )
         archive.append_work_event(
             session_id=other_session_id,

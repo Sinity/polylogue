@@ -1094,3 +1094,55 @@ class TestDeclaredHoldBudgets:
         assert event.hold_budget_s == 300.0
         assert event.hold_over_budget is False
         assert count == 0
+
+    def test_the_admitted_work_can_end_itself_at_the_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The declared bound reaches the work that has to respect it.
+
+        Anti-vacuity: drop ``enter_write_hold`` from ``_execute`` and the
+        checkpoint sees no hold, so the operation runs to completion and the
+        only trace of an over-long hold is the release warning -- the state
+        this closes.
+        """
+        from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
+        from polylogue.daemon import write_coordinator as wc
+
+        monkeypatch.setattr(wc, "WRITE_HOLD_BUDGETS_S", {"slow.": 0.0})
+        reached: list[str] = []
+
+        async def scenario() -> tuple[BaseException | None, wc.DaemonWriteEvent]:
+            coordinator = wc.DaemonWriteCoordinator()
+
+            def work_item(name: str) -> None:
+                check_write_hold_budget(f"item:{name}")
+                reached.append(name)
+
+            async def operation() -> None:
+                # ``run_sync`` is the production route: the checkpoint runs in
+                # a worker thread and must still see its caller's hold.
+                await coordinator.run_sync("slow.actor.inner", work_item, "first")
+                await coordinator.run_sync("slow.actor.inner", work_item, "second")
+
+            error: BaseException | None = None
+            try:
+                await coordinator.run("slow.actor", operation)
+            except BaseException as exc:
+                error = exc
+            snapshot = coordinator.snapshot()
+            assert snapshot.last_event is not None
+            return error, snapshot.last_event
+
+        error, event = asyncio.run(scenario())
+
+        assert isinstance(error, WriteHoldBudgetError)
+        assert error.actor == "slow.actor"
+        assert error.checkpoint == "item:first"
+        assert error.budget_s == 0.0
+        assert reached == []
+        assert event.hold_over_budget is True
+
+    def test_a_checkpoint_off_a_hold_has_no_bound_to_enforce(self) -> None:
+        """Un-gated callers (CLI ingest, focused tests) keep their old shape."""
+        from polylogue.core.write_hold import active_write_hold, check_write_hold_budget
+
+        assert active_write_hold() is None
+        check_write_hold_budget("item:none")

@@ -15,6 +15,7 @@ from polylogue.operations.daemon_protocol import (
     MAX_OPERATION_RESULT_BYTES,
     DaemonAuthority,
     DaemonOperationRequest,
+    archive_identity,
     daemon_operation_spec,
 )
 
@@ -50,6 +51,18 @@ class DaemonMutationIndeterminateError(RuntimeError):
 
 class DaemonOperationProtocolError(RuntimeError):
     """A daemon operation response was not a v1 typed envelope."""
+
+
+class DaemonOperationRejectedError(RuntimeError):
+    """The daemon refused an operation before durable acceptance."""
+
+    def __init__(self, outcome: str, detail: str | None = None) -> None:
+        self.outcome = outcome
+        self.detail = detail or outcome
+        super().__init__(self.detail)
+
+
+DaemonOperationRejected = DaemonOperationRejectedError
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
@@ -159,6 +172,11 @@ class DaemonClient:
         archive_root: str | None = None,
         index_schema_version: int | None = None,
         daemon_version: str | None = None,
+        expected_archive_identity: str | None = None,
+        expected_generation_id: str | None = None,
+        request_id: str | None = None,
+        deadline_ms: int | None = None,
+        cancellation_token: str | None = None,
     ) -> dict[str, Any] | None:
         """Issue one archive-scoped operation request; no health probe is needed."""
 
@@ -171,8 +189,11 @@ class DaemonClient:
             archive_root=archive_root,
             index_schema_version=index_schema_version,
             daemon_version=daemon_version,
-            request_id=uuid.uuid4().hex,
-            deadline_ms=max(1, round(spec.deadline_s * 1000)),
+            expected_archive_identity=expected_archive_identity,
+            expected_generation_id=expected_generation_id,
+            request_id=request_id or uuid.uuid4().hex,
+            deadline_ms=deadline_ms or max(1, round(spec.deadline_s * 1000)),
+            cancellation_token=cancellation_token,
         )
         # A write never gives up the way a read does: once the request is on
         # the socket, an offline retry would make the actuator outcome
@@ -199,43 +220,89 @@ class DaemonClient:
         if response.get("request_id") != request.request_id:
             raise DaemonOperationProtocolError("daemon returned a different request id")
         archive = response.get("archive")
-        if archive_root is not None and (not isinstance(archive, dict) or archive.get("root") != archive_root):
+        if archive_root is not None and (
+            not isinstance(archive, dict)
+            or Path(str(archive.get("root", ""))).resolve() != Path(archive_root).resolve()
+        ):
             raise DaemonOperationProtocolError("daemon returned a different archive identity")
         return response
 
-    def probe(
-        self,
-        *,
-        archive_root: str,
-        index_schema_version: int,
-        daemon_version: str,
-        accept_degraded: bool = False,
-    ) -> dict[str, Any] | None:
-        """Return identity only for the daemon serving the requested archive."""
+    def cancel(self, operation_id: str, *, archive_root: str | None = None) -> dict[str, Any] | None:
+        """Issue the declared control operation; completion is one exchange."""
+        return self.operation(
+            "mutation.session.delete.cancel",
+            {"operation_id": operation_id},
+            archive_root=archive_root,
+        )
 
-        response = self._request_json_response("GET", "/api/health")
-        if response is None:
-            return None
-        status, health = response
-        if status == 503:
-            if not accept_degraded or health is None or health.get("raw_failure_lifecycle_state") != "degraded":
-                return None
-        elif status != 200:
-            return None
-        if health is None:
-            return None
-        if health.get("archive_root") != archive_root:
-            return None
-        if health.get("index_schema_version") != index_schema_version:
-            return None
-        if health.get("daemon_version") != daemon_version:
-            return None
-        return health
+    def operation_with_direct_fallback(
+        self,
+        operation: str,
+        payload: dict[str, object] | None = None,
+        *,
+        direct_executor: Any,
+        archive_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a read directly only when its declaration permits it."""
+        spec = daemon_operation_spec(operation)
+        if spec is None:
+            raise DaemonOperationProtocolError(f"operation is not declared: {operation}")
+        response = self.operation(operation, payload, archive_root=archive_root)
+        if response is not None:
+            return response
+        if not spec.direct_allowed:
+            raise DaemonOperationRejected("daemon-required", "daemon is required for this operation")
+        result = direct_executor(payload or {})
+        if archive_root is None:
+            from polylogue.config import load_polylogue_config
+
+            root = Path(load_polylogue_config().archive_root)
+        else:
+            root = Path(archive_root)
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION
+
+        archive, generation, readiness = archive_identity(
+            root,
+            schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):  # pragma: no cover - typed authority resolver
+            raise DaemonOperationProtocolError("archive authority omitted tier schema versions")
+        authority_snapshot = {
+            "archive_identity": archive["archive_identity"],
+            "generation": generation["id"],
+            "schema_versions": tier_schema_versions,
+            "served_by": "direct",
+            "elapsed_ms": 0,
+            "queue_ms": 0,
+            "degraded_components": ["daemon_unavailable"],
+        }
+        return {
+            "protocol": DAEMON_OPERATION_PROTOCOL,
+            "operation": operation,
+            "archive": archive,
+            "generation": generation,
+            "readiness": readiness,
+            "authority": {"mode": "direct", "class": spec.authority.value, "fallback": spec.fallback.value},
+            "progress": {"state": "complete"},
+            "outcome": "completed",
+            "served_by": {"client": "direct"},
+            "timing": {"elapsed_ms": 0, "queue_ms": 0},
+            "degraded_components": ["daemon_unavailable"],
+            "schema_versions": tier_schema_versions,
+            "result": result,
+            "error": None,
+            "authority_snapshot": authority_snapshot,
+        }
 
 
 __all__ = [
     "DaemonClient",
     "DaemonMutationIndeterminateError",
     "DaemonOperationProtocolError",
+    "DaemonOperationRejected",
+    "DaemonOperationRejectedError",
     "DaemonResponseError",
 ]

@@ -3,32 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.repository.archive.writes.metadata import metadata_read_modify_write
 from polylogue.storage.repository.archive.writes.sessions import (
     delete_session_via_backend,
 )
 from polylogue.storage.repository.repository_contracts import RepositoryBackendProtocol
-from polylogue.storage.search.cache import invalidate_search_cache
 from polylogue.storage.sqlite.queries import sessions as sessions_q
 
 
 class RepositoryWriteMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
-
-    async def save_parsed_session(self, session: ParsedSession, content_hash: str) -> dict[str, int]:
-        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-        db_path = Path(self._backend.db_path)
-        with ArchiveStore(db_path.parent) as archive:
-            counts = archive.write_parsed_result(session, content_hash=content_hash)
-        invalidate_search_cache()
-        return counts
 
     async def get_metadata(self, session_id: str) -> JSONDocument:
         async with self._backend.connection() as conn:

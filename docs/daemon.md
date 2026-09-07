@@ -301,6 +301,30 @@ maintenance controls require the machine bearer when authentication is enabled.
 and `GET /metrics` remain unauthenticated so health checks and Prometheus
 scrapers can operate without credentials.
 
+## Request Admission
+
+Every request the daemon executes carries an admission class:
+`interactive-read` for reads, `control` for routes holding the writer lease,
+`incremental-background` and `bulk-candidate` for work behind the interactive
+surface. One bounded scheduler admits them all
+(`polylogue/daemon/execution.py`).
+
+Each class holds a reserve of work units and worker slots that no other class
+may take, so bulk work cannot consume the capacity an interactive read or a
+mutation needs, and background work keeps a slot while reads saturate the rest.
+Dispatch is first-in-first-out inside a class.
+
+When a class is at its ceiling or the queue is full, the request is refused
+rather than queued behind an unbounded backlog:
+
+```json
+{"error": "compute_backpressure", "detail": "daemon compute admission is saturated; retry shortly"}
+```
+
+The response is `503` with `Retry-After: 1`. A cancelled or disconnected read
+interrupts its SQLite connection, leaves the queue before it starts, and
+returns its reservation.
+
 ## Browser Capture Receiver
 
 The browser capture receiver accepts chat session payloads from local browser

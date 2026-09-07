@@ -1247,6 +1247,35 @@ def _claude_code_spec() -> OriginSpec:
             "parent's agent on the contiguous replayed head and its own on the divergent tail (every "
             "multi-valued file in a 300-file walk, e.g. 8 triage turns then 52 fork turns), so a "
             "session-level projection would erase the split.",
+            "polylogue-jpq9x (exhaustive walk of 14,667 session files, 2026-09-07): the top-level rendered[] "
+            "array is the text the provider injected into the model's context for an attachment record, and "
+            "it occurs on no other record type (55,006 records, 55,025 entries, each entry exactly "
+            "{content}). READ: rendered[].content rides the attachment's own session event as `rendered`. It "
+            "is not a second spelling of the payload -- 6,153 of those entries appear nowhere in the "
+            "attachment payload (a `file` is rendered with line numbers, a `queued_command` inside the "
+            "notification framing that made it a system reminder) and 4,440 more sit on payloads with no "
+            "substantive text at all. BOUNDED, not verbatim, for the six subtypes with a bounded payload "
+            "builder (deferred_tools_delta, mcp_instructions_delta, agent_listing_delta, skill_listing, "
+            "invoked_skills, diagnostics): there the rendered text IS the injected instruction body those "
+            "builders exclude, so only rendered_char_count/rendered_count are kept -- 10.6 MB of the "
+            "corpus's 42.6 MB of rendered text. DROPPED WITH ITS SUBTYPE: a subtype in "
+            "_ATTACHMENT_TRANSIENT_SUBTYPES emits no event, so its rendered content has nothing to ride; "
+            "total_tokens_reminder is 39,551 of those records and its remaining-token number is measured to "
+            "vary, which the transient ruling for that subtype (made on the payload) does not account for.",
+            "polylogue-v53yf (same walk): the record-level provenance keys outside `message` are READ as one "
+            "claude_session_environment event per session, each key a value->count map. entrypoint (cli "
+            "2,263,879 / sdk-cli 130,097 / sdk-py 2,664 over 8,091 files, never varying within a file) is "
+            "the only in-band evidence separating a dispatched SDK lane from an operator's interactive "
+            "session -- the two produce identical record shapes. version (133 distinct builds over 14,287 "
+            "files; 177 files carry more than one, a resume spanning a CLI upgrade) names the producer that "
+            "wrote the bytes. permissionMode (5 values, 65,746 records) and promptSource (typed/queued/"
+            "system/sdk/suggestion_accepted, 9,253 records) are per-record state, so their counts are the "
+            "session's distribution of them. All four ride attachment and progress records that return "
+            "before ordinary message parsing, so they are read at the top of the fold. "
+            "attachment.failedMcpServers[] (498 entries over the corpus, all on deferred_tools_delta, keys "
+            "exactly {name, errorCode, error}) rides that subtype's bounded payload in full: it is the only "
+            "record that a capability the session expected never arrived, and a missing tool is otherwise "
+            "indistinguishable from one that was never configured.",
             "claude/index.py's _GIT_BRANCH_PREFIXES (title-fallback heuristic: "
             "does a bare index-summary string look like a branch name rather "
             "than a title) is also not a DroppedValueVocabulary candidate: it "
@@ -1522,7 +1551,34 @@ def _chatgpt_spec() -> OriginSpec:
         assembly_spec_path="polylogue/sources/assembly_chatgpt.py:ChatGPTAssemblySpec",
         fixture_paths=("tests/unit/sources/test_parsers_chatgpt.py", "tests/data/golden/chatgpt-simple.md"),
         coverage_refs=("provider-package:chatgpt-export/takeout-json@v1",),
-        fidelity_notes=("Browser capture remains an acquisition mode and is not a new public origin.",),
+        fidelity_notes=(
+            "Browser capture remains an acquisition mode and is not a new public origin.",
+            "A cross-conversation memory citation "
+            "(message.metadata.conversation_context_citation_metadata) is conserved as a "
+            "CONTENT_REFERENCE web construct whose source_id is the cited conversation's "
+            "native id, and deliberately not as a session_links row: LinkType is the "
+            "lineage vocabulary, and every reader of that table composes an inherited "
+            "prefix from the edge. A lateral retrieval inherits nothing, so an edge for it "
+            "needs its own relation rather than a member in that one. Per-citation "
+            "prompt_text, alt, refs, reason, attribution and pub_date are unread.",
+            "aggregate_result conserves the executed program as the construct's text -- the "
+            "only place it survives, the calling `code` node's text being measured empty or "
+            "an unrelated tool-call payload -- plus the run's id, clock, timeout and "
+            "exception class as a chatgpt_code_interpreter_run event. Its stream text is "
+            "stored verbatim only where it differs from the result node's own text, which "
+            "is also where in_kernel_exception.traceback already lands.",
+            "search_result_groups[].entries[] per-result pub_date, thumbnail_url, "
+            "thumbnail_source and result_source are unread: ParsedWebConstruct carries no "
+            "field for them and adding one is a derived-schema change. `attribution` "
+            "repeats the group's `domain`, already the construct's group title.",
+            "author.metadata.real_author sets material_origin to tool_result for its `tool:` "
+            "values. The one measured `onboarding` value is left to the ordinary classifier: "
+            "nothing in the record names what injected it.",
+            "metadata.finish_details.type maps only `stop` and `max_tokens` onto "
+            "messages.stop_reason; `interrupted`, `skipped` and `unknown` name no StopReason "
+            "member. finish_details.stop_tokens is the sampler's stop-token list, not a "
+            "terminal state.",
+        ),
         semantic_reparse="reparse when ChatGPT document parsing fingerprints change",
         display_description="ChatGPT web exports (lab: OpenAI)",
         topology_capabilities=_no_topology_capabilities(origin),
@@ -2004,6 +2060,12 @@ def _claude_ai_spec() -> OriginSpec:
         # bd polylogue-4zqh3: sole-copy attachment-byte recovery sidecar.
         assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
+        fidelity_notes=(
+            "chat_messages[].stop_reason lands on messages.stop_reason only for the tokens "
+            "that name a StopReason member. The web surface also emits user_canceled, "
+            "error, conversation_length_limit and tool_use_limit, which have no equivalent "
+            "and leave the column NULL.",
+        ),
         topology_capabilities=_no_topology_capabilities(Origin.CLAUDE_AI_EXPORT),
         tool_outcome_unknown_reasons=frozenset(
             {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}

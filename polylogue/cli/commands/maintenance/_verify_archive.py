@@ -70,11 +70,19 @@ def verify_archive_command(
     ``--strict``, every selected check must be ``ok``: warnings and skips fail
     the command.
     """
+    # Bind the configured source denominator at the same runtime boundary as
+    # the command.  First-run runtimes with no configured local roots retain
+    # the historical archive-only checks; an explicit root, including a
+    # missing one, is never silently dropped.
+    from polylogue.config import configured_source_frontier, resolve_runtime_config
     from polylogue.maintenance.archive_verification import (
         archive_verification_names_for_route,
         passes_strict_acceptance,
         verify_archive,
     )
+
+    runtime = resolve_runtime_config()
+    source_frontier = configured_source_frontier(runtime) if runtime.source_paths.explicit else None
 
     declared_names = archive_verification_names_for_route("live-archive")
 
@@ -83,6 +91,8 @@ def verify_archive_command(
             archive_root(),
             checks=selected_checks or None,
             sample_limit=sample_limit,
+            source_frontier=source_frontier,
+            require_source_frontier=bool(runtime.source_paths.explicit),
         )
     except ValueError as exc:
         raise click.BadParameter(

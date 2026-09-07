@@ -7,7 +7,9 @@ import shutil
 import tempfile
 import threading
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from time import sleep
 
 import pytest
 
@@ -34,9 +36,11 @@ def test_one_uds_operation_request_returns_typed_result_without_health_probe(
 
         def _handle_cli_query(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            sleep(0.03)
             self._send_json(HTTPStatus.OK, {"items": [], "total": body["params"].get("limit", 0)})
 
         def _handle_query_units(self, params: dict[str, list[str]]) -> None:
+            sleep(0.03)
             self._send_json(HTTPStatus.OK, {"items": [], "expression": params.get("expression", [""])[0]})
 
     socket_path = runtime / "daemon.sock"
@@ -69,6 +73,27 @@ def test_one_uds_operation_request_returns_typed_result_without_health_probe(
     assert envelope["result"] == {"items": [], "total": 7}
     assert units is not None
     assert units["result"] == {"items": [], "expression": "origin:codex"}
+    # Envelope timing is measured, not declared: a route that slept 25ms
+    # cannot report a zero elapsed_ms, and queue_ms is the scheduler's own
+    # admission-to-dispatch wait rather than a placeholder.
+    timing = envelope["timing"]
+    assert timing["elapsed_ms"] >= 25
+    assert timing["queue_ms"] >= 0
+    assert units["timing"]["elapsed_ms"] >= 25
+
+
+def test_machine_handler_is_not_the_browser_handler_or_route_dispatcher() -> None:
+    """The UDS listener cannot acquire browser routes through inheritance."""
+
+    from polylogue.daemon.uds import machine_operation_handler
+
+    handler = machine_operation_handler(DaemonAPIHandler)
+
+    assert not issubclass(handler, DaemonAPIHandler)
+    assert handler.__bases__ == (BaseHTTPRequestHandler,)
+    assert "do_GET" in handler.__dict__
+    assert "do_POST" in handler.__dict__
+    assert "_api_get_routes" not in handler.__dict__
 
 
 def test_operation_route_bounds_the_serialized_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

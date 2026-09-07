@@ -24,6 +24,7 @@ import asyncio
 import pytest
 
 from polylogue.surfaces.payloads import reader_anchor
+from tests.infra.live_ingest import write_index_session
 
 pytestmark = pytest.mark.xdist_group("web-reader")
 
@@ -207,6 +208,56 @@ def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: p
     assert panels[0]["readiness"] == {"state": "ready", "required": True, "reason": None}
 
 
+def test_insight_panel_distinguishes_errored_from_genuinely_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-8ifs: a panel that fetched nothing and a panel whose fetch
+    raised must not render the same.
+
+    Anti-vacuity: collapse the ``ArchiveInsightUnavailableError``/``Exception``
+    arms into the empty arm and the two panels below carry the same state.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.analysis.archive import ArchiveInsightUnavailableError
+    from polylogue.daemon.webui import build_observability_payload
+
+    def _descriptor(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            display_name=name,
+            json_key=name,
+            fields=(SimpleNamespace(label="proof", accessor=lambda item: item.proof),),
+            query_model=None,
+            mcp_default_limit=1,
+            readiness_exempt=False,
+        )
+
+    empty, unavailable, degraded = (_descriptor(name) for name in ("empty", "unavailable", "degraded"))
+
+    async def fake_fetch(descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
+        if descriptor is unavailable:
+            raise ArchiveInsightUnavailableError("index tier is unreadable")
+        if descriptor is degraded:
+            raise RuntimeError("materializer blew up")
+        return []
+
+    monkeypatch.setattr("polylogue.analysis.registry.fetch_insights_async", fake_fetch)
+    payload = asyncio.run(
+        build_observability_payload(
+            object(),
+            {"component_readiness": {"session_profiles": {"state": "ready"}}},
+            registry={"empty": empty, "unavailable": unavailable, "degraded": degraded},
+        )
+    )
+
+    panels = {str(panel["name"]): panel for panel in cast(list[dict[str, object]], payload["insights"])}
+    assert panels["empty"]["state"] == "empty"
+    assert panels["empty"]["error"] is None
+    assert panels["unavailable"]["state"] == "unavailable"
+    assert "unreadable" in str(panels["unavailable"]["error"])
+    assert panels["degraded"]["state"] == "degraded"
+    assert "blew up" in str(panels["degraded"]["error"])
+    assert len({str(panel["state"]) for panel in panels.values()}) == 3
+
+
 def test_observability_payload_keeps_projection_errors_panel_local(monkeypatch: pytest.MonkeyPatch) -> None:
     """A malformed descriptor row cannot hide healthy registry siblings."""
     from types import SimpleNamespace
@@ -339,6 +390,7 @@ def _running_server_without_seed(
 # surface returns these identities verbatim.
 from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
+from polylogue.surfaces.outcome import decide_outcome
 
 _SEED_SPECS = [
     ("claude-code", "c1", "m-c1", "Claude Code session about authentication"),
@@ -398,7 +450,8 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
         for prov, cid, mid, title in _SEED_SPECS:
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.from_string(prov),
                     provider_session_id=cid,
@@ -414,7 +467,7 @@ def _seed_test_db(workspace: dict[str, Path]) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello reader")],
                         )
                     ],
-                )
+                ),
             )
 
 
@@ -524,7 +577,8 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
 
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="reader-v1",
@@ -540,7 +594,7 @@ def _seed_archive_test_archive(workspace: dict[str, Path]) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="Hello archive reader")],
                     )
                 ],
-            )
+            ),
         )
 
 
@@ -626,7 +680,7 @@ def _seed_browser_capture_reader_archive(workspace: dict[str, Path]) -> tuple[st
     assert len(parsed) == 1
     workspace["archive_root"].mkdir(parents=True, exist_ok=True)
     with ArchiveStore(workspace["archive_root"]) as archive:
-        session_id = archive.write_parsed(parsed[0])
+        session_id = write_index_session(archive, parsed[0])
     return session_id, unsafe_text
 
 
@@ -2135,15 +2189,17 @@ class TestWebUIV2:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            parent_id = archive.write_parsed(
+            parent_id = write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="lineage-parent",
                     title="Lineage parent",
                     messages=[ParsedMessage(provider_message_id="p0", role=Role.USER, text="start")],
-                )
+                ),
             )
-            child_id = archive.write_parsed(
+            child_id = write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="lineage-child",
@@ -2154,7 +2210,7 @@ class TestWebUIV2:
                         ParsedMessage(provider_message_id="p0", role=Role.USER, text="start"),
                         ParsedMessage(provider_message_id="c0", role=Role.USER, text="child tail"),
                     ],
-                )
+                ),
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
@@ -2190,7 +2246,8 @@ class TestWebUIV2:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            session_id = archive.write_parsed(
+            session_id = write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="card-family-session",
@@ -2236,7 +2293,7 @@ class TestWebUIV2:
                             ],
                         ),
                     ],
-                )
+                ),
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
@@ -2263,7 +2320,8 @@ class TestWebUIV2:
 
         message_count = 45  # > SESSION_READ_MESSAGE_LIMIT (30)
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            session_id = archive.write_parsed(
+            session_id = write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="large-read-session",
@@ -2278,7 +2336,7 @@ class TestWebUIV2:
                         )
                         for i in range(message_count)
                     ],
-                )
+                ),
             )
 
         with _running_server(workspace_env, seeded=False) as (_, base_url):
@@ -2332,8 +2390,8 @@ class TestWebUIV2:
         workspace_env: dict[str, Path],
     ) -> None:
         """A materialized rollup renders every basis lane independently, never collapsed into one number."""
+        from polylogue.analysis.archive import ArchiveInsightProvenance, CostRollupInsight
         from polylogue.archive.semantic.pricing import CostBasisPayload, CostUsagePayload
-        from polylogue.insights.archive import ArchiveInsightProvenance, CostRollupInsight
 
         provenance = ArchiveInsightProvenance(
             materializer_version=1,
@@ -3051,7 +3109,8 @@ class TestCockpitAggregateRoutes:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="evidence-summary",
@@ -3072,7 +3131,7 @@ class TestCockpitAggregateRoutes:
                             ],
                         )
                     ],
-                )
+                ),
             )
 
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
@@ -3109,7 +3168,8 @@ class TestCockpitAggregateRoutes:
             ),
         ]
         with ArchiveStore(workspace_env["archive_root"]) as archive:
-            parent_id = archive.write_parsed(
+            parent_id = write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="evidence-parent",
@@ -3123,9 +3183,10 @@ class TestCockpitAggregateRoutes:
                             blocks=replayed_tool_blocks,
                         ),
                     ],
-                )
+                ),
             )
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id="evidence-child",
@@ -3142,7 +3203,7 @@ class TestCockpitAggregateRoutes:
                         ),
                         ParsedMessage(provider_message_id="c2", role=Role.USER, text="child tail"),
                     ],
-                )
+                ),
             )
 
         with sqlite3.connect(workspace_env["archive_root"] / "index.db") as conn:
@@ -3281,7 +3342,9 @@ class TestSharedQueryPayloads:
         route_state = RouteReadinessPayload(
             state="empty", route="/api/sessions", reason="Archive contains no sessions."
         )
-        r = SessionListResponse(items=(), total=0, limit=50, offset=0, route_state=route_state)
+        r = SessionListResponse(
+            items=(), total=0, limit=50, offset=0, route_state=route_state, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["items"] == []
         assert d["total"] == 0
@@ -3344,7 +3407,9 @@ class TestSharedQueryPayloads:
             filters=("tag=missing",),
             reasons=(QueryMissReasonPayload(code="no_results", severity="info", summary="no match"),),
         )
-        r = SessionListResponse(items=(), total=0, limit=10, offset=0, diagnostics=diag)
+        r = SessionListResponse(
+            items=(), total=0, limit=10, offset=0, diagnostics=diag, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["diagnostics"] is not None
         assert d["diagnostics"]["message"] == "No results."
@@ -3354,6 +3419,7 @@ class TestSharedQueryPayloads:
         from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
 
         r = FacetsResponse(
+            outcome=decide_outcome(matched=15),
             scoped_to_query=False,
             generated_at="2026-06-22T00:00:00Z",
             budget_exceeded=True,

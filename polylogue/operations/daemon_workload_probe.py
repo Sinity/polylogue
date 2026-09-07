@@ -24,6 +24,7 @@ from typing import Any
 from polylogue.archive.topology.edge import TopologyEdgeStatus
 from polylogue.config import Config
 from polylogue.core.errors import SchemaSkewError
+from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, measured_or_none, resolve
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
@@ -33,6 +34,7 @@ from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.sqlite.archive_tiers.bootstrap import ARCHIVE_TIER_SPECS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.tier_access import TierRefusal, acquire_tier_reader
 
 # A tier whose schema does not match the packaged version is unreadable, not fatal:
 # the probe reports skew instead of crashing.
@@ -167,15 +169,23 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
         return set()
 
 
-def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> int:
+def _scalar_int(conn: sqlite3.Connection, sql: str, params: tuple[object, ...] = ()) -> Evidence[int]:
+    """Read one scalar count, keeping "the query failed" out of the number.
+
+    A failed read used to return 0 here, which readiness then compared against
+    0 and reported ready. The caller now has to consume the unavailable case
+    before it can put a number in a payload.
+    """
     try:
         row = conn.execute(sql, params).fetchone()
-    except sqlite3.Error:
-        return 0
-    return int(row[0] or 0) if row is not None else 0
+    except sqlite3.Error as exc:
+        return Unavailable(reason="scalar_read_failed", detail=f"{type(exc).__name__}: {exc}")
+    if row is None:
+        return Empty()
+    return Measured(int(row[0] or 0))
 
 
-def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> int | None:
+def _cheap_archive_table_count(conn: sqlite3.Connection, table: str) -> Evidence[int] | None:
     """Return an exact count when the archive can answer it cheaply.
 
     The workload probe is an evidence artifact, not a query planner report.  It
@@ -215,7 +225,13 @@ def _table_count_with_precision(conn: sqlite3.Connection, table: str, *, exact: 
         return (int(row[0] or 0) if row is not None else 0), "exact"
     cheap_count = _cheap_archive_table_count(conn, table)
     if cheap_count is not None:
-        return cheap_count, "exact"
+        return resolve(
+            cheap_count,
+            measured=lambda value: (value, "exact"),
+            empty=lambda: (0, "exact"),
+            unavailable=lambda _case: (UNKNOWN_TABLE_COUNT, "unavailable"),
+            degraded=lambda case: (case.value, "estimate"),
+        )
     with suppress(sqlite3.Error, ValueError, IndexError):
         row = conn.execute(
             """
@@ -236,14 +252,14 @@ def _table_count(conn: sqlite3.Connection, table: str, *, exact: bool) -> int:
     return _table_count_with_precision(conn, table, exact=exact)[0]
 
 
-def _presence_count(conn: sqlite3.Connection, table: str) -> int:
+def _presence_count(conn: sqlite3.Connection, table: str) -> Evidence[int]:
     """Return 1 when a table has at least one row, without scanning it."""
 
     try:
         row = conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
-    except sqlite3.Error:
-        return 0
-    return 1 if row is not None else 0
+    except sqlite3.Error as exc:
+        return Unavailable(reason="presence_read_failed", detail=f"{type(exc).__name__}: {exc}")
+    return Measured(1 if row is not None else 0)
 
 
 def _wal_file_size(db: Path) -> int:
@@ -256,10 +272,29 @@ def _wal_file_size(db: Path) -> int:
         return 0
 
 
-def _sqlite_stat1_rows(conn: sqlite3.Connection) -> int:
+def _sqlite_stat1_rows(conn: sqlite3.Connection) -> Evidence[int]:
     if not _table_exists(conn, "sqlite_stat1"):
-        return 0
+        return Measured(0)
     return _scalar_int(conn, "SELECT COUNT(*) FROM sqlite_stat1")
+
+
+def _planner_stats_fields(stat1_rows: Evidence[int]) -> dict[str, Any]:
+    """Report planner-statistics presence, or ``None`` plus the reason it is unknown."""
+    return resolve(
+        stat1_rows,
+        measured=lambda value: {"sqlite_stat1_rows": value, "planner_stats_present": value > 0},
+        empty=lambda: {"sqlite_stat1_rows": 0, "planner_stats_present": False},
+        unavailable=lambda case: {
+            "sqlite_stat1_rows": None,
+            "planner_stats_present": None,
+            "error": case.detail or case.reason,
+        },
+        degraded=lambda case: {
+            "sqlite_stat1_rows": case.value,
+            "planner_stats_present": case.value > 0,
+            "error": case.detail or case.reason,
+        },
+    )
 
 
 def _sqlite_maintenance_state(db: Path, observed_db: Path | None) -> dict[str, Any]:
@@ -280,11 +315,10 @@ def _sqlite_maintenance_state(db: Path, observed_db: Path | None) -> dict[str, A
                 # tier holds, including a version the runtime has moved past.
                 conn = open_readonly_connection(tier_db, validate_schema=False)
                 try:
-                    rows = _sqlite_stat1_rows(conn)
+                    stat1_rows = _sqlite_stat1_rows(conn)
                 finally:
                     conn.close()
-                tier_state["sqlite_stat1_rows"] = rows
-                tier_state["planner_stats_present"] = rows > 0
+                tier_state.update(_planner_stats_fields(stat1_rows))
             except sqlite3.Error as exc:
                 tier_state["error"] = str(exc)
         tiers[tier.value] = tier_state
@@ -517,7 +551,7 @@ def _storage_route_counts(conn: sqlite3.Connection, *, ops_db: Path | None = Non
         return counts
     columns = _columns(conn, "live_ingest_attempt")
     if "storage_route" not in columns:
-        counts["unknown"] = _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")
+        counts["unknown"] = measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")) or 0
         return counts
     rows = conn.execute("SELECT storage_route, COUNT(*) FROM live_ingest_attempt GROUP BY storage_route").fetchall()
     for row in rows:
@@ -582,15 +616,23 @@ def _attempt_counts(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> 
     ]
     has_stale_col = "stale_cursor_write_count" in _columns(conn, "live_ingest_attempt")
     return {
-        "total": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt"),
-        "running": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'"),
-        "completed": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'completed'"),
-        "failed": _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'failed'"),
-        "stale_cursor_writes": _scalar_int(
-            conn,
-            "SELECT COALESCE(SUM(stale_cursor_write_count), 0) FROM live_ingest_attempt"
-            if has_stale_col
-            else "SELECT 0",
+        "total": measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt")),
+        "running": measured_or_none(
+            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'running'")
+        ),
+        "completed": measured_or_none(
+            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'completed'")
+        ),
+        "failed": measured_or_none(
+            _scalar_int(conn, "SELECT COUNT(*) FROM live_ingest_attempt WHERE status = 'failed'")
+        ),
+        "stale_cursor_writes": measured_or_none(
+            _scalar_int(
+                conn,
+                "SELECT COALESCE(SUM(stale_cursor_write_count), 0) FROM live_ingest_attempt"
+                if has_stale_col
+                else "SELECT 0",
+            )
         ),
         "overlapping_source_paths": overlapping[:20],
     }
@@ -621,10 +663,16 @@ def _ops_attempt_counts(ops_db: Path | None) -> dict[str, Any] | None:
                 if count > 1
             ]
             return {
-                "total": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts"),
-                "running": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'running'"),
-                "completed": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'completed'"),
-                "failed": _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'failed'"),
+                "total": measured_or_none(_scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts")),
+                "running": measured_or_none(
+                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'running'")
+                ),
+                "completed": measured_or_none(
+                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'completed'")
+                ),
+                "failed": measured_or_none(
+                    _scalar_int(conn, "SELECT COUNT(*) FROM ingest_attempts WHERE status = 'failed'")
+                ),
                 "stale_cursor_writes": 0,
                 "overlapping_source_paths": overlapping[:20],
             }
@@ -1376,10 +1424,14 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
 
     index_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].filename
     source_db = root / ARCHIVE_TIER_SPECS[ArchiveTier.SOURCE].filename
-    if not index_db.exists():
-        return _unchecked_archive_derived_readiness("missing_index_tier")
+    # Absent, version-skewed and unopenable are three different answers, and
+    # the seam classifies them once against the tier probe.
+    acquired = acquire_tier_reader(ArchiveTier.INDEX, index_db)
+    if isinstance(acquired, TierRefusal):
+        reason = "missing_index_tier" if acquired.reason == "tier_missing" else acquired.reason
+        return _unchecked_archive_derived_readiness(reason)
 
-    conn = open_readonly_connection(index_db)
+    conn = acquired.connection
     source_attached = False
     source_check_available = False
     try:
@@ -1387,7 +1439,25 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
             source_attached = True
             source_check_available = _attached_table_exists(conn, "source_tier", "raw_sessions")
-        counts = _archive_derived_counts(conn, source_check_available=source_check_available, exact_counts=exact_counts)
+        measured_counts = _archive_derived_counts(
+            conn, source_check_available=source_check_available, exact_counts=exact_counts
+        )
+        counts = resolve(
+            measured_counts,
+            measured=lambda value: value,
+            empty=lambda: None,
+            unavailable=lambda _case: None,
+            degraded=lambda case: case.value,
+        )
+        if counts is None:
+            reason = resolve(
+                measured_counts,
+                measured=lambda _value: "",
+                empty=lambda: "derived_counts_empty",
+                unavailable=lambda case: case.detail or case.reason,
+                degraded=lambda case: case.reason,
+            )
+            return _unchecked_archive_derived_readiness(reason)
         counts["missing_raw_session_samples"] = _missing_raw_session_samples(conn) if source_check_available else []
         counts["lost_source_evidence_count"] = counts["missing_raw_session_count"]
         counts["lost_source_evidence_samples"] = counts["missing_raw_session_samples"]
@@ -1395,8 +1465,7 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
         messages_fts_ready = (
             counts["text_block_count"] == counts["messages_fts_count"]
             if exact_counts
-            else _fts_trigger_state(conn)["all_present"]
-            and (_presence_count(conn, "blocks") == 0 or _presence_count(conn, "messages_fts_docsize") > 0)
+            else _fts_trigger_state(conn)["all_present"] and _messages_fts_presence_ready(conn)
         )
         raw_materialization_debt_count = counts["raw_materialization_debt_count"]
         ready = {
@@ -1437,6 +1506,15 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
         conn.close()
 
 
+def _messages_fts_presence_ready(conn: sqlite3.Connection) -> bool | None:
+    """FTS presence readiness, or ``None`` when a presence probe did not answer."""
+    blocks = measured_or_none(_presence_count(conn, "blocks"))
+    docsize = measured_or_none(_presence_count(conn, "messages_fts_docsize"))
+    if blocks is None or docsize is None:
+        return None
+    return blocks == 0 or docsize > 0
+
+
 def _unchecked_user_overlay_orphans(reason: str) -> dict[str, Any]:
     return {
         "checked": False,
@@ -1446,14 +1524,52 @@ def _unchecked_user_overlay_orphans(reason: str) -> dict[str, Any]:
     }
 
 
+def _cost_bearing_profile_count(conn: sqlite3.Connection) -> Evidence[int]:
+    """Count profiles carrying any cost lane this archive's schema can hold.
+
+    A cost column the schema does not define is a shape fact, not a failed
+    read: an archive predating a lane has no cost-bearing rows in it, and
+    naming the column anyway would turn that into an unanswerable query.
+    """
+    lanes = [column for column in ("cost_usd", "cost_credits") if column in _columns(conn, "session_profiles")]
+    if not lanes:
+        return Measured(0)
+    predicate = " OR ".join(f"{lane} IS NOT NULL" for lane in lanes)
+    return _scalar_int(conn, f"SELECT COUNT(*) FROM session_profiles WHERE {predicate}")
+
+
+def _record_refusal(refusals: list[Unavailable], case: Unavailable) -> int:
+    """Remember a read that did not answer; the 0 it stands in for never ships."""
+    refusals.append(case)
+    return 0
+
+
 def _archive_derived_counts(
     conn: sqlite3.Connection, *, source_check_available: bool, exact_counts: bool = False
-) -> dict[str, Any]:
+) -> Evidence[dict[str, Any]]:
+    """Count the derived surfaces, or report which read did not answer.
+
+    Every count below feeds a ``ready`` comparison against 0. A read that
+    failed is therefore not a count at all: it is refused here so readiness
+    reports ``checked: False`` instead of comparing 0 to 0 and claiming ready.
+    """
+    refusals: list[Unavailable] = []
+
+    def count(evidence: Evidence[int]) -> int:
+        return resolve(
+            evidence,
+            measured=lambda value: value,
+            empty=lambda: 0,
+            unavailable=lambda case: _record_refusal(refusals, case),
+            degraded=lambda case: case.value,
+        )
+
     missing_raw = 0
     if source_check_available:
-        missing_raw = _scalar_int(
-            conn,
-            """
+        missing_raw = count(
+            _scalar_int(
+                conn,
+                """
             SELECT COUNT(*)
             FROM sessions AS s
             WHERE s.raw_id IS NOT NULL
@@ -1461,17 +1577,18 @@ def _archive_derived_counts(
                 SELECT 1 FROM source_tier.raw_sessions AS r WHERE r.raw_id = s.raw_id
               )
             """,
+            )
         )
     block_count = _readiness_count(conn, "blocks", exact=exact_counts)
     if exact_counts:
-        text_block_count = _scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''")
-        messages_fts_count = _scalar_int(conn, "SELECT COUNT(*) FROM messages_fts")
+        text_block_count = count(_scalar_int(conn, "SELECT COUNT(*) FROM blocks WHERE search_text != ''"))
+        messages_fts_count = count(_scalar_int(conn, "SELECT COUNT(*) FROM messages_fts"))
     else:
         text_block_count = block_count
         messages_fts_count = _readiness_count(conn, "messages_fts_docsize", exact=False)
-    return {
+    counts: dict[str, Any] = {
         "session_count": _readiness_count(conn, "sessions", exact=exact_counts),
-        "raw_link_count": _scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL"),
+        "raw_link_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM sessions WHERE raw_id IS NOT NULL")),
         "missing_raw_session_count": missing_raw,
         "message_count": _readiness_count(conn, "messages", exact=exact_counts),
         "block_count": block_count,
@@ -1479,64 +1596,69 @@ def _archive_derived_counts(
         "messages_fts_count": messages_fts_count,
         "messages_fts_exact_counts": exact_counts,
         "profile_row_count": _readiness_count(conn, "session_profiles", exact=exact_counts),
-        "missing_profile_row_count": _scalar_int(
-            conn,
-            """
+        "missing_profile_row_count": count(
+            _scalar_int(
+                conn,
+                """
             SELECT COUNT(*)
             FROM sessions AS s
             WHERE NOT EXISTS (
                 SELECT 1 FROM session_profiles AS p WHERE p.session_id = s.session_id
             )
             """,
+            )
         ),
-        "orphan_profile_row_count": _scalar_int(
-            conn,
-            """
+        "orphan_profile_row_count": count(
+            _scalar_int(
+                conn,
+                """
             SELECT COUNT(*)
             FROM session_profiles AS p
             WHERE NOT EXISTS (
                 SELECT 1 FROM sessions AS s WHERE s.session_id = p.session_id
             )
             """,
+            )
         ),
         "work_event_row_count": _readiness_count(conn, "session_work_events", exact=exact_counts),
         "phase_row_count": _readiness_count(conn, "session_phases", exact=exact_counts),
         "thread_count": _readiness_count(conn, "threads", exact=exact_counts),
         "thread_session_count": _readiness_count(conn, "thread_sessions", exact=exact_counts),
         "session_tag_count": _readiness_count(conn, "session_tags", exact=exact_counts),
-        "action_count": _scalar_int(conn, "SELECT COUNT(*) FROM actions")
+        "action_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM actions"))
         if exact_counts
-        else _presence_count(conn, "actions"),
+        else count(_presence_count(conn, "actions")),
         "action_count_exact": exact_counts,
-        "cost_profile_count": _scalar_int(
-            conn,
-            """
-            SELECT COUNT(*)
-            FROM session_profiles
-            WHERE cost_usd IS NOT NULL OR cost_credits IS NOT NULL
-            """,
-        ),
-        "profile_work_event_count_mismatch": _scalar_int(
-            conn,
-            """
+        "cost_profile_count": count(_cost_bearing_profile_count(conn)),
+        "profile_work_event_count_mismatch": count(
+            _scalar_int(
+                conn,
+                """
             SELECT COUNT(*)
             FROM session_profiles AS p
             WHERE p.work_event_count != (
                 SELECT COUNT(*) FROM session_work_events AS e WHERE e.session_id = p.session_id
             )
             """,
+            )
         ),
-        "profile_phase_count_mismatch": _scalar_int(
-            conn,
-            """
+        "profile_phase_count_mismatch": count(
+            _scalar_int(
+                conn,
+                """
             SELECT COUNT(*)
             FROM session_profiles AS p
             WHERE p.phase_count != (
                 SELECT COUNT(*) FROM session_phases AS ph WHERE ph.session_id = p.session_id
             )
             """,
+            )
         ),
     }
+    if refusals:
+        first = refusals[0]
+        return Unavailable(reason=first.reason, detail=first.detail)
+    return Measured(counts)
 
 
 def _missing_raw_session_samples(conn: sqlite3.Connection, *, limit: int = 10) -> list[dict[str, Any]]:
@@ -1803,13 +1925,22 @@ def _archive_user_overlay_orphans(root: Path) -> dict[str, Any]:
                 "AND NOT EXISTS (SELECT 1 FROM index_tier.sessions AS s WHERE s.session_id = substr(u.target_ref, 9))"
             ),
         }
+        refusals: list[Unavailable] = []
         counts = {
-            name: _scalar_int(conn, sql)
+            name: resolve(
+                _scalar_int(conn, sql),
+                measured=lambda value: value,
+                empty=lambda: 0,
+                unavailable=lambda case: _record_refusal(refusals, case),
+                degraded=lambda case: case.value,
+            )
             if (name.startswith("assertion_") and _table_exists(conn, "assertions"))
             or (not name.startswith("assertion_") and _table_exists(conn, name))
             else -1
             for name, sql in checks.items()
         }
+        if refusals:
+            return _unchecked_user_overlay_orphans(refusals[0].detail or refusals[0].reason)
         total = sum(count for count in counts.values() if count > 0)
         return {
             "checked": True,

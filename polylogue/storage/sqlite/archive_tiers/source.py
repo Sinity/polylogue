@@ -24,6 +24,24 @@ RETIRED_SOURCE_SCHEMA_OBJECTS: Final[frozenset[str]] = frozenset(
         "index:idx_raw_authority_artifact_census_checkpoint_members_page",
         "trigger:invalidate_pending_raw_authority_artifact_census_checkpoint_on_raw_delete",
         "index:idx_raw_sessions_raw_authority_census_candidates",
+        "table:raw_live_source_reconciliation_receipts",
+        "index:idx_raw_live_source_reconciliation_receipts_compared_at",
+        "table:raw_membership_writeback_receipts",
+        "index:idx_raw_membership_writeback_receipts_promoted_at",
+        "table:raw_append_chain_backfill_receipts",
+        "index:idx_raw_append_chain_backfill_receipts_compared_at",
+        "table:raw_byte_duplicate_supersession_receipts",
+        "index:idx_raw_byte_duplicate_supersession_receipts_promoted_at",
+        "index:idx_raw_byte_duplicate_supersession_receipts_duplicate_of",
+        "table:raw_failure_disposition_receipts",
+        "index:idx_raw_failure_disposition_receipts_disposed_at",
+        "table:raw_non_session_duplicate_exclusion_receipts",
+        "index:idx_raw_non_session_duplicate_exclusion_receipts_twin",
+        "table:raw_quarantine_group_dedup_receipts",
+        "index:idx_raw_quarantine_group_dedup_receipts_promoted_at",
+        "index:idx_raw_quarantine_group_dedup_receipts_representative",
+        "table:raw_unknown_export_reclassification_receipts",
+        "index:idx_raw_unknown_export_reclassification_receipts_reclassified_at",
     }
 )
 
@@ -333,78 +351,6 @@ CREATE TABLE IF NOT EXISTS raw_membership_census (
     detail             TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
--- v17 (polylogue-u19l): one immutable receipt per raw_sessions row promoted
--- out of quarantine by live-source-verification (see
--- polylogue.storage.live_source_reconciliation +
--- retired historical live-source reconciliation actuator). Records what
--- was compared, what matched, when, by which tool version, and against
--- which verified backup manifest -- never edited after being written.
-CREATE TABLE IF NOT EXISTS raw_live_source_reconciliation_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    verdict                     TEXT NOT NULL CHECK(verdict IN ('exact_match', 'codex_header_strip_match')),
-    previous_revision_authority TEXT NOT NULL,
-    source_path                 TEXT NOT NULL,
-    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
-    compared_at_ms              INTEGER NOT NULL CHECK(compared_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_live_source_reconciliation_receipts_compared_at
-ON raw_live_source_reconciliation_receipts(compared_at_ms);
-
--- v19 (polylogue-lb39z, Phase 1 item 2): one immutable receipt per
--- raw_sessions row promoted out of quarantine because its membership
--- pipeline verdict (raw_session_memberships.decision) was already decided
--- but never written back to revision_authority. See
--- polylogue.storage.raw_membership_writeback.
-CREATE TABLE IF NOT EXISTS raw_membership_writeback_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    logical_source_key          TEXT NOT NULL,
-    provider_session_id         TEXT NOT NULL,
-    membership_decision         TEXT NOT NULL,
-    previous_revision_authority TEXT NOT NULL,
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_membership_writeback_receipts_promoted_at
-ON raw_membership_writeback_receipts(promoted_at_ms);
-
--- v20 (polylogue-lb39z, Phase 1 item 3): one immutable receipt per
--- raw_sessions row promoted out of quarantine because its own claimed
--- [append_start_offset:append_end_offset) byte range was proven directly
--- against its live source file's current bytes -- the membershipless
--- append-chain-backfill population (a row stuck quarantined with no
--- raw_session_memberships row at all because its predecessor is itself
--- unresolved, so the normal _promote_contiguous_append_evidence cascade can
--- never reach it). Reuses revision_authority_evidence=
--- 'live_source_verification_v1' (the proof mechanism is identical to
--- polylogue-u19l's); this table's own existence records the distinct target
--- population. See polylogue.storage.raw_append_chain_backfill.
-CREATE TABLE IF NOT EXISTS raw_append_chain_backfill_receipts (
-    raw_id                           TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    logical_source_key                TEXT,
-    source_path                      TEXT NOT NULL,
-    blob_hash                        BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                        INTEGER NOT NULL CHECK(blob_size >= 0),
-    append_start_offset              INTEGER NOT NULL CHECK(append_start_offset >= 0),
-    append_end_offset                INTEGER NOT NULL CHECK(append_end_offset > append_start_offset),
-    matched_after_codex_header_strip INTEGER NOT NULL CHECK(matched_after_codex_header_strip IN (0, 1)),
-    previous_revision_authority      TEXT NOT NULL,
-    compared_at_ms                    INTEGER NOT NULL CHECK(compared_at_ms >= 0),
-    tool_version                      TEXT NOT NULL,
-    backup_manifest_path              TEXT NOT NULL,
-    detail                            TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_append_chain_backfill_receipts_compared_at
-ON raw_append_chain_backfill_receipts(compared_at_ms);
-
 CREATE TABLE IF NOT EXISTS raw_legacy_append_resynthesis_receipts (
     raw_id                          TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
     logical_source_key              TEXT NOT NULL,
@@ -424,143 +370,6 @@ CREATE TABLE IF NOT EXISTS raw_legacy_append_resynthesis_receipts (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_raw_legacy_append_resynthesis_receipts_observed_at
 ON raw_legacy_append_resynthesis_receipts(observed_at_ms);
-
--- v22 (polylogue-6753s): one immutable receipt per raw_sessions row promoted
--- out of quarantine because it is byte-identical (same blob_hash) to some
--- OTHER raw_sessions row that already has a materialized session in
--- index.db -- a pure re-acquisition/re-sync of already-archived content, not
--- missing content. Deliberately does not widen revision_authority_evidence's
--- closed CHECK vocabulary (would require a full raw_sessions table rebuild,
--- see migration 021); this distinct, independently-verifiable evidence
--- mechanism gets its own receipt table instead, exactly like
--- raw_membership_writeback_receipts (v19) already does for its own distinct
--- mechanism. See polylogue.storage.raw_byte_duplicate_supersession.
-CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
-    raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
-    duplicate_of_raw_id         TEXT NOT NULL,
-    duplicate_of_session_id     TEXT NOT NULL,
-    previous_revision_authority TEXT NOT NULL CHECK(previous_revision_authority IN ('asserted', 'byte_proven', 'quarantined')),
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_promoted_at
-ON raw_byte_duplicate_supersession_receipts(promoted_at_ms);
-
-CREATE INDEX IF NOT EXISTS idx_raw_byte_duplicate_supersession_receipts_duplicate_of
-ON raw_byte_duplicate_supersession_receipts(duplicate_of_raw_id);
-
--- v29 (polylogue-dyica): a stopped daemon can leave historical parse failures
--- whose retained bytes are known terminal inputs, but which predate the live
--- writer's typed raw_artifacts outcome.  This immutable receipt records the
--- reviewed manifest and source-tier backup that authorized replacing the
--- stale artifact classification with a terminal lifecycle classification.
--- The raw bytes and original parse diagnostic remain untouched.
-CREATE TABLE IF NOT EXISTS raw_failure_disposition_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    artifact_id                TEXT NOT NULL UNIQUE REFERENCES raw_artifacts(artifact_id),
-    origin                     TEXT NOT NULL,
-    source_path                TEXT NOT NULL,
-    source_index               INTEGER NOT NULL,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    previous_parse_error       TEXT NOT NULL,
-    previous_validation_status TEXT,
-    previous_artifact_kind     TEXT NOT NULL,
-    previous_support_status    TEXT NOT NULL,
-    previous_classification_reason TEXT NOT NULL,
-    disposition_kind           TEXT NOT NULL CHECK(disposition_kind IN (
-        'terminal_corrupt_input',
-        'terminal_unsupported_shape'
-    )),
-    manifest_sha256            TEXT NOT NULL CHECK(length(manifest_sha256) = 64),
-    disposed_at_ms             INTEGER NOT NULL CHECK(disposed_at_ms >= 0),
-    tool_version               TEXT NOT NULL,
-    backup_manifest_path       TEXT NOT NULL,
-    detail                     TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_failure_disposition_receipts_disposed_at
-ON raw_failure_disposition_receipts(disposed_at_ms);
-
--- v27 (polylogue-r9xsj): a non-session classification alone is not a
--- duplicate disposition. This immutable receipt binds an excluded raw blob to
--- the indexed twin whose bytes make the exclusion safe.
-CREATE TABLE IF NOT EXISTS raw_non_session_duplicate_exclusion_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    indexed_twin_raw_id        TEXT NOT NULL,
-    indexed_twin_session_id    TEXT NOT NULL,
-    parser_fingerprint         TEXT NOT NULL,
-    excluded_at_ms             INTEGER NOT NULL CHECK(excluded_at_ms >= 0),
-    tool_version               TEXT NOT NULL,
-    detail                     TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_non_session_duplicate_exclusion_receipts_twin
-ON raw_non_session_duplicate_exclusion_receipts(indexed_twin_raw_id);
-
--- v25 (polylogue-zm4w8): one immutable receipt per raw_sessions row marked a
--- proven duplicate within a fully-quarantined (source_path, blob_hash) group
--- -- a group where EVERY member starts out quarantined (unlike v22's
--- raw_byte_duplicate_supersession_receipts above, which requires an already-
--- INDEXED twin). A distinct actuator (devtools workspace
--- raw-quarantine-group-dedup-apply) promotes exactly one representative raw
--- per group through the real ingest/materialization path so it becomes a
--- genuine indexed session, then marks the rest of the group 'byte_proven'
--- (reusing the existing closed revision_authority vocabulary -- there is no
--- 'superseded' member and widening it needs a full raw_sessions table
--- rebuild, migration 021's own precedent) with a receipt here pointing at
--- the representative raw and its newly materialized session. See
--- polylogue.storage.raw_quarantine_group_dedup +
--- polylogue.maintenance.raw_quarantine_group_dedup_apply.
-CREATE TABLE IF NOT EXISTS raw_quarantine_group_dedup_receipts (
-    raw_id                     TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    source_path                TEXT NOT NULL,
-    blob_hash                  BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size                  INTEGER NOT NULL CHECK(blob_size >= 0),
-    representative_raw_id      TEXT NOT NULL,
-    representative_session_id  TEXT NOT NULL,
-    promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
-    tool_version                TEXT NOT NULL,
-    backup_manifest_path        TEXT NOT NULL,
-    detail                      TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_promoted_at
-ON raw_quarantine_group_dedup_receipts(promoted_at_ms);
-
-CREATE INDEX IF NOT EXISTS idx_raw_quarantine_group_dedup_receipts_representative
-ON raw_quarantine_group_dedup_receipts(representative_raw_id);
-
--- v26 (polylogue-s8s54): durable receipt for the narrow browser-capture
--- unknown-export repair. The actuator changes only source.db's origin and
--- capture_mode. The index.db generated session identity is intentionally
--- repaired later by the normal reparse route, never by this source-tier pass.
-CREATE TABLE IF NOT EXISTS raw_unknown_export_reclassification_receipts (
-    raw_id                  TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
-    previous_origin         TEXT NOT NULL CHECK(previous_origin = 'unknown-export'),
-    new_origin              TEXT NOT NULL CHECK(new_origin = 'chatgpt-export'),
-    previous_capture_mode   TEXT,
-    new_capture_mode        TEXT NOT NULL CHECK(new_capture_mode = 'chatgpt'),
-    embedded_provider       TEXT NOT NULL CHECK(embedded_provider = 'chatgpt'),
-    source_path             TEXT NOT NULL,
-    blob_hash               BLOB NOT NULL CHECK(length(blob_hash) = 32),
-    blob_size               INTEGER NOT NULL CHECK(blob_size >= 0),
-    reclassified_at_ms      INTEGER NOT NULL CHECK(reclassified_at_ms >= 0),
-    tool_version            TEXT NOT NULL,
-    backup_manifest_path    TEXT NOT NULL,
-    index_reparse_required  INTEGER NOT NULL CHECK(index_reparse_required = 1),
-    detail                  TEXT NOT NULL DEFAULT ''
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_raw_unknown_export_reclassification_receipts_reclassified_at
-ON raw_unknown_export_reclassification_receipts(reclassified_at_ms);
 
 -- Durable authority reconciliation ledger.  The source tier owns this
 -- evidence because index.db and ops.db are rebuildable/disposable: neither

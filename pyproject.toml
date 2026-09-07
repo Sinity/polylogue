@@ -172,7 +172,10 @@ only-include = [
 path = "packaging/hatch_build.py"
 
 [tool.pytest.ini_options]
-addopts = "-rfE --tb=line --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
+# Assertion rewriting retains a compiled AST for every test module during
+# collection.  Tests assert ordinary Python expressions, so plain assertions
+# release that per-module rewrite state while preserving test behavior.
+addopts = "-rfE --tb=line --assert=plain --benchmark-disable --benchmark-storage=file://./.cache/pytest-benchmark"
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py", "fuzz_*.py"]
 asyncio_mode = "auto"

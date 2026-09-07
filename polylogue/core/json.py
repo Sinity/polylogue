@@ -345,13 +345,9 @@ def _msgspec_enc_hook(encoder: JSONEncoder) -> Callable[[object], object]:
     return _hook
 
 
-# Matches EITHER a complete JSON string literal (left untouched -- alternative
-# tried first so an "e5"-shaped substring inside a string is never mistaken for
-# a number) OR a bare JSON number with an exponent (rewritten). Safe over raw
-# UTF-8 bytes: `"`/`\`/digits/`e`/`-`/`.` are all single-byte ASCII, and UTF-8
-# continuation bytes are always >= 0x80, so they can never masquerade as JSON
-# structural characters.
-_MSGSPEC_EXPONENT_TOKEN_RE = re.compile(rb'"(?:[^"\\]|\\.)*"' rb"|(-?(?:0|[1-9]\d*)(?:\.\d+)?)e(-?\d+)")
+# Matches a bare JSON number with an exponent for the scanner below. String
+# literals are skipped as opaque spans before this expression is attempted.
+_MSGSPEC_EXPONENT_TOKEN_RE = re.compile(rb"-?(?:0|[1-9]\d*)(?:\.\d+)?e(-?\d+)")
 
 
 def _msgspec_exponent_plus_sign(exponent: bytes) -> bytes:
@@ -382,13 +378,53 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     stability is only a hard guarantee between orjson and msgspec.
     """
 
-    def _repl(match: re.Match[bytes]) -> bytes:
-        mantissa, exponent = match.group(1), match.group(2)
-        if mantissa is None:
-            return match.group(0)  # matched a string literal -- leave untouched
-        return mantissa + b"e" + _msgspec_exponent_plus_sign(exponent)
-
-    return _MSGSPEC_EXPONENT_TOKEN_RE.sub(_repl, data)
+    # Avoid a regex that has to repeatedly backtrack through large quoted
+    # strings (browser captures can contain multi-megabyte base64 values).
+    # Scan string literals as opaque spans, and only run the small number
+    # matcher at positions outside strings.  The output is one linear copy
+    # of the input, plus at most one byte per normalized exponent.
+    chunks: list[bytes] = []
+    cursor = 0
+    index = 0
+    length = len(data)
+    changed = False
+    while index < length:
+        byte = data[index]
+        if byte == 34:  # '"'
+            if cursor < index:
+                chunks.append(data[cursor:index])
+            end = index + 1
+            while end < length:
+                current = data[end]
+                if current == 92:  # '\\'; escaped byte cannot close a string
+                    end += 2
+                elif current == 34:
+                    end += 1
+                    break
+                else:
+                    end += 1
+            chunks.append(data[index:end])
+            index = end
+            cursor = end
+            continue
+        if byte == 45 or 48 <= byte <= 57:  # '-' or a decimal digit
+            match = _MSGSPEC_EXPONENT_TOKEN_RE.match(data, index)
+            if match is not None:
+                exponent = match.group(1)
+                if not exponent.startswith(b"-"):
+                    chunks.append(data[cursor : match.start(1)])
+                    chunks.append(b"+")
+                    chunks.append(exponent)
+                    changed = True
+                    index = match.end()
+                    cursor = index
+                    continue
+                index = match.end()
+                continue
+        index += 1
+    if cursor < length:
+        chunks.append(data[cursor:])
+    return b"".join(chunks) if changed else data
 
 
 def _raw_loads(data: str | bytes | bytearray) -> object:

@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
@@ -34,7 +35,8 @@ def _seed_archive(archive_root: Path) -> str:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore(archive_root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="privileged-contract",
@@ -47,7 +49,7 @@ def _seed_archive(archive_root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle privileged contract evidence")],
                     )
                 ],
-            )
+            ),
         )
 
 
@@ -975,7 +977,7 @@ class TestRunTool:
 
 class TestMaintenanceTool:
     @pytest.mark.asyncio
-    async def test_list_returns_empty_envelope_on_a_fresh_archive(self, tmp_path: Path) -> None:
+    async def test_update_index_without_session_ids_returns_invalid_argument(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
@@ -984,27 +986,26 @@ class TestMaintenanceTool:
         maintenance_fn = server._tool_manager._tools["maintenance"].fn
 
         with installed_runtime_services(archive_root):
-            result = json.loads(await invoke_surface_async(maintenance_fn, operation="list"))
-            assert result.get("is_error") is not True, result
-            assert result["items"] == []
-            assert result["total"] == 0
-
-    @pytest.mark.asyncio
-    async def test_status_without_operation_id_returns_invalid_argument(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(await invoke_surface_async(maintenance_fn, operation="status"))
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="update_index"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_argument"
 
     @pytest.mark.asyncio
-    async def test_status_for_missing_operation_id_returns_not_found(self, tmp_path: Path) -> None:
+    async def test_recovery_status_without_operation_id_returns_invalid_argument(self, tmp_path: Path) -> None:
+        from polylogue.mcp.server import build_server
+
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+        maintenance_fn = server._tool_manager._tools["maintenance"].fn
+
+        with installed_runtime_services(archive_root):
+            result = json.loads(await invoke_surface_async(maintenance_fn, operation="recovery_status"))
+            assert result.get("is_error") is True
+            assert result.get("code") == "invalid_argument"
+
+    @pytest.mark.asyncio
+    async def test_recovery_status_for_missing_operation_id_returns_not_found(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server
 
         archive_root = tmp_path / "archive"
@@ -1014,7 +1015,7 @@ class TestMaintenanceTool:
 
         with installed_runtime_services(archive_root):
             result = json.loads(
-                await invoke_surface_async(maintenance_fn, operation="status", operation_id="does-not-exist")
+                await invoke_surface_async(maintenance_fn, operation="recovery_status", operation_id="does-not-exist")
             )
             assert result.get("is_error") is True
             assert result.get("code") == "not_found"
@@ -1118,73 +1119,6 @@ class TestMaintenanceTool:
 
 
 class TestMaintenanceConfirmGates:
-    """polylogue-jn40: full-effect maintenance operations must fail closed.
-
-    ``rebuild_index`` and ``rebuild_insights`` route through
-    ``hooks.get_polylogue()`` (the installed runtime services / seeded
-    archive); ``execute`` with ``dry_run=false`` routes through the
-    planner's own ``Config`` (a pre-existing, unrelated quirk -- see
-    ``_dispatch_maintenance``), so its refusal case is verified independent
-    of archive content and its confirmed-success case merely asserts the
-    call is not refused.
-    """
-
-    @pytest.mark.asyncio
-    async def test_execute_with_dry_run_false_without_confirm_is_refused(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn, operation="execute", targets=["session_insights"], dry_run=False
-                )
-            )
-            assert result.get("is_error") is True
-            assert "confirm" in result.get("message", "").lower()
-
-    @pytest.mark.asyncio
-    async def test_execute_with_dry_run_true_does_not_require_confirm(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn, operation="execute", targets=["session_insights"], dry_run=True
-                )
-            )
-            assert result.get("is_error") is not True, result
-
-    @pytest.mark.asyncio
-    async def test_execute_with_dry_run_false_and_confirm_true_succeeds(self, tmp_path: Path) -> None:
-        from polylogue.mcp.server import build_server
-
-        archive_root = tmp_path / "archive"
-        _seed_archive(archive_root)
-        server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
-        maintenance_fn = server._tool_manager._tools["maintenance"].fn
-
-        with installed_runtime_services(archive_root):
-            result = json.loads(
-                await invoke_surface_async(
-                    maintenance_fn,
-                    operation="execute",
-                    targets=["session_insights"],
-                    dry_run=False,
-                    confirm=True,
-                )
-            )
-            assert result.get("is_error") is not True, result
-
     @pytest.mark.asyncio
     async def test_rebuild_index_without_confirm_is_refused(self, tmp_path: Path) -> None:
         from polylogue.mcp.server import build_server

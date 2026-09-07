@@ -12,6 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -92,6 +93,7 @@ from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import archive_message_display_text
 from polylogue.surfaces.authority import serialize_authority
+from polylogue.surfaces.outcome import OutcomeEnvelope, combine_outcomes, decide_outcome
 from polylogue.surfaces.payloads import (
     AssertionClaimListPayload,
     MutationResultPayload,
@@ -603,8 +605,15 @@ def _route_readiness_payload(
     ).model_dump(mode="json")
 
 
-def _session_list_state(total: int, *, filtered: bool) -> tuple[RouteReadinessState, str | None]:
-    if total > 0:
+def _session_list_state(outcome: OutcomeEnvelope, *, filtered: bool) -> tuple[RouteReadinessState, str | None]:
+    """Project the canonical terminal outcome onto the reader's readiness chip.
+
+    The chip is presentation over the one decision the operation already made;
+    it never re-derives readiness from the row count.
+    """
+    if not outcome.rows_are_authoritative:
+        return "degraded", outcome.reason
+    if outcome.state == "ok":
         return "ready", None
     if filtered:
         return "no_results", "No sessions matched the active query or filters."
@@ -889,14 +898,18 @@ def _empty_cost_payload(session_id: str, origin: str | None) -> dict[str, object
 INSIGHT_KINDS: tuple[str, ...] = ("profile", "timeline", "phases", "threads")
 
 
-def _readiness_tag(*, materialized: bool, row_count: int | None = None) -> str:
-    """Map a materialized/row-count pair to the readiness chip vocabulary.
+def _readiness_tag(outcome: OutcomeEnvelope, *, materialized: bool, row_count: int | None = None) -> str:
+    """Map one panel's terminal outcome and row count to the readiness chip.
 
-    The chip vocabulary is closed (``q-ready`` / ``q-partial`` / ``q-missing``).
-    Unknown / unmaterialized rows are ``q-missing``; materialized rows with
-    zero downstream rows are ``q-partial`` (the rebuild ran but produced
-    nothing); everything else is ``q-ready``.
+    The chip vocabulary is closed (``q-error`` / ``q-missing`` / ``q-partial``
+    / ``q-ready``). ``q-error`` is what a panel whose insight surface could not
+    answer reports; without it an unavailable surface and a session that
+    genuinely has no rows both render as zero rows. Unmaterialized rows are
+    ``q-missing``; materialized rows with zero downstream rows are
+    ``q-partial`` (the rebuild ran but produced nothing).
     """
+    if not outcome.rows_are_authoritative:
+        return "q-error"
     if not materialized:
         return "q-missing"
     if row_count is not None and row_count <= 0:
@@ -974,24 +987,28 @@ def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     and adds a readiness chip + provenance summary on top.
     """
     body = dict(profile.to_dict())
+    row_count = int(body.get("message_count", 0) or 0)
+    outcome = decide_outcome(matched=row_count)
     return {
-        "readiness_tag": _readiness_tag(materialized=True, row_count=int(body.get("message_count", 0) or 0)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=True, row_count=row_count),
         "materialized": True,
         "profile": body,
         "provenance": _provenance_dict(provenance),
     }
 
 
-def _empty_profile_panel_payload() -> dict[str, object]:
+def _empty_profile_panel_payload(outcome: OutcomeEnvelope) -> dict[str, object]:
     return {
-        "readiness_tag": "q-missing",
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=False),
         "materialized": False,
         "profile": None,
         "provenance": None,
     }
 
 
-def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
+def _work_event_panel_payload(events: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for ev in events:
         items.append(
@@ -1006,14 +1023,15 @@ def _work_event_panel_payload(events: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(events), row_count=len(events)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(events), row_count=len(events)),
         "materialized": bool(events),
         "count": len(items),
         "events": items,
     }
 
 
-def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
+def _phase_panel_payload(phases: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for ph in phases:
         items.append(
@@ -1028,14 +1046,15 @@ def _phase_panel_payload(phases: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(phases), row_count=len(phases)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(phases), row_count=len(phases)),
         "materialized": bool(phases),
         "count": len(items),
         "phases": items,
     }
 
 
-def _thread_panel_payload(threads: list[Any]) -> dict[str, object]:
+def _thread_panel_payload(threads: list[Any], outcome: OutcomeEnvelope) -> dict[str, object]:
     items: list[dict[str, object]] = []
     for th in threads:
         items.append(
@@ -1048,7 +1067,8 @@ def _thread_panel_payload(threads: list[Any]) -> dict[str, object]:
             }
         )
     return {
-        "readiness_tag": _readiness_tag(materialized=bool(threads), row_count=len(threads)),
+        "outcome": outcome.to_dict(),
+        "readiness_tag": _readiness_tag(outcome, materialized=bool(threads), row_count=len(threads)),
         "materialized": bool(threads),
         "count": len(items),
         "threads": items,
@@ -1650,76 +1670,43 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return await handler(polylogue)
 
     def _sync_run(self, handler: Callable) -> object:  # type: ignore[type-arg]
-        if getattr(self, "_write_gate_depth", 0) > 0:
-            # The read executor deliberately leaves timed-out work running.
-            # A mutation cannot use that contract: its route-level writer
-            # lease must remain held until the real substrate call finishes.
-            return asyncio.run(self._run_archive_query(handler))
+        """Run one route body through the daemon's single bounded scheduler.
 
-        # Route through the daemon's single bounded compute adapter. Test
-        # doubles that predate the adapter retain the old attributes below;
-        # production servers always take this path.
+        Reads carry the interactive class and the request-thread timeout;
+        mutations carry the control class and wait for the substrate call,
+        because a route-level writer lease may not outlive its own work.
+        """
+
         kernel = getattr(self.server, "execution_kernel", None)
+        mutating = getattr(self, "_write_gate_depth", 0) > 0
         if isinstance(kernel, BoundedComputeAdapter):
             from polylogue.daemon.execution import CancellationHandle
 
             cancellation = CancellationHandle()
             submitted = kernel.submit(
                 lambda: asyncio.run(self._run_archive_query(handler)),
-                admission_class="interactive-read",
+                admission_class="control" if mutating else "interactive-read",
                 cancellation=cancellation,
             )
             try:
-                return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-            except FutureTimeoutError as exc:
-                cancellation.cancel()
-                raise TimeoutError(
-                    f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                    "the daemon may be busy with catch-up ingestion/embedding"
-                ) from exc
-
-        # Compatibility path for narrow in-process handler doubles. The real
-        # server never uses this branch.
-        # Route through the server's bounded archive-query executor (#0hqs)
-        # rather than running asyncio.run() directly on this connection's own
-        # thread: caps concurrent DB work at _ARCHIVE_QUERY_MAX_WORKERS
-        # regardless of how many connections are open, and the timeout below
-        # means a stalled query returns an honest error instead of blocking
-        # this thread (and the client) forever.
-        #
-        # admission is acquired here (non-blocking) and released inside the
-        # submitted closure once the work actually finishes -- not when this
-        # request thread stops waiting on it. That keeps the semaphore an
-        # honest count of in-flight-or-queued work regardless of whether the
-        # caller gave up, so a backlog of wedged queries saturates admission
-        # and new requests get rejected immediately instead of queuing behind
-        # ThreadPoolExecutor's own unbounded work queue (CodeRabbit, #2628).
-        admission = self.server.archive_query_admission
-        if not admission.acquire(blocking=False):
-            logger.warning(
-                "archive query rejected: admission saturated (%d workers + %d queue slots all in use)",
-                _ARCHIVE_QUERY_MAX_WORKERS,
-                _ARCHIVE_QUERY_MAX_QUEUED,
-            )
-            raise TimeoutError(
-                "archive query rejected: the daemon is already handling the maximum number of "
-                "concurrent/queued archive queries; retry shortly"
-            )
-
-        def _run_and_release() -> object:
-            try:
-                return asyncio.run(self._run_archive_query(handler))
+                if mutating:
+                    # The control class reserves capacity, so this wait is
+                    # bounded by the mutation itself, not by read pressure.
+                    return submitted.future.result()
+                try:
+                    return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
+                except FutureTimeoutError as exc:
+                    cancellation.cancel()
+                    raise TimeoutError(
+                        f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
+                        "the daemon may be busy with catch-up ingestion/embedding"
+                    ) from exc
             finally:
-                admission.release()
+                self._last_queue_delay_ms = int(submitted.queue_delay_s * 1000)
 
-        future = self.server.archive_query_executor.submit(_run_and_release)
-        try:
-            return future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
-        except FutureTimeoutError as exc:
-            raise TimeoutError(
-                f"archive query did not complete within {_ARCHIVE_QUERY_TIMEOUT_S:.0f}s; "
-                "the daemon may be busy with catch-up ingestion/embedding"
-            ) from exc
+        # Narrow in-process handler doubles construct no kernel. They have no
+        # concurrency to schedule, so the work runs on this thread.
+        return asyncio.run(self._run_archive_query(handler))
 
     @contextlib.contextmanager
     def _write_gate(self, actor: str) -> Iterator[None]:
@@ -3110,10 +3097,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
             items.append(row)
 
-        route_state_name, route_state_reason = _session_list_state(total, filtered=spec.has_filters())
+        list_outcome = decide_outcome(matched=total)
+        route_state_name, route_state_reason = _session_list_state(list_outcome, filtered=spec.has_filters())
         from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
         result: dict[str, object] = {
+            "outcome": list_outcome.to_dict(),
             "items": items,
             "total": total,
             "total_unit": session_count_unit_label(
@@ -3265,6 +3254,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
                         reason = "No session matched the id filter."
                         return {
+                            "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
                             "query": fts_query,
                             "retrieval_lane": "dialogue",
                             "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3280,6 +3270,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         }
                     reason = "No session matched the id filter."
                     return {
+                        "outcome": decide_outcome(matched=0, empty_reason="id_filter_matched_nothing").to_dict(),
                         "items": [],
                         "total": 0,
                         "limit": limit,
@@ -3322,6 +3313,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         archive_session_count=None,
                     ).model_dump(mode="json", by_alias=True)
                     return {
+                        "outcome": decide_outcome(matched=0, degraded=("search_index_degraded",)).to_dict(),
                         "query": fts_query,
                         "retrieval_lane": "dialogue",
                         "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3351,10 +3343,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         **_filter_kw,  # type: ignore[arg-type]
                     ),
                 )
-                route_state_name, route_state_reason = _session_list_state(total, filtered=True)
+                search_outcome = decide_outcome(matched=total)
+                route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
                 from polylogue.archive.query.spec import session_count_unit_label
 
                 payload: dict[str, object] = {
+                    "outcome": search_outcome.to_dict(),
                     "query": fts_query,
                     "retrieval_lane": "dialogue",
                     "ranking_policy": "mixed-bm25-rrf-vector",
@@ -3417,10 +3411,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
                 )
             )
-            route_state_name, route_state_reason = _session_list_state(total, filtered=filtered)
+            archive_list_outcome = decide_outcome(matched=total)
+            route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
             from polylogue.archive.query.spec import session_count_unit_label
 
             return {
+                "outcome": archive_list_outcome.to_dict(),
                 "items": [self._archive_summary_payload(summary) for summary in summaries],
                 "total": total,
                 "total_unit": session_count_unit_label(cast("bool | None", _filter_kw.get("root"))),
@@ -3984,21 +3980,29 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         }
         kinds = envelope["kinds"]
         assert isinstance(kinds, dict)
+        panel_outcomes: list[OutcomeEnvelope] = []
+
+        def _unavailable(kind: str, exc: BaseException) -> OutcomeEnvelope:
+            logger.warning("session insight %r unavailable for %s: %s", kind, conv_id, exc)
+            return decide_outcome(matched=0, error=f"insight_unavailable:{kind}")
 
         if "profile" in includes:
             from polylogue.analysis.archive import SessionProfileInsight
             from polylogue.storage.derived.session.profiles import hydrate_session_profile
 
+            profile_outcome: OutcomeEnvelope | None = None
             try:
                 # Archive read returns the full record directly; hydrate it into
                 # the domain ``SessionProfile`` for the panel projection. Native
                 # returns ``None`` (rather than raising) when the profile is not
-                # materialized, so the except below is defensive only.
+                # materialized, so the except below is the unavailable-surface
+                # path, not the unmaterialized one.
                 profile_record = await poly.get_session_profile_record(conv_id)
-            except ArchiveInsightUnavailableError:
-                # The substrate hasn't materialized this insight kind yet;
-                # surface q-missing rather than 503 the whole envelope.
+            except ArchiveInsightUnavailableError as exc:
+                # The insight surface could not answer; the panel reports
+                # q-error rather than 503-ing the whole envelope.
                 profile_record = None
+                profile_outcome = _unavailable("profile", exc)
             profile = hydrate_session_profile(profile_record) if profile_record is not None else None
             profile_insight = (
                 SessionProfileInsight.from_record(profile_record, tier="evidence")
@@ -4008,8 +4012,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             panel = (
                 _profile_panel_payload(profile, profile_insight.provenance)
                 if profile is not None and profile_insight is not None
-                else _empty_profile_panel_payload()
+                else _empty_profile_panel_payload(profile_outcome or decide_outcome(matched=0))
             )
+            panel_outcomes.append(OutcomeEnvelope.model_validate(panel["outcome"]))
             # Compare the materialized record's provenance against the
             # session's current ``updated_at`` via the typed
             # :func:`polylogue.analysis.provenance.is_stale` helper so the
@@ -4028,29 +4033,40 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 events = await poly.list_session_work_event_insights(
                     SessionWorkEventInsightQuery(session_id=conv_id, limit=None)
                 )
-            except ArchiveInsightUnavailableError:
+                timeline_outcome = decide_outcome(matched=len(events))
+            except ArchiveInsightUnavailableError as exc:
                 events = []
-            kinds["timeline"] = _work_event_panel_payload(events)
+                timeline_outcome = _unavailable("timeline", exc)
+            panel_outcomes.append(timeline_outcome)
+            kinds["timeline"] = _work_event_panel_payload(events, timeline_outcome)
 
         if "phases" in includes:
             try:
                 phases = await poly.list_session_phase_insights(
                     SessionPhaseInsightQuery(session_id=conv_id, limit=None)
                 )
-            except ArchiveInsightUnavailableError:
+                phases_outcome = decide_outcome(matched=len(phases))
+            except ArchiveInsightUnavailableError as exc:
                 phases = []
-            kinds["phases"] = _phase_panel_payload(phases)
+                phases_outcome = _unavailable("phases", exc)
+            panel_outcomes.append(phases_outcome)
+            kinds["phases"] = _phase_panel_payload(phases, phases_outcome)
 
         if "threads" in includes:
             try:
                 # Work threads are not keyed per-session in the substrate;
                 # the reader filters the materialized rows by membership.
                 all_threads = await poly.list_thread_insights(ThreadInsightQuery(limit=None))
-            except ArchiveInsightUnavailableError:
+                threads_error: OutcomeEnvelope | None = None
+            except ArchiveInsightUnavailableError as exc:
                 all_threads = []
+                threads_error = _unavailable("threads", exc)
             member_threads = [th for th in all_threads if conv_id in (th.thread.session_ids or ())]
-            kinds["threads"] = _thread_panel_payload(member_threads)
+            threads_outcome = threads_error or decide_outcome(matched=len(member_threads))
+            panel_outcomes.append(threads_outcome)
+            kinds["threads"] = _thread_panel_payload(member_threads, threads_outcome)
 
+        envelope["outcome"] = combine_outcomes(panel_outcomes).to_dict()
         return envelope
 
     # ------------------------------------------------------------------
@@ -5187,6 +5203,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             params["query"] = [expression]
         self._handle_list_sessions(params)
 
+    def _operation_timing(self, started: float) -> dict[str, object]:
+        """Measured envelope timing; ``queue_ms`` is the scheduler's own wait."""
+
+        return {
+            "elapsed_ms": int((monotonic() - started) * 1000),
+            "queue_ms": getattr(self, "_last_queue_delay_ms", 0),
+        }
+
     @daemon_safe_handler
     def _handle_daemon_operation(self) -> None:
         """Execute one archive-scoped operation and return one typed envelope.
@@ -5208,6 +5232,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
         from polylogue.version import POLYLOGUE_VERSION
 
+        operation_started = monotonic()
+        self._operation_started = operation_started
+        self._last_queue_delay_ms = 0
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         try:
             content_length = int(self.headers.get("Content-Length", "0"))
@@ -5216,8 +5243,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if content_type != "application/json":
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             return
-        if content_length <= 0 or content_length > MAX_DECLARED_OPERATION_BODY_BYTES:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing or too large")
+        if content_length <= 0:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing")
+            return
+        if content_length > MAX_DECLARED_OPERATION_BODY_BYTES:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large", "operation body is too large")
             return
         if content_length > MAX_OPERATION_BODY_BYTES:
             # Only a write operation declares a body larger than a parameter
@@ -5277,10 +5307,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "the daemon build does not match the client",
             )
             return
+        if request.expected_archive_identity not in (None, archive.get("archive_identity")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "archive_identity_stale",
+                "the archive identity changed since the client snapshot",
+            )
+            return
+        if request.expected_generation_id not in (None, generation.get("id")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "generation_stale",
+                "the active generation changed since the client snapshot",
+            )
+            return
 
         from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
 
         spec = daemon_operation_spec(request.operation)
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {"index": INDEX_SCHEMA_VERSION}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
         if spec is not None and content_length > spec.max_body_bytes:
             self._send_operation_error(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -5313,30 +5371,95 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # A request id is the exchange identity. Reusing it is ambiguous for
-        # a client that lost a response, so reject it before invoking any
-        # operation implementation.
+        # Admission is the mutation's commit boundary.  A caller whose
+        # deadline has already elapsed, or which explicitly cancelled before
+        # admission, is refused before any canonical handler is invoked.
+        elapsed_ms = int((monotonic() - operation_started) * 1000)
+        if request.deadline_ms is not None and elapsed_ms >= request.deadline_ms:
+            self._send_operation_error(
+                HTTPStatus.REQUEST_TIMEOUT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "timed_out_before_acceptance",
+                "operation deadline elapsed before durable acceptance",
+                outcome="timed-out",
+            )
+            return
+        if request.cancellation_token and request.payload.get("cancelled") is True:
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "cancelled_before_acceptance",
+                "operation was cancelled before durable acceptance",
+                outcome="cancelled",
+            )
+            return
+
+        # A request id is the exchange identity. Reusing an identical request
+        # recovers the durable envelope; reusing it with different bytes is a
+        # typed conflict and is never dispatched a second time.
         seen_ids = getattr(self.server, "operation_ids_seen", None)
         ids_lock = getattr(self.server, "operation_ids_lock", None)
         if request.request_id is not None and seen_ids is not None and ids_lock is not None:
+            replay: tuple[int, dict[str, object]] | None = None
+            duplicate_conflict = False
+            duplicate_incomplete = False
             with ids_lock:
-                if request.request_id in seen_ids:
-                    self._send_operation_error(
-                        HTTPStatus.CONFLICT,
-                        request,
-                        archive,
-                        generation,
-                        readiness,
-                        "duplicate_request_id",
-                        "request_id was already used",
-                    )
-                    return
-                seen_ids.add(request.request_id)
-                ids_order = getattr(self.server, "operation_ids_order", None)
-                if ids_order is not None:
-                    if len(ids_order) == ids_order.maxlen:
-                        seen_ids.discard(ids_order[0])
-                    ids_order.append(request.request_id)
+                results = getattr(self.server, "operation_results", {})
+                previous = results.get(request.request_id)
+                if previous is not None:
+                    previous_fingerprint, previous_status, previous_payload = previous
+                    if previous_fingerprint == request.fingerprint:
+                        replay = (previous_status, previous_payload)
+                    else:
+                        duplicate_conflict = True
+                elif request.request_id in seen_ids:
+                    duplicate_incomplete = True
+                else:
+                    seen_ids.add(request.request_id)
+                    ids_order = getattr(self.server, "operation_ids_order", None)
+                    if ids_order is not None:
+                        if len(ids_order) == ids_order.maxlen:
+                            evicted = ids_order[0]
+                            seen_ids.discard(evicted)
+                            getattr(self.server, "operation_results", {}).pop(evicted, None)
+                        ids_order.append(request.request_id)
+            # Do not write a response while ``operation_ids_lock`` is held.
+            # Error recording takes the same lock and a conflicting retry
+            # must not overwrite the original request's replay evidence.
+            if replay is not None:
+                previous_status, previous_payload = replay
+                self._send_json(HTTPStatus(previous_status), previous_payload)
+                return
+            if duplicate_conflict:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id_conflict",
+                    "request_id was already used for a different request",
+                    remember=False,
+                )
+                return
+            if duplicate_incomplete:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id",
+                    "request_id was already used before its result was durable",
+                    remember=False,
+                )
+                return
 
         captured: list[tuple[HTTPStatus, object]] = []
         original_send_json = self._send_json
@@ -5395,6 +5518,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             elif request.operation == "status":
                 self._handle_status({})
+            elif request.operation == "ingest":
+                body = _json_bytes(request.payload)
+                self.rfile = BytesIO(body)
+                self.headers = {  # type: ignore[assignment]
+                    "Content-Length": str(len(body)),
+                    "Content-Type": "application/json",
+                    "Authorization": original_headers.get("Authorization", ""),
+                }
+                self.path = "/api/ingest"
+                self._handle_ingest()
             elif request.operation in _MUTATION_OPERATION_HANDLERS:
                 # Each handler owns its own writer gate; the dispatcher only
                 # re-presents the operation payload as the body it reads.
@@ -5450,8 +5583,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 progress={"state": "failed"},
                 outcome=OperationStatus.FAILED,
                 served_by={"daemon_version": POLYLOGUE_VERSION},
-                timing={"elapsed_ms": 0, "queue_ms": 0},
-                schema_versions={"index": INDEX_SCHEMA_VERSION},
+                timing=self._operation_timing(operation_started),
+                schema_versions=cast(dict[str, int], tier_schema_versions),
+                authority_snapshot={
+                    "archive_identity": archive.get("archive_identity"),
+                    "generation": generation.get("id"),
+                    "schema_versions": tier_schema_versions,
+                    "served_by": POLYLOGUE_VERSION,
+                    **self._operation_timing(operation_started),
+                    "degraded_components": degraded_components,
+                },
                 error={
                     "code": str(error.get("error", "operation_failed")),
                     "detail": error.get("detail"),
@@ -5459,8 +5600,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 },
                 request_id=request.request_id,
             )
-            self._send_json(status, envelope.to_dict())
+            payload = envelope.to_dict()
+            self._remember_operation_result(request, int(status), payload)
+            self._send_json(status, payload)
             return
+        accepted_reference: dict[str, object] | None = None
+        if spec.accepted_reference and isinstance(result, dict):
+            operation_id = result.get("operation_id") or result.get("id")
+            if isinstance(operation_id, str) and operation_id:
+                accepted_reference = {
+                    "operation_id": operation_id,
+                    "accepted_at": datetime.now(UTC).isoformat(),
+                    "status_operation": "operation.status",
+                }
         envelope = DaemonOperationEnvelope(
             operation=request.operation,
             archive=archive,
@@ -5475,9 +5627,18 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             progress={"state": "complete"},
             outcome=OperationStatus.COMPLETED,
             served_by={"daemon_version": POLYLOGUE_VERSION},
-            timing={"elapsed_ms": 0, "queue_ms": 0},
-            schema_versions={"index": INDEX_SCHEMA_VERSION},
+            timing=self._operation_timing(operation_started),
+            schema_versions=cast(dict[str, int], tier_schema_versions),
+            authority_snapshot={
+                "archive_identity": archive.get("archive_identity"),
+                "generation": generation.get("id"),
+                "schema_versions": tier_schema_versions,
+                "served_by": POLYLOGUE_VERSION,
+                **self._operation_timing(operation_started),
+                "degraded_components": degraded_components,
+            },
             result=result,
+            accepted_reference=accepted_reference,
             request_id=request.request_id,
         )
         encoded = _json_bytes(envelope.to_dict())
@@ -5492,7 +5653,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "operation result exceeds the bounded result size",
             )
             return
-        self._send_json(HTTPStatus.OK, envelope.to_dict())
+        payload = envelope.to_dict()
+        self._remember_operation_result(request, HTTPStatus.OK.value, payload)
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _remember_operation_result(self, request: object, status: int, payload: dict[str, object]) -> None:
+        request_id = getattr(request, "request_id", None)
+        if not isinstance(request_id, str):
+            return
+        lock = getattr(self.server, "operation_ids_lock", None)
+        results = getattr(self.server, "operation_results", None)
+        if lock is None or results is None:
+            return
+        fingerprint = getattr(request, "fingerprint", "")
+        with lock:
+            results[request_id] = (str(fingerprint), int(status), dict(payload))
+            order = getattr(self.server, "operation_ids_order", None)
+            if order is not None and request_id not in order:
+                if len(order) == order.maxlen:
+                    results.pop(order[0], None)
+                order.append(request_id)
 
     def _send_operation_error(
         self,
@@ -5503,21 +5683,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         readiness: dict[str, object],
         code: str,
         detail: str,
+        *,
+        outcome: str = "failed",
+        remember: bool = True,
     ) -> None:
-        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, OperationStatus
+        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope
+        from polylogue.version import POLYLOGUE_VERSION
 
         operation = getattr(request, "operation", "unknown")
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
+        started = getattr(self, "_operation_started", None)
+        timing = self._operation_timing(started) if isinstance(started, float) else {"elapsed_ms": 0, "queue_ms": 0}
         envelope = DaemonOperationEnvelope(
             operation=str(operation),
             archive=archive,
             generation=generation,
             readiness=readiness,
             authority={"mode": "daemon", "writes": "daemon-owned"},
-            progress={"state": "failed"},
-            outcome=OperationStatus.FAILED,
+            progress={"state": "failed" if outcome == "failed" else outcome},
+            outcome=outcome,
+            served_by={"daemon_version": POLYLOGUE_VERSION},
+            schema_versions=cast(dict[str, int], tier_schema_versions),
             error={"code": code, "detail": detail},
+            request_id=getattr(request, "request_id", None),
+            authority_snapshot={
+                "archive_identity": archive.get("archive_identity"),
+                "generation": generation.get("id"),
+                "schema_versions": tier_schema_versions,
+                "served_by": POLYLOGUE_VERSION,
+                **timing,
+                "degraded_components": degraded_components,
+            },
         )
-        self._send_json(status, envelope.to_dict())
+        payload = envelope.to_dict()
+        if remember:
+            self._remember_operation_result(request, int(status), payload)
+        self._send_json(status, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete_prepare(self) -> None:
@@ -6046,26 +6252,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": with_overlays})
 
 
-# Bound for concurrent archive-query execution (polylogue-0hqs). ThreadingHTTPServer
-# spawns one raw OS thread per accepted connection with no cap; under sustained
-# concurrent load (or a query that stalls) that grows unbounded (64+ threads
-# observed live, py-spy showing dozens permanently stuck at the same SQL fetch).
-# Routing the actual archive-query work through a small, fixed-size executor
-# caps concurrent DB work regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S
-# below bounds each request's wait so a stalled query returns an honest error
-# instead of occupying a connection thread forever.
+# Bound for concurrent archive-query execution. ThreadingHTTPServer spawns one
+# raw OS thread per accepted connection with no cap, so the archive work itself
+# is what must be bounded: the compute adapter caps concurrent DB work
+# regardless of connection volume, and _ARCHIVE_QUERY_TIMEOUT_S bounds each
+# request's wait so a stalled query returns an honest error instead of
+# occupying a connection thread forever.
 _ARCHIVE_QUERY_MAX_WORKERS = 8
 _ARCHIVE_QUERY_TIMEOUT_S = 30.0
-# ThreadPoolExecutor's own work queue is unbounded (CodeRabbit review, #2628):
-# once all workers are individually wedged, submit() would still accept every
-# new request into that queue, and a request thread giving up after
-# _ARCHIVE_QUERY_TIMEOUT_S does NOT cancel the queued/running closure -- it
-# keeps consuming a worker slot for a client that was already told it timed
-# out. _archive_query_admission below is a bounded semaphore covering both
-# running AND queued work; once it is exhausted, a new request is rejected
-# immediately (503, no executor submission at all) instead of queuing behind
-# an unbounded backlog. This bounds the worst case to a fixed backlog rather
-# than a slow, wedged-query-driven memory/latency spiral.
+# Queue depth beyond the worker count. The adapter's admission is finite in
+# both work units and estimated bytes, so an exhausted queue rejects with typed
+# backpressure instead of accumulating behind an unbounded executor queue.
 _ARCHIVE_QUERY_MAX_QUEUED = 16
 
 
@@ -6103,17 +6300,16 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
             queue_units=_ARCHIVE_QUERY_MAX_QUEUED,
             thread_name_prefix="polylogue-compute",
         )
-        # Compatibility attributes are retained for existing narrow handler
-        # doubles and diagnostics; production submission goes through the
-        # adapter above.
+        # Diagnostic alias; every submission goes through the adapter above.
         self.archive_query_executor = self.execution_kernel.executor
-        self.archive_query_admission = threading.BoundedSemaphore(
-            _ARCHIVE_QUERY_MAX_WORKERS + _ARCHIVE_QUERY_MAX_QUEUED
-        )
         self.coordination_cache: dict[tuple[str, int], _CoordinationCacheEntry] = {}
         self.coordination_cache_lock = threading.Lock()
         self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
         self.coordination_cache_building: set[tuple[str, int]] = set()
+        self.operation_results: dict[str, tuple[str, int, dict[str, object]]] = {}
+        self.operation_ids_seen: set[str] = set()
+        self.operation_ids_order: deque[str] = deque(maxlen=4096)
+        self.operation_ids_lock = threading.Lock()
 
     def server_close(self) -> None:
         # cancel_futures=True drops any still-queued (not yet started) work

@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_a
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.live_ingest import write_index_session
 
 
 @pytest.mark.asyncio
@@ -403,7 +404,7 @@ def test_index_only_attachment_consumes_receipt_after_index_commit(tmp_path: Pat
         ],
     )
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_parsed(session)
+        write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).digest()
     with sqlite3.connect(archive_root / "source.db") as source_conn:

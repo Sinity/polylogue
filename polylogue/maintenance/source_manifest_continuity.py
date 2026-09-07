@@ -39,6 +39,14 @@ class MemberState(StrEnum):
     BLOCKED = "blocked"
 
 
+class FrontierState(StrEnum):
+    """Observation state for one configured source root."""
+
+    PRESENT = "present"
+    VALID_EMPTY = "valid-empty"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class SourceDeclaration:
     source_id: str
@@ -70,6 +78,123 @@ class MemberEvidence:
     content_sha256: str
     size: int
     logical_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FrontierMember:
+    """One independently enumerated source member at a stable cut."""
+
+    source_id: str
+    coordinate: str
+    identity: str
+    content_sha256: str
+    size: int
+    logical_sha256: str | None = None
+
+    @property
+    def key(self) -> tuple[str, str, str, str]:
+        return self.source_id, self.coordinate, self.identity, self.content_sha256
+
+
+@dataclass(frozen=True, slots=True)
+class SourceFrontier:
+    """Complete configured-source denominator used by conservation checks."""
+
+    declarations: tuple[SourceDeclaration, ...]
+    members: tuple[FrontierMember, ...]
+    root_states: Mapping[str, FrontierState]
+    blockers: tuple[str, ...]
+    frontier_sha256: str
+
+    @property
+    def item_count(self) -> int:
+        return len(self.members)
+
+    @property
+    def byte_count(self) -> int:
+        return sum(member.size for member in self.members)
+
+    @property
+    def complete(self) -> bool:
+        return not self.blockers and all(state is not FrontierState.UNAVAILABLE for state in self.root_states.values())
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "frontier_sha256": self.frontier_sha256,
+            "item_count": self.item_count,
+            "byte_count": self.byte_count,
+            "complete": self.complete,
+            "blockers": list(self.blockers),
+            "root_states": {key: value.value for key, value in sorted(self.root_states.items())},
+            "members": [
+                {
+                    "source_id": member.source_id,
+                    "coordinate": member.coordinate,
+                    "identity": member.identity,
+                    "content_sha256": member.content_sha256,
+                    "size": member.size,
+                    "logical_sha256": member.logical_sha256,
+                }
+                for member in self.members
+            ],
+        }
+
+    def verify_integrity(self) -> None:
+        payload = {
+            "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in self.declarations],
+            "members": [
+                (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256)
+                for m in self.members
+            ],
+            "root_states": sorted((key, value.value) for key, value in self.root_states.items()),
+            "blockers": list(self.blockers),
+        }
+        expected = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        if expected != self.frontier_sha256:
+            raise SourceContinuityError("source frontier integrity check failed")
+
+
+def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFrontier:
+    """Enumerate every configured root, retaining unavailable roots as blockers."""
+    rows = tuple(declarations)
+    if not rows:
+        raise SourceContinuityError("source frontier declaration is empty")
+    if len({row.source_id for row in rows}) != len(rows):
+        raise SourceContinuityError("source frontier contains duplicate source IDs")
+    from polylogue.sources.source_snapshot import SourceSnapshotError, observe_source_members
+
+    members: list[FrontierMember] = []
+    states: dict[str, FrontierState] = {}
+    blockers: list[str] = []
+    for declaration in rows:
+        try:
+            observed = observe_source_members(declaration)
+        except (OSError, SourceSnapshotError, ValueError) as exc:
+            states[declaration.source_id] = FrontierState.UNAVAILABLE
+            blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:{exc}")
+            continue
+        states[declaration.source_id] = FrontierState.PRESENT if observed else FrontierState.VALID_EMPTY
+        members.extend(
+            FrontierMember(
+                item.source_id,
+                item.coordinate,
+                item.identity,
+                item.content_sha256,
+                item.size_bytes,
+                item.content_sha256 if declaration.role is SourceRole.MUTABLE_SQLITE else None,
+            )
+            for item in observed
+        )
+    payload = {
+        "declarations": [(d.source_id, d.role.value, str(d.root), d.mutable) for d in rows],
+        "members": [
+            (m.source_id, m.coordinate, m.identity, m.content_sha256, m.size, m.logical_sha256) for m in members
+        ],
+        "root_states": sorted((key, value.value) for key, value in states.items()),
+        "blockers": blockers,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    return SourceFrontier(rows, tuple(members), states, tuple(blockers), digest)
 
 
 @dataclass(frozen=True, slots=True)

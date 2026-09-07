@@ -456,12 +456,15 @@ _ATTACHMENT_SUBTYPE_EVENT_TYPES: dict[str, str] = {
     "max_turns_reached": "claude_max_turns_reached",  # 1: session hit a turn budget
 }
 
-# Subtypes audited and found to carry zero information content in the live
-# corpus -- dropped (no event emitted), the same evidentiary bar applied to
-# ``init``/``mode`` above, not an assumption:
-#   total_tokens_reminder (5,677) -- the literal string
-#     "<total_tokens>Infinite tokens left</total_tokens>" in every sample
-#     checked; zero variance observed.
+# Subtypes dropped in the live corpus (no event emitted), the same evidentiary
+# bar applied to ``init``/``mode`` above, not an assumption. A dropped subtype
+# takes its ``rendered[].content`` with it -- there is no event to carry it:
+#   total_tokens_reminder (39,551 records carrying ``rendered``, exhaustive
+#     walk of 14,667 session files) -- ``text`` is
+#     "<total_tokens>N tokens left</total_tokens>", where N is the session's
+#     remaining token budget and varies: over 5,000 distinct values in that
+#     walk, not the constant an earlier sample recorded. That is real signal
+#     and this subtype's membership here is unresolved; it is dropped today.
 #   todo_reminder (5) -- always {"content": [], "itemCount": 0} in every
 #     occurrence observed (contrast with the sibling task_reminder above,
 #     which is 37% non-empty and kept); volume too small to rule out a
@@ -503,6 +506,13 @@ def _bounded_delta_payload(attachment: Mapping[str, object]) -> dict[str, object
     precedent in ``_tool_execution_result_payload`` (hunk counts, not full
     diffs) and ``_file_history_snapshot`` handling (file list, not file
     contents).
+
+    ``failedMcpServers`` is not body text and is kept in full: each entry is a
+    {name, errorCode, error} triple naming an MCP server whose tools were
+    absent from the session (498 entries over 14,667 session files, error
+    strings 17-55 characters, all on ``deferred_tools_delta``). It is the only
+    record that a capability the session expected did not arrive -- a missing
+    tool is otherwise indistinguishable from one that was never configured.
     """
     added_names: list[str] = []
     added_body_count = 0
@@ -513,7 +523,27 @@ def _bounded_delta_payload(attachment: Mapping[str, object]) -> dict[str, object
             added_names.extend(str(v) for v in value if isinstance(v, str))
         elif key.endswith("Lines") or key.endswith("Blocks"):
             added_body_count += len(value)
-    return {"added_names": added_names, "added_body_count": added_body_count}
+    payload: dict[str, object] = {"added_names": added_names, "added_body_count": added_body_count}
+    failed_mcp_servers = _failed_mcp_servers(attachment)
+    if failed_mcp_servers:
+        payload["failed_mcp_servers"] = failed_mcp_servers
+    return payload
+
+
+_FAILED_MCP_SERVER_FIELDS = (("name", "name"), ("error_code", "errorCode"), ("error", "error"))
+
+
+def _failed_mcp_servers(attachment: Mapping[str, object]) -> list[dict[str, object]]:
+    """Return one ``{name, error_code, error}`` row per failed MCP server."""
+    entries = attachment.get("failedMcpServers")
+    if not isinstance(entries, list):
+        return []
+    rows: list[dict[str, object]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            continue
+        rows.append({key: _string_field(entry, wire) for key, wire in _FAILED_MCP_SERVER_FIELDS})
+    return rows
 
 
 def _bounded_capability_snapshot_payload(attachment: Mapping[str, object]) -> dict[str, object]:
@@ -580,6 +610,29 @@ _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS: dict[str, Callable[[Mapping[str, object]],
 }
 
 
+def _rendered_contents(item: Mapping[str, object]) -> list[str]:
+    """Return the record's ``rendered[].content`` strings, in wire order.
+
+    ``rendered`` is a top-level key on an ``attachment`` record (it appears on
+    no other record type in the live corpus: 55,006 records, 2026-09-07 walk of
+    14,667 session files) whose entries carry exactly one key, ``content`` --
+    the text the provider actually injected into the model's context for that
+    attachment, framing included. 19 of those records carry two entries, so the
+    list is kept as a list.
+    """
+    rendered = item.get("rendered")
+    if not isinstance(rendered, list):
+        return []
+    contents: list[str] = []
+    for entry in rendered:
+        if not isinstance(entry, Mapping):
+            continue
+        content = entry.get("content")
+        if isinstance(content, str) and content:
+            contents.append(content)
+    return contents
+
+
 def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) -> ParsedSessionEvent | None:
     """Build the typed session_event for one ``attachment`` sidecar record.
 
@@ -587,6 +640,14 @@ def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) ->
     of the collapsed single ``claude_attachment`` event_type this replaces.
     Returns ``None`` only when the record carries no usable ``attachment``
     dict, or the subtype is confirmed-transient (``_ATTACHMENT_TRANSIENT_SUBTYPES``).
+
+    The record's ``rendered[].content`` -- the text the provider actually
+    injected into the model's context for this attachment -- rides the same
+    payload as ``rendered``, since it is what the model saw and the structured
+    payload beside it is not: for 6,153 of 55,025 entries in the 2026-09-07
+    corpus walk the rendered text appears nowhere in the attachment payload
+    (a ``file`` attachment is rendered with line numbers, a ``queued_command``
+    with the notification framing that made it a system reminder).
     """
     attachment = item.get("attachment")
     if not isinstance(attachment, dict):
@@ -612,6 +673,18 @@ def _attachment_sidecar_event(item: dict[str, object], timestamp: str | None) ->
         payload = _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS[subtype](attachment)
     else:
         payload = dict(attachment)
+    rendered_contents = _rendered_contents(item)
+    if rendered_contents:
+        if subtype is not None and subtype in _ATTACHMENT_BOUNDED_PAYLOAD_BUILDERS:
+            # The rendered text of a bounded subtype IS the injected body the
+            # builder above deliberately bounds away (full tool/skill/MCP
+            # instruction blocks, full diagnostic messages) -- storing it
+            # verbatim here would reinstate exactly what the builder excludes,
+            # so only its size is kept.
+            payload["rendered_char_count"] = sum(len(content) for content in rendered_contents)
+            payload["rendered_count"] = len(rendered_contents)
+        else:
+            payload["rendered"] = rendered_contents
     payload["summary"] = subtype or "attachment"
     return ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=payload)
 
@@ -1277,7 +1350,7 @@ def _claude_code_user_turn_origin(
     return None
 
 
-def _string_field(item: dict[str, object], key: str) -> str | None:
+def _string_field(item: Mapping[str, object], key: str) -> str | None:
     value = item.get(key)
     return value if isinstance(value, str) and value else None
 
@@ -1677,6 +1750,9 @@ def _project_background_task_completions(
                 "metadata": metadata,
                 "is_error": None if notification.exit_code is None else notification.exit_code != 0,
                 "exit_code": notification.exit_code,
+                "outcome_unknown_reason": (
+                    None if notification.exit_code is not None else ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
+                ),
             }
         )
         blocks = list(message.blocks)
@@ -1800,6 +1876,18 @@ class _SessionAccumulator:
     # CLI version emits it at all. Read like ``git_branch_value`` above: first
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
+    # polylogue-v53yf: the record-level provenance keys Claude Code stamps
+    # outside ``message``. Counted by value rather than kept per record: each
+    # rides most records of a session (``entrypoint``/``version`` on 154 of
+    # 191 in the bead's file; 2.4M and 4.9M records corpus-wide) and the
+    # session-level fact is which values occurred and how often, not which
+    # record carried one. ``entrypoint`` never varies within a session file
+    # (0 of 8,091 files with the key), ``version`` does across a resume that
+    # spans a CLI upgrade (177 of 14,287), so none of the four is a scalar.
+    entrypoint_counts: dict[str, int] = field(default_factory=dict)
+    cli_version_counts: dict[str, int] = field(default_factory=dict)
+    record_permission_mode_counts: dict[str, int] = field(default_factory=dict)
+    prompt_source_counts: dict[str, int] = field(default_factory=dict)
     # Claude Code stamps ``teamName`` on every record in a session. It is a
     # session-scoped campaign identity, so retain one value and emit one
     # session event rather than copying it onto every message.
@@ -1832,6 +1920,13 @@ class _SessionAccumulator:
     empty_drop_counts: dict[str, int] = field(default_factory=dict)
 
 
+def _count_by_value(counts: dict[str, int], item: Mapping[str, object], key: str) -> None:
+    """Tally one record's non-empty string ``key`` into ``counts``."""
+    value = item.get(key)
+    if isinstance(value, str) and value:
+        counts[value] = counts.get(value, 0) + 1
+
+
 def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, object]) -> None:
     """Fold one already-dict-typed Claude Code record into ``acc``.
 
@@ -1859,6 +1954,13 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         raw_slug = item.get("slug")
         if isinstance(raw_slug, str) and raw_slug:
             acc.session_slug_value = raw_slug
+    # Read before any early return: these ride ``attachment``/``progress``
+    # records too (275,861 and 30,278 of the 2.4M corpus-wide ``entrypoint``
+    # occurrences), which never reach ordinary message parsing.
+    _count_by_value(acc.entrypoint_counts, item, "entrypoint")
+    _count_by_value(acc.cli_version_counts, item, "version")
+    _count_by_value(acc.record_permission_mode_counts, item, "permissionMode")
+    _count_by_value(acc.prompt_source_counts, item, "promptSource")
     if acc.team_name_value is None:
         raw_team_name = item.get("teamName")
         if isinstance(raw_team_name, str) and raw_team_name.strip():
@@ -2474,6 +2576,39 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
             )
         )
 
+    # polylogue-v53yf: how this session was driven, recorded once. ``entrypoint``
+    # separates a dispatched SDK lane ("sdk-cli", "sdk-py") from an operator's
+    # interactive session ("cli") -- otherwise indistinguishable in the archive,
+    # since the two produce the same record shapes. ``version`` is the Claude
+    # Code build, the only in-band evidence of which producer wrote the bytes
+    # when a parse disagrees with a later one. ``permissionMode`` and
+    # ``promptSource`` are per-record state, so their counts are the session's
+    # distribution: how many of its turns the operator typed versus the system
+    # or a queue supplied.
+    session_environment_payload: dict[str, object] = {
+        key: dict(sorted(counts.items()))
+        for key, counts in (
+            ("entrypoints", acc.entrypoint_counts),
+            ("cli_versions", acc.cli_version_counts),
+            ("permission_modes", acc.record_permission_mode_counts),
+            ("prompt_sources", acc.prompt_source_counts),
+        )
+        if counts
+    }
+    if session_environment_payload:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_session_environment",
+                # Stamped at end of input like ``claude_parse_coverage``: both
+                # summarize the complete record set, and both are reduced to one
+                # row per session when a stream arrives in chunks
+                # (``dispatch.merge_claude_session_summaries``), which requires the
+                # two routes to agree on the stamp.
+                timestamp=acc.updated_at,
+                payload=session_environment_payload,
+            )
+        )
+
     if acc.team_name_value is not None:
         acc.session_events.append(
             ParsedSessionEvent(
@@ -2723,7 +2858,7 @@ def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:
 
 
 # polylogue-4987i: a session's summary session_events -- background
-# completions, delegation progress, session_kind, coverage -- are appended
+# completions, delegation progress, session_kind, environment, coverage -- are appended
 # after ``_fold_code_record``'s main loop, in that fixed order, because
 # ``_finalize_code_session`` only sees "no more records" once, at true end
 # of input. Sort by (timestamp, event-type tier, encounter order) rather
@@ -2733,7 +2868,8 @@ _SESSION_EVENT_TYPE_ORDER_TIER: dict[str, int] = {
     "background_task_completion": 1,
     "claude_delegation_progress": 2,
     "claude_session_kind": 3,
-    "claude_parse_coverage": 4,
+    "claude_session_environment": 4,
+    "claude_parse_coverage": 5,
 }
 
 

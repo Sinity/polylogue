@@ -306,7 +306,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
-    ArchiveWriteOutcome,
     PreparedRows,
     PreparedSessionShardRows,
     bind_session_shard,
@@ -318,7 +317,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     refresh_and_sweep_attachment_rows,
     search_archive_blocks,
     session_attachment_ids,
-    write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
@@ -1161,36 +1159,6 @@ class ArchiveStore:
         finally:
             attachment.__exit__(None, None, None)
 
-    def write_parsed(
-        self,
-        session: ParsedSession,
-        *,
-        content_hash: str | None = None,
-        fresh_build: bool = False,
-    ) -> str:
-        """Write a parsed session to index.db."""
-        self._require_writable("write index.db")
-        acquired, refs = self._preacquire_attachment_blobs(
-            session,
-            source_path=f"session:{session.provider_session_id}",
-            acquired_at_ms=int(time.time() * 1000),
-        )
-        if self._blob_publisher is not None:
-            self._blob_publisher.flush()
-        session_id = write_parsed_session_to_archive(
-            self._conn,
-            session,
-            content_hash=content_hash,
-            fresh_build=fresh_build,
-            preacquired_attachment_blobs=acquired,
-            source_conn=self._optional_source_conn(),
-        )
-        self._pending_index_blob_receipts.extend(
-            (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
-        )
-        self._consume_index_blob_receipts()
-        return session_id
-
     def append_work_event(
         self,
         *,
@@ -1241,41 +1209,6 @@ class ArchiveStore:
             "summary": summary,
             "content_changed": result.content_changed,
         }
-
-    def write_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        content_hash: str | None = None,
-        fresh_build: bool = False,
-    ) -> dict[str, int]:
-        """Write a parsed session and report whether precedence skipped it."""
-        self._require_writable("write index.db")
-        acquired, refs = self._preacquire_attachment_blobs(
-            session,
-            source_path=f"session:{session.provider_session_id}",
-            acquired_at_ms=int(time.time() * 1000),
-        )
-        if self._blob_publisher is not None:
-            self._blob_publisher.flush()
-        outcomes: list[ArchiveWriteOutcome] = []
-        write_parsed_session_to_archive(
-            self._conn,
-            session,
-            content_hash=content_hash,
-            fresh_build=fresh_build,
-            preacquired_attachment_blobs=acquired,
-            source_conn=self._optional_source_conn(),
-            write_outcome=outcomes,
-        )
-        self._pending_index_blob_receipts.extend(
-            (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
-        )
-        self._consume_index_blob_receipts()
-        stale_skipped = bool(outcomes and outcomes[0].stale_skipped)
-        counts = self._skipped_counts(session) if stale_skipped else self._write_counts(session)
-        counts["stale_skipped"] = int(stale_skipped)
-        return counts
 
     def _consume_index_blob_receipts(self) -> None:
         """Consume receipts only after index attachment rows are committed."""
@@ -2435,6 +2368,7 @@ class ArchiveStore:
         session_id: str | None = None,
         origin: str | None = None,
         heuristic_label: str | None = None,
+        query: str | None = None,
         since_ms: int | None = None,
         until_ms: int | None = None,
         limit: int | None = 50,
@@ -2453,6 +2387,9 @@ class ArchiveStore:
         if heuristic_label is not None:
             where.append("we.work_event_type = ?")
             params.append(heuristic_label)
+        if query:
+            where.append("we.search_text LIKE ?")
+            params.append(f"%{query}%")
         # A work event with no reliable timestamp anywhere in its fallback
         # chain (COALESCE(...) IS NULL) is not evidence it falls outside a
         # since/until window -- include it rather than let SQL's NULL
@@ -3565,6 +3502,7 @@ class ArchiveStore:
         session_date_since: str | None = None,
         session_date_until: str | None = None,
         tier: str = "merged",
+        query: str | None = None,
         limit: int | None = 50,
         offset: int = 0,
         min_wallclock_seconds: float | None = None,
@@ -3594,6 +3532,15 @@ class ArchiveStore:
         if terminal_state is not None:
             where.append("sp.terminal_state = ?")
             params.append(terminal_state)
+        if query:
+            search_column = {
+                "evidence": "evidence_search_text",
+                "inference": "inference_search_text",
+                "enrichment": "enrichment_search_text",
+                "merged": "search_text",
+            }.get(tier, "search_text")
+            where.append(f"sp.{search_column} LIKE ?")
+            params.append(f"%{query}%")
         if tag is not None:
             where.append(
                 f"EXISTS (SELECT 1 FROM {self._tags_relation} st WHERE st.session_id = s.session_id AND st.tag = ?)"
@@ -7649,8 +7596,9 @@ def _session_profile_components_from_archive_row(
             {
                 "work_event_count": int(row["work_event_count"] or 0),
                 "phase_count": int(row["phase_count"] or 0),
-                "engaged_duration_ms": int(row["total_duration_ms"] or row["duration_ms"] or 0),
-                "engaged_minutes": float(row["total_duration_ms"] or row["duration_ms"] or 0) / 60000.0,
+                "engaged_duration_ms": 0,
+                "engaged_minutes": 0.0,
+                "engaged_duration_source": "unknown",
                 "workflow_shape": workflow_shape,
                 "workflow_shape_confidence": workflow_confidence,
                 "terminal_state": terminal_state,

@@ -409,8 +409,8 @@ source stopped, and this reports *why* it was going to.
 Measured on the pinned worktree `/realm/worktrees/daemon-core-bench` at
 `0f1d1cb09`, quiet host, 516 real sessions / 200.8 MB parsed through the
 production route (`_live_parse_stage_candidates` → `live_parse_worker`) and
-written through the production choke point (`ArchiveStore.write_parsed` →
-`write_parsed_session_to_archive`). Each arm writes a fresh archive from empty.
+written through the production choke point (raw admission → revision
+governance → `write_parsed_session_to_archive`). Each arm writes a fresh archive from empty.
 Harness: `/realm/tmp/work/daemon-core/stage1_arms.py`.
 
 | Arm | CPU s | Wall s | MB/s | DB bytes |

@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 _LOCAL_ARCHIVE_OWNERS_LOCK = threading.RLock()
 _LOCAL_ARCHIVE_OWNERS: dict[tuple[int, int], tuple[int, int, int, str]] = {}
 
+#: The archive's own path vocabulary. The active index is selected by a
+#: pointer file, so ``root/index.db`` may be a 77-byte stub while the real
+#: index lives under ``GENERATIONS_DIRNAME``; anything measuring or relocating
+#: an archive must name both.
+ACTIVE_POINTER_FILENAME = ".index-active-pointer"
+GENERATIONS_DIRNAME = ".index-generations"
+REBUILD_TRANSACTIONS_DIRNAME = ".index-rebuild-transactions"
+LIFECYCLE_LOCK_FILENAME = ".index-generation-lifecycle.lock"
+MAINTENANCE_STATE_DIRNAME = ".maintenance-state"
+
 ArchiveTierName = Literal["source", "index", "embeddings", "user", "ops", "audit"]
 TIER_FILENAMES: tuple[tuple[ArchiveTierName, str], ...] = (
     ("source", "source.db"),
@@ -88,7 +98,7 @@ def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
     # A promoted generation may live outside the durable-tier root.  The
     # pointer is the explicit marker that its source/user/blob siblings still
     # belong to the configured archive root, not to the generation directory.
-    if (archive_root / ".index-active-pointer").exists():
+    if (archive_root / ACTIVE_POINTER_FILENAME).exists():
         return archive_root
     return db_path.parent if db_path.name == "index.db" else archive_root
 
@@ -118,7 +128,7 @@ class ArchiveLocation:
             TierFileIdentity.resolve(name, configured_root / filename) for name, filename in TIER_FILENAMES
         )
         configured_index = next(tier for tier in configured if tier.name == "index")
-        pointer_file = configured_root / ".index-active-pointer"
+        pointer_file = configured_root / ACTIVE_POINTER_FILENAME
         pointer: Path | None = None
         try:
             pointer_metadata = pointer_file.lstat()

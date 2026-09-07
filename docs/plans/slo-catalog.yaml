@@ -142,6 +142,17 @@ surfaces:
     gate: "informational"
     tier: "lab"
 
+  daemon_mixed_load:
+    description: >-
+      Interactive reads served while background units occupy the same bounded
+      scheduler. Gates the interactive side; the profile additionally asserts
+      nonzero background throughput and a bounded background admission wait.
+    benchmark_test: "tests/benchmarks/test_daemon_operation_profile.py::test_bench_daemon_mixed_load"
+    p50_ms: 250
+    p95_ms: 500
+    gate: "informational"
+    tier: "lab"
+
   ingest_to_searchable:
     description: "Live daemon ingest through FTS publication until the new content is visible to find"
     benchmark_test: "tests/benchmarks/test_daemon_convergence.py::test_convergence_single_file_perf"

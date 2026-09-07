@@ -33,6 +33,7 @@ from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.embeddings.progress import latest_embedding_catchup_run
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.sqlite.schema import SCHEMA_VERSION
+from tests.infra.live_ingest import write_index_session
 
 
 class _FakeV1VectorProvider:
@@ -1106,7 +1107,8 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     long_text = "This archive message is long enough to embed for semantic search."
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="embed-v1",
@@ -1120,7 +1122,7 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
     index_db = archive_root / "index.db"
@@ -1180,7 +1182,8 @@ def test_archive_embedding_resumes_after_bounded_message_window(
     text = "This archive message is long enough to embed for semantic search."
     root = tmp_path / "archive"
     with ArchiveStore(root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="bounded-v1",
@@ -1195,7 +1198,7 @@ def test_archive_embedding_resumes_after_bounded_message_window(
                     )
                     for index in range(2)
                 ],
-            )
+            ),
         )
     embeddings_db = root / "embeddings.db"
     initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
@@ -1231,7 +1234,8 @@ def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path)
     tool_text = "This tool output is intentionally long but should not be embedded because it is not prose."
     context_text = "This runtime context is long enough but should remain outside the paid embedding set."
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="embed-prose-only",
@@ -1268,7 +1272,7 @@ def test_archive_embedding_only_sends_authored_prose_to_provider(tmp_path: Path)
                         material_origin=MaterialOrigin.RUNTIME_CONTEXT,
                     ),
                 ],
-            )
+            ),
         )
 
     index_db = archive_root / "index.db"
@@ -1332,13 +1336,14 @@ def test_archive_embedding_batches_large_sessions(
         for i in range(5)
     ]
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="embed-batched",
                 title="batched embedding session",
                 messages=messages,
-            )
+            ),
         )
 
     index_db = archive_root / "index.db"
@@ -1382,7 +1387,8 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
     archive_root = tmp_path / "archive"
     long_text = "This archive message is long enough to trigger provider failure."
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="embed-v1-error",
@@ -1395,7 +1401,7 @@ def test_archive_embedding_error_records_retryable_status(tmp_path: Path) -> Non
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
     index_db = archive_root / "index.db"
@@ -1442,7 +1448,8 @@ def test_archive_embedding_http_400_records_terminal_status(tmp_path: Path) -> N
     archive_root = tmp_path / "archive"
     long_text = "This archive message is long enough to trigger provider hard failure."
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="embed-v1-hard-error",
@@ -1455,7 +1462,7 @@ def test_archive_embedding_http_400_records_terminal_status(tmp_path: Path) -> N
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
     index_db = archive_root / "index.db"
@@ -1521,7 +1528,8 @@ def _write_archive_session(archive_root: Path, *, native_id: str, embeddable: bo
 
     text = "This archive message is long enough to embed for semantic search."
     with ArchiveStore(archive_root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=native_id,
@@ -1535,7 +1543,7 @@ def _write_archive_session(archive_root: Path, *, native_id: str, embeddable: bo
                         material_origin=(MaterialOrigin.HUMAN_AUTHORED if embeddable else MaterialOrigin.TOOL_RESULT),
                     )
                 ],
-            )
+            ),
         )
 
 

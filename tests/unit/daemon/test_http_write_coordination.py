@@ -468,6 +468,63 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
     ]
 
 
+def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A conflicting retry responds without replacing the accepted request.
+
+    Anti-vacuity: sending the duplicate error while ``operation_ids_lock`` is
+    held deadlocks because response recording needs that same lock.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    (tmp_path / "index.db").write_bytes(b"index")
+    original = DaemonOperationRequest(
+        operation="status",
+        payload={},
+        request_id="request-id-reused",
+    )
+    conflicting = DaemonOperationRequest(
+        operation="completion",
+        payload={"prefix": "x"},
+        request_id="request-id-reused",
+    )
+    request_id = original.request_id
+    assert request_id is not None
+    body = json.dumps(conflicting.to_dict()).encode()
+    handler = _operation_handler([], body)
+    accepted_payload: dict[str, object] = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": request_id}
+    handler.server.operation_ids_seen = {request_id}
+    handler.server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
+    handler.server.operation_ids_lock = threading.Lock()
+    responses: list[tuple[HTTPStatus, object]] = []
+    handler._send_json = lambda status, payload, **_kwargs: responses.append((status, payload))  # type: ignore[method-assign]
+
+    failure: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            handler._handle_daemon_operation()
+        except BaseException as exc:  # pragma: no cover - assertion below reports it
+            failure.append(exc)
+
+    thread = threading.Thread(target=invoke, daemon=True)
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive(), "conflicting duplicate request id deadlocked the machine endpoint"
+    assert failure == []
+    assert responses and responses[0][0] is HTTPStatus.CONFLICT
+    response = responses[0][1]
+    assert isinstance(response, dict)
+    assert response["error"] == {
+        "code": "duplicate_request_id_conflict",
+        "detail": "request_id was already used for a different request",
+    }
+    assert handler.server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
+
+
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -758,7 +815,17 @@ def test_standalone_http_server_stops_loop_after_late_writer_drain() -> None:
     assert shutdown.await_count == 2
 
 
-def test_coordinated_mutation_does_not_use_timeout_detaching_read_executor() -> None:
+def test_coordinated_mutation_uses_control_admission_without_the_read_timeout() -> None:
+    """A mutation is scheduled as control and waits for its own substrate call.
+
+    Anti-vacuity: routing it as ``interactive-read`` would record the work
+    under the read class, and the read contract's timeout would be free to
+    detach a request whose writer lease is still held.
+    """
+
+    from polylogue.daemon.execution import BoundedComputeAdapter
+
+    kernel = BoundedComputeAdapter(max_workers=2, queue_units=2)
     handler = object.__new__(DaemonAPIHandler)
     handler._write_gate_depth = 1
 
@@ -769,9 +836,13 @@ def test_coordinated_mutation_does_not_use_timeout_detaching_read_executor() -> 
         return "persisted"
 
     handler._run_archive_query = run_direct  # type: ignore[assignment]
-    handler.server = SimpleNamespace(  # type: ignore[assignment]
-        archive_query_admission=SimpleNamespace(acquire=lambda **_kwargs: (_ for _ in ()).throw(AssertionError())),
-        archive_query_executor=SimpleNamespace(submit=lambda *_args: (_ for _ in ()).throw(AssertionError())),
-    )
+    handler.server = SimpleNamespace(execution_kernel=kernel)  # type: ignore[assignment]
 
-    assert handler._sync_run(mutation) == "persisted"
+    try:
+        assert handler._sync_run(mutation) == "persisted"
+        snapshot = kernel.snapshot()
+        assert snapshot.by_class("control").admitted == 1
+        assert snapshot.by_class("interactive-read").admitted == 0
+        assert snapshot.used_units == 0
+    finally:
+        kernel.shutdown(wait=True)

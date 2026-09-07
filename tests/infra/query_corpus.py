@@ -1,7 +1,7 @@
 """Adversarial corpus for the query-contract differential.
 
-Every session reaches SQLite through the production parse/write route
-(:meth:`ArchiveStore.write_parsed`), so the derived read models the query
+Every session reaches SQLite through the live index-only parse/write seam
+(``write_index_session``), so the derived read models the query
 units expose -- the ``actions`` view, ``delegation_facts``, run and
 observed-event projections, FTS -- are materialized the way ingest
 materializes them, not seeded behind the writer.
@@ -24,6 +24,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 from tests.infra.query_contract import (
     CORPUS_SHAPE_ANCHORS_BY_DIMENSION,
     REQUIRED_PATHOLOGIES,
@@ -442,9 +443,9 @@ def build_query_corpus(archive_root: Path) -> QueryCorpus:
     ]
     with ArchiveStore(archive_root) as archive:
         for session in ordered:
-            archive.write_parsed(session)
+            write_index_session(archive, session)
         # Active growth: the same logical source re-ingested with a longer tail.
-        archive.write_parsed(_growth_session(grown=True))
+        write_index_session(archive, _growth_session(grown=True))
 
     session_ids = tuple(f"{CORPUS_ORIGIN}:{session.provider_session_id}" for session in ordered)
     tagged = f"{CORPUS_ORIGIN}:{COORDINATOR_ID}"

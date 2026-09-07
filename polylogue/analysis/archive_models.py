@@ -128,7 +128,7 @@ class SessionInferencePayload(ArchiveInsightModel):
     terminal_state_method: str = "unknown"
     support_level: ConfidenceBand = ConfidenceBand.WEAK
     support_signals: tuple[str, ...] = ()
-    engaged_duration_source: str = "session_total_fallback"
+    engaged_duration_source: str = "unknown"
     repo_inference_strength: ConfidenceBand = ConfidenceBand.WEAK
     auto_tags: tuple[str, ...] = ()
     work_events: tuple[WorkEventDocument, ...] = ()

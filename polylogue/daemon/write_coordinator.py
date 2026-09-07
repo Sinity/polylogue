@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar
 
+from polylogue.core.write_hold import enter_write_hold, exit_write_hold
 from polylogue.core.write_lease import bind_write_lease_thread, current_write_lease, write_lease
 from polylogue.logging import get_logger
 
@@ -55,9 +56,11 @@ _DETACHED_WRITER_FAILURE_RESERVED_ACTOR_PREFIX = "<other>"
 #: Declared hold budgets, longest matching actor prefix wins.
 #:
 #: The coordinator cannot abort an operation that is already inside a SQLite
-#: transaction, so a budget does not preempt: it makes an over-long hold
-#: impossible to miss. Bounding a hold for real means restructuring the work
-#: into many short holds, which is what the budget is here to force.
+#: transaction, so a budget does not preempt. It is published to the admitted
+#: unit of work through :mod:`polylogue.core.write_hold`, and every checkpoint
+#: that unit offers -- between files, between records -- ends the unit with a
+#: typed ``WriteHoldBudgetError`` once the bound is spent, so overshoot is
+#: one work item.
 #:
 #: The numbers come from measurement, not preference. A non-gated writer times
 #: out after the storage layer's busy timeout -- 30 s, DB_TIMEOUT in
@@ -374,6 +377,8 @@ class DaemonWriteCoordinator:
             self._lock.release()
             raise RuntimeError("coordinator execution has no owning task")
         token = _ACTIVE_LEASE.set((self, owner))
+        budget_s = write_hold_budget_s(request.actor)
+        hold_token = enter_write_hold(request.actor, budget_s)
         outcome: WriteOutcome = "success"
         try:
             # Establish the storage-side authorization in the coordinator-owned
@@ -389,11 +394,11 @@ class DaemonWriteCoordinator:
             outcome = "error"
             raise
         finally:
+            exit_write_hold(hold_token)
             _ACTIVE_LEASE.reset(token)
             if request.caller_cancelled and outcome == "success":
                 outcome = "cancelled"
             hold_seconds = time.perf_counter() - acquired_at
-            budget_s = write_hold_budget_s(request.actor)
             over_budget = hold_seconds > budget_s
             if over_budget:
                 self._over_budget_holds += 1

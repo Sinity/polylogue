@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
@@ -43,6 +44,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
+from tests.infra.live_ingest import write_session_counts_sync
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
@@ -887,20 +889,34 @@ def _record_to_parsed_session(
         return None
 
     def _blocks(message: MessageRecord) -> list[ParsedContentBlock]:
-        return [
-            ParsedContentBlock(
-                type=block.type,
-                text=block.text,
-                tool_name=block.tool_name,
-                tool_id=block.tool_id,
-                tool_input=_maybe_json_object(block.tool_input),
-                metadata=_maybe_json_object(block.metadata),
-                is_error=None if block.tool_result_is_error is None else bool(block.tool_result_is_error),
-                exit_code=block.tool_result_exit_code,
-                tool_outcome=block.tool_outcome,
+        parsed_blocks: list[ParsedContentBlock] = []
+        for block in message.blocks or []:
+            is_error = None if block.tool_result_is_error is None else bool(block.tool_result_is_error)
+            exit_code = block.tool_result_exit_code
+            unknown_reason = block.tool_result_outcome_unknown_reason
+            if (
+                block.type is BlockType.TOOL_RESULT
+                and is_error is None
+                and exit_code is None
+                and block.tool_outcome is None
+                and unknown_reason is None
+            ):
+                unknown_reason = "not_reported"
+            parsed_blocks.append(
+                ParsedContentBlock(
+                    type=block.type,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_id=block.tool_id,
+                    tool_input=_maybe_json_object(block.tool_input),
+                    metadata=_maybe_json_object(block.metadata),
+                    is_error=is_error,
+                    exit_code=exit_code,
+                    tool_outcome=block.tool_outcome,
+                    outcome_unknown_reason=unknown_reason,
+                )
             )
-            for block in (message.blocks or [])
-        ]
+        return parsed_blocks
 
     parsed_messages = [
         ParsedMessage(
@@ -1008,8 +1024,12 @@ async def save_current_archive_records(
     """Seed current archive rows through the parsed-session writer."""
 
     parsed = _record_to_parsed_session(session, messages, attachments)
-    result: dict[str, int] = await repository.save_parsed_session(parsed, _writer_hash(session.content_hash))
-    return result
+    return await asyncio.to_thread(
+        write_session_counts_sync,
+        repository.backend.db_path,
+        parsed,
+        content_hash=_writer_hash(session.content_hash),
+    )
 
 
 async def save_session_to_archive(
@@ -1027,10 +1047,9 @@ async def save_session_to_archive(
     backend write path. Content blocks must be attached to their
     ``MessageRecord.content_blocks`` (no separate block-write step exists).
 
-    ``raw_id`` is not propagated by the parsed-session writer path
-    (``ArchiveStore.write_parsed`` never receives it), so a follow-up UPDATE
-    keyed on ``(origin, native_id)`` patches the column when the session
-    record carries one.
+    ``raw_id`` is not propagated by the index-only parsed-session fixture seam,
+    so a follow-up UPDATE keyed on ``(origin, native_id)`` patches the column
+    when the session record carries one.
     """
     from polylogue.storage.repository import SessionRepository
 

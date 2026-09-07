@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
+from polylogue.storage.sqlite.archive_tiers.schema_inventory import _objects_from_connection
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, canonical_schema_manifest, schema_manifest_diff
 
@@ -187,6 +188,53 @@ def _added_migration_versions(base: str, tier: ArchiveTier) -> tuple[dict[int, t
     return {version: tuple(paths) for version, paths in versions.items()}, invalid
 
 
+def _ddl_objects(ddl: str, tier: ArchiveTier) -> dict[str, str] | None:
+    """Return object_ref -> definition digest, or None if the DDL does not render."""
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    try:
+        connection.executescript(ddl)
+        return {obj.object_ref: obj.definition_sha256 for obj in _objects_from_connection(connection, tier)}
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
+def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
+    """True when the rendered DDL differs solely by declared retired removals.
+
+    A retired object is omitted from fresh generations while migrated
+    historical tiers keep it, so no migration runs and no database changes.
+    Anything added or redefined is an ordinary durable evolution.
+    """
+    from polylogue.storage.sqlite.migration_runner import _retired_schema_objects_for_parity
+
+    retired = _retired_schema_objects_for_parity(tier)
+    if not retired:
+        return False
+    old_objects = _ddl_objects(old_ddl, tier)
+    new_objects = _ddl_objects(new_ddl, tier)
+    if old_objects is None or new_objects is None:
+        return False
+    if set(new_objects) - set(old_objects):
+        return False
+    if any(old_objects[ref] != new_objects[ref] for ref in set(old_objects) & set(new_objects)):
+        return False
+    retired_tables = {ref.split(":", 1)[1] for ref in retired if ref.startswith("table:")}
+    for ref in set(old_objects) - set(new_objects):
+        kind_and_name = ref.split(":", 1)[1]
+        if kind_and_name in retired:
+            continue
+        if (
+            kind_and_name.startswith("column:")
+            and f"{kind_and_name.split(':', 1)[1].split('.', 1)[0]}" in retired_tables
+        ):
+            continue
+        return False
+    return True
+
+
 def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[str]:
     """Require effective durable schema changes to use an exact migration chain."""
     base = _merge_base(explicit_base)
@@ -233,7 +281,7 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
                 f"{tier.value}: added durable migrations without a schema-version bump: {sorted(added_versions)}"
             )
 
-        if old_ddl != new_ddl and old_version == new_version:
+        if old_ddl != new_ddl and old_version == new_version and not _is_retirement_only(old_ddl, new_ddl, tier):
             violations.append(f"{tier.value}: rendered DDL changed without a schema-version bump")
     return violations
 

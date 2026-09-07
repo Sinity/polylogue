@@ -12,6 +12,7 @@ reproduces exactly that silent-loss bug.
 from __future__ import annotations
 
 from polylogue.core.enums import BranchType, SessionKind, TitleSource
+from polylogue.sources.dispatch import merge_parsed_session_chunks
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.parsers.claude import parse_code
 
@@ -253,7 +254,8 @@ def test_permission_mode_persists_operational_signal() -> None:
     )
     events = [(e.event_type, e.payload) for e in _typed_events(parsed)]
     assert events == [
-        ("claude_permission_mode", {"permission_mode": "bypassPermissions", "summary": "bypassPermissions"})
+        ("claude_permission_mode", {"permission_mode": "bypassPermissions", "summary": "bypassPermissions"}),
+        ("claude_session_environment", {"permission_modes": {"bypassPermissions": 1}}),
     ]
 
 
@@ -1358,4 +1360,273 @@ def test_forked_from_does_not_displace_a_subagent_parent() -> None:
     assert parsed.branch_type is BranchType.SUBAGENT
     assert [e.event_type for e in parsed.session_events if e.event_type == "claude_forked_from"] == [
         "claude_forked_from"
+    ]
+
+
+def test_attachment_rendered_content_rides_the_attachment_event() -> None:
+    """``rendered[].content`` is the text injected into the model's context.
+
+    Dropping the ``rendered`` assignment in ``_attachment_sidecar_event``
+    reproduces the loss this pins: the structured payload survives and what
+    the model actually read does not. The two are different text here on
+    purpose -- a ``file`` attachment is rendered with line numbers the payload
+    has not got, which is why the payload cannot stand in for it.
+    """
+    rendered_text = "<system-reminder>\n     1\tfrom polylogue import archive\n</system-reminder>"
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-rendered",
+                "attachment": {"type": "file", "filename": "a.py", "content": "from polylogue import archive"},
+                "rendered": [{"content": rendered_text}],
+            }
+        ],
+        "sess-rendered",
+    )
+    events = _typed_events(parsed)
+    assert [e.event_type for e in events] == ["claude_attachment_file"]
+    assert events[0].payload["rendered"] == [rendered_text]
+    assert events[0].payload["content"] == "from polylogue import archive"
+
+
+def test_attachment_rendered_content_keeps_every_entry_in_wire_order() -> None:
+    """A record may carry more than one rendered entry; none of them is a spare."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-rendered-multi",
+                "attachment": {"type": "file", "filename": "a.py"},
+                "rendered": [{"content": "first injected"}, {"content": "second injected"}],
+            }
+        ],
+        "sess-rendered-multi",
+    )
+    assert _typed_events(parsed)[0].payload["rendered"] == ["first injected", "second injected"]
+
+
+def test_bounded_subtype_rendered_content_is_counted_not_stored() -> None:
+    """The rendered text of a bounded subtype IS the body its builder excludes.
+
+    ``skill_listing``'s payload builder keeps skill names and drops the
+    concatenated skill bodies; the rendered text is those same bodies inside a
+    system-reminder wrapper. Storing it verbatim would reinstate exactly what
+    the builder excludes, so only its size is kept -- delete the
+    ``rendered_char_count`` branch and the bounding is decorative.
+    """
+    body = "- polylogue: Query or develop Polylogue session archives."
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-bounded-rendered",
+                "attachment": {"type": "skill_listing", "content": body, "skillCount": 1},
+                "rendered": [{"content": f"<system-reminder>\n{body}\n</system-reminder>"}],
+            }
+        ],
+        "sess-bounded-rendered",
+    )
+    payload = _typed_events(parsed)[0].payload
+    assert payload["rendered_char_count"] == len(f"<system-reminder>\n{body}\n</system-reminder>")
+    assert payload["rendered_count"] == 1
+    assert "rendered" not in payload
+    assert payload["skill_names"] == ["polylogue"]
+
+
+def test_transient_subtype_drops_its_rendered_content_with_the_event() -> None:
+    """A dropped subtype emits no event, so its rendered text has nothing to ride.
+
+    This is the declared consequence of the transient ruling, not an oversight:
+    if a transient subtype ever starts emitting an event, its rendered content
+    rides it and this expectation flips.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-transient-rendered",
+                "attachment": {"type": "total_tokens_reminder", "text": "<total_tokens>7 tokens left</total_tokens>"},
+                "rendered": [
+                    {"content": "<system-reminder>\n<total_tokens>7 tokens left</total_tokens>\n</system-reminder>"}
+                ],
+            }
+        ],
+        "sess-transient-rendered",
+    )
+    assert _typed_events(parsed) == []
+
+
+def test_failed_mcp_servers_survive_the_bounded_delta_payload() -> None:
+    """A capability the session expected and did not get must stay visible.
+
+    ``_bounded_delta_payload`` keeps names and drops body text; reverting it to
+    the names/count-only dict loses the only record that an MCP server's tools
+    were absent, which is otherwise indistinguishable from never having
+    configured the server.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-mcp-failure",
+                "attachment": {
+                    "type": "deferred_tools_delta",
+                    "addedNames": ["Monitor"],
+                    "addedLines": ["Monitor: watch a condition"],
+                    "failedMcpServers": [
+                        {"name": "polylogue", "errorCode": "CONNECT_TIMEOUT", "error": "Connection timed out"}
+                    ],
+                },
+            }
+        ],
+        "sess-mcp-failure",
+    )
+    payload = _typed_events(parsed)[0].payload
+    assert payload["failed_mcp_servers"] == [
+        {"name": "polylogue", "error_code": "CONNECT_TIMEOUT", "error": "Connection timed out"}
+    ]
+    assert payload["added_names"] == ["Monitor"]
+
+
+def test_delta_payload_omits_failed_mcp_servers_when_every_server_connected() -> None:
+    """The key is evidence of a failure, so a clean session must not carry an empty one."""
+    parsed = parse_code(
+        [
+            {
+                "type": "attachment",
+                "sessionId": "sess-mcp-clean",
+                "attachment": {"type": "deferred_tools_delta", "addedNames": ["Monitor"], "failedMcpServers": []},
+            }
+        ],
+        "sess-mcp-clean",
+    )
+    assert "failed_mcp_servers" not in _typed_events(parsed)[0].payload
+
+
+def test_session_environment_event_separates_a_dispatched_lane_from_an_operator_session() -> None:
+    """``entrypoint``/``version``/``permissionMode``/``promptSource`` are read.
+
+    Without ``entrypoint``, an SDK-dispatched lane and an operator's own
+    interactive session produce identical archived sessions -- delete the fold
+    reads and this session is indistinguishable from a ``cli`` one. The counts
+    are per value because ``permissionMode``/``promptSource`` are per-record
+    state, not one session-wide setting.
+    """
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-env",
+                "entrypoint": "sdk-cli",
+                "version": "2.1.263",
+                "permissionMode": "bypassPermissions",
+                "promptSource": "sdk",
+                "timestamp": "2026-01-01T00:00:00Z",
+                "message": {"role": "user", "content": "implement the bead"},
+            },
+            {
+                "type": "attachment",
+                "sessionId": "sess-env",
+                "entrypoint": "sdk-cli",
+                "version": "2.1.263",
+                "timestamp": "2026-01-01T00:00:01Z",
+                "attachment": {"type": "date", "date": "2026-01-01"},
+            },
+        ],
+        "sess-env",
+    )
+    environment = [e for e in parsed.session_events if e.event_type == "claude_session_environment"]
+    assert [e.payload for e in environment] == [
+        {
+            "entrypoints": {"sdk-cli": 2},
+            "cli_versions": {"2.1.263": 2},
+            "permission_modes": {"bypassPermissions": 1},
+            "prompt_sources": {"sdk": 1},
+        }
+    ]
+
+
+def test_session_environment_event_is_absent_when_no_record_carries_provenance() -> None:
+    """An older CLI build stamps none of these keys; that must not fabricate an event."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-no-env",
+                "message": {"role": "user", "content": "hello"},
+            }
+        ],
+        "sess-no-env",
+    )
+    assert [e for e in parsed.session_events if e.event_type == "claude_session_environment"] == []
+
+
+def test_session_environment_counts_every_version_a_resumed_session_spans() -> None:
+    """177 of 14,287 corpus files carry more than one ``version``: a resume across
+    a CLI upgrade. Reading only the first value would name the wrong producer for
+    the tail of the session."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-upgrade",
+                "version": "2.1.261",
+                "message": {"role": "user", "content": "before"},
+            },
+            {
+                "type": "user",
+                "uuid": "u2",
+                "sessionId": "sess-upgrade",
+                "version": "2.1.263",
+                "message": {"role": "user", "content": "after"},
+            },
+        ],
+        "sess-upgrade",
+    )
+    environment = [e for e in parsed.session_events if e.event_type == "claude_session_environment"]
+    assert environment[0].payload["cli_versions"] == {"2.1.261": 1, "2.1.263": 1}
+
+
+def test_session_environment_survives_a_chunked_stream_as_one_row() -> None:
+    """The eager route and a chunk-split stream must agree on the event list.
+
+    ``claude_session_environment`` summarizes the complete record set, so a
+    stream split into chunks must reduce its per-chunk rows to one -- otherwise
+    the archived session's event count and every count inside them depend on
+    the read size that happened to be used.
+    """
+    records = [
+        {
+            "type": "user",
+            "uuid": "u1",
+            "sessionId": "sess-chunked-env",
+            "entrypoint": "sdk-cli",
+            "version": "2.1.261",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "before the upgrade"},
+        },
+        {
+            "type": "user",
+            "uuid": "u2",
+            "sessionId": "sess-chunked-env",
+            "entrypoint": "sdk-cli",
+            "version": "2.1.263",
+            "timestamp": "2026-01-01T00:00:01Z",
+            "message": {"role": "user", "content": "after the upgrade"},
+        },
+    ]
+
+    eager = parse_code(records, "sess-chunked-env")
+    chunked = merge_parsed_session_chunks(
+        [parse_code(records[:1], "sess-chunked-env"), parse_code(records[1:], "sess-chunked-env")]
+    )[0]
+
+    assert [e.event_type for e in chunked.session_events] == [e.event_type for e in eager.session_events]
+    environment = [e for e in chunked.session_events if e.event_type == "claude_session_environment"]
+    assert [e.payload for e in environment] == [
+        {"entrypoints": {"sdk-cli": 2}, "cli_versions": {"2.1.261": 1, "2.1.263": 1}}
     ]

@@ -1,15 +1,10 @@
 """Table-driven column specifications for archive_tiers hot core.
 
-Consolidates hand-aligned column lists, INSERT placeholders, and tuple ordering
-into a single source of truth per table. Eliminates 388 manual row[col]
-accessors and triplicates of each column list (DDL, INSERT, tuple order).
-
-Design: Column specs are dataclass-derived (via dataclasses.fields()) with
-expression support for NULL literals, sqlite_text coercions, JSON decoders, and
-GENERATED column markers. Specs drive:
-  - INSERT statement generation (column list + placeholders)
-  - Tuple order (what order to yield values in)
-  - Row extraction (type-safe mapping from sqlite3.Row to typed fields)
+One declaration per column owns the mechanical row shape: DDL definition,
+INSERT column list and placeholders, bound-value order, upsert conflict
+policy, the SELECT projection a record mapper consumes, and the record-to-
+domain keyword plumbing. Semantic validation, enum meaning and authored
+domain fields stay with the typed models.
 """
 
 from __future__ import annotations
@@ -17,9 +12,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, TypeVar
-
-T = TypeVar("T")
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,14 +20,14 @@ class ColumnSpec:
     """Specification for a single column in a table.
 
     name: SQL column name
-    sql_type: SQL type (for reference only)
     is_generated: True if column is GENERATED ALWAYS (should not be in INSERT)
     extract: Function to extract value from source object, or None if N/A
     extract_placeholder: SQL expression for INSERT VALUES (?, json_extract(...), NULL, etc)
+    conflict_update: right-hand side this column contributes to an upsert's
+        DO UPDATE SET, or None when a conflict must keep the stored value
     """
 
     name: str
-    sql_type: str = "TEXT"
     is_generated: bool = False
     extract: Callable[[Any], Any] | None = None
     extract_placeholder: str = "?"
@@ -44,14 +37,14 @@ class ColumnSpec:
     record_transform: Callable[[Any], Any] | None = None
     domain_name: str | None = None
     domain_transform: Callable[[Any], Any] | None = None
+    conflict_update: str | None = None
 
     @property
     def ddl_definition(self) -> str:
         """Return the canonical SQL definition for this storage column."""
-        if self.ddl_sql is not None:
-            return self.ddl_sql
-        generated = " GENERATED ALWAYS AS (...) STORED" if self.is_generated else ""
-        return f"{self.name} {self.sql_type}{generated}"
+        if self.ddl_sql is None:
+            raise ValueError(f"Column {self.name} has no DDL definition")
+        return self.ddl_sql
 
     def select_sql(self, table_alias: str) -> str:
         """Return this column's row-projection expression.
@@ -88,11 +81,6 @@ class TableColumnSpec:
         return tuple(col for col in (*self.all_columns, *self.record_only_columns) if col.record_name is not None)
 
     @property
-    def ddl_column_definitions(self) -> str:
-        """Render the table's column definitions from the storage declaration."""
-        return ",\n    ".join(col.ddl_definition for col in self.all_columns)
-
-    @property
     def ddl_body(self) -> str:
         """Render columns and table-level constraints for a CREATE TABLE body."""
         definitions = tuple(col.ddl_definition for col in self.all_columns)
@@ -118,14 +106,23 @@ class TableColumnSpec:
         """Generate VALUES placeholder string (?, ?, NULL, etc)."""
         return ", ".join(col.extract_placeholder for col in self.insert_columns)
 
-    @property
-    def select_column_names(self) -> str:
-        """Generate SELECT column list (all columns including GENERATED)."""
-        return ", ".join(col.name for col in self.all_columns)
-
     def record_select_column_names(self, table_alias: str) -> str:
         """Generate the SELECT projection consumed by the record mapper."""
         return ",\n    ".join(col.select_sql(table_alias) for col in self.record_columns)
+
+    @property
+    def conflict_update_columns(self) -> tuple[ColumnSpec, ...]:
+        """Columns whose value an upsert replaces on conflict, in declared order."""
+        return tuple(col for col in self.all_columns if col.conflict_update is not None)
+
+    def conflict_update_sql(self, indent: str = "") -> str:
+        """Render the ``DO UPDATE SET`` assignments this table declares.
+
+        A column with no ``conflict_update`` keeps its stored value, which is
+        what the counter and identity columns require.
+        """
+        separator = ",\n" + indent
+        return separator.join(f"{col.name} = {col.conflict_update}" for col in self.conflict_update_columns)
 
     def extract_tuple(self, source_obj: Any) -> tuple[Any, ...]:
         """Extract a tuple of values from a source object in insert-column order.
@@ -141,10 +138,6 @@ class TableColumnSpec:
                 raise ValueError(f"No extractor defined for column {col.name}")
             result.append(col.extract(source_obj))
         return tuple(result)
-
-    def row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
-        """Convert a sqlite3.Row to a typed dict using column specs."""
-        return {col.name: row[col.name] for col in self.all_columns}
 
     def row_to_record_kwargs(self, row: sqlite3.Row) -> dict[str, Any]:
         """Extract only selected record fields, preserving omitted-column defaults."""
@@ -179,15 +172,3 @@ class TableColumnSpec:
                 value = getattr(record, col.record_name)
                 return col.domain_transform(value) if col.domain_transform is not None else value
         raise KeyError(f"{self.table_name} has no domain field {domain_name!r}")
-
-    def row_to_typed_dict(
-        self, row: sqlite3.Row, type_mapper: dict[str, Callable[[Any], Any]] | None = None
-    ) -> dict[str, Any]:
-        """Convert a sqlite3.Row to a typed dict with optional per-column transformers."""
-        result = {}
-        for col in self.all_columns:
-            value = row[col.name]
-            if type_mapper and col.name in type_mapper:
-                value = type_mapper[col.name](value)
-            result[col.name] = value
-        return result

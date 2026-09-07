@@ -61,6 +61,30 @@ def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
 
 
+def _add_historical_supersession_receipts(conn: sqlite3.Connection) -> None:
+    """Give the tier the retired receipt table a migrated historical archive keeps.
+
+    Fresh source generations no longer declare it, so the source-index coverage
+    law's historical-explanation branch needs the table put back by hand.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
+            raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+            blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
+            duplicate_of_raw_id         TEXT NOT NULL,
+            duplicate_of_session_id     TEXT NOT NULL,
+            previous_revision_authority TEXT NOT NULL,
+            promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
+            tool_version                TEXT NOT NULL,
+            backup_manifest_path        TEXT NOT NULL,
+            detail                      TEXT NOT NULL DEFAULT ''
+        ) STRICT
+        """
+    )
+
+
 def _insert_claude_identity_collision_rows(source_db: Path) -> tuple[str, ...]:
     """Add decoys that independently collide on origin and logical source key."""
     collision_rows = (
@@ -554,6 +578,50 @@ def test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap(tmp_path: Path)
     assert check.evidence["orphan_count"] == 0
 
 
+def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path: Path) -> None:
+    """polylogue-5tkbt: I1 read four columns and called everything else untyped.
+
+    A head with a durable schema rejection (``validation_status = 'failed'``)
+    has a typed reason for never materializing; the coverage check simply did
+    not look at that column, and reported the row as having no typed state at
+    all. It now asks the one ladder that types an acquired raw before calling
+    a head untyped, and names the class that explained it.
+
+    Anti-vacuity: drop the typed-elsewhere consultation and this head is untyped
+    again, turning the check red with an empty escape class.
+    """
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms,
+                revision_authority, parsed_at_ms, validation_status
+            )
+            VALUES ('raw-schema-rejected', 'codex-session', 'rejected', '/rejected', ?, 10, 100,
+                    'byte_proven', 100, 'failed')
+            """,
+            (b"v" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage", "convergence-freshness"))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["untyped_count"] == 0
+    assert check.evidence["untyped_sample"] == []
+    assert check.evidence["typed_elsewhere_count"] == 1
+    assert check.evidence["escape_class_counts"] == {"validation_rejected": 1}
+    assert "validation_status" in check.evidence["escape_class_rules"]["validation_rejected"]
+    assert check.evidence["unindexed_head_count"] == 1
+    # I6 shares the ladder, so the same head is not counted as backlog either.
+    assert _check(report, "convergence-freshness").evidence["unindexed_backlog_gap"] == 0
+
+
 def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: Path) -> None:
     """RED TWIN (polylogue-r4jiu): census removal cannot shrink I1's universe.
 
@@ -803,6 +871,7 @@ def test_valid_byte_supersession_receipt_covers_unindexed_head(tmp_path: Path) -
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(source_conn)
         source_conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -843,6 +912,7 @@ def test_byte_supersession_receipt_requires_matching_source_semantics(tmp_path: 
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -880,6 +950,7 @@ def test_invalid_byte_supersession_receipt_does_not_cover_unindexed_head(tmp_pat
             """,
             (b"z" * 32,),
         )
+        _add_historical_supersession_receipts(source_conn)
         source_conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -1950,6 +2021,7 @@ def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Pat
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -2001,6 +2073,7 @@ def test_convergence_freshness_counts_a_receipt_with_the_wrong_twin_bytes(tmp_pa
             """,
             (b"z" * 32,),
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(

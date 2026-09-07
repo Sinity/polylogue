@@ -1052,6 +1052,55 @@ async def test_source_halted_mid_run_takes_no_further_writer_lease(
 
 
 @pytest.mark.asyncio
+async def test_a_chunk_past_its_hold_bound_defers_instead_of_ending_the_catch_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-ipyvj: the typed hold failure ends the chunk, not the run.
+
+    A chunk that reached a checkpoint past its declared writer-hold bound has
+    ended; the files it did not reach are ordinary backlog and the next chunk
+    starts on a fresh hold.
+
+    Anti-vacuity: remove the ``WriteHoldBudgetError`` handler from the chunk
+    loop and the first over-budget chunk aborts the whole catch-up cycle,
+    taking every later chunk -- including the healthy source's -- with it.
+    """
+    from polylogue.core.write_hold import WriteHoldBudgetError
+
+    monkeypatch.setattr(live_watcher, "_CATCH_UP_MAX_BATCH_FILES", 1)
+    coordinator = _RecordingCoordinator()
+    watcher, alpha_files, beta_files = _two_source_watcher(
+        tmp_path,
+        files_per_source=2,
+        write_coordinator=coordinator,
+    )
+    deferred: list[list[Path]] = []
+    monkeypatch.setattr(watcher, "_defer_unaccounted_failed_retries", lambda paths: deferred.append(list(paths)))
+
+    async def fake_ingest(paths: list[Path], **_kwargs: Any) -> Any:
+        if any(path in alpha_files for path in paths):
+            raise WriteHoldBudgetError(
+                actor="watcher.catch_up.chunk",
+                checkpoint="full_acquisition_file",
+                hold_seconds=44.737,
+                budget_s=30.0,
+            )
+        return _stub_metrics(len(paths), paths)
+
+    monkeypatch.setattr(watcher, "_ingest_files", fake_ingest)
+    try:
+        candidates = watcher._scan_catch_up_candidates([alpha_files[0].parent, beta_files[0].parent])
+        await watcher._catch_up_candidates(candidates)
+    finally:
+        watcher.stop()
+
+    chunk_leases = [actor for actor in coordinator.actors if actor == "watcher.catch_up.chunk"]
+    assert len(chunk_leases) == len(alpha_files) + len(beta_files)
+    assert sorted(path for chunk in deferred for path in chunk) == sorted(alpha_files)
+
+
+@pytest.mark.asyncio
 async def test_process_wide_degrade_mid_run_ends_the_catch_up_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -6,10 +6,14 @@ clients do not need a health/probe request before every operation.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from polylogue.core.enums import OperationStatus
 
@@ -28,6 +32,166 @@ class DaemonAuthority(StrEnum):
 class DaemonFallback(StrEnum):
     DIRECT_READ = "direct-read"
     NEVER = "never"
+
+
+class DaemonOperationOutcome(StrEnum):
+    """Lifecycle outcomes for one machine exchange."""
+
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    TIMED_OUT = "timed-out"
+    DISCONNECTED_BEFORE_ACCEPTANCE = "disconnected-before-acceptance"
+    DISCONNECTED_AFTER_ACCEPTANCE = "disconnected-after-acceptance"
+    INDETERMINATE = "indeterminate"
+    RESTARTED = "restarted"
+    REJECTED = "rejected"
+
+
+class _OperationPayload(BaseModel):
+    """Base for a concrete machine-operation payload type."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class StatusRequest(_OperationPayload):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class QueryRequest(_OperationPayload):
+    params: dict[str, object] = Field(default_factory=dict)
+
+
+class QueryUnitsRequest(QueryRequest):
+    pass
+
+
+class CompletionRequest(_OperationPayload):
+    pass
+
+
+class FacetsRequest(QueryRequest):
+    pass
+
+
+class IngestRequest(_OperationPayload):
+    pass
+
+
+class DeletePreviewRequest(_OperationPayload):
+    pass
+
+
+class DeleteAuthorizeRequest(_OperationPayload):
+    pass
+
+
+class DeleteCancelRequest(_OperationPayload):
+    pass
+
+
+class DeleteExecuteRequest(_OperationPayload):
+    pass
+
+
+class SessionTagRequest(_OperationPayload):
+    pass
+
+
+class SessionMetadataRequest(_OperationPayload):
+    pass
+
+
+class _OperationResult(BaseModel):
+    """Base for declared result payloads; envelopes own authority metadata."""
+
+    model_config = ConfigDict(extra="allow", frozen=True)
+
+
+class StatusResult(_OperationResult):
+    pass
+
+
+class QueryResult(_OperationResult):
+    pass
+
+
+class QueryUnitsResult(_OperationResult):
+    pass
+
+
+class CompletionResult(_OperationResult):
+    pass
+
+
+class FacetsResult(_OperationResult):
+    pass
+
+
+class IngestResult(_OperationResult):
+    pass
+
+
+class MutationResult(_OperationResult):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedOperationReference:
+    """Immutable reference returned after durable admission of long work."""
+
+    operation_id: str
+    accepted_at: str
+    status_operation: str = "operation.status"
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "operation_id": self.operation_id,
+            "accepted_at": self.accepted_at,
+            "status_operation": self.status_operation,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoritySnapshot:
+    """Coherent authority evidence attached to every result."""
+
+    archive_identity: str
+    generation: str
+    schema_versions: dict[str, int]
+    served_by: str
+    elapsed_ms: int = 0
+    queue_ms: int = 0
+    degraded_components: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "archive_identity": self.archive_identity,
+            "generation": self.generation,
+            "schema_versions": dict(self.schema_versions),
+            "served_by": self.served_by,
+            "elapsed_ms": self.elapsed_ms,
+            "queue_ms": self.queue_ms,
+            "degraded_components": list(self.degraded_components),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DaemonOperationError:
+    code: str
+    detail: str
+    retryable: bool = False
+    outcome: DaemonOperationOutcome = DaemonOperationOutcome.FAILED
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "detail": self.detail,
+            "retryable": self.retryable,
+            "outcome": self.outcome.value,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +224,25 @@ class DaemonOperationSpec:
         "queue_ms",
         "degraded_components",
     )
+    request_type: str = ""
+    result_type: str = ""
+    request_model: type[_OperationPayload] = _OperationPayload
+    result_model: type[_OperationResult] = _OperationResult
+    idempotent: bool = False
+    cancellation_outcomes: tuple[str, ...] = (
+        "cancelled",
+        "timed-out",
+        "disconnected-before-acceptance",
+        "disconnected-after-acceptance",
+        "indeterminate",
+    )
+
+    def __post_init__(self) -> None:
+        if self.request_type and self.result_type:
+            return
+        stem = "".join(part.capitalize() for part in self.name.replace(".", "-").split("-"))
+        object.__setattr__(self, "request_type", self.request_type or f"{stem}Request")
+        object.__setattr__(self, "result_type", self.result_type or f"{stem}Result")
 
     @property
     def direct_allowed(self) -> bool:
@@ -81,21 +264,81 @@ class DaemonOperationSpec:
             "max_body_bytes": self.max_body_bytes,
             "error_contract": self.error_contract,
             "authority_metadata": list(self.authority_metadata),
+            "request_type": self.request_type,
+            "result_type": self.result_type,
+            "request_model": self.request_model.__name__,
+            "result_model": self.result_model.__name__,
+            "idempotent": self.idempotent,
+            "cancellation_outcomes": list(self.cancellation_outcomes),
         }
 
 
 DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
     DaemonOperationSpec(
-        "cli.query", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="cli.query.result/v1"
+        "cli.query",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="cli.query.result/v1",
+        request_type="QueryRequest",
+        result_type="QueryResult",
+        request_model=QueryRequest,
+        result_model=QueryResult,
     ),
     DaemonOperationSpec(
-        "query.units", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="query.units.result/v1"
+        "query.units",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="query.units.result/v1",
+        request_type="QueryUnitsRequest",
+        result_type="QueryUnitsResult",
+        request_model=QueryUnitsRequest,
+        result_model=QueryUnitsResult,
     ),
-    DaemonOperationSpec("status", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="status.result/v1"),
     DaemonOperationSpec(
-        "completion", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="completion.result/v1"
+        "status",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="status.result/v1",
+        request_type="StatusRequest",
+        result_type="StatusResult",
+        request_model=StatusRequest,
+        result_model=StatusResult,
     ),
-    DaemonOperationSpec("facets", DaemonAuthority.READ, DaemonFallback.DIRECT_READ, result_contract="facets.result/v1"),
+    DaemonOperationSpec(
+        "completion",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="completion.result/v1",
+        request_type="CompletionRequest",
+        result_type="CompletionResult",
+        request_model=CompletionRequest,
+        result_model=CompletionResult,
+    ),
+    DaemonOperationSpec(
+        "facets",
+        DaemonAuthority.READ,
+        DaemonFallback.DIRECT_READ,
+        result_contract="facets.result/v1",
+        request_type="FacetsRequest",
+        result_type="FacetsResult",
+        request_model=FacetsRequest,
+        result_model=FacetsResult,
+    ),
+    DaemonOperationSpec(
+        "ingest",
+        DaemonAuthority.LONG_RUNNING,
+        DaemonFallback.NEVER,
+        capability="archive.ingest",
+        deadline_s=300.0,
+        progress=True,
+        accepted_reference=True,
+        request_contract="ingest.request/v1",
+        result_contract="ingest.result/v1",
+        request_type="IngestRequest",
+        result_type="IngestResult",
+        request_model=IngestRequest,
+        result_model=IngestResult,
+    ),
     DaemonOperationSpec(
         "mutation.session.delete.preview",
         DaemonAuthority.WRITE,
@@ -107,6 +350,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         max_body_bytes=64 * 1024 * 1024,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",
+        request_type="DeletePreviewRequest",
+        result_type="MutationResult",
+        request_model=DeletePreviewRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",
@@ -116,6 +363,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=30.0,
         request_contract="mutation.session.delete.authorize.request/v1",
         result_contract="mutation.session.delete.authorize.result/v1",
+        request_type="DeleteAuthorizeRequest",
+        result_type="MutationResult",
+        request_model=DeleteAuthorizeRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.cancel",
@@ -125,6 +376,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=30.0,
         request_contract="mutation.session.delete.cancel.request/v1",
         result_contract="mutation.session.delete.cancel.result/v1",
+        request_type="DeleteCancelRequest",
+        result_type="MutationResult",
+        request_model=DeleteCancelRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.execute",
@@ -133,8 +388,13 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         capability="archive.delete_session",
         deadline_s=300.0,
         progress=True,
+        accepted_reference=True,
         request_contract="mutation.session.delete.execute.request/v1",
         result_contract="mutation.result/v1",
+        request_type="DeleteExecuteRequest",
+        result_type="MutationResult",
+        request_model=DeleteExecuteRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.tag",
@@ -145,6 +405,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=120.0,
         request_contract="mutation.session.tag.request/v1",
         result_contract="mutation.result/v1",
+        request_type="SessionTagRequest",
+        result_type="MutationResult",
+        request_model=SessionTagRequest,
+        result_model=MutationResult,
     ),
     DaemonOperationSpec(
         "mutation.session.metadata",
@@ -155,6 +419,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=120.0,
         request_contract="mutation.session.metadata.request/v1",
         result_contract="mutation.result/v1",
+        request_type="SessionMetadataRequest",
+        result_type="MutationResult",
+        request_model=SessionMetadataRequest,
+        result_model=MutationResult,
     ),
 )
 
@@ -171,6 +439,13 @@ MUTATION_OPERATION_NAMES: frozenset[str] = frozenset(
 if len({spec.name for spec in DAEMON_OPERATION_SPECS}) != len(DAEMON_OPERATION_SPECS):
     raise RuntimeError("daemon operation names must be unique")
 
+DAEMON_OPERATION_SCHEMA: dict[str, dict[str, object]] = {spec.name: spec.to_dict() for spec in DAEMON_OPERATION_SPECS}
+
+
+def daemon_operation_schema() -> dict[str, dict[str, object]]:
+    """Return a defensive copy used by clients, server discovery and tests."""
+    return {name: dict(metadata) for name, metadata in DAEMON_OPERATION_SCHEMA.items()}
+
 
 def daemon_operation_spec(name: str) -> DaemonOperationSpec | None:
     return next((spec for spec in DAEMON_OPERATION_SPECS if spec.name == name), None)
@@ -183,8 +458,12 @@ class DaemonOperationRequest:
     archive_root: str | None = None
     index_schema_version: int | None = None
     daemon_version: str | None = None
+    expected_archive_identity: str | None = None
+    expected_generation_id: str | None = None
     request_id: str | None = None
     deadline_ms: int | None = None
+    idempotency_key: str | None = None
+    cancellation_token: str | None = None
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, object]) -> DaemonOperationRequest:
@@ -197,38 +476,86 @@ class DaemonOperationRequest:
             raise ValueError("payload must be an object")
         if protocol != DAEMON_OPERATION_PROTOCOL:
             raise ValueError("unsupported daemon operation protocol")
-        if daemon_operation_spec(operation) is None:
+        spec = daemon_operation_spec(operation)
+        if spec is None:
             raise ValueError(f"operation is not declared: {operation}")
+        try:
+            validated_payload = spec.request_model.model_validate(payload).model_dump(mode="json")
+        except ValidationError as exc:
+            raise ValueError(f"invalid {spec.request_type} payload: {exc}") from exc
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
+        expected_archive_identity = raw.get("expected_archive_identity")
+        expected_generation_id = raw.get("expected_generation_id")
         request_id = raw.get("request_id")
         deadline_ms = raw.get("deadline_ms")
+        idempotency_key = raw.get("idempotency_key")
+        cancellation_token = raw.get("cancellation_token")
         if archive_root is not None and not isinstance(archive_root, str):
             raise ValueError("archive_root must be a string")
         if schema is not None and (not isinstance(schema, int) or isinstance(schema, bool)):
             raise ValueError("index_schema_version must be an integer")
         if version is not None and not isinstance(version, str):
             raise ValueError("daemon_version must be a string")
+        if expected_archive_identity is not None and (
+            not isinstance(expected_archive_identity, str) or not expected_archive_identity
+        ):
+            raise ValueError("expected_archive_identity must be a non-empty string")
+        if expected_generation_id is not None and (
+            not isinstance(expected_generation_id, str) or not expected_generation_id
+        ):
+            raise ValueError("expected_generation_id must be a non-empty string")
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a non-empty string")
         if deadline_ms is not None and (
             not isinstance(deadline_ms, int) or isinstance(deadline_ms, bool) or deadline_ms <= 0
         ):
             raise ValueError("deadline_ms must be a positive integer")
-        return cls(operation.strip(), dict(payload), archive_root, schema, version, request_id, deadline_ms)
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not idempotency_key.strip()):
+            raise ValueError("idempotency_key must be a non-empty string")
+        if cancellation_token is not None and (
+            not isinstance(cancellation_token, str) or not cancellation_token.strip()
+        ):
+            raise ValueError("cancellation_token must be a non-empty string")
+        return cls(
+            operation.strip(),
+            validated_payload,
+            archive_root,
+            schema,
+            version,
+            expected_archive_identity,
+            expected_generation_id,
+            request_id,
+            deadline_ms,
+            idempotency_key,
+            cancellation_token,
+        )
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable exchange identity used for safe duplicate recovery."""
+        encoded = json.dumps(self.to_dict(), sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "operation": self.operation,
             "payload": self.payload,
             "archive_root": self.archive_root,
             "index_schema_version": self.index_schema_version,
             "daemon_version": self.daemon_version,
+            "expected_archive_identity": self.expected_archive_identity,
+            "expected_generation_id": self.expected_generation_id,
             "request_id": self.request_id,
             "deadline_ms": self.deadline_ms,
         }
+        if self.idempotency_key is not None:
+            result["idempotency_key"] = self.idempotency_key
+        if self.cancellation_token is not None:
+            result["cancellation_token"] = self.cancellation_token
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +574,8 @@ class DaemonOperationEnvelope:
     result: object = None
     error: dict[str, object] | None = None
     request_id: str | None = None
+    accepted_reference: dict[str, object] | None = None
+    authority_snapshot: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -265,35 +594,51 @@ class DaemonOperationEnvelope:
             "result": self.result,
             "error": self.error,
             "request_id": self.request_id,
+            "accepted_reference": self.accepted_reference,
+            "authority_snapshot": self.authority_snapshot,
         }
 
 
 def archive_identity(
     archive_root: Path, *, schema_version: int, daemon_version: str
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """Build an identity/readiness projection without a separate probe."""
+    """Build one archive authority snapshot without a separate probe.
 
+    File size and mtime are not generation evidence: a WAL commit can change
+    neither.  The operation boundary already has a canonical archive identity
+    resolver which pins the active index generation and all tier versions.
+    Keep the historical parameters for callers while deriving the returned
+    evidence from that authority instead of inventing a second identity.
+    """
+
+    from polylogue.operations.authority import authority_for_root
+
+    authority = authority_for_root(archive_root, server_identity="daemon").to_dict()
+    tier_schema_versions = authority["tier_schema_versions"]
+    if not isinstance(tier_schema_versions, dict):  # pragma: no cover - AuthorityEnvelope is typed
+        raise RuntimeError("archive authority omitted tier schema versions")
     index_path = archive_root / "index.db"
-    try:
-        stat = index_path.stat()
-    except OSError:
-        stat = None
-    generation: dict[str, object] = {
-        "index_schema_version": schema_version,
-        "index_size_bytes": stat.st_size if stat is not None else 0,
-        "index_mtime_ns": stat.st_mtime_ns if stat is not None else None,
-    }
-    ready = stat is not None
+    ready = index_path.is_file()
+    actual_index_schema = tier_schema_versions.get("index")
+    if not isinstance(actual_index_schema, int):  # pragma: no cover - tier registry is typed
+        raise RuntimeError("archive authority omitted index schema version")
     archive: dict[str, object] = {
         "root": str(archive_root),
         "daemon_version": daemon_version,
-        "index_schema_version": schema_version,
-        "archive_identity": str(archive_root.resolve()),
+        "index_schema_version": actual_index_schema,
+        "archive_identity": authority["archive_epoch"],
+        "tier_schema_versions": tier_schema_versions,
+    }
+    generation: dict[str, object] = {
+        "id": authority["generation_id"],
+        "index_schema_version": actual_index_schema,
+        "tier_schema_versions": tier_schema_versions,
     }
     readiness: dict[str, object] = {
         "state": "ready" if ready else "unavailable",
         "ready": ready,
         "reason": None if ready else "index_missing",
+        "degraded_components": authority["degraded"],
     }
     return archive, generation, readiness
 
@@ -306,11 +651,17 @@ __all__ = [
     "MAX_OPERATION_BODY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
     "DaemonAuthority",
+    "DaemonOperationOutcome",
     "DaemonFallback",
     "DaemonOperationSpec",
     "DaemonOperationEnvelope",
     "DaemonOperationRequest",
+    "AcceptedOperationReference",
+    "AuthoritySnapshot",
+    "DaemonOperationError",
     "OperationStatus",
     "archive_identity",
     "daemon_operation_spec",
+    "daemon_operation_schema",
+    "DAEMON_OPERATION_SCHEMA",
 ]

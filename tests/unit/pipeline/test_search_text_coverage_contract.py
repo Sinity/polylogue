@@ -9,6 +9,7 @@ from polylogue.archive.query.expression import compile_expression, parse_unit_so
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 _WRITE_TOKEN = "write-body-needle"
 _EDIT_OLD_TOKEN = "edit-old-body-needle"
@@ -47,7 +48,7 @@ def test_action_body_lookup_paths_execute(tmp_path: Path) -> None:
     )
 
     with ArchiveStore(tmp_path / "archive") as archive:
-        session_id = archive.write_parsed(session)
+        session_id = write_index_session(archive, session)
 
         terminal_source = parse_unit_source_expression(f'actions where tool:write AND text:"{_WRITE_TOKEN}"')
         assert terminal_source is not None

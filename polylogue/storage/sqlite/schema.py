@@ -66,6 +66,8 @@ def assert_supported_archive_layout(conn: sqlite3.Connection) -> None:
 def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: str | None = None) -> None:
     """Read-only mode counterpart of :func:`assert_supported_archive_layout`."""
     snapshot = capture_schema_snapshot(conn)
+    # Version is the primary admission contract: when it is stale, report the
+    # lifecycle action for rebuilding or upgrading before inspecting identity.
     if snapshot.current_version not in (0, SCHEMA_VERSION):
         lifecycle_action = "upgrade_runtime" if snapshot.current_version > SCHEMA_VERSION else "rebuild_index"
         raise SchemaVersionMismatchError(

@@ -49,6 +49,7 @@ from polylogue.storage.sqlite.schema_manifest import (
     schema_manifest_diff,
     schema_manifest_diff_is_message_fts_only,
 )
+from tests.infra.live_ingest import write_index_session
 
 # ---------------------------------------------------------------------------
 # Canonical FTS triggers — see docs/internals.md
@@ -666,7 +667,7 @@ def test_admitted_missing_message_fts_refuses_block_search_with_a_typed_error(tm
         ],
     )
     with ArchiveStore(root) as writer:
-        writer.write_parsed(session)
+        write_index_session(writer, session)
 
     with sqlite3.connect(root / "index.db") as conn:
         for trigger in ("messages_fts_ai", "messages_fts_ad", "messages_fts_au"):

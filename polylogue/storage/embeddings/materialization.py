@@ -44,6 +44,10 @@ from polylogue.storage.embeddings.tuple_generation import (
 )
 from polylogue.storage.introspection import index_exists as _index_exists
 from polylogue.storage.introspection import table_exists as _table_exists
+from polylogue.storage.sqlite.connection_profile import (
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 
@@ -1307,10 +1311,12 @@ def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
 def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_db_path: Path | None = None) -> None:
     """Flag every archive session for embedding rebuild under lifecycle admission."""
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
     resolved_embeddings = (
         embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
     )
+    require_write_lease("embedding lifecycle bootstrap", archive_root=resolved_embeddings.parent)
     if not resolved_embeddings.exists():
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1325,7 +1331,12 @@ def mark_all_archive_sessions_needs_reindex(index_db_path: Path, *, embeddings_d
 def _mark_all_archive_sessions_needs_reindex(
     index_db_path: Path, embeddings_binding: EmbeddingGenerationBinding
 ) -> None:
-    conn = sqlite3.connect(embeddings_binding.database_path, timeout=30.0)
+    conn = open_isolated_write_connection(
+        embeddings_binding.database_path,
+        purpose="embedding lifecycle reindex",
+        timeout=30.0,
+        archive_root=embeddings_binding.archive_root,
+    )
     try:
         conn.execute("ATTACH DATABASE ? AS idx", (str(index_db_path),))
         with conn:
@@ -1529,10 +1540,12 @@ def embed_archive_session_sync(
 ) -> EmbedSessionOutcome:
     """Admit and serialize the complete archive embedding write route."""
     from polylogue.storage.embeddings.generations import EmbeddingGenerationStore
+    from polylogue.storage.sqlite.write_lease import require_write_lease
 
     resolved_embeddings = (
         embeddings_db_path if embeddings_db_path is not None else index_db_path.with_name("embeddings.db")
     )
+    require_write_lease("embedding archive bootstrap", archive_root=resolved_embeddings.parent)
     if not resolved_embeddings.exists():
         from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
         from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -1586,9 +1599,15 @@ def _embed_archive_session_sync(
         if embeddings_db_path is not None
         else index_db_path.with_name("embeddings.db")
     )
-    index_conn = sqlite3.connect(f"file:{index_db_path}?mode=ro", uri=True, timeout=30.0)
+    index_conn = open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False)
     index_conn.row_factory = sqlite3.Row
-    embeddings_conn = sqlite3.connect(embeddings_path, timeout=30.0)
+    archive_root = Path(lifecycle_binding.archive_root) if lifecycle_binding is not None else index_db_path.parent
+    embeddings_conn = open_isolated_write_connection(
+        embeddings_path,
+        purpose="embedding materialization",
+        timeout=30.0,
+        archive_root=archive_root,
+    )
     attempted_message_refs: tuple[str, ...] = ()
     attempt = None
     session: sqlite3.Row | None = None
@@ -2002,7 +2021,12 @@ def _ensure_embedding_status_table(db_path: object) -> bool:
     if path is None:
         return False
 
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = open_isolated_write_connection(
+        path,
+        purpose="embedding status table",
+        timeout=30.0,
+        archive_root=path.parent,
+    )
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS embedding_status (
@@ -2030,7 +2054,12 @@ def _record_embedding_success(db_path: object, session_id: str, *, message_count
     path = _usable_db_path(db_path)
     if path is None:
         return
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = open_isolated_write_connection(
+        path,
+        purpose="embedding success receipt",
+        timeout=30.0,
+        archive_root=path.parent,
+    )
     try:
         conn.execute(
             """
@@ -2057,7 +2086,12 @@ def _record_embedding_failure(db_path: object, session_id: str, error: str) -> N
     path = _usable_db_path(db_path)
     if path is None:
         return
-    conn = sqlite3.connect(path, timeout=30.0)
+    conn = open_isolated_write_connection(
+        path,
+        purpose="embedding failure receipt",
+        timeout=30.0,
+        archive_root=path.parent,
+    )
     try:
         conn.execute(
             """
@@ -2082,7 +2116,7 @@ def _embedding_status_row_exists(db_path: object, session_id: str) -> bool:
         return True
 
     try:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30.0)
+        conn = open_readonly_connection(path, timeout_class="background-read", validate_schema=False)
         try:
             if not _table_exists(conn, "embedding_status"):
                 return False

@@ -18,7 +18,7 @@ import unicodedata
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Literal, cast
 from urllib.parse import urlparse
@@ -207,6 +207,31 @@ class ArchiveBlockRow:
     tool_result_outcome_unknown_reason: str | None = None
 
 
+# The compact block read model's own fields name its projection; BLOCKS_SPEC
+# decides which of them are stored columns, so a renamed or dropped column
+# cannot leave a SELECT silently stale. ``metadata`` has no blocks column and
+# is therefore never projected.
+ARCHIVE_BLOCK_ROW_COLUMNS: tuple[str, ...] = tuple(
+    column.name
+    for column in archive_tiers_specs.BLOCKS_SPEC.all_columns
+    if column.name in {field.name for field in fields(ArchiveBlockRow)}
+)
+
+
+def archive_block_row_select_sql(columns: tuple[str, ...] = ARCHIVE_BLOCK_ROW_COLUMNS) -> str:
+    """Render the block projection ``archive_block_row`` consumes."""
+    return ", ".join(columns)
+
+
+def archive_block_row(row: sqlite3.Row, columns: tuple[str, ...] = ARCHIVE_BLOCK_ROW_COLUMNS) -> ArchiveBlockRow:
+    """Hydrate the compact block read model from a row selected over ``columns``."""
+    values: dict[str, Any] = {name: row[name] for name in columns}
+    outcome = values.get("tool_outcome")
+    if outcome is not None:
+        values["tool_outcome"] = ToolOutcome(cast(str, outcome))
+    return ArchiveBlockRow(**values)
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveAttachmentRow:
     attachment_id: str
@@ -272,6 +297,25 @@ class ArchiveMessageRow:
     stop_reason: str | None = None
 
 
+# The compact envelope projection is a subset of the canonical messages row.
+# Its order follows ``MESSAGES_SPEC``; the only read-model alias is the
+# historical ``paste_boundary_state`` name.
+ARCHIVE_MESSAGE_ROW_COLUMNS: tuple[str, ...] = tuple(
+    column.name
+    for column in archive_tiers_specs.MESSAGES_SPEC.all_columns
+    if column.name in {field.name for field in fields(ArchiveMessageRow)}
+    or column.name in {"paste_boundary", "occurred_at_ms"}
+)
+
+
+def archive_message_row_select_sql() -> str:
+    """Render the compact message projection from the canonical declaration."""
+    return ", ".join(
+        "paste_boundary AS paste_boundary_state" if name == "paste_boundary" else name
+        for name in ARCHIVE_MESSAGE_ROW_COLUMNS
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ArchiveAgentPolicy:
     policy_id: str
@@ -326,6 +370,19 @@ class ArchiveSessionEnvelope:
     # ``messages`` holds only the requested window, so callers can page
     # without materializing the whole transcript.
     total_message_count: int | None = None
+
+
+ARCHIVE_SESSION_ENVELOPE_COLUMNS: tuple[str, ...] = tuple(
+    column.name
+    for column in archive_tiers_specs.SESSIONS_SPEC.all_columns
+    if column.name in {field.name for field in fields(ArchiveSessionEnvelope)}
+    or column.name in {"created_at_ms", "updated_at_ms"}
+)
+
+
+def archive_session_envelope_select_sql() -> str:
+    """Render the compact session projection in canonical declaration order."""
+    return ", ".join(ARCHIVE_SESSION_ENVELOPE_COLUMNS)
 
 
 def archive_message_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
@@ -869,99 +926,7 @@ def write_parsed_session_to_archive(
                     {sessions_spec.insert_column_names}
                 ) VALUES ({sessions_spec.insert_placeholder_string})
                 ON CONFLICT(origin, native_id) DO UPDATE SET
-                    raw_id = excluded.raw_id,
-                    parser_fingerprint = excluded.parser_fingerprint,
-                    lowering_fingerprint = excluded.lowering_fingerprint,
-                    branch_type = excluded.branch_type,
-                    active_leaf_message_id = excluded.active_leaf_message_id,
-                    title = COALESCE(excluded.title, sessions.title),
-                    session_kind = excluded.session_kind,
-                    -- Plain overwrite, NOT COALESCE (polylogue-0cn3): title_source/
-                    -- title_ref are a purely derived provenance pair -- every parser
-                    -- branch that sets one of the two sets both together (see e.g.
-                    -- code_parser.py's title heuristic chain), and no
-                    -- durable/user-authored path ever writes them
-                    -- (no rename verb exists on any surface). A COALESCE here was a
-                    -- ratchet: once a weaker parser stored title_source='unknown'
-                    -- (a definite, non-NULL verdict), a later run of an *improved*
-                    -- parser over the same content-hash-unchanged session would
-                    -- never reach this UPDATE at all (the ingest batch's
-                    -- content-hash idempotency check skips re-write entirely), and
-                    -- even a batch that DID reach this UPDATE would have its better
-                    -- verdict silently discarded by COALESCE picking the stale
-                    -- 'unknown' only if excluded happened to be NULL -- which the
-                    -- classification triple never is once cijx.4 made UNKNOWN an
-                    -- explicit member rather than a Python None. Recomputing the
-                    -- whole triple on every write is what actually lets a rebuild
-                    -- (`polylogue ops reset --index && polylogued run`, the
-                    -- documented remedy for a SEMANTIC_REPARSE-class parser fix)
-                    -- re-evaluate every session instead of some subset staying
-                    -- frozen at their first-ever verdict.
-                    title_source = excluded.title_source,
-                    title_ref = excluded.title_ref,
-                    display_name = COALESCE(excluded.display_name, sessions.display_name),
-                    -- Plain overwrite, NOT COALESCE like display_name above:
-                    -- a draft is current mutable state, so a reprocess that finds
-                    -- no non-blank pendingInputs (submitted, or cleared) must
-                    -- actually clear the stored value rather than preserving a
-                    -- now-stale draft forever (polylogue-o4j2).
-                    pending_drafts_json = excluded.pending_drafts_json,
-                    git_branch = excluded.git_branch,
-                    git_repository_url = excluded.git_repository_url,
-                    commit_hash = excluded.commit_hash,
-                    provider_project_ref = excluded.provider_project_ref,
-                    -- title/display_name/instructions_text keep
-                    -- their COALESCE (polylogue-0cn3 sibling audit): each is
-                    -- sometimes genuinely omitted on a given write (e.g. an
-                    -- append-only delta batch, or an origin whose parser doesn't
-                    -- populate that field for this content) without that omission
-                    -- meaning "clear the prior value" -- unlike the classification
-                    -- triple above, no producer treats a bare Python None as an
-                    -- authoritative "recomputed and confirmed absent" verdict for
-                    -- these columns, so preserving the last real value on a NULL
-                    -- write is correct, not a stale-verdict ratchet.
-                    instructions_text = COALESCE(excluded.instructions_text, sessions.instructions_text),
-                    reported_duration_ms = excluded.reported_duration_ms,
-                    reported_cost_usd = excluded.reported_cost_usd,
-                    content_hash = excluded.content_hash,
-                    -- Reversed COALESCE (existing wins over excluded), unlike every
-                    -- other column above: created_at_ms is a durable observed fact
-                    -- (the session's real creation time), not a re-derivable
-                    -- classification, so it is correctly ratcheted once set --
-                    -- included in the polylogue-0cn3 sibling audit as the one
-                    -- column that legitimately never moves.
-                    created_at_ms = CASE
-                        -- A valid producer timestamp outranks a previously-derived
-                        -- value, even when this is the first producer-bearing
-                        -- replay. A derived observation never overwrites producer
-                        -- authority already stored on the session.
-                        WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
-                        WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
-                        ELSE sessions.created_at_ms
-                    END,
-                    updated_at_ms = CASE
-                        -- Force replacement may replace known evidence with a newer
-                        -- producer value, but an incoming NULL is omission, never a
-                        -- command to erase an established timestamp. Keep the
-                        -- interval closed even when only one producer endpoint is
-                        -- supplied: a forced created endpoint may outrun the
-                        -- incoming update, while a forced update may precede the
-                        -- stored created endpoint.
-                        WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN
-                            CASE
-                                WHEN ? AND excluded.created_at_ms IS NOT NULL
-                                    THEN MAX(excluded.updated_at_ms, excluded.created_at_ms)
-                                WHEN sessions.created_at_ms IS NOT NULL
-                                    THEN MAX(excluded.updated_at_ms, sessions.created_at_ms)
-                                ELSE excluded.updated_at_ms
-                            END
-                        WHEN ? AND excluded.updated_at_ms IS NOT NULL
-                             AND sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
-                        WHEN excluded.updated_at_ms IS NULL THEN sessions.updated_at_ms
-                        WHEN sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
-                        WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
-                        ELSE sessions.updated_at_ms
-                    END
+                    {sessions_spec.conflict_update_sql(" " * 20)}
                 """,
                 (
                     *sessions_spec.extract_tuple(session_row_values),
@@ -1430,12 +1395,8 @@ def read_archive_session_envelope(
             conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
     session = conn.execute(
-        """
-        SELECT session_id, native_id, origin, title, session_kind, active_leaf_message_id,
-               parent_session_id, root_session_id, branch_type,
-               title_source, title_ref, instructions_text,
-               created_at_ms, updated_at_ms, git_branch, git_repository_url, provider_project_ref,
-               reported_cost_usd
+        f"""
+        SELECT {archive_session_envelope_select_sql()}
         FROM sessions
         WHERE session_id = ?
         """,
@@ -1494,10 +1455,8 @@ def read_archive_session_envelope(
         )
 
     message_rows = conn.execute(
-        """
-        SELECT message_id, native_id, identity_source, role, position, variant_index, is_active_path, is_active_leaf,
-               message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
+        f"""
+        SELECT {archive_message_row_select_sql()}
         FROM messages
         WHERE session_id = ?
         ORDER BY position, variant_index
@@ -1507,10 +1466,8 @@ def read_archive_session_envelope(
     messages: list[ArchiveMessageRow] = []
     for message in message_rows:
         block_rows = conn.execute(
-            """
-            SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-                   tool_input, language, tool_result_is_error, tool_result_exit_code,
-                   tool_outcome, tool_result_outcome_unknown_reason
+            f"""
+            SELECT {archive_block_row_select_sql()}
             FROM blocks
             WHERE message_id = ?
             ORDER BY position
@@ -1526,26 +1483,7 @@ def read_archive_session_envelope(
                 variant_index=message["variant_index"],
                 is_active_path=bool(message["is_active_path"]),
                 is_active_leaf=bool(message["is_active_leaf"]),
-                blocks=tuple(
-                    ArchiveBlockRow(
-                        block_id=block["block_id"],
-                        message_id=block["message_id"],
-                        block_type=block["block_type"],
-                        text=block["text"],
-                        tool_name=block["tool_name"],
-                        tool_id=block["tool_id"],
-                        semantic_type=block["semantic_type"],
-                        tool_input=block["tool_input"],
-                        language=block["language"],
-                        tool_result_is_error=block["tool_result_is_error"],
-                        tool_result_exit_code=block["tool_result_exit_code"],
-                        tool_outcome=(
-                            ToolOutcome(block["tool_outcome"]) if block["tool_outcome"] is not None else None
-                        ),
-                        tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
-                    )
-                    for block in block_rows
-                ),
+                blocks=tuple(archive_block_row(block) for block in block_rows),
                 message_type=message["message_type"],
                 material_origin=message["material_origin"],
                 word_count=int(message["word_count"] or 0),
@@ -1708,9 +1646,7 @@ def _fetch_message_window(
         upto_params = (upto_position, upto_variant_index)
     message_rows = conn.execute(
         f"""
-        SELECT message_id, native_id, identity_source, role, position, variant_index, is_active_path, is_active_leaf,
-               message_type, material_origin, word_count, has_tool_use, has_thinking, has_paste, occurred_at_ms,
-               paste_boundary AS paste_boundary_state, duration_ms, parent_message_id, stop_reason
+        SELECT {archive_message_row_select_sql()}
         FROM messages
         WHERE session_id = ?{upto_clause}
         ORDER BY position, variant_index
@@ -1724,9 +1660,7 @@ def _fetch_message_window(
     placeholders = ",".join("?" for _ in message_ids)
     block_rows = conn.execute(
         f"""
-        SELECT block_id, message_id, block_type, text, tool_name, tool_id, semantic_type,
-               tool_input, language, tool_result_is_error, tool_result_exit_code,
-               tool_outcome, tool_result_outcome_unknown_reason
+        SELECT {archive_block_row_select_sql()}
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position
@@ -1735,23 +1669,7 @@ def _fetch_message_window(
     ).fetchall()
     blocks_by_message: dict[str, list[ArchiveBlockRow]] = {}
     for block in block_rows:
-        blocks_by_message.setdefault(block["message_id"], []).append(
-            ArchiveBlockRow(
-                block_id=block["block_id"],
-                message_id=block["message_id"],
-                block_type=block["block_type"],
-                text=block["text"],
-                tool_name=block["tool_name"],
-                tool_id=block["tool_id"],
-                semantic_type=block["semantic_type"],
-                tool_input=block["tool_input"],
-                language=block["language"],
-                tool_result_is_error=block["tool_result_is_error"],
-                tool_result_exit_code=block["tool_result_exit_code"],
-                tool_outcome=(ToolOutcome(block["tool_outcome"]) if block["tool_outcome"] is not None else None),
-                tool_result_outcome_unknown_reason=block["tool_result_outcome_unknown_reason"],
-            )
-        )
+        blocks_by_message.setdefault(block["message_id"], []).append(archive_block_row(block))
     attachment_rows = conn.execute(
         f"""
         SELECT r.message_id AS message_id, a.attachment_id AS attachment_id,
@@ -2083,7 +2001,7 @@ def _write_messages(
     """Write message rows using table-driven column specification.
 
     The messages table column spec (archive_tiers_specs.MESSAGES_SPEC) defines:
-      - writable_columns: the ordered list of columns to INSERT (29 total)
+      - writable_columns: the ordered list of columns to INSERT
       - The column names and placeholders are generated from the spec
       - The tuple order is derived from the spec's writable_columns order
 
@@ -2341,7 +2259,7 @@ def _write_blocks(
     """Write block rows using table-driven column specification.
 
     The blocks table column spec (archive_tiers_specs.BLOCKS_SPEC) defines:
-      - writable_columns: the ordered list of columns to INSERT (16 total)
+      - writable_columns: the ordered list of columns to INSERT
       - The column names and placeholders are generated from the spec
       - The tuple order is derived from the spec's writable_columns order
 
@@ -3070,9 +2988,8 @@ def _union_with_existing_rows(
     rows unchanged (ordinary replace, exactly as before this change) with no
     field union and no reinjection. Union only fires when both are known and
     differ -- proven different acquisitions. When either side is unknown
-    (`None` -- e.g. a caller that writes directly via `ArchiveStore.
-    write_parsed()`, used by demo seeding and unit tests, never threads a
-    raw_id through), there is no positive evidence of a different
+    (`None` -- e.g. an index-only fixture writer that never threads a raw_id
+    through), there is no positive evidence of a different
     acquisition, so this also falls back to plain replace rather than
     guessing; approximating "unknown" as "different" would let a corrected
     re-parse's retraction be silently defeated by union whenever a caller
@@ -8768,12 +8685,19 @@ __all__ = [
     "copy_shard_session_rows",
     "prepare_session_shard",
     "ArchiveAgentPolicy",
+    "ARCHIVE_BLOCK_ROW_COLUMNS",
+    "ARCHIVE_MESSAGE_ROW_COLUMNS",
+    "ARCHIVE_SESSION_ENVELOPE_COLUMNS",
     "ArchiveBlockRow",
     "ArchiveMessageRow",
     "ArchiveSessionPhase",
     "ArchiveSessionTag",
     "ArchiveSessionEnvelope",
     "ArchiveSessionWorkEvent",
+    "archive_block_row",
+    "archive_block_row_select_sql",
+    "archive_message_row_select_sql",
+    "archive_session_envelope_select_sql",
     "read_session_agent_policies",
     "read_session_phases",
     "read_session_tags",

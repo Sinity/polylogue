@@ -71,7 +71,6 @@ class SessionRepository(
         async with SessionRepository() as repo:
             conv = await repo.get("claude-ai:abc123")
             convs = await repo.list(limit=10)
-            await repo.save_parsed_session(parsed_session, content_hash)
     """
 
     def __init__(

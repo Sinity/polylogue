@@ -11,8 +11,9 @@ registered only for capabilities the server was configured to enable
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
@@ -23,6 +24,7 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
+from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
     from polylogue.config import Config
@@ -560,6 +562,9 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         )
 
 
+# These projections are served from the dispatcher rather than the insight
+# registry, so the terminal outcome is decided here: it is the boundary that
+# knows how many rows the caller actually received.
 async def _query_insight_projection(
     hooks: ServerCallbacks,
     projection: str,
@@ -596,7 +601,11 @@ async def _query_insight_projection(
         )
         return hooks.json_payload(
             MCPRootPayload(
-                root={"tool_episodes": [item.model_dump(mode="json") for item in episodes], "total": len(episodes)}
+                root={
+                    "tool_episodes": [item.model_dump(mode="json") for item in episodes],
+                    "total": len(episodes),
+                    "outcome": decide_outcome(matched=len(episodes)).to_dict(),
+                }
             ),
             exclude_none=True,
         )
@@ -628,7 +637,11 @@ async def _query_insight_projection(
                 until=until,
                 limit=hooks.clamp_limit(limit),
             )
-            return hooks.json_payload(MCPRootPayload(root=abandoned), exclude_none=True)
+            rows = cast("Sequence[object]", abandoned.get("items") or ())
+            return hooks.json_payload(
+                MCPRootPayload(root={**abandoned, "outcome": decide_outcome(matched=len(rows)).to_dict()}),
+                exclude_none=True,
+            )
 
         assert projection == "stuck_sessions", f"unhandled insight projection: {projection}"
         from polylogue.analysis.archive import SessionLatencyProfileInsightQuery
@@ -639,7 +652,13 @@ async def _query_insight_projection(
             )
         )
         return hooks.json_payload(
-            MCPRootPayload(root={"items": [insight.model_dump(mode="json") for insight in stuck], "total": len(stuck)}),
+            MCPRootPayload(
+                root={
+                    "items": [insight.model_dump(mode="json") for insight in stuck],
+                    "total": len(stuck),
+                    "outcome": decide_outcome(matched=len(stuck)).to_dict(),
+                }
+            ),
             exclude_none=True,
         )
 
@@ -882,6 +901,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 return hooks.json_payload(session_topology_payload(topology, session_id=str(topology.target_id)))
             if view == "messages":
                 from polylogue.operations.authority import authority_for_config
+                from polylogue.surfaces.outcome import lineage_page_outcome
                 from polylogue.surfaces.payloads import (
                     SessionMessagesResponsePayload,
                     message_row_envelope_from_domain,
@@ -907,6 +927,11 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         authority=authority_for_config(
                             hooks.get_polylogue().config,
                             server_identity="direct",
+                        ),
+                        outcome=lineage_page_outcome(
+                            matched=total,
+                            complete=completeness.complete,
+                            truncation_reason=completeness.truncation_reason,
                         ),
                     )
                 )

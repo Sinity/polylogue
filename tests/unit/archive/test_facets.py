@@ -17,6 +17,7 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
+from polylogue.surfaces.outcome import OutcomeEnvelope
 from polylogue.surfaces.payloads import FacetBucketsPayload, FacetsResponse
 
 
@@ -114,6 +115,7 @@ class TestFacetsResponseEnvelope:
     def test_carries_scoped_and_global_buckets_with_alias(self) -> None:
         response = FacetsResponse.model_validate(
             {
+                "outcome": {"state": "ok"},
                 "scoped_to_query": True,
                 "origins": {"chatgpt-export": 1},
                 "scoped": FacetBucketsPayload(origins={"chatgpt-export": 1}, total_sessions=1),
@@ -145,7 +147,7 @@ class TestFacetsResponseEnvelope:
         assert dumped["idf"]["origins"]["chatgpt-export"] == pytest.approx(math.log(3 / 2))
 
     def test_defaults_are_empty(self) -> None:
-        response = FacetsResponse()
+        response = FacetsResponse(outcome=OutcomeEnvelope(state="empty"))
         assert response.scoped_to_query is False
         assert response.scoped.total_sessions == 0
         assert response.global_.total_sessions == 0

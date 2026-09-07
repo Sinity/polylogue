@@ -24,6 +24,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_annotation_schema
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
+from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
 
 
@@ -46,7 +47,8 @@ def _delegation_value(*, mode: str = "imperative") -> dict[str, object]:
 
 def _seed_delegation(archive_root: Path) -> tuple[str, str]:
     with ArchiveStore(archive_root) as archive:
-        parent = archive.write_parsed(
+        parent = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="join-parent",
@@ -81,9 +83,10 @@ def _seed_delegation(archive_root: Path) -> tuple[str, str]:
                         ],
                     ),
                 ],
-            )
+            ),
         )
-        archive.write_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="join-child",
@@ -91,7 +94,7 @@ def _seed_delegation(archive_root: Path) -> tuple[str, str]:
                 messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
                 parent_session_provider_id="join-parent",
                 branch_type=BranchType.SUBAGENT,
-            )
+            ),
         )
     block_id = f"{parent}:n:dispatch:0"
     return f"delegation:{block_id}", f"block:{block_id}"
@@ -103,7 +106,8 @@ def _seed_unresolved_delegation(archive_root: Path) -> tuple[str, str]:
     both dispatches surface honestly as mapping_state='unresolved' rather
     than the retired 'ambiguous' state (polylogue-1vpm.7)."""
     with ArchiveStore(archive_root) as archive:
-        parent = archive.write_parsed(
+        parent = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="join-unresolved-parent",
@@ -126,9 +130,10 @@ def _seed_unresolved_delegation(archive_root: Path) -> tuple[str, str]:
                     )
                     for suffix in ("a", "b")
                 ],
-            )
+            ),
         )
-        archive.write_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="join-unresolved-child",
@@ -136,7 +141,7 @@ def _seed_unresolved_delegation(archive_root: Path) -> tuple[str, str]:
                 messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
                 parent_session_provider_id="join-unresolved-parent",
                 branch_type=BranchType.SUBAGENT,
-            )
+            ),
         )
     block_id = f"{parent}:n:dispatch-a:0"
     return f"delegation:{block_id}", f"block:{block_id}"
@@ -340,7 +345,8 @@ async def test_delegation_join_groups_active_labels_and_reports_nonjoins(
 async def test_join_is_generic_for_session_targets(workspace_env: dict[str, Path]) -> None:
     archive_root = workspace_env["archive_root"]
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="generic-session",
@@ -348,7 +354,7 @@ async def test_join_is_generic_for_session_targets(workspace_env: dict[str, Path
                 created_at="2026-07-02T00:00:00Z",
                 git_repository_url="https://github.com/Sinity/sinex",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            )
+            ),
         )
     schema = AnnotationSchema(
         schema_id="test.session-quality",
@@ -467,13 +473,14 @@ async def test_terminal_lifecycle_join_retains_labeler_and_judgment_provenance(
 ) -> None:
     archive_root = workspace_env["archive_root"]
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=f"lifecycle-{decision}",
                 title="Lifecycle target",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            )
+            ),
         )
     schema = AnnotationSchema(
         schema_id=f"test.lifecycle-{decision}",

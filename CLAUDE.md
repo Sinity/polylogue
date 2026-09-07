@@ -20,14 +20,14 @@ complete staged diff before publication.
 ## Orientation
 
 ```text
-sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materialize→ insights/
+sources/ ─detect→ pipeline/ ─hash+write→ storage/{6 tiers} ─materialize→ analysis/
                                               │                              │
                             surfaces: cli/  mcp/  api/  daemon/  ─read-through─┘
                             verification:   devtools/  tests/  schemas/
 ```
 
-New semantics go into the substrate (`storage`/`insights`) or product layer
-first; surfaces adapt through `insights`/`operations`/`api`. Surface→substrate
+New semantics go into the substrate (`storage`/`analysis`) or product layer
+first; surfaces adapt through `analysis`/`operations`/`api`. Surface→substrate
 imports are a ratchet enforced by `devtools gate layering` (baseline may
 shrink, never grow); substrate→surface imports are forbidden outright.
 
@@ -148,15 +148,20 @@ explicit-and-retryable or a typed permanent refusal.
   needs signalled intent (the `find` keyword, a quoted expression, or field
   syntax) — a bare unquoted word errors with a hint. The grammar
   (`archive/query/expression.py`) is a real DSL lowered to SQL.
-- **MCP**: 10 capability-gated operation-dispatcher tools; adding an operation
+- **MCP**: 12 capability-gated operation-dispatcher tools; adding an operation
   updates the dispatcher's verb table (`EXPECTED_TOOL_NAMES` is derived; a
   missing tool contract fails discovery). Tool contracts are currently
   per-tool, not per-operation, and MCP insight projections are a hard-coded
   set that bypasses the registry — per-operation contracts and
   registry-driven MCP are the direction, owned by polylogue-fja2v/4p1, not
   current truth.
-- **Insights** are descriptor-driven (`insights/registry.py`); one registry
+- **Insights** are descriptor-driven (`analysis/registry.py`); one registry
   drives plaintext and JSON (MCP: see the caveat above).
+- **Terminal outcome**: every row-bearing envelope carries `outcome` in
+  {ok, empty, degraded, error}, decided once at the operation boundary
+  (`surfaces/outcome.py`). `degraded` outranks `empty`, so zero rows behind a
+  named gap is never reported as an empty scope. Surfaces serialize it and map
+  transport only; the CLI exit table is `OUTCOME_EXIT_CODES` (empty exits 2).
 - New Click params on query verbs go last — a positional shift silently
   reroutes args.
 
@@ -166,6 +171,10 @@ explicit-and-retryable or a typed permanent refusal.
 `devtools --list-commands` or `docs/devtools.md` (catalog:
 `devtools/command_catalog.py`; add a command → add its `CommandSpec` +
 `render devtools-reference`).
+
+Code-bound orientation facts in this file are kept aligned during edits but
+are not independently anchor-checked; durable citations belong in
+`docs/atlas/`, which `devtools gate atlas` verifies.
 
 - `devtools test <sel>` — focused pytest through the managed harness (checkout
   guard, environment, typed result). Never bare `pytest`.

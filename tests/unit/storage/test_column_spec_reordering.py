@@ -47,15 +47,6 @@ class TestColumnSpecReordering:
         for col in messages_spec.writable_columns:
             assert col.name in col_list
 
-    def test_messages_insert_placeholder_string_has_null_for_parent(self) -> None:
-        """Verify that parent_message_id uses NULL placeholder."""
-        _, messages_spec, _ = self._specs()
-        placeholders = messages_spec.insert_placeholder_string
-        # Should have ? placeholders for most columns
-        assert placeholders.count("?") > 10
-        # Should NOT have NULL in the placeholders if parent_message_id is skipped
-        # (parent_message_id has extract_placeholder="NULL" but may not appear in VALUES tuple)
-
     def test_blocks_spec_writable_columns_exclude_generated(self) -> None:
         """Verify that BLOCKS_SPEC excludes all GENERATED columns."""
         blocks_spec, _, _ = self._specs()
@@ -92,34 +83,6 @@ class TestColumnSpecReordering:
         col_count = len(blocks_spec.writable_columns)
         placeholder_count = blocks_spec.insert_placeholder_string.count("?")
         assert col_count == placeholder_count
-
-    def test_changing_column_order_would_change_sql_output(self) -> None:
-        """Verify that column order in specs directly determines SQL output."""
-        _, messages_spec, _ = self._specs()
-        original_insert_cols = messages_spec.insert_column_names
-        original_placeholders = messages_spec.insert_placeholder_string
-
-        # Both should have content
-        assert len(original_insert_cols) > 0
-        assert len(original_placeholders) > 0
-
-        # Verify that each column appears exactly once in the INSERT column list
-        col_names = [c.name for c in messages_spec.writable_columns]
-        for col_name in col_names:
-            # Count occurrences in the comma-separated list
-            # This is a simple check that the column appears at least once
-            assert col_name in original_insert_cols or col_name == "parent_message_id"
-
-    def test_column_spec_extract_placeholder_values(self) -> None:
-        """Verify that extract_placeholder values are correctly set."""
-        _, messages_spec, _ = self._specs()
-        # Most columns should use "?" placeholder
-        question_mark_cols = [c for c in messages_spec.writable_columns if c.extract_placeholder == "?"]
-        assert len(question_mark_cols) > 20  # Most columns
-
-        # parent_message_id should use "NULL" placeholder
-        parent_col = next(c for c in messages_spec.writable_columns if c.name == "parent_message_id")
-        assert parent_col.extract_placeholder == "NULL"
 
     def test_session_events_spec_reordering_changes_rendered_sql(self) -> None:
         """A new table's column order must be load-bearing in rendered DDL."""
