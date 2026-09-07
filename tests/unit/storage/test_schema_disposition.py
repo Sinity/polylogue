@@ -76,7 +76,10 @@ def test_six_tier_disposition_is_ddl_derived_and_settles_special_groups() -> Non
     assert {row.disposition for row in rows} <= {"KEEP", "COMPLETE", "PURGE", "DERIVE", "TRANSITION"}
     by_ref = {row.object_ref: row for row in rows}
 
-    assert by_ref["source:column:raw_unknown_export_reclassification_receipts.raw_id"].disposition == "PURGE"
+    assert all(
+        f"source:table:{table}" not in by_ref
+        for table in ("raw_live_source_reconciliation_receipts", "raw_unknown_export_reclassification_receipts")
+    )
     assert by_ref["source:table:excised_content"].disposition == "TRANSITION"
     assert by_ref["index:view:threads"].disposition == "DERIVE"
     assert by_ref["index:table:action_pairs"].implementation_bead == "polylogue-avlt5"

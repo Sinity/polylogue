@@ -1,19 +1,18 @@
-"""End-to-end proof that Codex live SQLite state (polylogue-0jf4) is acquired
-and its evidence attaches to the EXISTING codex-session row it describes,
-never as a session of its own.
+"""End-to-end proof that Codex live SQLite state is acquired as one logical
+export and its evidence reaches the index tier, never as a session of its own
+and never as durable per-row material.
 
 Drives the real ``LiveBatchProcessor`` (acquire -> parse -> archive write),
 exactly the daemon's own full-ingest path -- not a mock of the join, not a
 unit test of ``sources/parsers/codex_state.py`` in isolation (that already
 exists in ``tests/unit/sources/parsers/test_codex_state.py``). The production
 surface under test is ``sources/live/batch.py``'s acquire-loop branch that
-snapshots ``state_5.sqlite`` via the SQLite backup API and the parse-stage
-branch that calls ``_write_codex_thread_state_evidence`` -> ``ArchiveStore
-.write_hook_event``. Removing either wiring point (or reverting the acquire
-loop to a raw ``path.read_bytes()``, or dropping the spawn-edge/title loop in
-``_write_codex_thread_state_evidence``) makes the assertions below fail --
-this is not a self-validating mock: the join runs against a real acquired
-sqlite blob and a real archive.
+exports ``state_5.sqlite`` and the parse-stage branch that calls
+``record_codex_state_snapshot_terminal`` ->
+``codex_state_projection.apply_retained_state_export``. Removing either wiring
+point (or reverting the acquire loop to a raw ``path.read_bytes()``) makes the
+assertions below fail -- this is not a self-validating mock: the join runs
+against a real acquired export blob and a real archive.
 
 Hard constraint (operator, 2026-07-29, precedent: polylogue-31r1 hook-event
 inflation from 18,391 to 83,286 sessions): thread_spawn_edges/titles must
@@ -27,7 +26,6 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -170,15 +168,15 @@ async def test_codex_state_ingest_leaves_session_count_unchanged(
 
 
 @pytest.mark.asyncio
-async def test_codex_state_thread_title_and_spawn_edge_attach_to_existing_session(
+async def test_codex_state_thread_title_and_spawn_edge_reach_the_index_tier(
     workspace_env: dict[str, Path],
 ) -> None:
-    """AC3 (polylogue-0jf4): threads.title and thread_spawn_edges reach the
-    archive as typed evidence, joined to the existing session by thread_id.
+    """threads.title and thread_spawn_edges reach index.db as derived rows.
 
-    Anti-vacuity: this fails if ``_write_codex_thread_state_evidence`` (or
-    its call site in ``sources/live/batch.py``) is removed -- the summary
-    would then be empty/None rather than carrying the two new event types.
+    Anti-vacuity: this fails if the projection write (or its call site in
+    ``sources/live/batch.py``) is removed -- both tables would then be empty.
+    The blob-ref assertion fails if the retired per-row hook minting comes
+    back: it wrote one durable ``hook_payload`` blob per thread and per edge.
     """
     archive, codex_root, codex_state_root = _make_processor(
         workspace_env, "codex-home-evidence", "codex-state-evidence.db"
@@ -204,11 +202,26 @@ async def test_codex_state_thread_title_and_spawn_edge_attach_to_existing_sessio
         state_metrics = await processor.ingest_files([state_path], emit_event=False)
         assert state_metrics.failed_file_count == 0
 
-        summary = await archive.get_hook_event_summary_for_session(_CODEX_SESSION_ID)
-        assert summary is not None
-        by_event_type = cast("dict[str, int]", summary["by_event_type"])
-        assert by_event_type.get("codex_thread_title") == 1
-        assert by_event_type.get("codex_thread_spawn_edge") == 1
+        with sqlite3.connect(workspace_env["archive_root"] / "index.db") as index_conn:
+            threads = index_conn.execute(
+                "SELECT thread_id, title FROM codex_thread_state ORDER BY thread_id"
+            ).fetchall()
+            edges = index_conn.execute(
+                "SELECT parent_thread_id, child_thread_id, status FROM codex_thread_spawn_edges"
+            ).fetchall()
+            provenance = index_conn.execute("SELECT raw_id, blob_hash FROM codex_thread_state_provenance").fetchall()
+        assert [row[0] for row in threads] == [_THREAD_ID]
+        assert threads[0][1]
+        assert edges == [(_THREAD_ID, _CHILD_THREAD_ID, "closed")]
+        assert len(provenance) == 1
+
+        with sqlite3.connect(workspace_env["archive_root"] / "source.db") as source_conn:
+            hook_payload_refs = source_conn.execute(
+                "SELECT count(*) FROM blob_refs WHERE ref_type = 'hook_payload'"
+            ).fetchone()[0]
+            hook_events = source_conn.execute("SELECT count(*) FROM raw_hook_events").fetchone()[0]
+        assert hook_payload_refs == 0
+        assert hook_events == 0
     finally:
         await archive.close()
 

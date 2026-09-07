@@ -81,7 +81,12 @@ def test_chatgpt_native_wire_fixture_survives_dispatch_and_semantic_normalizatio
     assert answer.parent_message_provider_id == "recap-active-message"
 
     assert [block.type for block in user.blocks] == [BlockType.TEXT, BlockType.IMAGE]
-    assert user.blocks[1].metadata == {"asset_pointer": "file-service://fixture-input-image"}
+    assert user.blocks[1].metadata == {
+        "asset_pointer": "file-service://fixture-input-image",
+        "width": "8",
+        "height": "8",
+        "size_bytes": "128",
+    }
     assert [block.type for block in thought.blocks] == [BlockType.THINKING]
     assert thought.blocks[0].text == "Privacy-safe reasoning trace."
     assert [block.type for block in tool_call.blocks] == [BlockType.TOOL_USE]
@@ -91,11 +96,24 @@ def test_chatgpt_native_wire_fixture_survives_dispatch_and_semantic_normalizatio
     assert tool_result.blocks[0].text == "Privacy-safe tool result."
     assert [block.type for block in recap.blocks] == [BlockType.THINKING]
     assert [block.type for block in answer.blocks] == [BlockType.TEXT, BlockType.IMAGE]
-    assert answer.blocks[1].metadata == {"asset_pointer": "file-service://fixture-output-image"}
+    assert answer.blocks[1].metadata == {
+        "asset_pointer": "file-service://fixture-output-image",
+        "width": "16",
+        "height": "16",
+        "size_bytes": "256",
+    }
 
     attachments = {attachment.provider_attachment_id: attachment for attachment in session.attachments}
     upload = attachments["fixture-upload-1"]
     sandbox = attachments["sandbox:answer-active-message:/mnt/data/fixture-result.zip"]
+    # The generated image is an asset the export ships bytes for, so it needs
+    # an attachment of its own: block metadata is not an acquisition identity.
+    generated_image = attachments["file-service://fixture-output-image"]
+    assert generated_image.message_provider_id == "answer-active-message"
+    assert generated_image.provider_file_id == "fixture-output-image"
+    assert generated_image.size_bytes == 256
+    assert generated_image.attachment_kind == "image_asset"
+    assert generated_image.direction == "model_output"
     assert upload.message_provider_id == "user-message"
     assert upload.provider_file_id == "file-fixture-upload-1"
     assert upload.upload_origin == "oauth"

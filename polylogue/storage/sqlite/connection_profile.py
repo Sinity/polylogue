@@ -170,6 +170,7 @@ BOUNDED_REPAIR_MMAP_SIZE_BYTES = _scale_profile_size(134217728)  # 128 MiB
 # provider artifacts. It has no mmap allowance, only this page-cache limit.
 OBSERVATION_JOURNAL_CACHE_SIZE_KIB = _scale_profile_size(65536)  # 64 MiB
 WAL_AUTOCHECKPOINT_PAGES = 10000
+OWNED_WAL_AUTOCHECKPOINT_PAGES = 0
 # #1614: soft cap on the WAL file. After any checkpoint that frees
 # pages, SQLite truncates the WAL down to this size. Without this cap
 # the WAL grows unbounded when a TRUNCATE checkpoint is blocked by a
@@ -204,6 +205,17 @@ DAEMON_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     synchronous="NORMAL",
     wal_autocheckpoint_pages=WAL_AUTOCHECKPOINT_PAGES,
     journal_size_limit_bytes=WAL_JOURNAL_SIZE_LIMIT_BYTES,
+)
+
+# One-tier operations (backup/checkpoint and similar maintenance) must not
+# attach sibling databases or renegotiate journal mode while another writer is
+# active.  The existing file mode is adopted as-is.
+ISOLATED_TIER_WRITE_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=DB_TIMEOUT,
+    busy_timeout_ms=DB_TIMEOUT * 1000,
+    cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
 )
 
 # An owned INACTIVE index generation is never read by anything until
@@ -386,12 +398,6 @@ WAL_ESCALATION_BYTES = 512 * 1024 * 1024
 #: against its own ceiling instead of disappearing into whichever publication
 #: hold happened to contain it.
 CHECKPOINT_HOLD_BUDGET_S = 20.0
-
-#: Implicit autocheckpoint pages for a writable connection in a process that
-#: runs the recurring coordinator: none. Any other process keeps
-#: ``WAL_AUTOCHECKPOINT_PAGES``, because a one-shot CLI or API writer has no
-#: recurring owner to defer to and an unbounded WAL is the worse failure.
-OWNED_WAL_AUTOCHECKPOINT_PAGES = 0
 
 _RECURRING_CHECKPOINT_OWNER = threading.Event()
 
@@ -810,6 +816,7 @@ def open_connection(
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
     profile: SQLiteConnectionProfile = WRITE_CONNECTION_PROFILE,
+    archive_root: str | Path | None = None,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection with canonical write pragmas applied.
 
@@ -823,7 +830,7 @@ def open_connection(
     """
     if profile.role != "write":
         raise ValueError("open_connection requires a write profile")
-    require_write_lease(f"open_connection({path})")
+    require_write_lease(f"open_connection({path})", archive_root=archive_root)
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
@@ -847,6 +854,7 @@ def open_daemon_connection(
     busy_timeout_ms: int | None = None,
     tier: ArchiveTier | None = None,
     validate_schema: bool = True,
+    archive_root: str | Path | None = None,
 ) -> sqlite3.Connection:
     """Open a read-write SQLite connection for daemon maintenance/ops writes.
 
@@ -855,7 +863,7 @@ def open_daemon_connection(
     mmap profile, because systemd charges their SQLite page cache to the
     service cgroup for the lifetime of the process.
     """
-    require_write_lease(f"open_daemon_connection({path})")
+    require_write_lease(f"open_daemon_connection({path})", archive_root=archive_root)
     conn = sqlite3.connect(str(path), timeout=timeout)
     try:
         if validate_schema:
@@ -1014,20 +1022,22 @@ def open_isolated_write_connection(
     purpose: str,
     profile: SQLiteConnectionProfile = ISOLATED_TIER_WRITE_PROFILE,
     timeout: float | None = None,
+    archive_root: str | Path | None = None,
 ) -> sqlite3.Connection:
-    """Open a writable connection to exactly one tier, attaching no siblings.
+    """Open one writable tier without attaching sibling databases.
 
-    The declared route for a writer that must not span tiers. ``purpose`` names
-    the operation in the write-lease refusal, so an unserialized one-tier write
-    is as visible as any other unleased write.
+    Snapshot/checkpoint and other one-tier operations must still pass through
+    the same lease boundary as ordinary archive writes.  Keeping this factory
+    separate prevents those operations from accidentally widening their
+    transaction to attached tiers.
     """
     if profile.role != "write":
         raise ValueError("open_isolated_write_connection requires a write profile")
-    require_write_lease(purpose)
+    require_write_lease(purpose, archive_root=archive_root)
     conn = sqlite3.connect(str(path), timeout=profile.timeout_seconds if timeout is None else timeout)
     try:
-        for stmt in write_connection_pragma_statements(profile):
-            conn.execute(stmt)
+        for statement in write_connection_pragma_statements(profile):
+            conn.execute(statement)
     except BaseException:
         conn.close()
         raise
@@ -1326,6 +1336,7 @@ __all__ = [
     "BULK_BUILD_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_CACHE_SIZE_KIB",
     "DAEMON_WRITE_CONNECTION_PROFILE",
+    "ISOLATED_TIER_WRITE_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
     "MEMORY_BUDGET_BYTES",
     "MEMORY_BUDGET_ENV_VAR",

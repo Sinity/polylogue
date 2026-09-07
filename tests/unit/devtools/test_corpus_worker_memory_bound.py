@@ -24,11 +24,17 @@ Anti-vacuity:
 - drop the ``resize_worker_argument`` call from ``devtools.pytest_slot.main``
   and ``test_the_slot_resizes_the_queued_command`` goes red, which is the case
   that matters: a queued run can wait hours, so a width chosen when the command
-  was built describes memory that is no longer there.
+  was built describes memory that is no longer there;
+- drop it from ``devtools.pytest_slot._run_held`` and
+  ``test_a_run_that_already_holds_the_slot_is_narrowed_too`` goes red -- the
+  declared corpus and affected operations run inside the pytest pool, so they
+  hold the slot and never reach the queued path at all.
 """
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
@@ -496,3 +502,49 @@ def test_the_slot_records_which_bound_narrowed_the_run(tmp_path: Path, monkeypat
     )
     assert slot.main([str(launch)]) == 0
     assert "from the job cgroup" in log.read_text(encoding="utf-8")
+
+
+@pytest.mark.uses_real_clock("runs a real child process group to its end")
+def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The width is decided where the run starts, and a pool job starts here.
+
+    ``verify_all`` and ``verify_affected`` execute inside the pytest pool: they
+    hold the slot and run the command in place, so a narrowing applied only to
+    queued commands leaves the corpus at the width the memory ceiling was never
+    measured for.
+    """
+    import sys
+
+    from devtools import pytest_slot
+
+    recorder = tmp_path / "argv.json"
+    command = [
+        sys.executable,
+        "-c",
+        f"import json, sys; open({str(recorder)!r}, 'w').write(json.dumps(sys.argv[1:]))",
+        "--dist=loadgroup",
+        "-n",
+        str(CORPUS_MAX_WORKERS),
+    ]
+    paths = _pytest_slice(tmp_path, current_mib=350)
+    monkeypatch.setattr(
+        pytest_slot,
+        "resize_worker_argument",
+        lambda argv: resize_worker_argument(argv, meminfo=_meminfo(tmp_path, 10000), **paths),
+    )
+
+    outcome = pytest_slot.run_pytest(
+        command,
+        cwd=str(tmp_path),
+        env={"PATH": os.environ["PATH"], "POLYLOGUE_PYTEST_SLOT": "held"},
+        root=tmp_path,
+    )
+
+    assert outcome.returncode == 0
+    executed = json.loads(recorder.read_text(encoding="utf-8"))
+    workers = int(executed[executed.index("-n") + 1])
+    assert workers < CORPUS_MAX_WORKERS
+    assert outcome.receipt is not None
+    assert outcome.receipt["sizing"]["workers"] == workers
+    # The width it ran at fits the slice that would otherwise have killed it.
+    assert 350 + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB

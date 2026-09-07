@@ -296,6 +296,30 @@ class TestChunkTextIsMaterializedOnce:
         assert answer.text == "Two changes shipped: a faster parser and a smaller cache."
         assert [(block.type, block.text) for block in answer.blocks] == [(BlockType.TEXT, answer.text)]
 
+    def test_chunk_text_suppression_keeps_non_text_part_blocks(self) -> None:
+        """Suppress only the duplicated part text, not structured payloads."""
+        payload: JSONDocument = {
+            "id": "text-and-code",
+            "chunkedPrompt": {
+                "chunks": [
+                    {
+                        "role": "model",
+                        "text": "The answer is 4.",
+                        "parts": [
+                            {"text": "The answer is "},
+                            {"executableCode": {"code": "print(2 + 2)"}},
+                        ],
+                    }
+                ]
+            },
+        }
+        session = _parse(payload, "text-and-code")
+        [message] = session.messages
+        assert [(block.type, block.text) for block in message.blocks] == [
+            (BlockType.TEXT, "The answer is 4."),
+            (BlockType.CODE, "print(2 + 2)"),
+        ]
+
     def test_thought_chunk_with_parts_emits_one_thinking_block(self) -> None:
         session = _parse(_load_catalog("text_and_parts_prompt.json"), "text_and_parts_prompt")
         thinking = [

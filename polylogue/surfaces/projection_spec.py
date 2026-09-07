@@ -166,6 +166,7 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "hooks": (EvidenceFamily.HOOKS,),
     "events": (EvidenceFamily.EVENTS,),
     "effective_context": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
+    "lineage": (EvidenceFamily.SESSIONS,),
     "file-edits": (EvidenceFamily.FILE_EDITS,),
     "agent-policies": (EvidenceFamily.AGENT_POLICIES,),
     "web-content": (EvidenceFamily.WEB_CONTENT,),

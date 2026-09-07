@@ -485,6 +485,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
                         tool_id="tool-empty-payload",
                         text=None,
                         is_error=None,
@@ -498,6 +499,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
                     ),
                     ParsedContentBlock(
                         type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
                         tool_id="tool-unknown-nonempty",
                         text="provider omitted outcome",
                         is_error=None,

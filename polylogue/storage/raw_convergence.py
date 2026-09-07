@@ -5848,7 +5848,19 @@ def _converge_raw_materialization(
     # writer-hot table before this bounded live pass; this is the same
     # planner invariant seeded for a fresh index bootstrap, without turning
     # raw materialization into a full rebuild.
-    with closing(sqlite3.connect(index_db, timeout=60)) as planner_conn:
+    # ANALYZE updates sqlite_stat tables and is therefore a publication-side
+    # mutation, even though the planner data is derived.  Use the canonical
+    # archive-bound writer connection so it cannot race live ingest.
+    from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
+
+    with closing(
+        open_isolated_write_connection(
+            index_db,
+            purpose="raw convergence planner statistics",
+            timeout=60,
+            archive_root=Path(index_db).parent,
+        )
+    ) as planner_conn:
         planner_conn.execute("PRAGMA busy_timeout = 60000")
         # A freshly reset index uses representative bootstrap statistics.
         # ``ANALYZE blocks`` on an empty table deletes that seed and brings

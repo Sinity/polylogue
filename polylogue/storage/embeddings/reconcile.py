@@ -62,6 +62,7 @@ from typing import Literal
 
 from polylogue.storage.embeddings.generations import EmbeddingGenerationBinding
 from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 
 DEFAULT_QUIET_WINDOW_MS = 5 * 60 * 1000  # 5 minutes
 DEFAULT_SAMPLE_SIZE = 30
@@ -303,7 +304,28 @@ def _reconcile_embedding_orphans(
             samples=(),
         )
 
-    conn = sqlite3.connect(embeddings_path, timeout=30.0)
+    if dry_run:
+        # Census and validation are read-only work.  Use the query-only
+        # profile so an inspect route cannot accidentally become a writer.
+        conn = open_readonly_connection(
+            embeddings_path,
+            timeout_class="background-read",
+            validate_schema=False,
+        )
+    else:
+        # A mutating pass must be admitted by the daemon coordinator (or the
+        # explicit offline owner) and bound to the authenticated archive root.
+        archive_root = (
+            Path(embeddings_db_path.archive_root)
+            if isinstance(embeddings_db_path, EmbeddingGenerationBinding)
+            else embeddings_path.parent
+        )
+        conn = open_isolated_write_connection(
+            embeddings_path,
+            purpose="embedding orphan reconciliation",
+            timeout=30.0,
+            archive_root=archive_root,
+        )
     conn.row_factory = sqlite3.Row
     try:
         from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec

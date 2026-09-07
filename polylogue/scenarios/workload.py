@@ -7,12 +7,10 @@ cannot redefine the requested result set.
 
 from __future__ import annotations
 
-import hashlib
-import json
-import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 
+from polylogue.core.digest import RECEIPT, digest
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.workload_tiers import WorkloadScaleTier, WorkloadSelectivityTier
 
@@ -729,14 +727,7 @@ def raw_authority_fixed_point_spec(
 
 
 def _identity(namespace: str, payload: JSONDocument) -> str:
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
-    normalized = unicodedata.normalize("NFC", encoded).encode("utf-8")
-    return f"{namespace}:sha256:{hashlib.sha256(normalized).hexdigest()}"
+    return f"{namespace}:sha256:{digest(payload, RECEIPT)}"
 
 
 __all__ = [

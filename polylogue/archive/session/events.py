@@ -28,6 +28,14 @@ class SessionEvent(BaseModel):
     source_message_provider_id: str | None = None
     raw_id: str | None = None
     materializer_version: int = 1
+    # Compaction boundary geometry (polylogue-4ts.5). For a ``compaction``
+    # event, the inclusive message-position range the boundary replaced, in the
+    # session's own position coordinate, plus the materialized summary message
+    # that stands in for it. NULL on every event that replaces nothing, and on a
+    # compaction whose parser could not resolve the range.
+    boundary_start_position: int | None = None
+    boundary_end_position: int | None = None
+    boundary_message_id: MessageId | None = None
 
     @field_validator("origin", mode="before")
     @classmethod
