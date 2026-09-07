@@ -253,56 +253,58 @@ def census_source(root: Path) -> AntigravitySourceCensus:
         path = Path(error.filename) if error.filename else root
         record_unreadable(path, f"source item is unreadable: {error}")
 
-    for directory, dirnames, filenames in os.walk(root, followlinks=True, onerror=on_walk_error):
-        dirnames.sort()
-        for filename in sorted(filenames):
-            path = Path(directory) / filename
-            try:
-                link_stat = path.lstat()
-            except OSError as exc:
-                record_unreadable(path, f"source item is unreadable: {exc}")
-                continue
-            if not stat_module.S_ISREG(link_stat.st_mode):
-                items.append(
-                    AntigravitySourceItem(
-                        path=path,
-                        relative_path=_relative_path(path, root),
-                        classification=AntigravitySourceClassification(
-                            AntigravitySourceRole.UNKNOWN,
-                            False,
-                            ArtifactKind.UNKNOWN,
-                            "non-regular Antigravity source item",
-                        ),
-                        inspection=AntigravitySourceInspection.NON_REGULAR,
-                        size_bytes=link_stat.st_size,
-                        content_sha256=None,
-                    )
-                )
-                continue
-            try:
-                before = path.stat()
-                digest = _file_digest(path)
-                after = path.stat()
-            except OSError as exc:
-                record_unreadable(path, f"source item is unreadable: {exc}")
-                continue
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            ):
-                raise AntigravitySourceMutationError(f"Antigravity source changed during census: {path}")
+    from polylogue.sources.source_walk import _iter_source_entries
+
+    # Use the same skip-directory traversal as production admission.  Census
+    # still inspects non-regular files (including symlinks) so they remain
+    # accounted for as unsupported evidence, while admission excludes them.
+    for path in _iter_source_entries(root, onerror=on_walk_error):
+        try:
+            link_stat = path.lstat()
+        except OSError as exc:
+            record_unreadable(path, f"source item is unreadable: {exc}")
+            continue
+        if not stat_module.S_ISREG(link_stat.st_mode):
             items.append(
                 AntigravitySourceItem(
                     path=path,
                     relative_path=_relative_path(path, root),
-                    classification=classify_source_path(path),
-                    inspection=AntigravitySourceInspection.REGULAR,
-                    size_bytes=after.st_size,
-                    content_sha256=digest,
+                    classification=AntigravitySourceClassification(
+                        AntigravitySourceRole.UNKNOWN,
+                        False,
+                        ArtifactKind.UNKNOWN,
+                        "non-regular Antigravity source item",
+                    ),
+                    inspection=AntigravitySourceInspection.NON_REGULAR,
+                    size_bytes=link_stat.st_size,
+                    content_sha256=None,
                 )
             )
+            continue
+        try:
+            before = path.stat()
+            digest = _file_digest(path)
+            after = path.stat()
+        except OSError as exc:
+            record_unreadable(path, f"source item is unreadable: {exc}")
+            continue
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise AntigravitySourceMutationError(f"Antigravity source changed during census: {path}")
+        items.append(
+            AntigravitySourceItem(
+                path=path,
+                relative_path=_relative_path(path, root),
+                classification=classify_source_path(path),
+                inspection=AntigravitySourceInspection.REGULAR,
+                size_bytes=after.st_size,
+                content_sha256=digest,
+            )
+        )
     census = AntigravitySourceCensus(root=root, items=tuple(items))
     census.assert_conserved()
     return census
