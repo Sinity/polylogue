@@ -19,9 +19,15 @@ NULL stay distinct: ``["i",5]``, ``["f",1.5]``, ``["t","text"]``, ``["tx",
 "<hex>"]`` for TEXT whose bytes are not UTF-8, ``["b","<hex>"]`` for a blob,
 and a bare ``null``.
 
-``rowid`` is exported as a column whenever the table has an implicit one, so
-a reconstruction preserves insertion order and every ``ORDER BY rowid`` a
-parser issues answers exactly as it did against the live database.
+``rowid`` is exported as a column for every rowid table, so a reconstruction
+preserves row identity and every ``ORDER BY rowid`` a parser issues answers
+exactly as it did against the live database. A table with a user column named
+``rowid`` shadows the alias and is the one shape whose row identity cannot be
+restored.
+
+A generated column is not stored content, and SQLite hides it from
+``PRAGMA table_info``: the export carries the columns it is computed from
+plus the table's original DDL, never the computed value.
 """
 
 from __future__ import annotations
@@ -128,15 +134,24 @@ def _connect_source(path: Path, *, immutable: bool) -> sqlite3.Connection:
     return sqlite3.connect(uri, uri=True)
 
 
-def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str]]:
-    """Return the exported columns, the deterministic row order, and the declared columns."""
+def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[list[str], str, list[str], bool]:
+    """Return the exported columns, the row order, the declared columns, and
+    whether the first exported column is the synthetic ``rowid``."""
     quoted = '"' + table.replace('"', '""') + '"'
     columns = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
     column_names = [_schema_text(row[1]) for row in columns]
-    has_integer_primary_key = any(_schema_text(row[2]).upper() == "INTEGER" and int(row[5]) == 1 for row in columns)
     is_without_rowid = "WITHOUT ROWID" in table_sql.upper()
-    selected = (["rowid"] if not is_without_rowid and not has_integer_primary_key else []) + column_names
-    if not is_without_rowid:
+    # A user column literally named ``rowid`` shadows the alias, so the
+    # synthetic column would be a duplicate rather than the row's identity.
+    # Export the rowid for every rowid table, including one whose INTEGER
+    # PRIMARY KEY already carries it: the reconstruction declares columns
+    # untyped, so nothing else would restore the row identity a parser reads
+    # through ``rowid``. A user column of that name shadows the alias, and
+    # then no rowid can be restored at all.
+    shadowed = "rowid" in column_names
+    synthetic_rowid = not is_without_rowid and not shadowed
+    selected = (["rowid"] if synthetic_rowid else []) + column_names
+    if not is_without_rowid and not shadowed:
         # ``rowid`` is unique, never NULL, and the physical storage order, so
         # it is a total order that costs no sorter. Every rowid table's rowid
         # is part of the exported content -- either as the INTEGER PRIMARY KEY
@@ -144,7 +159,7 @@ def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[l
         # dependency the digest did not already have. A declared PRIMARY KEY
         # is not a substitute: SQLite lets a rowid table's PK columns be NULL,
         # so it is not reliably unique.
-        return selected, "rowid", column_names
+        return selected, "rowid", column_names, synthetic_rowid
     ordered = [
         name for _primary_key_position, name in sorted((int(row[5]), _schema_text(row[1])) for row in columns if row[5])
     ]
@@ -152,7 +167,7 @@ def _table_plan(conn: sqlite3.Connection, table: str, table_sql: str) -> tuple[l
     for name in ordered or column_names:
         quoted_column = '"' + name.replace('"', '""') + '"'
         order_terms.extend((f"typeof({quoted_column}) COLLATE BINARY", f"{quoted_column} COLLATE BINARY"))
-    return selected, ", ".join(order_terms), column_names
+    return selected, ", ".join(order_terms), column_names, synthetic_rowid
 
 
 def write_logical_export(
@@ -249,13 +264,15 @@ def write_logical_export(
         )
         handle.write(header.encode("utf-8"))
         for table in exported_tables:
-            selected, order, _declared = plans[table]
+            selected, order, _declared, synthetic_rowid = plans[table]
             handle.write(
                 (
                     '{"table":'
                     + _dumps(table)
                     + ',"columns":'
                     + _dumps(selected)
+                    + ',"rowid":'
+                    + ("true" if synthetic_rowid else "false")
                     + ',"sql":'
                     + _dumps(table_sql[table])
                     + "}\n"
@@ -352,7 +369,8 @@ def logical_source_shape(path: Path, *, immutable: bool = False) -> dict[str, tu
     """Return ``{table: columns}`` for an export or a live SQLite database.
 
     Detection asks a shape question of every acquired file, so it must not
-    cost a reconstruction: an export answers it from its header line.
+    cost a reconstruction: an export answers it from its header line. The two
+    answer alike, so SQLite-owned ``sqlite_%`` tables are excluded from both.
     """
     if looks_like_logical_export_path(path):
         return dict(read_export_header(path).columns)
@@ -360,7 +378,12 @@ def logical_source_shape(path: Path, *, immutable: bool = False) -> dict[str, tu
     if immutable:
         uri += "&immutable=1"
     with closing(sqlite3.connect(uri, uri=True)) as conn:
-        tables = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()]
+        tables = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall()
+        ]
         shape: dict[str, tuple[str, ...]] = {}
         for table in tables:
             quoted = '"' + table.replace('"', '""') + '"'
@@ -388,7 +411,7 @@ def _create_statement(table: str, columns: Sequence[str]) -> str:
     INTEGER and a TEXT stays a TEXT.
     """
     quoted_table = '"' + table.replace('"', '""') + '"'
-    declared = ", ".join('"' + name.replace('"', '""') + '"' for name in columns if name != "rowid")
+    declared = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
     return f"CREATE TABLE {quoted_table} ({declared})"
 
 
@@ -398,7 +421,7 @@ def materialize_export(path: Path, destination: Path) -> None:
         conn.execute("PRAGMA journal_mode=OFF")
         table: str | None = None
         columns: list[str] = []
-        insert = ""
+        targets = ""
         for payload, kind in _iter_export(path):
             if kind == "header":
                 continue
@@ -406,29 +429,29 @@ def materialize_export(path: Path, destination: Path) -> None:
                 assert isinstance(payload, dict)
                 table = str(payload["table"])
                 columns = [str(name) for name in payload["columns"]]
-                conn.execute(_create_statement(table, columns))
-                quoted_table = '"' + table.replace('"', '""') + '"'
-                targets = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
-                placeholders = ", ".join("?" for _ in columns)
-                insert = f"INSERT INTO {quoted_table} ({targets}) VALUES ({placeholders})"
+                synthetic_rowid = bool(payload.get("rowid", False))
+                conn.execute(_create_statement(table, columns[1:] if synthetic_rowid else columns))
+                # Naming ``rowid`` in the column list is what restores the
+                # original row identity, and it is only unambiguous when no
+                # user column carries that name -- which is exactly what the
+                # ``rowid`` flag records. Otherwise insert positionally.
+                quoted_names = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
+                targets = f" ({quoted_names})" if synthetic_rowid else ""
                 continue
             assert isinstance(payload, list)
+            assert table is not None
             values = [_decode_value(item) for item in payload]
-            text_bytes = [
+            text_bytes = {
                 position for position, item in enumerate(payload) if isinstance(item, list) and item and item[0] == "tx"
-            ]
-            if text_bytes:
+            }
+            placeholders = ", ".join(
                 # A TEXT value whose bytes are not UTF-8 only survives the
                 # round trip as a bytes parameter cast back to TEXT.
-                placeholders = ", ".join(
-                    "CAST(? AS TEXT)" if position in set(text_bytes) else "?" for position in range(len(values))
-                )
-                assert table is not None
-                quoted_table = '"' + table.replace('"', '""') + '"'
-                targets = ", ".join('"' + name.replace('"', '""') + '"' for name in columns)
-                conn.execute(f"INSERT INTO {quoted_table} ({targets}) VALUES ({placeholders})", values)
-            else:
-                conn.execute(insert, values)
+                "CAST(? AS TEXT)" if position in text_bytes else "?"
+                for position in range(len(values))
+            )
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            conn.execute(f"INSERT INTO {quoted_table}{targets} VALUES ({placeholders})", values)
         conn.commit()
 
 
