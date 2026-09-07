@@ -14,7 +14,6 @@ import threading
 import time
 from pathlib import Path
 
-from polylogue.sources.parsers.base import ParsedSessionEvent
 from polylogue.sources.parsers.codex_state import (
     CODEX_STATE_FIDELITY,
     IN_SCOPE_KINDS,
@@ -26,7 +25,6 @@ from polylogue.sources.parsers.codex_state import (
     parse_codex_goals_db,
     parse_codex_memories_db,
     parse_codex_state_db,
-    spawn_edges_as_session_events,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -339,27 +337,6 @@ def test_parse_memories_db_omits_raw_memory_text(tmp_path: Path) -> None:
     assert record.has_rollout_slug is True
     assert record.selected_for_phase2 is True
     assert not hasattr(record, "raw_memory")
-
-
-# --- session_events shape for spawn edges --------------------------------
-
-
-def test_spawn_edges_as_session_events(tmp_path: Path) -> None:
-    path = tmp_path / "state_5.sqlite"
-    _write_state_db(path)
-    snapshot = parse_codex_state_db(path)
-    grouped = spawn_edges_as_session_events(snapshot.spawn_edges)
-    assert set(grouped) == {"0000-thread-parent"}
-    events = grouped["0000-thread-parent"]
-    assert len(events) == 1
-    event = events[0]
-    assert isinstance(event, ParsedSessionEvent)
-    assert event.event_type == "codex_thread_spawn_edge"
-    assert event.payload == {
-        "parent_thread_id": "0000-thread-parent",
-        "child_thread_id": "0000-thread-child",
-        "status": "closed",
-    }
 
 
 # --- marker payload round trip -------------------------------------------

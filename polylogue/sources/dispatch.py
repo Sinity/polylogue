@@ -421,7 +421,7 @@ def detect_provider_from_raw_bytes_evidence(
     if (signature := detect_binary_signature(raw_bytes)) is not None:
         return (
             fallback_provider,
-            f"{signature.name}-shaped binary payload; refused as session content, used fallback_provider",
+            f"{signature.name}-shaped payload; refused as session content, used fallback_provider",
         )
     jsonl_like = _is_jsonl_stream_name(stream_name)
     text = None if jsonl_like else _decode_json_bytes(raw_bytes)

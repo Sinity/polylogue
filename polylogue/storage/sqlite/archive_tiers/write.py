@@ -445,10 +445,10 @@ def write_parsed_session_to_archive(
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
-    ``source_conn`` (optional) is the durable ``source.db`` handle. It is used
-    only to consult acquired ``codex_thread_spawn_edge`` hook evidence when
-    writing this session's topology edge; passing ``None`` leaves every edge
-    exactly as parser inference alone would write it.
+    ``source_conn`` (optional) is the durable ``source.db`` handle, used for
+    revision authority and parent-dispatch resolution; passing ``None`` leaves
+    every decision that needs it exactly as parser inference alone would make
+    it.
 
     ``prepared`` (polylogue-623q, default ``None``) is an optional
     ``PreparedSessionRows`` computed off this thread (typically by the daemon
@@ -578,7 +578,7 @@ def write_parsed_session_to_archive(
     parent_session_id: str | None = None
     inherited_source_message_ids: dict[str, str] = {}
     hook_parent_provider_id = _authoritative_parent_claim(
-        source_conn,
+        conn,
         origin=origin.value,
         child_native_id=native_id,
     )
@@ -1218,16 +1218,16 @@ def _clear_session_projection_rows(conn: sqlite3.Connection, session_id: str) ->
         "DELETE FROM session_events WHERE session_id = ? AND event_type != 'capture_gap'",
         (session_id,),
     )
-    # Hook-derived edges survive a full replace for the same reason capture_gap
-    # events just did: they are acquired durable evidence (polylogue-foee's
-    # codex_thread_spawn_edge spool), not projections owned by whichever parser
-    # payload currently wins source precedence. Without this exemption a plain
-    # re-parse DELETEs the authoritative edge and, when the caller has no
-    # source handle to re-derive it from, silently reinstates the inferred
-    # parent -- the "later inference overwrites the authoritative result" hole
-    # in its most destructive form. The contradicted marker is preserved with
-    # it so composition stays deterministic rather than falling back to an
-    # observed_at_ms race between two unqualified edges.
+    # State-asserted edges survive a full replace for the same reason
+    # capture_gap events just did: they are derived from Codex's own
+    # orchestration record (``codex_thread_spawn_edges``), not projections
+    # owned by whichever parser payload currently wins source precedence.
+    # Without this exemption a plain re-parse DELETEs the authoritative edge
+    # and silently reinstates the inferred parent -- the "later inference
+    # overwrites the authoritative result" hole in its most destructive form.
+    # The contradicted marker is preserved with it so composition stays
+    # deterministic rather than falling back to an observed_at_ms race between
+    # two unqualified edges.
     conn.execute(
         """
         DELETE FROM session_links
@@ -4025,45 +4025,24 @@ def _write_parent_links(
 
 
 def _authoritative_parent_claim(
-    source_conn: sqlite3.Connection | None,
+    conn: sqlite3.Connection,
     *,
     origin: str,
     child_native_id: str,
 ) -> str | None:
-    """Return the hook-asserted parent thread id for ``child_native_id``.
+    """Return the state-asserted parent thread id for ``child_native_id``.
 
-    polylogue-foee acquired ``codex_thread_spawn_edge`` rows into the durable
-    ``source.db`` hook spool, keyed by ``session_native_id = parent_thread_id``
-    (``sources/codex_state_evidence.py``). A child-side lookup therefore cannot
-    use ``list_hook_events(session_native_id=...)``; it matches the payload's
-    own ``child_thread_id`` instead. ``None`` means "hook evidence is silent
-    about this child", which is not the same as "hook evidence disagrees" --
-    only the latter is a conflict.
+    ``codex_thread_spawn_edges`` is Codex's own orchestration record, projected
+    into the index tier from the retained state export
+    (``sources/codex_state_projection.py``). ``None`` means the projection is
+    silent about this child, which is not the same as it naming a different
+    parent -- only the latter is a conflict.
     """
-    if source_conn is None or origin != Origin.CODEX_SESSION.value or not child_native_id:
+    if origin != Origin.CODEX_SESSION.value or not child_native_id:
         return None
-    has_hook_spool = source_conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'raw_hook_events'"
-    ).fetchone()
-    if has_hook_spool is None:
-        # An index-only harness (or a source tier predating the hook spool)
-        # has no such table. Absent evidence is silence, never a conflict.
-        return None
-    row = source_conn.execute(
-        """
-        SELECT json_extract(payload_json, '$.parent_thread_id')
-        FROM raw_hook_events
-        WHERE event_type = 'codex_thread_spawn_edge'
-          AND json_extract(payload_json, '$.child_thread_id') = ?
-        ORDER BY observed_at_ms DESC
-        LIMIT 1
-        """,
-        (child_native_id,),
-    ).fetchone()
-    if row is None or row[0] is None:
-        return None
-    parent = str(row[0]).strip()
-    return parent or None
+    from polylogue.sources.codex_state_projection import read_parent_thread_id
+
+    return read_parent_thread_id(conn, child_native_id)
 
 
 def _supersede_stale_authoritative_links(
@@ -4259,27 +4238,25 @@ def _write_session_link(
     inheritance: str | None = None,
     source_conn: sqlite3.Connection | None = None,
 ) -> None:
-    """Write this child's outbound parent edge, honouring hook authority.
+    """Write this child's outbound parent edge, honouring state authority.
 
-    ``source_conn`` is the durable ``source.db`` handle carrying polylogue-foee's
-    acquired ``codex_thread_spawn_edge`` evidence. It is optional exactly as it
-    is on ``revision_authority_refuses_write``: an index-only harness passes
-    ``None`` and every behaviour below collapses to the pre-existing
-    parser-only path.
+    ``source_conn`` is the durable ``source.db`` handle used for parent-dispatch
+    resolution. It is optional exactly as it is on
+    ``revision_authority_refuses_write``: an index-only harness passes ``None``
+    and that resolution collapses to the parser-only path.
 
     Why this lives on the write path rather than in a post-ingest
-    reconciliation pass: ``session_links`` is in the REBUILDABLE index tier
-    while hook evidence is in the DURABLE source tier, so every reindex
-    reconstructs these rows from scratch. Only a derivation that runs inside
-    ``write_parsed_session_to_archive`` -- the single choke point shared by
-    live incremental ingest and full raw replay -- survives a rebuild by
-    construction. A convergence-stage applier would silently lose the
-    authoritative marking on the next reindex.
+    reconciliation pass: ``session_links`` is in the REBUILDABLE index tier, so
+    every reindex reconstructs these rows from scratch. Only a derivation that
+    runs inside ``write_parsed_session_to_archive`` -- the single choke point
+    shared by live incremental ingest and full raw replay -- survives a rebuild
+    by construction. The spawn-edge projection it reads is itself recomputed
+    from the retained export, so replay order cannot decide the outcome.
     """
     origin = origin_from_provider(session.source_name).value
     observed_at_ms = _timestamp_ms(session.updated_at) or _timestamp_ms(session.created_at) or 0
     hook_parent = _authoritative_parent_claim(
-        source_conn,
+        conn,
         origin=origin,
         child_native_id=(session.provider_session_id or "").strip(),
     )

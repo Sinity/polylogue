@@ -21,6 +21,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, TitleSource
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.parsers.hermes_tool_outcome import JSON_ENVELOPE_PREFIX, tool_result_outcome
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
 from .base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from .hermes_finish_reason import end_turn_from_finish_reason as _end_turn_from_finish_reason
@@ -187,11 +188,14 @@ def looks_like_state_db_payload(payload: JSONDocument) -> bool:
 
 
 def looks_like_state_db_path(path: Path, *, immutable: bool = False) -> bool:
-    """Return true when *path* is a readable Hermes state database."""
+    """Return true when *path* is a readable Hermes state database or its export.
+
+    Answered from the table/column shape alone, so probing a retained export
+    never costs a reconstruction of its rows.
+    """
     try:
-        with _connect_readonly(path, immutable=immutable) as conn:
-            return _has_required_tables(conn)
-    except sqlite3.Error:
+        return _shape_has_required_tables(logical_source_shape(path, immutable=immutable))
+    except (sqlite3.Error, OSError, LogicalExportError, ValueError):
         return False
 
 
@@ -256,7 +260,7 @@ def parse_state_db(
 def import_fidelity_declaration(
     sessions: list[ParsedSession],
     *,
-    acquisition_method: Literal["sqlite_backup", "json_fallback"],
+    acquisition_method: Literal["logical_export", "json_fallback"],
 ) -> HermesImportFidelity:
     """Declare the source fidelity that the Hermes parser can substantiate.
 
@@ -267,10 +271,10 @@ def import_fidelity_declaration(
 
     if acquisition_method == "json_fallback":
         return _json_fallback_fidelity(sessions)
-    return _sqlite_backup_fidelity(sessions)
+    return _logical_export_fidelity(sessions)
 
 
-def _sqlite_backup_fidelity(sessions: list[ParsedSession]) -> HermesImportFidelity:
+def _logical_export_fidelity(sessions: list[ParsedSession]) -> HermesImportFidelity:
     total_sessions = len(sessions)
     messages = [message for session in sessions for message in session.messages]
     identity_payloads = [
@@ -369,7 +373,7 @@ def _sqlite_backup_fidelity(sessions: list[ParsedSession]) -> HermesImportFideli
         producer="Hermes state.db",
         schema_version=next(iter(schema_versions)) if len(schema_versions) == 1 else None,
         profile_namespace=next(iter(profile_keys)) if len(profile_keys) == 1 else None,
-        acquisition_method="sqlite_backup",
+        acquisition_method="logical_export",
         retained_blob_reproducibility=HermesFidelityCapability(
             status="exact",
             observed=total_sessions,
@@ -493,25 +497,26 @@ def _fidelity_capability(
 
 
 def _connect_readonly(path: Path, *, immutable: bool = False) -> sqlite3.Connection:
-    uri = path.resolve().as_uri() + "?mode=ro"
-    if immutable:
-        uri += "&immutable=1"
-    conn = sqlite3.connect(uri, uri=True)
+    """Open a retained logical export or a live Hermes database for reading."""
+    conn = open_logical_source(path, immutable=immutable)
     conn.row_factory = sqlite3.Row
     return conn
 
 
 def _has_required_tables(conn: sqlite3.Connection) -> bool:
-    tables = {
-        str(row[0])
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('schema_version', 'sessions', 'messages')"
-        ).fetchall()
-    }
-    if tables != {"schema_version", "sessions", "messages"}:
+    return _shape_has_required_tables(_connection_shape(conn))
+
+
+def _connection_shape(conn: sqlite3.Connection) -> Mapping[str, tuple[str, ...]]:
+    tables = [str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    return {table: tuple(sorted(_columns(conn, table))) for table in tables}
+
+
+def _shape_has_required_tables(shape: Mapping[str, tuple[str, ...]]) -> bool:
+    if not {"schema_version", "sessions", "messages"} <= set(shape):
         return False
-    session_columns = _columns(conn, "sessions")
-    message_columns = _columns(conn, "messages")
+    session_columns = set(shape["sessions"])
+    message_columns = set(shape["messages"])
     return (
         _REQUIRED_SESSION_COLUMNS.issubset(session_columns)
         and _REQUIRED_MESSAGE_COLUMNS.issubset(message_columns)

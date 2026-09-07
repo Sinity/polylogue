@@ -1455,12 +1455,17 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
     assert replay.scanned == 1
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms IS NOT NULL FROM raw_sessions").fetchone() == (1,)
-        rows = conn.execute("SELECT hook_event_id, event_type FROM raw_hook_events ORDER BY hook_event_id").fetchall()
-    assert [(event_type, event_id.split(":observation-", 1)[0]) for event_id, event_type in rows] == [
-        ("codex_thread_spawn_edge", "codex-thread-spawn-edge:codex-thread:codex-child"),
-        ("codex_thread_title", "codex-thread-title:codex-thread"),
-    ]
-    assert all(":observation-" in event_id for event_id, _event_type in rows)
+        # The retained material is a logical export, and thread evidence is
+        # derived from it -- no durable per-row hook material is minted.
+        assert conn.execute("SELECT count(*) FROM raw_hook_events").fetchone() == (0,)
+        assert conn.execute("SELECT count(*) FROM blob_refs WHERE ref_type = 'hook_payload'").fetchone() == (0,)
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT thread_id, title FROM codex_thread_state").fetchall() == [
+            ("codex-thread", "Recover retained state")
+        ]
+        assert conn.execute(
+            "SELECT parent_thread_id, child_thread_id, status FROM codex_thread_spawn_edges"
+        ).fetchall() == [("codex-thread", "codex-child", "closed")]
 
 
 @pytest.mark.parametrize("state_name", ["state.db", "verification_evidence.db"])
