@@ -198,6 +198,124 @@ def test_chatgpt_keeps_image_asset_only_nodes() -> None:
     assert messages[0].blocks[0].metadata == {"asset_pointer": "file-service://image-asset-1"}
 
 
+def test_image_asset_pointer_part_becomes_an_attachment() -> None:
+    """bd polylogue-91kys: an asset pointer needs an attachment row to bind to.
+
+    An `image_asset_pointer` part names bytes the export ships. The IMAGE
+    block carries the pointer as metadata, but block metadata is not an
+    acquisition identity — `assembly_chatgpt.py` joins acquired asset members
+    onto attachments by the bare file id, so a pointer with no attachment row
+    leaves its acquired bytes unbindable. Red if the branch goes back to
+    emitting the IMAGE block alone.
+    """
+    messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "image-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "image_asset_pointer",
+                                "asset_pointer": "sediment://file_00000000005061f6be1311c8d48a7716",
+                                "size_bytes": 27100,
+                                "width": 1024,
+                                "height": 768,
+                            }
+                        ],
+                    },
+                },
+            }
+        }
+    )
+
+    assert messages[0].blocks[0].type is BlockType.IMAGE
+    assert messages[0].blocks[0].metadata == {
+        "asset_pointer": "sediment://file_00000000005061f6be1311c8d48a7716",
+        "width": "1024",
+        "height": "768",
+        "size_bytes": "27100",
+    }
+
+    assert len(attachments) == 1
+    attachment = attachments[0]
+    assert attachment.provider_attachment_id == "sediment://file_00000000005061f6be1311c8d48a7716"
+    assert attachment.message_provider_id == "image-msg"
+    # The bare id is the join key the export's asset members are named by.
+    assert attachment.provider_file_id == "file_00000000005061f6be1311c8d48a7716"
+    assert attachment.size_bytes == 27100
+    assert attachment.attachment_kind == "image_asset"
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:image-msg"
+
+
+def test_image_asset_pointer_does_not_duplicate_its_metadata_attachment() -> None:
+    """One upload named twice is one attachment.
+
+    A user upload appears both as a message `metadata.attachments` row (bare
+    `file-<id>`) and as an `image_asset_pointer` part (`file-service://file-<id>`).
+    Both normalize to the same file id, so the pointer must not mint a second
+    row for the same bytes. Red if the dedupe by bare id is dropped.
+    """
+    _messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "upload-msg",
+                    "author": {"role": "user"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [
+                            {
+                                "content_type": "image_asset_pointer",
+                                "asset_pointer": "file-service://file-ABC123",
+                            },
+                            "look at this",
+                        ],
+                    },
+                    "metadata": {
+                        "attachments": [
+                            {"id": "file-ABC123", "name": "photo.png", "mime_type": "image/png", "size": 4096}
+                        ]
+                    },
+                },
+            }
+        }
+    )
+
+    assert len(attachments) == 1
+    assert attachments[0].provider_attachment_id == "file-ABC123"
+    assert attachments[0].name == "photo.png"
+
+
+def test_image_asset_pointer_without_a_pointer_invents_no_attachment() -> None:
+    """No pointer, no asset row -- an attachment is never invented."""
+    _messages, attachments = extract_messages_from_mapping(
+        {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "image-msg",
+                    "author": {"role": "assistant"},
+                    "create_time": 1,
+                    "content": {
+                        "content_type": "multimodal_text",
+                        "parts": [{"content_type": "image_asset_pointer"}],
+                    },
+                },
+            }
+        }
+    )
+
+    assert attachments == []
+
+
 def test_chatgpt_shared_conversation_index_shell_is_tagged() -> None:
     session = chatgpt_parse(
         {
@@ -2514,7 +2632,14 @@ def test_computer_output_screenshot_becomes_image_block_and_attachment() -> None
     out_msg = next(m for m in conv.messages if m.provider_message_id == "out")
 
     image = next(b for b in out_msg.blocks if b.type == BlockType.IMAGE)
-    assert image.metadata == {"asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7"}
+    # `blocks` has no dimension columns; the block metadata is projected into a
+    # `chatgpt_block_metadata` event, which is where width/height survive.
+    assert image.metadata == {
+        "asset_pointer": "sediment://file_00000000e2f06243a164751a50439fb7",
+        "width": "1024",
+        "height": "768",
+        "size_bytes": "27100",
+    }
     # The structural tool result still leads the message.
     assert out_msg.blocks[0].type == BlockType.TOOL_RESULT
 

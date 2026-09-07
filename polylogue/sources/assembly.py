@@ -59,12 +59,12 @@ class _ChatGPTSidecarData(TypedDict, total=False):
     # resolver built once per source scan from conversation_asset_file_names.json
     # + library_files.json. See sources/assembly_chatgpt.py.
     chatgpt_asset_index: ChatGPTAssetIndex
-    # bd polylogue-8ac0: dat asset id -> (blob_hash_hex, size_bytes) for every
-    # ``.dat`` member/sibling file whose bytes were streamed into the blob
+    # bd polylogue-8ac0: asset id -> (blob_hash_hex, size_bytes) for every
+    # export member or sibling file whose bytes were streamed into the blob
     # store during sidecar discovery. Attachment resolution joins against this
-    # so previously-acquired dat bytes are marked "acquired" without
+    # so previously-acquired asset bytes are marked "acquired" without
     # re-hashing (see ``ingest_batch/_core.py``'s ``preacquired_attachment_blobs``).
-    chatgpt_dat_blobs: dict[str, tuple[str, int]]
+    chatgpt_asset_blobs: dict[str, tuple[str, int]]
 
 
 class SidecarData(_ClaudeCodeSidecarData, _CodexSidecarData, _ChatGPTSidecarData, _ClaudeAISidecarData, total=False):
