@@ -138,7 +138,7 @@ def _code_snippet_payload(block: MCPFencedCodeBlock, session_id: str) -> Extract
     return {
         "language": block.get("language", ""),
         "code": block.get("code", ""),
-        "session": session_id[:20],
+        "session": session_id,
     }
 
 
@@ -431,7 +431,7 @@ Session 2:
             first_msgs = [_prompt_message_text(message)[:150] for message in _prompt_messages(conv)[:3]]
             summaries.append(
                 {
-                    "id": str(conv.id)[:20],
+                    "id": str(conv.id),
                     "origin": str(conv.origin),
                     "title": conv.display_title,
                     "opening": first_msgs,

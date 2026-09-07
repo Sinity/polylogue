@@ -208,8 +208,7 @@ def result_origin(result: QueryResult) -> str:
 
 
 def result_title(result: QueryResult) -> str:
-    title = result.display_title
-    return title if title else result_id(result)[:20]
+    return result.display_title or result_id(result)
 
 
 def result_date(result: QueryResult) -> datetime | None:

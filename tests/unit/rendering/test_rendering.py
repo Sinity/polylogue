@@ -6,11 +6,15 @@ MERGED: test_branch_rendering.py + test_none_guards.py
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import datetime, timezone
 
 import pytest
+from hypothesis import HealthCheck, given, settings
+from hypothesis import strategies as st
 
 from polylogue.archive.models import Message, Session, SessionSummary
+from polylogue.cli.query_output import format_summary_list
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.types import SessionId
 from polylogue.rendering.block_models import RenderableBlock
@@ -20,6 +24,7 @@ from polylogue.rendering.blocks import (
     render_blocks_plaintext,
 )
 from polylogue.rendering.core import format_session_markdown
+from polylogue.rendering.identity import identity_frame
 from polylogue.rendering.renderers.html import (
     _attach_branches,
     render_session_html,
@@ -545,3 +550,145 @@ class TestSessionSummaryDisplayDate:
             metadata={"title": "Review the project plan"},
         )
         assert summary.display_title == "Review the project plan"
+
+
+# =============================================================================
+# Identity abbreviation: a listing column may never collapse two sessions
+# =============================================================================
+
+
+_SUBAGENT_PARENT = "38ba7c1e-4d0f-4b3a-9e21-6c5f0a1b2d3e"
+
+
+def _identity_fields(rendered: str) -> list[str]:
+    """Pull the leading identity field out of each rendered text row."""
+    return [line.split("  ", 1)[0] for line in rendered.splitlines() if line]
+
+
+def _sibling_summaries(session_ids: Sequence[str], *, title: str | None) -> list[SessionSummary]:
+    return [
+        SessionSummary(
+            id=SessionId(session_id),
+            origin=Origin.CLAUDE_CODE_SESSION,
+            title=title,
+            created_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+            message_count=3,
+        )
+        for session_id in session_ids
+    ]
+
+
+@st.composite
+def _shared_prefix_session_ids(draw: st.DrawFn) -> list[str]:
+    """Sibling ids: one long shared parent, entropy only in the tail."""
+    origin = draw(st.sampled_from(["claude-code-session", "codex-session", "chatgpt-export"]))
+    parent = draw(st.text(alphabet="0123456789abcdef-", min_size=8, max_size=48))
+    tails = draw(
+        st.lists(
+            st.text(alphabet="0123456789abcdef", min_size=1, max_size=14),
+            min_size=2,
+            max_size=12,
+            unique=True,
+        )
+    )
+    separator = draw(st.sampled_from([":agent-", "-", ":"]))
+    return [f"{origin}:{parent}{separator}{tail}" for tail in tails]
+
+
+class TestIdentityColumnInjectivity:
+    """A rendered identity distinguishes every session in its own result set.
+
+    Subagent ids are ``<origin>:<parent-uuid>:agent-<hex>`` and put every
+    distinguishing character past position 24.
+
+    Anti-vacuity: replace the identity field in
+    ``polylogue.cli.query_output._summary_list_line`` with a fixed-width
+    prefix (``f"{row.id[:24]:24s}"``) and both cases below go red -- the
+    property by collapsing generated shared-prefix cohorts, the fan-out case
+    by rendering one identity ten times. Rendering goes through
+    ``format_summary_list``, the canonical text renderer, not the
+    abbreviation helper alone.
+    """
+
+    def test_sibling_subagent_fan_out_renders_distinguishable_rows(self) -> None:
+        """Ten sibling subagents with one shared title render ten distinct rows."""
+        session_ids = [f"claude-code-session:{_SUBAGENT_PARENT}:agent-{index:04x}9f" for index in range(10)]
+        summaries = _sibling_summaries(session_ids, title="robust-hopping-piglet")
+
+        rendered = format_summary_list(summaries, "text", None, message_counts=dict.fromkeys(session_ids, 3))
+
+        identities = _identity_fields(rendered)
+        assert len(identities) == 10
+        assert len(set(identities)) == 10, rendered
+
+    def test_untitled_siblings_do_not_share_a_title_either(self) -> None:
+        """With no title evidence the title column falls back to the same distinct identity."""
+        session_ids = [f"claude-code-session:{_SUBAGENT_PARENT}:agent-{index:04x}9f" for index in range(10)]
+        summaries = _sibling_summaries(session_ids, title=None)
+
+        rendered = format_summary_list(summaries, "text", None, message_counts=dict.fromkeys(session_ids, 3))
+
+        assert len(set(rendered.splitlines())) == 10, rendered
+
+    @settings(max_examples=150, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @given(session_ids=_shared_prefix_session_ids())
+    def test_rendered_identity_is_injective_over_the_result_set(self, session_ids: list[str]) -> None:
+        """Distinct ids never render the same identity field in one frame."""
+        summaries = _sibling_summaries(session_ids, title="shared title")
+
+        rendered = format_summary_list(summaries, "text", None, message_counts=dict.fromkeys(session_ids, 1))
+
+        identities = _identity_fields(rendered)
+        assert len(identities) == len(session_ids)
+        assert len(set(identities)) == len(set(session_ids))
+
+    @settings(max_examples=100, deadline=None, suppress_health_check=[HealthCheck.too_slow])
+    @given(session_ids=_shared_prefix_session_ids())
+    def test_rendered_identity_does_not_depend_on_row_order(self, session_ids: list[str]) -> None:
+        """Reordering a result set moves rows, never the identity each row shows."""
+        counts = dict.fromkeys(session_ids, 1)
+        forward = format_summary_list(_sibling_summaries(session_ids, title="t"), "text", None, message_counts=counts)
+        reverse_ids = list(reversed(session_ids))
+        backward = format_summary_list(_sibling_summaries(reverse_ids, title="t"), "text", None, message_counts=counts)
+
+        assert _identity_fields(forward) == list(reversed(_identity_fields(backward)))
+
+    def test_machine_output_carries_the_full_identity(self) -> None:
+        """Abbreviation is a width concession for humans; JSON keeps the real id."""
+        session_ids = [f"claude-code-session:{_SUBAGENT_PARENT}:agent-{index:04x}9f" for index in range(10)]
+        summaries = _sibling_summaries(session_ids, title=None)
+
+        payload = json.loads(format_summary_list(summaries, "json", None, message_counts=dict.fromkeys(session_ids, 3)))
+
+        assert [item["id"] for item in payload["items"]] == session_ids
+
+
+class TestIdentityFrameContract:
+    """The frame is the carried abbreviation context, not a per-row guess."""
+
+    def test_a_pinned_tail_renders_a_continuation_identically(self) -> None:
+        """A later page pinned to the first page's frame shows the same identity."""
+        session_ids = [f"claude-code-session:{_SUBAGENT_PARENT}:agent-{index:04x}9f" for index in range(10)]
+        whole = identity_frame(session_ids)
+
+        page = identity_frame(session_ids[5:], tail=whole.tail)
+
+        assert [page.display(session_id) for session_id in session_ids[5:]] == [
+            whole.display(session_id) for session_id in session_ids[5:]
+        ]
+
+    def test_an_identifier_outside_the_frame_renders_in_full(self) -> None:
+        """No cohort means no safe abbreviation, so the identity is shown whole."""
+        frame = identity_frame(["claude-code-session:aaaa:agent-1", "claude-code-session:aaaa:agent-2"])
+        stranger = f"claude-code-session:{_SUBAGENT_PARENT}:agent-ffff"
+
+        assert frame.display(stranger) == stranger
+
+    def test_an_abbreviation_is_never_longer_than_the_identity(self) -> None:
+        """A frame that cannot shorten an id shows it, never pads it into an ellipsis."""
+        session_ids = ["a:b", "a:c", "claude-code-session:" + "d" * 60]
+        frame = identity_frame(session_ids)
+
+        for session_id in session_ids:
+            assert len(frame.display(session_id)) <= len(session_id)

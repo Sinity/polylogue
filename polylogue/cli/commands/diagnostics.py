@@ -12,6 +12,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.archive.query.transaction import run_archive_read
 from polylogue.cli.shared.helpers import fail
 from polylogue.cli.shared.types import AppEnv
+from polylogue.rendering.identity import identity_frame
 
 
 @click.group("diagnostics", help="Run archive and daemon diagnostics.")
@@ -145,6 +146,7 @@ async def _pace(env: AppEnv, session_id: str | None, limit: int, threshold: int)
         spec = SessionQuerySpec(sort="date", limit=limit)
         convs = await spec.list(env.config)
 
+    identities = identity_frame(str(conv.id) for conv in convs)
     for conv in convs:
         msgs = conv.messages
         if len(msgs) < 2:
@@ -179,7 +181,7 @@ async def _pace(env: AppEnv, session_id: str | None, limit: int, threshold: int)
             if delta > 5:
                 gaps.append((i, i + 1, delta, kind))
 
-        env.ui.console.print(f"\n[bold]{conv.display_title}[/bold] ({str(conv.id)[:12]})")
+        env.ui.console.print(f"\n[bold]{conv.display_title}[/bold] ({identities.display(conv.id)})")
         env.ui.console.print(
             f"  Turns: {len(substantive)} | Active: {timedelta(seconds=total_active)} | Idle: {timedelta(seconds=total_idle)}"
         )
@@ -220,7 +222,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     conv = convs[0]
     msgs = conv.messages
 
-    env.ui.console.print(f"\n[bold]{conv.display_title}[/bold] ({str(conv.id)[:12]})")
+    env.ui.console.print(f"\n[bold]{conv.display_title}[/bold] ({conv.id})")
     header = f"{'#':>3s}  {'role':12s}  {'duration':>10s}  {'thinking':>10s}  {'tools':>5s}  {'chars':>6s}"
     env.ui.console.print(header)
     env.ui.console.print("-" * len(header))

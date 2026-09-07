@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 import click
 
+from polylogue.rendering.identity import identity_frame
 from polylogue.storage.embeddings.materialization import (
     EmbedSessionOutcome,
     embed_session_sync,
@@ -60,14 +61,14 @@ def embed_single(
         click.echo(f"No messages to embed in {outcome.session_id}")
         return
 
-    label = outcome.title or outcome.session_id[:12]
+    label = outcome.title or outcome.session_id
     click.echo(f"Embedding {outcome.embedded_message_count} messages from {label}...")
 
     if outcome.status == "error":
         click.echo(f"Error embedding {session_id}: {outcome.error}", err=True)
         raise click.Abort()
 
-    click.echo(f"✓ Embedded {outcome.session_id[:12]}")
+    click.echo(f"✓ Embedded {outcome.session_id}")
 
 
 def embed_batch(
@@ -95,13 +96,14 @@ def embed_batch(
         return
 
     click.echo(f"Embedding {len(pending)} sessions...")
+    identities = identity_frame(item.session_id for item in pending)
 
     embedded_count = 0
     error_count = 0
 
     with ui.progress("Embedding sessions", total=len(pending)) as progress:
         for index, item in enumerate(pending, 1):
-            label = item.title or item.session_id[:12]
+            label = item.title or identities.display(item.session_id)
             if not ui.plain:
                 progress.update(description=f"Embedding {label}...")
             outcome = embed_session_sync(repo, vec_provider, item.session_id)
