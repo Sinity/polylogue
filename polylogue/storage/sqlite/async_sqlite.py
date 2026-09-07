@@ -34,7 +34,8 @@ from polylogue.storage.sqlite.connection_profile import (
     DB_TIMEOUT,
     READ_CONNECTION_PRAGMA_STATEMENTS,
     READ_DB_TIMEOUT,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_writes as session_insight_profiles_q,
@@ -105,7 +106,7 @@ async def configure_connection(conn: aiosqlite.Connection) -> None:
     to expected levels.
     """
     conn.row_factory = aiosqlite.Row
-    await _apply_pragma_statements_async(conn, WRITE_CONNECTION_PRAGMA_STATEMENTS)
+    await _apply_pragma_statements_async(conn, write_connection_pragma_statements(WRITE_CONNECTION_PROFILE))
     await _attach_sibling_tiers(conn)
     await conn.create_function("pl_fold", 1, pl_fold, deterministic=True)
 

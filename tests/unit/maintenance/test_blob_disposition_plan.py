@@ -139,6 +139,36 @@ def test_hook_envelope_without_a_spool_file_is_restore_required(tmp_path: Path) 
     assert member.restoration.logical_id == "orphan-event"
 
 
+def test_an_acknowledged_only_envelope_is_not_a_source_proof(tmp_path: Path) -> None:
+    """Anti-vacuity: walking the whole spool root makes this SOURCE_PRESENT and deletes it.
+
+    ``acknowledged/`` holds the drain's commit receipts for the source.db that
+    consumed each event. No drain and no watcher reads that directory, so a
+    rebuilt archive re-ingests nothing from it: the bytes exist, the event is
+    unreachable, and the carrier is the only copy acquisition can still use.
+    """
+    spool_root = tmp_path / "legacy-hooks"
+    envelope = _hook_envelope("acknowledged-only")
+    receipt = spool_root / "acknowledged" / "2026-07-15"
+    receipt.mkdir(parents=True)
+    spool_file = receipt / "acknowledged-only.json"
+    spool_file.write_text(json.dumps(envelope, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    store = BlobStore(tmp_path / "blob")
+    _publish_blob(store, _stored_envelope_bytes(spool_file))
+
+    context = _context(tmp_path, hook_roots=(("legacy-hook-spool-0", spool_root),))
+    plan = compile_disposition_plan(
+        archive_root=tmp_path, blob_root=store.root, source_db=tmp_path / "source.db", context=context
+    )
+
+    (member,) = plan.members
+    assert member.disposition is BlobDisposition.RESTORE_REQUIRED
+    assert member.proof is None
+    assert member.restoration is not None
+    assert member.restoration.destination is RestorationDestination.HOOK_EVENT_SPOOL
+    assert member.restoration.logical_id == "acknowledged-only"
+
+
 def test_same_event_id_with_different_content_is_not_a_source_proof(tmp_path: Path) -> None:
     """Anti-vacuity: matching on identity alone would discard divergent material."""
     spool_root = tmp_path / "legacy-hooks"
