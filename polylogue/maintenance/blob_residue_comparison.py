@@ -24,7 +24,7 @@ from polylogue.archive.session_revision_membership import _relation
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
 from polylogue.maintenance.blob_disposition import RestorationDestination
-from polylogue.maintenance.blob_disposition_apply import MemberOutcome
+from polylogue.maintenance.blob_disposition_apply import RestorationOutcome
 from polylogue.pipeline.ids import SessionRevisionProjection, session_revision_projection
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -61,10 +61,10 @@ class AuthorityOutcome(StrEnum):
     UNRESOLVED_BLOCKER = "unresolved_blocker"
 
 
-# A restoration counts only once the ordinary spool actually holds the
-# material; every other apply outcome leaves the carrier unproven.
+# A restoration counts only once an ordinary spool actually holds the
+# material; every other outcome leaves the carrier unproven.
 _COMPLETED_RESTORATION_OUTCOMES = frozenset(
-    {MemberOutcome.RESTORED.value, MemberOutcome.RESTORATION_ALREADY_PRESENT.value}
+    {RestorationOutcome.RESTORED.value, RestorationOutcome.RESTORATION_ALREADY_PRESENT.value}
 )
 
 # Declared non-product kinds, keyed to the reason the taxonomy states. A kind
