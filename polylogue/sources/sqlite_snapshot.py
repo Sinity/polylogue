@@ -16,6 +16,7 @@ from polylogue.core.binary_signatures import SQLITE_MAGIC_HEADER
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes as _looks_like_sqlite_bytes
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore, Heartbeat
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 
@@ -142,10 +143,7 @@ def sqlite_logical_revision(path: Path, *, immutable: bool = False) -> str:
     ``immutable`` reads a retained blob, which no writer can reach and whose
     directory need not be writable for a WAL-mode page image.
     """
-    source_uri = f"{path.resolve().as_uri()}?mode=ro"
-    if immutable:
-        source_uri += "&immutable=1"
-    with closing(sqlite3.connect(source_uri, uri=True)) as conn:
+    with closing(open_readonly_connection(path.resolve(), immutable=immutable, validate_schema=False)) as conn:
         # SQLite permits arbitrary bytes in a TEXT value.  Preserve those
         # bytes so a table outside the parser's scope cannot prevent snapshot
         # acquisition or collapse distinct logical values.

@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.audit_continuity import (
     AuditMutation,
     audit_semantic_sha256,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.durable_change_train import (
     DurableChangeTrainExecution,
 )
@@ -729,9 +730,9 @@ def _audit_live_metadata(
     immutable: bool = False,
 ) -> tuple[int, int, tuple[str, ...]]:
     """Read durable markers, without mutating an immutable backup artifact."""
-    mode = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-    uri = f"{audit_path.resolve(strict=False).as_uri()}{mode}"
-    with closing(sqlite3.connect(uri, uri=True)) as connection:
+    with closing(
+        open_readonly_connection(audit_path.resolve(strict=False), immutable=immutable, validate_schema=False)
+    ) as connection:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0] or 0)
         application_id = int(connection.execute("PRAGMA application_id").fetchone()[0] or 0)
         quick_check = tuple(str(row[0]) for row in connection.execute("PRAGMA quick_check"))
@@ -995,7 +996,7 @@ def _validate_audit_adoption_continuity(
     # the continuity schema, a missing control table remains a hard failure.
     source_path = archive_root / "source.db"
     try:
-        with closing(sqlite3.connect(f"file:{source_path}?mode=ro&immutable=1", uri=True)) as source:
+        with closing(open_readonly_connection(source_path, immutable=True, validate_schema=False)) as source:
             source_version = int(source.execute("PRAGMA user_version").fetchone()[0] or 0)
             has_control = (
                 source.execute(

@@ -9,6 +9,7 @@ import sqlite3
 import time
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator
+from concurrent.futures import Future
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -41,6 +42,7 @@ from polylogue.config import Source
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
+from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.memory import release_process_memory
 from polylogue.core.metrics import (
     read_cgroup_memory_current_mb,
@@ -203,6 +205,8 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, PreparedSessionShardRows
+from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
 if TYPE_CHECKING:
     from polylogue.api import Polylogue
@@ -451,6 +455,22 @@ def _record_zip_container_coordinate(
         # reading to assert; the coordinate is still worth keeping.
         addressing_mode=record.addressing_mode,
     )
+
+
+def _shard_prepared_by_raw_id(
+    raw_id: str,
+    parsed_by_raw_id: dict[str, ParsedSession],
+    bindings: dict[str, PreparedSessionShardRows],
+) -> dict[str, PreparedRows | Future[PreparedRows]] | None:
+    """Re-key one raw's shard binding from session identity to raw identity."""
+    if not bindings:
+        return None
+    session = parsed_by_raw_id.get(raw_id)
+    if session is None:
+        return None
+    key = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
+    binding = bindings.get(key)
+    return None if binding is None else {raw_id: binding}
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -2070,6 +2090,7 @@ class LiveBatchProcessor:
         raw_frontier_sizes: dict[Path, int] = {}
         raw_payloads: dict[str, bytes] = {}
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
+        shard_paths_by_raw_id: dict[str, Path] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -2581,9 +2602,11 @@ class LiveBatchProcessor:
                         # and why ``pop`` re-verifies the payload bytes match
                         # exactly (a live-appending file can grow between the
                         # prewarm read and this one).
-                        cached_sessions = self._parse_stage.cache.pop(str(path), payload=payload)
-                        if cached_sessions is not None:
-                            parsed_sessions_by_raw_id[raw_id] = cached_sessions
+                        cached = self._parse_stage.cache.pop(str(path), payload=payload)
+                        if cached is not None:
+                            parsed_sessions_by_raw_id[raw_id] = cached.sessions
+                            if cached.shard_path is not None:
+                                shard_paths_by_raw_id[raw_id] = cached.shard_path
                     if heartbeat is not None:
                         heartbeat(
                             "full_blob_copy",
@@ -2761,14 +2784,20 @@ class LiveBatchProcessor:
                     },
                     force=True,
                 )
-            archive_write = self._ingest_full_records_archive(
-                raw_records,
-                raw_payloads,
-                blob_store,
-                parsed_sessions_by_raw_id,
-                max_pass_seconds=max_pass_seconds,
-                pass_started=pass_clock_started,
-            )
+            try:
+                archive_write = self._ingest_full_records_archive(
+                    raw_records,
+                    raw_payloads,
+                    blob_store,
+                    parsed_sessions_by_raw_id,
+                    shard_paths_by_raw_id,
+                    max_pass_seconds=max_pass_seconds,
+                    pass_started=pass_clock_started,
+                )
+            finally:
+                for residue in shard_paths_by_raw_id.values():
+                    discard_session_shard(residue)
+                shard_paths_by_raw_id.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
@@ -2924,6 +2953,7 @@ class LiveBatchProcessor:
         raw_payloads: dict[str, bytes],
         blob_store: BlobStore,
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
+        shard_paths_by_raw_id: dict[str, Path] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -3098,6 +3128,14 @@ class LiveBatchProcessor:
                             post_parse=True,
                         )
                         source_write_name = "full.source_raw_write"
+                    # Prefetch shards are initially keyed by the candidate's
+                    # acquisition record id. Source admission may assign a
+                    # different durable raw id; carry the shard across that
+                    # identity boundary before the write loop looks it up.
+                    if shard_paths_by_raw_id:
+                        shard_path = shard_paths_by_raw_id.pop(record.raw_id, None)
+                        if shard_path is not None:
+                            shard_paths_by_raw_id[source_raw_id] = shard_path
                     _record_zip_container_coordinate(
                         archive,
                         record,
@@ -3411,14 +3449,20 @@ class LiveBatchProcessor:
                                     current_raw_id=source_raw_id,
                                     current_session=session,
                                 )
-                                session_id, applied_raw_ids = archive.apply_raw_revision_replay(
-                                    plan,
-                                    parsed_by_raw_id,
-                                    acquired_at_ms=acquired_at_ms,
-                                    stage_timings_s=record_timings,
-                                    stage_timing_prefix="full",
-                                    defer_fts=True,
-                                )
+                                with archive.attached_session_shard(
+                                    (shard_paths_by_raw_id or {}).get(source_raw_id)
+                                ) as shard_bindings:
+                                    session_id, applied_raw_ids = archive.apply_raw_revision_replay(
+                                        plan,
+                                        parsed_by_raw_id,
+                                        acquired_at_ms=acquired_at_ms,
+                                        stage_timings_s=record_timings,
+                                        stage_timing_prefix="full",
+                                        defer_fts=True,
+                                        prepared_by_raw_id=_shard_prepared_by_raw_id(
+                                            source_raw_id, parsed_by_raw_id, shard_bindings
+                                        ),
+                                    )
                                 self._cursor.record_convergence_debt(
                                     stage="fts",
                                     subject_type="session_id",

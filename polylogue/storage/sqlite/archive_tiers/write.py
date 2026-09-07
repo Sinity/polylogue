@@ -105,6 +105,12 @@ from polylogue.storage.sqlite.archive_tiers.session_annotations_write import (
     upsert_session_tag,
     upsert_session_work_event,
 )
+from polylogue.storage.sqlite.archive_tiers.write_shard import (
+    SessionShard,
+    ShardSessionRows,
+    build_session_shard,
+    copy_shard_session_rows,
+)
 from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
 
 
@@ -427,6 +433,32 @@ class PreparedSessionRows:
     block_rows: tuple[tuple[object, ...], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedSessionShardRows:
+    """One session's rows resident in a shard attached to the writer's connection.
+
+    Interchangeable with :class:`PreparedSessionRows` at the writer's
+    acceptance gate -- it answers the same two questions, which session and
+    which content -- and differs only in where the rows are. Where
+    ``PreparedSessionRows`` hands the writer tuples to bind one row at a
+    time, this hands it a rowid range to copy in one statement; see
+    ``polylogue.storage.sqlite.archive_tiers.write_shard``.
+
+    ``schema`` is the ATTACH alias the shard is currently mounted under, so
+    an instance is only meaningful inside the ``attached_session_shard``
+    block that produced it.
+    """
+
+    session_id: str
+    session_content_hash: bytes
+    schema: str
+    entry: ShardSessionRows
+
+
+#: What a caller may hand the writer instead of letting it build rows inline.
+PreparedRows = PreparedSessionRows | PreparedSessionShardRows
+
+
 def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
     """Build ``PreparedSessionRows`` for ``session``'s full-replace write.
 
@@ -455,6 +487,33 @@ def prepare_session_rows(session: ParsedSession) -> PreparedSessionRows:
     )
 
 
+def prepare_session_shard(directory: Path, sessions: Sequence[ParsedSession]) -> SessionShard:
+    """Build one sealed shard holding every session in ``sessions``.
+
+    The stage-A half of the shard transport: pure computation over parsed
+    sessions plus one scratch file under ``directory``. No archive
+    connection, so it runs on a parse worker well outside any writer hold.
+    """
+    return build_session_shard(directory, [prepare_session_rows(session) for session in sessions])
+
+
+def bind_session_shard(schema: str, shard: SessionShard) -> dict[str, PreparedSessionShardRows]:
+    """Address an attached shard's sessions the way the writer accepts them.
+
+    ``schema`` is the alias ``attached_session_shard`` mounted the shard
+    under; the returned bindings are valid only while that attachment lives.
+    """
+    return {
+        entry.session_id: PreparedSessionShardRows(
+            session_id=entry.session_id,
+            session_content_hash=entry.session_content_hash,
+            schema=schema,
+            entry=entry,
+        )
+        for entry in shard.sessions
+    }
+
+
 def write_parsed_session_to_archive(
     conn: sqlite3.Connection,
     session: ParsedSession,
@@ -472,7 +531,7 @@ def write_parsed_session_to_archive(
     bulk_fts: bool = False,
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedSessionRows | None = None,
+    prepared: PreparedRows | None = None,
     source_conn: sqlite3.Connection | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
     unit_accounting: ParseAccounting | None = None,
@@ -484,10 +543,12 @@ def write_parsed_session_to_archive(
     writing this session's topology edge; passing ``None`` leaves every edge
     exactly as parser inference alone would write it.
 
-    ``prepared`` (polylogue-623q, default ``None``) is an optional
-    ``PreparedSessionRows`` computed off this thread (typically by the daemon
-    parse-prefetch worker via ``prepare_session_rows``). It is used ONLY when
-    ALL of the following hold, checked right before the full-replace write:
+    ``prepared`` (polylogue-623q, default ``None``) is an optional row set
+    computed off this thread (typically by the daemon parse-prefetch worker):
+    either a ``PreparedSessionRows`` of tuples from ``prepare_session_rows``,
+    or a ``PreparedSessionShardRows`` addressing rows in an attached shard
+    (polylogue-bp12n.6). It is used ONLY when ALL of the following hold,
+    checked right before the full-replace write:
     not ``merge_append`` (prepared rows are built for a full replace's
     ``position_offset=0``, never an append's positive offset); lineage
     resolution did not slice ``messages`` (a prefix-sharing composition
@@ -698,7 +759,7 @@ def write_parsed_session_to_archive(
     # single signal that ``_extract_prefix_tail`` sliced ``messages`` away
     # from what ``prepare_session_rows`` saw (it returns ``messages``
     # unchanged in every other case, including "spawned-fresh" and no-parent).
-    prepared_rows_to_use: PreparedSessionRows | None = None
+    prepared_rows_to_use: PreparedRows | None = None
     if (
         prepared is not None
         and not merge_append
@@ -3266,7 +3327,7 @@ def _replace_full_session_messages_and_blocks(
     stage_timing_prefix: str = "append",
     bulk_build: bool = False,
     defer_fts_rebuild: bool = False,
-    prepared: PreparedSessionRows | None = None,
+    prepared: PreparedRows | None = None,
 ) -> _ProjectionCarryForward | None:
     """Replace one session's messages/blocks wholesale.
 
@@ -3283,15 +3344,17 @@ def _replace_full_session_messages_and_blocks(
     query-time views; ordinary full-session replacement keeps their results
     current through the canonical rows.
 
-    ``prepared`` (polylogue-623q), when given, is an already-validated
-    ``PreparedSessionRows`` -- the caller (``write_parsed_session_to_archive``)
-    has already confirmed it was computed from THIS session's content hash
-    and that no lineage tail-slicing changed ``messages`` since. The message/
-    block row-building loops (the CPU-bound part of this function -- per-item
-    hashing, JSON encoding, enum lookups) are then skipped entirely in favor
-    of the precomputed tuples; only the ``executemany`` against SQLite still
-    runs on this (writer) thread. ``None`` (the default) reproduces the exact
-    prior behavior byte-for-byte.
+    ``prepared`` (polylogue-623q), when given, is an already-validated row
+    set -- the caller (``write_parsed_session_to_archive``) has already
+    confirmed it was computed from THIS session's content hash and that no
+    lineage tail-slicing changed ``messages`` since. The message/block
+    row-building loops (the CPU-bound part of this function -- per-item
+    hashing, JSON encoding, enum lookups) are then skipped entirely.
+    ``PreparedSessionRows`` leaves the ``executemany`` on this (writer)
+    thread; ``PreparedSessionShardRows`` (polylogue-bp12n.6) replaces it with
+    one ``INSERT ... SELECT`` per table out of an attached shard, and is
+    accepted only where there are no prior rows to union against. ``None``
+    (the default) reproduces the exact prior behavior byte-for-byte.
 
     ``raw_id`` (polylogue-geop) identifies which raw acquisition this write's
     ``messages`` were parsed from; ``existing_raw_id`` is whatever
@@ -3354,10 +3417,25 @@ def _replace_full_session_messages_and_blocks(
     session_id = archive_session_id(origin.value, session.provider_session_id)
     _assert_unique_message_coordinates(session_id, messages)
     t0 = time.perf_counter()
+    # polylogue-bp12n.6: a shard carries rows to copy, not the two row sets
+    # ``_union_with_existing_rows`` reconciles, so it is usable only on the
+    # branch that has nothing to reconcile. Demoting it to ``None`` here is
+    # the same fallback every other rejected ``prepared`` takes: rows get
+    # built inline and the write is unchanged.
+    shard_rows = prepared if isinstance(prepared, PreparedSessionShardRows) else None
+    if shard_rows is not None and session_row_existed:
+        shard_rows = None
+    tuple_rows = prepared if isinstance(prepared, PreparedSessionRows) else None
     # polylogue-geop: compute the field-path union against whatever is
     # currently stored *before* any delete below removes it. Must run ahead
     # of the FTS/base-table deletes -- both messages and blocks are read here.
-    if not session_row_existed:
+    if shard_rows is not None:
+        # The rows are already built, in the shard; the writer copies them
+        # below without ever materializing a tuple on this thread.
+        unioned_message_rows: list[tuple[object, ...]] = []
+        unioned_block_rows: list[tuple[object, ...]] = []
+        carry_forward = None
+    elif not session_row_existed:
         # A first write cannot have prior rows to reconcile.  The caller's
         # session PK lookup already proved this session_id is absent, and all
         # message/block rows are created together with that session row.  Skip
@@ -3366,13 +3444,13 @@ def _replace_full_session_messages_and_blocks(
         # same invariant used below to skip the delete cascade, but it also
         # avoids paying field-path-union overhead for every new session.
         unioned_message_rows = (
-            list(prepared.message_rows)
-            if prepared is not None
+            list(tuple_rows.message_rows)
+            if tuple_rows is not None
             else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
         )
         unioned_block_rows = (
-            list(prepared.block_rows)
-            if prepared is not None
+            list(tuple_rows.block_rows)
+            if tuple_rows is not None
             else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids)
         )
         carry_forward = None
@@ -3380,11 +3458,11 @@ def _replace_full_session_messages_and_blocks(
         unioned_message_rows, unioned_block_rows, carry_forward = _union_with_existing_rows(
             conn,
             session_id,
-            list(prepared.message_rows)
-            if prepared is not None
+            list(tuple_rows.message_rows)
+            if tuple_rows is not None
             else _build_message_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
-            list(prepared.block_rows)
-            if prepared is not None
+            list(tuple_rows.block_rows)
+            if tuple_rows is not None
             else _build_block_rows(session_id, messages, duplicate_native_ids=duplicate_native_ids),
             raw_id=raw_id,
             existing_raw_id=existing_raw_id,
@@ -3453,23 +3531,27 @@ def _replace_full_session_messages_and_blocks(
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             add_timing("delete_messages", t0)
         t0 = time.perf_counter()
-        _write_messages(
-            conn,
-            session_id,
-            messages,
-            duplicate_native_ids=duplicate_native_ids,
-            rows=unioned_message_rows,
-        )
-        add_timing("messages", t0)
-        t0 = time.perf_counter()
-        _write_blocks(
-            conn,
-            session_id,
-            messages,
-            duplicate_native_ids=duplicate_native_ids,
-            rows=unioned_block_rows,
-        )
-        add_timing("blocks", t0)
+        if shard_rows is not None:
+            copy_shard_session_rows(conn, shard_rows.schema, shard_rows.entry)
+            add_timing("shard_copy", t0)
+        else:
+            _write_messages(
+                conn,
+                session_id,
+                messages,
+                duplicate_native_ids=duplicate_native_ids,
+                rows=unioned_message_rows,
+            )
+            add_timing("messages", t0)
+            t0 = time.perf_counter()
+            _write_blocks(
+                conn,
+                session_id,
+                messages,
+                duplicate_native_ids=duplicate_native_ids,
+                rows=unioned_block_rows,
+            )
+            add_timing("blocks", t0)
         t0 = time.perf_counter()
         _write_file_edits(
             conn,
@@ -8647,6 +8729,11 @@ def _enum_value(value: object) -> str | None:
 
 
 __all__ = [
+    "PreparedRows",
+    "PreparedSessionShardRows",
+    "bind_session_shard",
+    "copy_shard_session_rows",
+    "prepare_session_shard",
     "ArchiveAgentPolicy",
     "ArchiveBlockRow",
     "ArchiveMessageRow",

@@ -231,9 +231,14 @@ instead: capture `(inode, size, mtime_ns)` with the bytes and re-check the
 identity, not the content, at cursor-write time. A changed file fails the
 proof and is re-queued, exactly as a hash mismatch does today. It parses
 and builds the row tuples — everything that is pure computation over a stable
-read snapshot — and hands the writer plain data. It is bounded by bytes in
-flight, not by file count, so one whale cannot inflate memory and a thousand
-small files are one batch.
+read snapshot — and hands the writer a sealed SQLite shard (with parsed
+sessions retained for governance) when the full-replace path can use one. The
+shard has no secondary indexes or authority; Stage B attaches it read-only and
+copies the `messages` and `blocks` ranges with `INSERT ... SELECT`. A worker
+that dies before sealing leaves no admitted shard, and a stale or malformed
+seal is refused and rebuilt inline. It is bounded by bytes in flight, not by
+file count, so one whale cannot inflate memory and a thousand small files are
+one batch.
 
 **Stage B** is the only thread that touches the lease. It never waits on
 parsing, network, or a future: it drains what stage A has already prepared.

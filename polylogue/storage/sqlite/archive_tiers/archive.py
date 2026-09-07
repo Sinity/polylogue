@@ -123,6 +123,7 @@ from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.core.raw_failure_evidence import RawFailureEvidenceKind
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionId
+from polylogue.logging import get_logger
 from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
@@ -304,7 +305,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
     ArchiveWriteOutcome,
-    PreparedSessionRows,
+    PreparedRows,
+    PreparedSessionShardRows,
+    bind_session_shard,
     read_archive_session_envelope,
     read_archive_session_page,
     read_session_phases,
@@ -315,17 +318,22 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     session_attachment_ids,
     write_parsed_session_to_archive,
 )
+from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
+from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
 from polylogue.storage.sqlite.connection_profile import (
-    BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    BULK_BUILD_WRITE_CONNECTION_PROFILE,
     READ_CONNECTION_PRAGMA_STATEMENTS,
-    WRITE_CONNECTION_PRAGMA_STATEMENTS,
+    WRITE_CONNECTION_PROFILE,
     open_connection,
     open_readonly_connection,
+    write_connection_pragma_statements,
 )
 from polylogue.storage.sqlite.queries.sessions_identity import session_id_prefix_bounds
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.write_lease import require_write_lease
 from polylogue.storage.usage import SessionUsageCost, session_usage_costs_for_connection
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -823,12 +831,14 @@ class ArchiveStore:
             self._conn = (
                 sqlite3.connect(f"file:{self.index_db_path}?mode=rw", uri=True)
                 if self._inactive_candidate_durable_read_only
-                else sqlite3.connect(self.index_db_path)
+                # URI filenames are inert for a plain path -- SQLite only
+                # parses one when it starts with ``file:`` -- and the flag is
+                # what lets this connection ATTACH a stage-A shard read-only
+                # (polylogue-bp12n.6, ``archive_tiers/write_shard.py``).
+                else sqlite3.connect(self.index_db_path, uri=True)
             )
-            pragma_statements = (
-                BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS
-                if bulk_build_profile
-                else WRITE_CONNECTION_PRAGMA_STATEMENTS
+            pragma_statements = write_connection_pragma_statements(
+                BULK_BUILD_WRITE_CONNECTION_PROFILE if bulk_build_profile else WRITE_CONNECTION_PROFILE
             )
         self._conn.row_factory = sqlite3.Row
         for statement in pragma_statements:
@@ -1066,6 +1076,31 @@ class ArchiveStore:
         if self._active_writer_lease is not None:
             self._active_writer_lease.close()
             self._active_writer_lease = None
+
+    @contextmanager
+    def attached_session_shard(self, shard_path: Path | None) -> Iterator[dict[str, PreparedSessionShardRows]]:
+        """Mount a stage-A shard read-only for the body and yield its bindings.
+
+        ``None``, a missing file, or a shard this build refuses all yield an
+        empty mapping: the caller then writes with no prepared rows, which is
+        the unchanged inline path. A shard is only ever a shortcut.
+        """
+        if shard_path is None:
+            yield {}
+            return
+        self._require_writable("attach a session shard")
+        try:
+            shard = open_session_shard(shard_path)
+            attachment = attach_session_shard(self._conn, shard)
+            schema = attachment.__enter__()
+        except (ShardRefusedError, OSError, sqlite3.DatabaseError) as exc:
+            logger.warning("index write: %s; building this session's rows inline", exc)
+            yield {}
+            return
+        try:
+            yield bind_session_shard(schema, shard)
+        finally:
+            attachment.__exit__(None, None, None)
 
     def write_parsed(self, session: ParsedSession, *, content_hash: str | None = None) -> str:
         """Write a parsed session to index.db."""
@@ -1862,7 +1897,7 @@ class ArchiveStore:
         bulk_build: bool = False,
         defer_fts: bool = False,
         skip_already_applied: bool = False,
-        prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] | None = None,
+        prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
         return apply_raw_revision_replay(

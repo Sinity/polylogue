@@ -19,11 +19,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from collections.abc import Iterator
+import threading
+import time
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from types import TracebackType
+from typing import TYPE_CHECKING, Literal, Self
+from urllib.parse import quote
 
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -120,6 +124,15 @@ DB_TIMEOUT = 30
 # wait out the checkpoint and succeed while staying far below the 30 s writer
 # timeout, so reads remain responsive.
 READ_DB_TIMEOUT = 5
+
+# The four named lock-wait classes. ``interactive-read`` is READ_DB_TIMEOUT
+# above: short enough that a stuck read surfaces rather than hangs. The other
+# three wait out a full writer hold rather than fail a job a retry would only
+# repeat, so they sit at the writer's own busy timeout.
+TIMEOUT_CLASS_BACKGROUND_READ_S = 30.0
+TIMEOUT_CLASS_PUBLICATION_S = 30.0
+TIMEOUT_CLASS_OFFLINE_BULK_S = 30.0
+
 MEMORY_BUDGET_ENV_VAR = "POLYLOGUE_MEMORY_BUDGET_BYTES"
 DEFAULT_MEMORY_BUDGET_BYTES = 18 * 1024**3
 
@@ -237,6 +250,14 @@ BULK_BUILD_WRITE_CONNECTION_PROFILE = SQLiteConnectionProfile(
     locking_mode="EXCLUSIVE",
 )
 
+# A live-generation reader pins the WAL frames it opened against for as long as
+# it lives, so an unbounded reader is what turns a recurring PASSIVE checkpoint
+# into a no-op and the WAL into unbounded growth. Every live read profile
+# declares the age past which its frame must be rebound (see ``read_frame.py``);
+# a sealed generation cannot change under a reader and declares none.
+INTERACTIVE_READ_SNAPSHOT_AGE_S = 30.0
+BACKGROUND_READ_SNAPSHOT_AGE_S = 300.0
+
 READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     role="read",
     timeout_seconds=READ_DB_TIMEOUT,
@@ -250,47 +271,173 @@ READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
     # time instead of waiting for the write lock.
     query_only=True,
     generation_identity="live",
-    max_snapshot_age_s=30.0,
+    max_snapshot_age_s=INTERACTIVE_READ_SNAPSHOT_AGE_S,
+    cancellation_supported=True,
+)
+
+BACKGROUND_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="read",
+    timeout_seconds=TIMEOUT_CLASS_BACKGROUND_READ_S,
+    busy_timeout_ms=int(TIMEOUT_CLASS_BACKGROUND_READ_S * 1000),
+    cache_size_kib=READ_CACHE_SIZE_KIB,
+    mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    query_only=True,
+    generation_identity="live",
+    max_snapshot_age_s=BACKGROUND_READ_SNAPSHOT_AGE_S,
+    cancellation_supported=True,
+)
+
+OFFLINE_BULK_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="read",
+    timeout_seconds=TIMEOUT_CLASS_OFFLINE_BULK_S,
+    busy_timeout_ms=int(TIMEOUT_CLASS_OFFLINE_BULK_S * 1000),
+    cache_size_kib=READ_CACHE_SIZE_KIB,
+    mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    query_only=True,
+    generation_identity="live",
+    max_snapshot_age_s=BACKGROUND_READ_SNAPSHOT_AGE_S,
+    cancellation_supported=True,
+)
+
+# SQLite's ``immutable=1`` skips locking and WAL/journal detection outright, so
+# it is a claim about the generation rather than about the caller's intent: it
+# is correct only where nothing can still write the file. This is the one
+# profile that carries it, and ``open_readonly_connection`` selects this profile
+# whenever a caller asks for immutability, so the two cannot drift apart.
+SEALED_READ_CONNECTION_PROFILE = SQLiteConnectionProfile(
+    role="read",
+    timeout_seconds=TIMEOUT_CLASS_OFFLINE_BULK_S,
+    busy_timeout_ms=int(TIMEOUT_CLASS_OFFLINE_BULK_S * 1000),
+    cache_size_kib=READ_CACHE_SIZE_KIB,
+    mmap_size_bytes=READ_MMAP_SIZE_BYTES,
+    query_only=True,
+    generation_identity="sealed",
+    immutable=True,
+    max_snapshot_age_s=None,
     cancellation_supported=True,
 )
 
 # Named timeout classes are the only supported policy vocabulary.  Callers
 # select a role, not an arbitrary lock-wait duration.
-TIMEOUT_CLASSES: dict[str, float] = {
-    "interactive-read": 5.0,
-    "background-read": 30.0,
-    "publication": 30.0,
-    "offline-bulk": 30.0,
+TIMEOUT_CLASSES: Mapping[str, float] = {
+    "interactive-read": float(READ_DB_TIMEOUT),
+    "background-read": TIMEOUT_CLASS_BACKGROUND_READ_S,
+    "publication": TIMEOUT_CLASS_PUBLICATION_S,
+    "offline-bulk": TIMEOUT_CLASS_OFFLINE_BULK_S,
 }
-READ_PROFILES: dict[str, SQLiteConnectionProfile] = {
+READ_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
     "interactive-read": READ_CONNECTION_PROFILE,
-    "background-read": SQLiteConnectionProfile(
-        role="read",
-        timeout_seconds=30.0,
-        busy_timeout_ms=30_000,
-        cache_size_kib=READ_CACHE_SIZE_KIB,
-        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
-        query_only=True,
-    ),
-    "offline-bulk": SQLiteConnectionProfile(
-        role="read",
-        timeout_seconds=30.0,
-        busy_timeout_ms=30_000,
-        cache_size_kib=READ_CACHE_SIZE_KIB,
-        mmap_size_bytes=READ_MMAP_SIZE_BYTES,
-        query_only=True,
-    ),
+    "background-read": BACKGROUND_READ_CONNECTION_PROFILE,
+    "offline-bulk": OFFLINE_BULK_READ_CONNECTION_PROFILE,
 }
-TIMEOUT_PROFILES: dict[str, SQLiteConnectionProfile] = {
-    **READ_PROFILES,
+# ``publication`` and ``offline-bulk`` name different profiles on the write side
+# than on the read side, so the two vocabularies stay separate maps: merging
+# them silently shadowed the offline-bulk *read* profile with the bulk-build
+# writer.
+WRITE_PROFILES: Mapping[str, SQLiteConnectionProfile] = {
     "publication": DAEMON_WRITE_CONNECTION_PROFILE,
     "offline-bulk": BULK_BUILD_WRITE_CONNECTION_PROFILE,
 }
 
-DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS = DAEMON_WRITE_CONNECTION_PROFILE.pragma_statements
-WRITE_CONNECTION_PRAGMA_STATEMENTS = WRITE_CONNECTION_PROFILE.pragma_statements
+# One tier, no sibling attach. An excision apply and a backup snapshot both
+# commit a single tier at a time so a mid-operation failure leaves at most one
+# tier mutated; attaching siblings would draw them into the same transaction
+# scope, which is the thing those routes exist to avoid. Journal mode and
+# foreign-key enforcement are deliberately left as the file already has them:
+# these routes adopt a tier, they do not reconfigure it.
+ISOLATED_TIER_WRITE_PROFILE = SQLiteConnectionProfile(
+    role="write",
+    timeout_seconds=TIMEOUT_CLASS_PUBLICATION_S,
+    busy_timeout_ms=int(TIMEOUT_CLASS_PUBLICATION_S * 1000),
+    cache_size_kib=DAEMON_WRITE_CACHE_SIZE_KIB,
+    mmap_size_bytes=DAEMON_WRITE_MMAP_SIZE_BYTES,
+)
+
 READ_CONNECTION_PRAGMA_STATEMENTS = READ_CONNECTION_PROFILE.pragma_statements
-BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS = BULK_BUILD_WRITE_CONNECTION_PROFILE.pragma_statements
+
+
+# ---------------------------------------------------------------------------
+# Recurring checkpoint ownership and WAL escalation policy
+# ---------------------------------------------------------------------------
+
+#: What each escalation may attempt, in attempt order.
+#:
+#: PASSIVE never waits and never blocks a reader, so it is the only mode a
+#: recurring owner may run against a live archive. RESTART additionally waits
+#: for existing readers to drain before resetting the WAL, which is bounded
+#: only at a declared quiescent boundary. TRUNCATE also takes the writer lock to
+#: shrink the file, and belongs to seal, shutdown and offline generation
+#: lifecycle after readers have drained -- never to fight a busy live reader.
+CheckpointEscalation = Literal["recurring", "quiescent", "exclusive"]
+
+CHECKPOINT_ESCALATION_MODES: Mapping[CheckpointEscalation, tuple[str, ...]] = {
+    "recurring": ("PASSIVE",),
+    "quiescent": ("PASSIVE", "RESTART"),
+    "exclusive": ("PASSIVE", "RESTART", "TRUNCATE"),
+}
+
+#: WAL size at which a checkpoint is worth running at all, and the size past
+#: which an escalation may reach its next mode.
+WAL_WARN_BYTES = 256 * 1024 * 1024
+WAL_ESCALATION_BYTES = 512 * 1024 * 1024
+
+#: Checkpoint hold budget. Declared here rather than beside the publication
+#: budgets in ``daemon/write_coordinator.py`` so checkpoint time is accounted
+#: against its own ceiling instead of disappearing into whichever publication
+#: hold happened to contain it.
+CHECKPOINT_HOLD_BUDGET_S = 20.0
+
+#: Implicit autocheckpoint pages for a writable connection in a process that
+#: runs the recurring coordinator: none. Any other process keeps
+#: ``WAL_AUTOCHECKPOINT_PAGES``, because a one-shot CLI or API writer has no
+#: recurring owner to defer to and an unbounded WAL is the worse failure.
+OWNED_WAL_AUTOCHECKPOINT_PAGES = 0
+
+_RECURRING_CHECKPOINT_OWNER = threading.Event()
+
+
+def recurring_checkpoint_owner_armed() -> bool:
+    """Whether this process runs the recurring checkpoint coordinator."""
+    return _RECURRING_CHECKPOINT_OWNER.is_set()
+
+
+def _set_recurring_checkpoint_owner(armed: bool) -> None:
+    if armed:
+        _RECURRING_CHECKPOINT_OWNER.set()
+    else:
+        _RECURRING_CHECKPOINT_OWNER.clear()
+
+
+@contextmanager
+def arm_recurring_checkpoint_owner(*, armed: bool = True) -> Iterator[None]:
+    """Claim recurring checkpoint ownership for this process.
+
+    Process-global rather than thread-local like the write lease: the daemon
+    opens writable connections from several threads and one coordinator owns
+    checkpointing for all of them.
+    """
+    previous = _RECURRING_CHECKPOINT_OWNER.is_set()
+    _set_recurring_checkpoint_owner(armed)
+    try:
+        yield
+    finally:
+        _set_recurring_checkpoint_owner(previous)
+
+
+def write_connection_pragma_statements(profile: SQLiteConnectionProfile) -> tuple[str, ...]:
+    """Write pragmas for ``profile`` under this process' checkpoint ownership.
+
+    Under an armed recurring owner an implicit autocheckpoint runs inside
+    whichever writer's commit crossed the page threshold, charging its wait and
+    hold to that writer's publication budget where no checkpoint accounting can
+    see it. Resolved per open rather than frozen at import so a process that
+    arms ownership after loading this module still gets the owned profile.
+    """
+    if profile.role != "write" or profile.wal_autocheckpoint_pages is None:
+        return profile.pragma_statements
+    if not recurring_checkpoint_owner_armed():
+        return profile.pragma_statements
+    return replace(profile, wal_autocheckpoint_pages=OWNED_WAL_AUTOCHECKPOINT_PAGES).pragma_statements
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +693,9 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
         if sibling.exists():
             tier = _archive_tier_for_path(sibling)
             if tier is not None:
-                sibling_conn = sqlite3.connect(f"file:{sibling}?mode=ro", uri=True)
+                sibling_conn = open_readonly_connection(
+                    sibling, tier=tier, validate_schema=False, timeout_class="background-read"
+                )
                 try:
                     _assert_schema_supported(sibling_conn, sibling, tier)
                 finally:
@@ -679,7 +828,7 @@ def open_connection(
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in profile.pragma_statements:
+        for stmt in write_connection_pragma_statements(profile):
             conn.execute(stmt)
         _attach_sibling_tiers(conn)
     except BaseException:
@@ -711,7 +860,7 @@ def open_daemon_connection(
     try:
         if validate_schema:
             _assert_schema_supported(conn, path, tier)
-        for stmt in DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS:
+        for stmt in write_connection_pragma_statements(DAEMON_WRITE_CONNECTION_PROFILE):
             if busy_timeout_ms is not None and stmt.startswith("PRAGMA busy_timeout"):
                 stmt = f"PRAGMA busy_timeout = {busy_timeout_ms}"
             conn.execute(stmt)
@@ -787,14 +936,25 @@ def open_readonly_connection(
     if timeout_class not in READ_PROFILES:
         raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
     if profile is READ_CONNECTION_PROFILE and timeout_class != "interactive-read":
-        profile = READ_PROFILES["offline-bulk" if immutable else timeout_class]
+        profile = READ_PROFILES[timeout_class]
+    if immutable and profile.generation_identity != "sealed":
+        if not any(profile is named for named in (READ_CONNECTION_PROFILE, *READ_PROFILES.values())):
+            raise ValueError(
+                "immutable SQLite mode requires a sealed-generation read profile; a live-generation "
+                "profile cannot promise the file will not change under the connection"
+            )
+        profile = SEALED_READ_CONNECTION_PROFILE
+    immutable = immutable or profile.immutable
     timeout = profile.timeout_seconds if timeout == READ_DB_TIMEOUT else timeout
     suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
     if opened_main_fd is not None and immutable:
         raise ValueError("an opened SQLite file descriptor cannot use immutable mode")
     opened_fd = opened_main_fd
     if opened_fd is None:
-        database_uri = f"file:{path}{suffix}"
+        # Percent-encode the path: an unescaped '?' or '#' in a filename would
+        # otherwise be parsed as the URI's own query or fragment delimiter and
+        # silently open a different file, or none.
+        database_uri = f"file:{quote(str(path))}{suffix}"
     else:
         descriptor_uri = _descriptor_database_uri(opened_fd, suffix)
         if descriptor_uri is None:
@@ -848,6 +1008,301 @@ def open_profiled_connection(
     )
 
 
+def open_isolated_write_connection(
+    path: str | Path,
+    *,
+    purpose: str,
+    profile: SQLiteConnectionProfile = ISOLATED_TIER_WRITE_PROFILE,
+    timeout: float | None = None,
+) -> sqlite3.Connection:
+    """Open a writable connection to exactly one tier, attaching no siblings.
+
+    The declared route for a writer that must not span tiers. ``purpose`` names
+    the operation in the write-lease refusal, so an unserialized one-tier write
+    is as visible as any other unleased write.
+    """
+    if profile.role != "write":
+        raise ValueError("open_isolated_write_connection requires a write profile")
+    require_write_lease(purpose)
+    conn = sqlite3.connect(str(path), timeout=profile.timeout_seconds if timeout is None else timeout)
+    try:
+        for stmt in write_connection_pragma_statements(profile):
+            conn.execute(stmt)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Read frames: a bounded, rebindable read connection over one generation
+# ---------------------------------------------------------------------------
+#
+# A ``mode=ro`` connection is not by itself a bounded read. It pins the WAL
+# frames it first read against for as long as it lives, which is what turns a
+# recurring PASSIVE checkpoint into a no-op and lets the WAL grow without
+# limit. A read frame gives a live-generation reader the two things that bound
+# it: an age past which it must rebind, and a generation identity that says
+# whether what it rebound to is still the thing it was reading.
+
+
+class ReadFrameExpiredError(RuntimeError):
+    """A live read frame outlived the maximum snapshot age its profile declares."""
+
+    code = "read_frame_expired"
+
+
+class StaleContinuationError(RuntimeError):
+    """A continuation cannot be resumed against an equivalent frame.
+
+    Raised instead of resuming where the anchor no longer holds the position:
+    continuing there would skip or duplicate rows, and only the caller can
+    decide which of those it can tolerate.
+    """
+
+    code = "stale_continuation"
+
+
+class ReadFrameCancelledError(RuntimeError):
+    """The frame's in-flight statement was cancelled by its owner."""
+
+    code = "read_frame_cancelled"
+
+
+@dataclass(frozen=True, slots=True)
+class GenerationToken:
+    """Identity of the generation a frame is bound to.
+
+    File identity, because that is what a generation swap moves and what stays
+    comparable between two connections. Content freshness *within* one
+    generation is a separate question that only the open connection can answer
+    (``PRAGMA data_version`` is explicitly not meaningful across connections),
+    so the frame tracks that separately.
+    """
+
+    device: int
+    inode: int
+
+
+@dataclass(frozen=True, slots=True)
+class ReadContinuation:
+    """A resumable position in a paged read, and the anchor that proves it.
+
+    ``anchor_sql`` must select the row the page stopped at and return its
+    position as the first column, so a rebound frame can prove the position
+    still means the same thing rather than assuming it.
+    """
+
+    position: object
+    anchor_sql: str
+    anchor_params: tuple[object, ...] = ()
+    generation: GenerationToken | None = None
+    #: Which frame incarnation produced this continuation. A rebind starts a
+    #: new one, so a continuation can never be waved through on generation
+    #: identity alone after the frame it was produced on was replaced.
+    epoch: int = 0
+
+
+def _generation_token(path: Path) -> GenerationToken:
+    stat = path.stat()
+    return GenerationToken(device=stat.st_dev, inode=stat.st_ino)
+
+
+def _data_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA main.data_version").fetchone()[0])
+
+
+class ReadFrame:
+    """A read connection bound to one generation for a declared maximum age.
+
+    Not thread-safe: a frame belongs to the request or page loop that opened
+    it. ``cancel`` is the one exception, and only for a profile that declares
+    cancellation support -- it interrupts an in-flight statement from another
+    thread, which is what SQLite's ``interrupt`` is for.
+    """
+
+    __slots__ = (
+        "_cancelled",
+        "_conn",
+        "_data_version",
+        "_epoch",
+        "_generation",
+        "_opened_at",
+        "_path",
+        "_profile",
+        "_tier",
+    )
+
+    def __init__(
+        self,
+        path: Path | str,
+        *,
+        profile: SQLiteConnectionProfile,
+        tier: ArchiveTier | None = None,
+    ) -> None:
+        if profile.role != "read" or not profile.query_only:
+            raise ValueError("a read frame requires a query-only read profile")
+        self._path = Path(path)
+        self._profile = profile
+        self._tier = tier
+        self._cancelled = False
+        self._epoch = 0
+        self._conn = self._open()
+        self._opened_at = time.monotonic()
+        self._generation = _generation_token(self._path)
+        self._data_version = _data_version(self._conn)
+
+    def _open(self) -> sqlite3.Connection:
+        conn = open_readonly_connection(
+            self._path,
+            profile=self._profile,
+            immutable=self._profile.immutable,
+            tier=self._tier,
+        )
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    # -- identity and lifetime ------------------------------------------------
+
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """The bound connection, refused once the frame has expired.
+
+        Refusing here is what makes the declared maximum age load-bearing: a
+        caller that holds a frame past it gets a typed error instead of a
+        silently unbounded WAL pin.
+        """
+        self.check()
+        return self._conn
+
+    @property
+    def generation(self) -> GenerationToken:
+        return self._generation
+
+    @property
+    def epoch(self) -> int:
+        """How many times this frame has been rebound."""
+        return self._epoch
+
+    @property
+    def profile(self) -> SQLiteConnectionProfile:
+        return self._profile
+
+    @property
+    def age_s(self) -> float:
+        return time.monotonic() - self._opened_at
+
+    @property
+    def expired(self) -> bool:
+        max_age = self._profile.max_snapshot_age_s
+        return max_age is not None and self.age_s > max_age
+
+    def check(self) -> None:
+        """Raise if this frame may no longer be read from."""
+        if self._cancelled:
+            raise ReadFrameCancelledError(f"read frame over {self._path} was cancelled")
+        if self.expired:
+            raise ReadFrameExpiredError(
+                f"read frame over {self._path} reached {self.age_s:.1f}s against a declared "
+                f"{self._profile.max_snapshot_age_s:.1f}s maximum; rebind it or finish the read"
+            )
+
+    def revalidate(self) -> bool:
+        """Whether this frame still sees exactly what it was opened on.
+
+        Both halves matter: the generation may have been swapped under the
+        frame, or another connection may have committed into the same one.
+        """
+        try:
+            if _generation_token(self._path) != self._generation:
+                return False
+            return _data_version(self._conn) == self._data_version
+        except (OSError, sqlite3.Error):
+            return False
+
+    def rebind(self) -> GenerationToken:
+        """Reopen against the current generation, releasing the pinned frames.
+
+        A sealed generation has nothing to rebind to: it cannot change, so a
+        rebind request against one is a caller error rather than a no-op that
+        hides a wrong profile choice.
+        """
+        if self._profile.generation_identity == "sealed":
+            raise ValueError(f"a sealed-generation read frame over {self._path} has nothing to rebind to")
+        self._conn.close()
+        self._cancelled = False
+        self._epoch += 1
+        self._conn = self._open()
+        self._opened_at = time.monotonic()
+        self._generation = _generation_token(self._path)
+        self._data_version = _data_version(self._conn)
+        return self._generation
+
+    def cancel(self) -> None:
+        """Interrupt an in-flight statement on this frame."""
+        if not self._profile.cancellation_supported:
+            raise ValueError(f"read profile for {self._path} does not declare cancellation support")
+        self._cancelled = True
+        self._conn.interrupt()
+
+    # -- continuations --------------------------------------------------------
+
+    def bind(self, continuation: ReadContinuation) -> ReadContinuation:
+        """Stamp a continuation with the frame incarnation that produced it."""
+        return replace(continuation, generation=self._generation, epoch=self._epoch)
+
+    def resume(self, continuation: ReadContinuation) -> ReadContinuation:
+        """Return a continuation valid against a current frame, or refuse.
+
+        Rebinds an expired frame first, then either confirms the continuation
+        is still equivalent -- same generation, or an anchor row that still
+        holds the same position -- or raises :class:`StaleContinuationError`. It
+        never advances or rewinds the position to make one fit.
+        """
+        if self.expired:
+            self.rebind()
+        unchanged = (
+            continuation.generation == self._generation and continuation.epoch == self._epoch and self.revalidate()
+        )
+        if unchanged:
+            return continuation
+        row = self._conn.execute(continuation.anchor_sql, continuation.anchor_params).fetchone()
+        if row is None or row[0] != continuation.position:
+            raise StaleContinuationError(
+                f"continuation at {continuation.position!r} cannot be resumed against the current "
+                f"generation of {self._path}: its anchor row no longer holds that position"
+            )
+        return replace(continuation, generation=self._generation, epoch=self._epoch)
+
+    # -- lifecycle ------------------------------------------------------------
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+
+def read_frame(
+    path: Path | str,
+    *,
+    timeout_class: str = "interactive-read",
+    tier: ArchiveTier | None = None,
+) -> ReadFrame:
+    """Open a read frame under one of the declared read timeout classes."""
+    if timeout_class not in READ_PROFILES:
+        raise ValueError(f"unknown SQLite timeout class: {timeout_class}")
+    return ReadFrame(path, profile=READ_PROFILES[timeout_class], tier=tier)
+
+
 @contextmanager
 def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iterator[sqlite3.Connection]:
     """Context manager for a single-use read-write connection.
@@ -868,10 +1323,8 @@ __all__ = [
     "BOUNDED_REPAIR_MMAP_SIZE_BYTES",
     "BULK_BUILD_CACHE_SIZE_KIB",
     "BULK_BUILD_MMAP_SIZE_BYTES",
-    "BULK_BUILD_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "BULK_BUILD_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_CACHE_SIZE_KIB",
-    "DAEMON_WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "DAEMON_WRITE_CONNECTION_PROFILE",
     "DAEMON_WRITE_MMAP_SIZE_BYTES",
     "MEMORY_BUDGET_BYTES",
@@ -884,19 +1337,42 @@ __all__ = [
     "READ_DB_TIMEOUT",
     "READ_MMAP_SIZE_BYTES",
     "READ_PROFILES",
+    "SEALED_READ_CONNECTION_PROFILE",
+    "BACKGROUND_READ_CONNECTION_PROFILE",
+    "OFFLINE_BULK_READ_CONNECTION_PROFILE",
+    "BACKGROUND_READ_SNAPSHOT_AGE_S",
+    "INTERACTIVE_READ_SNAPSHOT_AGE_S",
+    "CHECKPOINT_ESCALATION_MODES",
+    "CHECKPOINT_HOLD_BUDGET_S",
+    "CheckpointEscalation",
+    "OWNED_WAL_AUTOCHECKPOINT_PAGES",
+    "WAL_ESCALATION_BYTES",
+    "WAL_WARN_BYTES",
+    "WRITE_PROFILES",
+    "arm_recurring_checkpoint_owner",
+    "recurring_checkpoint_owner_armed",
+    "write_connection_pragma_statements",
     "SQLiteConnectionProfile",
     "TIMEOUT_CLASSES",
     "WAL_AUTOCHECKPOINT_PAGES",
     "WRITE_CACHE_SIZE_KIB",
-    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
     "WRITE_CONNECTION_PROFILE",
     "WRITE_MMAP_SIZE_BYTES",
     "check_mapped_bytes_budget_against_cgroup_limit",
+    "GenerationToken",
+    "ReadContinuation",
+    "ReadFrame",
+    "ReadFrameCancelledError",
+    "ReadFrameExpiredError",
+    "StaleContinuationError",
+    "read_frame",
     "connection_context",
     "descriptor_alias_path",
     "log_mapped_bytes_budget_check",
     "mapped_bytes_budget",
     "assert_tier_schema_supported",
+    "ISOLATED_TIER_WRITE_PROFILE",
+    "open_isolated_write_connection",
     "open_daemon_connection",
     "open_connection",
     "open_readonly_connection",

@@ -30,7 +30,6 @@ from polylogue.pipeline.services.ingest_batch._observations import (
 )
 from polylogue.pipeline.services.ingest_worker import ingest_record
 from polylogue.pipeline.services.process_pool import process_pool_executor
-from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PRAGMA_STATEMENTS
 
 __all__ = [
     "_SessionEntry",
@@ -52,5 +51,4 @@ __all__ = [
     "process_pool_executor",
     "repair_message_fts_bulk",
     "refresh_session_insights_bulk",
-    "WRITE_CONNECTION_PRAGMA_STATEMENTS",
 ]

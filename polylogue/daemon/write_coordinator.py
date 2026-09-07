@@ -69,6 +69,12 @@ WRITE_HOLD_BUDGETS_S: Mapping[str, float] = {
     "watcher.catch_up.chunk": 30.0,
     "watcher.live_ingest": 30.0,
     "watcher.": 30.0,
+    # Checkpointing gets its own ceiling rather than the general maintenance
+    # one: it is the recurring hold most likely to grow with archive size, and
+    # a budget it shares with publication cannot show that it did
+    # (CHECKPOINT_HOLD_BUDGET_S in storage/sqlite/connection_profile.py, not
+    # imported here because the daemon ring may not reach into storage).
+    "maintenance.wal_checkpoint": 20.0,
     "maintenance.": 120.0,
 }
 _DEFAULT_WRITE_HOLD_BUDGET_S = 60.0

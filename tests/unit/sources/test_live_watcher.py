@@ -90,12 +90,6 @@ class _FullIngestMock:
             ingested_session_count=1,
             ingested_message_count=7,
             changed_session_count=1,
-            wal_bytes_before_checkpoint=8192,
-            wal_bytes_after_checkpoint=1024,
-            wal_checkpointed_pages=4,
-            wal_busy_pages=2,
-            wal_checkpoint_elapsed_s=0.125,
-            wal_checkpoint_mode="truncate",
             stage_timings_s={"full.provider_parse": 0.01, "full.index_parsed_write": 0.02},
         )
 
@@ -450,9 +444,6 @@ def test_live_ingest_metrics_log_separates_read_bytes_from_candidate_size(
         parse_time_s=0.5,
         convergence_time_s=0.25,
         total_time_s=1.0,
-        wal_bytes_before_checkpoint_max=8_000_000,
-        wal_bytes_after_checkpoint_max=1_000_000,
-        wal_busy_pages_total=3,
         stage_timings_s={"full_parse": 0.45, "fts": 0.05, "derived": 0.2},
     )
 
@@ -3373,13 +3364,6 @@ def test_ingest_files_emits_observable_batch_metrics(tmp_path: Path) -> None:
     assert payload["ingested_session_count"] == 1
     assert payload["ingested_message_count"] == 7
     assert payload["changed_session_count"] == 1
-    assert payload["wal_bytes_before_checkpoint_max"] == 8192
-    assert payload["wal_bytes_after_checkpoint_max"] == 1024
-    assert payload["wal_checkpointed_pages_total"] == 4
-    assert payload["wal_busy_pages_total"] == 2
-    assert payload["wal_checkpoint_elapsed_s"] == 0.125
-    assert payload["wal_checkpoint_modes"] == {"truncate": 1}
-    assert payload["wal_checkpoint_errors"] == []
     assert payload["parse_time_s"] >= 0
     assert payload["total_time_s"] >= 0
     assert payload["stage_timings_s"] == {"full.index_parsed_write": 0.02, "full.provider_parse": 0.01}
