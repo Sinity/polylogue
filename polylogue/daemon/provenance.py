@@ -202,6 +202,7 @@ def fetch_provenance_row(session_id: str) -> ProvenanceRow | None:
         return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
     if not dbp.exists() and archive_db is not None:
         return _fetch_archive_provenance_row(archive_db, session_id, archive_root_path=archive_root())
+    return None
 
 
 def _quarantine_state(row: ProvenanceRow) -> tuple[bool, str | None]:
