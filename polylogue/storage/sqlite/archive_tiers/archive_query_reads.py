@@ -28,12 +28,11 @@ from polylogue.archive.query.predicate import (
 )
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.core.dates import parse_date
-from polylogue.core.enums import ActionResultState, ToolOutcome
+from polylogue.core.enums import ActionResultState
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC
 from polylogue.storage.sqlite.archive_tiers.types import (
     DelegationMappingState,
     DelegationResultStatus,
@@ -46,7 +45,10 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     ASSERTION_DEFAULT_VISIBILITY,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    ARCHIVE_BLOCK_ROW_COLUMNS,
     ArchiveBlockRow,
+    archive_block_row,
+    archive_block_row_select_sql,
 )
 from polylogue.storage.sqlite.queries.project_refs import expand_project_refs
 from polylogue.storage.sqlite.run_projection_relations import (
@@ -808,51 +810,12 @@ def _query_unit_order_direction(direction: Literal["asc", "desc"]) -> Literal["A
     return "DESC" if direction == "desc" else "ASC"
 
 
-# ArchiveBlockRow is intentionally a compact read model rather than a full
-# blocks-table row.  Keep its curated projection tied to the canonical table
-# declaration: adding or renaming a storage column cannot leave this SELECT's
-# spelling silently stale.  The order follows BLOCKS_SPEC; sqlite3.Row
-# hydration is name-based, so this does not impose a positional contract.
-_ARCHIVE_BLOCK_QUERY_ROW_FIELDS: frozenset[str] = frozenset(
-    {
-        "block_id",
-        "message_id",
-        "block_type",
-        "text",
-        "tool_name",
-        "tool_id",
-        "semantic_type",
-        "tool_input",
-        "language",
-        "tool_result_is_error",
-        "tool_result_exit_code",
-        "tool_outcome",
-    }
-)
+# The query read model is the shared compact block projection minus the
+# unknown-outcome reason, which this route does not select (polylogue-blpir
+# owns closing that gap).
 _ARCHIVE_BLOCK_QUERY_COLUMNS: tuple[str, ...] = tuple(
-    column.name for column in BLOCKS_SPEC.all_columns if column.name in _ARCHIVE_BLOCK_QUERY_ROW_FIELDS
+    name for name in ARCHIVE_BLOCK_ROW_COLUMNS if name != "tool_result_outcome_unknown_reason"
 )
-if set(_ARCHIVE_BLOCK_QUERY_COLUMNS) != _ARCHIVE_BLOCK_QUERY_ROW_FIELDS:
-    raise RuntimeError("ArchiveBlockRow projection is not covered by BLOCKS_SPEC")
-
-
-def _hydrate_archive_block_row(row: sqlite3.Row) -> ArchiveBlockRow:
-    """Build an ``ArchiveBlockRow`` from a row selected via ``_ARCHIVE_BLOCK_QUERY_COLUMNS``."""
-
-    return ArchiveBlockRow(
-        block_id=str(row["block_id"]),
-        message_id=str(row["message_id"]),
-        block_type=str(row["block_type"]),
-        text=str(row["text"]) if row["text"] is not None else None,
-        tool_name=str(row["tool_name"]) if row["tool_name"] is not None else None,
-        tool_id=str(row["tool_id"]) if row["tool_id"] is not None else None,
-        semantic_type=str(row["semantic_type"]) if row["semantic_type"] is not None else None,
-        tool_input=str(row["tool_input"]) if row["tool_input"] is not None else None,
-        language=str(row["language"]) if row["language"] is not None else None,
-        tool_result_is_error=(int(row["tool_result_is_error"]) if row["tool_result_is_error"] is not None else None),
-        tool_result_exit_code=(int(row["tool_result_exit_code"]) if row["tool_result_exit_code"] is not None else None),
-        tool_outcome=ToolOutcome(row["tool_outcome"]) if row["tool_outcome"] is not None else None,
-    )
 
 
 def _fetch_blocks_for_messages(
@@ -869,10 +832,9 @@ def _fetch_blocks_for_messages(
     if not message_ids:
         return blocks_by_message
     block_placeholders = ", ".join("?" for _ in message_ids)
-    columns_sql = ", ".join(_ARCHIVE_BLOCK_QUERY_COLUMNS)
     block_rows = conn.execute(
         f"""
-        SELECT {columns_sql}
+        SELECT {archive_block_row_select_sql(_ARCHIVE_BLOCK_QUERY_COLUMNS)}
         FROM blocks
         WHERE message_id IN ({block_placeholders})
         ORDER BY message_id, position, block_id
@@ -880,7 +842,7 @@ def _fetch_blocks_for_messages(
         message_ids,
     ).fetchall()
     for block in block_rows:
-        blocks_by_message[str(block["message_id"])].append(_hydrate_archive_block_row(block))
+        blocks_by_message[str(block["message_id"])].append(archive_block_row(block, _ARCHIVE_BLOCK_QUERY_COLUMNS))
     return blocks_by_message
 
 
