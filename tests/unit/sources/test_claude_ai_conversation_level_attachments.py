@@ -1,13 +1,10 @@
-"""A conversation-level attachment record must not orphan the file it restates.
+"""Conversation-level attachment records require an unambiguous message owner.
 
 A claude.ai conversation export may repeat a message's attachment record at
 the conversation level, in ``attachments``/``files``, without repeating the
-message id. When that entry names no provider attachment id, its identity is
-seeded from the message id it does not carry, so it can never equal the
-message-level record for the same file. The writer then stores the file
-twice: once referenced, once ``acquired`` with no ``attachment_refs`` row at
-all -- reachable from no session, message, or read surface, because every
-attachment read path inner-joins ``attachment_refs``.
+message id. Descriptor matching adopts the message identity only when exactly
+one message owns that descriptor. Metadata-only records remain evidence, but
+inline bytes without a unique owner are dropped before persistence.
 """
 
 from __future__ import annotations
@@ -68,9 +65,7 @@ def _unreferenced(root: Path) -> int:
 
 
 def test_conversation_level_repeat_of_an_idless_file_keeps_one_referenced_attachment(tmp_path: Path) -> None:
-    """Anti-vacuity: drop the descriptor match from ``_conversation_level_identity``
-    and this stores two attachments with one ref, leaving one acquired row
-    unreachable."""
+    """Anti-vacuity: descriptor matching preserves the conversation-level bytes."""
     root = tmp_path / "archive"
     descriptor = {"file_name": "report.txt", "file_type": "text/plain"}
     attachments, refs = _write(
@@ -108,7 +103,7 @@ def test_conversation_level_file_with_no_message_record_stays_unreferenced(tmp_p
         root,
         _conversation(
             message_files=[],
-            conversation_files=[{"file_name": "loose.txt", "file_type": "text/plain", "extracted_content": "body"}],
+            conversation_files=[{"file_name": "loose.txt", "file_type": "text/plain"}],
         ),
     )
 
@@ -126,7 +121,7 @@ def test_two_message_records_sharing_a_descriptor_leave_the_repeat_unattributed(
     descriptor = {"file_name": "shared.txt", "file_type": "text/plain"}
     payload = _conversation(
         message_files=[dict(descriptor)],
-        conversation_files=[{**descriptor, "extracted_content": "body"}],
+        conversation_files=[dict(descriptor)],
     )
     payload["chat_messages"].append(
         {
@@ -142,6 +137,44 @@ def test_two_message_records_sharing_a_descriptor_leave_the_repeat_unattributed(
 
     assert (attachments, refs) == (3, 2)
     assert _unreferenced(root) == 1
+
+
+def test_unowned_inline_bytes_are_dropped_without_a_message_owner(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+
+    attachments, refs = _write(
+        root,
+        _conversation(
+            message_files=[],
+            conversation_files=[{"file_name": "loose.txt", "file_type": "text/plain", "extracted_content": "body"}],
+        ),
+    )
+
+    assert (attachments, refs) == (0, 0)
+    assert _unreferenced(root) == 0
+
+
+def test_ambiguous_inline_bytes_are_dropped_without_a_unique_owner(tmp_path: Path) -> None:
+    root = tmp_path / "archive"
+    descriptor = {"file_name": "shared.txt", "file_type": "text/plain"}
+    payload = _conversation(
+        message_files=[dict(descriptor)],
+        conversation_files=[{**descriptor, "extracted_content": "body"}],
+    )
+    payload["chat_messages"].append(
+        {
+            "uuid": "msg-2",
+            "sender": "human",
+            "text": "again",
+            "created_at": _TIMESTAMP,
+            "attachments": [dict(descriptor)],
+        }
+    )
+
+    attachments, refs = _write(root, payload)
+
+    assert (attachments, refs) == (2, 2)
+    assert _unreferenced(root) == 0
 
 
 def test_conversation_level_repeat_carrying_its_own_id_is_unaffected(tmp_path: Path) -> None:

@@ -6037,6 +6037,17 @@ class TestFieldRegistry:
         "cwd": ("cwd:/realm/project", "cwd_prefix", "/realm/project"),
         "tool": ("tool:bash", "tool_terms", ("bash",)),
         "action": ("action:file_edit", "action_terms", ("file_edit",)),
+        "action_sequence": (
+            "action_sequence:file_edit>shell",
+            "action_sequence",
+            ("file_edit", "shell"),
+        ),
+        "action_text": ("action_text:pytest", "action_text_terms", ("pytest",)),
+        "since_session": (
+            "since_session:claude-code-session:abc123",
+            "since_session_id",
+            "claude-code-session:abc123",
+        ),
         "has": ("has:paste", "filter_has_paste", True),
         "id": ("id:abc123", "session_id", "abc123"),
         "session": ("session:claude-code-session:abc123", "session_id", "claude-code-session:abc123"),

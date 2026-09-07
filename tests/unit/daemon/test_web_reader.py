@@ -2332,8 +2332,7 @@ class TestWebUIV2:
         workspace_env: dict[str, Path],
     ) -> None:
         """A materialized rollup renders every basis lane independently, never collapsed into one number."""
-        from polylogue.analysis.archive import CostRollupInsight
-        from polylogue.analysis.archive_models import ArchiveInsightProvenance
+        from polylogue.analysis.archive import ArchiveInsightProvenance, CostRollupInsight
         from polylogue.archive.semantic.pricing import CostBasisPayload, CostUsagePayload
 
         provenance = ArchiveInsightProvenance(
