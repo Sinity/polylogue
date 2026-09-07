@@ -650,7 +650,6 @@ def test_a_state_payload_the_database_no_longer_emits_is_not_proven(tmp_path: Pa
     state_db = _codex_state_db(tmp_path / "state_5.sqlite", title="the title at acquisition")
     store = BlobStore(tmp_path / "blob")
     stale = _publish_blob(store, _codex_evidence_payloads(state_db)[0])
-    _codex_state_db(state_db.with_suffix(".rewritten"), title="the title now")
     state_db.unlink()
     _codex_state_db(state_db, title="the title now")
     source_db = _source_db_with_rows(tmp_path / "source.db", hook_events=((stale, str(state_db)),), blob_refs=(stale,))

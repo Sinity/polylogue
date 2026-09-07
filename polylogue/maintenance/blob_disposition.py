@@ -31,8 +31,9 @@ blob_disposition_apply` under a separate authorization.
 
 This is a one-time transition planner. Its deletion trigger is the terminal
 disposition receipt: once the physical namespace is accounted for, this
-module and its apply sibling go with it, and only the recurring liveness,
-publication, GC, and spool-admission laws remain in their owners.
+module, its apply sibling, and the normalized-comparison module the
+containment prover routes through go with it, and only the recurring
+liveness, publication, GC, and spool-admission laws remain in their owners.
 """
 
 from __future__ import annotations
