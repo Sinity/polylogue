@@ -2098,7 +2098,7 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
     assert final_cursor.byte_size == len(completed)
     assert final_cursor.deferred_end_offset is None
     with sqlite3.connect(index_db) as conn:
-        assert conn.execute("SELECT native_id FROM messages").fetchall() == []
+        assert conn.execute("SELECT native_id FROM messages").fetchall() == [("message-0",)]
 
 
 def test_full_ingest_rejects_incomplete_jsonl_without_hot_prefix_proof(
@@ -6253,7 +6253,7 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
         sha256(payload).hexdigest(),
         None,
         None,
-        None,
+        raw_id,
         None,
         None,
         0,
