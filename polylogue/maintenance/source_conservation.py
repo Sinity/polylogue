@@ -33,6 +33,7 @@ from typing import Any
 
 from polylogue.archive.revision_authority import logical_head_cohort_sql
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.maintenance.source_manifest_continuity import SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
 from polylogue.storage.introspection import table_exists
 
@@ -81,6 +82,12 @@ _TERM_BLOCK_ORPHAN = "block_orphan"
 _TERM_ATTACHMENT_REF_ORPHAN = "attachment_ref_orphan"
 _TERM_ATTACHMENT_UNREFERENCED = "attachment_unreferenced"
 _TERM_ATTACHMENT_UNOWNED = "attachment_unowned"
+_TERM_FRONTIER_UNAVAILABLE = "frontier_unavailable"
+_TERM_FRONTIER_UNACQUIRED = "frontier_unacquired"
+_TERM_FRONTIER_DUPLICATE = "frontier_duplicate"
+_TERM_FRONTIER_ORPHAN = "frontier_orphan"
+_TERM_CONTENT_MISMATCH = "content_mismatch"
+_TERM_ATTACHMENT_MISSING = "attachment_missing"
 
 _RULES: dict[str, str] = {
     _TERM_SOURCE_MISSING: ("acquired source file no longer exists on disk; the archive retains its raw payload bytes"),
@@ -133,6 +140,12 @@ _RULES: dict[str, str] = {
         "was ambiguous, or orphaned before the ref-count sweep covered its write path; identity "
         "and bytes are retained as evidence, and plan_orphaned_attachment_relink types which"
     ),
+    _TERM_FRONTIER_UNAVAILABLE: "configured source root could not be observed; the denominator is incomplete",
+    _TERM_FRONTIER_UNACQUIRED: "configured source member has no acquired raw membership",
+    _TERM_FRONTIER_DUPLICATE: "one configured source member has multiple acquired owners",
+    _TERM_FRONTIER_ORPHAN: "acquired raw source identity is outside the configured frontier",
+    _TERM_CONTENT_MISMATCH: "acquired logical membership and materialized semantic content disagree",
+    _TERM_ATTACHMENT_MISSING: "attachment reference names no retained attachment row",
 }
 
 _BLOCKING: frozenset[str] = frozenset(
@@ -150,6 +163,12 @@ _BLOCKING: frozenset[str] = frozenset(
         _TERM_BLOCK_ORPHAN,
         _TERM_ATTACHMENT_REF_ORPHAN,
         _TERM_ATTACHMENT_UNREFERENCED,
+        _TERM_FRONTIER_UNAVAILABLE,
+        _TERM_FRONTIER_UNACQUIRED,
+        _TERM_FRONTIER_DUPLICATE,
+        _TERM_FRONTIER_ORPHAN,
+        _TERM_CONTENT_MISMATCH,
+        _TERM_ATTACHMENT_MISSING,
     }
 )
 
@@ -188,6 +207,8 @@ class SourceConservationReport:
     sidecar_total: int
     session_total: int
     terms: tuple[ConservationTerm, ...]
+    frontier_sha256: str | None = None
+    frontier_total: int = 0
 
     @property
     def blocking_count(self) -> int:
@@ -208,6 +229,8 @@ class SourceConservationReport:
             f"{self.forward_total:,} raw item(s), {self.hook_total:,} hook event(s), "
             f"{self.session_total:,} index session(s)"
         ]
+        if self.frontier_sha256 is not None:
+            parts.append(f"frontier={self.frontier_total:,} item(s) digest={self.frontier_sha256}")
         for term in self.terms:
             if term.count and term.name != _TERM_MATERIALIZED:
                 marker = "!" if term.blocking else ""
@@ -221,6 +244,8 @@ class SourceConservationReport:
                 "hook_total": self.hook_total,
                 "sidecar_total": self.sidecar_total,
                 "session_total": self.session_total,
+                "frontier_sha256": self.frontier_sha256,
+                "frontier_total": self.frontier_total,
                 "blocking_count": self.blocking_count,
                 "warning_count": self.warning_count,
                 "terms": {term.name: term.to_json() for term in self.terms},
@@ -478,9 +503,12 @@ def audit_source_conservation(
     archive_root: Path,
     sample_limit: int = 10,
     probe_filesystem: bool = True,
+    frontier: SourceFrontier | None = None,
 ) -> SourceConservationReport:
     """Type every acquired source item and every index row; ``conn`` is the
     source tier with the index tier attached as ``idx_tier`` (read-only)."""
+    if frontier is not None:
+        frontier.verify_integrity()
     heads_cte, term_case = _raw_term_case(conn)
     forward_total = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
 
@@ -644,6 +672,8 @@ def audit_source_conservation(
     attachment_unreferenced: list[tuple[Any, ...]] = []
     attachment_unowned_count = 0
     attachment_unowned: list[tuple[Any, ...]] = []
+    attachment_missing_count = 0
+    attachment_missing: list[tuple[Any, ...]] = []
     if table_exists(conn, "attachment_refs", schema="idx_tier"):
         attachment_ref_orphan_count = int(
             conn.execute(
@@ -707,6 +737,103 @@ def audit_source_conservation(
             """,
             (sample_limit,),
         ).fetchall()
+        attachment_missing_count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*) FROM idx_tier.attachment_refs ar
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM idx_tier.attachments a WHERE a.attachment_id = ar.attachment_id
+                )
+                """
+            ).fetchone()[0]
+        )
+        attachment_missing = conn.execute(
+            """
+            SELECT ar.attachment_id FROM idx_tier.attachment_refs ar
+            WHERE NOT EXISTS (
+                SELECT 1 FROM idx_tier.attachments a WHERE a.attachment_id = ar.attachment_id
+            )
+            LIMIT ?
+            """,
+            (sample_limit,),
+        ).fetchall()
+
+    frontier_counts: dict[str, int] = {}
+    frontier_samples: dict[str, list[str]] = {}
+    if frontier is not None:
+        # Bind each observed member to raw acquisition by canonical path and
+        # digest.  The frontier remains authoritative even if its mutable path
+        # has since been replaced or removed.
+        raw_rows = conn.execute("SELECT raw_id, source_path, blob_hash FROM raw_sessions ORDER BY raw_id").fetchall()
+        declarations = {declaration.source_id: declaration for declaration in frontier.declarations}
+        raw_bound: set[str] = set()
+        for member in frontier.members:
+            declaration = declarations[member.source_id]
+            root = Path(declaration.root)
+            expected_path = str(root / member.coordinate) if root.is_dir() else str(root)
+            expected_archive_path = f"{root}!{member.coordinate}"
+            expected_paths = {expected_path, expected_archive_path}
+            if declaration.role.value == "archive-member":
+                expected_paths.add(str(root))
+            digest = member.content_sha256.lower()
+            owners = []
+            for raw_id, source_path, blob_hash in raw_rows:
+                raw_digest = (
+                    bytes(blob_hash).hex() if isinstance(blob_hash, (bytes, memoryview)) else str(blob_hash or "")
+                )
+                digest_matches = raw_digest.lower() == digest or member.logical_sha256 is not None
+                if str(source_path) in expected_paths and digest_matches:
+                    owners.append((raw_id, source_path, blob_hash))
+                    raw_bound.add(str(raw_id))
+            label = f"{member.source_id}:{member.coordinate}"
+            if not owners:
+                frontier_counts[_TERM_FRONTIER_UNACQUIRED] = frontier_counts.get(_TERM_FRONTIER_UNACQUIRED, 0) + 1
+                frontier_samples.setdefault(_TERM_FRONTIER_UNACQUIRED, []).append(label)
+            elif len(owners) > 1:
+                frontier_counts[_TERM_FRONTIER_DUPLICATE] = frontier_counts.get(_TERM_FRONTIER_DUPLICATE, 0) + 1
+                frontier_samples.setdefault(_TERM_FRONTIER_DUPLICATE, []).append(label)
+        for blocker in frontier.blockers:
+            frontier_counts[_TERM_FRONTIER_UNAVAILABLE] = frontier_counts.get(_TERM_FRONTIER_UNAVAILABLE, 0) + 1
+            frontier_samples.setdefault(_TERM_FRONTIER_UNAVAILABLE, []).append(blocker)
+        # A raw whose source coordinate is not represented by any configured
+        # member is an unowned acquisition, even when aggregate row counts
+        # happen to match the frontier denominator.
+        for raw_id, _source_path, _blob_hash in raw_rows:
+            if str(raw_id) in raw_bound:
+                continue
+            frontier_counts[_TERM_FRONTIER_ORPHAN] = frontier_counts.get(_TERM_FRONTIER_ORPHAN, 0) + 1
+            frontier_samples.setdefault(_TERM_FRONTIER_ORPHAN, []).append(str(raw_id))
+        # Membership content is an independent semantic witness.  A row that
+        # keeps its identity but changes its normalized content must not pass
+        # merely because the raw was acquired and a session row exists.
+        if table_exists(conn, "raw_session_memberships"):
+            mismatches = conn.execute(
+                """
+                SELECT m.raw_id
+                FROM raw_session_memberships m
+                JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
+                WHERE m.normalized_content_hash IS NOT NULL
+                  AND s.content_hash IS NOT NULL
+                  AND m.normalized_content_hash != s.content_hash
+                LIMIT ?
+                """,
+                (sample_limit,),
+            ).fetchall()
+            mismatch_count = int(
+                conn.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM raw_session_memberships m
+                    JOIN idx_tier.sessions s ON s.raw_id = m.raw_id
+                    WHERE m.normalized_content_hash IS NOT NULL
+                      AND s.content_hash IS NOT NULL
+                      AND m.normalized_content_hash != s.content_hash
+                    """
+                ).fetchone()[0]
+            )
+            if mismatch_count:
+                frontier_counts[_TERM_CONTENT_MISMATCH] = mismatch_count
+                frontier_samples[_TERM_CONTENT_MISMATCH] = [str(row[0]) for row in mismatches]
 
     def _term(
         name: str, count: int, sample: tuple[str, ...] = (), breakdown: dict[str, int] | None = None
@@ -775,14 +902,26 @@ def audit_source_conservation(
                 attachment_unowned_count,
                 _sample(attachment_unowned, sample_limit),
             ),
+            _term(_TERM_ATTACHMENT_MISSING, attachment_missing_count, _sample(attachment_missing, sample_limit)),
         )
     )
+    if frontier is not None:
+        for name in (
+            _TERM_FRONTIER_UNAVAILABLE,
+            _TERM_FRONTIER_UNACQUIRED,
+            _TERM_FRONTIER_DUPLICATE,
+            _TERM_FRONTIER_ORPHAN,
+            _TERM_CONTENT_MISMATCH,
+        ):
+            terms.append(_term(name, frontier_counts.get(name, 0), tuple(frontier_samples.get(name, ()))))
     return SourceConservationReport(
         forward_total=forward_total,
         hook_total=hook_total,
         sidecar_total=sidecar_total,
         session_total=session_total,
         terms=tuple(terms),
+        frontier_sha256=frontier.frontier_sha256 if frontier is not None else None,
+        frontier_total=frontier.item_count if frontier is not None else 0,
     )
 
 
