@@ -74,29 +74,21 @@ def _iter_hook_paste_events(source_db: Path, session_ids: Iterable[str] | None =
         if not _table_exists(connection, "raw_hook_events"):
             return []
         if session_ids is None:
-            cursors = [
-                connection.execute(
-                    "SELECT payload_json FROM raw_hook_events WHERE event_type = ?",
-                    (_PASTE_EVENT_TYPE,),
-                )
-            ]
+            queries = [("SELECT payload_json FROM raw_hook_events WHERE event_type = ?", (_PASTE_EVENT_TYPE,))]
         else:
             keys = _scoped_hook_keys(session_ids)
             if not keys:
                 return []
-            cursors = [
-                connection.execute(
-                    """
-                    SELECT payload_json
-                    FROM raw_hook_events
-                    WHERE origin = ? AND session_native_id = ? AND event_type = ?
-                    """,
+            queries = [
+                (
+                    "SELECT payload_json FROM raw_hook_events "
+                    "WHERE origin = ? AND session_native_id = ? AND event_type = ?",
                     (origin, native_id, _PASTE_EVENT_TYPE),
                 )
                 for origin, native_id in keys
             ]
-        for cursor in cursors:
-            for (payload_json,) in cursor:
+        for sql, parameters in queries:
+            for (payload_json,) in connection.execute(sql, parameters):
                 record = _decode_envelope(payload_json)
                 if record is None:
                     continue
