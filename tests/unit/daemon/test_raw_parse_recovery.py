@@ -538,7 +538,7 @@ def test_raw_parse_recovery_probe_seeks_the_source_path_index(tmp_path: Path, mo
     ``SCAN r`` (and, with the equality dropped, as a covering-index scan),
     both of which this assertion rejects.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "seek.json"
     _write_stuck_raw(tmp_path, source_path=str(path))
     plans = _record_probe_plans(monkeypatch)
@@ -559,7 +559,7 @@ def test_raw_parse_recovery_probes_a_whole_batch_in_one_statement(
     Anti-vacuity: without ``check_many``/``execute_many`` the converger falls
     back to the per-path ``check`` and this records four statements.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     paths = [tmp_path / f"batched-{index}.json" for index in range(4)]
     plans = _record_probe_plans(monkeypatch)
 
@@ -574,7 +574,7 @@ def test_raw_parse_recovery_probes_a_whole_batch_in_one_statement(
 
 def test_raw_parse_recovery_matches_descendants_of_a_directory_root(tmp_path: Path) -> None:
     """Debt registered for a directory root still finds the raws beneath it."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     nested = tmp_path / "inbox" / "conv.json"
     raw_id = _write_stuck_raw(tmp_path, source_path=str(nested))
 
@@ -599,7 +599,7 @@ def test_raw_parse_recovery_scope_is_a_literal_case_sensitive_prefix(
     tmp_path: Path, root_name: str, stuck_dir: str
 ) -> None:
     """A root's scope is its own descendants, not everything ``LIKE`` accepts."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     stuck = tmp_path / stuck_dir / "conv.json"
     _write_stuck_raw(tmp_path, source_path=str(stuck))
 
@@ -611,7 +611,7 @@ def test_raw_parse_recovery_scope_is_a_literal_case_sensitive_prefix(
 
 def test_raw_parse_recovery_drains_several_paths_in_one_batch(tmp_path: Path) -> None:
     """``execute_many`` repairs every pending path the chunk carries."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     first = tmp_path / "first.json"
     second = tmp_path / "second.json"
     first_raw = _write_stuck_raw(tmp_path, source_path=str(first), native_id="conv-first")
@@ -668,7 +668,7 @@ def test_restart_rewinds_cursor_that_outran_unparsed_raw(tmp_path: Path) -> None
     cursor store after a simulated kill must rewind the incomplete observation
     while retaining the recovery debt that drives raw materialization.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = tmp_path / "cursor-ahead.json"
     source_path.write_text("placeholder")
     _write_stuck_raw(tmp_path, source_path=str(source_path))
@@ -756,7 +756,7 @@ def test_raw_parse_recovery_terminates_on_a_decided_unresolved_membership(tmp_pa
     from ``_raw_parse_recovery_pending_count`` makes ``check`` stay True and
     ``execute`` return False here, which is the reported defect.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "decided-unresolved.jsonl"
     raw_id = _write_decided_unresolved_raw(tmp_path, source_path=str(path))
 
@@ -784,7 +784,7 @@ def test_raw_parse_recovery_still_pending_while_arbitration_has_not_run(tmp_path
     """
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     path = tmp_path / "pending-arbitration.jsonl"
     session = ParsedSession(
         source_name=Provider.CODEX,
