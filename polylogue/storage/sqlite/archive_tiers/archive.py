@@ -117,6 +117,7 @@ from polylogue.archive.semantic.subscription_pricing import compute_credit_cost,
 from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
+from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.json import require_json_value
@@ -7835,7 +7836,7 @@ def _session_cost_insight_from_archive_row(
 
 
 def _canonical_json_text(value: object) -> str:
-    return json.dumps(require_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return canonical_bytes(require_json_value(value), REFERENCE).decode("utf-8")
 
 
 def _stats_by_sql(group_by: str, where: str, *, tags_relation: str = "session_tags") -> str:
