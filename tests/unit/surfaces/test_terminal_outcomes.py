@@ -208,6 +208,11 @@ class TestCliTerminalOutcomes:
         assert exit_code == 2
         assert "bogus-origin" in output
 
+    def test_missing_session_is_an_error_not_an_empty_read(self, workspace_env: dict[str, Path]) -> None:
+        _seed_session(workspace_env)
+        exit_code, output = self._run(["-i", "nonexistent-xyz", "read"])
+        assert exit_code != 0, output
+
 
 # ---------------------------------------------------------------------------
 # MCP adapter
@@ -246,6 +251,14 @@ class TestMcpTerminalOutcomes:
         assert payload.get("is_error") is True
         assert payload.get("code") == "invalid_argument"
 
+    @pytest.mark.asyncio
+    async def test_missing_session_is_an_error_not_an_empty_read(self, workspace_env: dict[str, Path]) -> None:
+        _seed_session(workspace_env)
+        read_fn = build_tools()["read"]
+        with installed_runtime_services(workspace_env["archive_root"]):
+            payload = json.loads(await invoke_surface_async(read_fn, ref="session:nonexistent-xyz"))
+        assert payload.get("is_error") is True, payload
+
 
 # ---------------------------------------------------------------------------
 # Daemon HTTP adapter
@@ -283,3 +296,8 @@ class TestHttpTerminalOutcomes:
         status, payload = self._get("/api/sessions?query=probe&origin=bogus-origin")
         assert status == 400, payload
         assert payload.get("outcome") is None
+
+    def test_missing_session_is_an_error_not_an_empty_read(self, workspace_env: dict[str, Path]) -> None:
+        _seed_session(workspace_env)
+        status, payload = self._get("/api/sessions/nonexistent-xyz")
+        assert status == 404, payload
