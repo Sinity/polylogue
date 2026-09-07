@@ -15,6 +15,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
+from polylogue.browser_capture.receiver import write_capture_envelope_bytes
 from polylogue.maintenance.blob_disposition import (
     BlobDisposition,
     BlobDispositionContext,
@@ -59,27 +62,56 @@ def _stored_bytes(envelope: dict[str, object], tmp_path: Path) -> bytes:
     return json.dumps(read_hook_spool_record(scratch), ensure_ascii=False, sort_keys=True, indent=1).encode("utf-8")
 
 
-def _capture_bytes(session_id: str = "conv-123") -> bytes:
+def _capture_bytes(
+    session_id: str = "conv-123",
+    *,
+    captured_at: str = "2026-04-24T00:00:00+00:00",
+    turns: list[dict[str, str]] | None = None,
+) -> bytes:
     envelope = {
         "polylogue_capture_kind": "browser_llm_session",
         "schema_version": 1,
         "provenance": {
             "source_url": f"https://chatgpt.com/c/{session_id}",
             "page_title": "ChatGPT - Work plan",
-            "captured_at": "2026-04-24T00:00:00+00:00",
+            "captured_at": captured_at,
             "adapter_name": "chatgpt-dom-v1",
         },
         "session": {
             "provider": "chatgpt",
             "provider_session_id": session_id,
             "title": "Work plan",
-            "turns": [
+            "turns": turns
+            or [
                 {"provider_turn_id": "u1", "role": "user", "text": "Draft"},
                 {"provider_turn_id": "a1", "role": "assistant", "text": "Here"},
             ],
         },
     }
     return json.dumps(envelope, ensure_ascii=False, sort_keys=True).encode("utf-8")
+
+
+def _revision_pair(session_id: str) -> tuple[bytes, bytes]:
+    """One session captured twice: a later capture that also carries more turns.
+
+    Both halves are needed. The dedup fingerprint deliberately excludes
+    provenance, so two captures that differ only in ``captured_at`` are one
+    content revision; only the extra turn makes the spool choose between them.
+    """
+    earlier = _capture_bytes(session_id, captured_at="2026-04-24T00:00:00+00:00")
+    later = _capture_bytes(
+        session_id,
+        captured_at="2026-04-24T09:00:00+00:00",
+        turns=[
+            {"provider_turn_id": "u1", "role": "user", "text": "Draft"},
+            {"provider_turn_id": "a1", "role": "assistant", "text": "Here"},
+            {"provider_turn_id": "u2", "role": "user", "text": "And the risks?"},
+        ],
+    )
+    return earlier, later
+
+
+_EARLIER_CAPTURE, _LATER_CAPTURE = _revision_pair("conv-revised")
 
 
 def _write_spool_file(root: Path, envelope: dict[str, object]) -> Path:
@@ -414,6 +446,125 @@ def test_a_sole_copy_is_restored_before_its_carrier_is_deleted(tmp_path: Path) -
             "SELECT outcome FROM gc_generation_members WHERE blob_hash = ?", (bytes.fromhex(blob_hash),)
         ).fetchall()
     assert rows == [("removed",)]
+
+
+def test_an_older_revision_of_a_spooled_session_is_superseded_not_blocked(tmp_path: Path) -> None:
+    """Anti-vacuity: requiring the destination to hold an equal capture blocks
+    every carrier of a session the extension recaptured — 292 of 300 on the
+    live archive. Reinstating that equality check makes this red, and so does
+    letting the older revision overwrite the later one."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    resident = write_capture_envelope_bytes(_LATER_CAPTURE, spool_path=capture_spool).path
+    _, blob_path = _store_aged(blob_root, _EARLIER_CAPTURE)
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+    assert plan.members[0].disposition is BlobDisposition.RESTORE_REQUIRED
+
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert receipt.ok, receipt.blockers
+    (restoration,) = receipt.restorations
+    assert restoration.outcome is RestorationOutcome.RESTORATION_SUPERSEDED
+    assert Path(restoration.spool_path) == resident
+    assert resident.read_bytes() == _LATER_CAPTURE
+    (result,) = receipt.results
+    assert result.outcome is MemberOutcome.DELETED
+    assert not blob_path.exists()
+
+
+def test_a_newer_revision_replaces_the_spooled_capture(tmp_path: Path) -> None:
+    """Anti-vacuity: reporting every collision as superseded would drop the
+    revision the spool wants, leaving the stale capture resident."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    resident = write_capture_envelope_bytes(_EARLIER_CAPTURE, spool_path=capture_spool).path
+    _store_aged(blob_root, _LATER_CAPTURE)
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert receipt.ok, receipt.blockers
+    (restoration,) = receipt.restorations
+    assert restoration.outcome is RestorationOutcome.RESTORED
+    assert resident.read_bytes() == _LATER_CAPTURE
+    assert len(list(capture_spool.rglob("*.json"))) == 1
+
+
+def test_two_carriers_of_one_session_converge_on_one_artifact_holding_the_newer(tmp_path: Path) -> None:
+    """Anti-vacuity: blocking on the collision strands both carriers, and
+    publishing them independently leaves two artifacts for one session."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    _, earlier_path = _store_aged(blob_root, _EARLIER_CAPTURE)
+    _, later_path = _store_aged(blob_root, _LATER_CAPTURE)
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert receipt.ok, receipt.blockers
+    assert receipt.restoration_counts[RestorationOutcome.BLOCKED.value] == 0
+    (artifact,) = list(capture_spool.rglob("*.json"))
+    assert artifact.read_bytes() == _LATER_CAPTURE
+    assert [result.outcome for result in receipt.results] == [MemberOutcome.DELETED, MemberOutcome.DELETED]
+    assert not earlier_path.exists() and not later_path.exists()
+
+
+def test_a_rehearsal_predicts_the_restoration_counts_its_apply_produces(tmp_path: Path) -> None:
+    """Anti-vacuity: a dry arm that returns before resolving the destination
+    reports every carrier restorable — 880 restorable and 0 blocked in front
+    of an apply that restored 580 and blocked 300. Returning early, or
+    dropping the rehearsal's memory of what it already published, makes the
+    two count sets differ."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    stale_carrier, spooled_revision = _revision_pair("conv-stale")
+    write_capture_envelope_bytes(_capture_bytes("conv-resident"), spool_path=capture_spool)
+    write_capture_envelope_bytes(spooled_revision, spool_path=capture_spool)
+    spooled = {path: path.read_bytes() for path in capture_spool.rglob("*.json")}
+    for payload in (
+        _EARLIER_CAPTURE,
+        _LATER_CAPTURE,
+        _capture_bytes("conv-resident"),
+        stale_carrier,
+        _capture_bytes("conv-fresh"),
+    ):
+        _store_aged(blob_root, payload)
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+
+    rehearsal = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=True)
+
+    assert {path: path.read_bytes() for path in capture_spool.rglob("*.json")} == spooled
+
+    active = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert rehearsal.ok and active.ok, (rehearsal.blockers, active.blockers)
+    assert rehearsal.restoration_counts == active.restoration_counts
+    assert rehearsal.counts == active.counts
+    assert [restoration.outcome for restoration in rehearsal.restorations] == [
+        restoration.outcome for restoration in active.restorations
+    ]
+    assert active.restoration_counts[RestorationOutcome.RESTORATION_SUPERSEDED.value] == 1
+    assert active.restoration_counts[RestorationOutcome.BLOCKED.value] == 0
+    assert len(list(capture_spool.rglob("*.json"))) == 4
+
+
+def test_a_capture_carrier_of_a_different_session_never_overwrites_the_artifact_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: converging on artifact name rather than session identity
+    would let one session's capture replace another's."""
+    import polylogue.browser_capture.receiver as receiver
+
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    collision = capture_spool / "chatgpt" / "shared-name.json"
+    monkeypatch.setattr(receiver, "capture_artifact_path", lambda envelope, spool_path=None: collision)
+    write_capture_envelope_bytes(_capture_bytes("conv-resident"), spool_path=capture_spool)
+    _, blob_path = _store_aged(blob_root, _capture_bytes("conv-other"))
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    (restoration,) = receipt.restorations
+    assert restoration.outcome is RestorationOutcome.BLOCKED
+    assert "name collision" in restoration.detail
+    assert collision.read_bytes() == _capture_bytes("conv-resident")
+    assert blob_path.is_file()
 
 
 def test_a_referenced_member_is_never_deleted(tmp_path: Path) -> None:
