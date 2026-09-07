@@ -902,6 +902,55 @@ def _thinking_budget_payload(item: Mapping[str, object]) -> dict[str, object] | 
     return payload
 
 
+_CAPABILITY_ATTRIBUTION_FIELDS: tuple[tuple[str, str], ...] = (
+    ("attributionSkill", "skill"),
+    ("attributionPlugin", "plugin"),
+    ("attributionMcpServer", "mcp_server"),
+    ("attributionMcpTool", "mcp_tool"),
+    ("attributionAgent", "agent"),
+)
+
+
+def _capability_attribution_payload(item: Mapping[str, object]) -> dict[str, object] | None:
+    """Project the ``attribution*`` cluster: which capability produced this turn.
+
+    Claude Code stamps these five as top-level strings on ``assistant``
+    records and on no other record type (full-corpus census 2026-09-07,
+    14,684 session files: attributionAgent 517,881, attributionSkill 50,586,
+    attributionMcpServer and attributionMcpTool 7,683 each and never one
+    without the other, attributionPlugin 5,430). They are read off the record
+    itself rather than inside the usage-gated ``message_usage`` payload so an
+    assistant turn carrying no ``message.usage`` -- an API-error record, an
+    aborted stream -- keeps its attribution.
+
+    ``attributionAgent`` is a per-turn fact, not a session constant: it occurs
+    only in subagent (``agent-*.jsonl``) transcripts, and where such a
+    transcript replays a parent's prefix it carries the parent's agent on the
+    contiguous replayed head and its own on the divergent tail (measured on
+    every multi-valued file in a 300-file walk, e.g. 8 ``triage`` turns then
+    52 ``fork`` turns). A session-level projection would erase that split.
+    """
+    payload: dict[str, object] = {}
+    for wire_key, payload_key in _CAPABILITY_ATTRIBUTION_FIELDS:
+        value = item.get(wire_key)
+        if isinstance(value, str) and value:
+            payload[payload_key] = value
+    if not payload:
+        return None
+    mcp_server = payload.get("mcp_server")
+    mcp_tool = payload.get("mcp_tool")
+    if mcp_server is not None and mcp_tool is not None:
+        payload["summary"] = f"{mcp_server}:{mcp_tool}"
+        return payload
+    # Most specific capability first; the payload keeps every field it read.
+    for key in ("mcp_server", "mcp_tool", "skill", "plugin", "agent"):
+        value = payload.get(key)
+        if value is not None:
+            payload["summary"] = str(value)
+            break
+    return payload
+
+
 @dataclass
 class _DelegationProgressStats:
     count: int = 0
@@ -1154,6 +1203,9 @@ def _message_usage_event_payload(
         request_id = record.get("requestId")
         if isinstance(request_id, str) and request_id:
             payload["request_id"] = request_id
+        advisor_model = record.get("advisorModel")
+        if isinstance(advisor_model, str) and advisor_model:
+            payload["advisor_model"] = advisor_model
     return payload
 
 
@@ -1748,6 +1800,10 @@ class _SessionAccumulator:
     # CLI version emits it at all. Read like ``git_branch_value`` above: first
     # non-empty value wins, since it is constant within one file.
     session_slug_value: str | None = None
+    # Claude Code stamps ``teamName`` on every record in a session. It is a
+    # session-scoped campaign identity, so retain one value and emit one
+    # session event rather than copying it onto every message.
+    team_name_value: str | None = None
     session_refs: list[ParsedSessionRef] = field(default_factory=list)
     # polylogue-4x38n: the ``fork-context-ref`` lineage assertion. Read like
     # ``git_branch_value`` above -- first non-empty value wins, since the
@@ -1803,6 +1859,10 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         raw_slug = item.get("slug")
         if isinstance(raw_slug, str) and raw_slug:
             acc.session_slug_value = raw_slug
+    if acc.team_name_value is None:
+        raw_team_name = item.get("teamName")
+        if isinstance(raw_team_name, str) and raw_team_name.strip():
+            acc.team_name_value = raw_team_name.strip()
     forked_from = item.get("forkedFrom")
     if isinstance(forked_from, dict):
         fork_parent_provider_id = _string_field(forked_from, "sessionId")
@@ -2003,8 +2063,8 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         acc.updated_at = timestamp if acc.updated_at is None or timestamp > acc.updated_at else acc.updated_at
 
     # Emitted before the empty-content drop below: the turn's thinking
-    # configuration is a fact about the record, not about whether its message
-    # survived parsing.
+    # configuration and its capability attribution are facts about the record,
+    # not about whether its message survived parsing.
     thinking_budget = _thinking_budget_payload(item)
     if thinking_budget is not None:
         acc.session_events.append(
@@ -2013,6 +2073,41 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 timestamp=timestamp,
                 source_message_provider_id=record_uuid or None,
                 payload=thinking_budget,
+            )
+        )
+
+    capability_attribution = _capability_attribution_payload(item)
+    if capability_attribution is not None:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_capability_attribution",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload=capability_attribution,
+            )
+        )
+
+    # These provider flags live on the record envelope (not under
+    # ``message``). Keep them as typed, message-linked events so they survive
+    # the archive's provider-usage projection and remain queryable even when
+    # a future record has no textual content.
+    raw_advisor_model = item.get("advisorModel")
+    if isinstance(raw_advisor_model, str) and raw_advisor_model.strip() and record_type == "assistant":
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_advisor_model",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload={"advisor_model": raw_advisor_model.strip(), "summary": raw_advisor_model.strip()},
+            )
+        )
+    if item.get("isAbortedMidStream") is True and record_type == "assistant":
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_aborted_mid_stream",
+                timestamp=timestamp,
+                source_message_provider_id=record_uuid or None,
+                payload={"aborted": True, "summary": "aborted_mid_stream"},
             )
         )
 
@@ -2120,6 +2215,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             duration_ms=msg_duration_ms,
             paste_spans=paste_spans,
             stop_reason=msg_stop_reason,
+            is_aborted_mid_stream=item.get("isAbortedMidStream") is True,
         )
     )
     acc.session_events.extend(
@@ -2378,6 +2474,15 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
             )
         )
 
+    if acc.team_name_value is not None:
+        acc.session_events.append(
+            ParsedSessionEvent(
+                event_type="claude_team_name",
+                timestamp=acc.created_at,
+                payload={"team_name": acc.team_name_value, "summary": acc.team_name_value},
+            )
+        )
+
     # polylogue-pbuh AC5: one bounded coverage event per session so a future
     # silently-dropped record type is visible without another corpus audit --
     # counts for the known sidecar types (seen vs. actually persisted as
@@ -2490,6 +2595,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
         models_used=sorted(acc.models),
         working_directories=sorted(acc.cwds),
         git_branch=acc.git_branch_value,
+        team_name=acc.team_name_value,
         display_name=acc.session_slug_value,
         session_refs=acc.session_refs,
         provider_session_aliases=([str(acc.fallback_id)] if str(acc.fallback_id) != str(composed_session_id) else []),

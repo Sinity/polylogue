@@ -45,7 +45,6 @@ from polylogue.operations.mutation_transaction import (
     recover_interrupted_operations,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from polylogue.storage.sqlite.audit_leaf import (
     AuditLeafError,
@@ -53,6 +52,7 @@ from polylogue.storage.sqlite.audit_leaf import (
     open_verified_audit_connection,
     open_verified_audit_read_connection,
 )
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 @dataclass
@@ -217,7 +217,7 @@ def _principal() -> MutationPrincipal:
 
 
 def _audit(tmp_path: Path) -> AuditRepository:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     return AuditRepository.for_archive_root(tmp_path)
 
 
@@ -303,7 +303,7 @@ def test_prepare_bound_uses_the_declared_durable_target_for_legacy_actuators() -
 
 
 def test_production_executor_factory_persists_audit_preview(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     actuator = _Actuator()
     executor = OperationExecutor.for_archive_root(tmp_path, token_factory=lambda: "factory-token")
 
@@ -323,7 +323,7 @@ def test_production_executor_factory_persists_audit_preview(tmp_path: Path) -> N
 def test_audit_authority_rejects_a_symlinked_audit_leaf_without_touching_its_target(tmp_path: Path) -> None:
     """Bootstrap and direct audit access never follow an audit path outside its archive root."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     external_audit = tmp_path.parent / "external-audit.db"
     external_audit.write_bytes(audit_path.read_bytes())
@@ -332,7 +332,7 @@ def test_audit_authority_rejects_a_symlinked_audit_leaf_without_touching_its_tar
     before = external_audit.read_bytes()
 
     with pytest.raises(RuntimeError, match="archive-owned regular file"):
-        initialize_active_archive_root(tmp_path)
+        bootstrap_archive_root(tmp_path)
     with pytest.raises(RuntimeError, match="archive-owned regular file"):
         AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
 
@@ -342,7 +342,7 @@ def test_audit_authority_rejects_a_symlinked_audit_leaf_without_touching_its_tar
 def test_audit_authority_rejects_a_hardlinked_audit_leaf_without_touching_its_target(tmp_path: Path) -> None:
     """A regular-looking audit leaf must still have exactly one archive-owned link."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     external_audit = tmp_path.parent / "external-hardlinked-audit.db"
     external_audit.write_bytes(audit_path.read_bytes())
@@ -351,7 +351,7 @@ def test_audit_authority_rejects_a_hardlinked_audit_leaf_without_touching_its_ta
     before = external_audit.read_bytes()
 
     with pytest.raises(RuntimeError, match="one link"):
-        initialize_active_archive_root(tmp_path)
+        bootstrap_archive_root(tmp_path)
     with pytest.raises(RuntimeError, match="one link"):
         AuditRepository.for_archive_root(tmp_path).ensure_archive_authority(now_ms=1)
 
@@ -365,7 +365,7 @@ def test_audit_authority_rejects_a_foreign_owned_audit_leaf(tmp_path: Path, monk
     single-linked regular file and allows the authority check to proceed.
     """
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     before = audit_path.read_bytes()
     monkeypatch.setattr("polylogue.storage.sqlite.audit_leaf.os.geteuid", lambda: audit_path.stat().st_uid + 1)
@@ -385,7 +385,7 @@ def test_audit_leaf_uses_the_verified_native_directory_when_descriptor_children_
     host fail closed because neither pseudo-filesystem child is available.
     """
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def native_path_from_descriptor(_fd: int, _request: int, _buffer: bytes) -> bytes:
         return os.fsencode(tmp_path) + b"\0"
@@ -425,7 +425,7 @@ def test_audit_leaf_rejects_a_foreign_sidecar_without_leaking_descriptors(
     and lets SQLite consume attacker-controlled sidecar bytes.
     """
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     sidecar = tmp_path / "audit.db-wal"
     sidecar.write_bytes(b"not a sqlite wal")
     leaf = VerifiedAuditLeaf(tmp_path)
@@ -454,7 +454,7 @@ def test_audit_leaf_rejects_a_foreign_sidecar_without_leaking_descriptors(
 def test_audit_leaf_rejects_group_writable_archive_directory(tmp_path: Path) -> None:
     """A second Unix principal cannot plant an SQLite sidecar in the authority namespace."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     tmp_path.chmod(0o770)
     leaf = VerifiedAuditLeaf(tmp_path)
 
@@ -468,7 +468,7 @@ def test_audit_leaf_rejects_group_writable_archive_directory(tmp_path: Path) -> 
 def test_audit_leaf_rejects_group_writable_main_and_sidecar_files(tmp_path: Path) -> None:
     """UID equality alone cannot grant exclusive write authority over SQLite files."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     audit_path.chmod(0o660)
     with pytest.raises(AuditLeafError, match="audit tier must not be writable by group or other"):
@@ -489,7 +489,7 @@ def test_audit_leaf_serializes_writers_across_the_main_and_sidecar_namespace(tmp
     and can independently create or replace the audit sidecar namespace.
     """
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     with open_verified_audit_connection(audit_path):
         with pytest.raises(AuditLeafError, match="active writer"):
@@ -502,7 +502,7 @@ def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
 ) -> None:
     """SQLite never yields a connection after the descriptor-checked leaf changes."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     replacement = tmp_path / "replacement-audit.db"
     replacement.write_bytes(audit_path.read_bytes())
@@ -536,7 +536,7 @@ def test_audit_authority_rejects_a_leaf_replaced_during_sqlite_open(
 def test_verified_audit_writer_rejects_a_wal_replacement_before_first_application_begin(tmp_path: Path) -> None:
     """The production writer pins WAL/SHM before a caller can start its transaction."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     wal_path = audit_path.with_name("audit.db-wal")
 
@@ -551,7 +551,7 @@ def test_verified_audit_writer_rejects_a_wal_replacement_before_first_applicatio
 def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path) -> None:
     """Read-only authority checks include commits still resident in the live WAL."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     archive_id = "archive:live-wal-read"
 
@@ -572,7 +572,7 @@ def test_verified_audit_reader_observes_a_committed_live_wal_head(tmp_path: Path
 def test_verified_audit_writer_coexists_with_an_older_read_transaction(tmp_path: Path) -> None:
     """Persistent WAL mode lets a later writer proceed while a reader retains its snapshot."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit_path = tmp_path / "audit.db"
     with open_verified_audit_connection(audit_path) as writer:
         assert writer.execute("PRAGMA journal_mode").fetchone() == ("wal",)
@@ -588,7 +588,7 @@ def test_verified_audit_writer_coexists_with_an_older_read_transaction(tmp_path:
 
 def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_path: Path) -> None:
     """A second composition-root call recognizes the first executor's owner."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     actuator = _Actuator()
     first = OperationExecutor.for_archive_root(tmp_path, token_factory=lambda: "first-owner-token")
     preview = first.prepare_bound(
@@ -616,7 +616,7 @@ def test_production_factory_does_not_abandon_a_live_same_process_attempt(tmp_pat
 
 def test_recovery_marks_a_dead_process_owned_attempt_unknown(tmp_path: Path) -> None:
     """Restart recovery remains active when the recorded owner no longer exists."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit = _audit(tmp_path)
     actuator = _Actuator()
     executor = OperationExecutor(audit=audit, token_factory=lambda: "dead-owner-token")
@@ -1283,7 +1283,7 @@ def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> 
 def test_recovery_preserves_attempts_with_unproven_owners(tmp_path: Path, owner_id: str | None) -> None:
     """Legacy or externally-owned attempts stay running until their owner is proven dead."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     audit = _audit(tmp_path)
     executor = OperationExecutor(audit=audit, token_factory=lambda: "unproven-owner-token")
     preview = executor.prepare_bound(
@@ -1476,7 +1476,7 @@ def test_mark_preview_stale_advances_and_replays_durable_continuity(
 def test_replayed_start_keeps_the_crashed_owner_recoverable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Recovery never adopts an actuator-less pre-effect attempt into its own process."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     crashed_owner = "pid:999999999:0"
     first = AuditRepository.for_archive_root(tmp_path, attempt_owner_id=crashed_owner)
     executor = OperationExecutor(audit=first, token_factory=lambda: "replayed-owner-token")

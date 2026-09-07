@@ -77,7 +77,6 @@ from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.search.cache import get_cache_stats
 from polylogue.storage.search.runtime import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceArtifact,
     upsert_raw_artifact,
@@ -86,6 +85,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 from polylogue.storage.sqlite.archive_tiers.write import _attachment_id, write_parsed_session_to_archive
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.archive_templates import bootstrap_archive_root
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
@@ -144,7 +144,7 @@ def test_worker_normalization_replaces_malformed_session_timestamp_with_message_
 
 def test_stale_observation_repair_derives_created_time_from_session_event(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     conn = ingest_batch_core._open_sync_connection(archive_root / "index.db")
     try:
         session = ParsedSession(
@@ -225,7 +225,7 @@ def test_primary_mode_keeps_unconfirmed_revision_out_of_index_and_fts(
 ) -> None:
     """Primary authority must be established before any local read projection."""
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     raw_record = RawSessionRecord(
         raw_id="raw-primary",
         source_name="codex",
@@ -343,7 +343,7 @@ def test_primary_mode_projects_revision_after_allowed_durable_receipt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     raw_record = RawSessionRecord(
         raw_id="raw-primary-confirmed",
         source_name="codex",
@@ -1260,7 +1260,7 @@ def test_write_session_binds_drive_revision_lineage(tmp_path: Path) -> None:
     ``logical_source_key IS NULL``).
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     source_db_path = archive_root / "source.db"
     blob_publisher = ArchiveBlobPublisher(source_db_path, archive_root / "blob")
 
@@ -1370,7 +1370,7 @@ def test_write_session_drive_lineage_proven_winner_bypasses_freshness_tie(tmp_pa
     exact same regression shape.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     source_db_path = archive_root / "source.db"
     blob_publisher = ArchiveBlobPublisher(source_db_path, archive_root / "blob")
 
@@ -2680,7 +2680,7 @@ def test_write_session_refuses_a_raw_recorded_ambiguous_membership(tmp_path: Pat
     fails it just as it would have fixed nothing for the settled sibling.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     raw_id = "abcd1234abcd1234"
     source_db_path = archive_root / "source.db"
 
@@ -3145,7 +3145,7 @@ def test_process_ingest_batch_sync_reserves_inline_attachment_until_index_commit
     payload: bytes,
 ) -> None:
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     db_path = archive_root / "index.db"
     legacy_blob_root = tmp_path / "legacy-worker-blob-root"
     source_path = tmp_path / "raw.jsonl"
@@ -3799,7 +3799,7 @@ async def test_persist_batch_raw_state_updates_persists_terminal_worker_disposit
     tmp_path: Path,
 ) -> None:
     """The ordinary batch boundary retains typed terminal evidence at the raw coordinate."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3892,7 +3892,7 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
     tmp_path: Path,
 ) -> None:
     """The async batch success route revokes stale CAS replay authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -3967,7 +3967,7 @@ async def test_persist_batch_success_supersedes_deferred_cas_evidence_in_source_
 @pytest.mark.asyncio
 async def test_persist_batch_untyped_failure_retires_stale_terminal_evidence(tmp_path: Path) -> None:
     """A later untyped parser failure cannot inherit an older terminal cause."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4042,7 +4042,7 @@ async def test_process_ingest_batch_public_route_retires_deferred_cas_resolution
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The public async batch route applies CAS resolution after index commit."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (Path(__file__).parents[2] / "fixtures" / "chatgpt" / "native-conversation-v1.json").read_bytes()
     BlobStore(tmp_path / "blob").write_from_bytes(payload)
     with sqlite3.connect(tmp_path / "source.db") as conn:
@@ -4121,7 +4121,7 @@ async def test_persist_batch_corrupt_input_remains_terminal_in_lifecycle(
     diagnostic: str,
 ) -> None:
     """Worker validation failure plus typed corrupt evidence is explainable."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -4192,7 +4192,7 @@ async def test_process_ingest_batch_public_route_persists_corrupt_input_readines
     diagnostic: str,
 ) -> None:
     """The real worker route makes corrupt input terminal and status-readable."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     BlobStore(tmp_path / "blob").write_from_bytes(payload)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
@@ -4247,7 +4247,7 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A source-tier carrier failure rolls back the paired raw-state mutation."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,

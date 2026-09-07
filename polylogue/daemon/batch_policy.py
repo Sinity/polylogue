@@ -80,6 +80,11 @@ class BatchShape:
     #: Their cost is a function of the archive, so charging it to each chunk is
     #: the quadratic term the scope split removes.
     archive_wide_derivations: bool
+    #: Cold builds may defer these reader indexes only for an empty owned
+    #: generation; the boundary must recreate them before publication.
+    defer_secondary_indexes: bool = False
+    #: Skip compare/replace work only when the destination is known empty.
+    fresh_build: bool = False
 
     @property
     def reason(self) -> str:
@@ -92,6 +97,7 @@ def select_batch_shape(
     queue_age_s: float,
     destination: WriteDestination,
     at_admitted_input_boundary: bool = False,
+    archive_empty: bool = False,
 ) -> BatchShape:
     """Choose the batch shape for the queue as it stands.
 
@@ -114,6 +120,8 @@ def select_batch_shape(
             max_bytes=COLD_BACKLOG_MAX_BYTES,
             bulk_pragmas=destination.admits_bulk_pragmas,
             archive_wide_derivations=at_admitted_input_boundary,
+            defer_secondary_indexes=destination.admits_bulk_pragmas and archive_empty,
+            fresh_build=destination.admits_bulk_pragmas and archive_empty,
         )
     return BatchShape(
         mode=IngestMode.LIVE_TRICKLE,

@@ -26,14 +26,13 @@ surface owned by polylogue-rxdo.7.2.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import isfinite
 from typing import Literal, cast, get_args
 
+from polylogue.core.digest import RECEIPT, canonical_bytes, nfc
 from polylogue.core.json import loads as json_loads
 from polylogue.core.refs import ObjectRef, ObjectRefKind
 
@@ -76,7 +75,7 @@ def _nfc_string(value: object, *, context: str) -> str:
         raw.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise AnnotationSchemaError(f"{context} must be valid UTF-8") from exc
-    return unicodedata.normalize("NFC", raw)
+    return nfc(raw)
 
 
 def _nfc_string_tuple(value: object, *, context: str) -> tuple[str, ...]:
@@ -113,16 +112,6 @@ def _require_optional_number(value: object, *, context: str) -> int | float | No
 
 def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
-
-
-def _nfc_json_value(value: object) -> object:
-    if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
-    if isinstance(value, list):
-        return [_nfc_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {unicodedata.normalize("NFC", str(key)): _nfc_json_value(item) for key, item in value.items()}
-    return value
 
 
 def _is_finite_json_number(value: object) -> bool:
@@ -420,13 +409,7 @@ class AnnotationSchema:
     def canonical_definition_json(self) -> str:
         """Return the one byte-stable JSON representation used for durable identity."""
 
-        return json.dumps(
-            _nfc_json_value(self.definition_document()),
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return canonical_bytes(self.definition_document(), RECEIPT).decode("utf-8")
 
     @property
     def definition_fingerprint(self) -> str:

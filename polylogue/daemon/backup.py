@@ -31,7 +31,8 @@ from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
-from polylogue.daemon.cli import checkpoint_connection
+from polylogue.core.write_lease import write_lease
+from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.logging import get_logger
 from polylogue.operations.append_acquisition_replay import codex_legacy_header_size, replay_append_acquisition_payload
@@ -229,8 +230,7 @@ def _open_backup_readonly_connection(
     except SchemaSkew as exc:
         if not isinstance(exc.found, int) or not isinstance(exc.expected, int) or not (0 < exc.found < exc.expected):
             raise
-        suffix = "?mode=ro&immutable=1" if immutable else "?mode=ro"
-        return sqlite3.connect(f"file:{path}{suffix}", uri=True, timeout=30.0)
+        return open_readonly_connection(path, immutable=immutable, timeout_class=timeout_class, validate_schema=False)
 
 
 def _sqlite_user_version(path: Path) -> int:
@@ -459,6 +459,13 @@ def _has_backup_error(warnings: list[str]) -> bool:
 
 
 def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> None:
+    """Drain the WAL fully, or refuse to copy a tier that is still moving.
+
+    TRUNCATE is correct here and only here on a live tier: a backup snapshot is
+    an exclusive boundary that already requires no concurrent writer, and a
+    partially drained WAL would make the copy an incoherent generation. A busy
+    result refuses the backup rather than retrying against the reader.
+    """
     busy, log_frames, checkpointed_frames = checkpoint_connection(conn, "TRUNCATE")
     if busy or log_frames != checkpointed_frames:
         raise RuntimeError(f"could not quiesce {path} before backup")
@@ -467,9 +474,12 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
 def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
     """Copy a checkpointed tier while excluding concurrent SQLite writers."""
     live_path = src.resolve(strict=True)
-    conn = sqlite3.connect(str(live_path), timeout=30.0)
+    conn = open_isolated_write_connection(
+        live_path,
+        purpose=f"backup snapshot({live_path})",
+        archive_root=archive_root(),
+    )
     try:
-        conn.execute("PRAGMA busy_timeout = 30000")
         for _attempt in range(_SNAPSHOT_LOCK_ATTEMPTS):
             _checkpoint_sqlite_for_snapshot(conn, live_path)
             conn.execute("BEGIN IMMEDIATE")
@@ -1308,7 +1318,13 @@ def backup_archive(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
+    # Backups checkpoint and briefly take ``BEGIN IMMEDIATE`` on each live
+    # tier.  They are therefore writers even though the copied bytes are
+    # read-only.  Acquire the same process lease as daemon publications; when
+    # invoked from a coordinator this is re-entrant and cannot create a second
+    # ownership path.
+    with write_lease("maintenance.backup", archive_root=archive_root()):
+        result = _backup_archive(output_dir=output_dir, started=started, profile=profile)
     if verify and result.ok and result.output_path is not None:
         _verify_backup_result(result)
     return result

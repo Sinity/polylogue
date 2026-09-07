@@ -1,8 +1,8 @@
 """Hook-evidence authority on the LIVE topology write path.
 
-``polylogue-foee`` acquired Codex ``thread_spawn_edges`` into the durable
-``source.db`` hook spool as ``codex_thread_spawn_edge`` ``raw_hook_events``,
-but nothing consumed them for topology: the only artifact was
+Codex ``thread_spawn_edges`` reach ``index.db`` as the
+``codex_thread_spawn_edges`` projection of the retained state export, but
+nothing consumed them for topology: the only artifact was
 ``context/codex_spawn_edge_correlation.reconcile_codex_spawn_edges``, a
 READ-ONLY counter reachable solely through the API facade. It reports
 ``inferred_only`` / ``authoritative_only`` as set differences over
@@ -19,11 +19,10 @@ Two structural facts drive the design under test:
    overwrite each other -- they land as two coexisting, independently
    resolvable rows. Conflict is consequently scoped to ``(child, link_type)``,
    not to the primary key.
-2. ``session_links`` lives in the REBUILDABLE index tier while hook evidence
-   lives in the DURABLE source tier. Only a derivation running inside
-   ``write_parsed_session_to_archive`` -- the choke point shared by live
-   ingest and full raw replay -- survives a reindex, which is why this is a
-   write-path concern rather than a convergence stage.
+2. ``session_links`` lives in the REBUILDABLE index tier. Only a derivation
+   running inside ``write_parsed_session_to_archive`` -- the choke point
+   shared by live ingest and full raw replay -- survives a reindex, which is
+   why this is a write-path concern rather than a convergence stage.
 
 The losing edge carries ``TopologyEdgeStatus.AUTHORITY_CONTRADICTED``, a
 member distinct from ``QUARANTINED``. Both exclude an edge from composition,
@@ -106,32 +105,18 @@ def _session(provider_session_id: str, *, parent: str | None = None) -> ParsedSe
     )
 
 
-def _write_spawn_edge_event(conn: sqlite3.Connection, *, parent: str, child: str) -> None:
-    """Insert one acquired ``codex_thread_spawn_edge`` hook event.
+def _write_spawn_edge(
+    conn: sqlite3.Connection, *, parent: str, child: str, observed_at_ms: int = 1_760_000_000_000
+) -> None:
+    """Insert one projected ``codex_thread_spawn_edges`` row.
 
-    Mirrors ``sources/codex_state_evidence.py``: keyed by
-    ``session_native_id = parent_thread_id``, with both thread ids in the
-    payload. The child-side lookup under test must therefore match on the
-    payload rather than on ``session_native_id``.
+    Mirrors ``sources/codex_state_projection.py``. The child-side lookup under
+    test resolves the parent from ``child_thread_id``.
     """
-    payload = {"parent_thread_id": parent, "child_thread_id": child, "status": "spawned"}
     conn.execute(
-        """
-        INSERT INTO raw_hook_events (
-            hook_event_id, origin, source_path, event_type, payload_json,
-            observed_at_ms, native_id, session_native_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            f"codex-thread-spawn-edge:{parent}:{child}",
-            Origin.CODEX_SESSION.value,
-            "/sanitized/state_5.sqlite",
-            "codex_thread_spawn_edge",
-            json.dumps(payload, sort_keys=True, separators=(",", ":")),
-            1_760_000_000_000,
-            f"{parent}:{child}:codex_thread_spawn_edge",
-            parent,
-        ),
+        "INSERT INTO codex_thread_spawn_edges (parent_thread_id, child_thread_id, status, observed_at_ms) "
+        "VALUES (?, ?, 'spawned', ?)",
+        (parent, child, observed_at_ms),
     )
     conn.commit()
 
@@ -162,7 +147,7 @@ def test_contradiction_resolves_to_the_hook_parent(tmp_path: Path) -> None:
     """
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
@@ -206,7 +191,7 @@ def test_reparse_cannot_downgrade_authoritative_evidence(tmp_path: Path) -> None
     """
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
@@ -237,7 +222,7 @@ def test_conflict_state_is_queryable_by_typed_status_and_method(tmp_path: Path) 
     """The durable conflict state is discoverable without parsing prose."""
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
@@ -262,7 +247,7 @@ def test_hook_only_edge_is_written_when_inference_found_none(tmp_path: Path) -> 
     """An authoritative edge transcript inference never found is still recorded."""
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
@@ -279,7 +264,7 @@ def test_hook_only_edge_is_written_when_inference_found_none(tmp_path: Path) -> 
 def test_hook_only_classification_survives_merge_append(tmp_path: Path) -> None:
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
@@ -300,7 +285,7 @@ def test_agreeing_evidence_upgrades_the_single_edge(tmp_path: Path) -> None:
     """Agreement is not a conflict: one edge, marked authoritative."""
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_HOOK_PARENT), source_conn=source)
@@ -318,14 +303,16 @@ def test_agreeing_evidence_upgrades_the_single_edge(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("with_source_handle", [False, True])
-def test_no_hook_evidence_is_byte_identical_to_the_parser_only_path(tmp_path: Path, with_source_handle: bool) -> None:
+@pytest.mark.parametrize("with_unrelated_evidence", [False, True])
+def test_no_state_evidence_is_byte_identical_to_the_parser_only_path(
+    tmp_path: Path, with_unrelated_evidence: bool
+) -> None:
     """Absent evidence is silence, never a conflict.
 
-    Covers both shapes of "no evidence": no source handle at all, and a source
-    handle whose spool simply says nothing about this child. Red twin: mark
-    edges unconditionally (drop the ``hook_parent is not None`` guards) and
-    these rows stop matching the parser-only baseline.
+    Covers both shapes of "no evidence": an empty projection, and a projection
+    that simply says nothing about this child. Red twin: mark edges
+    unconditionally (drop the ``hook_parent is not None`` guards) and these
+    rows stop matching the parser-only baseline.
     """
     baseline_index = _index_conn(tmp_path / "baseline.db")
     write_parsed_session_to_archive(baseline_index, _session(_PARSER_PARENT))
@@ -333,11 +320,10 @@ def test_no_hook_evidence_is_byte_identical_to_the_parser_only_path(tmp_path: Pa
     baseline = dict(_links(baseline_index, baseline_child)[_PARSER_PARENT])
 
     index = _index_conn(tmp_path / "index.db")
-    source: sqlite3.Connection | None = None
-    if with_source_handle:
-        source = _source_conn(tmp_path / "source.db")
+    source = _source_conn(tmp_path / "source.db")
+    if with_unrelated_evidence:
         # Evidence exists, but about a completely unrelated child.
-        _write_spawn_edge_event(source, parent="unrelated-parent", child="unrelated-child")
+        _write_spawn_edge(index, parent="unrelated-parent", child="unrelated-child")
 
     write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
     child_id = write_parsed_session_to_archive(index, _session(_CHILD, parent=_PARSER_PARENT), source_conn=source)
@@ -368,7 +354,7 @@ def test_contradicted_edge_is_excluded_from_composition(tmp_path: Path) -> None:
     """
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     write_parsed_session_to_archive(index, _session(_PARSER_PARENT), source_conn=source)
@@ -397,24 +383,15 @@ def test_revised_hook_claim_supersedes_the_previous_authoritative_edge(tmp_path:
     """
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
-    _write_spawn_edge_event(source, parent=_HOOK_PARENT, child=_CHILD)
+    _write_spawn_edge(index, parent=_HOOK_PARENT, child=_CHILD)
 
     write_parsed_session_to_archive(index, _session(_HOOK_PARENT), source_conn=source)
     write_parsed_session_to_archive(index, _session("revised-hook-parent"), source_conn=source)
     child_id = write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
     assert _links(index, child_id)[_HOOK_PARENT]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
 
-    # The spool revises itself: a newer event names a different parent.
-    source.execute(
-        "UPDATE raw_hook_events SET observed_at_ms = ? WHERE hook_event_id = ?",
-        (1_760_000_000_000, f"codex-thread-spawn-edge:{_HOOK_PARENT}:{_CHILD}"),
-    )
-    _write_spawn_edge_event(source, parent="revised-hook-parent", child=_CHILD)
-    source.execute(
-        "UPDATE raw_hook_events SET observed_at_ms = ? WHERE hook_event_id = ?",
-        (1_770_000_000_000, f"codex-thread-spawn-edge:revised-hook-parent:{_CHILD}"),
-    )
-    source.commit()
+    # The projection revises itself: a newer export names a different parent.
+    _write_spawn_edge(index, parent="revised-hook-parent", child=_CHILD, observed_at_ms=1_770_000_000_000)
 
     write_parsed_session_to_archive(index, _session(_CHILD), source_conn=source)
 

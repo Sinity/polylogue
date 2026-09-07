@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import math
 from collections.abc import Mapping
 from typing import TypeGuard
@@ -32,7 +30,7 @@ from polylogue.sources.parsers.base_models import (
     ParsedSession,
     ParsedSessionEvent,
 )
-from polylogue.sources.parsers.base_support import derive_attachment_provenance
+from polylogue.sources.parsers.base_support import decode_attachment_base64, derive_attachment_provenance
 from polylogue.sources.tool_result_reasons import unknown_reason
 
 
@@ -225,43 +223,38 @@ def _apply_browser_capture_session_kind(
     return session.model_copy(update={"session_kind": session_kind, "ingest_flags": ingest_flags})
 
 
-def _decode_base64_payload(value: object) -> bytes | None:
-    if not isinstance(value, str) or not value:
-        return None
-    data = value
-    if value.startswith("data:") and ";base64," in value:
-        _, data = value.split(";base64,", 1)
-    try:
-        return base64.b64decode(data, validate=True)
-    except (ValueError, binascii.Error):
-        return None
-
-
 def _browser_capture_attachment_inline_bytes(attachment: BrowserCaptureAttachment) -> bytes | None:
-    extracted_content = attachment.extracted_content
-    if isinstance(extracted_content, str):
-        return extracted_content.encode("utf-8")
+    if attachment.content_base64 is not None:
+        return decode_attachment_base64(attachment.content_base64)
+
+    if attachment.inline_base64 is not None:
+        return decode_attachment_base64(attachment.inline_base64, field_name="inline_base64")
+
+    if attachment.data is not None:
+        return decode_attachment_base64(attachment.data, field_name="data")
 
     provider_meta = attachment.provider_meta
     if isinstance(provider_meta, Mapping):
+        for key in ("content_base64", "inline_base64"):
+            if key in provider_meta and provider_meta[key] is not None:
+                return decode_attachment_base64(provider_meta[key], field_name=key)
+
+    if isinstance(provider_meta, Mapping):
+        for key in ("inline_base64", "content_base64", "base64", "base64_data", "data"):
+            if key in {"inline_base64", "content_base64"} or provider_meta.get(key) is None:
+                continue
+            try:
+                return decode_attachment_base64(provider_meta[key], field_name=key)
+            except ValueError:
+                continue
+
         meta_extracted = provider_meta.get("extracted_content")
         if isinstance(meta_extracted, str):
             return meta_extracted.encode("utf-8")
 
-    for value in (
-        attachment.inline_base64,
-        attachment.content_base64,
-        attachment.data,
-    ):
-        decoded = _decode_base64_payload(value)
-        if decoded is not None:
-            return decoded
-
-    if isinstance(provider_meta, Mapping):
-        for key in ("inline_base64", "content_base64", "base64", "base64_data", "data"):
-            decoded = _decode_base64_payload(provider_meta.get(key))
-            if decoded is not None:
-                return decoded
+    extracted_content = attachment.extracted_content
+    if isinstance(extracted_content, str):
+        return extracted_content.encode("utf-8")
 
     return None
 

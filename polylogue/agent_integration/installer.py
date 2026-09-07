@@ -33,6 +33,7 @@ from polylogue.agent_integration.spec import (
     AgentClient,
     GuidanceMode,
 )
+from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.mcp.declarations import MCPCapabilities
 
@@ -161,7 +162,7 @@ class _Transaction:
 
 
 def _canonical_json(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode()
+    return canonical_bytes(value, REFERENCE)
 
 
 def _sha256_bytes(value: bytes) -> str:

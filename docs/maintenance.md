@@ -231,9 +231,15 @@ before treating the pass as complete.
 One-time transition tooling for the blob-store maneuver. `plan` is read-only:
 it walks the complete physical namespace and gives every object exactly one
 disposition proven against a configured source — `source_present`,
-`superseded_prefix`, `restore_required`, or `unresolved`. Its digest binds the
-archive identity, the namespace, the denominators, and every member outcome,
-and `accepted` reports whether anything is still unexplained.
+`superseded_prefix`, `restore_required`, `unreferenced`, or `unresolved`. A
+plan is acceptable at zero unresolved members with every non-blob namespace
+entry explained, and its digest binds the archive identity, the namespace, the
+denominators, and every member outcome.
+
+`unreferenced` is the terminal outcome for an object no durable relation
+names. A blob is published before the row that owns it, and reference-dropping
+repairs strand objects by design, so an unnamed object is daemon GC's to
+collect: this plan records it, never removes it, and never blocks on it.
 
 The plan splits the redundant population two ways. `reclaimable_bytes` counts
 the `source_present` and `superseded_prefix` members no durable row
@@ -259,7 +265,13 @@ every `restore_required` carrier into its ordinary spool and reads the
 published material back — the capture receiver publishes acquired bytes
 verbatim, so a restored capture is verified byte-for-byte, while a hook event
 is verified through the production read route that derives the fields the
-spool file does not carry. It then deletes, through the canonical blob-GC
+spool file does not carry. One provider session keeps one capture artifact, so
+a carrier arriving at an occupied artifact name is a revision the spool
+converges: the newer or richer capture is published and the rest report
+`restoration_superseded`, which is a completed restoration because the
+artifact holding that identity carries the material. Only a malformed
+envelope, a genuinely different session claiming the artifact name, or the
+spool quota refuses a carrier. It then deletes, through the canonical blob-GC
 seam, every member no durable row references: the same objects recurring GC
 would take, plus the namespace's non-blob entries (a SQLite `-wal` or `-shm`
 stranded beside a content-addressed object, whose bytes are that object's
@@ -273,7 +285,10 @@ what a durable row still references, and the receipt's `cohorts` block says
 how much of that is still unexplained.
 
 `apply` is a dry rehearsal without `--active`, and the rehearsal reports the
-totals its active twin would. A stale digest, a namespace that is not the
+totals and counts its active twin would: it resolves every restoration
+destination and evaluates the same admission rule, carrying what it would have
+published so a second carrier of one identity converges in the rehearsal
+exactly as it does in the run. A stale digest, a namespace that is not the
 plan's, a drifted denominator, or an active archive writer refuses the run
 before any effect. A carrier whose restoration did not complete keeps its blob
 and reports `blocked`. A pass interrupted part-way is resumed by re-running
@@ -288,6 +303,26 @@ bytes), `totals` (blob count and bytes in the namespace before and after),
 `restorations` (every sole copy and where the spool now holds it), and
 `reference_relations` — the durable relations a deleted member's
 `referenced: false` was decided against.
+
+Hook-event and browser-capture carriers are proven by the owning production
+read route, not by bytes: acquisition derives fields the spool file does not
+carry, so byte equality would misreport reproducible material as a sole copy.
+The same reasoning governs the three provers for material no filesystem walk
+can hash. A payload synthesized from a database row is reproduced by re-running
+the production encoding over the live state database. An attachment extracted
+from an account export is proven against a member of the retained export
+archive, selected by the member's uncompressed size and decided by a fresh
+SHA-256 — pass `--export-archive-root` to `plan`, and again to `restore` and
+`apply`, which cannot revalidate a proof whose prover they were not given. A
+whole-session carrier whose source was rewritten in place is proven by the
+normalized session contribution both sides produce through the live detector,
+parser and admission: the source proves the carrier when it reproduces every
+stored session and no stored axis is missing from it.
+
+A non-blob entry inside the namespace blocks acceptance until it carries
+positive evidence of what it is. The one explained shape is a SQLite sidecar
+named after a blob that is still present, written beside the object by a
+reader that opened the stored database in place.
 
 Deletion trigger: this command, both maintenance modules, and their tests are
 removed with the terminal disposition receipt. The recurring liveness,

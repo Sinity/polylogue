@@ -840,16 +840,20 @@ export type ReadSessionViewParameters = {
   readonly session_id: string;
   readonly at_position?: string;
   readonly confidence_threshold?: number;
+  readonly edge_limit?: string;
+  readonly edge_offset?: string;
   readonly format?: "json";
   readonly include_messages?: boolean;
   readonly limit?: number;
   readonly max_tokens?: number;
   readonly no_redact?: boolean;
+  readonly node_limit?: string;
+  readonly node_offset?: string;
   readonly offset?: number;
   readonly related_limit?: number;
   readonly repo_path?: string;
   readonly since_hours?: number;
-  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context";
+  readonly view?: "messages" | "raw" | "context" | "context-image" | "neighbors" | "correlation" | "effective_context" | "lineage";
   readonly window_hours?: number;
 };
 export type ReadSessionViewResponse = SessionReadViewEnvelope;
@@ -1033,11 +1037,15 @@ export class PolylogueClient {
         query: {
           at_position: parameters.at_position,
           confidence_threshold: parameters.confidence_threshold,
+          edge_limit: parameters.edge_limit,
+          edge_offset: parameters.edge_offset,
           format: parameters.format,
           include_messages: parameters.include_messages,
           limit: parameters.limit,
           max_tokens: parameters.max_tokens,
           no_redact: parameters.no_redact,
+          node_limit: parameters.node_limit,
+          node_offset: parameters.node_offset,
           offset: parameters.offset,
           related_limit: parameters.related_limit,
           repo_path: parameters.repo_path,
