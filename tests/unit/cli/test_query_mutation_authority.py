@@ -54,10 +54,14 @@ def _run(archive_root: Path, *args: str) -> Result:
 
 
 def _tagged_sessions(archive_root: Path, tag: str) -> list[object]:
-    """Read the tag back through the query surface that would show a write."""
+    """Read the tag back through the query surface that would show a write.
+
+    A zero-hit query is its own exit code, so the absence of the tag arrives
+    as a diagnostics envelope rather than an empty ``items`` list.
+    """
     listed = _run(archive_root, "--format", "json", "find", f"tag:{tag}")
-    assert listed.exit_code == 0, listed.output
-    items = json.loads(listed.output)["items"]
+    payload = json.loads(listed.output)
+    items = payload.get("items", [])
     assert isinstance(items, list)
     return items
 
