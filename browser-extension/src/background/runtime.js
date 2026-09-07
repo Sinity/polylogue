@@ -3213,6 +3213,17 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         : { ok: true });
       return;
     }
+    if (message.type === "polylogue.providerRateLimited") {
+      const error = new Error("provider_rate_limited");
+      error.outcome = "rate_limited";
+      error.retryAfterSeconds = Number.isFinite(message.retry_after_seconds)
+        ? message.retry_after_seconds
+        : null;
+      error.retryAfterMs = error.retryAfterSeconds === null ? null : error.retryAfterSeconds * 1000;
+      await recordProviderThrottle(message.provider, error, classifyBrowserActionFailure(error));
+      sendResponse({ ok: true });
+      return;
+    }
     if (message.type === "polylogue.receiverPairing.status") {
       const health = await checkReceiverHealth();
       sendResponse({ ok: true, health, pairing: health.pairing || await storedReceiverPairing() });

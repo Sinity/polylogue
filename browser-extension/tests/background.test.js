@@ -2379,6 +2379,29 @@ describe("background receiver diagnostics", () => {
     expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 173_000 });
   });
 
+  it("persists a content-reported rate limit before another conversation can capture", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/content-rate-limit", title: "ChatGPT" }];
+    await sendRuntimeMessage({
+      type: "polylogue.providerRateLimited",
+      provider: "chatgpt",
+      retry_after_seconds: 73,
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "other-conversation",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+
+    expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt).toBe(173_000);
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;

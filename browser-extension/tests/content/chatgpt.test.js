@@ -47,7 +47,7 @@ function notFoundResponse() {
 // 9s-per-asset timeout, which is what makes it safe to assert on the exact
 // descriptor identity (kind/fileId/sandboxPath) these tests care about
 // without the suite becoming slow.
-function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch } = {}) {
+function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch, runtimeMessage = null } = {}) {
   const dom = new JSDOM("<!doctype html><title>ChatGPT fixture</title>", { url, runScripts: "outside-only" });
   openDoms.push(dom);
   const cryptoAdapter = {
@@ -66,6 +66,8 @@ function installChatgpt({ url = "https://chatgpt.com/c/conversation-1", fetch } 
       getManifest: () => ({ version: "0.1.0" }),
       onMessage: { addListener: (listener) => runtimeListeners.push(listener) },
       async sendMessage(message) {
+        const overridden = await runtimeMessage?.(message);
+        if (overridden !== undefined) return overridden;
         if (message.type === "polylogue.capture") {
           return { ok: true, provider: "chatgpt", provider_session_id: "conversation-1", receiver_request_id: "synthetic-request" };
         }
@@ -233,6 +235,67 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
     expect(result).toMatchObject({ ok: false, outcome: "rate_limited", retry_after_seconds: null });
     expect(fetch.mock.calls.filter(([input]) => String(input).includes("/backend-api/conversation/conv-429-no-header")))
       .toHaveLength(1);
+  });
+
+  it("records a manual rate limit before a second capture can fetch again", async () => {
+    let cooldownUntil = 0;
+    const runtimeMessages = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-manual-429") {
+        return new globalThis.Response(JSON.stringify({ detail: "rate limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json", "Retry-After": "73" },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/conv-manual-429",
+      fetch,
+      runtimeMessage: async (message) => {
+        runtimeMessages.push(message);
+        if (message.type === "polylogue.providerThrottle") {
+          return cooldownUntil > Date.now()
+            ? { ok: false, outcome: "rate_limited", retry_after_seconds: Math.ceil((cooldownUntil - Date.now()) / 1000) }
+            : { ok: true };
+        }
+        if (message.type === "polylogue.providerRateLimited") {
+          cooldownUntil = Date.now() + message.retry_after_seconds * 1000;
+          return { ok: true };
+        }
+        return undefined;
+      },
+    });
+
+    const first = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+    const second = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(first).toMatchObject({ ok: false, outcome: "rate_limited", retry_after_seconds: 73 });
+    expect(second).toMatchObject({ ok: false, outcome: "rate_limited" });
+    expect(runtimeMessages).toContainEqual(expect.objectContaining({
+      type: "polylogue.providerRateLimited",
+      retry_after_seconds: 73,
+    }));
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/backend-api/conversation/conv-manual-429")))
+      .toHaveLength(1);
+  });
+
+  it("fails closed when the shared throttle authority is unavailable", async () => {
+    const fetch = vi.fn(async () => notFoundResponse());
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/authority-unavailable",
+      fetch,
+      runtimeMessage: async (message) => {
+        if (message.type === "polylogue.providerThrottle") throw new Error("runtime unavailable");
+        return undefined;
+      },
+    });
+
+    const result = await sendRuntimeMessage({ type: "polylogue.capturePage", reason: "message_layer_save" });
+
+    expect(result).toMatchObject({ ok: false, error: "provider_throttle_authority_unavailable" });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

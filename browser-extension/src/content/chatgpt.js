@@ -470,7 +470,19 @@
     try {
       return await chrome.runtime.sendMessage({ type: "polylogue.providerThrottle", provider: "chatgpt" });
     } catch {
-      return null;
+      return { outcome: "provider_throttle_authority_unavailable" };
+    }
+  }
+
+  async function recordProviderRateLimit(retryAfterMs) {
+    try {
+      return await chrome.runtime.sendMessage({
+        type: "polylogue.providerRateLimited",
+        provider: "chatgpt",
+        retry_after_seconds: retryAfterMs === null ? null : Math.ceil(retryAfterMs / 1000),
+      });
+    } catch {
+      return { ok: false, outcome: "provider_throttle_authority_unavailable" };
     }
   }
 
@@ -910,6 +922,9 @@
     generationObservationsOverride = [],
   ) {
     const throttle = await providerThrottle();
+    if (throttle?.outcome === "provider_throttle_authority_unavailable") {
+      return { ok: false, error: "provider_throttle_authority_unavailable" };
+    }
     if (throttle?.outcome === "rate_limited") {
       return {
         ok: false,
@@ -935,6 +950,8 @@
     } else {
       const nativeFetch = await fetchNativePayloadOnDemand(requestedConversationId);
       if (nativeFetch.rateLimited) {
+        const recorded = await recordProviderRateLimit(nativeFetch.retryAfterMs);
+        if (!recorded?.ok) return { ok: false, error: "provider_throttle_authority_unavailable" };
         return {
           ok: false,
           error: "rate_limited",
