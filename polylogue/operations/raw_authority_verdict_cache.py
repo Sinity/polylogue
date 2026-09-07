@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from polylogue.storage.raw_authority_verdict_cache import (
     RawAuthorityVerdictCacheWarmup,
     RawAuthorityVerdictCacheWork,
 )
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
 def find_raw_authority_verdict_cache_work(archive_root: Path) -> RawAuthorityVerdictCacheWork | None:
@@ -16,7 +16,7 @@ def find_raw_authority_verdict_cache_work(archive_root: Path) -> RawAuthorityVer
     source_db = archive_root / "source.db"
     if not source_db.exists():
         return None
-    conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
+    conn = open_readonly_connection(source_db, timeout_class="background-read")
     try:
         from polylogue.storage.introspection import table_exists
         from polylogue.storage.raw_authority_verdict_cache import find_raw_authority_verdict_cache_work as find_work

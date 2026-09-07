@@ -80,17 +80,19 @@ is deliberately not a source-text gate.
 
 | Shape | Count |
 | --- | --- |
-| Declared read factory (`open_readonly_connection`, `open_profiled_connection`, `read_frame`) | 163 |
+| Declared read factory (`open_readonly_connection`, `open_profiled_connection`, `read_frame`) | 165 |
 | Declared write factory (`open_connection`, `open_daemon_connection`, `open_isolated_write_connection`) | 60 |
 | Hand-built `immutable=1` URI | 0 |
-| Direct `mode=ro` open | 157 |
+| Direct `mode=ro` open | 155 |
 | Raw `PRAGMA busy_timeout` outside the policy module | 9 (8 files) |
 | `PRAGMA wal_checkpoint` outside `wal_checkpoint.py` | 0 |
 
 Migrated in this pass: `daemon/backup.py` (live-tier snapshot writer and the
 pre-migration backup reader), `security/secret_scan.py`,
 `security/excision.py`'s writer, `api/archive.py`'s two-tier audit seam (to a
-pair of read frames), `archive/query/source_freshness.py`, and every hand-built
+pair of read frames), `operations/mutation_actuators.py`,
+`operations/raw_authority_verdict_cache.py`,
+`archive/query/source_freshness.py`, and every hand-built
 `immutable=1` wrapper in `storage/blob_integrity.py`,
 `storage/artifacts/inspection.py`, `storage/sqlite/migration_runner.py`,
 `sources/sqlite_snapshot.py`, `sources/parsers/{codex_state,hermes_state,hermes_verification}.py`,

@@ -44,7 +44,7 @@ from polylogue.operations.mutation_transaction import (
     make_target_ref,
 )
 from polylogue.security.lifecycle import LifecycleMode
-from polylogue.storage.sqlite.connection_profile import open_connection
+from polylogue.storage.sqlite.connection_profile import open_connection, open_readonly_connection
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 if TYPE_CHECKING:
@@ -495,7 +495,7 @@ def _resolve_existing_session_ids(archive_root: Path, session_ids: tuple[str, ..
         # targets for ids the caller already resolved (mirrors reset.py's
         # existing "archive tier absent" allowance).
         return session_ids
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+    conn = open_readonly_connection(index_db, timeout_class="background-read")
     try:
         if not session_ids:
             return ()
