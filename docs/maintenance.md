@@ -126,6 +126,59 @@ substrate, see [architecture.md](architecture.md) and
 [internals.md](internals.md). For daemon ownership of the inline
 maintenance loop, see [daemon.md](daemon.md).
 
+## Rebinding durable references across an index rebuild
+
+`sessions.session_id`, `messages.message_id` and `blocks.block_id` are generated
+columns, so their text is a function of the index schema. A rebuild that changes
+one of those expressions moves every durable reference written against the
+retiring generation, and `user.db` and `audit.db` are not rebuildable — the
+rebuild has to carry them across as an explicit step.
+
+Run `plan` while both generations exist. It is read-only and classifies every
+reference in the declared durable relations
+(`polylogue/storage/sqlite/archive_tiers/durable_references.py`) against the
+candidate:
+
+- `preserved` — the candidate holds this exact identity, or the index does not
+  govern the ref's kind at all.
+- `expected-restored` — absent from the retiring generation, present in the
+  candidate, and claimed by an acquired `source.db` row.
+- `explicitly-migrated` — the identity moved and the map names where to.
+- `orphaned` — absent from the candidate, and no acquired raw row claims it.
+- `blocking-missing` — `source.db` still holds acquired bytes for the identity
+  and the candidate does not carry it. `apply` refuses until re-acquisition
+  restores it or the claim goes away.
+
+```bash
+polylogue ops maintenance durable-reference-transition plan \
+  --candidate-index /archive/.index-generations/gen-.../index.db \
+  --output /safe/durable-reference-transition.json --output-format json
+```
+
+`--predecessor-index` defaults to the archive's active index. Apply offline,
+with the daemon stopped, against a verified backup covering both durable tiers.
+`apply` recomputes the plan from the archive and refuses when the result no
+longer matches the digest being authorized:
+
+```bash
+polylogue ops backup --output-dir /path/to/staging --profile user_overlays --verify
+polylogue ops maintenance durable-reference-transition apply \
+  --plan /safe/durable-reference-transition.json \
+  --authorize PLAN_SHA256 \
+  --backup-manifest /path/to/staging/polylogue-archive-*/manifest.json
+```
+
+`assertions` is rewritten in place. A result manifest is immutable, so one whose
+members moved gains a successor manifest carrying the new ids while the original
+keeps the old ones; forward-looking owners (`watched_query_baselines`) are
+repointed and execution records are left naming the manifest they ran against.
+Audit relations are sealed: a plan that would rewrite one refuses.
+
+Every disposition lands in
+`.maintenance-state/durable-reference-transitions/<plan digest>.json`, including
+a run that rewrites nothing. An orphaning is acceptable only when it is
+recorded.
+
 ## Ownership
 
 `polylogued` owns every archive write. Its convergence loops drain raw
