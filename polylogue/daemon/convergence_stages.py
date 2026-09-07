@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.config import load_polylogue_config
 from polylogue.core.enums import OperationStatus, Provider
 from polylogue.core.raw_failure_evidence import (
@@ -842,10 +843,32 @@ _RAW_PARSE_RECOVERY_BATCH_LIMIT = 200
 # directly per this repo's layering ratchet, and ``converge_materialization``'s
 # ``max_payload_bytes`` is a plain bound this stage can restate on its own.
 _RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
+# Roots per pending-probe statement. One statement per chunk keeps the
+# parameter count and the SQL text bounded on a large catch-up batch.
+_RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK = 200
 
 
-def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root: Path | None = None) -> int:
-    """Count raw rows under ``path`` acquired but never materialized.
+def _source_root_scope_bounds(path: Path) -> tuple[str, str, str]:
+    """Return ``(root, descendant_lo, descendant_hi)`` for one source-root scope.
+
+    ``raw_sessions.source_path`` is indexed under BINARY collation, so only an
+    equality or a half-open range bounds the seek. ``'0'`` is the byte after
+    ``'/'``, which makes ``[root + '/', root + '0')`` exactly the descendants of
+    ``root``. A ``LIKE`` prefix cannot stand in: it plans as a scan, matches
+    case-insensitively over ASCII, and reads ``%``/``_`` inside the root itself
+    as wildcards.
+    """
+    root = str(path).rstrip("/")
+    return root, f"{root}/", f"{root}0"
+
+
+def _raw_parse_recovery_pending_roots(
+    db_path: Path,
+    paths: Sequence[Path],
+    *,
+    archive_root: Path | None = None,
+) -> set[Path]:
+    """Return the roots under which raw rows are acquired but never materialized.
 
     Mirrors the non-terminal branch of ``repair.py``'s candidate query at the
     cheap read-only level this stage's ``check`` needs: no materialized
@@ -856,7 +879,21 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
     ``execute``; this is only a cheap "is there plausibly pending work here"
     probe so ``check`` stays fast and false positives just cost one wasted
     ``execute`` call rather than silently missing real backlog.
+
+    One statement answers a whole chunk of roots and each root costs an index
+    seek, so the probe's cost tracks the batch rather than the archive: a cold
+    rebuild must not pay a ``raw_sessions`` scan per ingested file.
+
+    The one classification it must share is
+    ``decided_unresolved_membership_sql``. That state carries no
+    ``parse_error`` and no session, so the shape above reads it as pending
+    forever while ``converge_raw_materialization`` reports it converged and
+    quarantined. The recovery debt would otherwise be retried indefinitely
+    with an unchanging count.
     """
+    ordered = tuple(dict.fromkeys(paths))
+    if not ordered:
+        return set()
     durable_root = archive_root or db_path.parent
     source_db = durable_root / "source.db"
     if not source_db.exists():
@@ -865,16 +902,15 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
         # source tier is an authority failure and must remain retryable.
         if db_path.exists() or (durable_root / ".index-active-pointer").exists():
             raise FileNotFoundError(f"durable source tier is missing: {source_db}")
-        return 0
+        return set()
     index_db = ArchiveLocation.resolve(durable_root).active_index_path
-    normalized_root = str(path).rstrip("/")
     replay_authority_placeholders = ", ".join("?" for _ in RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS)
     try:
         conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=5.0)
     except sqlite3.Error:
         logger.warning(
-            "raw_parse_recovery: could not open source.db for %s; refusing to classify as no pending work",
-            path,
+            "raw_parse_recovery: could not open source.db for %d root(s); refusing to classify as no pending work",
+            len(ordered),
             exc_info=True,
         )
         raise
@@ -897,55 +933,75 @@ def _raw_parse_recovery_pending_count(db_path: Path, path: Path, *, archive_root
         else:
             materialized_join = ""
             materialized_where = ""
-        row = conn.execute(
-            f"""
-            SELECT COUNT(*)
-            FROM raw_sessions AS r
-            {materialized_join}
-            WHERE (r.source_path = ? OR r.source_path LIKE ?)
-              AND NOT (
-                COALESCE(r.validation_status, '') = 'failed'
-                AND (
-                  r.parsed_at_ms IS NULL
-                  OR r.validated_at_ms IS NULL
-                  OR r.validated_at_ms >= r.parsed_at_ms
-                )
-              )
-              AND (
-                (
-                  r.parsed_at_ms IS NULL
-                  AND (
-                    r.parse_error IS NULL
-                    OR r.parse_error = 'OperationalError: database is locked'
-                    OR r.parse_error LIKE 'decode:%No such file or directory:%'
-                    OR r.parse_error LIKE 'membership_replay_conflict:%'
-                  )
-                )
-                OR EXISTS (
+        pending: set[Path] = set()
+        for offset in range(0, len(ordered), _RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK):
+            chunk = ordered[offset : offset + _RAW_PARSE_RECOVERY_ROOT_PROBE_CHUNK]
+            bounds = [_source_root_scope_bounds(path) for path in chunk]
+            by_root = {bound[0]: path for bound, path in zip(bounds, chunk, strict=True)}
+            root_rows = ", ".join("(?, ?, ?)" for _ in chunk)
+            params: list[str] = [value for bound in bounds for value in bound]
+            params.extend(sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS))
+            params.append(RAW_FAILURE_DEFERRED_SUPPORT_STATUS)
+            rows = conn.execute(
+                f"""
+                WITH roots(root, descendant_lo, descendant_hi) AS (VALUES {root_rows})
+                SELECT roots.root
+                FROM roots
+                WHERE EXISTS (
                     SELECT 1
-                    FROM raw_artifacts AS failure_evidence
-                    WHERE failure_evidence.raw_id IS r.raw_id
-                      AND failure_evidence.origin IS r.origin
-                      AND failure_evidence.source_path IS r.source_path
-                      AND failure_evidence.source_index IS r.source_index
-                      AND failure_evidence.artifact_kind IN ({replay_authority_placeholders})
-                      AND failure_evidence.support_status = ?
+                    FROM raw_sessions AS r
+                    {materialized_join}
+                    WHERE (
+                        r.source_path = roots.root
+                        OR (
+                          r.source_path >= roots.descendant_lo
+                          AND r.source_path < roots.descendant_hi
+                        )
+                      )
+                      AND NOT (
+                        COALESCE(r.validation_status, '') = 'failed'
+                        AND (
+                          r.parsed_at_ms IS NULL
+                          OR r.validated_at_ms IS NULL
+                          OR r.validated_at_ms >= r.parsed_at_ms
+                        )
+                      )
+                      AND (
+                        (
+                          r.parsed_at_ms IS NULL
+                          AND (
+                            r.parse_error IS NULL
+                            OR r.parse_error = 'OperationalError: database is locked'
+                            OR r.parse_error LIKE 'decode:%No such file or directory:%'
+                            OR r.parse_error LIKE 'membership_replay_conflict:%'
+                          )
+                        )
+                        OR EXISTS (
+                            SELECT 1
+                            FROM raw_artifacts AS failure_evidence
+                            WHERE failure_evidence.raw_id IS r.raw_id
+                              AND failure_evidence.origin IS r.origin
+                              AND failure_evidence.source_path IS r.source_path
+                              AND failure_evidence.source_index IS r.source_index
+                              AND failure_evidence.artifact_kind IN ({replay_authority_placeholders})
+                              AND failure_evidence.support_status = ?
+                        )
+                      )
+                      AND NOT ({decided_unresolved_membership_sql("r")})
+                      {materialized_where}
                 )
-              )
-              {materialized_where}
-            """,
-            (
-                normalized_root,
-                f"{normalized_root}/%",
-                *sorted(RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS),
-                RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
-            ),
-        ).fetchone()
-        return int(row[0] or 0) if row is not None else 0
+                """,
+                params,
+            ).fetchall()
+            for row in rows:
+                matched = by_root.get(row[0])
+                if matched is not None:
+                    pending.add(matched)
+        return pending
     except sqlite3.Error:
         logger.warning(
-            "raw_parse_recovery: pending-count probe failed for %s; refusing to classify as no pending work",
-            path,
+            "raw_parse_recovery: pending probe failed for %d root(s); refusing to classify as no pending work",
+            len(ordered),
             exc_info=True,
         )
         raise
@@ -970,49 +1026,66 @@ def make_raw_parse_recovery_stage(db_path: Path, *, archive_root: Path | None = 
     """
 
     def check(path: Path) -> bool:
-        return _raw_parse_recovery_pending_count(db_path, path, archive_root=archive_root) > 0
+        return path in _raw_parse_recovery_pending_roots(db_path, (path,), archive_root=archive_root)
+
+    def check_many(paths: Sequence[Path]) -> set[Path]:
+        return _raw_parse_recovery_pending_roots(db_path, paths, archive_root=archive_root)
 
     def execute(path: Path) -> StageExecuteReturn:
+        return execute_many((path,))
+
+    def execute_many(paths: Sequence[Path]) -> StageExecuteReturn:
         from polylogue.config import Config
         from polylogue.maintenance.raw_authority import converge_materialization
         from polylogue.readiness.capability import raw_frontier_source_selection_refusal
 
+        ordered = tuple(dict.fromkeys(paths))
+        if not ordered:
+            return True
         configured_root = archive_root or db_path.parent
         refusal = raw_frontier_source_selection_refusal(configured_root)
-        # Only this path's own broken authority defers it; another path's
-        # refusal must not stall this one's recovery.
-        blocked_reason = refusal.unattributed_reason
-        if blocked_reason is None and (
-            str(path) in refusal.source_paths or str(path.resolve()) in refusal.source_paths
-        ):
-            blocked_reason = "source-selection authority is broken for this path"
-        if blocked_reason is not None:
-            logger.warning(
-                "raw_parse_recovery: source-selection gate blocked for %s: %s",
-                path,
-                blocked_reason,
-            )
-            return False
         config = Config(archive_root=configured_root, render_root=configured_root, sources=[])
-        try:
-            converge_materialization(
-                config,
-                dry_run=False,
-                raw_artifact_limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
-                max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
-                source_root=path,
-            )
-        except Exception:
-            logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
-            raise
-        pending = _raw_parse_recovery_pending_count(db_path, path, archive_root=configured_root)
-        return pending == 0
+        failure: Exception | None = None
+        for path in ordered:
+            # Only this path's own broken authority defers it; another path's
+            # refusal must not stall this one's recovery.
+            blocked_reason = refusal.unattributed_reason
+            if blocked_reason is None and (
+                str(path) in refusal.source_paths or str(path.resolve()) in refusal.source_paths
+            ):
+                blocked_reason = "source-selection authority is broken for this path"
+            if blocked_reason is not None:
+                logger.warning(
+                    "raw_parse_recovery: source-selection gate blocked for %s: %s",
+                    path,
+                    blocked_reason,
+                )
+                continue
+            try:
+                converge_materialization(
+                    config,
+                    dry_run=False,
+                    raw_artifact_limit=_RAW_PARSE_RECOVERY_BATCH_LIMIT,
+                    max_payload_bytes=_RAW_PARSE_RECOVERY_MAX_PAYLOAD_BYTES,
+                    source_root=path,
+                )
+            except Exception as exc:
+                logger.warning("raw_parse_recovery: repair pass failed for %s", path, exc_info=True)
+                # The chunk's other roots are independent repairs; finish them
+                # before surfacing this, then let the failure classify the
+                # chunk so a real error never reads as a deliberate deferral.
+                failure = failure or exc
+        if failure is not None:
+            raise failure
+        return not _raw_parse_recovery_pending_roots(db_path, ordered, archive_root=configured_root)
 
     return ConvergenceStage(
         name="raw_parse_recovery",
         description="Requeue raw rows an interrupted ingest attempt never validated/parsed",
         check=check,
+        check_many=check_many,
         execute=execute,
+        execute_many=execute_many,
         false_means_pending=True,
     )
 
