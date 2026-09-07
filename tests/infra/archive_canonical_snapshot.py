@@ -73,12 +73,6 @@ RUN_LOCAL_NORMALIZATION_ALLOWLIST: Mapping[str, frozenset[str]] = {
 RUN_LOCAL_PATH_ALLOWLIST: Mapping[str, frozenset[str]] = {
     "source.raw_sessions": frozenset({"source_path"}),
     "source.raw_artifacts": frozenset({"source_path"}),
-    "source.raw_live_source_reconciliation_receipts": frozenset({"source_path", "backup_manifest_path"}),
-    "source.raw_append_chain_backfill_receipts": frozenset({"source_path", "backup_manifest_path"}),
-    "source.raw_membership_writeback_receipts": frozenset({"backup_manifest_path"}),
-    "source.raw_byte_duplicate_supersession_receipts": frozenset({"backup_manifest_path"}),
-    "source.raw_quarantine_group_dedup_receipts": frozenset({"source_path", "backup_manifest_path"}),
-    "source.raw_failure_disposition_receipts": frozenset({"source_path", "backup_manifest_path"}),
     "source.blob_refs": frozenset({"source_path"}),
 }
 
@@ -121,14 +115,6 @@ _RELATION_GROUPS: Mapping[str, tuple[tuple[str, str], ...]] = {
         ("source", "raw_authority_blockers"),
         ("source", "raw_authority_verdicts"),
         ("source", "excised_content"),
-        ("source", "raw_live_source_reconciliation_receipts"),
-        ("source", "raw_membership_writeback_receipts"),
-        ("source", "raw_append_chain_backfill_receipts"),
-        ("source", "raw_byte_duplicate_supersession_receipts"),
-        ("source", "raw_non_session_duplicate_exclusion_receipts"),
-        ("source", "raw_quarantine_group_dedup_receipts"),
-        ("source", "raw_unknown_export_reclassification_receipts"),
-        ("source", "raw_failure_disposition_receipts"),
         ("source", "blob_refs"),
         ("source", "verified_blob_receipts"),
     ),
