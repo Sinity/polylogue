@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from polylogue.api.archive import open_readonly_connection
+from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, resolve
 from polylogue.core.user_state_targets import (
     TARGET_ATTACHMENT,
     TARGET_BLOCK,
@@ -51,20 +52,39 @@ _INSIGHT_QUERIES: dict[str, str] = {
 }
 
 
-def _index_db_path(archive_root: Path) -> Path | None:
-    """Return the `index.db` under ``archive_root`` if it is present
-    and carries the canonical ``sessions`` table, else ``None``."""
+def _index_db_path(archive_root: Path) -> Evidence[Path]:
+    """Locate the readable `index.db` carrying the canonical ``sessions`` table.
+
+    ``Empty`` means nothing is materialized, which is a real answer about the
+    target. ``Unavailable`` means the tier could not be read, which is not --
+    a write must refuse rather than report the target absent (polylogue-p707n).
+    """
     candidate = archive_root / "index.db"
     if not candidate.exists():
-        return None
+        return Empty()
     try:
         with closing(
             open_readonly_connection(candidate, timeout_class="interactive-read", validate_schema=False)
         ) as conn:
             row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
-    except sqlite3.Error:
-        return None
-    return candidate if row is not None else None
+    except sqlite3.Error as exc:
+        return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
+    return Measured(candidate) if row is not None else Empty()
+
+
+def _existence(evidence: Evidence[bool], *, subject: str) -> bool:
+    """Consume an existence probe; an unreadable tier refuses, never denies."""
+
+    def _refuse(case: Unavailable) -> bool:
+        raise ValueError(f"existence of {subject} could not be checked: {case.detail or case.reason}")
+
+    return resolve(
+        evidence,
+        measured=lambda value: value,
+        empty=lambda: False,
+        unavailable=_refuse,
+        degraded=lambda case: case.value,
+    )
 
 
 def _row_exists_sync(db_path: Path, sql: str, params: tuple[object, ...]) -> bool:
@@ -73,16 +93,17 @@ def _row_exists_sync(db_path: Path, sql: str, params: tuple[object, ...]) -> boo
     return row is not None
 
 
-async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) -> bool:
+async def _row_exists(archive_root: Path, sql: str, params: tuple[object, ...]) -> Evidence[bool]:
     """Existence probe against the `index.db`. A missing index means
-    nothing is materialized, so the row does not exist."""
-    db_path = _index_db_path(archive_root)
-    if db_path is None:
-        return False
+    nothing is materialized, so the row does not exist; an unreadable one
+    means the question was not answered."""
+    located = _index_db_path(archive_root)
+    if not isinstance(located, Measured):
+        return located if isinstance(located, Unavailable) else Empty()
     try:
-        return await asyncio.to_thread(_row_exists_sync, db_path, sql, params)
-    except sqlite3.Error:
-        return False
+        return Measured(await asyncio.to_thread(_row_exists_sync, located.value, sql, params))
+    except sqlite3.Error as exc:
+        return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
 
 
 def _block_exists_sync(
@@ -112,24 +133,26 @@ async def _block_exists(
     session_id: str,
     message_id: str,
     block_index_token: str,
-) -> bool:
+) -> Evidence[bool]:
     try:
         block_index = int(block_index_token)
     except ValueError:
-        return False
-    db_path = _index_db_path(archive_root)
-    if db_path is None:
-        return False
+        return Empty()
+    located = _index_db_path(archive_root)
+    if not isinstance(located, Measured):
+        return located if isinstance(located, Unavailable) else Empty()
     try:
-        return await asyncio.to_thread(
-            _block_exists_sync,
-            db_path,
-            session_id=session_id,
-            message_id=message_id,
-            block_index=block_index,
+        return Measured(
+            await asyncio.to_thread(
+                _block_exists_sync,
+                located.value,
+                session_id=session_id,
+                message_id=message_id,
+                block_index=block_index,
+            )
         )
-    except sqlite3.Error:
-        return False
+    except sqlite3.Error as exc:
+        return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
 
 
 def parse_block_target_id(target_id: str) -> tuple[str, str]:
@@ -168,7 +191,10 @@ async def resolve_insight_target(
         resolved_target_id = target_id or session_id
         if resolved_target_id != session_id:
             raise ValueError("session target_id must equal the session_id (session root)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_SESSION], (session_id,)):
+        if not _existence(
+            await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_SESSION], (session_id,)),
+            subject=f"session profile for session {session_id!r}",
+        ):
             raise ValueError(f"session profile for session {session_id!r} is not materialized")
         return {
             "target_type": TARGET_SESSION,
@@ -185,7 +211,10 @@ async def resolve_insight_target(
     if target_type == TARGET_WORK_EVENT:
         if not target_id:
             raise ValueError("work_event target requires target_id (event_id)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_WORK_EVENT], (target_id, session_id)):
+        if not _existence(
+            await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_WORK_EVENT], (target_id, session_id)),
+            subject=f"work_event {target_id!r}",
+        ):
             raise ValueError(f"work_event {target_id!r} is not in session {session_id!r}")
         return {
             "target_type": TARGET_WORK_EVENT,
@@ -202,7 +231,10 @@ async def resolve_insight_target(
     if target_type == TARGET_THREAD:
         if not target_id:
             raise ValueError("thread target requires target_id (thread_id)")
-        if not await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_THREAD], (target_id,)):
+        if not _existence(
+            await _row_exists(archive_root, _INSIGHT_QUERIES[TARGET_THREAD], (target_id,)),
+            subject=f"thread {target_id!r}",
+        ):
             raise ValueError(f"thread {target_id!r} is not a materialized thread root")
         return {
             "target_type": TARGET_THREAD,
@@ -230,11 +262,14 @@ async def resolve_insight_target(
         effective_message_id = message_id or msg_id
         if effective_message_id != msg_id:
             raise ValueError("block message_id must match the message_id in target_id")
-        if not await _block_exists(
-            archive_root,
-            session_id=session_id,
-            message_id=effective_message_id,
-            block_index_token=str(block_index),
+        if not _existence(
+            await _block_exists(
+                archive_root,
+                session_id=session_id,
+                message_id=effective_message_id,
+                block_index_token=str(block_index),
+            ),
+            subject=f"block {target_id!r}",
         ):
             raise ValueError(f"block {target_id!r} is not present in session {session_id!r}")
         return {

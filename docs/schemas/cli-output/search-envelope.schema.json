@@ -400,6 +400,44 @@
       "title": "AuthorityEnvelope",
       "type": "object"
     },
+    "OutcomeEnvelope": {
+      "additionalProperties": false,
+      "description": "The terminal outcome of one operation, decided at the operation boundary.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "state": {
+          "enum": [
+            "ok",
+            "empty",
+            "degraded",
+            "error"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "OutcomeEnvelope",
+      "type": "object"
+    },
     "QueryMissDiagnosticsPayload": {
       "additionalProperties": false,
       "description": "Shared diagnostics payload for zero-result queries.",
@@ -1170,6 +1208,9 @@
       "title": "Offset",
       "type": "integer"
     },
+    "outcome": {
+      "$ref": "#/$defs/OutcomeEnvelope"
+    },
     "query": {
       "title": "Query",
       "type": "string"
@@ -1281,7 +1322,8 @@
     "limit",
     "offset",
     "query",
-    "retrieval_lane"
+    "retrieval_lane",
+    "outcome"
   ],
   "title": "Search Envelope",
   "type": "object",

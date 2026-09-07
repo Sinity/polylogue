@@ -15,6 +15,17 @@
 #     are atomic, rebuildable writes are replayable, and ops writes restart.
 #   - a module may own multiple tiers only through a named twin-write contract.
 
+# Improvised SQLite degradation policy, ratcheted down per file. A handler that
+# turns an unavailable store into a zero or an empty list makes "errored" and
+# "genuinely empty" indistinguishable at the call site; the typed route
+# classifies absence once at the storage seam
+# (polylogue/storage/tier_access.py) and carries it as
+# polylogue/core/evidence.py. The baseline is the per-file ceiling: convert a
+# seam, then lower its entry in the same change.
+sqlite_degradation:
+  baseline: docs/plans/sqlite-degradation-baseline.json
+  roots: [polylogue]
+
 writer_modules:
   marker: "Writer module:"
   # This boundary inventories tier-owning archive facade modules. Lower-level

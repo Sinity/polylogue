@@ -254,6 +254,14 @@ export type ObservedEventQueryRowPayload = {
   readonly unit?: "observed-event";
 };
 
+export type OutcomeEnvelope = {
+  readonly detail?: {
+  readonly [key: string]: unknown;
+};
+  readonly reason?: string | null;
+  readonly state: "ok" | "empty" | "degraded" | "error";
+};
+
 export type QueryBoolPredicateAst = {
   readonly children?: ReadonlyArray<QueryFieldPredicateAst | QueryNotPredicateAst | QueryBoolPredicateAst | QueryExistsPredicateAst | QuerySequencePredicateAst | QueryTextPredicateAst | QuerySemanticPredicateAst | QueryLineagePredicateAst>;
   readonly kind: "and" | "or";
@@ -394,6 +402,7 @@ export type QueryUnitAggregateEnvelope = {
   readonly mode?: "query-unit-aggregate";
   readonly next_offset?: number | null;
   readonly offset: number;
+  readonly outcome: OutcomeEnvelope;
   readonly pipeline?: ({
   readonly [key: string]: unknown;
 }) | null;
@@ -441,6 +450,7 @@ export type QueryUnitEnvelope = {
   readonly mode?: "query-unit";
   readonly next_offset?: number | null;
   readonly offset: number;
+  readonly outcome: OutcomeEnvelope;
   readonly pipeline?: ({
   readonly [key: string]: unknown;
 }) | null;
@@ -619,6 +629,7 @@ export type SearchEnvelope = {
   readonly next_cursor?: string | null;
   readonly next_offset?: number | null;
   readonly offset: number;
+  readonly outcome: OutcomeEnvelope;
   readonly query: string;
   readonly query_hash?: string | null;
   readonly query_run_ref?: string | null;
@@ -674,6 +685,7 @@ export type SessionListResponse = {
   readonly items: ReadonlyArray<SessionListEnvelope>;
   readonly limit: number;
   readonly offset: number;
+  readonly outcome: OutcomeEnvelope;
   readonly query_description?: ReadonlyArray<string>;
   readonly route_state?: RouteReadinessPayload | null;
   readonly total: number;

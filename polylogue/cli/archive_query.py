@@ -51,6 +51,7 @@ from polylogue.config import Config
 from polylogue.logging import get_logger
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.cursor_identity import search_cursor_request_identity
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES, decide_outcome, outcome_exit_code
 
 # The names below are used only as type annotations across this module (never
 # constructed/called at the module's own top level) except at the specific
@@ -1648,7 +1649,7 @@ def _emit_degraded_daemon_search_payload(
         pass
     else:
         click.echo(reason, err=True)
-    raise SystemExit(1)
+    raise SystemExit(OUTCOME_EXIT_CODES["degraded"])
 
 
 def _decode_cursor(token: str | None) -> SearchCursor | None:
@@ -2641,7 +2642,8 @@ def _emit_no_results(
 
     convergence_warning = convergence_warning_line()
     diagnostics_payload = _diagnostics_dict(diagnostics)
-    empty = {**envelope, "items": [], "total": 0}
+    outcome = decide_outcome(matched=0)
+    empty = {**envelope, "items": [], "total": 0, "outcome": outcome.to_dict()}
     if convergence_warning is not None:
         empty["archive_converging"] = True
         empty["convergence_warning"] = convergence_warning
@@ -2663,12 +2665,12 @@ def _emit_no_results(
             click.echo(typo_hint)
         if diagnostics_payload is not None:
             _print_diagnostics_lines(diagnostics_payload)
-    raise SystemExit(2)
+    raise SystemExit(outcome_exit_code(outcome))
 
 
 def _emit_open_no_results(*, output_format: str, origin: str | None) -> NoReturn:
     if output_format == "json":
-        error_no_results("No sessions matched.").emit(exit_code=2)
+        error_no_results("No sessions matched.").emit(exit_code=OUTCOME_EXIT_CODES["empty"])
     _emit_no_results(
         {
             "mode": "open",

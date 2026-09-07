@@ -23,7 +23,13 @@ from types import TracebackType
 from typing import Any, cast
 
 from polylogue.archive.session_revision_membership import MembershipDecision
-from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.archive_identity import (
+    ACTIVE_POINTER_FILENAME,
+    GENERATIONS_DIRNAME,
+    LIFECYCLE_LOCK_FILENAME,
+    REBUILD_TRANSACTIONS_DIRNAME,
+    ArchiveLocation,
+)
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
@@ -54,7 +60,6 @@ SUPERSEDED_GENERATION_RETENTION = 1
 # is intentionally larger than the rollback-generation boundary so automatic
 # receipt pruning cannot erase the evidence for the active boundary.
 RETENTION_RECEIPT_HISTORY = SUPERSEDED_GENERATION_RETENTION + 1
-_GENERATIONS_DIRNAME = ".index-generations"
 _RETENTION_RECEIPTS_DIRNAME = "retention-receipts"
 _SAFE_LIFECYCLE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _LIFECYCLE_STATES = frozenset({"inactive", "promoting", "active", "retained", "eligible", "reclaimed"})
@@ -220,7 +225,7 @@ def _is_generation_member(path: Path) -> bool:
     """
     parts = path.absolute().parts
     try:
-        depth = parts.index(_GENERATIONS_DIRNAME)
+        depth = parts.index(GENERATIONS_DIRNAME)
     except ValueError:
         return False
     # A direct child is `.index-generations/<name>` (one part after the root);
@@ -625,7 +630,7 @@ class IndexGenerationStore:
     def __init__(self, location: ArchiveLocation, *, repair_anchor: bool = True) -> None:
         self.archive_root = location.configured_root
         self.location = location
-        anchor = location.configured_root / ".index-active-pointer"
+        anchor = location.configured_root / ACTIVE_POINTER_FILENAME
         anchored = location.active_pointer
         self.active_pointer = canonical_active_index_path(location)
         if (anchored is None or _is_generation_member(anchored)) and repair_anchor:
@@ -655,12 +660,12 @@ class IndexGenerationStore:
             if anchor.is_symlink():
                 raise RuntimeError(f"active pointer is a symlink: {anchor}")
             _atomic_text_write(anchor, str(self.active_pointer.absolute()), label="active pointer")
-        self.generations_root = self.active_pointer.parent / ".index-generations"
-        self.transactions_root = self.active_pointer.parent / ".index-rebuild-transactions"
+        self.generations_root = self.active_pointer.parent / GENERATIONS_DIRNAME
+        self.transactions_root = self.active_pointer.parent / REBUILD_TRANSACTIONS_DIRNAME
         _ensure_lifecycle_directory(self.generations_root, label="generation root")
         _ensure_lifecycle_directory(self.transactions_root, label="transaction root")
         _ensure_lifecycle_directory(self.generations_root / _RETENTION_RECEIPTS_DIRNAME, label="retention receipt root")
-        self._lifecycle_lock_path = self.active_pointer.parent / ".index-generation-lifecycle.lock"
+        self._lifecycle_lock_path = self.active_pointer.parent / LIFECYCLE_LOCK_FILENAME
         self._active_parent_identity = _stable_directory(self.active_pointer.parent, label="active pointer parent")
         self._lifecycle_lock_fd: int | None = None
         if self._lifecycle_lock_path.is_symlink():
@@ -728,10 +733,17 @@ class IndexGenerationStore:
         consumed_evidence: dict[str, object] | None = None,
     ) -> IndexRebuildTransaction:
         """Create an inactive candidate and its resumable transaction record."""
+        from polylogue.maintenance.candidate_capacity import require_candidate_capacity
+
         op_id = operation_id or str(uuid.uuid4())
         path = self._transaction_path(op_id)
         if path.exists():
             raise RuntimeError(f"rebuild transaction already exists: {op_id}")
+        # A candidate is the whole index again on disk beside the one still
+        # serving reads. Refuse here, before the generation directory exists:
+        # a build that runs the filesystem out mid-pass leaves a partial
+        # generation and no room to reclaim it.
+        require_candidate_capacity(self.archive_root, operation_id=op_id)
         generation = self.create(source_snapshot=source_snapshot)
         self.seal_candidate_membership(generation, source_snapshot=source_snapshot)
         now = int(time.time() * 1000)
@@ -800,7 +812,30 @@ class IndexGenerationStore:
         path = self._transaction_path(transaction.operation_id)
         _ensure_lifecycle_directory(path.parent, label="transaction root")
         _atomic_json_write(path, asdict(updated), label="rebuild transaction")
+        self._observe_candidate_capacity(updated)
         return updated
+
+    def _observe_candidate_capacity(self, transaction: IndexRebuildTransaction) -> None:
+        """Raise the recorded peak for this build so the next projection calibrates.
+
+        Calibration is evidence about future builds, never a precondition of
+        this one: a receipt that cannot be written is logged and the pass
+        continues.
+        """
+        from polylogue.maintenance.candidate_capacity import record_capacity_observation
+
+        try:
+            record_capacity_observation(
+                self.archive_root,
+                operation_id=transaction.operation_id,
+                candidate_root=self.generations_root / transaction.generation_id,
+            )
+        except (OSError, RuntimeError):
+            logger.warning(
+                "candidate capacity observation failed for operation %s",
+                transaction.operation_id,
+                exc_info=True,
+            )
 
     def checkpoint_transaction(
         self,

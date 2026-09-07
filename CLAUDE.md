@@ -157,6 +157,11 @@ explicit-and-retryable or a typed permanent refusal.
   current truth.
 - **Insights** are descriptor-driven (`analysis/registry.py`); one registry
   drives plaintext and JSON (MCP: see the caveat above).
+- **Terminal outcome**: every row-bearing envelope carries `outcome` in
+  {ok, empty, degraded, error}, decided once at the operation boundary
+  (`surfaces/outcome.py`). `degraded` outranks `empty`, so zero rows behind a
+  named gap is never reported as an empty scope. Surfaces serialize it and map
+  transport only; the CLI exit table is `OUTCOME_EXIT_CODES` (empty exits 2).
 - New Click params on query verbs go last — a positional shift silently
   reroutes args.
 

@@ -208,6 +208,56 @@ def test_observability_payload_projects_a_new_registry_descriptor(monkeypatch: p
     assert panels[0]["readiness"] == {"state": "ready", "required": True, "reason": None}
 
 
+def test_insight_panel_distinguishes_errored_from_genuinely_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-8ifs: a panel that fetched nothing and a panel whose fetch
+    raised must not render the same.
+
+    Anti-vacuity: collapse the ``ArchiveInsightUnavailableError``/``Exception``
+    arms into the empty arm and the two panels below carry the same state.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.analysis.archive import ArchiveInsightUnavailableError
+    from polylogue.daemon.webui import build_observability_payload
+
+    def _descriptor(name: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            display_name=name,
+            json_key=name,
+            fields=(SimpleNamespace(label="proof", accessor=lambda item: item.proof),),
+            query_model=None,
+            mcp_default_limit=1,
+            readiness_exempt=False,
+        )
+
+    empty, unavailable, degraded = (_descriptor(name) for name in ("empty", "unavailable", "degraded"))
+
+    async def fake_fetch(descriptor: object, _operations: object, **_kwargs: object) -> list[object]:
+        if descriptor is unavailable:
+            raise ArchiveInsightUnavailableError("index tier is unreadable")
+        if descriptor is degraded:
+            raise RuntimeError("materializer blew up")
+        return []
+
+    monkeypatch.setattr("polylogue.analysis.registry.fetch_insights_async", fake_fetch)
+    payload = asyncio.run(
+        build_observability_payload(
+            object(),
+            {"component_readiness": {"session_profiles": {"state": "ready"}}},
+            registry={"empty": empty, "unavailable": unavailable, "degraded": degraded},
+        )
+    )
+
+    panels = {str(panel["name"]): panel for panel in cast(list[dict[str, object]], payload["insights"])}
+    assert panels["empty"]["state"] == "empty"
+    assert panels["empty"]["error"] is None
+    assert panels["unavailable"]["state"] == "unavailable"
+    assert "unreadable" in str(panels["unavailable"]["error"])
+    assert panels["degraded"]["state"] == "degraded"
+    assert "blew up" in str(panels["degraded"]["error"])
+    assert len({str(panel["state"]) for panel in panels.values()}) == 3
+
+
 def test_observability_payload_keeps_projection_errors_panel_local(monkeypatch: pytest.MonkeyPatch) -> None:
     """A malformed descriptor row cannot hide healthy registry siblings."""
     from types import SimpleNamespace
@@ -340,6 +390,7 @@ def _running_server_without_seed(
 # surface returns these identities verbatim.
 from polylogue.core.identity_law import message_id as _archive_message_id
 from polylogue.core.identity_law import session_id as _archive_session_id
+from polylogue.surfaces.outcome import decide_outcome
 
 _SEED_SPECS = [
     ("claude-code", "c1", "m-c1", "Claude Code session about authentication"),
@@ -3292,7 +3343,9 @@ class TestSharedQueryPayloads:
         route_state = RouteReadinessPayload(
             state="empty", route="/api/sessions", reason="Archive contains no sessions."
         )
-        r = SessionListResponse(items=(), total=0, limit=50, offset=0, route_state=route_state)
+        r = SessionListResponse(
+            items=(), total=0, limit=50, offset=0, route_state=route_state, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["items"] == []
         assert d["total"] == 0
@@ -3355,7 +3408,9 @@ class TestSharedQueryPayloads:
             filters=("tag=missing",),
             reasons=(QueryMissReasonPayload(code="no_results", severity="info", summary="no match"),),
         )
-        r = SessionListResponse(items=(), total=0, limit=10, offset=0, diagnostics=diag)
+        r = SessionListResponse(
+            items=(), total=0, limit=10, offset=0, diagnostics=diag, outcome=decide_outcome(matched=0)
+        )
         d = r.model_dump(mode="json")
         assert d["diagnostics"] is not None
         assert d["diagnostics"]["message"] == "No results."
@@ -3365,6 +3420,7 @@ class TestSharedQueryPayloads:
         from polylogue.surfaces.payloads import FacetFamilyStatusPayload, FacetsResponse, FacetTimeRange
 
         r = FacetsResponse(
+            outcome=decide_outcome(matched=15),
             scoped_to_query=False,
             generated_at="2026-06-22T00:00:00Z",
             budget_exceeded=True,

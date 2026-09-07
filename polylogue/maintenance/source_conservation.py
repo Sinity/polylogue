@@ -61,7 +61,6 @@ _TERM_DECODE_FAILED = "decode_failed"
 _TERM_CENSUS_NON_SESSION = "census_non_session"
 _TERM_UNCLASSIFIED_SHAPE = "unclassified_shape"
 _TERM_PENDING = "pending"
-_TERM_MISSING_BLOB = "missing_blob"
 _TERM_AUTHORITY_BLOCKED = "authority_blocked_head"
 _TERM_QUARANTINED_COHORT = "quarantined_cohort_unmaterialized"
 _TERM_UNEXPLAINED = "unexplained"
@@ -97,10 +96,6 @@ _RULES: dict[str, str] = {
     _TERM_CENSUS_NON_SESSION: "raw_membership_census recorded a terminal non-session verdict",
     _TERM_UNCLASSIFIED_SHAPE: "artifact taxonomy holds no classification (unknown/unknown); a rule is missing",
     _TERM_PENDING: "acquired; convergence has not parsed it yet",
-    _TERM_MISSING_BLOB: (
-        "raw payload is not retained by the blob ledger or its bytes are unavailable; "
-        "re-acquire the source before parsing"
-    ),
     _TERM_AUTHORITY_BLOCKED: (
         "an unresolved raw_authority_blockers row names this raw as the accepted revision head "
         "while the index materialized a different raw of the same logical source; the authority "
@@ -139,7 +134,6 @@ _BLOCKING: frozenset[str] = frozenset(
     {
         _TERM_SOURCE_LOST,
         _TERM_UNCLASSIFIED_SHAPE,
-        _TERM_MISSING_BLOB,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
         _TERM_SESSION_WITHOUT_RAW,
@@ -270,7 +264,7 @@ def logical_head_cohort_expr(conn: sqlite3.Connection, *, raw_alias: str) -> str
 
     A cohort is a partition, so it cannot express the overlap between shared
     raws whose membership sets intersect without being equal. The
-    ``shares_indexed_key`` column of :func:`_raw_term_case` carries that
+    ``shares_indexed_key`` column of :func:`raw_term_case` carries that
     relation alongside this partition.
     """
     return logical_head_cohort_sql(
@@ -316,23 +310,27 @@ def _source_exists(archive_root: Path, source_path: str) -> bool:
     return path.exists()
 
 
-def _blob_exists(archive_root: Path, blob_hash: object) -> bool:
-    """Return whether a raw payload's content-addressed bytes are present."""
-    if isinstance(blob_hash, memoryview):
-        blob_hash = blob_hash.tobytes()
-    if isinstance(blob_hash, bytes):
-        digest = blob_hash.hex()
-    elif isinstance(blob_hash, str):
-        digest = blob_hash.lower()
-    else:
-        return False
-    if len(digest) < 3:
-        return False
-    return (archive_root / "blob" / digest[:2] / digest[2:]).is_file()
+def typed_raw_cte(conn: sqlite3.Connection, *, name: str) -> str:
+    """Return CTE text (no leading ``WITH``) binding ``name`` to typed raws.
+
+    The named CTE carries ``raw_id`` and the ladder's verdict as ``term``, so
+    another check can compose it beside its own CTEs and ask "does the one
+    ladder explain this raw?" without restating the ladder.  ``rn = 1`` selects
+    the logical head of each revision cohort.
+    """
+    heads_cte, term_case = raw_term_case(conn, cte_name=f"{name}__rows")
+    return f"{heads_cte.strip().removeprefix('WITH ')}, {name} AS (SELECT *, {term_case} AS term FROM {name}__rows)"
 
 
-def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
-    """Return the ``heads`` CTE and the CASE expression typing every raw row."""
+def raw_term_case(conn: sqlite3.Connection, *, cte_name: str = "heads") -> tuple[str, str]:
+    """Return the heads CTE and the CASE expression typing every raw row.
+
+    The one ladder that types an acquired raw. ``source-index-coverage``
+    consumes it through :func:`typed_raw_cte`, so a raw explained here can
+    never be reported as untyped there; ``rn = 1`` selects the logical head of
+    each revision cohort. ``conn`` is the source tier with the index tier
+    attached as ``idx_tier``.
+    """
     has_artifacts = table_exists(conn, "raw_artifacts")
     has_census = table_exists(conn, "raw_membership_census")
     census_expr = "(SELECT c.status FROM raw_membership_census c WHERE c.raw_id = r.raw_id)" if has_census else "NULL"
@@ -417,12 +415,13 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
         else "0"
     )
     heads_cte = f"""
-        WITH {blocked_cte}{indexed_keys_cte}heads AS (
+        WITH {blocked_cte}{indexed_keys_cte}{cte_name} AS (
             SELECT
                 r.raw_id,
                 r.origin,
                 r.source_path,
                 r.blob_hash,
+                r.revision_authority,
                 r.parse_error,
                 r.parsed_at_ms,
                 r.validation_status,
@@ -437,7 +436,11 @@ def _raw_term_case(conn: sqlite3.Connection) -> tuple[str, str]:
                 EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id) AS self_indexed,
                 ({shares_indexed_key_expr}) AS shares_indexed_key,
                 MAX(EXISTS(SELECT 1 FROM idx_tier.sessions s WHERE s.raw_id = r.raw_id))
-                    OVER (PARTITION BY r.origin, {cohort_expr}) AS any_indexed
+                    OVER (PARTITION BY r.origin, {cohort_expr}) AS any_indexed,
+                ROW_NUMBER() OVER (
+                    PARTITION BY r.origin, {cohort_expr}
+                    ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                ) AS rn
             FROM raw_sessions r
             {blocked_join}
         )
@@ -481,11 +484,11 @@ def audit_source_conservation(
 ) -> SourceConservationReport:
     """Type every acquired source item and every index row; ``conn`` is the
     source tier with the index tier attached as ``idx_tier`` (read-only)."""
-    heads_cte, term_case = _raw_term_case(conn)
+    heads_cte, term_case = raw_term_case(conn)
     forward_total = int(conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0])
 
     typed_rows = conn.execute(
-        f"{heads_cte} SELECT raw_id, origin, source_path, blob_hash, artifact_kind, bytes_retained, blocker_reason, "
+        f"{heads_cte} SELECT raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, "
         f"{term_case} AS term FROM heads"
     ).fetchall()
 
@@ -493,7 +496,7 @@ def audit_source_conservation(
     samples: dict[str, list[str]] = {}
     breakdowns: dict[str, dict[str, int]] = {}
     missing_paths: dict[str, bool] = {}
-    for raw_id, origin, source_path, blob_hash, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
+    for raw_id, origin, source_path, artifact_kind, bytes_retained, blocker_reason, term in typed_rows:
         if probe_filesystem:
             present = missing_paths.get(source_path)
             if present is None:
@@ -501,11 +504,6 @@ def audit_source_conservation(
                 missing_paths[source_path] = present
             if not present:
                 term = _TERM_SOURCE_MISSING if bytes_retained else _TERM_SOURCE_LOST
-        # A parsed raw with no published payload cannot be replayed from the
-        # archive. Keep this classification independent of the optional source
-        # path probe so read-only audits still account for missing blobs.
-        if term == _TERM_UNEXPLAINED and (not bytes_retained or not _blob_exists(archive_root, blob_hash)):
-            term = _TERM_MISSING_BLOB
         counts[term] = counts.get(term, 0) + 1
         bucket = samples.setdefault(term, [])
         if len(bucket) < sample_limit:
@@ -733,7 +731,6 @@ def audit_source_conservation(
         _TERM_CENSUS_NON_SESSION,
         _TERM_UNCLASSIFIED_SHAPE,
         _TERM_PENDING,
-        _TERM_MISSING_BLOB,
         _TERM_AUTHORITY_BLOCKED,
         _TERM_QUARANTINED_COHORT,
         _TERM_UNEXPLAINED,
@@ -789,10 +786,35 @@ def audit_source_conservation(
 __all__ = [
     "ARTIFACT_IDENTITY_SUFFIXES",
     "FRAGMENT_IDENTITY_PREFIXES",
+    "TYPED_ABSENCE_TERMS",
     "ConservationTerm",
     "SourceConservationReport",
     "audit_source_conservation",
     "fragment_identity_shape",
     "logical_head_cohort_expr",
+    "raw_term_case",
+    "term_rule",
+    "typed_raw_cte",
     "valid_byte_duplicate_supersession_expr",
 ]
+
+
+#: Terms that name a durable state explaining why a head never materialized.
+#: A head carrying one of these is typed, whatever else is true of it: a check
+#: that reports it as having *no* typed state is reporting its own blind spot
+#: (polylogue-5tkbt). ``unclassified_shape`` is deliberately absent -- its rule
+#: says a classification is missing, which is untypedness, not an explanation.
+TYPED_ABSENCE_TERMS: frozenset[str] = frozenset(
+    {
+        _TERM_VALIDATION_REJECTED,
+        _TERM_NON_SESSION_ARTIFACT,
+        _TERM_DECODE_FAILED,
+        _TERM_AUTHORITY_BLOCKED,
+        _TERM_QUARANTINED_COHORT,
+    }
+)
+
+
+def term_rule(name: str) -> str:
+    """Return the declared rule that explains one term."""
+    return _RULES[name]

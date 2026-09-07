@@ -35,6 +35,7 @@ from polylogue.cli.read_view_registry import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
+from polylogue.surfaces.outcome import render_outcome_line
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -145,7 +146,12 @@ def _emit_idf_buckets(idf: dict[str, dict[str, float]], *, limit: int = _FACET_T
 
 
 def emit_facets_response(response: FacetsResponse, *, output_format: str | None) -> None:
-    """Emit a facets response in the shared terminal or JSON shape."""
+    """Emit a facets response, always carrying the outcome the operation decided.
+
+    Every facets caller terminates here, so a zero-row or gap-shaped facet view
+    always states which of the two it is -- in the envelope for machine output
+    and on its own line for the terminal.
+    """
 
     if output_format == "json":
         click.echo(json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
@@ -157,15 +163,17 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
         return status.label if status is not None and status.label else family.replace("_", " ").title()
 
     click.echo(f"Facets ({scope_label}) — matched result set:")
+    outcome_line = render_outcome_line(response.outcome)
+    if outcome_line is not None:
+        click.secho(f"  {outcome_line}", fg="yellow" if response.outcome.state != "empty" else None)
     if response.availability is not None:
         avail = response.availability
-        marker = {"ready": "ready", "degraded": "DEGRADED", "unavailable": "UNAVAILABLE"}[avail.state]
         budget = (
             f"; budget {avail.elapsed_s:.2f}s/{avail.deadline_s:.2f}s"
             if avail.elapsed_s is not None and avail.deadline_s is not None
             else ""
         )
-        click.echo(f"  readiness: {marker} (cost_class={avail.cost_class}{budget})")
+        click.echo(f"  readiness: cost_class={avail.cost_class}{budget}")
         if avail.detail:
             click.secho(f"  {avail.detail}", fg="yellow")
     click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")

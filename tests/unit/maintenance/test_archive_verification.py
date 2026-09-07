@@ -578,6 +578,50 @@ def test_raw_with_no_typed_refusal_and_no_session_is_untyped_gap(tmp_path: Path)
     assert check.evidence["orphan_count"] == 0
 
 
+def test_head_typed_by_another_ledger_is_not_reported_as_untyped(tmp_path: Path) -> None:
+    """polylogue-5tkbt: I1 read four columns and called everything else untyped.
+
+    A head with a durable schema rejection (``validation_status = 'failed'``)
+    has a typed reason for never materializing; the coverage check simply did
+    not look at that column, and reported the row as having no typed state at
+    all. It now asks the one ladder that types an acquired raw before calling
+    a head untyped, and names the class that explained it.
+
+    Anti-vacuity: drop the typed-elsewhere consultation and this head is untyped
+    again, turning the check red with an empty escape class.
+    """
+    _seed_coherent_archive(tmp_path)
+    source_conn = _connect(tmp_path / "source.db")
+    try:
+        source_conn.execute(
+            """
+            INSERT INTO raw_sessions(
+                raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms,
+                revision_authority, parsed_at_ms, validation_status
+            )
+            VALUES ('raw-schema-rejected', 'codex-session', 'rejected', '/rejected', ?, 10, 100,
+                    'byte_proven', 100, 'failed')
+            """,
+            (b"v" * 32,),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+
+    report = verify_archive(tmp_path, checks=("source-index-coverage", "convergence-freshness"))
+
+    check = _check(report, "source-index-coverage")
+    assert check.status is OutcomeStatus.OK
+    assert check.evidence["untyped_count"] == 0
+    assert check.evidence["untyped_sample"] == []
+    assert check.evidence["typed_elsewhere_count"] == 1
+    assert check.evidence["escape_class_counts"] == {"validation_rejected": 1}
+    assert "validation_status" in check.evidence["escape_class_rules"]["validation_rejected"]
+    assert check.evidence["unindexed_head_count"] == 1
+    # I6 shares the ladder, so the same head is not counted as backlog either.
+    assert _check(report, "convergence-freshness").evidence["unindexed_backlog_gap"] == 0
+
+
 def test_source_index_coverage_census_deletion_does_not_hide_raw_head(tmp_path: Path) -> None:
     """RED TWIN (polylogue-r4jiu): census removal cannot shrink I1's universe.
 

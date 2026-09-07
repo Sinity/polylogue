@@ -19,6 +19,7 @@ from polylogue.operations.authority import authority_for_reader
 from polylogue.storage.archive_identity import archive_file_set_root
 from polylogue.surfaces.action_affordances import ActionAffordancePayload
 from polylogue.surfaces.authority import AuthorityEnvelope
+from polylogue.surfaces.outcome import decide_outcome, lineage_page_outcome
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
@@ -679,6 +680,11 @@ def archive_messages_payload(
         lineage_complete=session.lineage_complete,
         lineage_truncation_reason=session.lineage_truncation_reason,
         authority=authority,
+        outcome=lineage_page_outcome(
+            matched=total,
+            complete=session.lineage_complete,
+            truncation_reason=session.lineage_truncation_reason,
+        ),
     )
 
 
@@ -773,6 +779,7 @@ def archive_message_page_payload(
         suggested_tail_offset=suggested_tail_offset,
         offset_note=offset_note,
         authority=authority_for_reader(archive, server_identity="direct", started_at=started_at),
+        outcome=decide_outcome(matched=total),
     )
 
 

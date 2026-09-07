@@ -1160,6 +1160,32 @@ components:
       - elapsed_ms
       title: AuthorityEnvelope
       type: object
+    OutcomeEnvelope:
+      additionalProperties: false
+      description: The terminal outcome of one operation, decided at the operation boundary.
+      properties:
+        state:
+          enum:
+          - ok
+          - empty
+          - degraded
+          - error
+          title: State
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Reason
+        detail:
+          additionalProperties: true
+          title: Detail
+          type: object
+      required:
+      - state
+      title: OutcomeEnvelope
+      type: object
     QueryMissDiagnosticsPayload:
       additionalProperties: false
       description: Shared diagnostics payload for zero-result queries.
@@ -1731,6 +1757,8 @@ components:
           - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnvelope'
       required:
       - hits
       - total
@@ -1738,6 +1766,7 @@ components:
       - offset
       - query
       - retrieval_lane
+      - outcome
       title: SearchEnvelope
       type: object
     SessionFlagsPayload:
@@ -1943,11 +1972,14 @@ components:
           - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnvelope'
       required:
       - items
       - total
       - limit
       - offset
+      - outcome
       title: SessionListResponse
       type: object
     ActionQueryRowPayload:
@@ -2934,6 +2966,8 @@ components:
           - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnvelope'
       required:
       - unit
       - query
@@ -2941,6 +2975,7 @@ components:
       - total
       - limit
       - offset
+      - outcome
       title: QueryUnitEnvelope
       type: object
     QueryUnitAggregateRowPayload:
@@ -3104,6 +3139,8 @@ components:
           - $ref: '#/components/schemas/AuthorityEnvelope'
           - type: 'null'
           default: null
+        outcome:
+          $ref: '#/components/schemas/OutcomeEnvelope'
       required:
       - unit
       - query
@@ -3111,6 +3148,7 @@ components:
       - total
       - limit
       - offset
+      - outcome
       title: QueryUnitAggregateEnvelope
       type: object
     SessionReadViewEnvelope:
