@@ -84,7 +84,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     apply_source_raw_state_update,
     upsert_raw_artifact,
 )
-from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, prepare_session_rows
+from polylogue.storage.sqlite.archive_tiers.write import PreparedRows, prepare_session_rows
 from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
 _LOGGER = _polylogue_logging.get_logger(__name__)
@@ -2506,7 +2506,7 @@ def backfill_historical_revision_evidence(
                 # cohort's own apply_raw_revision_replay() preamble. A GIL build
                 # (prepare_pool is None) leaves prepared_by_raw_id empty and this
                 # write falls back to building rows inline, unchanged.
-                prepared_by_raw_id: dict[str, PreparedSessionRows | Future[PreparedSessionRows]] = {}
+                prepared_by_raw_id: dict[str, PreparedRows | Future[PreparedRows]] = {}
                 if prepare_pool is not None:
                     position0_raw_id = plan.accepted_raw_ids[0]
                     prepared_by_raw_id[position0_raw_id] = prepare_pool.submit(

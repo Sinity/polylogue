@@ -35,12 +35,15 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from io import BytesIO
+from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.logging import get_logger
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
 logger = get_logger(__name__)
 
@@ -164,6 +167,53 @@ def live_parse_worker(
         return cache_key, None, exc
 
 
+@dataclass(frozen=True, slots=True)
+class LiveParsedEntry:
+    """What one prewarm pass produced for one file.
+
+    ``shard_path`` is a sealed shard holding the same sessions' message and
+    block rows (polylogue-bp12n.6), or ``None`` when the stage was not
+    building shards. The writer attaches it and copies; the sessions are
+    still required either way, for everything a shard does not carry.
+    """
+
+    sessions: list[ParsedSession]
+    shard_path: Path | None
+
+
+def live_parse_and_shard_worker(
+    cache_key: str,
+    provider_value: str,
+    payload: bytes,
+    source_path: str,
+    fallback_id: str,
+    *,
+    is_stream: bool,
+    shard_directory: str | None,
+) -> tuple[str, list[ParsedSession] | None, BaseException | None, str | None]:
+    """``live_parse_worker`` plus the shard its sessions' rows go into.
+
+    Building the shard here is the point of polylogue-bp12n.6: row
+    construction AND the per-row parameter binding both leave the writer
+    thread, and what the writer gets is a file it copies with one statement
+    per table. A shard build that fails leaves the parse result intact and
+    the shard absent -- the writer then binds rows itself, exactly as it does
+    for any other prefetch miss. ``shard_directory=None`` is that same
+    outcome by configuration rather than by failure.
+    """
+    key, sessions, error = live_parse_worker(
+        cache_key, provider_value, payload, source_path, fallback_id, is_stream=is_stream
+    )
+    if shard_directory is None or error is not None or not sessions:
+        return key, sessions, error, None
+    try:
+        shard = prepare_session_shard(Path(shard_directory), sessions)
+    except Exception:
+        logger.warning("live watcher parse-stage prefetch: shard build failed for %s", source_path, exc_info=True)
+        return key, sessions, None, None
+    return key, sessions, None, str(shard.path)
+
+
 class LiveParsePrefetchCache:
     """Thread-safe path-keyed cache of pre-parsed sessions, budgeted by payload bytes.
 
@@ -182,7 +232,7 @@ class LiveParsePrefetchCache:
     def __init__(self, *, max_inflight_bytes: int) -> None:
         self._max_inflight_bytes = max_inflight_bytes
         self._lock = threading.Lock()
-        self._entries: dict[str, tuple[list[ParsedSession], bytes]] = {}
+        self._entries: dict[str, tuple[list[ParsedSession], bytes, Path | None]] = {}
         self._inflight_bytes = 0
 
     def __len__(self) -> int:
@@ -193,7 +243,14 @@ class LiveParsePrefetchCache:
         with self._lock:
             return cache_key in self._entries
 
-    def try_admit(self, cache_key: str, sessions: list[ParsedSession], *, payload: bytes) -> bool:
+    def try_admit(
+        self,
+        cache_key: str,
+        sessions: list[ParsedSession],
+        *,
+        payload: bytes,
+        shard_path: Path | None = None,
+    ) -> bool:
         """Admit ``sessions`` unless already present or the budget is exceeded.
 
         A single entry is always admitted even alone over budget (mirrors
@@ -201,39 +258,59 @@ class LiveParsePrefetchCache:
         much accumulates across MANY entries, not the size of any one file;
         rejecting a lone oversized entry would just mean parsing it inline
         anyway, an unhelpful distinction for a one-file cache.
+
+        ``shard_path`` is the sealed shard the worker built for these same
+        sessions (polylogue-bp12n.6). A rejected admission deletes it: the
+        rows it carries are about to be rebuilt inline, and an orphan
+        scratch file that nothing will ever attach is pure residue.
         """
         payload_bytes = len(payload)
         with self._lock:
-            if cache_key in self._entries:
-                return False
-            if self._entries and self._inflight_bytes + payload_bytes > self._max_inflight_bytes:
-                return False
-            self._entries[cache_key] = (sessions, payload)
-            self._inflight_bytes += payload_bytes
-            return True
+            already_present = cache_key in self._entries
+            over_budget = bool(self._entries) and self._inflight_bytes + payload_bytes > self._max_inflight_bytes
+            admitted = not (already_present or over_budget)
+            if admitted:
+                self._entries[cache_key] = (sessions, payload, shard_path)
+                self._inflight_bytes += payload_bytes
+        if not admitted and shard_path is not None:
+            discard_session_shard(shard_path)
+        return admitted
 
-    def pop(self, cache_key: str, *, payload: bytes) -> list[ParsedSession] | None:
+    def pop(self, cache_key: str, *, payload: bytes) -> LiveParsedEntry | None:
         """Consume a cached entry, but only if it was parsed from ``payload`` exactly.
 
         Always removes the entry when present (win or mismatch) -- a stale
         entry for a path that has since changed on disk is never useful to a
         later lookup either, since the writer-held pass advances that path's
-        cursor past the version prewarm saw.
+        cursor past the version prewarm saw. A mismatch also deletes the
+        shard, whose rows describe bytes this archive is no longer writing.
         """
         with self._lock:
             entry = self._entries.pop(cache_key, None)
             if entry is None:
                 return None
-            sessions, cached_payload = entry
+            sessions, cached_payload, shard_path = entry
             self._inflight_bytes -= len(cached_payload)
-            if cached_payload != payload:
-                logger.warning(
-                    "live watcher parse-stage prefetch: cached parse for %s no longer matches "
-                    "on-disk bytes (file changed between prewarm and writer hold); reparsing inline",
-                    cache_key,
-                )
-                return None
-            return sessions
+        if cached_payload != payload:
+            logger.warning(
+                "live watcher parse-stage prefetch: cached parse for %s no longer matches "
+                "on-disk bytes (file changed between prewarm and writer hold); reparsing inline",
+                cache_key,
+            )
+            if shard_path is not None:
+                discard_session_shard(shard_path)
+            return None
+        return LiveParsedEntry(sessions=sessions, shard_path=shard_path)
+
+    def discard_all(self) -> None:
+        """Drop every entry and delete the shards they hold."""
+        with self._lock:
+            entries = list(self._entries.values())
+            self._entries.clear()
+            self._inflight_bytes = 0
+        for _sessions, _payload, shard_path in entries:
+            if shard_path is not None:
+                discard_session_shard(shard_path)
 
 
 class LiveParseStage:
@@ -252,7 +329,20 @@ class LiveParseStage:
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
         warm_timeout_seconds: float | None = None,
+        shard_directory: Path | None = None,
     ) -> None:
+        # polylogue-bp12n.6. Where a worker's sealed shard goes, or ``None``
+        # to keep row binding on the writer thread. The stage owns the
+        # directory's contents: a shard lives from the worker that sealed it
+        # to the writer that copied it, and nothing outlives ``shutdown``.
+        self._shard_directory = shard_directory
+        if shard_directory is not None:
+            shard_directory.mkdir(parents=True, exist_ok=True)
+            # Anything already here belongs to a process that died before it
+            # could copy or delete it. The archive has one writer, so there
+            # is no other owner to consult.
+            for residue in shard_directory.glob("shard-*"):
+                discard_session_shard(residue)
         self._executor = ThreadPoolExecutor(
             max_workers=max_workers if max_workers is not None else live_watcher_parse_stage_worker_count(),
             thread_name_prefix="polylogue-live-parse-stage",
@@ -278,15 +368,17 @@ class LiveParseStage:
         pending = [candidate for candidate in candidates if not self.cache.contains(candidate.cache_key)]
         if not pending:
             return 0
+        shard_directory = None if self._shard_directory is None else str(self._shard_directory)
         futures = {
             self._executor.submit(
-                live_parse_worker,
+                live_parse_and_shard_worker,
                 candidate.cache_key,
                 candidate.provider.value,
                 candidate.payload,
                 candidate.source_path,
                 candidate.fallback_id,
                 is_stream=candidate.is_stream,
+                shard_directory=shard_directory,
             ): candidate
             for candidate in pending
         }
@@ -297,7 +389,7 @@ class LiveParseStage:
                 completed += 1
                 candidate = futures[future]
                 try:
-                    cache_key, sessions, error = future.result()
+                    result = future.result()
                 except Exception:
                     logger.warning(
                         "live watcher parse-stage prefetch: worker failed for %s",
@@ -305,12 +397,16 @@ class LiveParseStage:
                         exc_info=True,
                     )
                     continue
+                cache_key, sessions, error, shard_name = result
+                shard_path = None if shard_name is None else Path(shard_name)
                 if error is not None or sessions is None:
                     # Parse failures are intentionally NOT cached: the
                     # writer-held pass reparses (and correctly records) this
                     # file exactly as it would with no prewarm at all.
+                    if shard_path is not None:
+                        discard_session_shard(shard_path)
                     continue
-                if self.cache.try_admit(cache_key, sessions, payload=candidate.payload):
+                if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
                     warmed += 1
         except TimeoutError:
             pending_count = len(futures) - completed
@@ -324,13 +420,22 @@ class LiveParseStage:
         return warmed
 
     def shutdown(self) -> None:
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        # Wait for workers that already entered shard construction before
+        # removing the directory's residue; otherwise a late worker could
+        # seal a shard after cleanup and leave an unattached file behind.
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self.cache.discard_all()
+        if self._shard_directory is not None:
+            for residue in self._shard_directory.glob("shard-*"):
+                discard_session_shard(residue)
 
 
 __all__ = [
     "LiveParseCandidate",
     "LiveParsePrefetchCache",
     "LiveParseStage",
+    "LiveParsedEntry",
+    "live_parse_and_shard_worker",
     "live_parse_worker",
     "live_watcher_parse_stage_max_inflight_bytes",
     "live_watcher_parse_stage_warm_timeout_seconds",
