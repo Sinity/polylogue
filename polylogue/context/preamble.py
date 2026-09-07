@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.analysis.lineage_graph import CompactLineageGraph, LineageEdgeRole, LineageNodeRole
 from polylogue.context.scheduler import ContextAssembly, ContextItem, record_context_ledger, schedule_context
 from polylogue.core.assertions import derive_assertion_context_trust
 from polylogue.core.errors import DatabaseError
@@ -172,12 +173,13 @@ async def build_context_preamble_payload(
     lineage: ContextPreambleLineage | None = None
     if session_id:
         try:
-            topology = await polylogue.get_session_topology(session_id)  # type: ignore[attr-defined]
-            if topology:
-                lineage = ContextPreambleLineage(
-                    logical_session_root=getattr(topology, "logical_session_id", None),
-                    parent_session_id=getattr(topology, "parent_session_id", None),
-                )
+            # The compact relation (polylogue-4ts.9) carries the seed-relative
+            # roles this section needs and hydrates no transcript.
+            graph = await polylogue.compact_lineage(  # type: ignore[attr-defined]
+                session_id, node_limit=None, edge_limit=None, include_accounting=False
+            )
+            if graph:
+                lineage = _preamble_lineage(graph)
         except Exception as exc:
             component_failures["session_lineage"] = f"{type(exc).__name__}: {exc}"
             logger.warning("context preamble: session lineage lookup failed for %s: %s", session_id, exc)
@@ -354,3 +356,24 @@ def compose_context_preamble(env: AppEnv, *, session_id: str, related_limit: int
         env.ui.error(f"Session not found: {session_id}")
         raise SystemExit(1)
     return json.dumps(preamble.model_dump(mode="json", exclude_none=True), indent=2, default=str)
+
+
+def _preamble_lineage(graph: CompactLineageGraph) -> ContextPreambleLineage:
+    """Project the compact lineage graph into the preamble's lineage section."""
+
+    nodes = graph.nodes
+    edges = graph.edges
+    parent_id = next(
+        (
+            str(edge.parent_id)
+            for edge in edges
+            if edge.role is LineageEdgeRole.SEED_PARENT and edge.parent_id is not None
+        ),
+        None,
+    )
+    return ContextPreambleLineage(
+        logical_session_root=str(graph.root_id),
+        parent_session_id=parent_id,
+        sibling_session_ids=[str(node.session_id) for node in nodes if node.role is LineageNodeRole.SIBLING],
+        continuation_chain_depth=sum(1 for node in nodes if node.role is LineageNodeRole.ANCESTOR),
+    )

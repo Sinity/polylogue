@@ -587,8 +587,8 @@ paths:
       summary: Execute a session read-view
       description: Executes one supported single-session read profile and returns the stable ``SessionReadViewEnvelope``.
         Supported profiles currently include ``messages``, ``raw``, ``context``, ``context-image``, ``neighbors``, ``correlation``,
-        ``effective_context``. The envelope shape is stable; individual ``payload`` content is the shared DTO for the selected
-        read profile.
+        ``effective_context``, ``lineage``. The envelope shape is stable; individual ``payload`` content is the shared DTO
+        for the selected read profile.
       operationId: readSessionView
       security:
       - machineBearer: []
@@ -614,6 +614,7 @@ paths:
           - neighbors
           - correlation
           - effective_context
+          - lineage
           default: messages
       - name: format
         in: query
@@ -702,6 +703,30 @@ paths:
         in: query
         required: false
         description: 'Read-view option advertised by /api/read-view-profiles: at_position.'
+        schema:
+          type: string
+      - name: node_offset
+        in: query
+        required: false
+        description: 'Read-view option advertised by /api/read-view-profiles: node_offset.'
+        schema:
+          type: string
+      - name: node_limit
+        in: query
+        required: false
+        description: 'Read-view option advertised by /api/read-view-profiles: node_limit.'
+        schema:
+          type: string
+      - name: edge_offset
+        in: query
+        required: false
+        description: 'Read-view option advertised by /api/read-view-profiles: edge_offset.'
+        schema:
+          type: string
+      - name: edge_limit
+        in: query
+        required: false
+        description: 'Read-view option advertised by /api/read-view-profiles: edge_limit.'
         schema:
           type: string
       responses:

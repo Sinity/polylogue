@@ -71,6 +71,7 @@ from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsa
 from polylogue.analysis.confidence import ConfidenceBand
 from polylogue.analysis.confidence import from_score as confidence_from_score
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
+from polylogue.analysis.lineage_graph import CompactLineageGraph
 from polylogue.analysis.objective_posture import structural_objective_posture
 from polylogue.analysis.readiness import (
     InsightOriginCoverage,
@@ -2080,6 +2081,34 @@ class ArchiveStore:
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
         return read_archive_session_envelope(self._conn, session_id)
+
+    def read_compact_lineage(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int | None = None,
+        edge_offset: int = 0,
+        edge_limit: int | None = None,
+        include_accounting: bool = True,
+    ) -> CompactLineageGraph | None:
+        """Read the seed-relative compact lineage graph (polylogue-4ts.9).
+
+        Reads ``sessions``, ``session_links`` and message counts only, so a
+        large family costs indexed reads rather than a transcript hydration.
+        A ``None`` limit is an unbounded window.
+        """
+        from polylogue.storage.derived.lineage.compact import derive_compact_lineage
+
+        return derive_compact_lineage(
+            self._conn,
+            session_id,
+            node_offset=node_offset,
+            node_limit=node_limit,
+            edge_offset=edge_offset,
+            edge_limit=edge_limit,
+            include_accounting=include_accounting,
+        )
 
     def read_session_page(self, session_id: str, *, limit: int, offset: int) -> ArchiveSessionEnvelope:
         """Read a bounded ``[offset, offset + limit)`` page of a session's transcript.

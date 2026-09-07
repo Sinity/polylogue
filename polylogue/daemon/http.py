@@ -4687,6 +4687,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 return {"session_id": conv_id, "messages": messages}
 
             payload = self._sync_run(_get_effective)
+        elif view == "lineage":
+            if output_format != "json":
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+                return
+
+            async def _get_lineage(poly: Polylogue) -> object | None:
+                from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
+
+                graph = await poly.compact_lineage(
+                    conv_id,
+                    node_offset=max(0, self._get_int(params, "node_offset", 0)),
+                    node_limit=self._get_int(params, "node_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                    edge_offset=max(0, self._get_int(params, "edge_offset", 0)),
+                    edge_limit=self._get_int(params, "edge_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                )
+                return None if graph is None else graph.model_dump(mode="json")
+
+            payload = self._sync_run(_get_lineage)
         else:
 
             async def _get(poly: Polylogue) -> object | None:
