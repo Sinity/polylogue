@@ -267,8 +267,8 @@ def test_an_acknowledged_receipt_does_not_count_as_a_restored_copy(tmp_path: Pat
         plan, context=context, hook_spool_root=hooks_root, browser_capture_spool=capture_spool, dry_run=False
     )
 
-    assert result.outcome is MemberOutcome.RESTORED
-    restored = Path(result.detail)
+    assert result.outcome is RestorationOutcome.RESTORED
+    restored = Path(result.spool_path)
     assert restored.is_relative_to(hooks_root / "pending")
     assert read_hook_spool_record(restored) == read_hook_spool_record(receipt / "acknowledged-only.json")
     assert (receipt / "acknowledged-only.json").is_file()
