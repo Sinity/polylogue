@@ -140,6 +140,30 @@ def test_daemon_workload_probe_reports_attempts_and_plan_shape(tmp_path: Path) -
     assert any("blocks" in item for item in fts_plan["plan"])
 
 
+def test_failed_readiness_read_is_reported_unchecked_not_ready(tmp_path: Path) -> None:
+    """polylogue-uuf2g: a failed count came back as 0 and readiness compared 0
+    to 0 and said ready, under ``checked: true``.
+
+    Dropping ``session_profiles`` from the index tier makes the profile
+    reconciliation counts unanswerable. The probe must report the derived
+    readiness as unchecked with the sqlite reason, not a green ``ready`` block.
+
+    Anti-vacuity: restore the ``except sqlite3.Error: return 0`` in
+    ``_scalar_int`` and this reports ``checked: True`` with
+    ``profile_rows_ready: True``.
+    """
+    db = tmp_path / "archive.sqlite"
+    _seed_minimal_archive(db, tmp_path / "session.jsonl")
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute("DROP TABLE session_profiles")
+
+    readiness = probe(db)["archive_tiers"]["derived_readiness"]
+
+    assert readiness["checked"] is False
+    assert "session_profiles" in str(readiness["reason"])
+    assert readiness["ready"] == {}
+
+
 def test_daemon_workload_probe_reports_blob_reference_debt(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

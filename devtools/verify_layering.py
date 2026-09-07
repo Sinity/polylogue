@@ -28,6 +28,7 @@ from pathlib import Path
 from devtools import repo_root as _get_root
 from devtools.manifest_models import validate_layering_manifest
 from devtools.required_gate import evidence_gate_result
+from devtools.sqlite_degradation import census_sqlite_degradation_sites, load_sqlite_degradation_baseline
 from polylogue.core.json import dumps
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 
@@ -724,6 +725,47 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
     return violations
 
 
+def _sqlite_degradation_findings(
+    repo_root: Path, manifest: dict[str, object]
+) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
+    """Return (violations, ratchet-down opportunities) for improvised sqlite policy.
+
+    A file may carry fewer ``except sqlite3`` handlers than the baseline
+    records, never more, and a file the baseline does not name may carry none.
+    Growth is therefore only possible by editing the baseline, which is the
+    thing review looks at.
+    """
+    policy = manifest.get("sqlite_degradation")
+    if not isinstance(policy, dict):
+        return [], []
+    baseline_ref = policy.get("baseline")
+    raw_roots = policy.get("roots")
+    if not isinstance(baseline_ref, str) or not isinstance(raw_roots, list):
+        return [], []
+    roots = tuple(str(root) for root in raw_roots)
+    baseline = load_sqlite_degradation_baseline(repo_root / baseline_ref)
+    observed = census_sqlite_degradation_sites(repo_root, roots)
+
+    violations: list[dict[str, object]] = []
+    for file_rel, count in sorted(observed.items()):
+        allowed = baseline.get(file_rel, 0)
+        if count > allowed:
+            violations.append(
+                {
+                    "file": file_rel,
+                    "rule": "sqlite_degradation_sites_grew",
+                    "observed": count,
+                    "baseline": allowed,
+                }
+            )
+    shrunk: list[dict[str, object]] = [
+        {"file": file_rel, "observed": observed.get(file_rel, 0), "baseline": allowed}
+        for file_rel, allowed in sorted(baseline.items())
+        if observed.get(file_rel, 0) < allowed
+    ]
+    return violations, shrunk
+
+
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
     if rule in {"declared_root_missing", "declared_root_unreadable"}:
@@ -732,6 +774,11 @@ def _format_violation(violation: dict[str, object]) -> str:
     if rule.startswith("package_docstring_"):
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
+    if rule == "sqlite_degradation_sites_grew":
+        return (
+            f"  {violation['file']}: {rule} observed={violation['observed']} baseline={violation['baseline']}"
+            " (classify absence at the storage seam: polylogue.storage.tier_access + polylogue.core.evidence)"
+        )
     if rule.startswith("writer_module_"):
         detail = ""
         if "entrypoint" in violation:
@@ -883,6 +930,8 @@ def main(argv: list[str] | None = None) -> int:
 
     violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
     violations.extend(_top_level_package_docstring_violations(repo_root))
+    sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(repo_root, manifest)
+    violations.extend(sqlite_violations)
 
     baseline_refs: set[str] = set()
     for rule in rules:
@@ -918,6 +967,7 @@ def main(argv: list[str] | None = None) -> int:
                     "count": len(violations),
                     "baselined_count": len(baselined),
                     "stale_baseline_count": stale_baseline_count,
+                    "sqlite_degradation_shrunk": sqlite_shrunk,
                     "required_gate": gate.to_payload(),
                 }
             )
@@ -933,6 +983,11 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"  {stale_baseline_count} baseline entr(y/ies) no longer reproduce -- prune them from the "
                 "baseline file to ratchet the count down"
+            )
+        for entry in sqlite_shrunk:
+            print(
+                f"  {entry['file']}: {entry['observed']} improvised sqlite handler(s), baseline allows "
+                f"{entry['baseline']} -- lower the baseline entry to hold the ground"
             )
     return 1 if violations or not gate.ok else 0
 

@@ -84,6 +84,20 @@ class TwinWriteContract(BaseModel):
     reason: str
 
 
+class SqliteDegradationPolicy(BaseModel):
+    """Ratchet on hand-written ``except sqlite3`` degradation policy.
+
+    Absence and degradation are classified once at the storage seam
+    (``polylogue.storage.tier_access``) and carried as
+    ``polylogue.core.evidence``. ``baseline`` records the per-file count of
+    sites still improvising their own policy; it may shrink, never grow.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    baseline: str
+    roots: list[str] = Field(min_length=1)
+
+
 class WriterModulePolicy(BaseModel):
     """Production writer-module inventory and its interruption doctrine."""
 
@@ -99,6 +113,7 @@ class LayeringManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     writer_modules: WriterModulePolicy | None = None
+    sqlite_degradation: SqliteDegradationPolicy | None = None
     rules: list[LayeringRule]
 
 
