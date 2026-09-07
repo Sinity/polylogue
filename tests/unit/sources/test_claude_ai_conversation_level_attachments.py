@@ -18,6 +18,7 @@ from typing import Any
 
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 _TIMESTAMP = "2026-01-01T00:00:00Z"
 
@@ -43,7 +44,7 @@ def _conversation(*, message_files: list[dict[str, Any]], conversation_files: li
 def _write(root: Path, payload: dict[str, Any]) -> tuple[int, int]:
     """Write the parsed conversation and return (attachment rows, ref rows)."""
     with ArchiveStore(root) as archive:
-        archive.write_parsed(parse_ai(payload, "fallback"))
+        write_index_session(archive, parse_ai(payload, "fallback"))
     conn = sqlite3.connect(root / "index.db")
     try:
         return (

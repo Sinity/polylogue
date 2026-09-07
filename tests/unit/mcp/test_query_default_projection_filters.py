@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
@@ -32,7 +33,8 @@ def _seed_two_origin_sessions(archive_root: Path) -> None:
 
     with ArchiveStore(archive_root) as archive:
         for provider, native_id in ((Provider.CLAUDE_CODE, "cc-1"), (Provider.CHATGPT, "gpt-1")):
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=provider,
                     provider_session_id=native_id,
@@ -45,7 +47,7 @@ def _seed_two_origin_sessions(archive_root: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="origin filter probe message")],
                         )
                     ],
-                )
+                ),
             )
 
 

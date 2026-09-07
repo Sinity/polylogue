@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.query_objects import QueryObject, put_query
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed_archive(archive_root: Path) -> None:
@@ -40,7 +41,8 @@ def _seed_archive(archive_root: Path) -> None:
             (Provider.CODEX, "codex-1", "codex session"),
             (Provider.CLAUDE_CODE, "claude-1", "claude session"),
         ):
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=provider,
                     provider_session_id=native_id,
@@ -56,7 +58,7 @@ def _seed_archive(archive_root: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
                         )
                     ],
-                )
+                ),
             )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
     initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
@@ -105,7 +107,8 @@ def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) ->
     with ArchiveStore(archive_root) as archive:
         for i in range(session_count):
             native_id = f"codex-{i:03d}"
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CODEX,
                     provider_session_id=native_id,
@@ -121,7 +124,7 @@ def test_evaluate_does_not_truncate_at_the_default_page_limit(tmp_path: Path) ->
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
                         )
                     ],
-                )
+                ),
             )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
 

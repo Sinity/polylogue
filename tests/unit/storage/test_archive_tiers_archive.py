@@ -46,6 +46,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
 )
 from polylogue.surfaces.payloads import ActionQueryRowPayload
 from tests.infra.identity import archive_message_id
+from tests.infra.live_ingest import write_index_session
 from tests.infra.workload_artifacts import build_seeded_archive
 
 
@@ -162,7 +163,7 @@ def test_active_archive_root_facade_writes_reads_and_searches_archive_db(tmp_pat
 
     with ArchiveStore(tmp_path / "archive") as facade:
         assert (tmp_path / "archive" / "index.db").exists()
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         envelope = facade.read_session(session_id)
         matching_blocks = facade.search_blocks("needle")
 
@@ -200,7 +201,7 @@ def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path
     )
     hook_event_id = "pinned-hook-event"
     with ArchiveStore.open_existing(root, read_only=False) as archive:
-        session_id = archive.write_parsed(session)
+        session_id = write_index_session(archive, session)
         archive.add_user_tags((session_id,), ("pinned",))
         archive.write_hook_event(
             provider=Provider.CODEX,
@@ -293,8 +294,8 @@ def test_archive_tiers_archive_facade_sorts_search_matches(tmp_path: Path) -> No
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        short_id = facade.write_parsed(short)
-        long_id = facade.write_parsed(long)
+        short_id = write_index_session(facade, short)
+        long_id = write_index_session(facade, long)
 
     with ArchiveStore.open_existing(root) as facade:
         by_messages = facade.search_summaries("needle", limit=5, sort="messages")
@@ -336,7 +337,7 @@ def test_archive_tiers_archive_facade_queries_session_actions_by_session_index(t
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
@@ -435,7 +436,7 @@ def test_archive_facade_exposes_distinct_action_result_states(tmp_path: Path) ->
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
@@ -515,7 +516,7 @@ def test_archive_action_relation_distinguishes_empty_payload_from_absent_linkage
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         rows = facade.query_session_actions([session_id], limit=10)
@@ -591,7 +592,7 @@ def test_session_action_occurrences_pair_repeated_ids_by_rank_and_page_after_pai
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         all_rows = facade.query_session_action_occurrences([session_id], limit=10)
@@ -797,8 +798,8 @@ def test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan(
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="acknowledged, continuing now")],
                     )
                 )
-            session_id = facade.write_parsed(
-                ParsedSession(source_name=Provider.CODEX, provider_session_id=f"sess-{i}", messages=messages)
+            session_id = write_index_session(
+                facade, ParsedSession(source_name=Provider.CODEX, provider_session_id=f"sess-{i}", messages=messages)
             )
             if i == 5:
                 target_id = session_id
@@ -875,7 +876,8 @@ def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts
     assert receipt.budget_results[0].verdict is BudgetVerdict.PASS
 
 
-def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) -> None:
+def test_archive_facade_raw_admission_governs_parsed_write(tmp_path: Path) -> None:
+    """Public parsed writes retain admitted raw evidence and its authority."""
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="codex-archive-raw-1",
@@ -911,11 +913,14 @@ def test_archive_tiers_archive_facade_links_raw_and_parsed_rows(tmp_path: Path) 
     source_conn.row_factory = sqlite3.Row
     try:
         raw = source_conn.execute(
-            "SELECT native_id, source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+            "SELECT native_id, source_path, revision_kind, revision_authority FROM raw_sessions WHERE raw_id = ?",
+            (raw_id,),
         ).fetchone()
         assert dict(raw) == {
             "native_id": "codex-archive-raw-1",
             "source_path": "/tmp/codex-session.jsonl",
+            "revision_kind": "full",
+            "revision_authority": "asserted",
         }
         assert source_conn.execute("PRAGMA foreign_key_check").fetchall() == []
     finally:
@@ -1614,7 +1619,7 @@ def test_archive_tiers_archive_facade_adds_user_tags(tmp_path: Path) -> None:
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         changed = facade.add_user_tags(
             (session_id,),
             ("Review", "ready"),
@@ -1669,7 +1674,7 @@ def test_archive_tiers_archive_facade_deletes_archive_sessions_but_keeps_user_ta
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         facade.add_user_tags((session_id,), ("keep-user-state",))
         deleted = facade.delete_sessions((session_id,))
         remaining = facade.count_sessions()
@@ -1705,7 +1710,7 @@ def test_archive_tiers_archive_facade_sets_user_metadata(tmp_path: Path) -> None
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         changed = facade.set_user_metadata((session_id,), (("priority", "high"), ("status", "reviewed")))
         unchanged = facade.set_user_metadata((session_id,), (("priority", "high"),))
         metadata = facade.read_user_metadata(session_id)
@@ -1751,7 +1756,7 @@ def test_archive_tiers_archive_facade_preserves_metadata_json_type_changes(tmp_p
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         assert facade.set_user_metadata((session_id,), (("ambiguous", True),)) == 1
         assert facade.set_user_metadata((session_id,), (("ambiguous", 1),)) == 1
         assert facade.read_user_metadata(session_id) == {"ambiguous": 1}
@@ -1807,8 +1812,8 @@ def test_archive_tiers_archive_facade_lists_and_searches_session_summaries(tmp_p
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        first_id = facade.write_parsed(first)
-        second_id = facade.write_parsed(second)
+        first_id = write_index_session(facade, first)
+        second_id = write_index_session(facade, second)
         conn = facade._conn
         facade.add_user_tags((first_id,), ("archive",))
         conn.execute(
@@ -1996,7 +2001,7 @@ def test_archive_tiers_archive_facade_resolves_exact_and_prefix_session_ids(tmp_
     root = tmp_path / "archive"
 
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         assert facade.resolve_session_id(session_id) == session_id
@@ -2047,8 +2052,8 @@ def test_archive_tiers_archive_facade_exact_bare_native_id_not_shadowed_by_prefi
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        short_id = facade.write_parsed(short)
-        long_id = facade.write_parsed(long)
+        short_id = write_index_session(facade, short)
+        long_id = write_index_session(facade, long)
 
     with ArchiveStore.open_existing(root) as facade:
         assert facade.resolve_session_id("dup") == short_id
@@ -2120,10 +2125,10 @@ def test_archive_tiers_archive_facade_filters_since_session_scope(tmp_path: Path
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        anchor_id = facade.write_parsed(anchor)
-        later_same_id = facade.write_parsed(later_same_scope)
-        facade.write_parsed(later_other_scope)
-        facade.write_parsed(earlier_same_scope)
+        anchor_id = write_index_session(facade, anchor)
+        later_same_id = write_index_session(facade, later_same_scope)
+        write_index_session(facade, later_other_scope)
+        write_index_session(facade, earlier_same_scope)
 
     with ArchiveStore.open_existing(root) as facade:
         assert facade.count_sessions(since_session_id=anchor_id) == 1
@@ -2160,7 +2165,7 @@ def test_archive_coverage_averages_render_none_not_zero_over_empty_denominator(t
 
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        facade.write_parsed(all_assistant_session)
+        write_index_session(facade, all_assistant_session)
 
     with ArchiveStore.open_existing(root) as facade:
         origin_rows = facade.list_archive_coverage_insights(group_by="origin")
@@ -2209,7 +2214,7 @@ def test_archive_coverage_origin_group_includes_model_usage_cost(tmp_path: Path)
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        session_id = facade.write_parsed(session)
+        session_id = write_index_session(facade, session)
         facade._conn.execute(
             "UPDATE session_model_usage SET catalog_cost_usd = ? WHERE session_id = ?",
             (1.25, session_id),
@@ -2248,7 +2253,7 @@ def test_list_archive_debt_insights_correct_while_main_connection_holds_transact
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        facade.write_parsed(session)
+        write_index_session(facade, session)
 
     with ArchiveStore.open_existing(root) as facade:
         facade._conn.execute("BEGIN")
@@ -2305,8 +2310,8 @@ def test_root_filter_partitions_top_level_and_subagent_sessions(tmp_path: Path) 
     )
     root = tmp_path / "archive"
     with ArchiveStore(root) as facade:
-        parent_id = facade.write_parsed(parent)
-        child_id = facade.write_parsed(child)
+        parent_id = write_index_session(facade, parent)
+        child_id = write_index_session(facade, child)
         facade._conn.execute(
             "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
             (parent_id, child_id),

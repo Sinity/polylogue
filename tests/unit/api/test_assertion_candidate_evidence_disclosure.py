@@ -20,11 +20,13 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from polylogue.surfaces.payloads import PublicRefResolutionPayload
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed_candidate(root: Path) -> tuple[str, str]:
     with ArchiveStore(root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="evidence-review",
@@ -43,7 +45,7 @@ def _seed_candidate(root: Path) -> tuple[str, str]:
                         ],
                     )
                 ],
-            )
+            ),
         )
     evidence_refs = (
         f"session:{session_id}",

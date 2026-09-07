@@ -20,6 +20,7 @@ from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import LineageCompleteness
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.identity import archive_message_id
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 _SESSION_ID = "codex-session:native-1"
@@ -68,7 +69,8 @@ async def test_read_messages_matches_python_api_positional_order(
 ) -> None:
     root = tmp_path
     with ArchiveStore(root) as store:
-        session_id = store.write_parsed(
+        session_id = write_index_session(
+            store,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="order-parity",
@@ -83,7 +85,7 @@ async def test_read_messages_matches_python_api_positional_order(
                     )
                     for position in range(6)
                 ],
-            )
+            ),
         )
 
     archive = Polylogue(archive_root=root, db_path=root / "index.db")

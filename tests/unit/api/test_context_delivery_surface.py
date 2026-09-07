@@ -27,11 +27,13 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive:
-        archive.write_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=provider_session_id,
@@ -46,7 +48,7 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
-            )
+            ),
         )
 
 

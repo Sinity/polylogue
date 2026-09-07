@@ -36,6 +36,7 @@ from polylogue.storage.sqlite.archive_tiers.source import SOURCE_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from tests.infra.frozen_clock import FrozenClock
+from tests.infra.live_ingest import write_index_session
 
 
 def _resolved_config(**overrides: object) -> Any:
@@ -2768,7 +2769,8 @@ def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
 
     archive_root = tmp_path
     with ArchiveStore(archive_root) as archive:
-        archive.write_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="daemon-heartbeat-v1",
@@ -2780,7 +2782,7 @@ def test_daemon_cli_heartbeat_counts_archive(tmp_path: Path) -> None:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="heartbeat v1")],
                     )
                 ],
-            )
+            ),
         )
 
     assert daemon_cli._heartbeat_counts(archive_root / "index.db") == (1, 1, "sessions")

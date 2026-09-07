@@ -2966,9 +2966,8 @@ def _union_with_existing_rows(
     rows unchanged (ordinary replace, exactly as before this change) with no
     field union and no reinjection. Union only fires when both are known and
     differ -- proven different acquisitions. When either side is unknown
-    (`None` -- e.g. a caller that writes directly via `ArchiveStore.
-    write_parsed()`, used by demo seeding and unit tests, never threads a
-    raw_id through), there is no positive evidence of a different
+    (`None` -- e.g. an index-only fixture writer that never threads a raw_id
+    through), there is no positive evidence of a different
     acquisition, so this also falls back to plain replace rather than
     guessing; approximating "unknown" as "different" would let a corrected
     re-parse's retraction be silently defeated by union whenever a caller

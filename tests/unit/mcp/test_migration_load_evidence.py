@@ -25,6 +25,8 @@ from typing import Any, cast
 
 import pytest
 
+from tests.infra.live_ingest import write_index_session
+
 # These tests exercise the incident-scale query response and cancellation
 # paths. Keep them in the isolated lane so their large transient payloads do
 # not contend with ordinary selected tests.
@@ -59,7 +61,8 @@ def _seed_archive(
 
     with ArchiveStore(archive_root) as archive:
         return tuple(
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id=f"mcp-load-{index:03d}",
@@ -78,7 +81,7 @@ def _seed_archive(
                             ],
                         )
                     ],
-                )
+                ),
             )
             for index in range(count)
         )

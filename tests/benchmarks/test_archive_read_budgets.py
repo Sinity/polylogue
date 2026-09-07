@@ -15,6 +15,7 @@ import pytest
 
 from polylogue.api import Polylogue
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
 pytestmark = [
@@ -48,7 +49,7 @@ def _seed_archive(
                     text=f"Message {j} in session {i}",
                 )
             parsed = _record_to_parsed_session(builder.conv, builder.messages, builder.attachments)
-            archive.write_parsed(parsed)
+            write_index_session(archive, parsed)
             ids.append(builder.native_session_id())
     return ids
 

@@ -23,6 +23,7 @@ import pytest
 from pydantic import BaseModel
 
 from polylogue.mcp.declarations.registry import MCP_TOOL_DECLARATIONS
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, EXPECTED_TOOL_NAMES, MCPServerUnderTest
 
 # ---------------------------------------------------------------------------
@@ -501,7 +502,8 @@ class TestNativeReadSurfaceHonorsContract:
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
         with ArchiveStore(archive_root) as archive:
-            return archive.write_parsed(
+            return write_index_session(
+                archive,
                 ParsedSession(
                     source_name=Provider.CHATGPT,
                     provider_session_id="native-contract",
@@ -514,7 +516,7 @@ class TestNativeReadSurfaceHonorsContract:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle contract evidence")],
                         )
                     ],
-                )
+                ),
             )
 
     @pytest.mark.parametrize(

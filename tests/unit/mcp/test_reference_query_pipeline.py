@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.holdout_cohorts import mark_holdout
 from polylogue.storage.sqlite.query_objects import QueryObject, put_query, put_result_set
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 from tests.unit.mcp.test_contract_evidence import _seeded_runtime_services
 
@@ -39,7 +40,8 @@ def _seed_archive(archive_root: Path) -> None:
             (Provider.CODEX, "codex-1", "codex session"),
             (Provider.CLAUDE_CODE, "claude-1", "claude session"),
         ):
-            archive.write_parsed(
+            write_index_session(
+                archive,
                 ParsedSession(
                     source_name=provider,
                     provider_session_id=native_id,
@@ -55,7 +57,7 @@ def _seed_archive(archive_root: Path) -> None:
                             blocks=[ParsedContentBlock(type=BlockType.TEXT, text="hello")],
                         )
                     ],
-                )
+                ),
             )
     initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
     initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)

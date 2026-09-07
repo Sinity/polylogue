@@ -44,6 +44,7 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from tests.infra.live_ingest import write_index_session
 
 _INITIAL_TEXT = "Initial authored archive prose that is long enough for an embedding vector."
 _CHANGED_TEXT = "Changed authored archive prose that keeps the same identity and message count."
@@ -101,7 +102,8 @@ def _materialization_uses_freshness_baseline_recipe(monkeypatch: pytest.MonkeyPa
 
 def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
     with ArchiveStore(root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=native_id,
@@ -114,7 +116,7 @@ def _write_archive_session(root: Path, *, native_id: str, text: str) -> str:
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
 

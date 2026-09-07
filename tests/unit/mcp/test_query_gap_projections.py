@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import build_tools, installed_runtime_services, invoke_surface_async
 
 
@@ -28,7 +29,8 @@ def _seed_archive(archive_root: Path) -> str:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore(archive_root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="query-gap-contract",
@@ -41,7 +43,7 @@ def _seed_archive(archive_root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle query gap evidence")],
                     )
                 ],
-            )
+            ),
         )
 
 
@@ -97,7 +99,7 @@ def _seed_repo_filtered_archive(archive_root: Path) -> str:
         ),
     )
     with ArchiveStore(archive_root) as archive:
-        session_ids = [archive.write_parsed(session) for session in sessions]
+        session_ids = [write_index_session(archive, session) for session in sessions]
         for session_id in session_ids:
             archive._conn.execute(
                 """
@@ -221,7 +223,7 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
         ),
     )
     with ArchiveStore(archive_root) as archive:
-        session_ids = [archive.write_parsed(session) for session in sessions]
+        session_ids = [write_index_session(archive, session) for session in sessions]
         archive.add_user_tags((session_ids[0],), ("episode-filter",))
         archive.add_user_tags((session_ids[1],), ("other-filter",))
         archive.add_user_tags((session_ids[2],), ("episode-filter",))

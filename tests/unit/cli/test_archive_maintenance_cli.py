@@ -40,6 +40,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user import USER_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.live_ingest import write_index_session
 
 _ARCHIVE_TIERS = tuple(spec.filename for spec in ARCHIVE_TIER_SPECS.values())
 
@@ -1257,7 +1258,8 @@ def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
 
     long_text = "This live message keeps the session present in the rebuilt index."
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="orphan-cli-fixture",
@@ -1271,7 +1273,7 @@ def _seed_orphan_embedding_row(archive_root: Path) -> tuple[str, str]:
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
     orphan_message_id = f"{session_id}:orphaned-message-no-longer-in-index"

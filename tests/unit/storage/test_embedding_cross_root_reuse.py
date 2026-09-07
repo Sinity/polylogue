@@ -34,6 +34,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from tests.infra.live_ingest import write_index_session
 
 _TEXT = "This authored prose message is embedded once and reused under a fresh archive root."
 _CONFIGURED_EMBEDDING_MODEL = load_polylogue_config().embedding_model
@@ -63,7 +64,8 @@ class _CountingFakeVectorProvider:
 
 def _write_session(root: Path, *, native_id: str, message_native_id: str) -> str:
     with ArchiveStore(root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=native_id,
@@ -76,7 +78,7 @@ def _write_session(root: Path, *, native_id: str, message_native_id: str) -> str
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
 
