@@ -715,18 +715,23 @@ def test_provider_enum_interop_with_ids(provider: Provider, conv_str: str) -> No
 
 @pytest.mark.parametrize("backend", _backend_params())
 @given(value=_json_value)
-def test_loads_output_is_a_json_value_under_every_backend(
-    monkeypatch: pytest.MonkeyPatch, backend: core_json.JSONBackend, value: object
-) -> None:
+def test_loads_output_is_a_json_value_under_every_backend(backend: core_json.JSONBackend, value: object) -> None:
     """``loads`` decodes into JSON's own vocabulary and nothing else.
 
     ``sources/decoder_json`` stopped re-walking every decoded JSONL record to
     rediscover this, so the guarantee lives here. Anti-vacuity: a backend that
     decoded a number to ``Decimal``, or an object to a non-string-keyed dict,
     makes this red.
+
+    Sets the module-level backend directly for the same reason
+    ``test_roundtrip_basic_types_under_every_backend`` does.
     """
-    monkeypatch.setattr(core_json, "_BACKEND", backend)
-    decoded = core_json.loads(core_json.dumps(value))
+    original = core_json._BACKEND
+    core_json._BACKEND = backend
+    try:
+        decoded = core_json.loads(core_json.dumps(value))
+    finally:
+        core_json._BACKEND = original
     assert core_json.is_json_value(decoded)
 
 
