@@ -171,6 +171,47 @@ def test_valid_degradation_uses_replacement_content_and_ledger_cost() -> None:
     assert row.budget_after == 0
 
 
+@pytest.mark.parametrize("policy_target", (None, "s1"))
+def test_valid_policy_degradation_preserves_global_and_session_scope(policy_target: str | None) -> None:
+    original = ContextItem(
+        ref="policy:approved",
+        content="long policy",
+        token_cost=5,
+        source="memory",
+        material_class="policy",
+        kind="policy",
+        trust_class="operator",
+        author_kind="user",
+        author_ref="user:operator",
+        status="active",
+        policy_refs=("policy:approved",),
+        target_session=policy_target,
+        authority_reason="adopted:operator",
+        degrade=lambda item: replace(item, content="short policy", token_cost=1),
+    )
+    result = schedule_context(
+        (_Source((original,)),),
+        moment="session_start",
+        target_session="s1",
+        execution_context=_context(),
+        token_budget=1,
+        now_ms=10,
+    )
+
+    assert [(item.ref, item.content, item.token_cost) for item in result.executable_policy] == [
+        ("policy:approved", "short policy", 1)
+    ]
+    assert result.quoted_evidence == ()
+    assert result.token_cost == 1
+    row = result.ledger[0]
+    assert row.decision == "degraded"
+    assert row.item_ref == "policy:approved"
+    assert row.token_cost == 1
+    assert row.authority_verdict == "accepted"
+    assert row.budget_before == 1
+    assert row.budget_after == 0
+
+
 @pytest.mark.parametrize(
     "mutation",
     (

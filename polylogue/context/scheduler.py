@@ -231,9 +231,6 @@ def _validate_degraded_item(
     )
     if any(getattr(replacement, name) != getattr(original, name) for name in authority_fields):
         return None, "invalid", "rejected", "degraded candidate authority or scope changed"
-    if replacement.target_session != target_session and replacement.material_class == "policy":
-        return None, "policy", "rejected", "degraded policy target scope mismatch"
-
     authority_ok, authority_reason = _policy_is_authorized(replacement, target_session=target_session, now_ms=now_ms)
     if replacement.material_class == "policy" and not authority_ok:
         return None, "policy", "rejected", authority_reason
@@ -417,7 +414,7 @@ def schedule_context(
                     rank,
                     before,
                     after,
-                    row_disclosure if chosen else row_disclosure,
+                    row_disclosure,
                     row_authority,
                     row_reason,
                     execution_context,
