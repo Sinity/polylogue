@@ -67,11 +67,14 @@ not a task-success judgment. The evidence and inference tiers intentionally
 omit the enrichment payload.
 
 The storage column `engaged_duration_ms` is message-clustered wall clock: it
-sums phase intervals separated by no more than the fixed five-minute idle
-threshold. It does not measure human attention, keyboard focus, or operator
-presence. Each materialized phase records `phase_idle_threshold_ms`, currently
-300000, so readers do not need to know a hidden global constant to interpret a
-phase split.
+sums timestamped phase intervals separated by no more than the fixed five-minute
+idle threshold. It does not measure human attention, keyboard focus, or
+operator presence. When no timestamped phase has a positive interval, the
+value is zero and `inference.engaged_duration_source` is `unknown`; the
+session-level wall-clock total is never used as an engagement substitute.
+Each materialized phase records `phase_idle_threshold_ms`, currently 300000,
+so readers do not need to know a hidden global constant to interpret a phase
+split.
 
 `tool_active_duration_ms` is session-event tool activity: it sums paired
 tool-call start/output events that have explicit timestamps. It does not

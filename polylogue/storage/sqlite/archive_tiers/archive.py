@@ -7512,8 +7512,9 @@ def _session_profile_components_from_archive_row(
             {
                 "work_event_count": int(row["work_event_count"] or 0),
                 "phase_count": int(row["phase_count"] or 0),
-                "engaged_duration_ms": int(row["total_duration_ms"] or row["duration_ms"] or 0),
-                "engaged_minutes": float(row["total_duration_ms"] or row["duration_ms"] or 0) / 60000.0,
+                "engaged_duration_ms": 0,
+                "engaged_minutes": 0.0,
+                "engaged_duration_source": "unknown",
                 "workflow_shape": workflow_shape,
                 "workflow_shape_confidence": workflow_confidence,
                 "terminal_state": terminal_state,

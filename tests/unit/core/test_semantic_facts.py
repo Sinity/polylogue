@@ -29,6 +29,7 @@ from polylogue.archive.viewport.viewports import ToolCategory
 from polylogue.core.enums import MaterialOrigin, Origin, Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.types import SessionEventId, SessionId
+from polylogue.storage.derived.session.profiles import profile_inference_payload
 from tests.infra.builders import make_conv, make_msg
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -193,10 +194,32 @@ def test_build_session_profile_reuses_shared_semantic_facts() -> None:
     assert profile.timestamp_coverage == "complete"
     assert profile.canonical_session_date is not None
     assert profile.canonical_session_date.isoformat() == "2026-03-23"
-    assert profile.engaged_duration_ms > 0
+    assert profile.engaged_duration_ms == profile.wall_duration_ms
     assert profile.phases[0].phase_idle_threshold_ms == PHASE_IDLE_THRESHOLD_MS
     assert profile.to_dict()["phases"][0]["phase_idle_threshold_ms"] == PHASE_IDLE_THRESHOLD_MS
     assert profile.wall_duration_ms == 240000
+
+
+def test_build_session_profile_excludes_long_idle_gap_from_engaged_duration() -> None:
+    start = datetime(2026, 5, 24, 10, 0, tzinfo=timezone.utc)
+    end = start.replace(minute=10)
+    session = make_conv(
+        id="conv-long-idle-gap",
+        origin=Provider.CODEX,
+        title="Long idle gap",
+        messages=MessageCollection(
+            messages=[
+                make_msg(id="u1", role="user", origin="codex", text="Start", timestamp=start),
+                make_msg(id="a1", role="assistant", origin="codex", text="Resume", timestamp=end),
+            ]
+        ),
+    )
+
+    profile = build_session_profile(session)
+
+    assert profile.wall_duration_ms == 600_000
+    assert profile.engaged_duration_ms == 0
+    assert profile_inference_payload(profile).engaged_duration_source == "unknown"
 
 
 def test_build_session_profile_derives_terminal_state_from_stop_reason_refusal() -> None:

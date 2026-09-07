@@ -563,9 +563,9 @@ def build_session_profile(
     )
     add_timing("profile.compactions", t0)
     t0 = time.perf_counter()
+    # Engagement is the sum of timestamped phase intervals. A session-level
+    # wall-clock total includes idle gaps and is not a valid substitute.
     engaged_duration_ms = sum(int(phase.duration_ms or 0) for phase in session_analysis.phases)
-    if engaged_duration_ms <= 0:
-        engaged_duration_ms = max(int(session.total_duration_ms or 0), 0)
     tool_active_duration_ms = compute_tool_active_duration_ms(session.session_events)
     add_timing("profile.durations", t0)
     t0 = time.perf_counter()

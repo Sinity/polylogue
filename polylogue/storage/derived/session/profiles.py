@@ -320,8 +320,6 @@ def profile_inference_payload(profile: SessionProfile) -> SessionInferencePayloa
 
 def profile_inference_fallback_reasons(profile: SessionProfile) -> tuple[FallbackReason, ...]:
     reasons: list[FallbackReason] = []
-    if engaged_duration_source(profile) == "session_total_fallback":
-        reasons.append(FallbackReason.ENGAGED_DURATION_SESSION_TOTAL)
     if not profile.work_events and not profile.phases:
         reasons.append(FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES)
     elif profile.work_events and all(event_fallback(event) for event in profile.work_events):
@@ -654,7 +652,7 @@ def phase_fallback(phase: SessionPhase) -> bool:
 
 
 def engaged_duration_source(profile: SessionProfile) -> str:
-    return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "session_total_fallback"
+    return "phase_sum" if any(int(phase.duration_ms or 0) > 0 for phase in profile.phases) else "unknown"
 
 
 def repo_inference_strength(profile: SessionProfile) -> ConfidenceBand:
