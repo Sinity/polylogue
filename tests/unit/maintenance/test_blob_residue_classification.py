@@ -2,8 +2,9 @@
 
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from pytest import MonkeyPatch
 
@@ -180,13 +181,14 @@ def test_sqlite_route_uses_immutable_read_only_connections(tmp_path: Path, monke
         connection.execute("CREATE TABLE thread_spawn_edges (id TEXT)")
 
     immutable_args: list[bool] = []
-    original_connect = codex_state._connect_readonly
+    codex_state_module = cast(Any, codex_state)
+    original_shape = cast(Callable[..., dict[str, tuple[str, ...]]], codex_state_module.logical_source_shape)
 
-    def connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
+    def logical_shape(path: Path, *, immutable: bool = False) -> dict[str, tuple[str, ...]]:
         immutable_args.append(immutable)
-        return original_connect(path, timeout=timeout, immutable=immutable)
+        return original_shape(path, immutable=immutable)
 
-    monkeypatch.setattr(codex_state, "_connect_readonly", connect_readonly)
+    monkeypatch.setattr(codex_state_module, "logical_source_shape", logical_shape)
 
     route, _observation = parse_production_route(path, provider_hint=Provider.CODEX)
 

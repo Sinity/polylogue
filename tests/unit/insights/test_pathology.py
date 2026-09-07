@@ -10,6 +10,8 @@ from polylogue.analysis.pathology import (
     detect_session_pathologies,
 )
 from polylogue.analysis.run_projection import (
+    COMPACTION_RANGE_END_KEY,
+    COMPACTION_RANGE_START_KEY,
     ContextBoundary,
     ContextInheritanceMode,
     ContextSnapshot,
@@ -174,6 +176,48 @@ def test_stale_context_excludes_normal_subagent_dispatch() -> None:
     # A subagent receiving a focused summary/prefix is by design, not a pathology.
     proj = _projection(snapshots=[_snapshot("subagent_start", "summary")])
     assert [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"] == []
+
+
+def _compaction_snapshot(
+    *,
+    session_id: str = "s1",
+    start: int | None = 0,
+    end: int | None = 2,
+    replaced: Sequence[str] = ("m0", "m1", "m2"),
+) -> ContextSnapshot:
+    metadata = {"source": "session-event-compaction"}
+    if start is not None and end is not None:
+        metadata[COMPACTION_RANGE_START_KEY] = str(start)
+        metadata[COMPACTION_RANGE_END_KEY] = str(end)
+    return ContextSnapshot(
+        snapshot_ref=ObjectRef.parse(f"context-snapshot:{session_id}:0:compaction"),
+        run_ref=ObjectRef.parse(f"run:{session_id}"),
+        boundary="compaction",
+        inheritance_mode="summary",
+        evidence_refs=tuple(EvidenceRef(session_id=session_id, message_id=mid) for mid in replaced) or _ev(session_id),
+        metadata=metadata,
+    )
+
+
+def test_compaction_boundary_reports_the_stored_replaced_range() -> None:
+    proj = _projection(snapshots=[_compaction_snapshot()])
+    findings = [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"]
+    assert len(findings) == 1
+    assert "0-2" in findings[0].detail
+    assert [ref.message_id for ref in findings[0].evidence_refs] == ["m0", "m1", "m2"]
+
+
+def test_compaction_boundary_without_a_stored_range_is_not_a_finding() -> None:
+    proj = _projection(snapshots=[_compaction_snapshot(start=None, end=None, replaced=())])
+    assert [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"] == []
+
+
+def test_stored_range_replaces_the_lossy_resume_heuristic() -> None:
+    """One context loss is one finding: the precise reading wins outright."""
+    proj = _projection(snapshots=[_snapshot("resume", "summary"), _compaction_snapshot()])
+    findings = [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"]
+    assert len(findings) == 1
+    assert "compaction boundary" in findings[0].detail
 
 
 # ── aggregation / determinism ────────────────────────────────────────

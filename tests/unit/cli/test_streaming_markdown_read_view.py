@@ -3,10 +3,13 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.cli.read_views.streaming_markdown import _row_to_renderable_block, stream_exact_session_markdown
 from polylogue.core.enums import BlockType, Provider
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -192,6 +195,17 @@ def test_stream_exact_session_markdown_without_session_links_streams(tmp_path: P
     conn.close()
 
     assert stream_exact_session_markdown(tmp_path, child_id, tmp_path / "out.md", prose_only=False)
+
+
+def test_stream_exact_session_markdown_reports_unreadable_index(tmp_path: Path) -> None:
+    (tmp_path / "index.db").write_bytes(b"not sqlite")
+
+    with pytest.raises(ArchiveTierUnavailableError) as error:
+        stream_exact_session_markdown(tmp_path, _SESSION_ID, tmp_path / "out.md", prose_only=False)
+
+    assert error.value.code == "archive_tier_unavailable"
+    assert error.value.tier == "index"
+    assert error.value.path == str((tmp_path / "index.db").resolve())
 
 
 def test_streaming_adapter_preserves_structural_outcome_and_exact_block_id(tmp_path: Path) -> None:

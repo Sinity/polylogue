@@ -1,14 +1,22 @@
 """Codex live SQLite state — ``~/.codex/*.sqlite``.
 
-Codex keeps five SQLite databases outside the JSONL rollout files that
-``parsers/codex.py`` parses (polylogue-0jf4):
+Codex keeps seven SQLite databases outside the JSONL rollout files that
+``parsers/codex.py`` parses:
 
-    state_5.sqlite     threads, thread_spawn_edges, thread_dynamic_tools,
-                       remote_control_enrollments, external_agent_config_imports
-    goals_1.sqlite     thread_goals, thread_goal_continuation_deferrals
-    memories_1.sqlite  stage1_outputs, jobs
-    logs_2.sqlite      logs (runtime tracing: level/target/module_path/file/line)
-    codex-dev.db       inbox_items, automations, automation_runs
+    state_5.sqlite            threads, thread_spawn_edges, thread_dynamic_tools,
+                              remote_control_enrollments,
+                              external_agent_config_imports
+    goals_1.sqlite            thread_goals, thread_goal_continuation_deferrals
+    memories_1.sqlite         stage1_outputs, jobs
+    logs_2.sqlite             logs (runtime tracing: level/target/module_path/file/line)
+    codex-dev.db              inbox_items, automations, automation_runs
+    thread_history_1.sqlite   thread_turns, thread_items, thread_realtime_items,
+                              thread_history_projection_state
+    queue_1.sqlite            queued_items, queued_thread_revisions
+
+``CODEX_STATE_FIDELITY`` states the disposition and the reason for each.
+Every one of them has a disposition: an undeclared database beside a declared
+one is a silent acquisition decision.
 
 ``threads.title`` and ``thread_spawn_edges`` are evidence the JSONL rollout
 files never carry at all (verified empirically: no rollout ``session_meta``
@@ -19,43 +27,24 @@ subagents are only linked in-session via ``forked_from_id``/
 relationship plus edges that in-session evidence doesn't capture, such as
 edges from a still-running or crashed child).
 
-This module owns detecting, snapshotting, and parsing that state.  It is
-deliberately independent of ``parsers/codex.py`` (which owns JSONL rollout
-parsing) and of ``sources/assembly_codex.py`` (which owns live, ambient
-title enrichment during ingest, polylogue-ih67, still in flight) — it does
-not modify either.  What it adds is a durable, content-addressed capture of
-the raw databases plus typed accessors for the evidence that has no other
-home, following the same consistent-snapshot pattern
-``parsers/hermes_state.py`` / ``sources/sqlite_snapshot.py`` already use for
-Hermes: back up the live file (``sqlite3.Connection.backup()``) into an
-immutable copy before ever hashing or parsing it, so a lock or a concurrent
-writer never blocks the acquisition and the parsed content never observes a
-half-written page.
-
-Wiring this module's output into live ingestion (routing acquired bytes
-through ``sources/dispatch.py`` the way
-``hermes_state.looks_like_state_db_payload`` is routed there, widening the
-``codex`` ``WatchSource`` root in ``sources/live/watcher.py`` from
-``~/.codex/sessions`` to ``~/.codex``, and deciding how ``thread_spawn_edges``
-reach ``session_events`` on the *existing* ``codex-session`` rows without a
-full-replace data loss) is out of this module's write scope and is not done
-here — see the module docstring of the accompanying test file and the
-project report for the precise follow-up.
+This module owns detecting and parsing that state. It is deliberately
+independent of ``parsers/codex.py`` (which owns JSONL rollout parsing) and of
+``sources/assembly_codex.py`` (which owns live, ambient title enrichment
+during ingest). It reads through ``sources/sqlite_export.open_logical_source``,
+so the same functions serve a retained canonical export and the operator's
+live file.
 """
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
 from polylogue.core.json import JSONDocument
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-from .base import ParsedSessionEvent
+from polylogue.sources.sqlite_export import LogicalExportError, logical_source_shape, open_logical_source
 
 CODEX_STATE_DB_MARKER = "codex_state_db"
 
@@ -65,6 +54,8 @@ CodexSqliteKind: TypeAlias = Literal[
     "memories",  # memories_1.sqlite -- stage1_outputs
     "logs",  # logs_2.sqlite -- runtime tracing
     "automation",  # codex-dev.db -- inbox/automation scheduling
+    "thread_history",  # thread_history_1.sqlite -- UI projection of the rollout
+    "queue",  # queue_1.sqlite -- input queued for submission
     "unknown",
 ]
 
@@ -78,6 +69,8 @@ _KIND_REQUIRED_TABLES: tuple[tuple[CodexSqliteKind, tuple[str, ...]], ...] = (
     ("memories", ("stage1_outputs",)),
     ("logs", ("logs",)),
     ("automation", ("automations", "automation_runs")),
+    ("thread_history", ("thread_items", "thread_history_projection_state")),
+    ("queue", ("queued_items", "queued_thread_revisions")),
 )
 
 
@@ -91,11 +84,9 @@ class CodexStateDbClassification:
     reason: str
 
 
-# polylogue-0jf4 acceptance criterion 1: classify each of the five databases.
-# This is the fidelity declaration content; the canonical home for it is
-# ``sources/origin_specs.py:_codex_spec()``'s ``fidelity_notes`` tuple, which
-# is outside this module's write scope (see the module docstring) -- these
-# are the exact classifications and reasons to fold in there.
+#: Every SQLite database Codex keeps, with its disposition and the reason.
+#: ``sources/origin_specs.py:_codex_spec()`` declares the same dispositions as
+#: ``DatabaseMemberRule`` members; the two are checked against each other.
 CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
     CodexStateDbClassification(
         kind="thread_state",
@@ -154,6 +145,36 @@ CODEX_STATE_FIDELITY: tuple[CodexStateDbClassification, ...] = (
             "evidence."
         ),
     ),
+    CodexStateDbClassification(
+        kind="thread_history",
+        disposition="out-of-scope",
+        filenames=("thread_history_1.sqlite",),
+        reason=(
+            "A UI projection of the rollout JSONL the archive already acquires, "
+            "measured against it (2026-09-07, 3.6 GB on this install, 120-thread "
+            "sample): every sampled thread had its rollout file; 119 of 120 "
+            "thread_history_projection_state cursors sat exactly at rollout EOF "
+            "and the remaining one was mid-write; all 14,215 thread_items item_ids "
+            "appeared verbatim in the rollout bytes; every non-commandExecution "
+            "text probe (1,446 of 1,446) appeared among the rollout's decoded "
+            "strings; and 1,950 of 1,950 commandExecution rows reproduced a "
+            "rollout function_call command array exactly. Acquiring it would "
+            "roughly quadruple this archive's Codex footprint for content it "
+            "already holds."
+        ),
+    ),
+    CodexStateDbClassification(
+        kind="queue",
+        disposition="out-of-scope",
+        filenames=("queue_1.sqlite",),
+        reason=(
+            "Input queued for submission, plus a per-thread revision counter. A "
+            "queued item leaves the table when it is submitted, at which point it "
+            "is a rollout userMessage the archive acquires; what remains is intent "
+            "that has not happened yet, not evidence of a session. Both tables "
+            "were empty on the install measured (2026-09-07)."
+        ),
+    ),
 )
 
 IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
@@ -162,25 +183,25 @@ IN_SCOPE_KINDS: frozenset[CodexSqliteKind] = frozenset(
 
 
 def _connect_readonly(path: Path, *, timeout: float = 1.0, immutable: bool = False) -> sqlite3.Connection:
-    """Open *path* read-only. Never takes a write lock against a live Codex."""
-    return open_readonly_connection(path.resolve(), timeout=timeout, immutable=immutable, validate_schema=False)
+    """Open *path* for reading, whether it is a retained export or a live file.
 
-
-def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
-    rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
-    return frozenset(str(row[0]) for row in rows)
+    The retained material for a declared member is its canonical logical
+    export; the operator's live ``~/.codex`` databases are still read in
+    place for detection and ambient title enrichment. Never takes a write
+    lock against a live Codex.
+    """
+    return open_logical_source(path, immutable=immutable, timeout=timeout)
 
 
 def classify_codex_sqlite_path(path: Path, *, immutable: bool = False) -> CodexSqliteKind:
-    """Classify a live Codex SQLite file by its table shape.
+    """Classify a retained export or a live Codex SQLite file by its table shape.
 
     Returns ``"unknown"`` for anything unreadable or unrecognized rather than
     raising -- classification runs against a live, possibly-locked file.
     """
     try:
-        with closing(_connect_readonly(path, immutable=immutable)) as conn:
-            tables = _table_names(conn)
-    except sqlite3.Error:
+        tables = frozenset(logical_source_shape(path, immutable=immutable))
+    except (sqlite3.Error, OSError, LogicalExportError, ValueError):
         return "unknown"
     for kind, required in _KIND_REQUIRED_TABLES:
         if required and set(required).issubset(tables):
@@ -409,35 +430,6 @@ def parse_codex_memories_db(path: Path, *, immutable: bool = False) -> tuple[Cod
     )
 
 
-_SPAWN_EVENT_TYPE = "codex_thread_spawn_edge"
-
-
-def spawn_edges_as_session_events(
-    edges: Iterable[CodexSpawnEdge],
-) -> dict[str, list[ParsedSessionEvent]]:
-    """Group spawn edges into per-parent-thread ``ParsedSessionEvent`` lists.
-
-    Ready for a future write-path consumer to attach onto the *existing*
-    ``codex-session`` row identified by ``origin:parent_thread_id`` -- see the
-    module docstring for why that wiring is not done in this change.
-    ``session_events`` accepts a new ``event_type`` value with no index schema
-    change (polylogue-0jf4 constraint), which is what this shape targets.
-    """
-    grouped: dict[str, list[ParsedSessionEvent]] = {}
-    for edge in edges:
-        grouped.setdefault(edge.parent_thread_id, []).append(
-            ParsedSessionEvent(
-                event_type=_SPAWN_EVENT_TYPE,
-                payload={
-                    "parent_thread_id": edge.parent_thread_id,
-                    "child_thread_id": edge.child_thread_id,
-                    "status": edge.status,
-                },
-            )
-        )
-    return grouped
-
-
 __all__ = [
     "CODEX_STATE_DB_MARKER",
     "CODEX_STATE_FIDELITY",
@@ -458,5 +450,4 @@ __all__ = [
     "parse_codex_goals_db",
     "parse_codex_memories_db",
     "parse_codex_state_db",
-    "spawn_edges_as_session_events",
 ]

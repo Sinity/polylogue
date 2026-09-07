@@ -42,7 +42,8 @@ from polylogue.sources.live.batch_support import (
 )
 from polylogue.sources.parsers import codex_state, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.sqlite_snapshot import is_sqlite_path, looks_like_sqlite_bytes
+from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
+from polylogue.sources.sqlite_snapshot import is_sqlite_path
 from polylogue.storage.blob_store import BlobStore
 
 
@@ -381,7 +382,7 @@ def parse_production_route(
         return _parse_large_production_route(path, logical=logical, provider_hint=provider_hint)
     payload, observation = _stable_bytes(path)
     fallback_id = logical.stem
-    if is_sqlite_path(logical) or looks_like_sqlite_bytes(payload):
+    if is_sqlite_path(logical) or looks_like_logical_source_bytes(payload):
         sqlite_result = _parse_sqlite(path, provider=provider_hint, fallback_id=fallback_id)
         if sqlite_result is not None:
             return sqlite_result, observation
@@ -447,7 +448,7 @@ def _parse_large_production_route(
     try:
         with path.open("rb") as handle:
             prefix = handle.read(8192)
-        if is_sqlite_path(logical) or looks_like_sqlite_bytes(prefix):
+        if is_sqlite_path(logical) or looks_like_logical_source_bytes(prefix):
             sqlite_result = _parse_sqlite(path, provider=provider_hint, fallback_id=fallback_id)
             route = sqlite_result or RouteResult(
                 provider_hint, "sqlite.unrecognized", "sqlite.refused", error="unrecognized SQLite source"

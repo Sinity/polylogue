@@ -31,7 +31,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.daemon.parse_prefetch import DaemonParseStage, estimate_parsed_tree_bytes
 from polylogue.sources.parsers.base_models import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 
 pytestmark = pytest.mark.uses_real_clock(
     "DaemonParseStage.warm() timeout test measures real elapsed wall-clock against a genuinely hung worker thread to prove the wait is bounded, not merely reordered; frozen_clock cannot substitute for a real ThreadPoolExecutor future's wait timeout."
@@ -54,7 +54,7 @@ def _config(root: Path) -> Config:
 
 
 def _seed_raws(tmp_path: Path, payloads: dict[str, bytes]) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index, (source_path, payload) in enumerate(payloads.items()):
             archive.write_raw_payload(
@@ -197,7 +197,7 @@ def test_writer_admission_rejects_until_cancelled_parse_worker_drains(
 
 def test_shutdown_is_process_bounded_with_wedged_parse_worker(tmp_path: Path) -> None:
     """A wedged prefetch worker cannot extend daemon process shutdown."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     started = threading.Event()
     release = threading.Event()
 
@@ -230,7 +230,7 @@ def test_warm_async_cancellation_does_not_join_default_executor(
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources import census_parse_stage, revision_backfill
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
     monkeypatch.setattr(
         census_parse_stage,
@@ -287,7 +287,7 @@ def test_warm_source_payload_admission_bounds_submitted_full_parses(
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources import census_parse_stage, revision_backfill
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_ids = ["raw-a", "raw-b", "raw-c"]
     descriptors = dict.fromkeys(raw_ids, (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 60))
     submitted: list[str] = []
@@ -314,7 +314,7 @@ def test_completed_result_retains_payload_reservation_until_consumed(
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources import census_parse_stage, revision_backfill
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
     monkeypatch.setattr(
         census_parse_stage,
@@ -371,7 +371,7 @@ def test_submit_failure_cleans_every_admitted_future_and_reservation(
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources import census_parse_stage, revision_backfill
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     descriptors = dict.fromkeys(
         ("raw-a", "raw-b", "raw-c"),
         (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 60),
@@ -423,7 +423,7 @@ def test_consecutive_timeout_retries_share_global_payload_admission(
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources import census_parse_stage, revision_backfill
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
     monkeypatch.setattr(
         census_parse_stage,
@@ -466,7 +466,7 @@ def test_warm_parses_indexed_raw_with_missing_parser_receipt(tmp_path: Path) -> 
     Replacing the preview's parser-census selector with the ordinary replay
     selector makes ``warmed`` zero and leaves the cache empty.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="indexed-missing-receipt",
@@ -513,13 +513,13 @@ def test_warm_recovers_append_native_id_not_source_path_stem(tmp_path: Path) -> 
     from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     payload = (
         b'{"type":"response_item","payload":{"type":"message","id":"m0","role":"user",'
         b'"content":[{"type":"input_text","text":"hello"}]}}\n'
     )
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -639,7 +639,7 @@ def test_warm_skips_raws_already_present_in_cache(tmp_path: Path, monkeypatch: p
 
 
 def test_warm_returns_zero_when_no_candidates_pending(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     stage = DaemonParseStage(max_workers=2, max_inflight_bytes=10_000_000)
     try:

@@ -35,6 +35,7 @@ CORRELATION_READ_VIEW_OPTION_NAMES = frozenset({"confidence_threshold", "github_
 CHRONICLE_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 EVENTS_READ_VIEW_OPTION_NAMES = frozenset({"limit"})
 EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES = frozenset({"at_position"})
+LINEAGE_READ_VIEW_OPTION_NAMES = frozenset({"node_offset", "node_limit", "edge_offset", "edge_limit"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,7 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "effective_context": ReadViewHandlerMetadata(
         "effective_context", "required", EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES
     ),
+    "lineage": ReadViewHandlerMetadata("lineage", "required", LINEAGE_READ_VIEW_OPTION_NAMES),
     "file-edits": ReadViewHandlerMetadata("file-edits", "required"),
     "agent-policies": ReadViewHandlerMetadata("agent-policies", "required"),
     "web-content": ReadViewHandlerMetadata("web-content", "required"),
@@ -108,6 +110,7 @@ __all__ = [
     "CONTEXT_READ_VIEW_OPTION_NAMES",
     "CORRELATION_READ_VIEW_OPTION_NAMES",
     "EVENTS_READ_VIEW_OPTION_NAMES",
+    "LINEAGE_READ_VIEW_OPTION_NAMES",
     "EFFECTIVE_CONTEXT_READ_VIEW_OPTION_NAMES",
     "MESSAGE_READ_VIEW_OPTION_NAMES",
     "NEIGHBOR_READ_VIEW_OPTION_NAMES",

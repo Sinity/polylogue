@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from polylogue.core.text_identity import nfc
+from polylogue.core.digest import QUERY, digest, nfc
 
 
 def hash_text(text: str) -> str:
@@ -18,8 +18,6 @@ def hash_text(text: str) -> str:
     Applies NFC Unicode normalization to ensure visually identical
     strings produce identical hashes regardless of normalization form.
     """
-    # Normalize to NFC (Canonical Decomposition, followed by Canonical Composition)
-    # This ensures "café" hashes the same whether é is precomposed or decomposed
     return hashlib.sha256(nfc(text).encode("utf-8")).hexdigest()
 
 
@@ -32,21 +30,13 @@ def hash_text_short(text: str, length: int = 16) -> str:
 
 
 def hash_payload(payload: object) -> str:
-    """Hash a JSON-serializable object to full SHA-256 hex digest.
+    """Hash a JSON-serializable object under the ``query`` digest profile.
 
-    Uses stdlib json for deterministic output across environments. A fast
-    accelerator (e.g. msgspec) would be faster but can produce different byte
-    output for non-ASCII content between versions, breaking content-addressed
-    storage.
-
-    String values within the payload are NOT NFC-normalized here.
-    Callers should normalize strings before including in payload if
-    normalization-invariant hashing is required.
+    ASCII-escaped and not NFC-normalized: a caller needing
+    normalization-invariant hashing normalizes the payload first, where it can
+    tell a field token from a literal, or names a profile that normalizes.
     """
-    import json
-
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(serialized).hexdigest()
+    return digest(payload, QUERY)
 
 
 def hash_bytes(payload: bytes) -> str:

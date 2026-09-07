@@ -42,6 +42,7 @@ from polylogue.maintenance.blob_disposition import (
     BlobDispositionContext,
     BlobDispositionMember,
     BlobDispositionPlan,
+    InvalidNamespaceEntry,
     RestorationDestination,
 )
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
@@ -741,15 +742,20 @@ def restore_plan_members(
     return tuple(results)
 
 
-def _namespace_relative_path(entry: str) -> tuple[str, ...] | None:
+def _namespace_relative_path(entry: InvalidNamespaceEntry | str) -> tuple[str, ...] | None:
     """Recover the namespace-relative path an invalid-entry record names.
 
     The record is ``<relative path>: <issue>``. Only a strictly relative,
     ``..``-free path is accepted: a path that could climb out of the namespace
     is not a namespace entry at all.
     """
-    relative, separator, issue = entry.rpartition(": ")
-    if not separator or issue not in _ISSUE_LABELS or not relative:
+    if isinstance(entry, InvalidNamespaceEntry):
+        relative, issue = entry.relative_path, entry.issue
+    else:
+        relative, separator, issue = entry.rpartition(": ")
+        if not separator:
+            return None
+    if issue not in _ISSUE_LABELS or not relative:
         return None
     pure = PurePosixPath(relative)
     if pure.is_absolute():
@@ -878,7 +884,7 @@ def _delete_invalid_entries(
                     outcome=MemberOutcome.BLOCKED,
                     detail=f"unreadable namespace-entry record: {entry}",
                     cohort=INVALID_ENTRY_COHORT,
-                    from_path=entry,
+                    from_path=entry.relative_path,
                 )
             )
             continue

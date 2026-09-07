@@ -40,6 +40,11 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_
 from polylogue.storage.sqlite.archive_tiers.revision_application import assert_session_fts_exact_sync
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.runtime_indexes import (
+    DEFERRED_SECONDARY_INDEX_NAMES,
+    defer_secondary_indexes_sync,
+    restore_deferred_secondary_indexes_sync,
+)
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -286,6 +291,58 @@ def test_bulk_build_guard_row_cleared_even_on_exception(tmp_path: Path) -> None:
         ).fetchone()[0]
         == 0
     )
+    conn.close()
+
+
+def test_fresh_build_refuses_duplicate_session_instead_of_replacing(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    session = _session("fresh")
+    write_parsed_session_to_archive(conn, session, fresh_build=True)
+    with pytest.raises(AssertionError, match="fresh_build requires an absent session_id"):
+        write_parsed_session_to_archive(conn, session, fresh_build=True)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    conn.close()
+
+
+def test_fresh_build_refuses_nonempty_generation_even_for_new_session(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    write_parsed_session_to_archive(conn, _session("existing"))
+    with pytest.raises(AssertionError, match="fresh_build requires an empty archive generation"):
+        write_parsed_session_to_archive(conn, _session("other"), fresh_build=True)
+    conn.close()
+
+
+def test_fresh_build_batch_allows_distinct_sessions_after_empty_check(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    seen: set[str] = set()
+    write_parsed_session_to_archive(conn, _session("first"), fresh_build=True, fresh_build_batch=seen)
+    write_parsed_session_to_archive(conn, _session("second"), fresh_build=True, fresh_build_batch=seen)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+    conn.close()
+
+
+def test_deferred_secondary_indexes_round_trip_without_losing_rows(tmp_path: Path) -> None:
+    conn = _connect(tmp_path / "index.db")
+    before = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'")
+    }
+    assert set(DEFERRED_SECONDARY_INDEX_NAMES) <= before
+    dropped = defer_secondary_indexes_sync(conn)
+    assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+    assert not any(
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?", (name,)).fetchone()
+        for name in DEFERRED_SECONDARY_INDEX_NAMES
+    )
+    write_parsed_session_to_archive(conn, _session("deferred"), fresh_build=True)
+    restore_deferred_secondary_indexes_sync(conn)
+    conn.commit()
+    after = {
+        row[0]
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND name NOT LIKE 'sqlite_%'")
+    }
+    assert set(DEFERRED_SECONDARY_INDEX_NAMES) <= after
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     conn.close()
 
 

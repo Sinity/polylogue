@@ -100,7 +100,7 @@ Five facts follow, and they are what the design has to answer.
    and wrong for 46k files sitting on disk. `BULK_BUILD_WRITE_CONNECTION_PROFILE`
    (−25 % apply time on bead 623q) has exactly one selection site,
    `archive_tiers/archive.py:826`, gated solely on `owned_inactive_generation`
-   (`archive.py:721`) — reachable only from `revision_backfill.py:2302` and
+   (`archive.py:721`) — reachable only from `revision_backfill.py:2486` and
    `storage/repair.py:6211`, i.e. **the manual rebuild engine being deleted in
    PR #4698**. Unless it is re-homed onto the batch policy it dies with that
    engine.

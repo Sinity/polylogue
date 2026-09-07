@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 from dataclasses import dataclass, field
 
+from polylogue.core.digest import RECEIPT, REFERENCE, KeyCollisionError, canonical_bytes
 from polylogue.core.json import JSONDocument, require_json_document
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text
 
@@ -43,26 +43,6 @@ def _is_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
-def _nfc_json_value(value: object) -> object:
-    if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
-    if isinstance(value, list):
-        return [_nfc_json_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_nfc_json_value(item) for item in value]
-    if isinstance(value, dict):
-        normalized: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise AnnotationBatchError("canonical JSON object keys must be strings")
-            normalized_key = unicodedata.normalize("NFC", key)
-            if normalized_key in normalized:
-                raise AnnotationBatchError(f"NFC-normalized JSON keys collide at {normalized_key!r}")
-            normalized[normalized_key] = _nfc_json_value(item)
-        return normalized
-    return value
-
-
 def _document_copy(value: object, *, context: str) -> JSONDocument:
     if not isinstance(value, dict):
         raise AnnotationBatchError(f"{context} must be a finite JSON object")
@@ -81,16 +61,11 @@ def _canonical_json_text(
     context: str,
     normalize_strings: bool = True,
 ) -> str:
+    profile = RECEIPT if normalize_strings else REFERENCE
     try:
-        return json.dumps(
-            _nfc_json_value(value) if normalize_strings else value,
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    except AnnotationBatchError:
-        raise
+        return canonical_bytes(value, profile).decode("utf-8")
+    except KeyCollisionError as exc:
+        raise AnnotationBatchError(str(exc)) from exc
     except (TypeError, ValueError) as exc:
         raise AnnotationBatchError(f"{context} must be finite canonical JSON") from exc
 

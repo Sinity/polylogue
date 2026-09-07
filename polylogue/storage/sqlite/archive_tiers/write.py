@@ -587,6 +587,8 @@ def write_parsed_session_to_archive(
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
     defer_fts_rebuild: bool = False,
     prepared: PreparedRows | None = None,
     source_conn: sqlite3.Connection | None = None,
@@ -638,7 +640,15 @@ def write_parsed_session_to_archive(
     owns one targeted repair and exactness proof after its writes. It avoids
     rebuilding the same session's FTS surfaces twice in the same transaction.
     Direct callers retain the immediate-ready default.
+
+    ``fresh_build`` is restricted to a from-empty index generation.  It keeps
+    identity and content hashing, but skips compare/replace preparation after
+    proving that this session id has not been written in the generation.  A
+    repeated id is an assertion failure rather than an implicit duplicate or
+    overwrite; live ingest never enables this mode.
     """
+    if fresh_build and (merge_append or force_replace):
+        raise ValueError("fresh_build is only valid for an untouched full-replace session")
     t0 = time.perf_counter()
 
     admission = unit_accounting or session.unit_accounting
@@ -860,13 +870,25 @@ def write_parsed_session_to_archive(
             # to know whether its ~14-table point-DELETE cascade has anything
             # to do at all.
             session_row_existed = False
-            if not merge_append:
+            if not merge_append and not fresh_build:
                 existing_raw_id_row = conn.execute(
                     "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                 ).fetchone()
                 if existing_raw_id_row is not None:
                     session_row_existed = True
                     existing_session_raw_id = existing_raw_id_row[0]
+            elif fresh_build and not merge_append:
+                # Fresh mode is a correctness contract, not a hint.  Keep the
+                # absence check even when the caller batches transactions so a
+                # duplicate session can never silently replace rows.
+                if conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None:
+                    raise AssertionError(f"fresh_build requires an absent session_id: {session_id}")
+                if (fresh_build_batch is None or not fresh_build_batch) and conn.execute(
+                    "SELECT 1 FROM sessions LIMIT 1"
+                ).fetchone() is not None:
+                    raise AssertionError("fresh_build requires an empty archive generation")
+                if fresh_build_batch is not None:
+                    fresh_build_batch.add(session_id)
             t0 = time.perf_counter()
             session_row_values = {
                 "native_id": native_id,
@@ -4141,18 +4163,29 @@ def _hook_spool_present(source_conn: sqlite3.Connection) -> bool:
 
 
 def _codex_spawn_edge_parent_claim(
-    source_conn: sqlite3.Connection,
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection | None,
     *,
     child_native_id: str,
 ) -> _HookParentClaim | None:
-    """Return the ``codex_thread_spawn_edge`` parent for ``child_native_id``.
+    """Return projected or spooled Codex parent evidence for a child.
 
-    polylogue-foee acquired those rows into the durable ``source.db`` hook
-    spool, keyed by ``session_native_id = parent_thread_id``
-    (``sources/codex_state_evidence.py``). A child-side lookup therefore cannot
-    use ``list_hook_events(session_native_id=...)``; it matches the payload's
-    own ``child_thread_id`` instead.
+    The retained state export is projected into the index tier and is the
+    primary source. Older source tiers may carry the same evidence in the
+    durable hook spool, which remains a compatible fallback.
     """
+    if not child_native_id:
+        return None
+    try:
+        from polylogue.sources.codex_state_projection import read_parent_thread_id
+
+        projected_parent = read_parent_thread_id(conn, child_native_id)
+    except (ImportError, sqlite3.Error):
+        projected_parent = None
+    if projected_parent is not None:
+        return _HookParentClaim(projected_parent, {"codex_thread_spawn_edge_parent": projected_parent})
+    if source_conn is None or not _hook_spool_present(source_conn):
+        return None
     row = source_conn.execute(
         """
         SELECT json_extract(payload_json, '$.parent_thread_id')
@@ -4301,12 +4334,12 @@ def _authoritative_parent_claim(
     ``None`` means "hook evidence is silent about this child", which is not the
     same as "hook evidence disagrees" -- only the latter is a conflict.
     """
-    if source_conn is None or not child_native_id:
+    if not child_native_id:
         return None
     if origin == Origin.CODEX_SESSION.value:
-        if not _hook_spool_present(source_conn):
-            return None
-        return _codex_spawn_edge_parent_claim(source_conn, child_native_id=child_native_id)
+        return _codex_spawn_edge_parent_claim(conn, source_conn, child_native_id=child_native_id)
+    if source_conn is None:
+        return None
     if origin == Origin.CLAUDE_CODE_SESSION.value and parent_candidate:
         return _claude_agent_dispatch_parent_claim(
             conn,
