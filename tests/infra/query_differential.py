@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import patch
 from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
@@ -33,6 +33,10 @@ from urllib.request import Request, urlopen
 
 from polylogue.api import Polylogue
 from polylogue.archive.query.metadata import QueryUnitName
+
+if TYPE_CHECKING:
+    from polylogue.archive.query.execution_control import QueryExecutionReceipt
+
 from tests.infra.query_contract import (
     REF_FAMILIES_BY_UNIT,
     SURFACE_NAMES,
@@ -932,8 +936,23 @@ async def _check_unknown_outcome_agreement(run: LawRun, bench: SurfaceBench) -> 
     run.record("unknown-outcome-agreement", held=not detail, detail=detail)
 
 
-async def _check_cancellation(run: LawRun, bench: SurfaceBench) -> None:
-    """Cancel a real archive read before it runs and require a clean abort."""
+#: A statement whose VM-step count dwarfs ``PROGRESS_GUARD_OPCODES``, so the
+#: progress guard is guaranteed to run while it executes. Its result is never
+#: read; the only thing that matters is that it takes many opcodes to reach.
+LONG_RUNNING_STATEMENT = (
+    "WITH RECURSIVE counter(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM counter WHERE i < 200000) "
+    "SELECT count(*) FROM counter"
+)
+
+
+async def _run_cancelled_read(archive_root: Path, *, cancel_before_start: bool) -> tuple[str, QueryExecutionReceipt]:
+    """Cancel one real archive read and report how it ended.
+
+    With ``cancel_before_start`` the abort lands before the worker owns the
+    store, so no statement may run at all. Otherwise the read cancels itself
+    and then executes :data:`LONG_RUNNING_STATEMENT`: the abort can only be
+    delivered by the progress guard, from inside SQLite.
+    """
 
     from polylogue.archive.query.execution_control import (
         QueryCancelledError,
@@ -943,27 +962,46 @@ async def _check_cancellation(run: LawRun, bench: SurfaceBench) -> None:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     ctx = QueryExecutionContext.create(query_text="cancellation-law", timeout_s=30.0)
-    ctx.cancel()
+    if cancel_before_start:
+        ctx.cancel()
 
     def _work(archive: ArchiveStore) -> int:
-        return int(archive._conn.execute("SELECT count(*) FROM messages").fetchone()[0])
+        if cancel_before_start:
+            return int(archive._conn.execute("SELECT count(*) FROM messages").fetchone()[0])
+        ctx.cancel()
+        return int(archive._conn.execute(LONG_RUNNING_STATEMENT).fetchone()[0])
+
+    try:
+        await execute_archive_read(archive_root, _work, ctx=ctx)
+    except QueryCancelledError:
+        return "", ctx.receipt
+    except Exception as exc:
+        return f"cancelled read raised {type(exc).__name__} instead of QueryCancelledError", ctx.receipt
+    return "a cancelled read ran to completion and returned a result", ctx.receipt
+
+
+async def _check_cancellation(run: LawRun, bench: SurfaceBench) -> None:
+    """A cancelled read halts, whether it has started or is already running."""
 
     detail = ""
-    try:
-        await execute_archive_read(bench.archive_root, _work, ctx=ctx)
-    except QueryCancelledError:
-        pass
-    except Exception as exc:
-        detail = f"cancelled read raised {type(exc).__name__} instead of QueryCancelledError"
-    else:
-        detail = "a cancelled read completed and returned a page"
-    if not detail:
-        if ctx.receipt.state != "cancelled":
-            detail = f"receipt state is {ctx.receipt.state!r}, not 'cancelled'"
-        elif not ctx.receipt.cleanup_complete:
-            detail = "the cancelled read did not complete its cleanup"
-        elif ctx.receipt.rows_emitted:
-            detail = f"the cancelled read emitted {ctx.receipt.rows_emitted} rows"
+    for phase, cancel_before_start in (("before-start", True), ("in-flight", False)):
+        outcome, receipt = await _run_cancelled_read(bench.archive_root, cancel_before_start=cancel_before_start)
+        if outcome:
+            detail = f"{phase}: {outcome}"
+        elif receipt.state != "cancelled":
+            detail = f"{phase}: receipt state is {receipt.state!r}, not 'cancelled'"
+        elif not receipt.cleanup_complete:
+            detail = f"{phase}: the cancelled read did not complete its cleanup"
+        elif receipt.rows_emitted:
+            detail = f"{phase}: the cancelled read emitted {receipt.rows_emitted} rows"
+        elif cancel_before_start and receipt.interrupted:
+            detail = f"{phase}: a read cancelled before it started still entered SQLite"
+        elif not cancel_before_start and not receipt.interrupted:
+            # The abort was noticed only after the statement finished on its
+            # own: the server did the work it was told to stop doing.
+            detail = f"{phase}: the statement ran to completion and the abort was observed afterwards"
+        if detail:
+            break
     run.record("cancellation-halts-work", held=not detail, detail=detail)
 
 

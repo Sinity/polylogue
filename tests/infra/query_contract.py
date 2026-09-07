@@ -112,7 +112,7 @@ QUERY_LAWS: tuple[QueryLaw, ...] = (
     ),
     QueryLaw(
         "cancellation-halts-work",
-        "A cancelled read aborts, reports the abort, and completes its cleanup.",
+        "A cancelled read never starts, or is interrupted inside SQLite, and completes its cleanup either way.",
         "a cancellation flag observed only after the result page is built",
     ),
     QueryLaw(
