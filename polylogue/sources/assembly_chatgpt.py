@@ -1,8 +1,12 @@
 """ChatGPT provider assembly — asset-name and sandbox-file sidecar resolution.
 
-bd polylogue-0hwv / polylogue-dt5s / polylogue-2m2e: the 2026-07-29
-GDPR/Takeout export ships ``.dat`` asset bytes and two sibling JSON files that
-name them (``conversation_asset_file_names.json``, ``library_files.json``).
+bd polylogue-0hwv / polylogue-dt5s / polylogue-2m2e: a GDPR/Takeout export
+ships asset bytes and two sibling JSON files that name them
+(``conversation_asset_file_names.json``, ``library_files.json``). Asset
+members carry their provider file id in the member name and are claimed by
+that id, never by suffix: one export vintage names them ``file-<id>.dat``,
+another ships them under their real extensions (``.png``/``.wav``/``.pdf``/
+…) or under none at all, in per-conversation subdirectories.
 Neither the ZIP-bundle path nor the extracted-directory path has any other
 place they'd naturally be read from: they are cross-conversation lookup
 tables, not conversation shards themselves. This module discovers them once
@@ -15,13 +19,15 @@ Resolution results are recorded as ``session_events`` rather than new
 attachment/schema columns (index.db is a derived tier; a schema bump needs a
 declared delta class) — same precedent as this file's neighbors
 (``chatgpt.py``'s ``chatgpt_block_metadata`` events). ``provider_file_id`` IS updated in place when an id-grade match is
-found (tiers 1-4 of the sandbox resolver, or any ``.dat`` id resolution) —
+found (tiers 1-4 of the sandbox resolver, or any asset-member id resolution) —
 that is a real identity strengthening, not a guess.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import re
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -38,7 +44,7 @@ logger = get_logger(__name__)
 
 _LIBRARY_FILES_NAME = "library_files.json"
 _ASSET_NAMES_NAME = "conversation_asset_file_names.json"
-_DAT_SUFFIX = ".dat"
+_ASSET_MEMBER_ID_RE = re.compile(r"(?:\A|#)(file[-_][A-Za-z0-9]+)")
 
 
 def _read_json_file(path: Path) -> object | None:
@@ -72,13 +78,13 @@ def _read_chatgpt_zip_sidecars(
     zip_path: Path,
     store: BlobStore | None,
 ) -> tuple[dict[str, object], dict[str, tuple[str, int]]]:
-    """Read admitted JSON sidecars and stream admitted ``.dat`` members.
+    """Read admitted JSON sidecars and stream every admitted asset member.
 
     ``ZipInfo`` identity is preserved from central-directory admission through
     decompression. In particular, a later duplicate filename cannot replace an
     earlier member by making ``ZipFile.open(name)`` resolve through the archive's
     name map. One validator accounts for every relevant member in the archive,
-    so JSON and ``.dat`` payloads share the cumulative limit.
+    so JSON and asset payloads share the cumulative limit.
     """
     from .decoder_zip import ZIP_JSON_SUFFIXES, ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 
@@ -89,28 +95,34 @@ def _read_chatgpt_zip_sidecars(
     try:
         with zipfile.ZipFile(zip_path) as zf:
             validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=zip_path)
-            for info in validator.filter_entries(zf.infolist(), allowed_suffixes=(*ZIP_JSON_SUFFIXES, _DAT_SUFFIX)):
-                if info.filename.lower().endswith(_DAT_SUFFIX):
-                    if store is None:
-                        continue
-                    dat_id = _dat_asset_id(Path(info.filename).name)
-                    if dat_id in acquired:
+            entries = validator.filter_entries(
+                zf.infolist(),
+                allowed_suffixes=ZIP_JSON_SUFFIXES,
+                allowed_path=_is_asset_member,
+            )
+            for info in entries:
+                # An asset member is claimed by its name, not its suffix: the
+                # 2026-04-23 export ships assets under their real extensions
+                # (and some under none), including a handful named `.json`.
+                asset_id = _member_asset_id(Path(info.filename).name)
+                if asset_id is not None:
+                    if store is None or asset_id in acquired:
                         continue
                     try:
                         with open_bounded_zip_entry(zf, info) as handle:
                             blob_hash, size = store.write_from_fileobj(handle)
                     except ZipBombError:
-                        logger.warning("chatgpt_dat_zip_bomb", path=str(zip_path), member=info.filename)
+                        logger.warning("chatgpt_asset_zip_bomb", path=str(zip_path), member=info.filename)
                         continue
                     except (KeyError, zipfile.BadZipFile, OSError) as exc:
                         logger.debug(
-                            "chatgpt_dat_read_failed",
+                            "chatgpt_asset_read_failed",
                             path=str(zip_path),
                             member=info.filename,
                             error=str(exc),
                         )
                         continue
-                    acquired[dat_id] = (blob_hash, size)
+                    acquired[asset_id] = (blob_hash, size)
                     continue
                 if info.filename not in targets or info.filename in seen_targets:
                     continue
@@ -123,52 +135,86 @@ def _read_chatgpt_zip_sidecars(
     return payloads, acquired
 
 
-def _dat_asset_id(basename: str) -> str:
-    bare = basename[: -len(_DAT_SUFFIX)] if basename.lower().endswith(_DAT_SUFFIX) else basename
-    return _normalize_file_id(bare)
+def _member_asset_id(basename: str) -> str | None:
+    """Return the asset id an export member's name carries, or ``None``.
+
+    Every carrier names an asset by embedding its provider file id in the
+    member name, and every shape puts that id either first or right after a
+    ``#`` separator, terminated by ``-`` or ``.``:
+
+        file-078R8dTqVR9lYSLVmOsCh6ht.dat
+        <conversation>/image/file_<32hex>-<uuid>.png
+        dalle-generations/file-<id>-<uuid>.webp
+        file-<id>-<original name>.pdf
+        <7hex>#file_<32hex>#p_0.jpg-p_0.jpg
+        file-<id>-<uuid>                      (no extension at all)
+
+    The id is what joins: it is the key ``library_files.json`` uses and what
+    an attachment's ``provider_file_id`` normalizes to. Anchoring the match
+    keeps non-asset members out — ``conversation_asset_file_names.json``
+    contains the substring ``file_names`` but does not start with it.
+    """
+    match = _ASSET_MEMBER_ID_RE.search(basename)
+    if match is None:
+        return None
+    return _normalize_file_id(match.group(1))
 
 
-def _acquire_dat_blobs_from_directory(directory: Path, store: BlobStore) -> dict[str, tuple[str, int]]:
-    """Stream sibling ``*.dat`` files from an extracted export directory.
+def _is_asset_member(name: str) -> bool:
+    return _member_asset_id(Path(name).name) is not None
 
-    ``ChatGPTAssemblySpec.discover_sidecars`` already walks this directory
-    (looking for ``library_files.json``/``conversation_asset_file_names.json``);
-    the ``.dat`` files themselves sit right next to ``conversations-*.json``
-    as ordinary files, streamed via ``BlobStore.write_from_path`` (no
-    full-file memory load).
+
+def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> dict[str, tuple[str, int]]:
+    """Stream an extracted export directory's asset files into the blob store.
+
+    ``ChatGPTAssemblySpec.discover_sidecars`` already anchors on this directory
+    (looking for ``library_files.json``/``conversation_asset_file_names.json``).
+    Assets sit beside ``conversations-*.json`` and, in the extension-carrying
+    export shape, under per-conversation ``image/``/``audio/`` subdirectories,
+    so the walk is recursive; each file is streamed via
+    ``BlobStore.write_from_path`` (no full-file memory load).
     """
     from polylogue.storage.blob_publication import flush_blob_publications
 
     from .decoder_zip import MAX_UNCOMPRESSED_SIZE
 
     acquired: dict[str, tuple[str, int]] = {}
-    try:
-        candidates = sorted(directory.glob(f"*{_DAT_SUFFIX}"))
-    except OSError:
-        return acquired
-    for dat_path in candidates:
-        dat_id = _dat_asset_id(dat_path.name)
+    for asset_path in _walk_asset_files(directory):
+        asset_id = _member_asset_id(asset_path.name)
+        if asset_id is None or asset_id in acquired:
+            continue
         try:
-            size_on_disk = dat_path.stat().st_size
+            size_on_disk = asset_path.stat().st_size
         except OSError as exc:
-            logger.warning("chatgpt_dat_stat_failed", path=str(dat_path), error=str(exc))
+            logger.warning("chatgpt_asset_stat_failed", path=str(asset_path), error=str(exc))
             continue
         if size_on_disk > MAX_UNCOMPRESSED_SIZE:
-            logger.warning("chatgpt_dat_oversized", path=str(dat_path), size=size_on_disk)
+            logger.warning("chatgpt_asset_oversized", path=str(asset_path), size=size_on_disk)
             continue
         try:
-            blob_hash, size = store.write_from_path(dat_path)
+            blob_hash, size = store.write_from_path(asset_path)
         except OSError as exc:
-            logger.warning("chatgpt_dat_read_failed", path=str(dat_path), error=str(exc))
+            logger.warning("chatgpt_asset_read_failed", path=str(asset_path), error=str(exc))
             continue
-        acquired[dat_id] = (blob_hash, size)
+        acquired[asset_id] = (blob_hash, size)
     if acquired:
         flush_blob_publications(store)
     return acquired
 
 
+def _walk_asset_files(directory: Path) -> list[Path]:
+    found: list[Path] = []
+    for root, dirnames, filenames in os.walk(directory):
+        dirnames.sort()
+        root_path = Path(root)
+        for filename in sorted(filenames):
+            if _member_asset_id(filename) is not None:
+                found.append(root_path / filename)
+    return found
+
+
 class ChatGPTAssemblySpec:
-    """ChatGPT provider assembly — ``.dat``/sandbox-file sidecar resolution."""
+    """ChatGPT provider assembly — asset-member/sandbox-file sidecar resolution."""
 
     def discover_sidecars(
         self,
@@ -177,7 +223,7 @@ class ChatGPTAssemblySpec:
         blob_store: BlobStore | None = None,
     ) -> SidecarData:
         """Discover ``library_files.json``/``conversation_asset_file_names.json``
-        and, when ``blob_store`` is given, stream every ``.dat`` asset's bytes
+        and, when ``blob_store`` is given, stream every asset member's bytes
         into the content-addressed blob store (bd polylogue-8ac0).
 
         Resolves via each source path's containing directory rather than
@@ -190,28 +236,28 @@ class ChatGPTAssemblySpec:
         there covers both call shapes with the same code, mirroring how
         ``CodexAssemblySpec`` climbs to a stable anchor directory.
 
-        ``.dat`` bytes are acquired the same way: a ZIP source streams every
-        ``.dat`` member through ``BlobStore.write_from_fileobj`` (bounded
-        decompression, no full-file memory load — mirrors
-        ``decoder_zip.py``'s ``capture_raw`` branch); an extracted-directory
-        source streams sibling ``*.dat`` files through
+        Asset bytes are acquired the same way: a ZIP source streams every
+        member whose name carries a file id through
+        ``BlobStore.write_from_fileobj`` (bounded decompression, no full-file
+        memory load — mirrors ``decoder_zip.py``'s ``capture_raw`` branch); an
+        extracted-directory source streams the same members from disk through
         ``BlobStore.write_from_path``. ``blob_store`` is ``None`` for callers
         that only need sidecar metadata (e.g. non-session artifact admission),
         so this stays a no-op there.
         """
         library_files_payload: object | None = None
         asset_names_payload: object | None = None
-        dat_blobs: dict[str, tuple[str, int]] = {}
+        asset_blobs: dict[str, tuple[str, int]] = {}
         seen_dirs: set[Path] = set()
         for path in source_paths:
             if path.suffix.lower() == ".zip":
-                zip_sidecars, zip_dat_blobs = _read_chatgpt_zip_sidecars(path, blob_store)
+                zip_sidecars, zip_asset_blobs = _read_chatgpt_zip_sidecars(path, blob_store)
                 if library_files_payload is None:
                     library_files_payload = zip_sidecars.get(_LIBRARY_FILES_NAME)
                 if asset_names_payload is None:
                     asset_names_payload = zip_sidecars.get(_ASSET_NAMES_NAME)
-                dat_blobs.update(zip_dat_blobs)
-                if zip_dat_blobs and blob_store is not None:
+                asset_blobs.update(zip_asset_blobs)
+                if zip_asset_blobs and blob_store is not None:
                     from polylogue.storage.blob_publication import flush_blob_publications
 
                     flush_blob_publications(blob_store)
@@ -229,14 +275,14 @@ class ChatGPTAssemblySpec:
                 if candidate.is_file():
                     asset_names_payload = _read_json_file(candidate)
             if blob_store is not None:
-                dat_blobs.update(_acquire_dat_blobs_from_directory(directory, blob_store))
+                asset_blobs.update(_acquire_asset_blobs_from_directory(directory, blob_store))
         index = ChatGPTAssetIndex.build(
             library_files_payload=library_files_payload,
             asset_file_names_payload=asset_names_payload,
         )
         result: SidecarData = {"chatgpt_asset_index": index}
-        if dat_blobs:
-            result["chatgpt_dat_blobs"] = dat_blobs
+        if asset_blobs:
+            result["chatgpt_asset_blobs"] = asset_blobs
         return result
 
     def enrich_session(
@@ -247,8 +293,8 @@ class ChatGPTAssemblySpec:
         if conv.source_name is not Provider.CHATGPT or not conv.attachments:
             return conv
         index = sidecar_data.get("chatgpt_asset_index")
-        dat_blobs = sidecar_data.get("chatgpt_dat_blobs") or {}
-        if (index is None or index.is_empty) and not dat_blobs:
+        asset_blobs = sidecar_data.get("chatgpt_asset_blobs") or {}
+        if (index is None or index.is_empty) and not asset_blobs:
             return conv
         if index is None:
             index = ChatGPTAssetIndex.empty()
@@ -258,7 +304,7 @@ class ChatGPTAssemblySpec:
         changed = False
         for attachment in conv.attachments:
             resolved, event = _resolve_attachment(
-                attachment, index, thread_id=conv.provider_session_id, dat_blobs=dat_blobs
+                attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
             )
             new_attachments.append(resolved)
             if resolved is not attachment:
@@ -280,23 +326,23 @@ def _resolve_attachment(
     index: ChatGPTAssetIndex,
     *,
     thread_id: str,
-    dat_blobs: Mapping[str, tuple[str, int]],
+    asset_blobs: Mapping[str, tuple[str, int]],
 ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
     if attachment.attachment_kind == "sandbox_file":
         # bd polylogue-dt5s: sandbox links carry no bytes of their own -- the
         # export/capture never ships the Code-Interpreter container's file,
-        # so there is nothing in ``dat_blobs`` to join against here.
+        # so there is nothing in ``asset_blobs`` to join against here.
         return _resolve_sandbox_attachment(attachment, index, thread_id=thread_id)
-    return _resolve_dat_attachment(attachment, index, dat_blobs)
+    return _resolve_asset_attachment(attachment, index, asset_blobs)
 
 
-def _resolve_dat_attachment(
+def _resolve_asset_attachment(
     attachment: ParsedAttachment,
     index: ChatGPTAssetIndex,
-    dat_blobs: Mapping[str, tuple[str, int]],
+    asset_blobs: Mapping[str, tuple[str, int]],
 ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
     resolved = index.resolve_dat(attachment.provider_attachment_id)
-    blob = dat_blobs.get(_normalize_file_id(attachment.provider_attachment_id))
+    blob = asset_blobs.get(_normalize_file_id(attachment.provider_attachment_id))
     if resolved is None and blob is None:
         return attachment, None
     update: dict[str, object] = {}
@@ -311,7 +357,8 @@ def _resolve_dat_attachment(
             update["provider_file_id"] = resolved.file_id
     if blob is not None and attachment.inline_bytes is None and attachment.precomputed_blob is None:
         # bd polylogue-8ac0: bytes already streamed into the blob store during
-        # sidecar discovery (`_read_chatgpt_zip_sidecars`/`_from_directory`).
+        # sidecar discovery (`_read_chatgpt_zip_sidecars` /
+        # `_acquire_asset_blobs_from_directory`).
         # Recording the (hash, size) pair here -- rather than re-reading the
         # source bytes -- lets `ingest_batch/_core.py` mark the attachment
         # acquired without re-hashing already-written bytes.

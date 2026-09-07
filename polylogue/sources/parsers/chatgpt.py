@@ -5,6 +5,7 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from decimal import Decimal
 
 from pydantic import ValidationError
 
@@ -15,6 +16,7 @@ from polylogue.core.enums import (
     BlockType,
     Provider,
     SessionKind,
+    StopReason,
     TitleSource,
     ToolResultUnknownReason,
     WebConstructType,
@@ -39,6 +41,7 @@ from .base import (
     parser_admission,
     typed_unknown_block,
 )
+from .base_support import AttachmentDirection, derive_attachment_provenance
 from .chatgpt_sidecars import strip_asset_pointer_scheme
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
@@ -247,6 +250,67 @@ _CHATGPT_TERMINAL_NODE_STATES: dict[str, bool] = {
 #: so no outcome was reported. Distinct from a token outside both sets, which
 #: is a state this mapping does not cover.
 _CHATGPT_UNCONCLUDED_NODE_STATES = frozenset({"in_progress"})
+
+
+#: ``metadata.finish_details.type`` tokens that name the same fact as a
+#: :class:`StopReason` member. Only exact equivalences map: ``interrupted``
+#: is the operator stopping generation and ``content_filter`` is a
+#: provider-side filter rather than the model's own refusal, so both leave
+#: the column NULL instead of widening a guess into it -- the same rule
+#: ``hermes_finish_reason`` applies to OpenAI's ``finish_reason``.
+_CHATGPT_FINISH_STOP_REASONS: dict[str, StopReason] = {
+    "stop": StopReason.END_TURN,
+    "max_tokens": StopReason.MAX_TOKENS,
+}
+
+
+def _stop_reason_from_finish_details(finish_details: object) -> str | None:
+    """Return ``messages.stop_reason`` for a ChatGPT ``finish_details`` record."""
+    if not isinstance(finish_details, Mapping):
+        return None
+    mapped = _CHATGPT_FINISH_STOP_REASONS.get(str(finish_details.get("type")))
+    return mapped.value if mapped is not None else None
+
+
+def _author_display_name(author: object) -> str | None:
+    """Who the export says sent this message.
+
+    ``author.name`` is the ordinary carrier. ``author.metadata.real_author``
+    is the provider naming the tool that actually produced an
+    assistant-role turn (``tool:web.run``, ``tool:web.search``); without it
+    those turns read as the model's own words.
+    """
+    if not isinstance(author, Mapping):
+        return None
+    name = _string_value(author, "name")
+    if name is not None:
+        return name
+    metadata = author.get("metadata")
+    return _string_value(metadata, "real_author") if isinstance(metadata, Mapping) else None
+
+
+def _sibling_ordinals(mapping: Mapping[str, object]) -> dict[str, int]:
+    """Ordinal of each node among the siblings naming the same ``parent``.
+
+    ``children`` states sibling order directly and stays authoritative
+    wherever the export carries it. The reduced export shape ships
+    ``{id, message, parent}`` nodes with no ``children`` array at all, and
+    without a parent-edge fallback every regenerated alternative in such an
+    export collapses to ``branch_index == 0`` -- indistinguishable from the
+    first response. Mapping order is the export's own record order, so
+    counting arrivals per parent recovers the sequence ``children`` names.
+    """
+    ordinals: dict[str, int] = {}
+    counts: dict[str, int] = {}
+    for node_id, node in mapping.items():
+        if not isinstance(node, Mapping):
+            continue
+        parent = node.get("parent")
+        parent_key = parent if isinstance(parent, str) and parent else ""
+        ordinal = counts.get(parent_key, 0)
+        counts[parent_key] = ordinal + 1
+        ordinals[node_id] = ordinal
+    return ordinals
 
 
 def _node_status_outcome(node_status: object) -> tuple[bool | None, str | None]:
@@ -533,6 +597,67 @@ def _non_negative_int(value: object) -> int | None:
     return None
 
 
+def _asset_pointer_block_metadata(record: Mapping[str, object], pointer: str) -> dict[str, object]:
+    """Carry an asset pointer and its intrinsic dimensions on an IMAGE block.
+
+    ``blocks`` has no metadata column; the dict is projected verbatim into a
+    ``chatgpt_block_metadata`` session event (``_block_metadata_evidence_events``),
+    which is the only place an asset's width/height/byte size survives — the
+    attachment row has no dimension columns.
+    """
+    metadata: dict[str, object] = {"asset_pointer": pointer}
+    for key in ("width", "height", "size_bytes"):
+        value = _non_negative_int(record.get(key))
+        if value is not None:
+            metadata[key] = str(value)
+    return metadata
+
+
+def _append_asset_attachment(
+    attachments: list[ParsedAttachment],
+    record: Mapping[str, object],
+    *,
+    pointer: str,
+    message_provider_id: str,
+    attachment_kind: str,
+    direction: AttachmentDirection | None,
+    producer_ref: str | None,
+    dedupe_from: int,
+) -> None:
+    """Record an asset-pointer record as the attachment its bytes bind to.
+
+    An attachment row is the only acquisition identity an asset has:
+    ``assembly_chatgpt.py`` joins acquired export members onto attachments by
+    the bare file id, so a pointer that reaches storage as block metadata
+    alone leaves its acquired bytes with nothing to bind to.
+
+    ``dedupe_from`` is the index at which this message's own attachments
+    start. A user upload is named twice — once by the message's ``metadata``
+    attachment row (bare ``file-<id>``) and once by the content part's
+    pointer URI (``file-service://file-<id>``) — and both normalize to the
+    same id, so the second naming must not mint a second row.
+    """
+    file_id = strip_asset_pointer_scheme(pointer)
+    if not file_id:
+        return
+    for existing in attachments[dedupe_from:]:
+        if strip_asset_pointer_scheme(existing.provider_attachment_id) == file_id:
+            return
+    attachments.append(
+        ParsedAttachment(
+            provider_attachment_id=pointer,
+            message_provider_id=message_provider_id,
+            # Read off the URI: the id space the export's asset members and
+            # ``library_files.json`` keys share.
+            provider_file_id=file_id,
+            size_bytes=_non_negative_int(record.get("size_bytes")),
+            attachment_kind=attachment_kind,
+            direction=direction,
+            producer_ref=producer_ref,
+        )
+    )
+
+
 # ChatGPT embeds inline citation anchors in assistant text as private-use
 # unicode spans: U+E200 opens, U+E202 separates reference tokens, U+E201
 # closes (e.g. "\ue200filecite\ue202turn3file14\ue202L180-L293\ue201").
@@ -737,12 +862,88 @@ def _tool_role_result_blocks(
     return blocks
 
 
+# ChatGPT field disposition register (bd polylogue-vnucj). Every
+# ``message``, ``message.metadata``, ``author`` and conversation-level key
+# this parser sees is either read into a named destination or excluded here
+# with its reason; nothing is left in the unexamined third state. Counts are
+# measured over the three acquired exports -- 2025-10 (2,051 conversations /
+# 75,480 messages), 2026-04 (2,403 / 109,657) and 2026-07 (2,472 / 72,981).
+#
+# READ -- message.metadata
+#   finish_details          -> messages.stop_reason (_CHATGPT_FINISH_STOP_REASONS)
+#   default_model_slug      -> messages.model_name, after model_slug
+#   command, args           -> TOOL_USE tool_name / tool_input
+#   reasoning_title         -> THINKING block metadata -> chatgpt_block_metadata
+#   dalle                   -> IMAGE block metadata -> chatgpt_block_metadata
+#   ada_visualizations      -> one attachment per file_id
+#   targeted_reply          -> chatgpt_targeted_reply
+#   is_visually_hidden_from_conversation -> chatgpt_message_delivery
+#   jit_plugin_data         -> chatgpt_jit_plugin_data
+# READ -- message
+#   weight, channel         -> chatgpt_message_delivery
+#   author.metadata.real_author -> messages.sender_name, after author.name
+# READ -- conversation
+#   default_model_slug      -> sessions.models_used
+#   a non-project gizmo token -> chatgpt_custom_gpt
+#   the settings keys above -> chatgpt_conversation_settings
+#
+# EXCLUDED, with reason:
+#   metadata.request_id
+#       The provider's correlation token for one server-side run
+#       (``wfr_019d68e3...``, repeated across every message of that run).
+#       It names nothing inside the archive -- no tier carries a ChatGPT
+#       request id to join against -- and the grouping it expresses is the
+#       conversation tree the archive already stores.
+#   metadata.search_display_string
+#       One constant render string in every occurrence: "Searching the
+#       web..." (1,524 of 1,524 in 2025-10, 1,987 of 1,987 in 2026-04).
+#       The queries it labels are already read (``search_queries``) and the
+#       results already projected (``search_result_groups``).
+#   metadata.initial_text / metadata.finished_text
+#       The status line the UI showed before and after a reasoning run:
+#       "Reasoning"/"Thinking", then "Reasoned for 4 seconds". The elapsed
+#       time is the same measurement ``_extract_generation_timings`` reads
+#       into ``duration_ms`` and the ``generation_lifecycle`` event, in
+#       prose; the label restates that the block is THINKING.
+#   message.update_time
+#       Null on 102,886 of 109,657 messages (2026-04). Where it is stated it
+#       times an edit whose before-state the export does not carry, and
+#       ``messages`` models no per-message revision axis, so storing it would
+#       assert a history the archive cannot show.
+#   author.metadata.sonicberry_model_id / .source
+#       Provider-internal routing labels for the web tool (181 of 109,657 in
+#       2026-04, 82 of 75,480 in 2025-10). They name neither content, a
+#       source, nor an outcome -- only which internal variant served a call.
+#   author.metadata.is_system_initiated_conversation
+#       2 occurrences in 109,657. Restates for one message what the
+#       conversation's own first turn already shows.
+#   conversation.memory_scope
+#       An account setting the export stamps onto every conversation:
+#       "global_enabled" on 2,394 of 2,421 conversations (2026-04). It names
+#       which memory store the account had enabled, not anything this
+#       conversation did.
+#   conversation.owner
+#       Null in every conversation of every acquired export, and provider
+#       account identity is out of scope for session content evidence --
+#       the same decision ``claude/common.py`` records for claude.ai
+#       ``account``.
+#
+# NOT PRESENT in the 2026-07 export shape, and therefore unreadable from it:
+#   node.children; message.status / .recipient / .weight / .channel /
+#   .end_turn / .update_time; author.metadata. That export also carries no
+#   ``code``, ``execution_output``, ``computer_output``, ``tether_*``,
+#   ``system_error`` or ``citable_code_output`` node at all -- 0 of 72,981
+#   messages, against 41,697 in 2026-04 -- so it states no tool episode whose
+#   outcome could be derived. ``_node_status_outcome`` answers NOT_REPORTED
+#   there, which is the whole of what the record supports. ``branch_index``
+#   survives through ``_sibling_ordinals``.
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
     *,
     admission: AdmissionLedger | None = None,
     preserve_empty_messages: bool = False,
+    default_model_slug: str | None = None,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, str, ParsedMessage]] = []
     attachments: list[ParsedAttachment] = []
@@ -752,6 +953,7 @@ def extract_messages_from_mapping(
             sum(1 for node in mapping.values() if isinstance(node, dict) and isinstance(node.get("message"), dict)),
         )
     message_ordinal = 0
+    sibling_ordinals = _sibling_ordinals(mapping)
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
     emitted_by_node_id: dict[str, str] = {}
@@ -803,8 +1005,12 @@ def extract_messages_from_mapping(
         )
         branch_index = 0
 
-        # Calculate branch_index from parent's children array position
+        # The parent's ``children`` array states sibling order; where the
+        # export omits it, the node's arrival ordinal among the siblings
+        # naming the same parent carries the same sequence
+        # (``_sibling_ordinals``).
         if parent_message_provider_id:
+            branch_index = sibling_ordinals.get(node_id, 0)
             parent_node = mapping.get(str(parent_id))
             if isinstance(parent_node, dict):
                 children = parent_node.get("children")
@@ -812,6 +1018,10 @@ def extract_messages_from_mapping(
                     current_node_id = node.get("id")
                     if current_node_id in children:
                         branch_index = children.index(current_node_id)
+
+        # Where this message's own attachments begin, so an asset named both
+        # by a metadata row and by a content part collapses to one row.
+        message_attachment_start = len(attachments)
 
         # Extract attachments from message metadata
         msg_metadata = msg.get("metadata") or {}
@@ -822,6 +1032,30 @@ def extract_messages_from_mapping(
                     attachment = attachment_from_meta(attach, str(msg_id), role=role)
                     if attachment is not None:
                         attachments.append(attachment)
+            # Code-interpreter chart and table deliverables
+            # (``{"type": "table", "file_id": "file-...", "title": ...}``).
+            # Each is a real exported file with its own id; ``attachments``
+            # never lists them, so without this the archive holds the
+            # analysis prose and no record that the artifact it describes
+            # exists. ``attachment_kind`` keeps them distinguishable from
+            # operator uploads.
+            for visualization in msg_metadata.get("ada_visualizations") or []:
+                if not isinstance(visualization, Mapping):
+                    continue
+                file_id = _string_value(visualization, "file_id")
+                if file_id is None:
+                    continue
+                attachments.append(
+                    ParsedAttachment(
+                        provider_attachment_id=file_id,
+                        provider_file_id=file_id,
+                        message_provider_id=str(msg_id),
+                        name=_string_value(visualization, "title"),
+                        attachment_kind="ada_visualization",
+                        direction="model_output",
+                        producer_ref=f"message:{msg_id}",
+                    )
+                )
 
         # Assistant-generated downloadable files (#sandbox links). Code
         # Interpreter deliverables surface only as `sandbox:/mnt/data/...`
@@ -848,10 +1082,18 @@ def extract_messages_from_mapping(
         model_slug: object = None
         model_effort: str | None = None
         duration_raw: object = None
+        stop_reason: str | None = None
+        tool_command: str | None = None
+        tool_args: object = None
+        reasoning_render: dict[str, object] = {}
+        dalle_provenance: Mapping[str, object] | None = None
 
         # Extract message-level metadata from typed fields
         if isinstance(msg_metadata, dict):
-            model_slug = msg_metadata.get("model_slug")
+            # ``default_model_slug`` names the model that answered whenever
+            # the provider did not stamp a per-message ``model_slug``; the
+            # conversation-level default is the last fallback.
+            model_slug = msg_metadata.get("model_slug") or msg_metadata.get("default_model_slug")
             model_effort = _string_value(
                 msg_metadata,
                 "thinking_effort",
@@ -862,7 +1104,20 @@ def extract_messages_from_mapping(
             duration_raw = msg_metadata.get("durationMs")
             if duration_raw is None:
                 duration_raw = msg_metadata.get("duration_ms")
+            stop_reason = _stop_reason_from_finish_details(msg_metadata.get("finish_details"))
+            tool_command = _string_value(msg_metadata, "command")
+            tool_args = msg_metadata.get("args")
+            # The title the provider displayed for this reasoning step
+            # ("Extracting lines from XML file"). ``blocks`` has no column
+            # for it, so it rides the THINKING block's metadata into
+            # ``chatgpt_block_metadata``.
+            if (reasoning_title := _string_value(msg_metadata, "reasoning_title")) is not None:
+                reasoning_render["reasoning_title"] = reasoning_title
+            if isinstance(dalle_raw := msg_metadata.get("dalle"), Mapping) and dalle_raw:
+                dalle_provenance = dalle_raw
         model_name = str(model_slug) if isinstance(model_slug, str) and model_slug else None
+        if model_name is None and role is Role.ASSISTANT:
+            model_name = default_model_slug
         duration_ms = _non_negative_int(duration_raw)
 
         # A non-"all" recipient marks a tool invocation (e.g. the web-search/
@@ -873,14 +1128,22 @@ def extract_messages_from_mapping(
         recipient = (
             recipient_val if isinstance(recipient_val, str) and recipient_val and recipient_val != "all" else None
         )
+        # ``metadata.command`` names the tool a turn addressed and
+        # ``metadata.args`` carries its parameters. Both are stated
+        # independently of the top-level ``recipient``, which the reduced
+        # export shape omits entirely -- without them such an export has no
+        # tool-call signal left to read.
+        tool_target = recipient or tool_command
         tool_call_input: Mapping[str, object] | None = None
-        if recipient is not None and text:
+        if tool_target is not None and text:
             try:
                 parsed_tool_json = json.loads(text)
             except (json.JSONDecodeError, ValueError):
                 parsed_tool_json = None
             if isinstance(parsed_tool_json, dict):
                 tool_call_input = parsed_tool_json
+        if tool_call_input is None and tool_target is not None and tool_args not in (None, [], {}, ""):
+            tool_call_input = {"args": tool_args}
 
         # Build structured content blocks
         content_blocks: list[ParsedContentBlock] = []
@@ -905,7 +1168,7 @@ def extract_messages_from_mapping(
             content_blocks.append(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
-                    tool_name=recipient,
+                    tool_name=tool_target,
                     # tool_id = this node's own id, so the mapping-tree child
                     # node that carries the result (parent == this id) can
                     # link back via the same id below (polylogue-ah21: these
@@ -922,7 +1185,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.THINKING,
                     text=text,
-                    metadata={"content_type": content_type},
+                    metadata={"content_type": content_type, **reasoning_render},
                 )
             )
         elif content_type == "code":
@@ -947,7 +1210,7 @@ def extract_messages_from_mapping(
                 ParsedContentBlock(
                     type=BlockType.TOOL_USE,
                     text=text,
-                    tool_name=recipient or "code_interpreter",
+                    tool_name=tool_target or "code_interpreter",
                     tool_id=str(msg_id),
                     tool_input={"code": text},
                     metadata=dict(tool_use_metadata),
@@ -1010,21 +1273,18 @@ def extract_messages_from_mapping(
                 content_blocks.append(
                     ParsedContentBlock(
                         type=BlockType.IMAGE,
-                        metadata={"asset_pointer": screenshot_pointer},
+                        metadata=_asset_pointer_block_metadata(screenshot, screenshot_pointer),
                     )
                 )
-                attachments.append(
-                    ParsedAttachment(
-                        provider_attachment_id=screenshot_pointer,
-                        message_provider_id=str(msg_id),
-                        # Read off the URI: the id space the export's asset
-                        # blobs and `library_files.json` keys share.
-                        provider_file_id=strip_asset_pointer_scheme(screenshot_pointer),
-                        size_bytes=_non_negative_int(screenshot.get("size_bytes")),
-                        attachment_kind="computer_screenshot",
-                        direction="model_output",
-                        producer_ref=f"message:{msg_id}",
-                    )
+                _append_asset_attachment(
+                    attachments,
+                    screenshot,
+                    pointer=screenshot_pointer,
+                    message_provider_id=str(msg_id),
+                    attachment_kind="computer_screenshot",
+                    direction="model_output",
+                    producer_ref=f"message:{msg_id}",
+                    dedupe_from=message_attachment_start,
                 )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
             # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
@@ -1156,12 +1416,32 @@ def extract_messages_from_mapping(
                 if isinstance(part, str) and part:
                     content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=_strip_citation_markers(part)))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
+                    image_pointer = str(part.get("asset_pointer", ""))
+                    image_metadata = _asset_pointer_block_metadata(part, image_pointer)
+                    # ``metadata.dalle`` states what this image was made from
+                    # -- the generation and file it transformed. That edge
+                    # exists nowhere else: the derived image's own asset
+                    # pointer says nothing about its original.
+                    if dalle_provenance is not None:
+                        image_metadata["dalle"] = dict(dalle_provenance)
                     content_blocks.append(
                         ParsedContentBlock(
                             type=BlockType.IMAGE,
-                            metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
+                            metadata=image_metadata,
                         )
                     )
+                    if image_pointer:
+                        image_direction, image_producer = derive_attachment_provenance(role, str(msg_id))
+                        _append_asset_attachment(
+                            attachments,
+                            part,
+                            pointer=image_pointer,
+                            message_provider_id=str(msg_id),
+                            attachment_kind="image_asset",
+                            direction=image_direction,
+                            producer_ref=image_producer,
+                            dedupe_from=message_attachment_start,
+                        )
                 elif isinstance(part, dict) and part.get("content_type") in {
                     "audio_asset_pointer",
                     "audio_transcription",
@@ -1322,7 +1602,7 @@ def extract_messages_from_mapping(
             model_name=model_name,
             model_effort=model_effort,
             duration_ms=duration_ms,
-            sender_name=_string_value(author, "name") if isinstance(author, Mapping) else None,
+            sender_name=_author_display_name(author),
             recipient=recipient,
             delivery_status=status_val if isinstance(status_val, str) and status_val else None,
             end_turn=end_turn_val if isinstance(end_turn_val, bool) else None,
@@ -1331,6 +1611,7 @@ def extract_messages_from_mapping(
                 if isinstance(user_context_val, Mapping)
                 else None
             ),
+            stop_reason=stop_reason,
         )
         emitted_by_node_id[node_id] = parsed.provider_message_id
         entries.append((_coerce_float(timestamp), idx, node_id, parsed))
@@ -1605,6 +1886,164 @@ def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[P
     return events
 
 
+def _iter_message_nodes(mapping: Mapping[str, object]) -> list[tuple[str, Mapping[str, object]]]:
+    """Every ``(provider_message_id, message)`` pair in mapping order."""
+    pairs: list[tuple[str, Mapping[str, object]]] = []
+    for node in mapping.values():
+        if not isinstance(node, Mapping):
+            continue
+        message = node.get("message")
+        if not isinstance(message, Mapping):
+            continue
+        # The same identity ``extract_messages_from_mapping`` mints, so the
+        # events these feed bind to the message the parser emitted.
+        pairs.append((str(message.get("id") or node.get("id") or ""), message))
+    return pairs
+
+
+def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[ParsedSessionEvent]:
+    """Message-level ``metadata`` evidence with no column or block to hold it.
+
+    Three separately named facts rather than one metadata bag, so a reader
+    filtering on ``event_type`` gets the fact it asked for:
+
+    ``chatgpt_targeted_reply``
+        The prose a user quoted when replying to part of an earlier turn.
+        Real user words, authored in this conversation and recoverable
+        nowhere else in it -- the quoted span is not repeated in the
+        message's own text.
+    ``chatgpt_message_delivery``
+        How the provider delivered this turn: ``weight`` 0 (dropped from the
+        model's own context), ``is_visually_hidden_from_conversation`` (never
+        shown to the operator), and the ``channel`` it was emitted on
+        (``commentary`` for the tool/analysis stream, ``final`` for the
+        answer). Absent these a hidden, context-dropped, commentary-channel
+        turn reads as conversation the operator saw and the model kept.
+    ``chatgpt_jit_plugin_data``
+        A just-in-time plugin's call and response payload -- the only
+        record of what a plugin was asked and what it answered.
+    """
+    events: list[ParsedSessionEvent] = []
+    for message_id, message in _iter_message_nodes(mapping):
+        metadata = message.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        timestamp = message.get("create_time")
+        timestamp_text = str(timestamp) if timestamp is not None else None
+        targeted_reply = metadata.get("targeted_reply")
+        if targeted_reply not in (None, "", [], {}):
+            payload: dict[str, object] = {"targeted_reply": targeted_reply}
+            if (label := _string_value(metadata, "targeted_reply_label")) is not None:
+                payload["targeted_reply_label"] = label
+            events.append(
+                ParsedSessionEvent(
+                    event_type="chatgpt_targeted_reply",
+                    timestamp=timestamp_text,
+                    source_message_provider_id=message_id,
+                    payload=payload,
+                )
+            )
+        delivery: dict[str, object] = {}
+        weight = message.get("weight")
+        if isinstance(weight, (int, float, Decimal)) and not isinstance(weight, bool) and float(weight) != 1.0:
+            delivery["weight"] = float(weight)
+        if metadata.get("is_visually_hidden_from_conversation") is True:
+            delivery["is_visually_hidden_from_conversation"] = True
+        if (channel := _string_value(message, "channel")) is not None:
+            delivery["channel"] = channel
+        if delivery:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="chatgpt_message_delivery",
+                    timestamp=timestamp_text,
+                    source_message_provider_id=message_id,
+                    payload=delivery,
+                )
+            )
+        jit_plugin_data = metadata.get("jit_plugin_data")
+        if isinstance(jit_plugin_data, Mapping) and jit_plugin_data:
+            events.append(
+                ParsedSessionEvent(
+                    event_type="chatgpt_jit_plugin_data",
+                    timestamp=timestamp_text,
+                    source_message_provider_id=message_id,
+                    payload=dict(jit_plugin_data),
+                )
+            )
+    return events
+
+
+#: Conversation-level keys that state how the operator configured or filed
+#: this conversation. Every one is a provider-owned setting with no
+#: cross-origin equivalent, so they travel together as one settings event
+#: rather than becoming per-provider session columns -- the decision
+#: ``sessions.run_settings_json`` recorded and v95 then retired in favour of
+#: an event.
+_CHATGPT_CONVERSATION_SETTING_KEYS: tuple[str, ...] = (
+    "conversation_origin",
+    "is_archived",
+    "is_starred",
+    "is_read_only",
+    "is_do_not_remember",
+    "is_study_mode",
+    "voice",
+    "async_status",
+    "context_scopes",
+    "disabled_tool_ids",
+    "plugin_ids",
+    "sugar_item_id",
+    "gizmo_type",
+    "safe_urls",
+    "blocked_urls",
+    "moderation_results",
+)
+
+
+def _conversation_settings_event(
+    payload: Mapping[str, object],
+    *,
+    timestamp: str | None,
+) -> ParsedSessionEvent | None:
+    """Carry the conversation's own non-empty settings, or nothing."""
+    settings = {
+        key: value
+        for key in _CHATGPT_CONVERSATION_SETTING_KEYS
+        if (value := payload.get(key)) not in (None, "", [], {}, False)
+    }
+    if not settings:
+        return None
+    return ParsedSessionEvent(
+        event_type="chatgpt_conversation_settings",
+        timestamp=timestamp,
+        payload=settings,
+    )
+
+
+def _custom_gpt_event(
+    payload: Mapping[str, object],
+    *,
+    timestamp: str | None,
+) -> ParsedSessionEvent | None:
+    """Name the custom GPT a conversation ran against, if any.
+
+    ``provider_project_ref`` admits only the ``g-p-`` project token, so a
+    bare ``g-<id>`` -- a custom GPT, a different kind of thing from a
+    project -- reaches no destination through it. The GPT is what answered
+    every turn in the conversation, so its identity is session evidence.
+    """
+    gizmo_id = _string_value(payload, "conversation_template_id") or _string_value(payload, "gizmo_id")
+    if gizmo_id is None or gizmo_id.startswith("g-p-"):
+        return None
+    event_payload: dict[str, object] = {"gizmo_id": gizmo_id}
+    if (gizmo_type := _string_value(payload, "gizmo_type")) is not None:
+        event_payload["gizmo_type"] = gizmo_type
+    return ParsedSessionEvent(
+        event_type="chatgpt_custom_gpt",
+        timestamp=timestamp,
+        payload=event_payload,
+    )
+
+
 @parser_admission("chatgpt")
 def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     mapping = payload.get("mapping") or {}
@@ -1623,11 +2062,13 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     admission = AdmissionLedger()
     admission.expect(AdmissionUnit.OUTER_RECORD, 1)
     admission.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
+    conversation_model_slug = _string_value(payload, "default_model_slug")
     messages, attachments = extract_messages_from_mapping(
         mapping,
         current_node,
         admission=admission,
         preserve_empty_messages=derived_current_node is not None,
+        default_model_slug=conversation_model_slug,
     )
     generation_timings = _extract_generation_timings(mapping)
     emitted_message_ids = {message.provider_message_id for message in messages}
@@ -1682,6 +2123,12 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         for timing in generation_timings
     ]
     session_events.extend(_block_metadata_evidence_events(messages))
+    emitted_provider_ids = {message.provider_message_id for message in messages}
+    session_events.extend(
+        event
+        for event in _message_metadata_evidence_events(mapping)
+        if event.source_message_provider_id in emitted_provider_ids
+    )
     duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     provider_title = payload.get("title") or payload.get("name")
     title = provider_title or fallback_id
@@ -1709,6 +2156,20 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     project_raw = payload.get("conversation_template_id") or payload.get("gizmo_id")
     provider_project_ref = str(project_raw) if isinstance(project_raw, str) and project_raw.startswith("g-p-") else None
 
+    conversation_timestamp = str(payload.get("create_time")) if payload.get("create_time") is not None else None
+    if (settings_event := _conversation_settings_event(payload, timestamp=conversation_timestamp)) is not None:
+        session_events.append(settings_event)
+    if (custom_gpt_event := _custom_gpt_event(payload, timestamp=conversation_timestamp)) is not None:
+        session_events.append(custom_gpt_event)
+
+    # The conversation's ``default_model_slug`` names the model it was
+    # configured to use; per-message slugs name the models that actually
+    # answered. The union is the session's model summary.
+    model_names: set[str] = {message.model_name for message in messages if message.model_name}
+    if conversation_model_slug:
+        model_names.add(conversation_model_slug)
+    models_used = sorted(model_names)
+
     return ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
@@ -1727,5 +2188,6 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         session_events=session_events,
         unit_accounting=admission.close(),
         reported_duration_ms=sum(duration_values) if duration_values else None,
+        models_used=models_used,
         ingest_flags=ingest_flags,
     )

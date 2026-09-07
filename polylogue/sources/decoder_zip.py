@@ -164,7 +164,7 @@ def process_zip(
 
     ``sidecar_data`` (bd polylogue-8ac0) threads the source-scan-level
     provider assembly sidecars (e.g. ChatGPT's ``chatgpt_asset_index``/
-    ``chatgpt_dat_blobs``, discovered once per source by
+    ``chatgpt_asset_blobs``, discovered once per source by
     ``_setup_source_walk`` before any entry is parsed) into every entry's
     ``_ParseContext`` so ``_SessionEmitter.emit``'s ``enrich_session`` hook
     actually fires for ZIP-bundle sources. Without it, every entry got an
