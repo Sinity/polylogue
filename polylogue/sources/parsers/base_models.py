@@ -297,6 +297,10 @@ class ParsedMessage(BaseModel):
     # occurrences on the wire). None when the provider did not report one or
     # this is not an assistant turn -- never a guess.
     stop_reason: str | None = None
+    # Claude Code's explicit producer outcome for a generation cut short
+    # before completion. The durable session event carries this even on
+    # records that have no message body.
+    is_aborted_mid_stream: bool = False
 
     @field_validator("role", mode="before")
     @classmethod
@@ -546,6 +550,8 @@ class ParsedSession(BaseModel):
     # web sessions be grouped/enumerated by project and upgrades the canonical URL
     # to the project-scoped form. None for sessions with no project.
     provider_project_ref: str | None = None
+    # Claude Code's team/campaign scope, stamped on every record in the file.
+    team_name: str | None = None
     # Specific commit the agent session was anchored to (codex records this
     # per-session in their meta.git.commit_hash). Lets downstream attribution
     # pin a session to an exact commit instead of the looser "session_date
