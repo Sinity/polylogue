@@ -22,6 +22,7 @@ Four distinct wire shapes live under the ``claude-ai`` acquisition family:
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Mapping
 
 from polylogue.archive.message.artifacts import classify_material_origin
@@ -39,12 +40,14 @@ from ..base import (
     attachment_from_meta,
     human_authored_override,
     mark_last_occurrence_as_active_leaf,
+    meta_carries_provider_attachment_id,
     parser_admission,
     synthetic_message_id,
 )
 from .common import (
     _first_identity_field,
     _first_string_field,
+    _merge_attachment_rows,
     _message_model_effort,
     _message_model_name,
     _thinking_configuration,
@@ -777,10 +780,45 @@ def _session_timestamp(payload: Mapping[str, object], *keys: str) -> str | None:
     return None
 
 
+def _conversation_level_identity(
+    meta: object,
+    attachment: ParsedAttachment,
+    owned_by_descriptor: Mapping[tuple[str, str | None], ParsedAttachment | None],
+) -> ParsedAttachment:
+    """Adopt the owning message's identity for a conversation-level repeat.
+
+    A conversation-level ``attachments``/``files`` entry restates a record
+    that a message already carries, without restating the message id. When
+    the entry names no provider identity of its own, its identity is seeded
+    from the absent message id, so it can never equal the message-level
+    record for the same physical file: the file lands twice, once owned and
+    once with no owner at all. The export still supplies the descriptors
+    ``attachment_from_meta`` seeds that identity with, so match on those --
+    and only when exactly one message-level record answers to them, because
+    two make the owner a guess.
+    """
+    if meta_carries_provider_attachment_id(meta) or not attachment.name:
+        return attachment
+    owned = owned_by_descriptor.get((attachment.name, attachment.mime_type))
+    if owned is None:
+        return attachment
+    return attachment.model_copy(update={"provider_attachment_id": owned.provider_attachment_id})
+
+
 def _merge_session_attachments(
     message_attachments: list[ParsedAttachment],
     payload: Mapping[str, object],
 ) -> list[ParsedAttachment]:
+    descriptor_counts: Counter[tuple[str, str | None]] = Counter(
+        (attachment.name, attachment.mime_type) for attachment in message_attachments if attachment.name
+    )
+    owned_by_descriptor: dict[tuple[str, str | None], ParsedAttachment | None] = {}
+    for attachment in message_attachments:
+        if not attachment.name:
+            continue
+        descriptor = (attachment.name, attachment.mime_type)
+        owned_by_descriptor[descriptor] = attachment if descriptor_counts[descriptor] == 1 else None
+
     attachments = list(message_attachments)
     top_level: list[object] = []
     for key in ("attachments", "files"):
@@ -788,31 +826,10 @@ def _merge_session_attachments(
         if isinstance(value, list):
             top_level.extend(value)
     for meta in top_level:
-        attachment = attachment_from_meta(meta, None)
-        if attachment is not None:
-            attachments.append(attachment)
-
-    merged: dict[str, ParsedAttachment] = {}
-    for candidate in attachments:
-        existing = merged.get(candidate.provider_attachment_id)
-        if existing is None:
-            merged[candidate.provider_attachment_id] = candidate
-            continue
-        preferred = candidate if candidate.inline_bytes is not None and existing.inline_bytes is None else existing
-        other = existing if preferred is candidate else candidate
-        merged[candidate.provider_attachment_id] = preferred.model_copy(
-            update={
-                "message_provider_id": preferred.message_provider_id or other.message_provider_id,
-                "name": preferred.name or other.name,
-                "mime_type": preferred.mime_type or other.mime_type,
-                "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
-                "provider_file_id": preferred.provider_file_id or other.provider_file_id,
-                "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
-                "direction": preferred.direction or other.direction,
-                "producer_ref": preferred.producer_ref or other.producer_ref,
-            }
-        )
-    return list(merged.values())
+        parsed = attachment_from_meta(meta, None)
+        if parsed is not None:
+            attachments.append(_conversation_level_identity(meta, parsed, owned_by_descriptor))
+    return _merge_attachment_rows(attachments)
 
 
 @parser_admission("claude_ai")
