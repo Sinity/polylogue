@@ -12,6 +12,7 @@ import hashlib
 import json
 import multiprocessing
 import resource
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
@@ -149,6 +150,8 @@ def test_attachment_enrichment_is_rejected_for_stale_changed_or_invalid_input() 
     conflicting["session"]["turns"][0]["attachments"][0]["content_base64"] = "d29ybGQ="
     changed_observation = json.loads(json.dumps(enriched))
     changed_observation["provenance"]["adapter_version"] = "different"
+    changed_identity = json.loads(json.dumps(enriched))
+    changed_identity["session"]["turns"][0]["attachments"][0]["provider_attachment_id"] = "other-upload"
 
     resident_model = BrowserCaptureEnvelope.model_validate(resident)
     assert (
@@ -168,6 +171,35 @@ def test_attachment_enrichment_is_rejected_for_stale_changed_or_invalid_input() 
     assert (
         capture_convergence(BrowserCaptureEnvelope.model_validate(changed_observation), resident_model)
         is CaptureConvergence.SUPERSEDED
+    )
+    assert (
+        capture_convergence(BrowserCaptureEnvelope.model_validate(changed_identity), resident_model)
+        is CaptureConvergence.SUPERSEDED
+    )
+
+
+def test_newer_capture_with_attachment_carrier_keeps_normal_freshness_admission() -> None:
+    resident = _payload()
+    resident["session"]["turns"][0]["attachments"] = [  # type: ignore[index]
+        {"provider_attachment_id": "upload-1", "name": "payload.bin"}
+    ]
+    incoming = json.loads(json.dumps(resident))
+    incoming["session"]["turns"].append(
+        {
+            "provider_turn_id": "turn-2",
+            "role": "assistant",
+            "text": "later turn",
+            "attachments": [
+                {"provider_attachment_id": "upload-1", "name": "payload.bin", "content_base64": "aGVsbG8="}
+            ],
+        }
+    )
+    assert (
+        capture_convergence(
+            BrowserCaptureEnvelope.model_validate(incoming),
+            BrowserCaptureEnvelope.model_validate(resident),
+        )
+        is CaptureConvergence.PUBLISH
     )
 
 
@@ -191,7 +223,7 @@ def test_attachment_enrichment_rereads_resident_after_lock_drift(
     original_lock = receiver._spool_file_lock
 
     @contextmanager
-    def lock_with_drift(root: Path):
+    def lock_with_drift(root: Path) -> Iterator[None]:
         with original_lock(root):
             first.path.write_bytes(drifted_raw)
             yield

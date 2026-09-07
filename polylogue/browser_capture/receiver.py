@@ -339,13 +339,7 @@ def _capture_hash_bytes(
     *,
     without_attachment_carriers: bool = False,
 ) -> bytes:
-    """Serialize the semantic capture fingerprint without the fast JSON path.
-
-    The msgspec encoder has pathological peak memory use for very large
-    strings on the receiver's input route.  This hash is admission metadata,
-    so the stdlib encoder's bounded, predictable allocation is preferable to
-    retaining the accelerator's output characteristics here.
-    """
+    """Serialize the semantic capture fingerprint."""
     session = envelope.session.model_dump(mode="json", exclude_none=True)
     if without_attachment_carriers:
         for attachment in session.get("attachments", []):
@@ -361,7 +355,7 @@ def _capture_hash_bytes(
         "provider_meta": _semantic_provider_meta(envelope.provider_meta),
         "raw_provider_payload": envelope.raw_provider_payload,
     }
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return dumps_bytes(payload, sort_keys=True)
 
 
 _INVALID_ATTACHMENT_CARRIER = object()
@@ -395,6 +389,50 @@ def _capture_has_invalid_content_carrier(envelope: BrowserCaptureEnvelope) -> bo
         and _decode_capture_content_base64(attachment.content_base64) is _INVALID_ATTACHMENT_CARRIER
         for attachment in _capture_attachments(envelope)
     )
+
+
+def _attachment_identity(attachment: BrowserCaptureAttachment) -> tuple[object, ...]:
+    """Return attachment fields that identify the observed object, not bytes."""
+    return (
+        attachment.provider_attachment_id,
+        attachment.message_provider_id,
+        attachment.attachment_kind,
+        attachment.name,
+        attachment.mime_type,
+        attachment.size_bytes,
+        attachment.url,
+        attachment.extracted_content,
+        attachment.inline_base64,
+        attachment.data,
+        attachment.provider_meta,
+    )
+
+
+def _capture_carrier_conflicts(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
+    """Reject carrier bytes that contradict an existing attachment identity."""
+    incoming_attachments = _capture_attachments(incoming)
+    existing_attachments = _capture_attachments(existing)
+    if len(incoming_attachments) < len(existing_attachments):
+        return True
+    if any(
+        _attachment_identity(current) != _attachment_identity(previous)
+        for current, previous in zip(
+            incoming_attachments[: len(existing_attachments)], existing_attachments, strict=True
+        )
+    ):
+        return True
+    for current, previous in zip(incoming_attachments, existing_attachments, strict=False):
+        if current.content_base64 is None or previous.content_base64 is None:
+            continue
+        current_bytes = _decode_capture_content_base64(current.content_base64)
+        previous_bytes = _decode_capture_content_base64(previous.content_base64)
+        if (
+            current_bytes is _INVALID_ATTACHMENT_CARRIER
+            or previous_bytes is _INVALID_ATTACHMENT_CARRIER
+            or current_bytes != previous_bytes
+        ):
+            return True
+    return False
 
 
 def _attachment_content_enrichment(
@@ -777,11 +815,10 @@ def capture_convergence(
         return CaptureConvergence.DUPLICATE
     if _attachment_content_enrichment(incoming, existing):
         return CaptureConvergence.PUBLISH
-    # A carrier is an acquisition claim, not freshness evidence.  If it does
-    # not satisfy the narrow enrichment relation, do not let a newer timestamp
-    # or turn count smuggle changed, malformed, or cross-identity bytes into
-    # the resident artifact.
-    if _capture_has_content_carrier(incoming):
+    # A carrier that contradicts a resident attachment is not freshness
+    # evidence.  Otherwise ordinary newer/richer snapshots (for example a new
+    # turn carrying an attachment) retain their existing admission semantics.
+    if _capture_has_content_carrier(incoming) and _capture_carrier_conflicts(incoming, existing):
         return CaptureConvergence.SUPERSEDED
     if not _capture_is_newer_or_richer(incoming, existing):
         return CaptureConvergence.SUPERSEDED
