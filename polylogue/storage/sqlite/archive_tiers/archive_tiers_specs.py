@@ -1,9 +1,9 @@
 """Concrete column specifications for archive_tiers tables.
 
-Defines the single source of truth for:
-  - messages table structure (29 writable columns + 1 GENERATED message_id)
-  - blocks table structure (16 writable columns + 1 GENERATED block_id)
-  - Other key tables (sessions, session_events, etc.)
+Defines the single source of truth for messages, blocks, sessions, and the
+other archive-tier table row shapes.  Each declaration drives its DDL,
+mechanical INSERT order, record projection, and domain projection; semantic
+validation remains with the typed owners.
 
 Each spec drives INSERT/SELECT generation and typed row extraction.
 
@@ -107,314 +107,6 @@ def _optional_bool_value(value: object) -> bool | None:
     return None if value is None else bool(value)
 
 
-def _ddl(name: str, sql: str) -> ColumnSpec:
-    return ColumnSpec(name=name, is_generated="GENERATED ALWAYS" in sql, ddl_sql=f"{name} {sql}")
-
-
-def _make_messages_spec() -> TableColumnSpec:
-    """Create the messages table column specification.
-
-    The messages table structure (from schema):
-      session_id, native_id, identity_source, parent_message_id, position, role, message_type,
-      material_origin, model_name, model_effort, sender_name, recipient,
-      delivery_status, end_turn, user_context_text, has_tool_use, has_thinking,
-      has_paste, paste_boundary, variant_index, is_active_path, is_active_leaf,
-      word_count, input_tokens, output_tokens, cache_read_tokens,
-      cache_write_tokens, duration_ms, content_address, content_hash, occurred_at_ms
-
-    GENERATED (not writable): message_id
-
-    Special handling: parent_message_id is always NULL on INSERT (no tuple value).
-    """
-    all_columns: tuple[ColumnSpec, ...] = (
-        _ddl(
-            "message_id",
-            "TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'p:' || position || '.' || variant_index ELSE 'n:' || native_id END) STORED UNIQUE",
-        ),
-        _ddl("session_id", "TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"),
-        _ddl("native_id", "TEXT"),
-        ColumnSpec(
-            "identity_source",
-            "TEXT",
-            ddl_sql="identity_source TEXT NOT NULL DEFAULT 'positional' CHECK(identity_source IN ('native', 'positional'))",
-        ),
-        ColumnSpec(
-            "parent_message_id",
-            "TEXT",
-            extract_placeholder="NULL",
-            ddl_sql="parent_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL",
-        ),
-        _ddl("position", "INTEGER NOT NULL CHECK(position >= 0)"),
-        ColumnSpec("role", "TEXT", ddl_sql=f"role TEXT NOT NULL CHECK ({check('role', Role)})"),
-        ColumnSpec(
-            "message_type",
-            "TEXT",
-            ddl_sql=f"message_type TEXT NOT NULL DEFAULT 'message' CHECK ({check('message_type', MessageType)})",
-        ),
-        ColumnSpec(
-            "material_origin",
-            "TEXT",
-            ddl_sql=f"material_origin TEXT NOT NULL DEFAULT 'unknown' CHECK ({check('material_origin', MaterialOrigin)})",
-        ),
-        _ddl("model_name", "TEXT"),
-        _ddl("model_effort", "TEXT"),
-        _ddl("sender_name", "TEXT"),
-        _ddl("recipient", "TEXT"),
-        _ddl("delivery_status", "TEXT"),
-        _ddl("end_turn", "INTEGER CHECK(end_turn IN (0, 1) OR end_turn IS NULL)"),
-        _ddl("user_context_text", "TEXT"),
-        _ddl("has_tool_use", "INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1))"),
-        _ddl("has_thinking", "INTEGER NOT NULL DEFAULT 0 CHECK(has_thinking IN (0, 1))"),
-        _ddl("has_paste", "INTEGER NOT NULL DEFAULT 0 CHECK(has_paste IN (0, 1))"),
-        ColumnSpec(
-            "paste_boundary",
-            "TEXT",
-            ddl_sql=f"paste_boundary TEXT CHECK ({nullable_check('paste_boundary', PasteBoundary)})",
-        ),
-        _ddl("variant_index", "INTEGER NOT NULL DEFAULT 0 CHECK(variant_index >= 0)"),
-        _ddl("is_active_path", "INTEGER NOT NULL DEFAULT 1 CHECK(is_active_path IN (0, 1))"),
-        _ddl("is_active_leaf", "INTEGER NOT NULL DEFAULT 0 CHECK(is_active_leaf IN (0, 1))"),
-        _ddl("word_count", "INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0)"),
-        _ddl("input_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0)"),
-        _ddl("output_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0)"),
-        _ddl("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0)"),
-        _ddl("cache_write_tokens", "INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0)"),
-        _ddl("duration_ms", "INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0)"),
-        _ddl("content_address", "BLOB CHECK(content_address IS NULL OR length(content_address) = 32)"),
-        _ddl("content_hash", f"BLOB NOT NULL {CONTENT_HASH_CHECK}"),
-        _ddl("occurred_at_ms", "INTEGER"),
-        ColumnSpec(
-            "stop_reason", "TEXT", ddl_sql=f"stop_reason TEXT CHECK ({nullable_check('stop_reason', StopReason)})"
-        ),
-    )
-
-    record_columns = (
-        ColumnSpec(
-            "text",
-            record_name="text",
-            domain_name="text",
-            select_expression="COALESCE((SELECT group_concat(b.text, char(10)) FROM blocks b WHERE b.message_id = {alias}.message_id AND b.text IS NOT NULL), '')",
-        ),
-        ColumnSpec("source_name", record_name="source_name", select_expression="s.origin"),
-        ColumnSpec("version", record_name="version", select_expression="1"),
-    )
-
-    def record(
-        name: str,
-        *,
-        record_name: str | None = None,
-        domain_name: str | None = None,
-        select_expression: str | None = None,
-        record_transform: Callable[[object], object] | None = None,
-        domain_transform: Callable[[object], object] | None = None,
-    ) -> ColumnSpec:
-        return ColumnSpec(
-            name,
-            record_name=record_name or name,
-            domain_name=domain_name,
-            select_expression=select_expression,
-            record_transform=record_transform,
-            domain_transform=domain_transform,
-        )
-
-    mappings = {
-        "message_id": record("message_id", domain_name="id"),
-        "session_id": record("session_id"),
-        "native_id": record("native_id", record_name="provider_message_id"),
-        "identity_source": record("identity_source", domain_name="identity_source"),
-        "parent_message_id": record("parent_message_id", domain_name="parent_id"),
-        "content_address": record("content_address", select_expression="lower(hex({alias}.content_address))"),
-        "position": record("position", domain_name="position", record_transform=_none_to_zero),
-        "role": record("role", domain_name="role"),
-        "message_type": record("message_type", domain_name="message_type"),
-        "material_origin": record("material_origin", domain_name="material_origin"),
-        "model_name": record("model_name", domain_name="model_name"),
-        "has_tool_use": record(
-            "has_tool_use", domain_name="has_tool_use", record_transform=_none_to_zero, domain_transform=_bool_value
-        ),
-        "has_thinking": record(
-            "has_thinking", domain_name="has_thinking", record_transform=_none_to_zero, domain_transform=_bool_value
-        ),
-        "has_paste": record(
-            "has_paste", domain_name="has_paste", record_transform=_none_to_zero, domain_transform=_bool_value
-        ),
-        "paste_boundary": record(
-            "paste_boundary", record_name="paste_boundary_state", domain_name="paste_boundary_state"
-        ),
-        "variant_index": record(
-            "variant_index", record_name="branch_index", domain_name="branch_index", record_transform=_none_to_zero
-        ),
-        "is_active_path": record(
-            "is_active_path",
-            domain_name="is_active_path",
-            record_transform=_optional_bool_value,
-            domain_transform=lambda value: value,
-        ),
-        "is_active_leaf": record(
-            "is_active_leaf", domain_name="is_active_leaf", record_transform=_bool_value, domain_transform=_bool_value
-        ),
-        "word_count": record("word_count", record_transform=_none_to_zero),
-        "input_tokens": record("input_tokens", domain_name="input_tokens", record_transform=_none_to_zero),
-        "output_tokens": record("output_tokens", domain_name="output_tokens", record_transform=_none_to_zero),
-        "cache_read_tokens": record(
-            "cache_read_tokens", domain_name="cache_read_tokens", record_transform=_none_to_zero
-        ),
-        "cache_write_tokens": record(
-            "cache_write_tokens", domain_name="cache_write_tokens", record_transform=_none_to_zero
-        ),
-        "duration_ms": record("duration_ms", domain_name="duration_ms", domain_transform=_none_to_zero),
-        "content_hash": record("content_hash", select_expression="lower(hex({alias}.content_hash))"),
-        "occurred_at_ms": record(
-            "occurred_at_ms",
-            record_name="sort_key",
-            domain_name="timestamp",
-            select_expression="{alias}.occurred_at_ms / 1000.0",
-            domain_transform=_epoch_seconds_to_datetime,
-        ),
-        "stop_reason": record("stop_reason", domain_name="stop_reason"),
-    }
-    all_columns = tuple(
-        replace(
-            col,
-            extract=_value(col.name) if col.extract_placeholder == "?" else None,
-            record_name=mappings[col.name].record_name,
-            select_expression=mappings[col.name].select_expression,
-            record_transform=mappings[col.name].record_transform,
-            domain_name=mappings[col.name].domain_name,
-            domain_transform=mappings[col.name].domain_transform,
-        )
-        if col.name in mappings
-        else replace(col, extract=_value(col.name) if col.extract_placeholder == "?" else None)
-        for col in all_columns
-    )
-
-    writable_columns = tuple(col for col in all_columns if not col.is_generated)
-
-    return TableColumnSpec(
-        table_name="messages",
-        all_columns=all_columns,
-        writable_columns=writable_columns,
-        record_only_columns=record_columns,
-        table_constraints=("PRIMARY KEY(session_id, position, variant_index)",),
-    )
-
-
-def _make_blocks_spec() -> TableColumnSpec:
-    """Create the blocks table column specification.
-
-    The blocks table structure (from schema):
-      session_id, message_id, position, block_type, text, tool_name, tool_id,
-      tool_input, semantic_type, media_type, language, tool_result_is_error,
-      tool_result_exit_code, tool_result_outcome_unknown_reason, signature,
-      content_hash
-
-    GENERATED (not writable):
-      block_id, tool_command, tool_path, search_text, tool_detail_text
-    """
-    all_columns: tuple[ColumnSpec, ...] = (
-        _ddl("block_id", "TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE"),
-        _ddl("message_id", "TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE"),
-        _ddl("session_id", "TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE"),
-        _ddl("position", "INTEGER NOT NULL CHECK(position >= 0)"),
-        ColumnSpec("block_type", "TEXT", ddl_sql=f"block_type TEXT NOT NULL CHECK ({check('block_type', BlockType)})"),
-        _ddl("text", "TEXT"),
-        _ddl("tool_name", "TEXT"),
-        _ddl("tool_id", "TEXT"),
-        ColumnSpec(
-            "tool_input", "TEXT", ddl_sql=f"tool_input TEXT CHECK ({json_object_check('tool_input', nullable=True)})"
-        ),
-        _ddl("semantic_type", "TEXT"),
-        _ddl("media_type", "TEXT"),
-        _ddl("language", "TEXT"),
-        _ddl("tool_result_is_error", "INTEGER CHECK (tool_result_is_error IN (0, 1))"),
-        _ddl("tool_result_exit_code", "INTEGER"),
-        ColumnSpec("tool_outcome", "TEXT", ddl_sql=f"tool_outcome TEXT CHECK ({check('tool_outcome', ToolOutcome)})"),
-        ColumnSpec(
-            "tool_result_outcome_unknown_reason",
-            "TEXT",
-            ddl_sql=f"tool_result_outcome_unknown_reason TEXT CHECK ({nullable_check('tool_result_outcome_unknown_reason', ToolResultUnknownReason)})",
-        ),
-        _ddl("signature", "TEXT"),
-        _ddl("content_hash", "BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)"),
-        _ddl("tool_command", "TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL"),
-        _ddl(
-            "tool_path",
-            "TEXT GENERATED ALWAYS AS (COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))) VIRTUAL",
-        ),
-        _ddl(
-            "search_text",
-            "TEXT GENERATED ALWAYS AS (trim(COALESCE(text, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(json_extract(tool_input, '$.command'), '') || ' ' || COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' || COALESCE(json_extract(tool_input, '$.path'), ''))) VIRTUAL",
-        ),
-        _ddl(
-            "tool_detail_text",
-            "TEXT GENERATED ALWAYS AS (lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))) VIRTUAL",
-        ),
-    )
-
-    record_columns = (ColumnSpec("metadata", record_name="metadata", select_expression="NULL"),)
-    # (record field, domain field, domain transform). A ``None`` domain field
-    # is storage/record identity the domain block never carries.
-    mappings: dict[str, tuple[str, str | None, Callable[[object], object] | None]] = {
-        "block_id": ("block_id", "id", None),
-        "message_id": ("message_id", None, None),
-        "session_id": ("session_id", None, None),
-        "position": ("block_index", None, None),
-        "block_type": ("type", "type", _text_value),
-        "text": ("text", "text", None),
-        "tool_name": ("tool_name", "tool_name", None),
-        "tool_id": ("tool_id", "tool_id", None),
-        "tool_input": ("tool_input", "tool_input", _decoded_json_value),
-        "semantic_type": ("semantic_type", "semantic_type", _optional_text_value),
-        "tool_result_is_error": ("tool_result_is_error", "tool_result_is_error", None),
-        "tool_result_exit_code": ("tool_result_exit_code", "tool_result_exit_code", None),
-        "tool_outcome": ("tool_outcome", "tool_outcome", _optional_text_value),
-        "tool_result_outcome_unknown_reason": (
-            "tool_result_outcome_unknown_reason",
-            "tool_result_outcome_unknown_reason",
-            None,
-        ),
-        "signature": ("signature", "signature", None),
-    }
-    all_columns = tuple(
-        replace(
-            col,
-            extract=_value(col.name) if col.extract_placeholder == "?" else None,
-            record_name=mappings[col.name][0],
-            domain_name=mappings[col.name][1],
-            domain_transform=mappings[col.name][2],
-        )
-        if col.name in mappings
-        else replace(col, extract=_value(col.name) if col.extract_placeholder == "?" else None)
-        for col in all_columns
-    )
-
-    writable_columns = tuple(col for col in all_columns if not col.is_generated)
-
-    return TableColumnSpec(
-        table_name="blocks",
-        all_columns=all_columns,
-        writable_columns=writable_columns,
-        record_only_columns=record_columns,
-        table_constraints=(
-            "PRIMARY KEY(message_id, position)",
-            # An unknown structural outcome is only honest with a reason for it.
-            # The reason describes a tool_result's missing outcome, so it may
-            # appear on no other block shape: a tool_use mirrors its result's
-            # outcome but the reason stays on the result that lacks the signal.
-            """CHECK (
-        CASE
-            WHEN block_type = 'tool_result' AND tool_outcome = 'unknown'
-                THEN tool_result_outcome_unknown_reason IS NOT NULL
-            ELSE tool_result_outcome_unknown_reason IS NULL
-        END
-    )""",
-        ),
-    )
-
-
-# Index-tier table specs. Each rendered table body is sourced from these
-# column definitions plus its table-level constraints; indexes, triggers,
-# and virtual tables remain in index.py because they are not row schemas.
 _DEFERRED_WRITE = "deferred"
 
 
@@ -428,14 +120,26 @@ def _raw_column(
     domain_name: str | None = None,
     domain_transform: Callable[[object], object] | None = None,
     deferred_write: bool = False,
+    insert_literal: str | None = None,
+    conflict_update: str | None = None,
 ) -> ColumnSpec:
     """Declare a stored column and, where it has one, its record projection.
 
     ``record_name`` is the label the record mapper consumes; a column without
     one is storage-only and never reaches a runtime record. ``deferred_write``
     marks a column the table's own INSERT does not supply because a later
-    owner (lineage resolution, a rollup pass) writes it.
+    owner (lineage resolution, a rollup pass) writes it. ``insert_literal`` is
+    a SQL literal the INSERT emits in place of a bound value.
+    ``conflict_update`` is the column's right-hand side in an upsert's
+    ``DO UPDATE SET``; a column without one keeps its stored value on
+    conflict.
     """
+    if insert_literal is not None:
+        placeholder = insert_literal
+    elif deferred_write:
+        placeholder = _DEFERRED_WRITE
+    else:
+        placeholder = "?"
     return ColumnSpec(
         name=name,
         is_generated="GENERATED ALWAYS" in ddl_sql,
@@ -445,7 +149,31 @@ def _raw_column(
         record_transform=record_transform,
         domain_name=domain_name,
         domain_transform=domain_transform,
-        extract_placeholder=_DEFERRED_WRITE if deferred_write else "?",
+        extract_placeholder=placeholder,
+        conflict_update=conflict_update,
+    )
+
+
+def _derived_column(
+    record_name: str,
+    select_expression: str,
+    *,
+    domain_name: str | None = None,
+    record_transform: Callable[[object], object] | None = None,
+    domain_transform: Callable[[object], object] | None = None,
+) -> ColumnSpec:
+    """Declare a record field a read derives rather than storing.
+
+    It carries no DDL and never reaches an INSERT; the projection is the whole
+    declaration.
+    """
+    return ColumnSpec(
+        name=record_name,
+        record_name=record_name,
+        select_expression=select_expression,
+        domain_name=domain_name,
+        record_transform=record_transform,
+        domain_transform=domain_transform,
     )
 
 
@@ -459,17 +187,21 @@ def _make_table_spec(
     """Bind each writable column to its value in the table's insert mapping.
 
     A writable column's INSERT value is read from the mapping under its own
-    storage name; a ``deferred_write`` column has no value here and drops out
-    of the generated statement entirely.
+    storage name; a ``deferred_write`` column and a column supplying a SQL
+    literal both have no bound value here, the former dropping out of the
+    generated statement entirely.
     """
-    bound = tuple(
-        replace(column, extract=None, extract_placeholder="?")
-        if column.extract_placeholder == _DEFERRED_WRITE
-        else replace(column, extract=_value(column.name))
-        if not column.is_generated
-        else column
-        for column in columns
-    )
+
+    def bind(column: ColumnSpec) -> ColumnSpec:
+        if column.is_generated:
+            return column
+        if column.extract_placeholder == _DEFERRED_WRITE:
+            return replace(column, extract=None, extract_placeholder="?")
+        if column.extract_placeholder != "?":
+            return replace(column, extract=None)
+        return replace(column, extract=_value(column.name))
+
+    bound = tuple(bind(column) for column in columns)
     return TableColumnSpec(
         table_name=table_name,
         all_columns=bound,
@@ -477,6 +209,317 @@ def _make_table_spec(
         record_only_columns=record_only_columns,
         table_constraints=table_constraints,
     )
+
+
+MESSAGES_SPEC = _make_table_spec(
+    "messages",
+    (
+        _raw_column(
+            "message_id",
+            "message_id TEXT GENERATED ALWAYS AS (session_id || ':' || CASE WHEN native_id IS NULL THEN 'p:' || position || '.' || variant_index ELSE 'n:' || native_id END) STORED UNIQUE",
+            record_name="message_id",
+            domain_name="id",
+        ),
+        _raw_column(
+            "session_id",
+            "session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE",
+            record_name="session_id",
+        ),
+        _raw_column("native_id", "native_id TEXT", record_name="provider_message_id"),
+        _raw_column(
+            "identity_source",
+            "identity_source TEXT NOT NULL DEFAULT 'positional' CHECK(identity_source IN ('native', 'positional'))",
+            record_name="identity_source",
+            domain_name="identity_source",
+        ),
+        _raw_column(
+            "parent_message_id",
+            "parent_message_id TEXT REFERENCES messages(message_id) ON DELETE SET NULL",
+            insert_literal="NULL",
+            record_name="parent_message_id",
+            domain_name="parent_id",
+        ),
+        _raw_column(
+            "position",
+            "position INTEGER NOT NULL CHECK(position >= 0)",
+            record_name="position",
+            domain_name="position",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "role",
+            f"role TEXT NOT NULL CHECK ({check('role', Role)})",
+            record_name="role",
+            domain_name="role",
+        ),
+        _raw_column(
+            "message_type",
+            f"message_type TEXT NOT NULL DEFAULT 'message' CHECK ({check('message_type', MessageType)})",
+            record_name="message_type",
+            domain_name="message_type",
+        ),
+        _raw_column(
+            "material_origin",
+            f"material_origin TEXT NOT NULL DEFAULT 'unknown' CHECK ({check('material_origin', MaterialOrigin)})",
+            record_name="material_origin",
+            domain_name="material_origin",
+        ),
+        _raw_column("model_name", "model_name TEXT", record_name="model_name", domain_name="model_name"),
+        _raw_column("model_effort", "model_effort TEXT"),
+        _raw_column("sender_name", "sender_name TEXT"),
+        _raw_column("recipient", "recipient TEXT"),
+        _raw_column("delivery_status", "delivery_status TEXT"),
+        _raw_column("end_turn", "end_turn INTEGER CHECK(end_turn IN (0, 1) OR end_turn IS NULL)"),
+        _raw_column("user_context_text", "user_context_text TEXT"),
+        _raw_column(
+            "has_tool_use",
+            "has_tool_use INTEGER NOT NULL DEFAULT 0 CHECK(has_tool_use IN (0, 1))",
+            record_name="has_tool_use",
+            domain_name="has_tool_use",
+            record_transform=_none_to_zero,
+            domain_transform=_bool_value,
+        ),
+        _raw_column(
+            "has_thinking",
+            "has_thinking INTEGER NOT NULL DEFAULT 0 CHECK(has_thinking IN (0, 1))",
+            record_name="has_thinking",
+            domain_name="has_thinking",
+            record_transform=_none_to_zero,
+            domain_transform=_bool_value,
+        ),
+        _raw_column(
+            "has_paste",
+            "has_paste INTEGER NOT NULL DEFAULT 0 CHECK(has_paste IN (0, 1))",
+            record_name="has_paste",
+            domain_name="has_paste",
+            record_transform=_none_to_zero,
+            domain_transform=_bool_value,
+        ),
+        _raw_column(
+            "paste_boundary",
+            f"paste_boundary TEXT CHECK ({nullable_check('paste_boundary', PasteBoundary)})",
+            record_name="paste_boundary_state",
+            domain_name="paste_boundary_state",
+        ),
+        # Creation order among siblings, not display state: 0 is not "the
+        # accepted variant" -- is_active_path carries that.
+        _raw_column(
+            "variant_index",
+            "variant_index INTEGER NOT NULL DEFAULT 0 CHECK(variant_index >= 0)",
+            record_name="branch_index",
+            domain_name="branch_index",
+            record_transform=_none_to_zero,
+        ),
+        # A read path that does not select this column leaves the record field
+        # None: unknown, never a fabricated "not active".
+        _raw_column(
+            "is_active_path",
+            "is_active_path INTEGER NOT NULL DEFAULT 1 CHECK(is_active_path IN (0, 1))",
+            record_name="is_active_path",
+            domain_name="is_active_path",
+            record_transform=_optional_bool_value,
+        ),
+        _raw_column(
+            "is_active_leaf",
+            "is_active_leaf INTEGER NOT NULL DEFAULT 0 CHECK(is_active_leaf IN (0, 1))",
+            record_name="is_active_leaf",
+            domain_name="is_active_leaf",
+            record_transform=_bool_value,
+            domain_transform=_bool_value,
+        ),
+        _raw_column(
+            "word_count",
+            "word_count INTEGER NOT NULL DEFAULT 0 CHECK(word_count >= 0)",
+            record_name="word_count",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "input_tokens",
+            "input_tokens INTEGER NOT NULL DEFAULT 0 CHECK(input_tokens >= 0)",
+            record_name="input_tokens",
+            domain_name="input_tokens",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "output_tokens",
+            "output_tokens INTEGER NOT NULL DEFAULT 0 CHECK(output_tokens >= 0)",
+            record_name="output_tokens",
+            domain_name="output_tokens",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "cache_read_tokens",
+            "cache_read_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_read_tokens >= 0)",
+            record_name="cache_read_tokens",
+            domain_name="cache_read_tokens",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "cache_write_tokens",
+            "cache_write_tokens INTEGER NOT NULL DEFAULT 0 CHECK(cache_write_tokens >= 0)",
+            record_name="cache_write_tokens",
+            domain_name="cache_write_tokens",
+            record_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "duration_ms",
+            "duration_ms INTEGER CHECK(duration_ms IS NULL OR duration_ms >= 0)",
+            record_name="duration_ms",
+            domain_name="duration_ms",
+            domain_transform=_none_to_zero,
+        ),
+        _raw_column(
+            "content_address",
+            "content_address BLOB CHECK(content_address IS NULL OR length(content_address) = 32)",
+            record_name="content_address",
+            select_expression="lower(hex({alias}.content_address))",
+        ),
+        _raw_column(
+            "content_hash",
+            f"content_hash BLOB NOT NULL {CONTENT_HASH_CHECK}",
+            record_name="content_hash",
+            select_expression="lower(hex({alias}.content_hash))",
+        ),
+        _raw_column(
+            "occurred_at_ms",
+            "occurred_at_ms INTEGER",
+            record_name="sort_key",
+            domain_name="timestamp",
+            select_expression="{alias}.occurred_at_ms / 1000.0",
+            domain_transform=_epoch_seconds_to_datetime,
+        ),
+        _raw_column(
+            "stop_reason",
+            f"stop_reason TEXT CHECK ({nullable_check('stop_reason', StopReason)})",
+            record_name="stop_reason",
+            domain_name="stop_reason",
+        ),
+    ),
+    record_only_columns=(
+        _derived_column(
+            "text",
+            "COALESCE((SELECT group_concat(b.text, char(10)) FROM blocks b WHERE b.message_id = {alias}.message_id AND b.text IS NOT NULL), '')",
+            domain_name="text",
+        ),
+        _derived_column("source_name", "s.origin"),
+        _derived_column("version", "1"),
+    ),
+    table_constraints=("PRIMARY KEY(session_id, position, variant_index)",),
+)
+
+
+BLOCKS_SPEC = _make_table_spec(
+    "blocks",
+    (
+        _raw_column(
+            "block_id",
+            "block_id TEXT GENERATED ALWAYS AS (message_id || ':' || position) STORED UNIQUE",
+            record_name="block_id",
+            domain_name="id",
+        ),
+        _raw_column(
+            "message_id",
+            "message_id TEXT NOT NULL REFERENCES messages(message_id) ON DELETE CASCADE",
+            record_name="message_id",
+        ),
+        _raw_column(
+            "session_id",
+            "session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE",
+            record_name="session_id",
+        ),
+        _raw_column("position", "position INTEGER NOT NULL CHECK(position >= 0)", record_name="block_index"),
+        _raw_column(
+            "block_type",
+            f"block_type TEXT NOT NULL CHECK ({check('block_type', BlockType)})",
+            record_name="type",
+            domain_name="type",
+            domain_transform=_text_value,
+        ),
+        _raw_column("text", "text TEXT", record_name="text", domain_name="text"),
+        _raw_column("tool_name", "tool_name TEXT", record_name="tool_name", domain_name="tool_name"),
+        _raw_column("tool_id", "tool_id TEXT", record_name="tool_id", domain_name="tool_id"),
+        _raw_column(
+            "tool_input",
+            f"tool_input TEXT CHECK ({json_object_check('tool_input', nullable=True)})",
+            record_name="tool_input",
+            domain_name="tool_input",
+            domain_transform=_decoded_json_value,
+        ),
+        _raw_column(
+            "semantic_type",
+            "semantic_type TEXT",
+            record_name="semantic_type",
+            domain_name="semantic_type",
+            domain_transform=_optional_text_value,
+        ),
+        _raw_column("media_type", "media_type TEXT"),
+        _raw_column("language", "language TEXT"),
+        # Legacy structural fields. tool_outcome below is the canonical
+        # outcome; these stay nullable compatibility columns.
+        _raw_column(
+            "tool_result_is_error",
+            "tool_result_is_error INTEGER CHECK (tool_result_is_error IN (0, 1))",
+            record_name="tool_result_is_error",
+            domain_name="tool_result_is_error",
+        ),
+        _raw_column(
+            "tool_result_exit_code",
+            "tool_result_exit_code INTEGER",
+            record_name="tool_result_exit_code",
+            domain_name="tool_result_exit_code",
+        ),
+        _raw_column(
+            "tool_outcome",
+            f"tool_outcome TEXT CHECK ({check('tool_outcome', ToolOutcome)})",
+            record_name="tool_outcome",
+            domain_name="tool_outcome",
+            domain_transform=_optional_text_value,
+        ),
+        _raw_column(
+            "tool_result_outcome_unknown_reason",
+            f"tool_result_outcome_unknown_reason TEXT CHECK ({nullable_check('tool_result_outcome_unknown_reason', ToolResultUnknownReason)})",
+            record_name="tool_result_outcome_unknown_reason",
+            domain_name="tool_result_outcome_unknown_reason",
+        ),
+        _raw_column("signature", "signature TEXT", record_name="signature", domain_name="signature"),
+        _raw_column("content_hash", "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)"),
+        _raw_column(
+            "tool_command", "tool_command TEXT GENERATED ALWAYS AS (json_extract(tool_input, '$.command')) VIRTUAL"
+        ),
+        _raw_column(
+            "tool_path",
+            "tool_path TEXT GENERATED ALWAYS AS (COALESCE(json_extract(tool_input, '$.file_path'), json_extract(tool_input, '$.path'))) VIRTUAL",
+        ),
+        _raw_column(
+            "search_text",
+            "search_text TEXT GENERATED ALWAYS AS (trim(COALESCE(text, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(json_extract(tool_input, '$.command'), '') || ' ' || COALESCE(json_extract(tool_input, '$.file_path'), '') || ' ' || COALESCE(json_extract(tool_input, '$.path'), ''))) VIRTUAL",
+        ),
+        _raw_column(
+            "tool_detail_text",
+            "tool_detail_text TEXT GENERATED ALWAYS AS (lower(COALESCE(tool_command, '') || ' ' || COALESCE(tool_path, ''))) VIRTUAL",
+        ),
+    ),
+    record_only_columns=(_derived_column("metadata", "NULL"),),
+    table_constraints=(
+        "PRIMARY KEY(message_id, position)",
+        # An unknown structural outcome is only honest with a reason for it.
+        # The reason describes a tool_result's missing outcome, so it may
+        # appear on no other block shape: a tool_use mirrors its result's
+        # outcome but the reason stays on the result that lacks the signal.
+        """CHECK (
+        CASE
+            WHEN block_type = 'tool_result' AND tool_outcome = 'unknown'
+                THEN tool_result_outcome_unknown_reason IS NOT NULL
+            ELSE tool_result_outcome_unknown_reason IS NULL
+        END
+    )""",
+    ),
+)
+
+
+# Index-tier table specs. Each rendered table body is sourced from these
+# column definitions plus its table-level constraints; indexes, triggers,
+# and virtual tables remain in index.py because they are not row schemas.
 
 
 FTS_FRESHNESS_STATE_SPEC = _make_table_spec(
@@ -647,25 +690,48 @@ SESSIONS_SPEC = _make_table_spec(
             """root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
             deferred_write=True,
         ),
-        _raw_column("raw_id", """raw_id                  TEXT""", record_name="raw_id"),
+        _raw_column(
+            "raw_id",
+            """raw_id                  TEXT""",
+            record_name="raw_id",
+            conflict_update="excluded.raw_id",
+        ),
         _raw_column(
             "parser_fingerprint",
             """-- Written by the parsed-session chokepoint in the same transaction as
     -- this row. Pre-v64 generations are intentionally nullable until replay.
     parser_fingerprint      TEXT""",
+            conflict_update="excluded.parser_fingerprint",
         ),
-        _raw_column("lowering_fingerprint", """lowering_fingerprint    TEXT"""),
+        _raw_column(
+            "lowering_fingerprint", """lowering_fingerprint    TEXT""", conflict_update="excluded.lowering_fingerprint"
+        ),
         _raw_column(
             "branch_type",
             f"""branch_type             TEXT CHECK ({nullable_check("branch_type", BranchType)})""",
             record_name="branch_type",
+            conflict_update="excluded.branch_type",
         ),
-        _raw_column("active_leaf_message_id", """active_leaf_message_id  TEXT"""),
-        _raw_column("title", """title                   TEXT""", record_name="title"),
+        _raw_column(
+            "active_leaf_message_id",
+            """active_leaf_message_id  TEXT""",
+            conflict_update="excluded.active_leaf_message_id",
+        ),
+        # COALESCE, not plain overwrite: an omitted title on an append-only
+        # delta batch (or an origin whose parser does not populate it for this
+        # content) is omission, never an authoritative "confirmed absent".
+        # Same for display_name and instructions_text below.
+        _raw_column(
+            "title",
+            """title                   TEXT""",
+            record_name="title",
+            conflict_update="COALESCE(excluded.title, sessions.title)",
+        ),
         _raw_column(
             "session_kind",
             f"""session_kind            TEXT NOT NULL DEFAULT 'standard' CHECK ({check("session_kind", SessionKind)})""",
             record_name="session_kind",
+            conflict_update="excluded.session_kind",
         ),
         _raw_column(
             "title_source",
@@ -677,6 +743,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- actually assigns and this CHECK is now generated from it like the
     -- other enum-backed columns instead of hand-listing the values.
     title_source            TEXT CHECK({nullable_check("title_source", TitleSource)})""",
+            conflict_update="excluded.title_source",
         ),
         _raw_column(
             "title_ref",
@@ -685,6 +752,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- "codex-history:<id>", "message:<provider_message_id>").
     -- Derived/rebuildable, never hand-edited.
     title_ref               TEXT""",
+            conflict_update="excluded.title_ref",
         ),
         _raw_column(
             "display_name",
@@ -696,6 +764,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- not its content.
     display_name            TEXT""",
             record_name="display_name",
+            conflict_update="COALESCE(excluded.display_name, sessions.display_name)",
         ),
         _raw_column(
             "pending_drafts_json",
@@ -711,15 +780,39 @@ SESSIONS_SPEC = _make_table_spec(
     -- state rather than acquisition state or provider-remeasurement).
     pending_drafts_json      TEXT CHECK ({json_array_check("pending_drafts_json", nullable=True)})""",
             record_name="pending_drafts_json",
+            # Plain overwrite, unlike display_name: a draft is current mutable
+            # state, so a reprocess that finds no non-blank pendingInputs
+            # (submitted, or cleared) must clear the stored value.
+            conflict_update="excluded.pending_drafts_json",
         ),
-        _raw_column("git_branch", """git_branch              TEXT""", record_name="git_branch"),
-        _raw_column("git_repository_url", """git_repository_url      TEXT""", record_name="git_repository_url"),
-        _raw_column("provider_project_ref", """provider_project_ref    TEXT""", record_name="provider_project_ref"),
-        _raw_column("commit_hash", """commit_hash             TEXT"""),
-        _raw_column("instructions_text", """instructions_text       TEXT"""),
+        _raw_column(
+            "git_branch",
+            """git_branch              TEXT""",
+            record_name="git_branch",
+            conflict_update="excluded.git_branch",
+        ),
+        _raw_column(
+            "git_repository_url",
+            """git_repository_url      TEXT""",
+            record_name="git_repository_url",
+            conflict_update="excluded.git_repository_url",
+        ),
+        _raw_column(
+            "provider_project_ref",
+            """provider_project_ref    TEXT""",
+            record_name="provider_project_ref",
+            conflict_update="excluded.provider_project_ref",
+        ),
+        _raw_column("commit_hash", """commit_hash             TEXT""", conflict_update="excluded.commit_hash"),
+        _raw_column(
+            "instructions_text",
+            """instructions_text       TEXT""",
+            conflict_update="COALESCE(excluded.instructions_text, sessions.instructions_text)",
+        ),
         _raw_column(
             "reported_duration_ms",
             """reported_duration_ms    INTEGER CHECK(reported_duration_ms IS NULL OR reported_duration_ms >= 0)""",
+            conflict_update="excluded.reported_duration_ms",
         ),
         _raw_column(
             "reported_cost_usd",
@@ -735,6 +828,7 @@ SESSIONS_SPEC = _make_table_spec(
     -- a token source.
     reported_cost_usd       REAL CHECK(reported_cost_usd IS NULL OR reported_cost_usd >= 0)""",
             record_name="reported_cost_usd",
+            conflict_update="excluded.reported_cost_usd",
         ),
         _raw_column(
             "message_count", """message_count           INTEGER NOT NULL DEFAULT 0 CHECK(message_count >= 0)"""
@@ -783,18 +877,50 @@ SESSIONS_SPEC = _make_table_spec(
             f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}""",
             record_name="content_hash",
             select_expression="lower(hex({alias}.content_hash))",
+            conflict_update="excluded.content_hash",
         ),
         _raw_column(
             "created_at_ms",
             """created_at_ms           INTEGER""",
             record_name="created_at",
             select_expression="datetime({alias}.created_at_ms / 1000, 'unixepoch')",
+            # A durable observed fact, so it ratchets: a valid producer
+            # timestamp outranks a previously-derived value, and a derived
+            # observation never overwrites stored producer authority. The
+            # bound parameter is ``producer_created``.
+            conflict_update="""CASE
+                        WHEN ? AND excluded.created_at_ms IS NOT NULL THEN excluded.created_at_ms
+                        WHEN sessions.created_at_ms IS NULL THEN excluded.created_at_ms
+                        ELSE sessions.created_at_ms
+                    END""",
         ),
         _raw_column(
             "updated_at_ms",
             """updated_at_ms           INTEGER""",
             record_name="updated_at",
             select_expression="datetime({alias}.updated_at_ms / 1000, 'unixepoch')",
+            # Force replacement may replace known evidence with a newer producer
+            # value, but an incoming NULL is omission, never a command to erase
+            # an established timestamp. The interval stays closed even when only
+            # one producer endpoint is supplied. Bound parameters, in order:
+            # ``force_replace``, ``producer_updated``, ``producer_created``,
+            # ``producer_created``, ``producer_updated or merge_append``.
+            conflict_update="""CASE
+                        WHEN ? AND (? OR ?) AND excluded.updated_at_ms IS NOT NULL THEN
+                            CASE
+                                WHEN ? AND excluded.created_at_ms IS NOT NULL
+                                    THEN MAX(excluded.updated_at_ms, excluded.created_at_ms)
+                                WHEN sessions.created_at_ms IS NOT NULL
+                                    THEN MAX(excluded.updated_at_ms, sessions.created_at_ms)
+                                ELSE excluded.updated_at_ms
+                            END
+                        WHEN ? AND excluded.updated_at_ms IS NOT NULL
+                             AND sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+                        WHEN excluded.updated_at_ms IS NULL THEN sessions.updated_at_ms
+                        WHEN sessions.updated_at_ms IS NULL THEN excluded.updated_at_ms
+                        WHEN ? THEN MAX(sessions.updated_at_ms, excluded.updated_at_ms)
+                        ELSE sessions.updated_at_ms
+                    END""",
         ),
         _raw_column(
             "sort_key_ms",
@@ -1778,10 +1904,6 @@ INDEX_TABLE_SPECS = {
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,
 }
 
-
-# Global registry of table specs
-MESSAGES_SPEC = _make_messages_spec()
-BLOCKS_SPEC = _make_blocks_spec()
 
 TABLE_SPECS = {
     "messages": MESSAGES_SPEC,
