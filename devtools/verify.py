@@ -23,12 +23,14 @@ from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     CLOSED_WORLD_COLLECTION_ARGS,
+    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
-    PROGRESS_PLUGIN_NAME,
+    REPORT_PLUGIN_ARGS,
     managed_plugin_args,
 )
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
+from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
@@ -214,11 +216,8 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         *IGNORED_COLLECTION_ARGS,
         "--durations=10",
         f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
-        "--json-report",
-        "--json-report-omit=collectors,log,streams,warnings",
-        f"--json-report-file={PYTEST_REPORT_PATH}",
-        "-p",
-        PROGRESS_PLUGIN_NAME,
+        report_file_argument(PYTEST_REPORT_PATH),
+        *DEVTOOLS_PLUGIN_ARGS,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
         *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
@@ -334,7 +333,8 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
         PYTEST_SELECTION_PATH,
         PYTEST_SUMMARY_PATH,
     ]
-    paths += [Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")]
+    for report in (_pytest_report_path(command),):
+        paths += [report, *spool_paths(report)]
     for path in paths:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
@@ -398,9 +398,8 @@ def _rerun_failed_once(command: Sequence[str], *, env: Mapping[str, str], artifa
         "pytest",
         "-q",
         "--tb=short",
-        "--json-report",
-        "--json-report-omit=collectors,log,streams,warnings",
-        f"--json-report-file={rerun_report}",
+        report_file_argument(rerun_report),
+        *REPORT_PLUGIN_ARGS,
         *MANAGED_PLUGIN_ARGS,
         "-p",
         "no:testmon",
@@ -501,8 +500,9 @@ def _path_for_receipt(path: Path) -> Path:
 
 
 def _pytest_report_path(command: Sequence[str]) -> Path:
+    prefix = f"{REPORT_FILE_OPTION}="
     return next(
-        (Path(argument.split("=", 1)[1]) for argument in command if argument.startswith("--json-report-file=")),
+        (Path(argument.split("=", 1)[1]) for argument in command if argument.startswith(prefix)),
         PYTEST_REPORT_PATH,
     )
 

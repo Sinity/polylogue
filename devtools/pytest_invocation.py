@@ -13,18 +13,42 @@ from typing import Final
 __all__ = [
     "CLEAR_CONFIGURED_ADDOPTS",
     "CLOSED_WORLD_COLLECTION_ARGS",
+    "DEVTOOLS_PLUGIN_ARGS",
+    "DEVTOOLS_PLUGIN_NAMES",
     "IGNORED_COLLECTION_ARGS",
     "MANAGED_PLUGIN_ARGS",
     "managed_plugin_args",
     "MANAGED_PLUGIN_NAMES",
     "PROGRESS_PLUGIN_NAME",
+    "REPORT_PLUGIN_ARGS",
+    "STREAM_REPORT_PLUGIN_NAME",
+    "TESTMON_RETENTION_PLUGIN_NAME",
 ]
 
 #: Neutralize any addopts configured in pyproject so the invocation is closed.
 CLEAR_CONFIGURED_ADDOPTS: Final = "--override-ini=addopts="
 
-#: The progress plugin is loaded by module path rather than entry-point name.
+#: The repository's own plugins, loaded by module path rather than entry-point
+#: name. The progress plugin writes the incremental ledgers, the report plugin
+#: writes the JSON report a step is judged from, and the retention plugin frees
+#: what testmon has already consumed on the controller.
 PROGRESS_PLUGIN_NAME: Final = "devtools.pytest_progress_plugin"
+STREAM_REPORT_PLUGIN_NAME: Final = "devtools.pytest_stream_report"
+TESTMON_RETENTION_PLUGIN_NAME: Final = "devtools.pytest_testmon_retention"
+
+DEVTOOLS_PLUGIN_NAMES: Final[tuple[str, ...]] = (
+    PROGRESS_PLUGIN_NAME,
+    STREAM_REPORT_PLUGIN_NAME,
+    TESTMON_RETENTION_PLUGIN_NAME,
+)
+
+DEVTOOLS_PLUGIN_ARGS: Final[tuple[str, ...]] = tuple(
+    argument for name in DEVTOOLS_PLUGIN_NAMES for argument in ("-p", name)
+)
+
+#: A run that needs the report but none of the session-wide ledgers: the rerun
+#: of failed tests writes its own report beside the step it adjudicates.
+REPORT_PLUGIN_ARGS: Final[tuple[str, ...]] = ("-p", STREAM_REPORT_PLUGIN_NAME)
 
 #: Plugins loaded explicitly, because autoload is disabled for reproducibility.
 #: Adding or removing one changes which hooks run during collection.
@@ -34,7 +58,6 @@ MANAGED_PLUGIN_NAMES: Final[tuple[str, ...]] = (
     "hypothesispytest",
     "benchmark",
     "pytest_cov",
-    "pytest_jsonreport",
     "randomly",
     "syrupy",
     "timeout",

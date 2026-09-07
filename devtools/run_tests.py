@@ -38,6 +38,7 @@ from devtools.checkout_guard import (
 )
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
+    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
@@ -47,6 +48,7 @@ from devtools.pytest_slot import (
     remove_temp_tree,
     run_pytest,
 )
+from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
@@ -360,13 +362,10 @@ def build_pytest_cmd(selection: list[str]) -> list[str]:
         venv_python(root=ROOT),
         "-m",
         "pytest",
-        "-p",
-        "devtools.pytest_progress_plugin",
+        *DEVTOOLS_PLUGIN_ARGS,
         *MANAGED_PLUGIN_ARGS,
         CLEAR_CONFIGURED_ADDOPTS,
-        "--json-report",
-        "--json-report-omit=collectors,log,streams,warnings",
-        f"--json-report-file={PYTEST_REPORT_PATH}",
+        report_file_argument(PYTEST_REPORT_PATH),
         *collection_args,
         # A focused run never selects: the caller already named what to run.
         # It traces into the scratch graph `focused_pytest_env` points it at,
@@ -413,6 +412,7 @@ def _clear_pytest_report(_cmd: list[str]) -> None:
     """Remove this focused invocation's stale pytest-domain artifacts."""
     for path in (
         PYTEST_REPORT_PATH,
+        *spool_paths(PYTEST_REPORT_PATH),
         PYTEST_PROGRESS_PATH,
         PYTEST_EVENTS_PATH,
         PYTEST_EVENTS_DIR,

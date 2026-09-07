@@ -12,6 +12,7 @@ import pytest
 from devtools import run_tests
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
+    DEVTOOLS_PLUGIN_ARGS,
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
 )
@@ -54,9 +55,17 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
 
 
 def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
+    """The repository's own plugins load, then the third-party contract, in order.
+
+    Anti-vacuity: drop one name from ``DEVTOOLS_PLUGIN_ARGS`` in the built
+    command and the first slice comparison fails; reorder the two blocks and
+    the second does.
+    """
     cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
 
-    managed_start = cmd.index("devtools.pytest_progress_plugin") + 1
+    devtools_start = cmd.index(DEVTOOLS_PLUGIN_ARGS[0])
+    assert [*DEVTOOLS_PLUGIN_ARGS] == cmd[devtools_start : devtools_start + len(DEVTOOLS_PLUGIN_ARGS)]
+    managed_start = devtools_start + len(DEVTOOLS_PLUGIN_ARGS)
     assert [*MANAGED_PLUGIN_ARGS] == cmd[managed_start : managed_start + len(MANAGED_PLUGIN_ARGS)]
     assert CLEAR_CONFIGURED_ADDOPTS in cmd
     ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
