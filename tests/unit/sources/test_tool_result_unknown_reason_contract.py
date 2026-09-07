@@ -644,6 +644,28 @@ def test_a_known_outcome_cannot_carry_a_reason() -> None:
         )
 
 
+def test_an_explicit_unknown_outcome_cannot_bypass_its_reason() -> None:
+    """A pre-populated UNKNOWN value still needs the structural explanation."""
+    with pytest.raises(ValueError, match="unknown tool-result outcomes must carry"):
+        ParsedContentBlock(
+            type=BlockType.TOOL_RESULT,
+            tool_id="call-1",
+            text="no verdict",
+            tool_outcome=ToolOutcome.UNKNOWN,
+        )
+
+
+def test_hermes_off_type_success_is_unsupported_not_false() -> None:
+    """Provider fields are type-sensitive; a string must not become failure."""
+    session = parse_hermes(_hermes_payload('{"output": "ran", "success": "false"}'), "hermes-outcome")
+    result_blocks = [
+        block for message in session.messages for block in message.blocks if block.type is BlockType.TOOL_RESULT
+    ]
+    assert result_blocks
+    assert result_blocks[0].is_error is None
+    assert result_blocks[0].outcome_unknown_reason == UNSUPPORTED
+
+
 def test_an_unknown_outcome_never_coerces_to_a_reported_success() -> None:
     """Coercing NULL to false is the failure this vocabulary exists to prevent.
 
