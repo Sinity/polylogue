@@ -39,6 +39,7 @@ from .base import (
     parser_admission,
     typed_unknown_block,
 )
+from .base_support import AttachmentDirection, derive_attachment_provenance
 from .chatgpt_sidecars import strip_asset_pointer_scheme
 
 SHARED_CONVERSATION_INDEX_INGEST_FLAG = "capture:chatgpt-shared-index-shell"
@@ -533,6 +534,67 @@ def _non_negative_int(value: object) -> int | None:
     return None
 
 
+def _asset_pointer_block_metadata(record: Mapping[str, object], pointer: str) -> dict[str, object]:
+    """Carry an asset pointer and its intrinsic dimensions on an IMAGE block.
+
+    ``blocks`` has no metadata column; the dict is projected verbatim into a
+    ``chatgpt_block_metadata`` session event (``_block_metadata_evidence_events``),
+    which is the only place an asset's width/height/byte size survives — the
+    attachment row has no dimension columns.
+    """
+    metadata: dict[str, object] = {"asset_pointer": pointer}
+    for key in ("width", "height", "size_bytes"):
+        value = _non_negative_int(record.get(key))
+        if value is not None:
+            metadata[key] = str(value)
+    return metadata
+
+
+def _append_asset_attachment(
+    attachments: list[ParsedAttachment],
+    record: Mapping[str, object],
+    *,
+    pointer: str,
+    message_provider_id: str,
+    attachment_kind: str,
+    direction: AttachmentDirection | None,
+    producer_ref: str | None,
+    dedupe_from: int,
+) -> None:
+    """Record an asset-pointer record as the attachment its bytes bind to.
+
+    An attachment row is the only acquisition identity an asset has:
+    ``assembly_chatgpt.py`` joins acquired export members onto attachments by
+    the bare file id, so a pointer that reaches storage as block metadata
+    alone leaves its acquired bytes with nothing to bind to.
+
+    ``dedupe_from`` is the index at which this message's own attachments
+    start. A user upload is named twice — once by the message's ``metadata``
+    attachment row (bare ``file-<id>``) and once by the content part's
+    pointer URI (``file-service://file-<id>``) — and both normalize to the
+    same id, so the second naming must not mint a second row.
+    """
+    file_id = strip_asset_pointer_scheme(pointer)
+    if not file_id:
+        return
+    for existing in attachments[dedupe_from:]:
+        if strip_asset_pointer_scheme(existing.provider_attachment_id) == file_id:
+            return
+    attachments.append(
+        ParsedAttachment(
+            provider_attachment_id=pointer,
+            message_provider_id=message_provider_id,
+            # Read off the URI: the id space the export's asset members and
+            # ``library_files.json`` keys share.
+            provider_file_id=file_id,
+            size_bytes=_non_negative_int(record.get("size_bytes")),
+            attachment_kind=attachment_kind,
+            direction=direction,
+            producer_ref=producer_ref,
+        )
+    )
+
+
 # ChatGPT embeds inline citation anchors in assistant text as private-use
 # unicode spans: U+E200 opens, U+E202 separates reference tokens, U+E201
 # closes (e.g. "\ue200filecite\ue202turn3file14\ue202L180-L293\ue201").
@@ -813,6 +875,10 @@ def extract_messages_from_mapping(
                     if current_node_id in children:
                         branch_index = children.index(current_node_id)
 
+        # Where this message's own attachments begin, so an asset named both
+        # by a metadata row and by a content part collapses to one row.
+        message_attachment_start = len(attachments)
+
         # Extract attachments from message metadata
         msg_metadata = msg.get("metadata") or {}
         if isinstance(msg_metadata, dict):
@@ -1010,21 +1076,18 @@ def extract_messages_from_mapping(
                 content_blocks.append(
                     ParsedContentBlock(
                         type=BlockType.IMAGE,
-                        metadata={"asset_pointer": screenshot_pointer},
+                        metadata=_asset_pointer_block_metadata(screenshot, screenshot_pointer),
                     )
                 )
-                attachments.append(
-                    ParsedAttachment(
-                        provider_attachment_id=screenshot_pointer,
-                        message_provider_id=str(msg_id),
-                        # Read off the URI: the id space the export's asset
-                        # blobs and `library_files.json` keys share.
-                        provider_file_id=strip_asset_pointer_scheme(screenshot_pointer),
-                        size_bytes=_non_negative_int(screenshot.get("size_bytes")),
-                        attachment_kind="computer_screenshot",
-                        direction="model_output",
-                        producer_ref=f"message:{msg_id}",
-                    )
+                _append_asset_attachment(
+                    attachments,
+                    screenshot,
+                    pointer=screenshot_pointer,
+                    message_provider_id=str(msg_id),
+                    attachment_kind="computer_screenshot",
+                    direction="model_output",
+                    producer_ref=f"message:{msg_id}",
+                    dedupe_from=message_attachment_start,
                 )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
             # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
@@ -1156,12 +1219,25 @@ def extract_messages_from_mapping(
                 if isinstance(part, str) and part:
                     content_blocks.append(ParsedContentBlock(type=BlockType.TEXT, text=_strip_citation_markers(part)))
                 elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
+                    image_pointer = str(part.get("asset_pointer", ""))
                     content_blocks.append(
                         ParsedContentBlock(
                             type=BlockType.IMAGE,
-                            metadata={"asset_pointer": str(part.get("asset_pointer", ""))},
+                            metadata=_asset_pointer_block_metadata(part, image_pointer),
                         )
                     )
+                    if image_pointer:
+                        image_direction, image_producer = derive_attachment_provenance(role, str(msg_id))
+                        _append_asset_attachment(
+                            attachments,
+                            part,
+                            pointer=image_pointer,
+                            message_provider_id=str(msg_id),
+                            attachment_kind="image_asset",
+                            direction=image_direction,
+                            producer_ref=image_producer,
+                            dedupe_from=message_attachment_start,
+                        )
                 elif isinstance(part, dict) and part.get("content_type") in {
                     "audio_asset_pointer",
                     "audio_transcription",
