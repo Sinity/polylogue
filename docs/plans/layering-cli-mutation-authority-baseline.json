@@ -1,0 +1,42 @@
+[
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/excise.py",
+    "import": "polylogue.operations.mutation_actuators"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/excise.py",
+    "import": "polylogue.operations.mutation_transaction"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_blob_gc.py",
+    "import": "polylogue.operations.mutation_actuators"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_blob_gc.py",
+    "import": "polylogue.operations.mutation_transaction"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_raw_identity.py",
+    "import": "polylogue.operations.mutation_actuators"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/maintenance/_raw_identity.py",
+    "import": "polylogue.operations.mutation_transaction"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/reset.py",
+    "import": "polylogue.operations.mutation_actuators"
+  },
+  {
+    "target": "polylogue/cli",
+    "file": "polylogue/cli/commands/reset.py",
+    "import": "polylogue.operations.mutation_transaction"
+  }
+]

@@ -13,6 +13,7 @@ from typing import Any
 from polylogue.operations.daemon_protocol import (
     DAEMON_OPERATION_PROTOCOL,
     MAX_OPERATION_RESULT_BYTES,
+    DaemonAuthority,
     DaemonOperationRequest,
     daemon_operation_spec,
 )
@@ -72,6 +73,7 @@ class DaemonClient:
         self.timeout_s = timeout_s
         self.auth_token = auth_token
         self.last_elapsed_ms: int | None = None
+        self.last_status: int | None = None
 
     def request_json(
         self,
@@ -152,6 +154,7 @@ class DaemonClient:
             except (UnicodeDecodeError, ValueError):
                 decoded = None
             self.last_elapsed_ms = round((perf_counter() - started_at) * 1000)
+            self.last_status = response.status
             return response.status, decoded if isinstance(decoded, dict) else None
         except KeyboardInterrupt as exc:
             if mutation and connection.connected:
@@ -190,13 +193,23 @@ class DaemonClient:
             request_id=uuid.uuid4().hex,
             deadline_ms=max(1, round(spec.deadline_s * 1000)),
         )
-        response = self.request_json(
-            "POST",
-            "/api/operation",
-            request.to_dict(),
-            accepted_statuses=frozenset({200, 400, 408, 409, 404, 429, 503}),
-        )
-        if response is None:
+        # A write never gives up the way a read does: once the request is on
+        # the socket, an offline retry would make the actuator outcome
+        # ambiguous, so the transport reports indeterminacy instead of absence.
+        writes = spec.authority is not DaemonAuthority.READ
+        previous_timeout = self.timeout_s
+        # Reads keep the caller's fast-path budget; a write waits for the
+        # operation's own declared deadline instead of timing out mid-actuator.
+        if writes:
+            self.timeout_s = spec.deadline_s
+        try:
+            raw = self._request_json_response("POST", "/api/operation", request.to_dict(), mutation=writes)
+        finally:
+            self.timeout_s = previous_timeout
+        if raw is None:
+            return None
+        status, response = raw
+        if status not in {200, 400, 404, 408, 409, 413, 429, 503} or response is None:
             return None
         if response.get("protocol") != DAEMON_OPERATION_PROTOCOL:
             raise DaemonOperationProtocolError("daemon returned an invalid operation protocol envelope")

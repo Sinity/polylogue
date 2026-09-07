@@ -178,6 +178,20 @@ rules:
       from: [polylogue/storage, polylogue/pipeline, polylogue/sources]
       baseline: docs/plans/layering-surface-baseline.json
 
+  - target: polylogue/cli
+    description: >-
+      Mutation authority — the daemon is the sole writer, so a CLI adapter
+      lowers a write to a declared operation instead of driving the mutation
+      executor in its own process. The baseline names the command families
+      that still hold a second write authority; it may only shrink.
+    disallow:
+      from:
+        - polylogue/operations/mutation_transaction
+        - polylogue/operations/mutation_actuators
+        - polylogue/operations/delete_authorization
+        - polylogue/operations/session_mutations
+      baseline: docs/plans/layering-cli-mutation-authority-baseline.json
+
   - target: polylogue/mcp
     description: >-
       MCP surface adapter — should route through insights/operations/api

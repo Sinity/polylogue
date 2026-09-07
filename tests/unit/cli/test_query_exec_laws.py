@@ -2886,15 +2886,15 @@ def test_async_execute_query_archive_deletes_session_by_id(
     # keep this case's real claim -- that the resolved session id is the one
     # carried into the delete -- by asserting it at the daemon boundary, which
     # is where the write now happens.
-    def _daemon_delete(_config: object, path: str, *, body: dict[str, object]) -> dict[str, object]:
-        if path.endswith("/prepare"):
-            assert body["session_ids"] == ["codex-session:native-1"]
+    def _daemon_delete(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        if operation.endswith(".preview"):
+            assert payload["session_ids"] == ["codex-session:native-1"]
             return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["codex-session:native-1"]}
-        if path.endswith("/authorize"):
+        if operation.endswith(".authorize"):
             return {"status": "authorized", "authorization_token": "test-authorization"}
         return {"status": "deleted", "affected_count": 1, "session_ids": ["codex-session:native-1"]}
 
-    with patch("polylogue.cli.archive_query._submit_daemon_mutation", side_effect=_daemon_delete):
+    with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_daemon_delete):
         asyncio.run(
             _execute_query_params(
                 env,
