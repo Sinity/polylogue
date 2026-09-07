@@ -44,7 +44,11 @@ from polylogue.storage.source_sessions import (
     session_ids_for_source_path,
     session_ids_for_source_paths,
 )
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_daemon_connection,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 
 if TYPE_CHECKING:
     from polylogue.sinex.service import PublicationService
@@ -1493,7 +1497,15 @@ def _reconcile_archive_embedding_config_change(index_db_path: Path, *, archive_r
     root = archive_root if archive_root is not None else index_db_path.parent
     sibling = root / "embeddings.db"
     target = sibling if sibling.exists() else index_db_path
-    conn = sqlite3.connect(target, timeout=5.0)
+    # Recipe/dimension reconciliation mutates the embeddings tier.  Keep it
+    # behind the canonical writer factory so daemon execution is bound to the
+    # same archive-root lease as the other publication stages.
+    conn = open_isolated_write_connection(
+        target,
+        purpose="embedding configuration reconciliation",
+        timeout=5.0,
+        archive_root=root,
+    )
     try:
         try_load_sqlite_vec(conn)
         _reconcile_embedding_config_change(conn)
@@ -1869,7 +1881,7 @@ def _archive_fts_execute(db_path: Path, path: Path) -> bool:
 def _archive_session_ids_for_source_paths(db_path: Path, paths: Sequence[Path]) -> dict[Path, list[str]]:
     """Sessions written from each source path, read-only."""
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             return _session_ids_for_source_paths(conn, paths)
         finally:
@@ -2084,7 +2096,11 @@ def _archive_pending_embedding_session_ids(
 def _archive_embed_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
         _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
-        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn = open_readonly_connection(
+            db_path,
+            timeout_class="background-read",
+            validate_schema=False,
+        )
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             return bool(_archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root))
@@ -2099,7 +2115,7 @@ def _archive_embed_check(db_path: Path, path: Path, *, archive_root: Path | None
 
 def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | None = None) -> StageExecuteReturn:
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             pending = _archive_pending_embedding_sessions(conn, session_ids, archive_root=archive_root)
@@ -2119,7 +2135,7 @@ def _archive_embed_execute(db_path: Path, path: Path, *, archive_root: Path | No
 def _archive_embed_check_many(db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None) -> set[Path]:
     try:
         _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
-        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             all_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
@@ -2138,7 +2154,7 @@ def _archive_embed_execute_many(
     db_path: Path, paths: Sequence[Path], *, archive_root: Path | None = None
 ) -> StageExecuteReturn:
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             session_ids = list(dict.fromkeys(session_id for ids in by_path.values() for session_id in ids))
@@ -2161,7 +2177,7 @@ def _archive_embed_check_sessions(
 ) -> set[str]:
     try:
         _reconcile_archive_embedding_config_change(db_path, archive_root=archive_root)
-        conn = sqlite3.connect(db_path, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             ids = _archive_existing_session_ids(conn, session_ids)
             return set(_archive_pending_embedding_session_ids(conn, ids, archive_root=archive_root))
@@ -2182,7 +2198,7 @@ def _archive_embed_execute_sessions(
     ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
     if not ids:
         return True
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+    conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
     try:
         pending = _archive_pending_embedding_sessions(conn, ids, archive_root=archive_root)
     finally:
@@ -2201,7 +2217,7 @@ def _archive_embedding_debt_remaining(
     if not session_ids:
         return False
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             return bool(_archive_pending_embedding_session_ids(conn, session_ids, archive_root=archive_root))
         finally:
@@ -2385,7 +2401,7 @@ def _archive_hot_insight_session_ids(
 
 def _archive_insights_check(db_path: Path, path: Path, *, archive_root: Path | None = None) -> bool:
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             session_ids = _schema_archive_session_ids_for_source_path(conn, path, archive_root=archive_root)
             return bool(session_ids) and bool(_stale_session_profile_ids(conn, session_ids))
@@ -2423,7 +2439,7 @@ def _archive_insights_check_many(
     if not paths:
         return set()
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5.0)
+        conn = open_readonly_connection(db_path, timeout_class="background-read", validate_schema=False)
         try:
             by_path = _schema_archive_session_ids_for_source_paths(conn, paths, archive_root=archive_root)
             result = {
