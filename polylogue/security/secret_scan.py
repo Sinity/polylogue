@@ -52,15 +52,19 @@ from pathlib import Path
 
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.logging import get_logger
-from polylogue.storage.sqlite.connection_profile import DB_TIMEOUT, READ_DB_TIMEOUT
+from polylogue.storage.sqlite.connection_profile import (
+    READ_PROFILES,
+    open_isolated_write_connection,
+    open_profiled_connection,
+)
 
 logger = get_logger(__name__)
 
-# One-shot tier connections here mirror the pattern in security/excision.py:
-# a direct connect (not open_connection/open_readonly_connection, so no
-# sibling-tier attach) with the shared busy_timeout applied explicitly.
-_READ_BUSY_TIMEOUT_MS = READ_DB_TIMEOUT * 1000
-_WRITE_BUSY_TIMEOUT_MS = DB_TIMEOUT * 1000
+# One-shot tier connections here mirror security/excision.py: each tier is
+# opened and committed on its own, so no sibling tier is drawn into the same
+# transaction. Reads take the named background class; writes are classified
+# one-tier writers.
+_READ_PROFILE = READ_PROFILES["background-read"]
 
 # ---------------------------------------------------------------------------
 # Pattern rules
@@ -282,8 +286,7 @@ def scan_session_for_secret_candidates(
     if not index_db.exists():
         return SecretScanResult(session_id=session_id, found=False)
 
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
     try:
         session_row = conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         if session_row is None:
@@ -301,8 +304,7 @@ def scan_session_for_secret_candidates(
 
     user_db = archive_root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    user_conn = sqlite3.connect(user_db)
-    user_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    user_conn = open_isolated_write_connection(user_db, purpose=f"secret scan write({user_db})")
     written: list[str] = []
     try:
         with user_conn:
@@ -420,8 +422,7 @@ def select_pending_secret_scan_session_ids(
     """
     if not index_db.exists():
         return []
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
     try:
         if ops_db.exists():
             conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
@@ -474,8 +475,7 @@ def count_pending_secret_scan_sessions(
     """Count sessions not yet covered at ``scanner_version`` (status reporting)."""
     if not index_db.exists():
         return 0
-    conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-    conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
+    conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
     try:
         if ops_db.exists():
             conn.execute("ATTACH DATABASE ? AS ops", (str(ops_db),))
@@ -581,12 +581,9 @@ def scan_archive_for_secret_candidates(
     if not pending_ids:
         return BulkSecretScanResult(remaining_pending=0)
 
-    index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
-    index_conn.execute(f"PRAGMA busy_timeout = {_READ_BUSY_TIMEOUT_MS}")
-    user_conn = sqlite3.connect(user_db)
-    user_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
-    ops_conn = sqlite3.connect(ops_db)
-    ops_conn.execute(f"PRAGMA busy_timeout = {_WRITE_BUSY_TIMEOUT_MS}")
+    index_conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
+    user_conn = open_isolated_write_connection(user_db, purpose=f"secret scan write({user_db})")
+    ops_conn = open_isolated_write_connection(ops_db, purpose=f"secret scan write({ops_db})")
 
     sessions_scanned = 0
     blocks_scanned_total = 0

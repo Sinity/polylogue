@@ -22,9 +22,10 @@ from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.raw_authority import RawReplayPlan, RawReplayPlanOutcome, RawReplayPlanStatus
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _codex_conversation_bytes(session_id: str = "session") -> bytes:
@@ -67,7 +68,7 @@ def test_raw_materialization_binds_current_generation_under_writer_lease(
     """Promotion cannot race generation resolution, replay, and postconditions."""
     from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[])
     active_index = tmp_path / "generations" / "active" / "index.db"
     initialize_archive_database(active_index, ArchiveTier.INDEX)
@@ -95,7 +96,7 @@ def test_raw_materialization_returns_a_typed_failure_while_rebuild_owns_archive(
     """A lease conflict cannot abort a caller aggregating repair results."""
     from polylogue.storage.index_generation import RebuildLease
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with RebuildLease(tmp_path):
         result = raw_convergence_mod.converge_raw_materialization(_config(tmp_path))
 
@@ -110,9 +111,9 @@ def test_raw_materialization_reparses_legacy_indexed_raw_before_receipting(tmp_p
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
     from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="legacy-indexed-receipt",
@@ -158,9 +159,9 @@ def test_raw_materialization_parser_census_respects_raw_scope(tmp_path: Path) ->
     from polylogue.core.enums import Provider
     from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids: list[str] = []
         for provider_session_id in ("scope-selected", "scope-unselected"):
@@ -225,7 +226,7 @@ def _converge_after_persisted_census(
 
 def test_raw_materialization_preview_counts_replayable_rows_without_erasing_missing_blobs(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replayable_raw_id, replayable_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("empty"))
     materialized_raw_id, materialized_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("done"))
@@ -307,7 +308,7 @@ def test_raw_materialization_preview_counts_replayable_rows_without_erasing_miss
 
 def test_raw_materialization_replays_same_native_when_index_raw_link_is_dangling(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replacement_raw_id, replacement_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("replacement"))
 
@@ -352,7 +353,7 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
     configured_root.mkdir()
-    initialize_active_archive_root(routed_root)
+    bootstrap_archive_root(routed_root)
     raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(
         b'{"mapping":{"routed":{"id":"routed","message":{"id":"m1","author":{"role":"user"},'
         b'"content":{"content_type":"text","parts":["hi"]}},"parent":null,"children":[]}},'
@@ -400,9 +401,9 @@ def test_raw_materialization_split_root_routes_authority_replay(tmp_path: Path) 
 def test_raw_materialization_retries_typed_transient_lock_failure(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         b'{"type":"session_meta","payload":{"id":"lock-retry","timestamp":"2026-07-11T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
@@ -437,10 +438,10 @@ def test_raw_materialization_retries_only_with_deferred_frontier_evidence(tmp_pa
     """CAS retryability comes from durable evidence, never parse-error prose."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     # Written below with Provider.CODEX, so these must be Codex-shaped streams:
     # a ChatGPT mapping parses to no messages under the Codex parser and is
     # refused for lack of conversational evidence (polylogue-9ykn).
@@ -548,9 +549,9 @@ def test_raw_materialization_candidates_leave_out_refused_source_paths(tmp_path:
     """
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         refused_raw = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -584,9 +585,9 @@ def test_raw_materialization_rejects_contradictory_deferred_evidence(tmp_path: P
     """A deferred kind with terminal support cannot authorize replay."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -625,9 +626,9 @@ def test_raw_materialization_requires_exact_failed_artifact_coordinate(tmp_path:
     """A deferred neighbor cannot authorize replay for another raw coordinate."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -671,9 +672,9 @@ def test_raw_materialization_validation_failure_cannot_reuse_deferred_authority(
     """Repair and its public backlog report share the worker validation gate."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -713,9 +714,9 @@ def test_raw_materialization_replays_successful_raw_with_historical_validation_f
     """Index reset replays a successful raw while retaining its failed-validation history."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -796,9 +797,9 @@ def test_raw_materialization_refuses_non_parse_authoritative_validation_failure(
     """A newer failure or legacy tie must not replay and overwrite raw authority."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -840,7 +841,7 @@ def test_raw_replay_plan_marks_tied_validation_component_terminal(tmp_path: Path
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         parsed_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -898,9 +899,9 @@ def test_raw_materialization_does_not_replay_hot_partial_capture(tmp_path: Path,
     """Hot partial evidence stays deferred until a complete source observation arrives."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
@@ -940,9 +941,9 @@ def test_raw_materialization_repairs_deferred_stale_frontier_failure(tmp_path: P
     from polylogue.core.enums import Provider
     from polylogue.storage.raw_retention import raw_frontier_integrity_projection
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         b'{"type":"session_meta","payload":{"id":"legacy-frontier-repair"}}\n'
         b'{"type":"response_item","payload":{"type":"message","role":"user",'
@@ -984,9 +985,9 @@ def test_raw_materialization_preserves_bounded_historical_cas_retry_authority(tm
     """Historical CAS rows remain selectable, while arbitrary prose stays terminal."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     errors = {
         "prefix": "MembershipReplayConflictError: old guard wording",
         "frontier": "RuntimeError: raw revision CAS rejected an older accepted frontier",
@@ -1019,9 +1020,9 @@ def test_raw_materialization_terminal_carrier_overrides_legacy_cas_marker(tmp_pa
     """A reviewed terminal carrier blocks legacy-marker replay authority."""
     from polylogue.core.enums import Origin, Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -1065,9 +1066,9 @@ def test_raw_cas_frontier_error_is_typed_transient() -> None:
 def test_non_codex_cas_frontier_failure_persists_provider_neutral_evidence(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
@@ -1094,9 +1095,9 @@ def test_generic_parse_state_failure_retires_prior_failure_authority(tmp_path: P
     from polylogue.storage.raw.models import RawSessionStateUpdate
     from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -1141,9 +1142,9 @@ def test_failed_raw_lifecycle_preserves_exact_evidence_for_same_coordinate(
     from polylogue.core.enums import Provider
     from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         old_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -1212,10 +1213,10 @@ def test_failed_raw_lifecycle_ignores_newer_ordinary_artifact_at_same_coordinate
     """A newer ordinary observation cannot hide a valid closed failure carrier."""
     from polylogue.core.enums import Origin
     from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
     from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         raw_id = write_source_raw_session(
             conn,
@@ -1276,9 +1277,9 @@ def test_cas_failure_evidence_rolls_back_with_parse_state(
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers import revision_governance
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -1310,9 +1311,9 @@ def test_deferred_cas_evidence_is_superseded_after_resolution_and_non_cas_failur
     from polylogue.core.enums import Provider
     from polylogue.storage.raw_failure_lifecycle import read_raw_failure_lifecycle
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_success = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -1410,7 +1411,7 @@ def test_raw_materialization_split_root_classifies_parsed_sidecar_from_routed_bl
     configured_root = tmp_path / "configured"
     routed_root = tmp_path / "routed"
     configured_root.mkdir()
-    initialize_active_archive_root(routed_root)
+    bootstrap_archive_root(routed_root)
     raw_id, raw_size = BlobStore(routed_root / "blob").write_from_bytes(b'{"type":"session_meta"}\n')
     with sqlite3.connect(routed_root / "source.db") as source_conn:
         source_conn.execute(
@@ -1451,7 +1452,7 @@ def test_raw_materialization_skips_current_non_session_census(tmp_path: Path) ->
     """A successful zero-session census settles an otherwise unknown sidecar shape."""
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
@@ -1522,7 +1523,7 @@ def test_raw_materialization_retries_restored_missing_blob_parse_errors(tmp_path
 
 def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     raw_id, blob_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("already-parsed"))
 
@@ -1559,7 +1560,7 @@ def test_raw_materialization_replays_parsed_rows_when_index_is_empty(tmp_path: P
 
 def test_raw_materialization_replays_parsed_rows_after_interrupted_index_rebuild(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     remaining_raw_id, remaining_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("remaining"))
     done_raw_id, done_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("done"))
@@ -1765,7 +1766,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
     """A complete durable census governs replay; it never substitutes for index rows."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     def conversation(session_id: str) -> dict[str, object]:
         return {
@@ -1789,7 +1790,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
             "current_node": "message-1",
         }
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -1823,7 +1824,7 @@ def test_raw_materialization_replays_governed_bundle_after_index_reset(tmp_path:
 
 def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     raw_id, blob_size = blob_store.write_from_bytes(b'{"fragment":true}')
     with sqlite3.connect(tmp_path / "source.db") as source_conn:
@@ -1896,7 +1897,7 @@ def test_raw_materialization_reports_uncensused_append_fragments_as_pending_debt
 
 def test_raw_materialization_ordinary_replay_reaches_two_call_fixed_point(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = b"""{
       "id": "fixed-point",
       "title": "fixed point",
@@ -1979,7 +1980,7 @@ def test_raw_materialization_no_progress_component_terminalizes_instead_of_loopi
     automatically reselected on the next pass.
     """
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = b"""{
       "id": "orphan-append",
       "title": "orphan append",
@@ -2078,7 +2079,7 @@ def test_raw_materialization_uses_authority_replay_not_legacy_batch_parser(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     first_raw_id, first_size = blob_store.write_from_bytes(
         b'{"mapping":{"first":{"id":"first","message":{"id":"m1","author":{"role":"user"},'
@@ -2150,7 +2151,7 @@ def test_raw_materialization_ordinary_repair_preserves_newer_index_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     older_payload = b"""{
       "id": "logical-session",
       "title": "older raw snapshot",
@@ -2294,9 +2295,9 @@ def test_raw_materialization_dry_run_reports_limited_selection(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     sizes = [512, 1024, 2048, 4096]
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
@@ -2332,9 +2333,9 @@ def test_raw_materialization_execute_limits_authority_selection(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
             archive.write_raw_payload(
@@ -2420,7 +2421,7 @@ def test_raw_materialization_raw_artifact_filter_counts_only_target(tmp_path: Pa
 
 def test_raw_materialization_excludes_already_parsed_non_materialized_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     replayable_raw_id, replayable_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("pending"))
     parsed_raw_id, parsed_size = blob_store.write_from_bytes(_chatgpt_conversation_bytes("parsed"))
@@ -2515,7 +2516,7 @@ def test_raw_materialization_excludes_parsed_non_session_artifacts(tmp_path: Pat
 
 def test_raw_materialization_explicit_scope_includes_already_parsed_rows(tmp_path: Path) -> None:
     config = _config(tmp_path)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     blob_store = BlobStore(tmp_path / "blob")
     # A gemini-cli checkpoint needs sessionId plus startTime/lastUpdated as well
     # as a non-empty messages list. sessionId + messages alone is also one of
@@ -2664,9 +2665,9 @@ def test_raw_materialization_uses_authority_substrate_not_legacy_ingest_stage(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2698,9 +2699,9 @@ def test_raw_materialization_reports_authority_progress_and_payload_size(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2739,9 +2740,9 @@ def test_raw_materialization_blocks_oversized_actual_replay(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -2793,9 +2794,9 @@ def test_raw_materialization_classifies_oversized_stream_record_replay(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -2829,9 +2830,9 @@ def test_raw_materialization_blocks_oversized_expanded_cohort_before_blob_open(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     baseline = (
         b'{"type":"session_meta","payload":{"id":"expanded-size","timestamp":"2026-07-11T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
@@ -2878,9 +2879,9 @@ def test_raw_materialization_backlog_expands_to_oversized_materialized_sibling(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     small_payload = _codex_conversation_bytes("small-gap")
     large_payload = _codex_conversation_bytes("large-done")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -2925,9 +2926,9 @@ def test_raw_materialization_blocks_aggregate_sub_limit_cohort_before_blob_open(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
             archive.write_raw_payload(
@@ -2973,9 +2974,9 @@ def test_raw_materialization_reuses_pre_envelope_deferred_receipt(tmp_path: Path
     """Upgrading does not strand a completed deferred receipt without envelope identity."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3019,10 +3020,10 @@ def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path
     """A bounded dry run must describe the envelope that governed its plan."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     max_payload_bytes = 100
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3048,9 +3049,9 @@ def test_raw_materialization_reports_the_active_custom_payload_envelope(tmp_path
 def test_raw_materialization_processes_independent_components_across_bounded_passes(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_count = 25
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
@@ -3110,9 +3111,9 @@ def test_raw_materialization_max_pass_seconds_bounds_one_pass_and_preserves_prog
     """
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_count = 3
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
@@ -3165,9 +3166,9 @@ def test_raw_materialization_durable_ledger_survives_ops_reset_for_fairness(
     """A retryable oldest component must not monopolize a slot after ops reset."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
             archive.write_raw_payload(
@@ -3214,11 +3215,11 @@ def test_raw_materialization_fair_rotation_mutation_recreates_starvation(
     from polylogue.core.enums import Provider
     from polylogue.sources import revision_backfill
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     def run(*, remove_fair_rotation: bool) -> tuple[tuple[str, ...], tuple[str, ...]]:
         root = tmp_path / ("unfair" if remove_fair_rotation else "fair")
-        initialize_active_archive_root(root)
+        bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             raw_ids = [
                 archive.write_raw_payload(
@@ -3277,11 +3278,11 @@ def test_raw_materialization_ordering_is_size_agnostic_and_does_not_starve_large
     """
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     def run(*, prefer_cheap: bool) -> tuple[tuple[str, ...], str]:
         root = tmp_path / ("cheap-first" if prefer_cheap else "fair-order")
-        initialize_active_archive_root(root)
+        bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             # The large valid component is acquired FIRST (oldest), so fair
             # age-based ordering must select it on the very first pass.
@@ -3349,9 +3350,9 @@ def test_raw_materialization_isolates_failed_component_and_continues_batch(
     from polylogue.core.enums import Provider
     from polylogue.sources import revision_backfill
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_ids = [
             archive.write_raw_payload(
@@ -3404,7 +3405,7 @@ def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
     from polylogue.storage.sqlite import action_pairs as action_pairs_mod
     from polylogue.storage.sqlite import delegation_facts as delegation_facts_mod
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
     def _tool_call_payload(native_id: str) -> bytes:
         return (
@@ -3417,7 +3418,7 @@ def test_raw_materialization_replay_scopes_derived_rebuild_to_touched_component(
             b'"call_id":"call_abc","output":"file1.txt"}}\n'
         )
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     existing_native_ids = [f"existing-{index}" for index in range(8)]
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index, native_id in enumerate(existing_native_ids):
@@ -3501,9 +3502,9 @@ def test_raw_materialization_transient_failure_retries_with_same_plan_id_then_su
     from polylogue.core.enums import Provider
     from polylogue.sources import revision_backfill
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3561,9 +3562,9 @@ def test_raw_materialization_cas_conflict_outcome_is_typed_durable_and_non_mutat
     from polylogue.core.enums import Provider
     from polylogue.sources import revision_backfill
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3625,9 +3626,9 @@ def test_raw_materialization_fails_closed_on_plan_conservation_mismatch(
     """The success flag must not conceal a mutated before/after plan algebra."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3662,9 +3663,9 @@ def test_raw_materialization_batch_limit_counts_authority_components(tmp_path: P
     """One revision-heavy source must not consume the whole daemon batch."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session_meta = b'{"type":"session_meta","payload":{"id":"shared-session","timestamp":"2026-07-15T00:00:00Z"}}\n'
     shared_raw_ids: list[str] = []
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
@@ -3745,9 +3746,9 @@ def test_raw_materialization_quarantines_parse_failures_without_legacy_parser(
 ) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3835,9 +3836,9 @@ def test_stream_safe_resolves_non_candidate_component_members_via_expanded_maps(
 def test_raw_materialization_whale_pass_candidate_excludes_non_stream_safe_component(tmp_path: Path) -> None:
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = json.dumps({"mapping": {}, "title": "non-stream-safe-whale"}).encode() + b"x" * 2_000
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -3868,9 +3869,9 @@ def test_raw_materialization_ordinary_pass_census_detail_distinguishes_escalatio
     -- stream-safe -- versus ChatGPT .json -- not)."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         stream_safe_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3920,9 +3921,9 @@ def test_non_stream_safe_envelope_terminal_never_reports_deferred_success(tmp_pa
     """A durable terminal envelope outcome remains failed on the next real pass."""
     from polylogue.core.enums import Provider
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.infra.archive_templates import bootstrap_archive_root
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -4125,7 +4126,7 @@ def test_raw_materialization_converges_component_with_byte_governed_append_fragm
     )
     tail = grown[len(baseline) :]
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as store:
         full_raw_ids = []
         for index, payload in enumerate((baseline, grown)):

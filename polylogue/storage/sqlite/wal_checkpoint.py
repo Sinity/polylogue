@@ -1,4 +1,9 @@
-"""Bounded WAL checkpoint helpers for daemon ingest and maintenance."""
+"""Bounded WAL checkpoints executing the policy declared in ``connection_profile``.
+
+This module is mechanism only: which modes an escalation may attempt, the WAL
+size thresholds and the hold budget are declared once in
+``connection_profile.py`` and read from there.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +13,20 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.storage.sqlite.connection_profile import open_daemon_connection
+from polylogue.storage.sqlite.connection_profile import (
+    CHECKPOINT_ESCALATION_MODES,
+    CHECKPOINT_HOLD_BUDGET_S,
+    WAL_ESCALATION_BYTES,
+    WAL_WARN_BYTES,
+    CheckpointEscalation,
+    open_daemon_connection,
+)
 
-DEFAULT_WAL_WARN_BYTES = 256 * 1024 * 1024
-DEFAULT_WAL_TRUNCATE_BYTES = 512 * 1024 * 1024
 ARCHIVE_TIER_WAL_FILES = ("source.db", "index.db", "embeddings.db", "user.db", "ops.db")
+
+#: Checkpoint modes in escalation order, so an observation can report how far
+#: an escalation actually reached.
+CHECKPOINT_MODES = ("PASSIVE", "RESTART", "TRUNCATE")
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +37,7 @@ class WalCheckpointObservation:
     mode: str
     wal_bytes_before: int
     wal_bytes_after: int
+    escalation: CheckpointEscalation = "recurring"
     busy_pages: int = 0
     log_pages: int = 0
     checkpointed_pages: int = 0
@@ -33,6 +48,15 @@ class WalCheckpointObservation:
     @property
     def ran(self) -> bool:
         return self.mode != "none"
+
+    @property
+    def blocked(self) -> bool:
+        """Whether a reader or writer kept the checkpoint from draining the WAL."""
+        return self.busy_pages > 0 or self.checkpointed_pages < self.log_pages
+
+    @property
+    def over_hold_budget(self) -> bool:
+        return self.elapsed_s > CHECKPOINT_HOLD_BUDGET_S
 
 
 def _wal_size(db: Path) -> int:
@@ -47,7 +71,7 @@ def _wal_size(db: Path) -> int:
 
 def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int, int]:
     """Run one declared checkpoint mode and return busy/log/checkpointed pages."""
-    if mode not in {"PASSIVE", "RESTART", "TRUNCATE"}:
+    if mode not in CHECKPOINT_MODES:
         raise ValueError(f"unsupported checkpoint mode: {mode}")
     row = conn.execute(f"PRAGMA wal_checkpoint({mode})").fetchone()
     if row is None:
@@ -55,38 +79,50 @@ def checkpoint_connection(conn: sqlite3.Connection, mode: str) -> tuple[int, int
     return tuple(int(value or 0) for value in row)  # type: ignore[return-value]
 
 
-def maybe_checkpoint_wal(
+def checkpoint_wal(
     db: Path,
     *,
     reason: str,
-    warn_bytes: int = DEFAULT_WAL_WARN_BYTES,
-    truncate_bytes: int = DEFAULT_WAL_TRUNCATE_BYTES,
+    escalation: CheckpointEscalation = "recurring",
+    warn_bytes: int = WAL_WARN_BYTES,
+    escalation_bytes: int = WAL_ESCALATION_BYTES,
     timeout_s: float = 1.0,
-    allow_truncate: bool = True,
+    collect_blockers: bool = False,
 ) -> WalCheckpointObservation:
-    """Checkpoint WAL when it crosses a bounded threshold.
+    """Checkpoint one WAL as far as ``escalation`` permits, and no further.
 
-    The helper never loops. It first attempts a PASSIVE checkpoint when the
-    WAL is beyond ``warn_bytes``. If the WAL is still above
-    ``truncate_bytes`` and SQLite reports no busy pages, it follows with a
-    TRUNCATE checkpoint. Busy readers are reported, not fought.
+    The helper never loops and never retries. It attempts each mode the
+    escalation declares in order, stopping as soon as the WAL is back under
+    ``escalation_bytes`` or SQLite reports busy pages: a busy result means a
+    reader still holds frames, and the WAL is retained with that evidence
+    rather than fought.
+
+    ``collect_blockers`` walks ``/proc`` to name the processes holding the
+    files. It is off by default because that walk costs a scan of every process
+    on the host, which no interactive route can afford.
     """
     before = _wal_size(db)
     if before < warn_bytes:
-        return WalCheckpointObservation(reason=reason, mode="none", wal_bytes_before=before, wal_bytes_after=before)
+        return WalCheckpointObservation(
+            reason=reason,
+            mode="none",
+            escalation=escalation,
+            wal_bytes_before=before,
+            wal_bytes_after=before,
+        )
 
     started = time.perf_counter()
-    mode = "passive"
+    mode = "none"
     busy = log = checkpointed = 0
     error: str | None = None
     try:
         conn = open_daemon_connection(db, timeout=timeout_s)
         try:
-            busy, log, checkpointed = checkpoint_connection(conn, "PASSIVE")
-            after_passive = _wal_size(db)
-            if allow_truncate and busy == 0 and after_passive >= truncate_bytes:
-                mode = "truncate"
-                busy, log, checkpointed = checkpoint_connection(conn, "TRUNCATE")
+            for candidate in CHECKPOINT_ESCALATION_MODES[escalation]:
+                mode = candidate.lower()
+                busy, log, checkpointed = checkpoint_connection(conn, candidate)
+                if busy > 0 or _wal_size(db) < escalation_bytes:
+                    break
         finally:
             conn.close()
     except sqlite3.Error as exc:
@@ -94,12 +130,14 @@ def maybe_checkpoint_wal(
     after = _wal_size(db)
     blocking_processes = (
         _sqlite_file_holders(db)
-        if busy > 0 or after >= truncate_bytes or (error is not None and "locked" in error.lower())
+        if collect_blockers
+        and (busy > 0 or after >= escalation_bytes or (error is not None and "locked" in error.lower()))
         else ()
     )
     return WalCheckpointObservation(
         reason=reason,
         mode=mode,
+        escalation=escalation,
         wal_bytes_before=before,
         wal_bytes_after=after,
         busy_pages=busy,
@@ -111,20 +149,21 @@ def maybe_checkpoint_wal(
     )
 
 
-def maybe_checkpoint_archive_wals(
+def checkpoint_archive_wals(
     archive_root: Path,
     *,
     reason: str,
-    warn_bytes: int = DEFAULT_WAL_WARN_BYTES,
-    truncate_bytes: int = DEFAULT_WAL_TRUNCATE_BYTES,
+    escalation: CheckpointEscalation = "recurring",
+    warn_bytes: int = WAL_WARN_BYTES,
+    escalation_bytes: int = WAL_ESCALATION_BYTES,
     timeout_s: float = 1.0,
-    allow_truncate: bool = True,
+    collect_blockers: bool = False,
 ) -> tuple[WalCheckpointObservation, ...]:
     """Checkpoint WAL files for every existing split archive tier.
 
-    The daemon is responsible for keeping all archive-tier WALs bounded, not
-    only the index tier.  Missing tiers are skipped because archive bootstrap
-    and tier readiness checks own creation/version semantics.
+    The recurring owner is responsible for keeping all archive-tier WALs
+    bounded, not only the index tier.  Missing tiers are skipped because
+    archive bootstrap and tier readiness checks own creation/version semantics.
     """
 
     observations: list[WalCheckpointObservation] = []
@@ -133,13 +172,14 @@ def maybe_checkpoint_archive_wals(
         if not db.exists():
             continue
         observations.append(
-            maybe_checkpoint_wal(
+            checkpoint_wal(
                 db,
                 reason=reason,
+                escalation=escalation,
                 warn_bytes=warn_bytes,
-                truncate_bytes=truncate_bytes,
+                escalation_bytes=escalation_bytes,
                 timeout_s=timeout_s,
-                allow_truncate=allow_truncate,
+                collect_blockers=collect_blockers,
             )
         )
     return tuple(observations)
@@ -189,10 +229,9 @@ def _process_command(proc_entry: Path) -> str:
 
 __all__ = [
     "ARCHIVE_TIER_WAL_FILES",
-    "DEFAULT_WAL_TRUNCATE_BYTES",
-    "DEFAULT_WAL_WARN_BYTES",
+    "CHECKPOINT_MODES",
     "WalCheckpointObservation",
+    "checkpoint_archive_wals",
     "checkpoint_connection",
-    "maybe_checkpoint_archive_wals",
-    "maybe_checkpoint_wal",
+    "checkpoint_wal",
 ]

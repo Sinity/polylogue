@@ -17,7 +17,7 @@ from polylogue.core.refs import EvidenceRef, ObjectRef
 
 RunHarness = Literal["claude-code", "codex", "chatgpt", "local", "unknown"]
 RunStatus = Literal["completed", "failed", "unknown"]
-ContextBoundary = Literal["session_start", "subagent_start", "resume", "unknown"]
+ContextBoundary = Literal["session_start", "subagent_start", "resume", "compaction", "unknown"]
 ContextInheritanceMode = Literal["clean", "summary", "prefix", "snapshot", "injected", "unknown"]
 ObservedEventKind = Literal[
     "session_started",
@@ -36,6 +36,36 @@ ObservedDeliveryState = Literal["observed", "unknown"]
 
 class _RawRefLike(Protocol):
     def to_evidence_ref(self) -> EvidenceRef: ...
+
+
+class _CompactionBoundaryLike(Protocol):
+    """One compaction event's stored replaced range (polylogue-4ts.5).
+
+    ``start_position``/``end_position`` are the inclusive message-position
+    bounds the boundary replaced, read from
+    ``session_events.boundary_start_position``/``boundary_end_position``;
+    ``replaced_refs`` names the messages inside that range. A parser that could
+    not resolve the range leaves the positions ``None``, and the projection
+    records the boundary without a range rather than guessing one.
+    """
+
+    @property
+    def event_id(self) -> str: ...
+
+    @property
+    def start_position(self) -> int | None: ...
+
+    @property
+    def end_position(self) -> int | None: ...
+
+    @property
+    def summary_message_id(self) -> str | None: ...
+
+    @property
+    def replaced_refs(self) -> Sequence[EvidenceRef]: ...
+
+    @property
+    def raw_refs(self) -> Sequence[_RawRefLike]: ...
 
 
 class _ToolSummaryLike(Protocol):
@@ -219,12 +249,19 @@ def build_run_projection(
     subagent_reports: Sequence[_SubagentReportLike],
     session_digest_events: Sequence[_SessionDigestEventLike],
     is_resume: bool = False,
+    compaction_boundaries: Sequence[_CompactionBoundaryLike] = (),
 ) -> RunProjection:
     """Project digest evidence into bounded Run/ContextSnapshot/ObservedEvent DTOs.
 
     ``is_resume`` marks a genuine continuation/resume session (see
     ``Session.is_continuation``) — the main run's context-snapshot boundary is
     then ``resume`` rather than a fresh ``session_start`` (polylogue-aoe5).
+
+    ``compaction_boundaries`` carries the stored replaced range of each
+    compaction event (polylogue-4ts.5), projected as one ``compaction``
+    context snapshot per boundary. The range is evidence, not inference: a
+    boundary whose positions are ``None`` yields a snapshot with no range, and
+    consumers must not substitute a heuristic for it.
     """
 
     session_evidence = _to_evidence_refs(session_raw_refs)
@@ -374,11 +411,62 @@ def build_run_projection(
                 )
             )
 
+    for boundary in compaction_boundaries:
+        # A boundary whose range the archive never recorded is not a snapshot of
+        # zero replaced messages -- it carries no context-loss evidence at all,
+        # so it produces no snapshot rather than an empty one.
+        if boundary.start_position is None or boundary.end_position is None:
+            continue
+        snapshots.append(_compaction_snapshot(session_id, main_run_ref, boundary))
+
     return RunProjection(
         session_id=session_id,
         runs=tuple(runs),
         context_snapshots=tuple(snapshots),
         events=tuple(observed),
+    )
+
+
+#: ``ContextSnapshot.metadata`` keys carrying a compaction's stored replaced
+#: range. Absent together when the boundary columns are NULL, which is what
+#: separates "this compaction replaced positions 0..4" from "a compaction
+#: happened and the archive does not record what it replaced".
+COMPACTION_RANGE_START_KEY = "replaced_start_position"
+COMPACTION_RANGE_END_KEY = "replaced_end_position"
+COMPACTION_SUMMARY_MESSAGE_KEY = "summary_message_id"
+
+#: Replaced-message refs carried on one compaction snapshot. A compaction can
+#: replace thousands of messages; the range in ``metadata`` is the complete
+#: fact, and these are the first few by position so a reader can open one. The
+#: SQL relation in ``run_projection_relations.py`` applies the same bound, so
+#: both derivations of a snapshot agree.
+MAX_COMPACTION_EVIDENCE_REFS = 5
+
+
+def _compaction_snapshot(
+    session_id: str,
+    run_ref: ObjectRef,
+    boundary: _CompactionBoundaryLike,
+) -> ContextSnapshot:
+    start = boundary.start_position
+    end = boundary.end_position
+    assert start is not None and end is not None
+    metadata: dict[str, str] = {
+        "source": "session-event-compaction",
+        COMPACTION_RANGE_START_KEY: str(start),
+        COMPACTION_RANGE_END_KEY: str(end),
+    }
+    if boundary.summary_message_id is not None:
+        metadata[COMPACTION_SUMMARY_MESSAGE_KEY] = boundary.summary_message_id
+    replaced = tuple(boundary.replaced_refs)[:MAX_COMPACTION_EVIDENCE_REFS]
+    return ContextSnapshot(
+        snapshot_ref=_context_snapshot_ref(boundary.event_id, "compaction"),
+        run_ref=run_ref,
+        boundary="compaction",
+        inheritance_mode="summary",
+        segment_refs=(ObjectRef(kind="session", object_id=session_id),),
+        evidence_refs=replaced or _to_evidence_refs(boundary.raw_refs),
+        metadata=metadata,
     )
 
 
@@ -466,6 +554,10 @@ def _tool_call_ref(tool: _ToolSummaryLike) -> ObjectRef | None:
 
 
 __all__ = [
+    "COMPACTION_RANGE_END_KEY",
+    "COMPACTION_RANGE_START_KEY",
+    "COMPACTION_SUMMARY_MESSAGE_KEY",
+    "MAX_COMPACTION_EVIDENCE_REFS",
     "ContextSnapshot",
     "ObservedEvent",
     "ProjectedRun",

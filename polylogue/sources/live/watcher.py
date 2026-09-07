@@ -26,6 +26,7 @@ from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.source_halts import halted_sources, source_halt
@@ -65,7 +66,7 @@ from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
     sqlite_database_for_sidecar,
-    sqlite_logical_revision,
+    sqlite_member_revision,
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
@@ -163,7 +164,7 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
     logger.info(
         "%s complete: read=%.1f MB input=%.1f MB read_amp=%.6fx append_files=%d full_files=%d "
         "succeeded=%d failed=%d excluded=%d parse_s=%.3f convergence_s=%.3f stages=%s "
-        "wal_before_checkpoint=%.1f MB wal_after_checkpoint=%.1f MB wal_busy_pages=%d time_budget_exceeded=%s",
+        "time_budget_exceeded=%s",
         prefix,
         source_payload_read_bytes / 1e6,
         input_bytes / 1e6,
@@ -176,9 +177,6 @@ def _log_ingest_metrics(prefix: str, metrics: LiveBatchMetrics) -> None:
         getattr(metrics, "parse_time_s", 0.0),
         getattr(metrics, "convergence_time_s", 0.0),
         stage_summary,
-        getattr(metrics, "wal_bytes_before_checkpoint_max", 0) / 1e6,
-        getattr(metrics, "wal_bytes_after_checkpoint_max", 0) / 1e6,
-        getattr(metrics, "wal_busy_pages_total", 0),
         getattr(metrics, "time_budget_exceeded", False),
     )
     excluded_reasons = getattr(metrics, "excluded_reasons", {})
@@ -210,6 +208,67 @@ def _log_unclaimed_catch_up_candidate(path: Path, *, source_name: str, reason: s
     except OSError:
         size, mtime = None, None
     log_unclaimed_file(path=path, size=size, mtime=mtime, reason=reason, source_name=source_name)
+
+
+def _directory_identity(path: Path) -> tuple[int, int] | None:
+    """Return the device/inode a directory really occupies.
+
+    ``None`` for anything that cannot be statted -- a broken symlink or a
+    directory that vanished mid-walk -- neither of which can be descended.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_dev, stat.st_ino)
+
+
+class _SourceTreeWalk:
+    """One source's catch-up walk, following deliberate directory symlinks.
+
+    A directory symlink under a watch root is a deliberate placement -- the
+    inbox exposes whole export corpora that way -- so the walk enters it.
+    Two things bound what that admits:
+
+    ``_walked`` holds every directory identity already entered, so a link to
+    an ancestor or to an already-walked tree is not followed a second time; a
+    cycle terminates and one corpus reachable under two names is one candidate.
+
+    ``_containment`` holds, per walked directory, the real root of the tree
+    the walk is inside: the source root, or the target of the last symlink it
+    followed. A file whose resolved path leaves that tree is a symlink
+    escaping the watch root and is never a candidate.
+    """
+
+    def __init__(self, source: WatchSource) -> None:
+        self._source = source
+        root = source.root.resolve()
+        self._walked = {identity for identity in (_directory_identity(source.root),) if identity is not None}
+        self._containment: dict[str, Path] = {str(source.root): root}
+
+    def descendable(self, directory: Path, dirnames: list[str]) -> list[str]:
+        """Return the child directory names this walk may descend into."""
+        inherited = self._containment.get(str(directory), self._source.root.resolve())
+        descendable: list[str] = []
+        for dirname in dirnames:
+            child = directory / dirname
+            if self._source.ignores_directory(child):
+                continue
+            identity = _directory_identity(child)
+            if identity is None or identity in self._walked:
+                continue
+            self._walked.add(identity)
+            self._containment[str(child)] = child.resolve() if child.is_symlink() else inherited
+            descendable.append(dirname)
+        return descendable
+
+    def contains(self, directory: Path, path: Path) -> bool:
+        """Whether ``path`` stays inside the real tree the walk is in."""
+        root = self._containment.get(str(directory), self._source.root.resolve())
+        try:
+            return path.resolve().is_relative_to(root)
+        except OSError:
+            return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,7 +416,15 @@ class LiveWatcher:
         # own the stage's lifecycle themselves); otherwise one is created
         # here, owned by this watcher, and shut down in ``stop()``.
         self._owns_parse_stage = parse_stage is None
-        self._parse_stage: LiveParseStage | None = parse_stage if parse_stage is not None else LiveParseStage()
+        # polylogue-bp12n.6: a stage the watcher owns also writes each parsed
+        # file's rows into a shard the writer copies. The directory is
+        # disposable scratch beside the tiers it feeds; nothing in it
+        # survives ``stop()``.
+        self._parse_stage: LiveParseStage | None = (
+            parse_stage
+            if parse_stage is not None
+            else LiveParseStage(shard_directory=Path(polylogue.archive_root) / "parse-shards")
+        )
         self._pending_paths: set[Path] = set()
         self._forced_reparse_paths: set[Path] = set()
         self._pending_scheduled = False
@@ -960,13 +1027,18 @@ class LiveWatcher:
                 continue
             if source in self._hook_sources():
                 continue
-            for directory, dirnames, filenames in os.walk(source.root, followlinks=False):
-                dirnames[:] = [
-                    dirname for dirname in dirnames if not source.ignores_directory(Path(directory) / dirname)
-                ]
+            walk = _SourceTreeWalk(source)
+            for directory, dirnames, filenames in os.walk(source.root, followlinks=True):
+                dirnames[:] = walk.descendable(Path(directory), dirnames)
                 for filename in filenames:
                     path = Path(directory) / filename
-                    if deepest_source_for_path(path, self._sources) is not source:
+                    if not walk.contains(Path(directory), path):
+                        continue
+                    # A file behind a directory symlink resolves outside every
+                    # configured root, so ownership only has to settle which
+                    # source wins where roots overlap.
+                    owner = deepest_source_for_path(path, self._sources)
+                    if owner is not None and owner is not source:
                         continue
                     if not source.accepts(path):
                         # Unclaimed-file sweep (mission item 2): a file this
@@ -1694,6 +1766,40 @@ class LiveWatcher:
             None,
         )
 
+    @staticmethod
+    def _decided_unresolved_cursor_row(
+        path: Path,
+        *,
+        source_conn: sqlite3.Connection,
+    ) -> tuple[object, ...] | None:
+        """Newest raw for ``path`` whose membership arbitration decided unresolved.
+
+        Such a raw is never parsed and never reaches the index, so
+        :meth:`_archived_cursor_row` cannot see it; without this the cursor
+        can never be restored from it and every start re-reads the whole
+        file to reach the same decided verdict. Its retained bytes are still
+        proof of what was consumed, and the caller re-verifies them against
+        the archived blob hash before advancing, so a changed observation
+        still returns through full ingest -- the only route that can carry
+        the new evidence the verdict needs.
+        """
+        return cast(
+            "tuple[object, ...] | None",
+            source_conn.execute(
+                f"""
+                SELECT r.raw_id, r.origin, r.blob_hash, r.blob_size
+                FROM raw_sessions AS r
+                WHERE r.source_path = ?
+                  AND COALESCE(r.source_index, 0) >= 0
+                  AND r.parse_error IS NULL
+                  AND ({decided_unresolved_membership_sql("r")})
+                ORDER BY r.acquired_at_ms DESC, r.raw_id DESC
+                LIMIT 1
+                """,
+                (str(path),),
+            ).fetchone(),
+        )
+
     @classmethod
     def _path_corroborated_by_index(
         cls,
@@ -1772,7 +1878,9 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         try:
             if shared is not None:
-                row = self._archived_cursor_row(path, source_conn=shared[0], index_conn=shared[1])
+                row = self._archived_cursor_row(
+                    path, source_conn=shared[0], index_conn=shared[1]
+                ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
             else:
                 source_db = archive_root / "source.db"
                 index_db = resolve_active_index_path(archive_root)
@@ -1782,7 +1890,9 @@ class LiveWatcher:
                     closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
                     closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
                 ):
-                    row = self._archived_cursor_row(path, source_conn=source_conn, index_conn=index_conn)
+                    row = self._archived_cursor_row(
+                        path, source_conn=source_conn, index_conn=index_conn
+                    ) or self._decided_unresolved_cursor_row(path, source_conn=source_conn)
         except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
             return _ArchivedCursorReconciliation.UNAVAILABLE
         if row is None:
@@ -2060,13 +2170,16 @@ class LiveWatcher:
 
         Only a recorded fingerprint that is itself a logical revision can
         answer; every other cursor shape falls through to work, which is what
-        the filesystem observation already claimed.
+        the filesystem observation already claimed. The revision is scoped to
+        the member's declared logical tables, exactly as acquisition records
+        it -- a whole-database digest would report work for a commit in a
+        table nothing reads.
         """
         recorded = cursor.content_fingerprint
         if recorded is None:
             return True
         try:
-            return sqlite_logical_revision(path) != recorded
+            return sqlite_member_revision(path) != recorded
         except (sqlite3.Error, OSError, UnicodeDecodeError):
             # Acquisition owns the consistent read and reports its own typed
             # failure; a locked or damaged database is not silently fresh.
@@ -2171,6 +2284,23 @@ def _interleave_by_source(candidates: list[CandidateSourceFile]) -> list[Candida
     return ordered
 
 
+def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
+    """Return the XDG data-home inbox when the archive root has moved away.
+
+    ``archive_root()`` defaults to ``data_home()``, so an archive whose root
+    was later pointed elsewhere leaves its inbox behind under no watch root at
+    all: exports staged there before the move are acquired by nothing, and a
+    wipe-and-reconverge never reads them. Same finite legacy-root topology the
+    hook spools already carry. Inert where the two inboxes coincide.
+    """
+    from polylogue.paths import archive_root, data_home
+
+    legacy_root = data_home() / "inbox"
+    if legacy_root.resolve() == (archive_root() / "inbox").resolve():
+        return ()
+    return (WatchSource(name="inbox", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
+
+
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
@@ -2248,6 +2378,7 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
+        *_legacy_data_home_inbox_sources(),
         *hook_watch_sources(hook_spool_sources()),
     )
 

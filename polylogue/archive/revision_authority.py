@@ -46,6 +46,37 @@ BYTE_AUTHORITY_CENSUS_DETAIL = "append fragments are governed by byte revision a
 RAW_AUTHORITY_PARSER_FINGERPRINT = "revision-membership-v4"
 
 
+def decided_unresolved_membership_sql(table_alias: str = "r") -> str:
+    """SQL predicate for a raw whose membership arbitration concluded unresolved.
+
+    Census complete, every membership row arbitrated, the verdict
+    ``ambiguous``/``deferred``, and the raw durably quarantined: replay is
+    fail-closed and only new bytes or new evidence can change it, so the
+    passage of time and re-reading the same source bytes cannot. Consumers
+    that ask "is there still pending work here?" must read this as a decided
+    outcome rather than as an unfinished parse (which ``parsed_at_ms IS NULL``
+    alone looks like).
+    """
+    return f"""
+        {table_alias}.revision_authority = 'quarantined'
+        AND EXISTS (
+            SELECT 1 FROM raw_membership_census AS decided_census
+            WHERE decided_census.raw_id = {table_alias}.raw_id
+              AND decided_census.status = 'complete'
+        )
+        AND EXISTS (
+            SELECT 1 FROM raw_session_memberships AS decided_membership
+            WHERE decided_membership.raw_id = {table_alias}.raw_id
+              AND decided_membership.decision IN ('ambiguous', 'deferred')
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM raw_session_memberships AS pending_membership
+            WHERE pending_membership.raw_id = {table_alias}.raw_id
+              AND pending_membership.decision IS NULL
+        )
+    """
+
+
 def canonical_authority_logical_key(logical_key: str) -> str:
     """Normalize a provider or public-origin authority key to public origin form."""
     prefix, separator, native_id = logical_key.partition(":")

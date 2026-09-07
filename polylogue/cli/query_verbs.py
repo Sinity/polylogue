@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
+from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
 from polylogue.archive.viewport import (
     READ_VIEW_PROFILE_BY_ID,
     READ_VIEW_PROFILES,
@@ -464,6 +465,10 @@ def _read_view_option_values(
     since_hours: int,
     confidence_threshold: float,
     github_api: bool,
+    node_offset: int,
+    node_limit: int | None,
+    edge_offset: int,
+    edge_limit: int | None,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -480,6 +485,10 @@ def _read_view_option_values(
         "since_hours": since_hours,
         "confidence_threshold": confidence_threshold,
         "github_api": github_api,
+        "node_offset": node_offset,
+        "node_limit": node_limit,
+        "edge_offset": edge_offset,
+        "edge_limit": edge_limit,
     }
 
 
@@ -1107,6 +1116,22 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
 @click.option("--spec", "show_spec", is_flag=True, help="Print the composed selection/projection/render spec as JSON.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
+@click.option("--node-offset", type=int, default=0, help="Lineage node-page offset (--view lineage).")
+@click.option(
+    "--node-limit",
+    type=int,
+    default=DEFAULT_LINEAGE_PAGE_LIMIT,
+    show_default=True,
+    help="Lineage node-page size (--view lineage).",
+)
+@click.option("--edge-offset", type=int, default=0, help="Lineage edge-page offset (--view lineage).")
+@click.option(
+    "--edge-limit",
+    type=int,
+    default=DEFAULT_LINEAGE_PAGE_LIMIT,
+    show_default=True,
+    help="Lineage edge-page size (--view lineage).",
+)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -1138,6 +1163,10 @@ def read_verb(
     show_spec: bool = False,
     show_views: bool = False,
     at_position: int | None = None,
+    node_offset: int = 0,
+    node_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
+    edge_offset: int = 0,
+    edge_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
     ref: str | None = None,
 ) -> None:
     """Read matched sessions.
@@ -1517,6 +1546,10 @@ def read_verb(
                     since_hours=since_hours,
                     confidence_threshold=confidence_threshold,
                     github_api=github_api,
+                    node_offset=node_offset,
+                    node_limit=node_limit,
+                    edge_offset=edge_offset,
+                    edge_limit=edge_limit,
                 ),
             ),
             explicit_options=explicit_options,
@@ -1708,8 +1741,13 @@ def delete_verb(
         polylogue find 'repo:polylogue since:7d' then delete --dry-run --all
         polylogue find 'repo:polylogue since:7d' then delete --yes --all
     """
+    from polylogue.cli.contextual_errors import (
+        AMBIGUITY_CANDIDATE_LIMIT,
+        AmbiguousSelectionError,
+        ContextualCliError,
+        NextAction,
+    )
     from polylogue.cli.verb_cardinality import (
-        CardinalityError,
         check_cardinality,
         probe_session_ids_for_verb,
         resolve_session_ids_for_verb,
@@ -1740,22 +1778,37 @@ def delete_verb(
     if dry_run:
         probe_ids = probe_session_ids_for_verb(env, request, limit=2)
         if len(probe_ids) > 1 and not all_flag:
-            raise click.UsageError(
+            raise AmbiguousSelectionError(
                 "'delete dry-run' matched multiple sessions. "
-                "Use --all to preview every matched session, or narrow the query."
+                "Use --all to preview every matched session, or narrow the query.",
+                candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
+                next_actions=(
+                    NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
+                    NextAction("Preview one session", "polylogue find id:<REF> then delete --dry-run"),
+                ),
             )
         session_ids = resolve_session_ids_for_verb(env, request)
         execute_delete_by_session_ids(env, session_ids, force=True, dry_run=True)
         return
     if not yes_flag:
-        raise click.UsageError("delete requires --yes for actual deletion; use --dry-run to preview.")
+        raise ContextualCliError(
+            "delete requires --yes for actual deletion.",
+            next_actions=(
+                NextAction("Preview the deletion first", "polylogue find <QUERY> then delete --dry-run"),
+                NextAction("Confirm the deletion", "polylogue find <QUERY> then delete --yes"),
+            ),
+        )
 
     # Enforce cardinality before any destructive action.
     session_ids = resolve_session_ids_for_verb(env, request)
-    try:
-        check_cardinality(len(session_ids), allow_all=all_flag, first_only=False, operation="delete")
-    except CardinalityError as exc:
-        raise click.UsageError(str(exc)) from exc
+    check_cardinality(
+        len(session_ids),
+        allow_all=all_flag,
+        first_only=False,
+        operation="delete",
+        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
+        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    )
 
     # Delete using the pre-resolved IDs so all matched sessions are removed.
     execute_delete_by_session_ids(env, session_ids, force=yes_flag)
@@ -1822,7 +1875,8 @@ def mark_verb(
     """
     import hashlib
 
-    from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality, resolve_session_ids_for_verb
+    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, ContextualCliError, NextAction
+    from polylogue.cli.verb_cardinality import check_cardinality, resolve_session_ids_for_verb
 
     if ctx.invoked_subcommand is not None:
         return
@@ -1851,14 +1905,24 @@ def mark_verb(
         return
 
     if apply_all and first_only:
-        raise click.UsageError("mark --all and --first are mutually exclusive.")
+        raise ContextualCliError(
+            "mark --all and --first are mutually exclusive.",
+            next_actions=(
+                NextAction("Mark every matched session", "polylogue find <QUERY> then mark --all <FLAGS>"),
+                NextAction("Mark the first match only", "polylogue find <QUERY> then mark --first <FLAGS>"),
+            ),
+        )
 
     # Resolve matched sessions and enforce cardinality.
     session_ids = resolve_session_ids_for_verb(env, request)
-    try:
-        check_cardinality(len(session_ids), allow_all=apply_all, first_only=first_only, operation="mark")
-    except CardinalityError as exc:
-        raise click.UsageError(str(exc)) from exc
+    check_cardinality(
+        len(session_ids),
+        allow_all=apply_all,
+        first_only=first_only,
+        operation="mark",
+        candidates=session_ids[:AMBIGUITY_CANDIDATE_LIMIT],
+        bounded=len(session_ids) > AMBIGUITY_CANDIDATE_LIMIT,
+    )
 
     # Honour --first: act only on the leading result when multiple matched.
     target_ids = session_ids[:1] if first_only and len(session_ids) > 1 else session_ids
@@ -2529,7 +2593,8 @@ def _resolve_query_action_session_id(
     if request.query_terms:
         from dataclasses import replace
 
-        from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
+        from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+        from polylogue.cli.verb_cardinality import check_cardinality
 
         explicit = request.params.get("conv_id")
         if isinstance(explicit, str) and explicit:
@@ -2540,7 +2605,7 @@ def _resolve_query_action_session_id(
         if not spec.latest and not spec.has_filters():
             return None
 
-        resolve_limit = 1 if first_only else 2
+        resolve_limit = 1 if first_only else AMBIGUITY_CANDIDATE_LIMIT + 1
         bounded_spec = replace(spec, limit=resolve_limit)
 
         async def _resolve() -> list[str]:
@@ -2549,24 +2614,24 @@ def _resolve_query_action_session_id(
 
         session_ids = run_coroutine_sync(_resolve())
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
-        try:
-            if multi_match_hint is not None:
-                check_cardinality(
-                    len(session_ids),
-                    allow_all=False,
-                    first_only=first_only,
-                    operation=operation,
-                    multi_match_hint=multi_match_hint,
-                )
-            else:
-                check_cardinality(
-                    len(session_ids),
-                    allow_all=False,
-                    first_only=first_only,
-                    operation=operation,
-                )
-        except CardinalityError as exc:
-            raise click.UsageError(str(exc)) from exc
+        if len(session_ids) > 1 and not first_only:
+            from polylogue.cli.select import resolve_ambiguous_selection
+
+            return resolve_ambiguous_selection(
+                env,
+                session_ids,
+                operation=operation,
+                multi_match_hint=multi_match_hint,
+                rows_loader=lambda: run_coroutine_sync(bounded_spec.list_summaries(env.config)),
+            )
+        check_cardinality(
+            len(session_ids),
+            allow_all=False,
+            first_only=first_only,
+            operation=operation,
+            multi_match_hint=multi_match_hint,
+            candidates=tuple(session_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
+        )
         return session_ids[0] if session_ids else None
 
     return _resolve_target_session_id(request)

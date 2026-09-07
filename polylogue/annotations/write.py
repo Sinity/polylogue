@@ -26,7 +26,6 @@ import json
 import math
 import sqlite3
 import time
-import unicodedata
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -38,6 +37,7 @@ from polylogue.annotations.schema import (
     AnnotationSchemaRegistry,
     validate_annotation_row,
 )
+from polylogue.core.digest import RECEIPT, canonical_bytes
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.core.json import JSONDocument, JSONValue, require_json_document
 from polylogue.core.refs import ObjectRef, normalize_object_ref_text, normalize_public_ref_text
@@ -266,32 +266,8 @@ class OntologyGovernanceResult:
     active_schemas: tuple[DurableAnnotationSchema, ...]
 
 
-def _nfc_json_value(value: object) -> object:
-    if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
-    if isinstance(value, list):
-        return [_nfc_json_value(item) for item in value]
-    if isinstance(value, dict):
-        normalized: dict[str, object] = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                raise TypeError("canonical JSON object keys must be strings")
-            normalized_key = unicodedata.normalize("NFC", key)
-            if normalized_key in normalized:
-                raise ValueError(f"NFC-normalized JSON keys collide at {normalized_key!r}")
-            normalized[normalized_key] = _nfc_json_value(item)
-        return normalized
-    return value
-
-
 def _canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        _nfc_json_value(value),
-        allow_nan=False,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
+    return canonical_bytes(value, RECEIPT)
 
 
 def _detached_json_document(value: object, *, context: str) -> JSONDocument:

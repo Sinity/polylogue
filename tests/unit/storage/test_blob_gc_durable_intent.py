@@ -19,10 +19,10 @@ import polylogue.storage.blob_gc as blob_gc
 from polylogue.storage.blob_liveness import BlobLiveness
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.hook_payload_ref_reconciliation import HookPayloadRefMatchStage
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source import SOURCE_DDL
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import migrate_archive_tier
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _backdate(store: BlobStore, blob_hash: str) -> None:
@@ -82,7 +82,7 @@ def test_gc_commits_exact_member_intent_before_any_unlink(tmp_path: Path, monkey
     Anti-vacuity twin: moving unlink ahead of the intent commit makes the
     patched unlink observe no matching durable member and fails this test.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"intent before unlink")
     _backdate(store, blob_hash)
@@ -111,7 +111,7 @@ def test_gc_mid_batch_unlink_crash_leaves_durable_intent_for_the_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A crash during unlink preserves each completed member outcome durably."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     first_hash, _ = store.write_from_bytes(b"first crash-window member")
     second_hash, _ = store.write_from_bytes(b"second crash-window member")
@@ -156,7 +156,7 @@ def test_pending_member_retries_after_fresh_liveness_and_absence_reconciles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A crash after intent has exact retry and post-unlink restart semantics."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"restartable exact intent")
     _backdate(store, blob_hash)
@@ -235,7 +235,7 @@ def test_pending_member_refuses_a_swapped_blob_namespace(tmp_path: Path, monkeyp
     Anti-vacuity: a retry that treats any readable missing path as reconciled
     removal would complete the pending member after the namespace swap.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"namespace-bound pending intent")
     _backdate(store, blob_hash)
@@ -269,7 +269,7 @@ def test_pending_member_recovers_after_device_number_change_with_stable_marker(
     Anti-vacuity: binding the intent to ``st_dev`` instead of the owned marker
     makes the patched root stat block the pending generation.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"remount stable marker")
     _backdate(store, blob_hash)
@@ -306,7 +306,7 @@ def test_member_reconciliation_keeps_the_observed_namespace_after_batch_check(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A swap after descriptor admission cannot redirect an old intent's effect."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"swap after batch validation")
     _backdate(store, blob_hash)
@@ -353,7 +353,7 @@ def test_member_unlink_stays_in_observed_namespace_after_root_swap(
     the replacement namespace object disappear after this production-seam
     swap between final object observation and effect.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"observed namespace object")
     _backdate(store, blob_hash)
@@ -392,7 +392,7 @@ def test_authorized_abandonment_terminalizes_exact_intent_without_blob_effect(tm
     )
     from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"operator adjudication")
     marker = blob_gc._blob_namespace_identity(store.root, create_marker=True).marker
@@ -455,7 +455,7 @@ def test_gc_does_not_terminalize_a_generation_with_an_unknown_member(tmp_path: P
     requiring every member outcome would mark this manually seeded generation
     complete.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute(
             "INSERT INTO gc_generations (generation_id, started_at_ms, completed_at_ms, reclaimed_count, reclaimed_bytes) "
@@ -489,7 +489,7 @@ def test_finalizer_refuses_terminal_summary_while_a_member_outcome_is_pending(
     ``_finalize_gc_generation`` makes this generation terminal even though the
     patched outcome writer deliberately leaves one exact member unexplained.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     first_hash, _ = store.write_from_bytes(b"first finalization guard")
     second_hash, _ = store.write_from_bytes(b"second finalization guard")
@@ -535,7 +535,7 @@ def test_pending_member_blocks_on_unreadable_shard_not_object_absence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A required shard failure leaves durable intent pending and names its blocker."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"unreadable shard")
     _backdate(store, blob_hash)
@@ -575,7 +575,7 @@ def test_direct_unlink_resumes_pending_generation_before_planning_new_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Raw-retention's direct entry point shares recurring GC's pending gate."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     pending_hash, _ = store.write_from_bytes(b"pending direct gate")
     _backdate(store, pending_hash)
@@ -605,7 +605,7 @@ def test_direct_unlink_resumes_pending_generation_before_planning_new_work(
 @pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
 def test_empty_intent_is_terminal_in_its_commit_transaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """No-member plan cannot wedge restart recovery between intent and finalization."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, size = store.write_from_bytes(b"referenced means empty plan")
     _backdate(store, blob_hash)
@@ -633,7 +633,7 @@ def test_empty_intent_is_terminal_in_its_commit_transaction(tmp_path: Path, monk
 @pytest.mark.uses_real_clock("backdates temporary blobs to pass production GC's age gate")
 def test_report_counts_this_resume_while_generation_counts_all_durable_outcomes(tmp_path: Path) -> None:
     """A restart cannot present a generation total as this invocation's deletion count."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     pending_hash, pending_size = store.write_from_bytes(b"pending report counter")
     _backdate(store, pending_hash)
@@ -673,7 +673,7 @@ def test_intent_commit_failure_and_absent_without_intent_never_become_success(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No intent means no unlink, and an absent non-member has no GC success."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, _ = store.write_from_bytes(b"intent commit failure")
     _backdate(store, blob_hash)
@@ -701,7 +701,7 @@ def test_partial_generation_restarts_only_its_exact_pending_member(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A partial batch keeps its denominator and resumes exact pending members."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     first_hash, _ = store.write_from_bytes(b"partial first")
     second_hash, _ = store.write_from_bytes(b"partial second")
@@ -756,7 +756,7 @@ def test_final_recheck_closes_pending_member_as_still_live_when_newly_protected(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     """Fresh canonical liveness, not the accepted plan, decides a retry."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     store = BlobStore(tmp_path / "blob")
     blob_hash, size = store.write_from_bytes(f"new {kind}".encode())
     _backdate(store, blob_hash)
@@ -849,7 +849,7 @@ def test_v33_source_migrates_additively_to_exact_gc_member_intent(tmp_path: Path
 
 def test_gc_refuses_a_missing_source_tier_before_planning(tmp_path: Path) -> None:
     """An index entry point never treats a missing durable source tier as empty."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     (tmp_path / "source.db").rename(tmp_path / "source.db.unavailable")
 
     report = blob_gc.run_blob_gc_report(tmp_path / "index.db", tmp_path / "blob")

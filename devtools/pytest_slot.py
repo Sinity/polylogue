@@ -39,6 +39,7 @@ from typing import IO, Any, Final
 
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
+from devtools.pytest_memory import ProcessGroupMemorySampler
 from devtools.worker_memory import resize_worker_argument
 
 __all__ = [
@@ -442,6 +443,9 @@ def _submit(
     launch_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.json"
     log_path = root / LAUNCH_DIR / f"pytest-slot-{identity}.log"
     client = client_environment(env)
+    # The paths are per client pid, so a previous run of this pid may have left
+    # a result document; reading that one would report someone else's run.
+    _slot_result_path(log_path).unlink(missing_ok=True)
     _write_launch(launch_path, argv=command, cwd=cwd, env=env, log_path=log_path)
     try:
         started = _agentctl(
@@ -468,7 +472,7 @@ def _submit(
     sys.stderr.flush()
     with _on_exit(lambda: _reap_job(job_id, env=client, launch_path=launch_path), on_exit):
         view = _wait_for(job_id, env=client)
-    receipt = _read_timeout_receipt(log_path)
+    receipt = _read_slot_result(log_path)
     returncode = _job_exit_status(view, receipt=receipt)
     launch_path.unlink(missing_ok=True)
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
@@ -481,12 +485,12 @@ def _submit(
     )
 
 
-def _timeout_receipt_path(log_path: Path) -> Path:
+def _slot_result_path(log_path: Path) -> Path:
     return log_path.with_suffix(".result.json")
 
 
-def _read_timeout_receipt(log_path: Path) -> dict[str, Any] | None:
-    path = _timeout_receipt_path(log_path)
+def _read_slot_result(log_path: Path) -> dict[str, Any] | None:
+    path = _slot_result_path(log_path)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -531,32 +535,106 @@ def _progress_counts(environment: Mapping[str, str]) -> dict[str, Any]:
     return counts
 
 
-def _write_timeout_receipt(
-    log_path: Path, *, environment: Mapping[str, str], started: float, signal_number: int
+def _sizing_note(sizing: Mapping[str, Any] | None) -> str | None:
+    """Why this run is narrower than it asked to be, or None when it is not."""
+    if sizing is None or not sizing.get("narrowed"):
+        return None
+    bound = "the job cgroup" if sizing["basis"] == "cgroup_budget" else "host memory"
+    return (
+        f"pytest slot: {sizing['available_mib']} MiB from {bound} "
+        f"(host {sizing['host_available_mib']} MiB, cgroup {sizing['cgroup_available_mib']} MiB) "
+        f"holds {sizing['workers']} workers, not {sizing['requested_workers']}; "
+        "running narrower rather than being killed."
+    )
+
+
+def _slot_receipt(
+    *,
+    status: str,
+    elapsed_s: float,
+    sizing: Mapping[str, Any] | None,
+    memory: Mapping[str, Any] | None,
+    exit_code: int | None = None,
+    log_path: Path | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Atomically preserve a typed timeout result before the worker dies."""
-    receipt = {
+    """The run's durable result: how wide it ran, and what it took to run that wide.
+
+    The width and the peak belong to the same document because neither answers
+    the question alone: a peak is only over or under budget against the width
+    that was chosen, and a width is only justified by what the run then took.
+    """
+    receipt: dict[str, Any] = {
         "schema_version": 1,
         "kind": "polylogue.pytest-slot-result",
-        "status": "timed_out",
-        "diagnosis": "pytest_deadline",
-        "signal": signal.Signals(signal_number).name,
-        "elapsed_s": round(time.monotonic() - started, 3),
-        "progress": _progress_counts(environment),
+        "status": status,
+        "elapsed_s": round(elapsed_s, 3),
     }
-    path = _timeout_receipt_path(log_path)
+    if exit_code is not None:
+        receipt["exit_code"] = exit_code
+    if log_path is not None:
+        receipt["log_path"] = str(log_path)
+    if sizing is not None:
+        receipt["sizing"] = dict(sizing)
+    if memory is not None:
+        receipt["memory"] = dict(memory)
+    if extra is not None:
+        receipt.update(extra)
+    return receipt
+
+
+def _persist_slot_result(log_path: Path, receipt: Mapping[str, Any]) -> None:
+    """Atomically publish the result document the waiting client reads."""
+    path = _slot_result_path(log_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(json.dumps(receipt, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _write_interrupted_result(
+    log_path: Path,
+    *,
+    environment: Mapping[str, str],
+    started: float,
+    signal_number: int,
+    sizing: Mapping[str, Any] | None = None,
+    memory: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Atomically preserve a typed timeout result before the worker dies."""
+    receipt = _slot_receipt(
+        status="timed_out",
+        elapsed_s=time.monotonic() - started,
+        sizing=sizing,
+        memory=memory,
+        extra={
+            "diagnosis": "pytest_deadline",
+            "signal": signal.Signals(signal_number).name,
+            "progress": _progress_counts(environment),
+        },
+    )
+    _persist_slot_result(log_path, receipt)
     return receipt
 
 
 def _run_held(
     argv: Sequence[str], *, cwd: str, env: Mapping[str, str], stdout: IO[Any] | None, on_exit: Callable[[], None]
-) -> int:
-    """Run pytest here, in its own process group so a signalled waiter takes it along."""
-    process = subprocess.Popen(list(argv), cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
+) -> tuple[int, dict[str, Any]]:
+    """Run pytest here, in its own process group so a signalled waiter takes it along.
+
+    The width is narrowed to what memory allows at this moment for the same
+    reason the queued path narrows it inside the slot: this is where the run
+    starts, and the corpus operation reaches pytest through here.
+    """
+    started = time.monotonic()
+    command, sizing = resize_worker_argument(list(argv))
+    note = _sizing_note(sizing)
+    if note is not None:
+        sys.stderr.write(note + "\n")
+        sys.stderr.flush()
+    process = subprocess.Popen(command, cwd=cwd, env=dict(env), stdout=stdout, stderr=stdout, process_group=0)
+    sampler = ProcessGroupMemorySampler(process.pid)
+    sampler.start()
 
     def stop() -> None:
         if process.poll() is not None:
@@ -571,8 +649,18 @@ def _run_held(
             with contextlib.suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=5)
 
-    with _on_exit(stop, on_exit):
-        return process.wait()
+    try:
+        with _on_exit(stop, on_exit):
+            returncode = process.wait()
+    finally:
+        memory = sampler.stop()
+    return returncode, _slot_receipt(
+        status="success" if returncode == 0 else "failed",
+        exit_code=returncode,
+        elapsed_s=time.monotonic() - started,
+        sizing=sizing,
+        memory=memory,
+    )
 
 
 def run_pytest(
@@ -604,8 +692,8 @@ def run_pytest(
 
     try:
         if holds_pytest_slot(env):
-            returncode = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
-            outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD)
+            returncode, receipt = _run_held(argv, cwd=cwd, env=contained, stdout=stdout, on_exit=dispose)
+            outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
             outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
         keep = outcome.returncode != 0
@@ -639,6 +727,8 @@ def _run_launch(launch_path: Path) -> int:
     log_path = Path(launch["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
     child: subprocess.Popen[Any] | None = None
+    sampler: ProcessGroupMemorySampler | None = None
+    sizing: dict[str, Any] | None = None
     started = time.monotonic()
     terminating = False
 
@@ -658,11 +748,13 @@ def _run_launch(launch_path: Path) -> int:
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     child.wait(timeout=2)
         with contextlib.suppress(OSError):
-            receipt = _write_timeout_receipt(
+            receipt = _write_interrupted_result(
                 log_path,
                 environment=environment,
                 started=started,
                 signal_number=signal_number,
+                sizing=sizing,
+                memory=sampler.snapshot() if sampler is not None else None,
             )
             _print_result(receipt)
         os._exit(128 + signal_number)
@@ -672,15 +764,10 @@ def _run_launch(launch_path: Path) -> int:
     # can sit in this queue for hours, and what matters is the memory this job
     # may take when its workers start.
     command, sizing = resize_worker_argument(list(launch["argv"]))
+    note = _sizing_note(sizing)
     with open(log_path, "wb") as log:
-        if sizing is not None and sizing.get("narrowed"):
-            bound = "the job cgroup" if sizing["basis"] == "cgroup_budget" else "host memory"
-            log.write(
-                f"pytest slot: {sizing['available_mib']} MiB from {bound} "
-                f"(host {sizing['host_available_mib']} MiB, cgroup {sizing['cgroup_available_mib']} MiB) "
-                f"holds {sizing['workers']} workers, not {sizing['requested_workers']}; "
-                "running narrower rather than being killed.\n".encode()
-            )
+        if note is not None:
+            log.write((note + "\n").encode())
             log.flush()
         try:
             child = subprocess.Popen(
@@ -691,24 +778,30 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
+            sampler = ProcessGroupMemorySampler(child.pid)
+            sampler.start()
             returncode = child.wait()
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125
         finally:
+            memory = sampler.stop() if sampler is not None else None
             for number, handler in previous.items():
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(number, handler)
-    _print_result(
-        {
-            "schema_version": 1,
-            "kind": "polylogue.pytest-slot-result",
-            "status": "success" if returncode == 0 else "failed",
-            "exit_code": returncode,
-            "elapsed_s": round(time.monotonic() - started, 3),
-            "log_path": str(log_path),
-        }
+    receipt = _slot_receipt(
+        status="success" if returncode == 0 else "failed",
+        exit_code=returncode,
+        elapsed_s=time.monotonic() - started,
+        sizing=sizing,
+        memory=memory,
+        log_path=log_path,
     )
+    # Written as well as printed: the waiting client reads the file, and the
+    # job's stdout is the result artifact.
+    with contextlib.suppress(OSError):
+        _persist_slot_result(log_path, receipt)
+    _print_result(receipt)
     return returncode
 
 

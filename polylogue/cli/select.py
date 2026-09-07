@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal, NoReturn
 
@@ -151,15 +152,22 @@ def _choose_with_fzf(rows: list[SelectSessionRow]) -> SelectSessionRow | None:
     return next((row for row in rows if row.session_id == selected_id), None)
 
 
+def interactive_selection_available(env: AppEnv) -> bool:
+    """Return whether an interactive chooser may run on this invocation.
+
+    Both ends must be a terminal: a piped consumer that blocked on a chooser
+    would hang with no prompt to answer.  ``--plain`` opts out explicitly.
+    """
+    return sys.stdin.isatty() and sys.stdout.isatty() and not env.ui.plain
+
+
 def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessionRow | None:
     """Choose one row, using fzf/prompt only when the terminal can support it."""
     if not rows:
         return None
     if len(rows) == 1:
         return rows[0]
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        return None
-    if env.ui.plain:
+    if not interactive_selection_available(env):
         return None
 
     fzf_row = _choose_with_fzf(rows)
@@ -212,6 +220,50 @@ async def select_session_rows(env: AppEnv, request: RootModeRequest, *, limit: i
         env.config,
         request,
         limit=limit,
+    )
+
+
+def resolve_ambiguous_selection(
+    env: AppEnv,
+    candidates: Sequence[str],
+    *,
+    operation: str,
+    multi_match_hint: str | None = None,
+    rows_loader: Callable[[], Sequence[Session | SessionSummary]] | None = None,
+) -> str:
+    """Resolve several matched refs to one, or refuse deterministically.
+
+    On a terminal the fuzzy chooser runs; anywhere else — a pipe, a captured
+    runner, ``--plain`` — the candidates are reported as a typed refusal, so no
+    non-interactive consumer can be left waiting on a prompt it cannot answer.
+
+    ``rows_loader`` supplies the richer labels the chooser displays and is
+    called only once a chooser will actually run, so the refusal path costs the
+    same read it did before.
+    """
+    from polylogue.cli.contextual_errors import (
+        AMBIGUITY_CANDIDATE_LIMIT,
+        AmbiguousSelectionError,
+        ambiguous_selection_actions,
+    )
+
+    refs = tuple(str(candidate) for candidate in candidates)
+    if len(refs) == 1:
+        return refs[0]
+    if refs and interactive_selection_available(env):
+        loaded = rows_loader() if rows_loader is not None else ()
+        rows = [select_row_from_result(result) for result in loaded] or [
+            SelectSessionRow(session_id=ref, origin="unknown", title=ref, date=None) for ref in refs
+        ]
+        chosen = choose_select_row(env, rows)
+        if chosen is not None:
+            return chosen.session_id
+    hint = multi_match_hint or "Narrow the query to one session or run select first."
+    raise AmbiguousSelectionError(
+        f"'{operation}' matched {len(refs)} sessions. {hint}",
+        candidates=refs[:AMBIGUITY_CANDIDATE_LIMIT],
+        next_actions=ambiguous_selection_actions(operation, refs[0] if refs else None),
+        bounded=len(refs) > AMBIGUITY_CANDIDATE_LIMIT,
     )
 
 
@@ -270,6 +322,8 @@ __all__ = [
     "SelectPrintField",
     "async_run_select",
     "choose_select_row",
+    "interactive_selection_available",
+    "resolve_ambiguous_selection",
     "render_select_row",
     "render_select_rows",
     "run_select",

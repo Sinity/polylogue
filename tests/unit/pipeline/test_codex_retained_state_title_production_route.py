@@ -1,13 +1,13 @@
-"""Acquired ``codex_thread_title`` hook events reach Codex assembly (polylogue-zco96).
+"""Projected Codex thread titles reach Codex assembly.
 
 Both routes that will run during the production reindex are driven end to
 end here: ``_process_ingest_batch_sync`` (pipeline ingest) and
 ``_enrich_retained_parse_results`` (retained-raw replay). Neither test hands
-assembly a ``hook_event_titles`` key -- the evidence is produced by the real
-writer (``write_codex_thread_state_evidence`` over a real ``state_5.sqlite``
-snapshot) and must be found by the route itself. Sever either consumer and
-both sessions fall back to the content-heuristic first-prompt title, which
-is exactly what these assertions reject.
+assembly a ``retained_state_titles`` key -- the evidence is produced by the
+real writer (``apply_retained_state_export`` over a real ``state_5.sqlite``
+export) and must be found by the route itself. Sever either consumer and both
+sessions fall back to the content-heuristic first-prompt title, which is
+exactly what these assertions reject.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider, TitleSource
 from polylogue.pipeline.services.ingest_batch import _process_ingest_batch_sync
-from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
-from polylogue.sources.parsers.codex_state import parse_codex_state_db
+from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.revision_backfill import _enrich_retained_parse_results
+from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -68,26 +68,37 @@ def _write_state_db(path: Path) -> None:
         conn.commit()
 
 
-def _archive_with_acquired_title_evidence(tmp_path: Path) -> Path:
-    """Produce the durable hook event through its only production writer."""
+def _archive_with_retained_state_export(tmp_path: Path) -> Path:
+    """Retain the state export and project it through its production route."""
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
     state_path = tmp_path / "state_5.sqlite"
     _write_state_db(state_path)
-    snapshot = parse_codex_state_db(state_path, immutable=True)
+    store = BlobStore(archive_root / "blob")
+    export = snapshot_sqlite_to_blob(state_path, store)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        write_codex_thread_state_evidence(
-            archive,
-            snapshot,
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=store.blob_path(export.blob_hash).read_bytes(),
             source_path=str(state_path),
             acquired_at_ms=1_767_000_000_000,
+        )
+        record_codex_state_snapshot_terminal(
+            archive,
+            raw_id,
+            state_path=store.blob_path(export.blob_hash),
+            state_kind="thread_state",
+            source_path=str(state_path),
+            acquired_at_ms=1_767_000_000_000,
+            censused_at_ms=1_767_000_000_000,
+            blob_hash=export.blob_hash,
         )
         archive.commit()
     return archive_root
 
 
-def test_pipeline_ingest_resolves_acquired_hook_event_title(tmp_path: Path) -> None:
-    archive_root = _archive_with_acquired_title_evidence(tmp_path)
+def test_pipeline_ingest_resolves_the_projected_state_title(tmp_path: Path) -> None:
+    archive_root = _archive_with_retained_state_export(tmp_path)
     content = _rollout_bytes()
     store = BlobStore(archive_root / "blob")
     raw_id, blob_size = store.write_from_bytes(content)
@@ -121,11 +132,11 @@ def test_pipeline_ingest_resolves_acquired_hook_event_title(tmp_path: Path) -> N
     assert row[1] == TitleSource.ORIGIN.value
 
 
-def test_retained_replay_resolves_acquired_hook_event_title(tmp_path: Path) -> None:
+def test_retained_replay_resolves_the_projected_state_title(tmp_path: Path) -> None:
     from polylogue.archive.revision_authority import RawRevisionKind
     from polylogue.sources.dispatch import parse_stream_payload
 
-    archive_root = _archive_with_acquired_title_evidence(tmp_path)
+    archive_root = _archive_with_retained_state_export(tmp_path)
     content = _rollout_bytes()
     source_path = str(tmp_path / "sessions" / f"rollout-{_THREAD_ID}.jsonl")
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:

@@ -36,7 +36,7 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, Pars
 from polylogue.storage.raw_authority import RAW_AUTHORITY_PARSER_FINGERPRINT, parser_census_logical_keys
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from tests.infra.archive_templates import bootstrap_archive_root
 
 
 def _candidate(
@@ -222,7 +222,7 @@ def _with_fold_attachment(session: ParsedSession) -> ParsedSession:
 
 def test_live_revision_binding_without_parser_evidence_does_not_issue_receipt(tmp_path: Path) -> None:
     """Binding acquisition metadata cannot self-certify parser authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -260,7 +260,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
     with the bound key instead, so this exercises the writer shared by
     ordinary imports and retained-raw census rather than a test-local check.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = _codex_jsonl(
         [
             {"type": "session_meta", "payload": {"id": "parser-observed-id"}},
@@ -320,7 +320,7 @@ def test_parser_receipt_fails_when_observed_identity_differs_from_binding(tmp_pa
 def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path: Path) -> None:
     """A typed terminal failure is a settled non-session source disposition."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -363,7 +363,7 @@ def test_terminal_non_session_failure_has_complete_empty_parser_census(tmp_path:
 
 def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys(tmp_path: Path) -> None:
     """A byte-governed receipt cannot overclaim an empty durable identity set."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -405,7 +405,7 @@ def test_byte_governed_fragment_parser_receipt_preserves_durable_membership_keys
 
 def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_path: Path) -> None:
     """Restart validation must use the same durable shape as receipt creation."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -452,7 +452,7 @@ def test_typed_non_session_receipt_preserves_durable_membership_on_restart(tmp_p
 def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> None:
     """Terminal non-session evidence settles replay without dispatching its malformed bytes."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -497,7 +497,7 @@ def test_frozen_replay_skips_typed_terminal_non_session_raw(tmp_path: Path) -> N
 
 def test_membership_receipt_excludes_post_parse_pending_identity(tmp_path: Path) -> None:
     """A parser-derived membership receipt cannot retain its provisional raw key."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="post-parse-receipt",
@@ -554,7 +554,7 @@ def test_replay_selects_newest_full_and_exact_contiguous_suffix_independent_of_o
 
 
 def test_membership_reselection_reuses_equivalent_superseded_receipt(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = ParsedSession(
         source_name=Provider.CODEX,
         provider_session_id="session",
@@ -647,7 +647,7 @@ def test_headless_cohort_keeps_equivalents_quarantined_ambiguous(tmp_path: Path)
     ``accepted_raw_ids`` is empty (the pre-fix behavior that produced 914
     headless-but-byte_proven logical sources on the 2026-07-20 rebuild).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def session_with(text: str) -> ParsedSession:
         return ParsedSession(
@@ -801,7 +801,7 @@ def test_replay_does_not_treat_a_duplicate_of_the_accepted_baseline_as_a_competi
 
 
 def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         append_raw_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -850,7 +850,7 @@ def test_cohort_classification_promotes_late_baseline_and_deferred_append(tmp_pa
 
 def test_public_cohort_classification_commits_source_authority_before_return(tmp_path: Path) -> None:
     """The public classification route makes its source transaction visible."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = _write_chain_full(archive, "transaction-owner", 0)
         plan = archive.classify_raw_revision_cohort_for_rebuild_repair("codex-session:session")
@@ -901,7 +901,7 @@ def test_duplicate_decision_mid_chain_gets_representative_generation_not_zero(tm
     *middle* link and prove the duplicate lands on generation 1 (mid's real
     chain position), not the 0 fallback the bug produced.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         base = _write_full_raw(archive, raw_id="raw-000-base", payload=b"a" * 10, acquired_at_ms=1)
         mid = _write_full_raw(archive, raw_id="raw-010-mid", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=2)
@@ -939,7 +939,7 @@ def test_duplicate_generation_copy_does_not_drop_the_chain_continuing_representa
     ``mid``, still gets its correct real generation (2), not the fallback 0
     a reintroduced collision would cause.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         base = _write_full_raw(archive, raw_id="raw-000-base", payload=b"a" * 10, acquired_at_ms=1)
         mid = _write_full_raw(archive, raw_id="raw-010-mid", payload=b"a" * 10 + b"b" * 10, acquired_at_ms=2)
@@ -986,7 +986,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
     is never even reached -- while confirming the guard itself still fails
     closed for a raw a duplicate genuinely still depends on.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline = _write_full_raw(archive, raw_id="raw-a-baseline", payload=b"hello world", acquired_at_ms=1)
         duplicate = _write_full_raw(archive, raw_id="raw-b-duplicate", payload=b"hello world", acquired_at_ms=2)
@@ -1020,7 +1020,7 @@ def test_duplicate_of_accepted_baseline_does_not_trip_membership_census_guard(tm
 
 
 def test_real_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*messages: tuple[str, str]) -> ParsedSession:
         return ParsedSession(
@@ -1165,7 +1165,7 @@ def test_isolated_later_raw_does_not_override_known_ambiguous_cohort(tmp_path: P
     become the accepted session content -- an outcome that depends on
     incremental discovery order, not on which content is actually correct.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
         return ParsedSession(
@@ -1257,7 +1257,7 @@ def test_precedence_write_refuses_a_raw_recorded_ambiguous(tmp_path: Path) -> No
     one-shot importer, ``revision_authoritative=False`` by default) never
     consulted ``raw_session_memberships`` at all.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     session = ParsedSession(
         source_name=Provider.CHATGPT,
@@ -1314,7 +1314,7 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
     ambiguous, and one raw carries 106 memberships. Their content would have
     silently vanished at the next full rebuild.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     ambiguous_session = ParsedSession(
         source_name=Provider.CHATGPT,
@@ -1389,7 +1389,7 @@ def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail
     current shared constant -- proving the guard's widened ``detail IN (...)``
     match, not just its original single-literal match.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
         return ParsedSession(
@@ -1481,7 +1481,7 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
     ``(origin, native_id)`` upsert (arbitrary last-writer-wins), instead of
     ever being compared against each other.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_enriched = archive.write_raw_payload(
@@ -1524,7 +1524,7 @@ def test_same_source_path_full_siblings_under_different_keys_are_not_independent
 
 
 def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_payload, tail = _codex_fold_payloads()
@@ -1590,7 +1590,7 @@ def test_real_single_append_chain_folds_segmentation_distinct_full_snapshot(tmp_
 
 
 def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(message_id: str, text: str, *, seen: int, persisted: int) -> ParsedSession:
         return ParsedSession(
@@ -1678,7 +1678,7 @@ def test_claude_full_append_replay_persists_reduced_coverage_and_receipts(tmp_pa
 
 
 def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         baseline_payload, tail = _codex_fold_payloads()
@@ -1743,7 +1743,7 @@ def test_fold_accepts_a_legacy_codex_append_payload_after_header_normalization(t
 def test_real_append_fold_proof_mutations_roll_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*messages: tuple[str, str]) -> ParsedSession:
         return ParsedSession(
@@ -1893,7 +1893,7 @@ def test_real_append_fold_proof_mutations_roll_back(
 
 
 def test_write_raw_and_parsed_persists_file_mtime_across_reopen(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     file_mtime_ms = 1_767_225_600_000
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -1924,7 +1924,7 @@ def test_write_raw_and_parsed_persists_file_mtime_across_reopen(tmp_path: Path) 
 
 
 def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     file_mtime_ms = 1_767_225_600_000
     session = ParsedSession(
         source_name=Provider.CODEX,
@@ -1968,7 +1968,7 @@ def test_retained_replay_uses_persisted_file_mtime_for_timestamp_fallback(tmp_pa
 
 
 def test_full_replay_preserves_semantic_head_and_rolls_back_regressions(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*messages: tuple[str, str], event_timestamp: str | None = None) -> ParsedSession:
         return ParsedSession(
@@ -2134,7 +2134,7 @@ def _apply_membership_head(archive: ArchiveStore, raw_id: str, session: ParsedSe
 
 def test_batched_membership_success_supersedes_deferred_cas_evidence(tmp_path: Path) -> None:
     """The positive commit-batch route must expire CAS retry authority too."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = _parsed_session(("m0", "batched success"))
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = _write_quarantined_member(archive, "batched-cas", session)
@@ -2172,7 +2172,7 @@ def test_retained_index_cas_failure_persists_evidence_with_first_failure_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A retained-raw CAS failure cannot commit an untyped state first."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     session = _parsed_session(("m0", "retained CAS failure"))
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = _write_quarantined_member(archive, "retained-cas-failure", session)
@@ -2220,7 +2220,7 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
     the head from a quarantined membership (browser-capture) raw instead of
     the CAS rejecting the whole replay.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         capture_session = _parsed_session(("m0", "zero"), ("m1", "capture flavour"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
@@ -2247,7 +2247,7 @@ def test_chain_replay_supersedes_quarantined_membership_head_even_when_capture_h
     hands the head to chain-governed evidence (the capture raw stays in the
     source tier; re-adoption needs a real prefix-dominance proof).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         capture_session = _parsed_session(("m0", "zero"), ("m1", "one"), ("m2", "two"))
         capture = _write_quarantined_member(archive, "capture", capture_session)
@@ -2274,7 +2274,7 @@ def test_membership_replay_yields_to_chain_governed_head(tmp_path: Path) -> None
     terminally decided) instead of raising 'cannot retire an unrelated
     accepted head'.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
         export = _write_chain_full(archive, "export", 1)
@@ -2323,7 +2323,7 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
     provisional head before re-indexing the session. The retained session's
     foreign byte-governed raw still wins; replay must receipt the membership
     as superseded instead of raising the unrelated-head guard."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         export_session = _parsed_session(("m0", "zero"), ("m1", "export flavour"))
         export = _write_chain_full(archive, "export", 1)
@@ -2357,7 +2357,7 @@ def test_membership_replay_yields_when_resumed_cohort_head_masks_byte_session(tm
 def test_membership_replay_yields_to_semantic_chain_head_even_when_capture_has_more_units(tmp_path: Path) -> None:
     """A capture cohort with more semantic units still yields to a
     chain-governed semantic head: unit counts are not a dominance proof."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         capture1_session = _parsed_session(("m0", "zero"))
         capture1 = _write_quarantined_member(archive, "capture1", capture1_session)
@@ -2420,7 +2420,7 @@ def test_skip_already_applied_indexes_only_new_tail_of_append_chain(
     (confirmed root cause; see ``apply_raw_revision_replay``'s
     ``skip_already_applied`` docstring).
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*messages: tuple[str, str]) -> ParsedSession:
         return ParsedSession(
@@ -2573,7 +2573,7 @@ def test_skip_already_applied_default_false_still_reindexes_whole_chain(
     and must keep the full self-healing re-apply of every historical position
     -- only the live-append hot path opts into the fast tail-only mode.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*messages: tuple[str, str]) -> ParsedSession:
         return ParsedSession(
@@ -2669,7 +2669,7 @@ def test_accepted_chain_indexes_one_composed_session_not_one_per_chunk(tmp_path:
     ``claude_parse_coverage`` rows carrying the chunk-local counts 1 and 2
     rather than one row carrying the composed total 3, and turns this test red.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     def parsed(*, message_id: str, text: str, seen: int) -> ParsedSession:
         return ParsedSession(
@@ -2781,7 +2781,7 @@ def test_tail_only_replay_stores_the_chain_reduction_not_the_prefix_summary_row(
     differs from the reduction the stored hash describes in both order and
     timestamp, and this test is red.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     baseline_chunk = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
@@ -2949,7 +2949,7 @@ def test_terminal_failure_carrier_survives_ordinary_reclassification(tmp_path: P
     from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceArtifact, upsert_raw_artifact
 
     source_path = "projects/-home-user/summary-only.jsonl"
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.CLAUDE_CODE,
