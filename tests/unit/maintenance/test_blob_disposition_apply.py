@@ -158,6 +158,14 @@ def _real_archive(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     return archive_root, archive_root / "blob", hooks_root, capture_spool
 
 
+def _archive_without_gc_generation_ledger(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """A supported source tier before durable GC member intents."""
+    archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("DROP TABLE gc_generation_members")
+    return archive_root, blob_root, hooks_root, capture_spool
+
+
 def _store_aged(blob_root: Path, payload: bytes) -> tuple[str, Path]:
     store = BlobStore(blob_root)
     blob_hash, _ = store.write_from_bytes(payload)
@@ -833,7 +841,7 @@ def test_a_source_tier_without_the_gc_ledger_unlinks_unreferenced_candidates_dir
     """Anti-vacuity: deleting the direct-unlink fallback leaves the proven
     object on disk with a blocked receipt; deleting the reference recheck
     would unlink the referenced object too."""
-    archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
+    archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
     _write_spool_file(legacy_root, envelope)
@@ -852,25 +860,43 @@ def test_a_source_tier_without_the_gc_ledger_unlinks_unreferenced_candidates_dir
     assert receipt.namespace_after.blob_count == 0
 
 
-def test_the_direct_unlink_fallback_keeps_an_object_a_durable_row_still_names(tmp_path: Path) -> None:
-    """Anti-vacuity: a reference that appears after planning is a drifted
-    denominator; dropping that refusal (or the fallback's own recheck) would
-    unlink raw material the archive still reads."""
-    archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
+def test_legacy_fallback_keeps_an_index_only_attachment_in_dry_and_active_runs(tmp_path: Path) -> None:
+    """Anti-vacuity: source-only rechecks delete this attachment in both runs."""
+    archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
     _write_spool_file(legacy_root, envelope)
     blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
     plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute(
-            "INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, ?)", (bytes.fromhex(blob_hash), "raw_payload")
+            "INSERT INTO attachments(attachment_id, blob_hash) VALUES (?, ?)", ("index-only", bytes.fromhex(blob_hash))
         )
-    _, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
 
-    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+    rehearsal = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=True)
+    active = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
-    assert not receipt.ok
-    assert any("referenced-and-present" in blocker for blocker in receipt.blockers)
+    assert rehearsal.ok and active.ok
+    assert rehearsal.results[0].outcome is active.results[0].outcome is MemberOutcome.RETAINED_REFERENCED
     assert blob_path.is_file()
-    assert receipt.deleted_count == 0
+    assert rehearsal.deleted_count == active.deleted_count == 0
+
+
+def test_legacy_fallback_refuses_when_index_liveness_evidence_is_unavailable(tmp_path: Path) -> None:
+    """Anti-vacuity: treating an unavailable index as empty unlinks this blob."""
+    archive_root, blob_root, hooks_root, capture_spool = _archive_without_gc_generation_ledger(tmp_path)
+    legacy_root = tmp_path / "legacy-hooks"
+    envelope = _hook_envelope("proven")
+    _write_spool_file(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        conn.execute("DROP TABLE attachments")
+
+    rehearsal = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=True)
+    active = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert not rehearsal.ok and not active.ok
+    assert rehearsal.results[0].outcome is active.results[0].outcome is MemberOutcome.BLOCKED
+    assert any("index.attachments is missing" in blocker for blocker in active.blockers)
+    assert blob_path.is_file()

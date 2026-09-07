@@ -1018,14 +1018,26 @@ def apply_disposition_plan(
     results = [result for result, _ in classified]
 
     seam_blockers: tuple[str, ...] = ()
-    if not dry_run and candidates:
-        results, seam_blockers = _delete_candidates(
-            results,
-            candidates=candidates,
-            context=context,
-            source_db=source_db,
-            index_db=index_db,
-        )
+    if candidates:
+        if dry_run:
+            # Rehearse the same source+index liveness decision used by the
+            # legacy active fallback, without touching the namespace.
+            results, seam_blockers = _delete_candidates_without_generation_ledger(
+                results,
+                candidates=candidates,
+                blob_root=context.blob_store.root,
+                source_db=source_db,
+                index_db=index_db,
+                dry_run=True,
+            )
+        else:
+            results, seam_blockers = _delete_candidates(
+                results,
+                candidates=candidates,
+                context=context,
+                source_db=source_db,
+                index_db=index_db,
+            )
 
     synced: set[Path] = set()
     results.extend(_delete_invalid_entries(plan, blob_root=context.blob_store.root, dry_run=dry_run, synced=synced))
@@ -1053,54 +1065,38 @@ _GC_SCHEMA_ABSENT_BLOCKERS = frozenset(
 DIRECT_UNLINK_DETAIL = "deleted by direct unlink: the source tier predates the blob-GC member-intent schema"
 
 
-def _delete_candidates_directly(
+def _delete_candidates_without_generation_ledger(
     results: list[MemberResult],
     *,
     candidates: list[MemberResult],
-    context: BlobDispositionContext,
+    blob_root: Path,
     source_db: Path,
+    index_db: Path,
+    dry_run: bool,
 ) -> tuple[list[MemberResult], tuple[str, ...]]:
-    """Unlink unreferenced candidates without the GC generation ledger.
+    """Map the storage-owned legacy-GC decision into disposition receipts."""
+    from polylogue.storage.blob_gc import unlink_unreferenced_blob_hashes_without_generation_ledger
 
-    Used only when the source tier has no ``gc_generation_members`` table.
-    Publishers are excluded for the whole pass; a hash that is referenced now
-    stays on disk and is reported retained.
-    """
-    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
-
-    errors: list[str] = []
-    deleted: set[str] = set()
-    retained: set[str] = set()
-    touched: set[Path] = set()
-    with exclude_archive_blob_publishers(source_db):
-        for result in candidates:
-            if result.blob_hash in context.referenced_hashes:
-                retained.add(result.blob_hash)
-                continue
-            path = context.blob_store.blob_path(result.blob_hash)
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                deleted.add(result.blob_hash)
-                continue
-            except OSError as exc:
-                errors.append(f"{result.blob_hash[:16]}: {exc}")
-                continue
-            deleted.add(result.blob_hash)
-            touched.add(path.parent)
-    for directory in sorted(touched):
-        _fsync_directory(directory)
+    decision = unlink_unreferenced_blob_hashes_without_generation_ledger(
+        source_db,
+        index_db,
+        blob_root,
+        {result.blob_hash for result in candidates},
+        dry_run=dry_run,
+    )
     updated = [
         replace(result, detail=DIRECT_UNLINK_DETAIL)
-        if result.blob_hash in deleted and result.outcome is MemberOutcome.DELETED
+        if result.blob_hash in decision.deleted and result.outcome is MemberOutcome.DELETED
         else replace(
             result, outcome=MemberOutcome.RETAINED_REFERENCED, detail="referenced by a durable row at unlink time"
         )
-        if result.blob_hash in retained and result.outcome is MemberOutcome.DELETED
+        if result.blob_hash in decision.retained and result.outcome is MemberOutcome.DELETED
+        else replace(result, outcome=MemberOutcome.BLOCKED, detail="blob liveness evidence unavailable")
+        if result.blob_hash in decision.blocked and result.outcome is MemberOutcome.DELETED
         else result
         for result in results
     ]
-    return updated, tuple(errors)
+    return updated, decision.errors
 
 
 def _delete_candidates(
@@ -1132,8 +1128,13 @@ def _delete_candidates(
         # generation, but the disposition plan already carries the liveness
         # decision and this pass re-read the reference set; unlink directly
         # and say so on every member.
-        results, errors = _delete_candidates_directly(
-            results, candidates=candidates, context=context, source_db=source_db
+        results, errors = _delete_candidates_without_generation_ledger(
+            results,
+            candidates=candidates,
+            blob_root=context.blob_store.root,
+            source_db=source_db,
+            index_db=index_db,
+            dry_run=False,
         )
     declined = {result.blob_hash for result in candidates if context.blob_store.blob_path(result.blob_hash).exists()}
     if not declined:
