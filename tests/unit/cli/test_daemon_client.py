@@ -87,16 +87,18 @@ def test_operation_rejects_a_socket_serving_a_different_archive(
     client = DaemonClient(tmp_path / "daemon.sock")
     captured: dict[str, object] = {}
 
-    def fake_request(method: str, path: str, body: dict[str, object], **_kwargs: object) -> dict[str, object]:
+    def fake_request(
+        method: str, path: str, body: dict[str, object], **_kwargs: object
+    ) -> tuple[int, dict[str, object]]:
         captured.update(body)
-        return {
+        return 200, {
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "operation": "status",
             "request_id": body["request_id"],
             "archive": {"root": "/tmp"},
         }
 
-    monkeypatch.setattr(client, "request_json", fake_request)
+    monkeypatch.setattr(client, "_request_json_response", fake_request)
 
     with pytest.raises(DaemonOperationProtocolError, match="different archive identity"):
         client.operation("status", {}, archive_root="/realm/archive")
@@ -143,10 +145,10 @@ def test_operation_reaches_the_production_uds_server(
         thread.join(timeout=2)
 
 
-def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server(
+def test_machine_socket_rejects_legacy_non_operation_routes(
     _short_uds_runtime_dir: Path,
 ) -> None:
-    """Maintenance clients can surface a daemon validation reason, not only a transport failure."""
+    """The machine socket exposes only the declared operation endpoint."""
     from http import HTTPStatus
 
     from polylogue.daemon.http import DaemonAPIHandler
@@ -168,15 +170,14 @@ def test_daemon_client_preserves_typed_4xx_detail_from_the_production_uds_server
     thread.start()
     try:
         client = DaemonClient(socket_path, auth_token="uds-test-token")
-        with pytest.raises(DaemonResponseError, match="missing the canonical acceptance profile") as raised:
+        with pytest.raises(DaemonResponseError, match="daemon returned HTTP 404") as raised:
             client.request_json(
                 "POST",
                 "/api/maintenance/rebuild-index",
                 {"promote": False},
                 raise_for_status=True,
             )
-        assert raised.value.status == HTTPStatus.UNPROCESSABLE_ENTITY
-        assert raised.value.code == "canary_report_invalid"
+        assert raised.value.status == HTTPStatus.NOT_FOUND
     finally:
         server.shutdown()
         server.server_close()

@@ -12,6 +12,7 @@ import select
 import socket
 import sqlite3
 import threading
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
@@ -5232,6 +5233,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.version import POLYLOGUE_VERSION
 
         operation_started = monotonic()
+        self._operation_started = operation_started
         self._last_queue_delay_ms = 0
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         try:
@@ -5241,8 +5243,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if content_type != "application/json":
             self._send_error(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type")
             return
-        if content_length <= 0 or content_length > MAX_DECLARED_OPERATION_BODY_BYTES:
-            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing or too large")
+        if content_length <= 0:
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "operation body is missing")
+            return
+        if content_length > MAX_DECLARED_OPERATION_BODY_BYTES:
+            self._send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "request_too_large", "operation body is too large")
             return
         if content_length > MAX_OPERATION_BODY_BYTES:
             # Only a write operation declares a body larger than a parameter
@@ -5302,10 +5307,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "the daemon build does not match the client",
             )
             return
+        if request.expected_archive_identity not in (None, archive.get("archive_identity")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "archive_identity_stale",
+                "the archive identity changed since the client snapshot",
+            )
+            return
+        if request.expected_generation_id not in (None, generation.get("id")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "generation_stale",
+                "the active generation changed since the client snapshot",
+            )
+            return
 
         from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
 
         spec = daemon_operation_spec(request.operation)
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {"index": INDEX_SCHEMA_VERSION}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
         if spec is not None and content_length > spec.max_body_bytes:
             self._send_operation_error(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -5338,30 +5371,95 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             return
 
-        # A request id is the exchange identity. Reusing it is ambiguous for
-        # a client that lost a response, so reject it before invoking any
-        # operation implementation.
+        # Admission is the mutation's commit boundary.  A caller whose
+        # deadline has already elapsed, or which explicitly cancelled before
+        # admission, is refused before any canonical handler is invoked.
+        elapsed_ms = int((monotonic() - operation_started) * 1000)
+        if request.deadline_ms is not None and elapsed_ms >= request.deadline_ms:
+            self._send_operation_error(
+                HTTPStatus.REQUEST_TIMEOUT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "timed_out_before_acceptance",
+                "operation deadline elapsed before durable acceptance",
+                outcome="timed-out",
+            )
+            return
+        if request.cancellation_token and request.payload.get("cancelled") is True:
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "cancelled_before_acceptance",
+                "operation was cancelled before durable acceptance",
+                outcome="cancelled",
+            )
+            return
+
+        # A request id is the exchange identity. Reusing an identical request
+        # recovers the durable envelope; reusing it with different bytes is a
+        # typed conflict and is never dispatched a second time.
         seen_ids = getattr(self.server, "operation_ids_seen", None)
         ids_lock = getattr(self.server, "operation_ids_lock", None)
         if request.request_id is not None and seen_ids is not None and ids_lock is not None:
+            replay: tuple[int, dict[str, object]] | None = None
+            duplicate_conflict = False
+            duplicate_incomplete = False
             with ids_lock:
-                if request.request_id in seen_ids:
-                    self._send_operation_error(
-                        HTTPStatus.CONFLICT,
-                        request,
-                        archive,
-                        generation,
-                        readiness,
-                        "duplicate_request_id",
-                        "request_id was already used",
-                    )
-                    return
-                seen_ids.add(request.request_id)
-                ids_order = getattr(self.server, "operation_ids_order", None)
-                if ids_order is not None:
-                    if len(ids_order) == ids_order.maxlen:
-                        seen_ids.discard(ids_order[0])
-                    ids_order.append(request.request_id)
+                results = getattr(self.server, "operation_results", {})
+                previous = results.get(request.request_id)
+                if previous is not None:
+                    previous_fingerprint, previous_status, previous_payload = previous
+                    if previous_fingerprint == request.fingerprint:
+                        replay = (previous_status, previous_payload)
+                    else:
+                        duplicate_conflict = True
+                elif request.request_id in seen_ids:
+                    duplicate_incomplete = True
+                else:
+                    seen_ids.add(request.request_id)
+                    ids_order = getattr(self.server, "operation_ids_order", None)
+                    if ids_order is not None:
+                        if len(ids_order) == ids_order.maxlen:
+                            evicted = ids_order[0]
+                            seen_ids.discard(evicted)
+                            getattr(self.server, "operation_results", {}).pop(evicted, None)
+                        ids_order.append(request.request_id)
+            # Do not write a response while ``operation_ids_lock`` is held.
+            # Error recording takes the same lock and a conflicting retry
+            # must not overwrite the original request's replay evidence.
+            if replay is not None:
+                previous_status, previous_payload = replay
+                self._send_json(HTTPStatus(previous_status), previous_payload)
+                return
+            if duplicate_conflict:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id_conflict",
+                    "request_id was already used for a different request",
+                    remember=False,
+                )
+                return
+            if duplicate_incomplete:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id",
+                    "request_id was already used before its result was durable",
+                    remember=False,
+                )
+                return
 
         captured: list[tuple[HTTPStatus, object]] = []
         original_send_json = self._send_json
@@ -5420,6 +5518,16 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 )
             elif request.operation == "status":
                 self._handle_status({})
+            elif request.operation == "ingest":
+                body = _json_bytes(request.payload)
+                self.rfile = BytesIO(body)
+                self.headers = {  # type: ignore[assignment]
+                    "Content-Length": str(len(body)),
+                    "Content-Type": "application/json",
+                    "Authorization": original_headers.get("Authorization", ""),
+                }
+                self.path = "/api/ingest"
+                self._handle_ingest()
             elif request.operation in _MUTATION_OPERATION_HANDLERS:
                 # Each handler owns its own writer gate; the dispatcher only
                 # re-presents the operation payload as the body it reads.
@@ -5476,7 +5584,15 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 outcome=OperationStatus.FAILED,
                 served_by={"daemon_version": POLYLOGUE_VERSION},
                 timing=self._operation_timing(operation_started),
-                schema_versions={"index": INDEX_SCHEMA_VERSION},
+                schema_versions=cast(dict[str, int], tier_schema_versions),
+                authority_snapshot={
+                    "archive_identity": archive.get("archive_identity"),
+                    "generation": generation.get("id"),
+                    "schema_versions": tier_schema_versions,
+                    "served_by": POLYLOGUE_VERSION,
+                    **self._operation_timing(operation_started),
+                    "degraded_components": degraded_components,
+                },
                 error={
                     "code": str(error.get("error", "operation_failed")),
                     "detail": error.get("detail"),
@@ -5484,8 +5600,19 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 },
                 request_id=request.request_id,
             )
-            self._send_json(status, envelope.to_dict())
+            payload = envelope.to_dict()
+            self._remember_operation_result(request, int(status), payload)
+            self._send_json(status, payload)
             return
+        accepted_reference: dict[str, object] | None = None
+        if spec.accepted_reference and isinstance(result, dict):
+            operation_id = result.get("operation_id") or result.get("id")
+            if isinstance(operation_id, str) and operation_id:
+                accepted_reference = {
+                    "operation_id": operation_id,
+                    "accepted_at": datetime.now(UTC).isoformat(),
+                    "status_operation": "operation.status",
+                }
         envelope = DaemonOperationEnvelope(
             operation=request.operation,
             archive=archive,
@@ -5501,8 +5628,17 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             outcome=OperationStatus.COMPLETED,
             served_by={"daemon_version": POLYLOGUE_VERSION},
             timing=self._operation_timing(operation_started),
-            schema_versions={"index": INDEX_SCHEMA_VERSION},
+            schema_versions=cast(dict[str, int], tier_schema_versions),
+            authority_snapshot={
+                "archive_identity": archive.get("archive_identity"),
+                "generation": generation.get("id"),
+                "schema_versions": tier_schema_versions,
+                "served_by": POLYLOGUE_VERSION,
+                **self._operation_timing(operation_started),
+                "degraded_components": degraded_components,
+            },
             result=result,
+            accepted_reference=accepted_reference,
             request_id=request.request_id,
         )
         encoded = _json_bytes(envelope.to_dict())
@@ -5517,7 +5653,26 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "operation result exceeds the bounded result size",
             )
             return
-        self._send_json(HTTPStatus.OK, envelope.to_dict())
+        payload = envelope.to_dict()
+        self._remember_operation_result(request, HTTPStatus.OK.value, payload)
+        self._send_json(HTTPStatus.OK, payload)
+
+    def _remember_operation_result(self, request: object, status: int, payload: dict[str, object]) -> None:
+        request_id = getattr(request, "request_id", None)
+        if not isinstance(request_id, str):
+            return
+        lock = getattr(self.server, "operation_ids_lock", None)
+        results = getattr(self.server, "operation_results", None)
+        if lock is None or results is None:
+            return
+        fingerprint = getattr(request, "fingerprint", "")
+        with lock:
+            results[request_id] = (str(fingerprint), int(status), dict(payload))
+            order = getattr(self.server, "operation_ids_order", None)
+            if order is not None and request_id not in order:
+                if len(order) == order.maxlen:
+                    results.pop(order[0], None)
+                order.append(request_id)
 
     def _send_operation_error(
         self,
@@ -5528,21 +5683,47 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         readiness: dict[str, object],
         code: str,
         detail: str,
+        *,
+        outcome: str = "failed",
+        remember: bool = True,
     ) -> None:
-        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, OperationStatus
+        from polylogue.operations.daemon_protocol import DaemonOperationEnvelope
+        from polylogue.version import POLYLOGUE_VERSION
 
         operation = getattr(request, "operation", "unknown")
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
+        started = getattr(self, "_operation_started", None)
+        timing = self._operation_timing(started) if isinstance(started, float) else {"elapsed_ms": 0, "queue_ms": 0}
         envelope = DaemonOperationEnvelope(
             operation=str(operation),
             archive=archive,
             generation=generation,
             readiness=readiness,
             authority={"mode": "daemon", "writes": "daemon-owned"},
-            progress={"state": "failed"},
-            outcome=OperationStatus.FAILED,
+            progress={"state": "failed" if outcome == "failed" else outcome},
+            outcome=outcome,
+            served_by={"daemon_version": POLYLOGUE_VERSION},
+            schema_versions=cast(dict[str, int], tier_schema_versions),
             error={"code": code, "detail": detail},
+            request_id=getattr(request, "request_id", None),
+            authority_snapshot={
+                "archive_identity": archive.get("archive_identity"),
+                "generation": generation.get("id"),
+                "schema_versions": tier_schema_versions,
+                "served_by": POLYLOGUE_VERSION,
+                **timing,
+                "degraded_components": degraded_components,
+            },
         )
-        self._send_json(status, envelope.to_dict())
+        payload = envelope.to_dict()
+        if remember:
+            self._remember_operation_result(request, int(status), payload)
+        self._send_json(status, payload)
 
     @daemon_safe_handler
     def _handle_cli_delete_prepare(self) -> None:
@@ -6125,6 +6306,10 @@ class DaemonAPIHTTPServer(ThreadingHTTPServer):
         self.coordination_cache_lock = threading.Lock()
         self.coordination_cache_condition = threading.Condition(self.coordination_cache_lock)
         self.coordination_cache_building: set[tuple[str, int]] = set()
+        self.operation_results: dict[str, tuple[str, int, dict[str, object]]] = {}
+        self.operation_ids_seen: set[str] = set()
+        self.operation_ids_order: deque[str] = deque(maxlen=4096)
+        self.operation_ids_lock = threading.Lock()
 
     def server_close(self) -> None:
         # cancel_futures=True drops any still-queued (not yet started) work
