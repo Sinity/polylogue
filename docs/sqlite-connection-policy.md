@@ -2,8 +2,8 @@
 
 `polylogue/storage/sqlite/connection_profile.py` is the single owner of
 connection profiles, named timeout classes, WAL checkpoint escalation, the
-checkpoint hold budget and read-frame lifetime. `wal_checkpoint.py` and
-`read_frame.py` execute that policy; neither declares any of it.
+checkpoint hold budget and read-frame lifetime. `wal_checkpoint.py` executes
+the checkpoint half of that policy and declares none of it.
 
 ## Named timeout classes
 
@@ -52,16 +52,25 @@ Checkpoint hold is budgeted separately from publication:
 
 ## Read frames
 
-`ReadFrame` binds a read connection to a generation identity
-(`(st_dev, st_ino, PRAGMA data_version)`) for the age its profile declares.
-Past that age `frame.connection` raises `ReadFrameExpiredError` rather than
-serving a reader that pins WAL frames indefinitely. `rebind()` reopens against
-the current generation; a sealed frame refuses, having nothing to rebind to.
+`ReadFrame` binds a read connection to a generation identity — the file's
+`(st_dev, st_ino)`, which is what a generation-pointer swap moves and what stays
+comparable between two connections — for the age its profile declares. Past that
+age `frame.connection` raises `ReadFrameExpiredError` rather than serving a
+reader that pins WAL frames indefinitely. `rebind()` reopens against the current
+generation and starts a new incarnation; a sealed frame refuses, having nothing
+to rebind to.
 
-A `ReadContinuation` carries the anchor query proving its position. `resume()`
-rebinds an expired frame, then either confirms the continuation is still
-equivalent or raises `StaleContinuationError` — it never advances or rewinds a
-position to make one fit.
+Content freshness inside one generation is a separate question, answered only by
+the open connection: `PRAGMA data_version` is explicitly not meaningful across
+connections, so `revalidate()` compares it against this connection's own
+baseline and the generation identity against the file.
+
+A `ReadContinuation` carries the anchor query proving its position, plus the
+frame incarnation that produced it. `resume()` rebinds an expired frame, then
+skips the anchor check only when nothing has moved at all — same generation,
+same incarnation, no observed commit. Otherwise it re-proves the anchor and
+raises `StaleContinuationError` if the position no longer holds; it never
+advances or rewinds a position to make one fit.
 
 ## Connection inventory
 
@@ -71,17 +80,17 @@ is deliberately not a source-text gate.
 
 | Shape | Count |
 | --- | --- |
-| Declared read factory (`open_readonly_connection`, `open_profiled_connection`, `read_frame`) | 164 |
+| Declared read factory (`open_readonly_connection`, `open_profiled_connection`, `read_frame`) | 163 |
 | Declared write factory (`open_connection`, `open_daemon_connection`, `open_isolated_write_connection`) | 60 |
 | Hand-built `immutable=1` URI | 0 |
-| Direct `mode=ro` open | 156 |
-| Raw `PRAGMA busy_timeout` outside the policy module | 9 |
+| Direct `mode=ro` open | 157 |
+| Raw `PRAGMA busy_timeout` outside the policy module | 9 (8 files) |
 | `PRAGMA wal_checkpoint` outside `wal_checkpoint.py` | 0 |
 
 Migrated in this pass: `daemon/backup.py` (live-tier snapshot writer and the
 pre-migration backup reader), `security/secret_scan.py`,
-`security/excision.py`'s writer, `cli/read_views/streaming_markdown.py` (to a
-read frame), `archive/query/source_freshness.py`, and every hand-built
+`security/excision.py`'s writer, `api/archive.py`'s two-tier audit seam (to a
+pair of read frames), `archive/query/source_freshness.py`, and every hand-built
 `immutable=1` wrapper in `storage/blob_integrity.py`,
 `storage/artifacts/inspection.py`, `storage/sqlite/migration_runner.py`,
 `sources/sqlite_snapshot.py`, `sources/parsers/{codex_state,hermes_state,hermes_verification}.py`,

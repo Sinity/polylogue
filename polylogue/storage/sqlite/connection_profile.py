@@ -1064,17 +1064,17 @@ class ReadFrameCancelledError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class GenerationToken:
-    """Identity of the exact database content a frame is bound to.
+    """Identity of the generation a frame is bound to.
 
-    ``device``/``inode`` move when a generation pointer is swapped to a new
-    file; ``data_version`` moves when another connection commits to the same
-    file. Together they answer "is this still what I was reading", which
-    neither answers alone.
+    File identity, because that is what a generation swap moves and what stays
+    comparable between two connections. Content freshness *within* one
+    generation is a separate question that only the open connection can answer
+    (``PRAGMA data_version`` is explicitly not meaningful across connections),
+    so the frame tracks that separately.
     """
 
     device: int
     inode: int
-    data_version: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1090,12 +1090,19 @@ class ReadContinuation:
     anchor_sql: str
     anchor_params: tuple[object, ...] = ()
     generation: GenerationToken | None = None
+    #: Which frame incarnation produced this continuation. A rebind starts a
+    #: new one, so a continuation can never be waved through on generation
+    #: identity alone after the frame it was produced on was replaced.
+    epoch: int = 0
 
 
-def _generation_token(conn: sqlite3.Connection, path: Path) -> GenerationToken:
+def _generation_token(path: Path) -> GenerationToken:
     stat = path.stat()
-    data_version = int(conn.execute("PRAGMA main.data_version").fetchone()[0])
-    return GenerationToken(device=stat.st_dev, inode=stat.st_ino, data_version=data_version)
+    return GenerationToken(device=stat.st_dev, inode=stat.st_ino)
+
+
+def _data_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA main.data_version").fetchone()[0])
 
 
 class ReadFrame:
@@ -1107,7 +1114,17 @@ class ReadFrame:
     thread, which is what SQLite's ``interrupt`` is for.
     """
 
-    __slots__ = ("_conn", "_generation", "_opened_at", "_path", "_profile", "_tier", "_cancelled")
+    __slots__ = (
+        "_cancelled",
+        "_conn",
+        "_data_version",
+        "_epoch",
+        "_generation",
+        "_opened_at",
+        "_path",
+        "_profile",
+        "_tier",
+    )
 
     def __init__(
         self,
@@ -1122,9 +1139,11 @@ class ReadFrame:
         self._profile = profile
         self._tier = tier
         self._cancelled = False
+        self._epoch = 0
         self._conn = self._open()
         self._opened_at = time.monotonic()
-        self._generation = _generation_token(self._conn, self._path)
+        self._generation = _generation_token(self._path)
+        self._data_version = _data_version(self._conn)
 
     def _open(self) -> sqlite3.Connection:
         conn = open_readonly_connection(
@@ -1154,6 +1173,11 @@ class ReadFrame:
         return self._generation
 
     @property
+    def epoch(self) -> int:
+        """How many times this frame has been rebound."""
+        return self._epoch
+
+    @property
     def profile(self) -> SQLiteConnectionProfile:
         return self._profile
 
@@ -1177,9 +1201,15 @@ class ReadFrame:
             )
 
     def revalidate(self) -> bool:
-        """Whether the bound generation still holds the content it was opened on."""
+        """Whether this frame still sees exactly what it was opened on.
+
+        Both halves matter: the generation may have been swapped under the
+        frame, or another connection may have committed into the same one.
+        """
         try:
-            return _generation_token(self._conn, self._path) == self._generation
+            if _generation_token(self._path) != self._generation:
+                return False
+            return _data_version(self._conn) == self._data_version
         except (OSError, sqlite3.Error):
             return False
 
@@ -1194,9 +1224,11 @@ class ReadFrame:
             raise ValueError(f"a sealed-generation read frame over {self._path} has nothing to rebind to")
         self._conn.close()
         self._cancelled = False
+        self._epoch += 1
         self._conn = self._open()
         self._opened_at = time.monotonic()
-        self._generation = _generation_token(self._conn, self._path)
+        self._generation = _generation_token(self._path)
+        self._data_version = _data_version(self._conn)
         return self._generation
 
     def cancel(self) -> None:
@@ -1209,8 +1241,8 @@ class ReadFrame:
     # -- continuations --------------------------------------------------------
 
     def bind(self, continuation: ReadContinuation) -> ReadContinuation:
-        """Stamp a continuation with the generation it was produced against."""
-        return replace(continuation, generation=self._generation)
+        """Stamp a continuation with the frame incarnation that produced it."""
+        return replace(continuation, generation=self._generation, epoch=self._epoch)
 
     def resume(self, continuation: ReadContinuation) -> ReadContinuation:
         """Return a continuation valid against a current frame, or refuse.
@@ -1222,7 +1254,10 @@ class ReadFrame:
         """
         if self.expired:
             self.rebind()
-        if continuation.generation == self._generation:
+        unchanged = (
+            continuation.generation == self._generation and continuation.epoch == self._epoch and self.revalidate()
+        )
+        if unchanged:
             return continuation
         row = self._conn.execute(continuation.anchor_sql, continuation.anchor_params).fetchone()
         if row is None or row[0] != continuation.position:
@@ -1230,7 +1265,7 @@ class ReadFrame:
                 f"continuation at {continuation.position!r} cannot be resumed against the current "
                 f"generation of {self._path}: its anchor row no longer holds that position"
             )
-        return replace(continuation, generation=self._generation)
+        return replace(continuation, generation=self._generation, epoch=self._epoch)
 
     # -- lifecycle ------------------------------------------------------------
 

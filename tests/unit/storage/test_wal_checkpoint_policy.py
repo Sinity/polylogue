@@ -120,7 +120,7 @@ def test_exclusive_escalation_reaches_truncate(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     _seed_wal(db, rows=64)
     observation = wal_checkpoint.checkpoint_wal(
-        db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=2**40
+        db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=1
     )
     assert observation.mode == "truncate"
     assert observation.wal_bytes_after == 0
@@ -134,7 +134,7 @@ def test_busy_reader_retains_the_wal_and_reports_evidence(tmp_path: Path) -> Non
         reader.execute("BEGIN")
         reader.execute("SELECT count(*) FROM payload").fetchone()
         observation = wal_checkpoint.checkpoint_wal(
-            db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=2**40
+            db, reason="unit", escalation="exclusive", warn_bytes=1, escalation_bytes=1
         )
     finally:
         reader.close()
@@ -208,25 +208,28 @@ def test_restart_from_a_large_wal_recovers_the_committed_rows(tmp_path: Path) ->
     db = tmp_path / "index.db"
     with arm_recurring_checkpoint_owner():
         conn = connection_profile.open_connection(db, validate_schema=False)
+        conn.execute("CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)")
+        conn.commit()
+        # A second connection outlives the writer, so closing the writer cannot
+        # run SQLite's last-connection checkpoint: the WAL survives exactly as
+        # it would after a process died mid-run.
+        survivor = connection_profile.open_readonly_connection(db, validate_schema=False)
         try:
-            conn.execute("CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)")
             conn.executemany("INSERT INTO payload (body) VALUES (?)", [(b"y" * 4096,) for _ in range(256)])
             conn.commit()
             assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 0
-        finally:
-            # Closing without checkpointing: the abandoned WAL is the state a
-            # restart must recover from.
             conn.close()
-
-    assert (db.with_suffix(".db-wal")).exists()
-    recovered = connection_profile.open_readonly_connection(db, validate_schema=False)
-    try:
-        assert recovered.execute("SELECT count(*) FROM payload").fetchone()[0] == 256
-    finally:
-        recovered.close()
+            assert db.with_suffix(".db-wal").stat().st_size > 0
+            recovered = connection_profile.open_readonly_connection(db, validate_schema=False)
+            try:
+                assert recovered.execute("SELECT count(*) FROM payload").fetchone()[0] == 256
+            finally:
+                recovered.close()
+        finally:
+            survivor.close()
 
     observation = wal_checkpoint.checkpoint_wal(
-        db, reason="restart", escalation="exclusive", warn_bytes=1, escalation_bytes=2**40
+        db, reason="restart", escalation="exclusive", warn_bytes=1, escalation_bytes=1
     )
     assert observation.mode == "truncate"
     assert observation.wal_bytes_after == 0

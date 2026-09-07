@@ -129,11 +129,32 @@ def test_rebinding_releases_the_frame_and_sees_later_commits(index_db: Path) -> 
         before = frame.generation
         assert frame.connection.execute("SELECT count(*) FROM rows_").fetchone()[0] == 10
         _commit(index_db, "INSERT INTO rows_ VALUES (11, 'row-11')")
+        # The commit landed in the same generation, so the file identity is
+        # unchanged; what moved is the content this frame was opened on.
         assert not frame.revalidate()
-        after = frame.rebind()
-        assert after != before
+        assert frame.rebind() == before
+        assert frame.epoch == 1
         assert frame.revalidate()
         assert frame.connection.execute("SELECT count(*) FROM rows_").fetchone()[0] == 11
+    finally:
+        frame.close()
+
+
+def test_generation_identity_moves_when_the_pointer_is_swapped(index_db: Path, tmp_path: Path) -> None:
+    replacement = tmp_path / "replacement.db"
+    conn = sqlite3.connect(replacement)
+    try:
+        conn.execute("CREATE TABLE rows_ (position INTEGER PRIMARY KEY, body TEXT NOT NULL)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    frame = read_frame(index_db, timeout_class="interactive-read")
+    try:
+        before = frame.generation
+        replacement.replace(index_db)
+        assert not frame.revalidate()
+        assert frame.rebind() != before
     finally:
         frame.close()
 
@@ -195,6 +216,23 @@ def test_unmoved_generation_resumes_unchanged(index_db: Path) -> None:
     with read_frame(index_db, timeout_class="interactive-read") as frame:
         continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
         assert frame.resume(continuation) == continuation
+
+
+def test_rebound_frame_reproves_the_anchor_rather_than_trusting_identity(index_db: Path) -> None:
+    """A rebind starts a new incarnation, so the fast path must not fire.
+
+    ``PRAGMA data_version`` is meaningless across connections and the file
+    identity is unchanged by an ordinary commit, so without the epoch a
+    continuation would be waved through against content it never saw.
+    """
+    with read_frame(index_db, timeout_class="interactive-read") as frame:
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        _commit(index_db, "DELETE FROM rows_ WHERE position = 5")
+        frame.rebind()
+        assert frame.generation == continuation.generation
+        assert frame.epoch != continuation.epoch
+        with pytest.raises(StaleContinuationError):
+            frame.resume(continuation)
 
 
 def test_moved_generation_resumes_when_the_anchor_still_holds(index_db: Path) -> None:

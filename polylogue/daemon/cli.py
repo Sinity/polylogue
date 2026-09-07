@@ -72,6 +72,16 @@ from polylogue.operations.embedding_lifecycle import (
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
+
+# The daemon ring's seam onto the storage checkpoint and one-tier writer
+# factories: daemon modules take them from here rather than each reaching
+# into storage on its own.
+from polylogue.storage.sqlite.connection_profile import (
+    open_isolated_write_connection as open_isolated_write_connection,
+)
+from polylogue.storage.sqlite.wal_checkpoint import (
+    checkpoint_connection as checkpoint_connection,
+)
 from polylogue.version import POLYLOGUE_VERSION
 
 if TYPE_CHECKING:
@@ -660,17 +670,6 @@ async def _periodic_fts_merge() -> None:
             await daemon_write_coordinator().run_sync("maintenance.fts_merge", run_periodic_fts_merge_sync, db)
         except Exception:
             logger.warning("daemon: FTS periodic merge failed", exc_info=True)
-
-
-# The daemon ring's seam onto the storage checkpoint and one-tier writer
-# factories: daemon modules take them from here rather than each reaching into
-# storage on its own.
-from polylogue.storage.sqlite.connection_profile import (  # noqa: E402
-    open_isolated_write_connection as open_isolated_write_connection,
-)
-from polylogue.storage.sqlite.wal_checkpoint import (  # noqa: E402
-    checkpoint_connection as checkpoint_connection,
-)
 
 
 async def _periodic_wal_checkpoint() -> None:
