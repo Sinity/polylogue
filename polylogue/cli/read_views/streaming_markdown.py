@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
+from polylogue.api.archive import read_frame
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.rendering.block_models import RenderableBlock
@@ -33,9 +34,12 @@ def stream_exact_session_markdown(
     if not db_path.exists():
         return False
 
-    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-    conn.row_factory = sqlite3.Row
     try:
+        frame = read_frame(db_path, timeout_class="background-read")
+    except sqlite3.Error:
+        return False
+    try:
+        conn = frame.connection
         session_id = _resolve_session_id(conn, session_ref)
         if session_id is None or _has_prefix_sharing_edge(conn, session_id):
             return False
@@ -55,10 +59,10 @@ def stream_exact_session_markdown(
             fh.write(f"# {title}\n\n")
             fh.write(f"Origin: {session['origin']}\n")
             fh.write(f"Session ID: {session['session_id']}\n\n")
-            _write_message_stream(conn, session_id, fh, prose_only=prose_only)
+            _write_message_stream(frame, session_id, fh, prose_only=prose_only)
         return True
     finally:
-        conn.close()
+        frame.close()
 
 
 def _resolve_session_id(conn: sqlite3.Connection, token: str) -> str | None:
@@ -104,12 +108,16 @@ def _has_prefix_sharing_edge(conn: sqlite3.Connection, session_id: str) -> bool:
 
 
 def _write_message_stream(
-    conn: sqlite3.Connection,
+    frame: Any,
     session_id: str,
     fh: TextIO,
     *,
     prose_only: bool,
 ) -> None:
+    # Keep the age bound load-bearing during large exports: a cursor can yield
+    # rows long after it was opened, so check the frame between rows as well as
+    # at connection acquisition.
+    conn = frame.connection
     cursor = conn.execute(
         f"""
         SELECT m.message_id,
@@ -137,6 +145,7 @@ def _write_message_stream(
     current_ts: object = None
     blocks: list[RenderableBlock] = []
     for row in cursor:
+        frame.check()
         message_id = str(row["message_id"])
         if current_id is not None and message_id != current_id:
             _write_one_message(fh, role=current_role, timestamp=current_ts, blocks=blocks, prose_only=prose_only)

@@ -89,9 +89,11 @@ from polylogue.storage.sqlite.connection_profile import (
     ReadFrameExpiredError,
     StaleContinuationError,
     open_connection,
-    open_readonly_connection,
-    read_frame,
 )
+from polylogue.storage.sqlite.connection_profile import (
+    open_readonly_connection as open_readonly_connection,
+)
+from polylogue.storage.sqlite.connection_profile import read_frame as read_frame
 from polylogue.storage.sqlite.queries.message_query_reads import MessageTypeName
 from polylogue.surfaces.chronicle import (
     ChronicleProjectionPayload,
