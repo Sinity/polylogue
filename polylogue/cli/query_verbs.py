@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
+from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
 from polylogue.archive.viewport import (
     READ_VIEW_PROFILE_BY_ID,
     READ_VIEW_PROFILES,
@@ -464,6 +465,10 @@ def _read_view_option_values(
     since_hours: int,
     confidence_threshold: float,
     github_api: bool,
+    node_offset: int,
+    node_limit: int | None,
+    edge_offset: int,
+    edge_limit: int | None,
 ) -> dict[str, object]:
     """Collect raw Click option values for read-view handler builders."""
 
@@ -480,6 +485,10 @@ def _read_view_option_values(
         "since_hours": since_hours,
         "confidence_threshold": confidence_threshold,
         "github_api": github_api,
+        "node_offset": node_offset,
+        "node_limit": node_limit,
+        "edge_offset": edge_offset,
+        "edge_limit": edge_limit,
     }
 
 
@@ -1107,6 +1116,22 @@ def select_verb(ctx: click.Context, limit: int, print_field: str, output_format:
 @click.option("--views", "show_views", is_flag=True, help="List executable read-view profiles, formats, and options.")
 @click.option("--spec", "show_spec", is_flag=True, help="Print the composed selection/projection/render spec as JSON.")
 @click.option("--first", "first_only", is_flag=True, help="Read the first matched session only.")
+@click.option("--node-offset", type=int, default=0, help="Lineage node-page offset (--view lineage).")
+@click.option(
+    "--node-limit",
+    type=int,
+    default=DEFAULT_LINEAGE_PAGE_LIMIT,
+    show_default=True,
+    help="Lineage node-page size (--view lineage).",
+)
+@click.option("--edge-offset", type=int, default=0, help="Lineage edge-page offset (--view lineage).")
+@click.option(
+    "--edge-limit",
+    type=int,
+    default=DEFAULT_LINEAGE_PAGE_LIMIT,
+    show_default=True,
+    help="Lineage edge-page size (--view lineage).",
+)
 @click.argument("ref", required=False)
 @click.pass_context
 def read_verb(
@@ -1138,6 +1163,10 @@ def read_verb(
     show_spec: bool = False,
     show_views: bool = False,
     at_position: int | None = None,
+    node_offset: int = 0,
+    node_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
+    edge_offset: int = 0,
+    edge_limit: int | None = DEFAULT_LINEAGE_PAGE_LIMIT,
     ref: str | None = None,
 ) -> None:
     """Read matched sessions.
@@ -1517,6 +1546,10 @@ def read_verb(
                     since_hours=since_hours,
                     confidence_threshold=confidence_threshold,
                     github_api=github_api,
+                    node_offset=node_offset,
+                    node_limit=node_limit,
+                    edge_offset=edge_offset,
+                    edge_limit=edge_limit,
                 ),
             ),
             explicit_options=explicit_options,

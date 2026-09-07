@@ -9,8 +9,10 @@ from typing import TYPE_CHECKING
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import MessageRoleFilter
 from polylogue.archive.session.domain_models import Session, SessionSummary
+from polylogue.archive.session.events import SessionEvent
 from polylogue.storage.hydrators import (
     message_from_record,
+    session_event_from_record,
     session_from_records,
     session_summary_from_record,
 )
@@ -103,6 +105,17 @@ class RepositoryArchiveSessionMixin:
 
     async def get_messages(self, session_id: str) -> list[MessageRecord]:
         return await self.queries.get_messages(session_id)
+
+    async def get_session_event_models(self, session_id: str) -> list[SessionEvent]:
+        """Hydrate a session's timeline events without reading its transcript.
+
+        The envelope read behind the API's ``get_session`` carries no
+        ``session_events``, so a caller that needs them (the session digest's
+        compaction geometry, polylogue-4ts.5) would otherwise re-read the whole
+        session through the repository.
+        """
+        records = await self.queries.get_session_events(session_id)
+        return [session_event_from_record(record) for record in records]
 
     async def get_agent_policies(self, session_id: str) -> list[ArchiveAgentPolicy]:
         """Read agent-policy facts (sandbox/approval/network policy) for a session.

@@ -142,6 +142,69 @@ class TransformRawRef(ArchiveInsightModel):
         )
 
 
+class CompactionBoundary(ArchiveInsightModel):
+    """One compaction event's stored replaced range (polylogue-4ts.5).
+
+    Read straight off ``session_events``: the parser computed the range while
+    walking records and the writer stored it. Nothing here is inferred from
+    message shape, so an archive that has not recorded a range reports no
+    range rather than a guess.
+    """
+
+    event_id: str
+    start_position: int | None = None
+    end_position: int | None = None
+    summary_message_id: str | None = None
+    replaced_refs: tuple[EvidenceRef, ...] = ()
+    raw_refs: tuple[TransformRawRef, ...] = ()
+
+
+def _compaction_boundaries(session: Session, messages: Sequence[Message]) -> tuple[CompactionBoundary, ...]:
+    """Project the session's stored compaction ranges into projection inputs.
+
+    ``replaced_refs`` names exactly the messages inside the stored inclusive
+    range, so a consumer can point at the replaced content instead of at the
+    whole session.
+    """
+
+    session_id = str(session.id)
+    by_position: dict[int, list[Message]] = {}
+    for message in messages:
+        by_position.setdefault(message.position, []).append(message)
+    boundaries: list[CompactionBoundary] = []
+    for event in session.session_events:
+        if event.event_type != "compaction":
+            continue
+        start = event.boundary_start_position
+        end = event.boundary_end_position
+        replaced: list[EvidenceRef] = []
+        if start is not None and end is not None:
+            for position in range(start, end + 1):
+                replaced.extend(
+                    EvidenceRef(session_id=session_id, message_id=message.id)
+                    for message in by_position.get(position, ())
+                )
+        source_message_id = str(event.source_message_id) if event.source_message_id is not None else None
+        boundaries.append(
+            CompactionBoundary(
+                event_id=str(event.id),
+                start_position=start,
+                end_position=end,
+                summary_message_id=str(event.boundary_message_id) if event.boundary_message_id is not None else None,
+                replaced_refs=tuple(replaced),
+                raw_refs=(
+                    TransformRawRef(
+                        session_id=session_id,
+                        message_id=source_message_id,
+                        ref_kind="message" if source_message_id else "session",
+                        preview=event.event_type,
+                    ),
+                ),
+            )
+        )
+    return tuple(boundaries)
+
+
 class ForensicIndexEntry(ArchiveInsightModel):
     """One raw evidence location and the extracted claims it supports."""
 
@@ -503,6 +566,7 @@ def compile_session_digest(
         subagent_reports=subagent_reports,
         session_digest_events=events,
         is_resume=session.is_continuation,
+        compaction_boundaries=_compaction_boundaries(session, messages),
     )
     role_counts = dict(Counter(_role_value(message) for message in messages))
     normal_read = _normal_read_text(messages)
@@ -603,6 +667,7 @@ def compile_session_run_projection(
         subagent_reports=subagent_reports,
         session_digest_events=events,
         is_resume=session.is_continuation,
+        compaction_boundaries=_compaction_boundaries(session, messages),
     )
 
 

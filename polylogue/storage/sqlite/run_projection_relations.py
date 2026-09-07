@@ -11,7 +11,12 @@ from __future__ import annotations
 import json
 from typing import Protocol
 
-from polylogue.analysis.run_projection import ContextSnapshot, ObservedEvent, ProjectedRun
+from polylogue.analysis.run_projection import (
+    MAX_COMPACTION_EVIDENCE_REFS,
+    ContextSnapshot,
+    ObservedEvent,
+    ProjectedRun,
+)
 from polylogue.archive.query.predicate import QueryBoolPredicate, QueryFieldPredicate, QueryPredicate
 from polylogue.core.refs import EvidenceRef, ObjectRef
 from polylogue.core.types import SessionId
@@ -358,7 +363,7 @@ def context_snapshot_relation_sql(*, include_materialized: bool = False) -> str:
             "session_context_snapshots materialized table is no longer written to (polylogue-dab). "
             "Pass include_materialized=False or omit the argument."
         )
-    return """
+    return f"""
 WITH source_context_snapshots AS (
     SELECT
         'source' AS row_source,
@@ -387,8 +392,62 @@ WITH source_context_snapshots AS (
         '' AS materialized_at
     FROM sessions s0
 ),
+-- polylogue-4ts.5: a compaction boundary is a context snapshot, and the range
+-- it replaced is stored evidence. Only a boundary with both bounds recorded
+-- appears -- an unrecorded range is not a snapshot of zero messages.
+source_compaction_snapshots AS (
+    SELECT
+        'source' AS row_source,
+        'context-snapshot:' || se.event_id || ':compaction' AS snapshot_ref,
+        se.session_id AS session_id,
+        'run:' || se.session_id AS run_ref,
+        se.position AS position,
+        printf('%016d', COALESCE(se.occurred_at_ms, 0)) AS source_updated_at,
+        'compaction' AS boundary,
+        'summary' AS inheritance_mode,
+        json_array('session:' || se.session_id) AS segment_refs_json,
+        COALESCE(
+            NULLIF(
+                (
+                    SELECT json_group_array(ref)
+                    FROM (
+                        SELECT se.session_id || '::' || m.message_id AS ref
+                        FROM messages m
+                        WHERE m.session_id = se.session_id
+                          AND m.position BETWEEN se.boundary_start_position AND se.boundary_end_position
+                        ORDER BY m.position, m.variant_index
+                        LIMIT {MAX_COMPACTION_EVIDENCE_REFS}
+                    )
+                ),
+                '[]'
+            ),
+            json_array(se.session_id)
+        ) AS evidence_refs_json,
+        json_patch(
+            json_object(
+                'source', 'session-event-compaction',
+                'replaced_start_position', CAST(se.boundary_start_position AS TEXT),
+                'replaced_end_position', CAST(se.boundary_end_position AS TEXT)
+            ),
+            CASE
+                WHEN se.boundary_message_id IS NOT NULL
+                    THEN json_object('summary_message_id', se.boundary_message_id)
+                ELSE '{{}}'
+            END
+        ) AS metadata_json,
+        'compaction' AS search_text,
+        NULL AS payload_json,
+        1 AS materializer_version,
+        '' AS materialized_at
+    FROM session_events se
+    WHERE se.event_type = 'compaction'
+      AND se.boundary_start_position IS NOT NULL
+      AND se.boundary_end_position IS NOT NULL
+),
 context_snapshots AS (
     SELECT * FROM source_context_snapshots
+    UNION ALL
+    SELECT * FROM source_compaction_snapshots
 )
 """
 
@@ -477,7 +536,7 @@ def context_snapshot_from_row(row: RowLike) -> ContextSnapshot:
         snapshot_ref=ObjectRef.parse(str(row["snapshot_ref"])),
         run_ref=ObjectRef.parse(str(row["run_ref"])),
         boundary=str(row["boundary"]),  # type: ignore[arg-type]
-        inheritance_mode="unknown",
+        inheritance_mode=str(row["inheritance_mode"] or "unknown"),  # type: ignore[arg-type]
         segment_refs=tuple(ObjectRef.parse(ref) for ref in _tuple_from_json_array(row["segment_refs_json"])),
         evidence_refs=tuple(EvidenceRef.parse(ref) for ref in _tuple_from_json_array(row["evidence_refs_json"])),
         metadata=dict(json.loads(str(row["metadata_json"] or "{}"))),

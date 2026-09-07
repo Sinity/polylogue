@@ -28,7 +28,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     RawParsePrefetchCache,
     _browser_snapshot_fidelity,
-    _lineage_aware_replay_order,
+    _lineage_aware_replay_schedule,
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -3983,7 +3983,23 @@ def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
             )
 
 
-def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path) -> None:
+def _lexicographic_replay_schedule(
+    logical_keys: set[str],
+    archive: ArchiveStore,
+    spill: Any,
+    archive_root: Path,
+) -> revision_backfill.ReplaySchedule:
+    """The pre-polylogue-5q2u schedule: sorted keys, no lineage edges. Used
+    to force the old order so a lineage-aware run can be compared against it."""
+    order = tuple(sorted(logical_keys))
+    return revision_backfill.ReplaySchedule(
+        order=order,
+        topology=dict.fromkeys(order, revision_backfill.ReplayTopologyState.ROOT),
+        parent_of=dict.fromkeys(order, None),
+    )
+
+
+def test_lineage_aware_replay_schedule_visits_parent_before_children(tmp_path: Path) -> None:
     """polylogue-5q2u: roots first, then each child only after its parent --
     NOT the lexicographic order a plain ``sorted()`` would produce (the
     parent's native id, "zparent", sorts LAST here)."""
@@ -3999,7 +4015,9 @@ def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path
         archive.commit()
         _expanded, logical_keys = archive.expand_raw_membership_selection(None)
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
-            order = _lineage_aware_replay_order(set(logical_keys), archive, spill, root)
+            schedule = _lineage_aware_replay_schedule(set(logical_keys), archive, spill, root)
+            order = list(schedule.order)
+            topology = dict(schedule.topology)
 
     assert order[0] == "codex-session:zparent"
     parent_position = order.index("codex-session:zparent")
@@ -4009,14 +4027,16 @@ def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path
         assert order.index(child_key) > parent_position
     # Lexicographic order would have put every child before the parent.
     assert sorted(logical_keys)[0] != "codex-session:zparent"
+    assert topology["codex-session:zparent"] is revision_backfill.ReplayTopologyState.ROOT
+    assert {topology[f"codex-session:achild{index}"] for index in range(5)} == {
+        revision_backfill.ReplayTopologyState.DESCENDANT
+    }
 
 
-def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
+def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
     """A parent outside this call's ``logical_keys`` set (missing/external/
-    cross-batch) must not crash or drop the child -- it degrades to the
-    lexicographic position among the unresolved remainder. Two orphans (not
-    one) so the real DB lookup + ``spill.for_raw`` path is exercised instead
-    of the single-key short-circuit."""
+    cross-batch) must not crash or drop the child -- it degrades to a
+    typed ``UNRESOLVED_PARENT`` root at its lexicographic position."""
     root = tmp_path / "archive"
     initialize_active_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -4028,23 +4048,32 @@ def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path:
                 acquired_at_ms=1,
             )
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
-            order = _lineage_aware_replay_order(
+            revision_backfill._census_historical_revision_evidence(
+                archive, spill, selected_raw_ids=None, max_payload_bytes=None
+            )
+            archive.commit()
+            schedule = _lineage_aware_replay_schedule(
                 {"codex-session:zorphan", "codex-session:aorphan"}, archive, spill, root
             )
+    order = list(schedule.order)
     assert sorted(order) == ["codex-session:aorphan", "codex-session:zorphan"]
     # Neither key's parent is in the set, so both are roots -- fallback
     # degrades to lexicographic order among them.
     assert order == ["codex-session:aorphan", "codex-session:zorphan"]
+    assert set(schedule.topology.values()) == {revision_backfill.ReplayTopologyState.UNRESOLVED_PARENT}
+    assert set(schedule.parent_of.values()) == {None}
 
 
-def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lineage_aware_replay_schedule_reduces_deferred_tail_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-5q2u AC1: lineage-aware replay must trigger the #2467
     deferred-tail/orphaned-child normalization path (``_reextract_prefix_tail_db``)
     strictly less often than the previous lexicographic order for a
     representative parent-with-many-children fixture, where the parent's
     native id sorts lexicographically AFTER its children's.
 
-    Anti-vacuity: reverting the ``_lineage_aware_replay_order`` call at the
+    Anti-vacuity: reverting the ``_lineage_aware_replay_schedule`` call at the
     ``for logical_key in ...:`` call site back to ``sorted(logical_keys)``
     makes this test fail (both counts become equal and >0, since every
     child would then replay before the parent it depends on).
@@ -4068,8 +4097,8 @@ def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, m
         if force_lexicographic:
             monkeypatch.setattr(
                 revision_backfill,
-                "_lineage_aware_replay_order",
-                lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+                "_lineage_aware_replay_schedule",
+                _lexicographic_replay_schedule,
             )
         backfill_historical_revision_evidence(root)
         monkeypatch.undo()
@@ -4088,7 +4117,9 @@ def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, m
     )
 
 
-def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lineage_aware_replay_schedule_preserves_outcome_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-5q2u AC2: lineage-aware scheduling must not change WHAT gets
     replayed/adopted -- only the order. Two archives seeded identically,
     replayed once under lineage order and once forced to the previous
@@ -4107,8 +4138,8 @@ def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, mon
 
     monkeypatch.setattr(
         revision_backfill,
-        "_lineage_aware_replay_order",
-        lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+        "_lineage_aware_replay_schedule",
+        _lexicographic_replay_schedule,
     )
     lexicographic_result = backfill_historical_revision_evidence(lexicographic_root)
 
