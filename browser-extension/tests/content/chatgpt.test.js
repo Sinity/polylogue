@@ -150,6 +150,90 @@ describe("chatgpt.js on-demand native fetch, exact-provider capture", () => {
 
     expect(result).toMatchObject({ ok: false, error: "native_capture_unavailable" });
   });
+
+  it("returns a typed bridge rate limit without fallback reads or asset downloads", async () => {
+    const calls = [];
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      calls.push(url.pathname);
+      if (url.pathname === "/backend-api/conversation/conv-429") {
+        return new globalThis.Response(JSON.stringify({ detail: "rate limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json", "Retry-After": "73" },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { dom, sendRuntimeMessage } = installChatgpt({ url: "https://chatgpt.com/c/conv-429", fetch });
+    dom.window.dispatchEvent(new dom.window.MessageEvent("message", {
+      source: dom.window,
+      origin: dom.window.location.origin,
+      data: {
+        type: "polylogue.chatgpt.nativeCapture",
+        capture: {
+          ok: true,
+          status: 200,
+          contentType: "application/json",
+          url: "https://chatgpt.com/backend-api/conversation/conv-429",
+          body: JSON.stringify({
+            conversation_id: "conv-429",
+            current_node: "assistant",
+            mapping: {
+              assistant: {
+                message: {
+                  id: "assistant",
+                  author: { role: "assistant" },
+                  content: { parts: ["[file](sandbox:/mnt/data/never-fetch.zip)"] },
+                },
+              },
+            },
+          }),
+        },
+      },
+    }));
+
+    const result = await sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "freshness_convergence",
+      providerSessionId: "conv-429",
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: 73,
+    });
+    expect(calls.filter((path) => path === "/backend-api/conversation/conv-429")).toHaveLength(1);
+    expect(calls).not.toContain("/backend-api/conversation/conv-429/interpreter/download");
+  });
+
+  it("keeps a rate limit typed when the provider omits Retry-After", async () => {
+    const fetch = vi.fn(async (input) => {
+      const url = new URL(String(input), "https://chatgpt.com");
+      if (url.pathname === "/backend-api/conversation/conv-429-no-header") {
+        return new globalThis.Response(JSON.stringify({ detail: "rate limited" }), {
+          status: 429,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return notFoundResponse();
+    });
+    const { sendRuntimeMessage } = installChatgpt({
+      url: "https://chatgpt.com/c/conv-429-no-header",
+      fetch,
+    });
+
+    const result = await sendRuntimeMessage({
+      type: "polylogue.capturePage",
+      reason: "freshness_convergence",
+      providerSessionId: "conv-429-no-header",
+    });
+
+    expect(result).toMatchObject({ ok: false, outcome: "rate_limited", retry_after_seconds: null });
+    expect(fetch.mock.calls.filter(([input]) => String(input).includes("/backend-api/conversation/conv-429-no-header")))
+      .toHaveLength(1);
+  });
 });
 
 describe("chatgpt.js asset descriptor identification (through a real capture)", () => {

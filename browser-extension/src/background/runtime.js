@@ -1,5 +1,5 @@
 import { BackfillCoordinator } from "../backfill/coordinator.js";
-import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS } from "../backfill/models.js";
+import { DURABLE_RECEIVER_ACK_FIELDS, PROVIDER_REQUEST_TIMEOUT_MS, retryAfterMs } from "../backfill/models.js";
 import { providerAdapters } from "../backfill/providers.js";
 import { executeProviderPageRequest } from "../backfill/page_transport.js";
 import { IndexedDbBackfillStore } from "../backfill/storage.js";
@@ -12,6 +12,7 @@ import {
   chatGptCaptureNeedsFollowUp,
   claimDueFreshness,
   completeFreshnessClaim,
+  extendProviderCooldown,
   failureRetryDelayMs,
   normalizeFreshnessQueue,
   runningPollDelayMs,
@@ -1810,14 +1811,62 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
-function withProviderTransportOperation(provider, operation) {
+function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
-  const result = prior.catch(() => undefined).then(operation);
+  const result = prior.catch(() => undefined).then(async () => {
+    if (checkThrottle) await requireProviderThrottleAvailability(provider);
+    try {
+      return await operation();
+    } catch (error) {
+      const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+      if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {
+        await recordProviderThrottle(provider, error, classified);
+      }
+      throw error;
+    }
+  });
   const tracked = result.finally(() => {
     if (providerTransportOperations.get(provider) === tracked) providerTransportOperations.delete(provider);
   });
   providerTransportOperations.set(provider, tracked);
   return tracked;
+}
+
+function providerThrottleError(deadline, nowMs) {
+  const error = new Error("provider_rate_limited");
+  error.outcome = "rate_limited";
+  error.retryAfterMs = Math.max(0, deadline - nowMs);
+  error.retryAfterSeconds = Math.ceil(error.retryAfterMs / 1000);
+  error.providerThrottleApplied = true;
+  return error;
+}
+
+async function requireProviderThrottleAvailability(provider) {
+  const queue = await storedCaptureFreshnessQueue();
+  const deadline = Number(queue.provider_cooldowns[provider]) || 0;
+  const now = Date.now();
+  if (deadline > now) throw providerThrottleError(deadline, now);
+}
+
+function retryDelayFromProviderError(error, classified) {
+  if (Number.isFinite(error?.retryAfterMs)) return Math.max(1_000, error.retryAfterMs);
+  if (error?.retryAfter) {
+    const delay = retryAfterMs({ get: (name) => (name.toLowerCase() === "retry-after" ? error.retryAfter : null) }, Date.now());
+    if (delay !== null) return Math.max(1_000, delay);
+  }
+  return failureRetryDelayMs(0, classified.outcome, classified.retry_after_seconds);
+}
+
+async function recordProviderThrottle(provider, error, classified) {
+  const now = Date.now();
+  const queue = await serializeStorageMutation(async () => {
+    const current = await storedCaptureFreshnessQueue();
+    return persistCaptureFreshnessQueue(extendProviderCooldown(current, {
+      provider,
+      untilMs: now + retryDelayFromProviderError(error, classified),
+    }));
+  });
+  await scheduleNextCaptureFreshnessWake(queue);
 }
 
 function pageContextResponse(response) {
@@ -1888,7 +1937,14 @@ async function providerPageFetch(url, options = {}) {
       }
       throw new Error(error);
     }
-    return pageContextResponse(result.response);
+    const response = pageContextResponse(result.response);
+    if (response.status === 429) {
+      const error = new Error("provider_rate_limited");
+      error.outcome = "rate_limited";
+      error.retryAfter = response.headers.get("retry-after");
+      await recordProviderThrottle(request.provider, error, classifyBrowserActionFailure(error));
+    }
+    return response;
   });
 }
 
@@ -1922,7 +1978,7 @@ async function providerAccountHandle(provider) {
       }
       throw error;
     }
-  });
+  }, { checkThrottle: false });
 }
 
 async function cleanupBackfillTransportTab(alarmName) {
@@ -1989,11 +2045,24 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       type: "polylogue.capturePage",
       reason,
     };
-    const resultWithTimeout = await withTimeout(
-      runtimeChrome.tabs.sendMessage(tab.id, captureMessage),
-      CAPTURE_MESSAGE_TIMEOUT_MS,
-      "capture_message",
-    );
+    const pageProvider = archiveProviderForUrl(conversationUrl);
+    const resultWithTimeout = await withProviderTransportOperation(pageProvider, async () => {
+      const result = await withTimeout(
+        runtimeChrome.tabs.sendMessage(tab.id, captureMessage),
+        CAPTURE_MESSAGE_TIMEOUT_MS,
+        "capture_message",
+      );
+      if (!result?.ok && result?.outcome === "rate_limited") {
+        const error = new Error("provider_rate_limited");
+        error.outcome = "rate_limited";
+        error.retryAfterSeconds = Number.isFinite(result.retry_after_seconds)
+          ? result.retry_after_seconds
+          : null;
+        error.retryAfterMs = error.retryAfterSeconds === null ? null : error.retryAfterSeconds * 1000;
+        throw error;
+      }
+      return result;
+    });
     if (resultWithTimeout?.ok) {
       const envelopeSession = resultWithTimeout.envelope?.session || {};
       const provider = resultWithTimeout.captureResult?.provider || envelopeSession.provider;
@@ -2100,7 +2169,12 @@ async function captureTab(tab, reason = "background", expectedConversation = nul
       detail: String(error.message || error),
       tabId: tab.id,
     });
-    return { ok: false, error: String(error.message || error) };
+    return {
+      ok: false,
+      error: String(error.message || error),
+      outcome: error?.outcome || null,
+      retry_after_seconds: Number.isFinite(error?.retryAfterSeconds) ? error.retryAfterSeconds : null,
+    };
   }
 }
 
@@ -2130,7 +2204,15 @@ async function captureProviderConversation(
       CAPTURE_MESSAGE_TIMEOUT_MS,
       "capture_message",
     );
-    if (!result?.ok) throw new Error(result?.error || "exact_provider_capture_failed");
+    if (!result?.ok) {
+      const error = new Error(result?.error || "exact_provider_capture_failed");
+      error.outcome = result?.outcome || null;
+      error.retryAfterSeconds = Number.isFinite(result?.retry_after_seconds)
+        ? result.retry_after_seconds
+        : null;
+      error.retryAfterMs = error.retryAfterSeconds === null ? null : error.retryAfterSeconds * 1000;
+      throw error;
+    }
     const acceptedId = result.envelope?.session?.provider_session_id;
     if (acceptedId !== providerSessionId) throw new Error("exact_provider_capture_identity_mismatch");
     return result;
@@ -2178,7 +2260,9 @@ async function scheduleCaptureFreshness({
 async function scheduleNextCaptureFreshnessWake(queueValue = null) {
   const queue = queueValue || await storedCaptureFreshnessQueue();
   const deadlines = Object.values(queue.entries).map((entry) => (
-    entry.lease_owner ? entry.lease_expires_at_ms : entry.next_attempt_at_ms
+    entry.lease_owner
+      ? entry.lease_expires_at_ms
+      : Math.max(entry.next_attempt_at_ms || 0, queue.provider_cooldowns[entry.provider] || 0)
   )).filter(Number.isFinite);
   if (!deadlines.length) {
     await runtimeChrome.alarms?.clear?.(CAPTURE_FRESHNESS_ALARM);
@@ -3114,6 +3198,19 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.missionControl.status") {
       sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      return;
+    }
+    if (message.type === "polylogue.providerThrottle") {
+      const queue = await storedCaptureFreshnessQueue();
+      const deadline = Number(queue.provider_cooldowns[message.provider]) || 0;
+      const now = Date.now();
+      sendResponse(deadline > now
+        ? {
+          ok: false,
+          outcome: "rate_limited",
+          retry_after_seconds: Math.ceil((deadline - now) / 1000),
+        }
+        : { ok: true });
       return;
     }
     if (message.type === "polylogue.receiverPairing.status") {
