@@ -209,6 +209,120 @@ def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, s
     return imports, tuple(unreadable)
 
 
+def _grimp_import_edges(
+    *,
+    repo_root: Path,
+    rules: list[dict[str, object]],
+) -> tuple[set[tuple[str, str, str]], tuple[dict[str, object], ...]]:
+    """Build an independent import graph and return forbidden direct edges.
+
+    The gate's AST walker is intentionally retained as the diagnostic source
+    of file/line details. Grimp supplies a second graph implementation so a
+    change to either extractor cannot silently widen the enforced boundary.
+    A missing audit installation is a gate error rather than an implicit skip.
+    """
+
+    try:
+        import grimp
+    except ImportError as exc:
+        return set(), (
+            {
+                "rule": "grimp_unavailable",
+                "file": "pyproject.toml",
+                "detail": f"install the audit group before running layering: {exc}",
+            },
+        )
+
+    disallowed_by_target: dict[str, tuple[str, ...]] = {}
+    for rule in rules:
+        target = rule.get("target")
+        block = rule.get("disallow")
+        # The independent cross-check covers the substrate-to-surface
+        # direction that prompted this audit. Surface-to-substrate imports are
+        # intentionally ratcheted by the existing AST inventory because many
+        # of those packages are namespace-style modules that grimp cannot
+        # resolve to a file on its own.
+        if not isinstance(target, str) or not isinstance(block, dict):
+            continue
+        if target not in {"polylogue/storage", "polylogue/pipeline", "polylogue/sources"}:
+            continue
+        raw = block.get("from")
+        if isinstance(raw, list):
+            disallowed_by_target[target] = tuple(item for item in raw if isinstance(item, str))
+
+    try:
+        graph = grimp.build_graph("polylogue", cache_dir=None, exclude_type_checking_imports=False)
+    except Exception as exc:  # pragma: no cover - defensive boundary for tool failures
+        return set(), (
+            {
+                "rule": "grimp_failed",
+                "file": "polylogue",
+                "detail": f"grimp could not build the package graph: {exc}",
+            },
+        )
+
+    edges: set[tuple[str, str, str]] = set()
+    for target, disallowed in disallowed_by_target.items():
+        target_prefix = target.replace("/", ".")
+        for module in graph.modules:
+            if module != target_prefix and not module.startswith(target_prefix + "."):
+                continue
+            relative_module = module.removeprefix("polylogue.")
+            module_path = repo_root / "polylogue" / relative_module.replace(".", "/")
+            if module_path.is_dir() and (module_path / "__init__.py").is_file():
+                file_rel = f"{module_path.relative_to(repo_root).as_posix()}/__init__.py"
+            else:
+                file_rel = f"{module_path.relative_to(repo_root).as_posix()}.py"
+            for imported in graph.find_modules_directly_imported_by(module):
+                if any(_package_matches(forbidden, imported) for forbidden in disallowed):
+                    edges.add((target, file_rel, imported))
+    return edges, ()
+
+
+def _grimp_cross_check_violations(
+    *,
+    repo_root: Path,
+    rules: list[dict[str, object]],
+    imports_by_root: dict[str, dict[str, set[str]]],
+) -> list[dict[str, object]]:
+    """Require the independent grimp and AST edge sets to agree exactly."""
+
+    grimp_edges, errors = _grimp_import_edges(repo_root=repo_root, rules=rules)
+    if errors:
+        return list(errors)
+
+    ast_edges: set[tuple[str, str, str]] = set()
+    for rule in rules:
+        target = rule.get("target")
+        block = rule.get("disallow")
+        if not isinstance(target, str) or not isinstance(block, dict):
+            continue
+        if target not in {"polylogue/storage", "polylogue/pipeline", "polylogue/sources"}:
+            continue
+        raw = block.get("from")
+        disallowed = tuple(item for item in raw if isinstance(item, str)) if isinstance(raw, list) else ()
+        for file_rel, imports in imports_by_root.get(target, {}).items():
+            for imported in imports:
+                if not imported.startswith("polylogue"):
+                    continue
+                if any(_package_matches(forbidden, imported) for forbidden in disallowed):
+                    ast_edges.add((target, file_rel, imported))
+
+    if ast_edges == grimp_edges:
+        return []
+    return [
+        {
+            "rule": "grimp_disagreement",
+            "file": file_rel,
+            "import": imported,
+            "target": target,
+            "ast": (target, file_rel, imported) in ast_edges,
+            "grimp": (target, file_rel, imported) in grimp_edges,
+        }
+        for target, file_rel, imported in sorted(ast_edges ^ grimp_edges)
+    ]
+
+
 def _package_name(value: str) -> str:
     return value.strip().replace("/", ".").removesuffix(".__init__").removesuffix(".py")
 
@@ -726,6 +840,13 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
 def _format_violation(violation: dict[str, object]) -> str:
     rule = str(violation.get("rule"))
+    if rule in {"grimp_unavailable", "grimp_failed"}:
+        return f"  {violation.get('file', 'polylogue')}: {rule} ({violation.get('detail', '')})"
+    if rule == "grimp_disagreement":
+        return (
+            f"  {violation['file']}: imports {violation['import']} (grimp_disagreement; "
+            f"ast={violation['ast']} grimp={violation['grimp']})"
+        )
     if rule in {"declared_root_missing", "declared_root_unreadable"}:
         detail = f" ({violation['detail']})" if "detail" in violation else ""
         return f"  {violation['file']}: {rule}{detail}"
@@ -880,6 +1001,16 @@ def main(argv: list[str] | None = None) -> int:
                                 "allowed": allow_from,
                             }
                         )
+
+    # Keep the bespoke AST extraction honest against an independent graph
+    # implementation. A disagreement is itself a blocking layering finding.
+    violations.extend(
+        _grimp_cross_check_violations(
+            repo_root=repo_root,
+            rules=rules,
+            imports_by_root=imports_by_root,
+        )
+    )
 
     violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
     violations.extend(_top_level_package_docstring_violations(repo_root))

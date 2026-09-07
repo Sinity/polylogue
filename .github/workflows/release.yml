@@ -99,7 +99,7 @@ jobs:
         with:
           python-version: "3.14"
       - name: Install dev dependencies (frozen lockfile)
-        run: uv sync --extra dev --frozen
+        run: uv sync --extra dev --group audit --frozen
       - name: Build wheel + sdist and smoke installed entrypoints
         run: uv run devtools gate distribution --work-dir "${RUNNER_TEMP}/dist" --keep-work-dir
         env:
