@@ -73,6 +73,7 @@ def _iter_hook_paste_events(source_db: Path, session_ids: Iterable[str] | None =
     try:
         if not _table_exists(connection, "raw_hook_events"):
             return []
+        queries: list[tuple[str, tuple[str, ...]]]
         if session_ids is None:
             queries = [("SELECT payload_json FROM raw_hook_events WHERE event_type = ?", (_PASTE_EVENT_TYPE,))]
         else:
