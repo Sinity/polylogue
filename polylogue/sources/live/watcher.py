@@ -225,29 +225,52 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     return (stat.st_dev, stat.st_ino)
 
 
-def _descendable_directory_names(
-    source: WatchSource,
-    directory: Path,
-    dirnames: list[str],
-    walked: set[tuple[int, int]],
-) -> list[str]:
-    """Return the child directory names a source's walk may descend into.
+class _SourceTreeWalk:
+    """One source's catch-up walk, following deliberate directory symlinks.
 
-    ``walked`` accumulates every directory identity the walk has entered, so a
-    symlink pointing at an ancestor or at an already-walked sibling tree is
-    dropped rather than followed a second time.
+    A directory symlink under a watch root is a deliberate placement -- the
+    inbox exposes whole export corpora that way -- so the walk enters it.
+    Two things bound what that admits:
+
+    ``_walked`` holds every directory identity already entered, so a link to
+    an ancestor or to an already-walked tree is not followed a second time; a
+    cycle terminates and one corpus reachable under two names is one candidate.
+
+    ``_containment`` holds, per walked directory, the real root of the tree
+    the walk is inside: the source root, or the target of the last symlink it
+    followed. A file whose resolved path leaves that tree is a symlink
+    escaping the watch root and is never a candidate.
     """
-    descendable: list[str] = []
-    for dirname in dirnames:
-        child = directory / dirname
-        if source.ignores_directory(child):
-            continue
-        identity = _directory_identity(child)
-        if identity is None or identity in walked:
-            continue
-        walked.add(identity)
-        descendable.append(dirname)
-    return descendable
+
+    def __init__(self, source: WatchSource) -> None:
+        self._source = source
+        root = source.root.resolve()
+        self._walked = {identity for identity in (_directory_identity(source.root),) if identity is not None}
+        self._containment: dict[str, Path] = {str(source.root): root}
+
+    def descendable(self, directory: Path, dirnames: list[str]) -> list[str]:
+        """Return the child directory names this walk may descend into."""
+        inherited = self._containment.get(str(directory), self._source.root.resolve())
+        descendable: list[str] = []
+        for dirname in dirnames:
+            child = directory / dirname
+            if self._source.ignores_directory(child):
+                continue
+            identity = _directory_identity(child)
+            if identity is None or identity in self._walked:
+                continue
+            self._walked.add(identity)
+            self._containment[str(child)] = child.resolve() if child.is_symlink() else inherited
+            descendable.append(dirname)
+        return descendable
+
+    def contains(self, directory: Path, path: Path) -> bool:
+        """Whether ``path`` stays inside the real tree the walk is in."""
+        root = self._containment.get(str(directory), self._source.root.resolve())
+        try:
+            return path.resolve().is_relative_to(root)
+        except OSError:
+            return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -998,20 +1021,18 @@ class LiveWatcher:
                 continue
             if source in self._hook_sources():
                 continue
-            # A directory symlink under a watch root is a deliberate placement
-            # -- the inbox exposes whole export corpora that way -- so the walk
-            # follows it. ``walked`` carries every directory identity already
-            # entered, which bounds the walk against symlink cycles and keeps
-            # one file from becoming a candidate under two names.
-            walked: set[tuple[int, int]] = set()
-            root_identity = _directory_identity(source.root)
-            if root_identity is not None:
-                walked.add(root_identity)
+            walk = _SourceTreeWalk(source)
             for directory, dirnames, filenames in os.walk(source.root, followlinks=True):
-                dirnames[:] = _descendable_directory_names(source, Path(directory), dirnames, walked)
+                dirnames[:] = walk.descendable(Path(directory), dirnames)
                 for filename in filenames:
                     path = Path(directory) / filename
-                    if deepest_source_for_path(path, self._sources) is not source:
+                    if not walk.contains(Path(directory), path):
+                        continue
+                    # A file behind a directory symlink resolves outside every
+                    # configured root, so ownership only has to settle which
+                    # source wins where roots overlap.
+                    owner = deepest_source_for_path(path, self._sources)
+                    if owner is not None and owner is not source:
                         continue
                     if not source.accepts(path):
                         # Unclaimed-file sweep (mission item 2): a file this

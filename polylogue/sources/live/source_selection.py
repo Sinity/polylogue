@@ -31,15 +31,6 @@ def _accepts(source: SourceT, path: Path) -> bool:
         return False
 
 
-def _owning_root_depth(forms: tuple[Path, ...], roots: tuple[Path, ...]) -> int | None:
-    """Return the depth of the first root owning any form of a path."""
-    for root in roots:
-        for form in forms:
-            if form.is_relative_to(root):
-                return len(root.parts)
-    return None
-
-
 def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT | None:
     """Return the most-specific configured source owning ``path``.
 
@@ -51,27 +42,20 @@ def deepest_source_for_path(path: Path, sources: Iterable[SourceT]) -> SourceT |
     ingest. Ownership is therefore resolved among the sources that actually
     accept the path, and falls back to plain depth only when none do, so a
     path no source admits still resolves exactly as before.
-
-    A file reached through a directory symlink placed under a watch root keeps
-    that root in its own path while resolving outside every root, so ownership
-    admits the path as given as well as its resolved form.
     """
 
     try:
         resolved = path.resolve()
     except OSError:
         return None
-    forms = (resolved,) if path == resolved else (resolved, path)
     matches: list[tuple[int, SourceT]] = []
     for source in sources:
         try:
             source_root = source.root.resolve()
-        except OSError:
+            if resolved.is_relative_to(source_root):
+                matches.append((len(source_root.parts), source))
+        except (OSError, ValueError):
             continue
-        roots = (source_root,) if source.root == source_root else (source_root, source.root)
-        depth = _owning_root_depth(forms, roots)
-        if depth is not None:
-            matches.append((depth, source))
     if not matches:
         return None
     if len(matches) == 1:

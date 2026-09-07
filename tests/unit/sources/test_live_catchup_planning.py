@@ -1162,3 +1162,25 @@ def test_catch_up_scan_reaches_one_corpus_linked_twice_once(tmp_path: Path) -> N
 
     assert len(candidates) == 1
     assert candidates[0].path.name == "exported.jsonl"
+
+
+def test_catch_up_scan_rejects_a_file_symlink_escaping_the_watch_root(tmp_path: Path) -> None:
+    """Following directory symlinks must not weaken file containment: a file
+    symlink whose target leaves the tree the walk is in is not a candidate.
+
+    Anti-vacuity: resolve ownership from the walked path alone and ``secret``
+    is acquired, which is the escape ``_canonical_watch_path`` already refuses
+    on the live-event path.
+    """
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    inside = inbox / "inside.jsonl"
+    inside.write_text('{"role":"user","content":"inside"}\n', encoding="utf-8")
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text('{"role":"user","content":"secret"}\n', encoding="utf-8")
+    (inbox / "escaping.jsonl").symlink_to(outside)
+
+    watcher = _inbox_watcher(inbox, tmp_path)
+    candidates = watcher._scan_catch_up_candidates([inbox])
+
+    assert [candidate.path for candidate in candidates] == [inside]
