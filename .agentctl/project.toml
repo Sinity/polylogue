@@ -21,7 +21,7 @@ default_base = "origin/master"
 # One agent's hard memory ceiling. Heavy work (a live-archive census, a
 # corpus scan) runs through the `scratch` operation in the bulk pool, never
 # inside the agent's own process.
-agent_memory_max = "1500M"
+agent_memory_max = "3000M"
 # Wave policy: a candidate lands on its verification alone; the corpus run on
 # master per wave is the correctness backstop.
 review = "none"
