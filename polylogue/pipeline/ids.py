@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import unicodedata
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.text_identity import nfc
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
 # ParsedMessage/ParsedSession/ParsedAttachment/ParsedContentBlock are used only
@@ -300,11 +300,10 @@ def _normalize_nested_for_hash(value: object) -> object:
     if value == "":
         return _EMPTY_SENTINEL
     if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
+        return nfc(value)
     if isinstance(value, Mapping):
         return {
-            unicodedata.normalize("NFC", key) if isinstance(key, str) else key: _normalize_nested_for_hash(item)
-            for key, item in value.items()
+            nfc(key) if isinstance(key, str) else key: _normalize_nested_for_hash(item) for key, item in value.items()
         }
     if isinstance(value, (list, tuple)):
         return [_normalize_nested_for_hash(item) for item in value]
@@ -325,7 +324,7 @@ def _normalize_for_hash(value: HashScalar) -> JSONValue:
     if value == "":
         return _EMPTY_SENTINEL
     if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
+        return nfc(value)
     return value
 
 

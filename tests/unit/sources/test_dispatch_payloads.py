@@ -961,3 +961,63 @@ def test_parse_payload_generic_unrecognized_record_shape_manufactures_only_a_con
         sessions = require_positive_conversational_evidence(parsed, provider=Provider.CLAUDE_CODE, source_path=None)
 
     assert sessions == []
+
+
+def test_claude_code_multiway_parse_coerces_each_record_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Coercing a record walks its whole decoded tree, so it happens once per record.
+
+    Production path: ``dispatch._claude_code_multiway_parse``'s main loop and
+    its ``fold_into`` closure. Anti-vacuity: let ``fold_into`` re-derive the
+    record from its ``item`` (what it did before it was passed one) and the
+    count doubles.
+    """
+    from polylogue.sources import dispatch
+
+    calls = 0
+    original = dispatch._payload_record
+
+    def counting(value: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(dispatch, "_payload_record", counting)
+
+    records: list[object] = [
+        {"sessionId": "s1", "uuid": f"u{index}", "type": "user", "message": {"role": "user", "content": "hi"}}
+        for index in range(8)
+    ]
+    sessions = list(dispatch._claude_code_multiway_parse(iter(records), "s1"))
+
+    assert len(sessions) == 1
+    assert len(sessions[0].messages) == len(records)
+    assert calls == len(records)
+
+
+def test_claude_code_multiway_parse_coerces_prefix_records_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Records buffered before any ``sessionId`` appears are coerced once too.
+
+    They are folded later than they are read, so the coerced view travels with
+    them in ``pending_prefix`` rather than being recomputed at fold time.
+    """
+    from polylogue.sources import dispatch
+
+    calls = 0
+    original = dispatch._payload_record
+
+    def counting(value: object) -> object:
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(dispatch, "_payload_record", counting)
+
+    records: list[object] = [
+        {"type": "summary", "summary": "prefix one"},
+        {"type": "summary", "summary": "prefix two"},
+        {"sessionId": "s1", "uuid": "u0", "type": "user", "message": {"role": "user", "content": "hi"}},
+    ]
+    sessions = list(dispatch._claude_code_multiway_parse(iter(records), "s1"))
+
+    assert len(sessions) == 1
+    assert calls == len(records)
