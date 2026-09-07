@@ -30,7 +30,7 @@ from polylogue.storage.runtime import (
     SessionEventRecord,
     SessionRecord,
 )
-from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
+from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC
 
 
 def _parse_json_blob(raw: object) -> object | None:
@@ -102,20 +102,11 @@ def message_from_record(
             media_type = block_metadata.get("media_type")
         blocks.append(
             {
-                "id": b.block_id,
-                "type": str(b.type),
-                "text": b.text,
-                "tool_name": b.tool_name,
-                "tool_id": b.tool_id,
-                "tool_input": _parse_json_blob(b.tool_input),
+                **BLOCKS_SPEC.domain_kwargs(b),
+                # Lifted out of the block-metadata JSON, so neither is a column
+                # projection the declaration can own.
                 "media_type": media_type,
                 "metadata": block_metadata,
-                "semantic_type": str(b.semantic_type) if b.semantic_type is not None else None,
-                "tool_result_is_error": b.tool_result_is_error,
-                "tool_result_exit_code": b.tool_result_exit_code,
-                "tool_outcome": str(b.tool_outcome) if b.tool_outcome is not None else None,
-                "tool_result_outcome_unknown_reason": b.tool_result_outcome_unknown_reason,
-                "signature": b.signature,
             }
         )
 
