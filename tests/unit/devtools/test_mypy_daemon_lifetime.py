@@ -34,11 +34,12 @@ def test_shared_gate_uses_one_cache_and_returns_checker_status(monkeypatch: pyte
     calls: list[list[str]] = []
 
     monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
-    monkeypatch.setattr(
-        mypy_gate.subprocess,
-        "run",
-        lambda argv, **_kwargs: calls.append(list(argv)) or SimpleNamespace(returncode=7),
-    )
+
+    def fake_run(argv: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=7)
+
+    monkeypatch.setattr("devtools.mypy_gate.subprocess.run", fake_run)
 
     assert mypy_gate.main(["--root", str(tmp_path)]) == 7
     assert calls == [[str(checker), "--cache-dir", str(common / "polylogue-mypy/cache")]]
