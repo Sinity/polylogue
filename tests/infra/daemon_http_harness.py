@@ -30,7 +30,6 @@ handler against a fake network, not to replace the handler.
 
 from __future__ import annotations
 
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from io import BytesIO
@@ -44,15 +43,13 @@ if TYPE_CHECKING:
 
 
 class MockDaemonServer:
-    """Stand-in for ``DaemonAPIHTTPServer``: the listening socket, thread
-    pool, and admission semaphore the real server owns — not the
-    request-handling logic under test. ``archive_query_executor``/
-    ``archive_query_admission`` are generously sized shared class
-    attributes; no test in this harness exercises their throttling."""
+    """Stand-in for ``DaemonAPIHTTPServer``: the listening socket and thread
+    pool the real server owns — not the request-handling logic under test.
+    ``archive_query_executor`` is a generously sized shared class attribute;
+    no test in this harness exercises scheduling, so routes run inline."""
 
     api_host = "127.0.0.1"
     archive_query_executor = ThreadPoolExecutor(max_workers=1)
-    archive_query_admission = threading.BoundedSemaphore(64)
 
     def __init__(self, *, auth_token: str = "", web_credentials: WebCredentialRegistry | None = None) -> None:
         self.auth_token = auth_token
