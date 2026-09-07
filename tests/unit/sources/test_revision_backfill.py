@@ -28,7 +28,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     RawParsePrefetchCache,
     _browser_snapshot_fidelity,
-    _lineage_aware_replay_order,
+    _lineage_aware_replay_schedule,
     _parse_one,
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
@@ -43,8 +43,8 @@ from polylogue.storage.raw_retention import RawRetentionAuthority, active_raw_re
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
 from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.revision_backfill_benchmark import (
     REVISION_CHAIN_SHAPE,
     WHALE_BEARING_SHAPE,
@@ -135,7 +135,7 @@ def test_browser_snapshot_fidelity_derives_from_parser_ingest_flags() -> None:
 
 def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys(tmp_path: Path) -> None:
     """Current receipts with legacy empty keys are re-censused when authority has a key."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         legacy_raw_id = archive.write_raw_payload(
@@ -194,7 +194,7 @@ def test_current_parser_receipt_reselection_repairs_legacy_empty_membership_keys
 
 def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_receipt(tmp_path: Path) -> None:
     """Re-census repairs a fragment receipt without erasing its authority key."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     logical_key = "codex-session:legacy-fragment"
     baseline = (
         b'{"type":"session_meta","payload":{"id":"legacy-fragment","timestamp":"2026-08-20T00:00:00Z"}}\n'
@@ -288,7 +288,7 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
 
 def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path: Path) -> None:
     """The real census path repairs stale terminal non-session receipts."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -377,7 +377,7 @@ def test_unknown_retained_stream_replay_scans_past_oversized_first_record_withou
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """UNKNOWN JSONL scans past an oversized first record before streaming replay."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         json.dumps({"opaque": "x" * 9_000}, sort_keys=True).encode() + b"\n"
         b'{"type":"session_meta","payload":{"id":"unknown-stream","timestamp":"2026-06-01T00:00:00Z"}}\n'
@@ -405,7 +405,7 @@ def test_unknown_retained_codex_record_scans_provider_key_past_8k_padding(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A late Codex discriminator in one oversized record remains visible."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     late_session_meta = json.dumps(
         {
             "padding": "x" * (revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES + 512),
@@ -480,7 +480,7 @@ def test_unknown_retained_oversized_provider_record_never_uses_eager_payload(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Positive prefix evidence survives a record larger than the total scan cap."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         json.dumps(
             {
@@ -513,7 +513,7 @@ def test_unknown_retained_jsonl_detection_caps_total_scan_before_typed_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """An unidentifiable retained JSONL blob stops at the detection envelope."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (b'{"opaque":"' + b"x" * 9_000 + b'"}\n') * 32
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -563,7 +563,7 @@ def test_frozen_source_validation_treats_codex_state_as_non_session_evidence(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Frozen validation must route Codex state SQLite past the JSON parser."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen state")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
@@ -590,7 +590,7 @@ def test_frozen_codex_state_budget_blocks_before_sqlite_classification(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Frozen-source validation rejects an oversized state snapshot before opening it."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen oversized state")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -617,7 +617,7 @@ def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record
     tmp_path: Path,
 ) -> None:
     """The production census worker must discover a later bounded JSONL record."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         json.dumps({"opaque": "x" * 9_000}, sort_keys=True).encode()
         + b"\n"
@@ -659,7 +659,7 @@ def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record
 
 def test_unknown_retained_nonstream_jsonl_keeps_complete_payload_fallback(tmp_path: Path) -> None:
     """Positive bounded document evidence may select eager non-stream replay."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     document = _chatgpt_session("large-jsonl-document", "bounded evidence")
     document["padding"] = "x" * 9_000
     payload = json.dumps(document, sort_keys=True).encode() + b"\n"
@@ -683,7 +683,7 @@ def test_unknown_retained_document_scans_past_oversized_leading_value(tmp_path: 
     drives the historical replay chokepoint against a real archive, rather
     than testing the structural scanner in isolation.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     document = {"padding": "x" * 9_000, **_chatgpt_session("large-document", "bounded evidence")}
     payload = json.dumps([document]).encode()
     assert b'"mapping"' not in payload[: revision_backfill._REPLAY_PROVIDER_DETECTION_PREFIX_BYTES]
@@ -706,7 +706,7 @@ def test_unknown_retained_document_caps_oversized_scalar_before_structural_scan(
     tmp_path: Path,
 ) -> None:
     """The retained-document route never hands a whole giant scalar to ijson."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = json.dumps({"padding": "x" * 128_000, "metadata": {"shape": "unknown"}}).encode()
     observed_string_bytes: list[int] = []
     original_parse = ijson.parse
@@ -739,7 +739,7 @@ def test_unknown_retained_document_caps_oversized_scalar_before_structural_scan(
 
 def test_unknown_retained_array_ignores_fragment_only_mapping_before_real_provider(tmp_path: Path) -> None:
     """An unrelated mapping fragment cannot claim a whole document sequence."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = json.dumps(
         [
             {"mapping": {"foreign-node": {"message": None}}, "metadata": "not a conversation"},
@@ -866,7 +866,7 @@ def test_backfill_scans_declared_stream_past_non_session_prefix(tmp_path: Path) 
     session.  The archive assertion fails if replay rejects that bounded
     prefix before parsing the rest of the retained JSONL.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     payload = _relationship_index_jsonl_bytes(64) + (
         b'{"parentUuid":null,"type":"user","sessionId":"late-session","message":{"role":"user","content":"late evidence"},'
@@ -1000,7 +1000,7 @@ def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> 
     has a real on-disk blob path, unlike the direct-bytes test above) also
     replays a single-session state.db raw revision correctly."""
 
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = _single_session_state_db_bytes(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
@@ -1020,7 +1020,7 @@ def test_historical_backfill_replays_single_session_state_db(tmp_path: Path) -> 
 def test_historical_backfill_streams_codex_raw_without_eager_blob_read(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     # polylogue-9ykn: a session_meta-only stream carries no positive
     # conversational evidence and is refused (never becomes a session) --
     # append one real message record so this fixture keeps testing what it
@@ -1074,7 +1074,7 @@ def _codex_thread_state_snapshot_bytes(tmp_path: Path, title: str) -> bytes:
 
 def test_codex_state_replay_applies_payload_budget_before_sqlite_parse(tmp_path: Path) -> None:
     """A bounded census defers a state snapshot before it can write evidence."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = _codex_thread_state_snapshot_bytes(tmp_path, "oversized state")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1102,7 +1102,7 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
     orders its snapshot application by the latest durable raw-payload receipt,
     not ``raw_sessions.acquired_at_ms`` from A's first observation.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / "codex" / "state_5.sqlite")
     snapshot_a = _codex_thread_state_snapshot_bytes(tmp_path, "title A")
     snapshot_b = _codex_thread_state_snapshot_bytes(tmp_path, "title B")
@@ -1135,7 +1135,7 @@ def test_backfill_replays_codex_state_by_latest_raw_observation(tmp_path: Path) 
 
 def test_backfill_replays_equal_time_codex_state_by_raw_acquisition_order(tmp_path: Path) -> None:
     """Equal-time Codex snapshots retain the later raw insertion as authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / "codex" / "state_5.sqlite")
     older_snapshot = _codex_thread_state_snapshot_bytes(tmp_path, "older title")
     newer_snapshot = _codex_thread_state_snapshot_bytes(tmp_path, "newer title")
@@ -1179,7 +1179,7 @@ def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> 
     artifact, and the source tier must retain both typed artifact evidence and
     a successful parse receipt so it is not selected forever.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1207,7 +1207,7 @@ def test_backfill_terminalizes_source_only_declared_artifact(tmp_path: Path) -> 
 @pytest.mark.asyncio
 async def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: Path) -> None:
     """Detected provider evidence must survive an empty retained replay."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1261,7 +1261,7 @@ async def test_backfill_terminalizes_detected_unknown_empty_artifact(tmp_path: P
 
 def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp_path: Path) -> None:
     """Empty replay retains parser identity without mutating acquisition identity."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "history-only-session.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1314,7 +1314,7 @@ def test_backfill_persists_detected_provider_for_empty_ordinary_session_path(tmp
 
 def test_backfill_leaves_undetected_empty_raw_replayable(tmp_path: Path) -> None:
     """An unknown shape is not terminal merely because it produced no sessions."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
             provider=Provider.UNKNOWN,
@@ -1331,7 +1331,7 @@ def test_backfill_leaves_undetected_empty_raw_replayable(tmp_path: Path) -> None
 
 def test_backfill_retires_stale_revision_governance_for_empty_replay(tmp_path: Path) -> None:
     """A current zero-session parse cannot remain in a stale full-revision plan."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "history-only-session.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1361,7 +1361,7 @@ def test_backfill_retires_stale_revision_governance_for_empty_replay(tmp_path: P
 
 def test_backfill_preserves_empty_append_revision_governance(tmp_path: Path) -> None:
     """A terminal empty APPEND remains reconstructible through its byte envelope."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "append.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1416,7 +1416,7 @@ def test_backfill_preserves_empty_append_revision_governance(tmp_path: Path) -> 
 
 def test_backfill_fallback_terminalization_preserves_each_source_index(tmp_path: Path) -> None:
     """A deferred byte-growth member keeps its own artifact coordinate."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     older_payload = b'{"contentKey":"older","agentId":"agent"}\n'
     head_payload = older_payload + b'{"contentKey":"head","agentId":"agent"}\n'
@@ -1444,7 +1444,7 @@ def test_backfill_fallback_terminalization_preserves_each_source_index(tmp_path:
 
 def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A failed terminal census cannot expose only its artifact carrier."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_id = archive.write_raw_payload(
@@ -1471,7 +1471,7 @@ def test_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypat
 
 def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Batched empty outcomes retain one transaction through their batch boundary."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_ids: list[str] = []
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(2):
@@ -1538,7 +1538,7 @@ def test_batched_terminal_artifact_receipts_roll_back_together(tmp_path: Path, m
 
 def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path) -> None:
     """A delayed older replay cannot replace a newer coordinate carrier."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         older_raw_id = archive.write_raw_payload(
@@ -1573,7 +1573,7 @@ def test_backfill_preserves_latest_terminal_artifact_observation(tmp_path: Path)
 
 def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: Path) -> None:
     """Legacy receipt-free observations use raw insertion order, not raw-id order."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         older_raw_id = archive.write_raw_payload(
@@ -1607,7 +1607,7 @@ def test_backfill_uses_raw_observation_order_for_equal_time_artifacts(tmp_path: 
 
 def test_backfill_preserves_latest_repeated_artifact_observation(tmp_path: Path) -> None:
     """A -> B -> A reacquisition restores A as the coordinate authority."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     source_path = str(tmp_path / ".claude" / "projects" / "proj" / "subagents" / "workflows" / "wf" / "journal.jsonl")
     payload_a = b'{"contentKey":"workflow-artifact","agentId":"a"}\n'
     payload_b = b'{"contentKey":"workflow-artifact","agentId":"b"}\n'
@@ -1643,7 +1643,7 @@ def test_backfill_preserves_latest_repeated_artifact_observation(tmp_path: Path)
 
 
 def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_order(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     baseline = (
         b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-01T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
@@ -1756,7 +1756,7 @@ def test_historical_backfill_selects_prefix_newest_independent_of_acquisition_or
 
 def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path: Path) -> None:
     """A newly parsed path must not split an already-known byte cohort."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     baseline = (
         b'{"type":"session_meta","payload":{"id":"shared","timestamp":"2026-07-15T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
@@ -1796,7 +1796,7 @@ def test_incremental_target_expands_new_logical_key_across_source_paths(tmp_path
 def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     payload = (
         b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-01T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
@@ -1843,7 +1843,7 @@ def test_backfill_resumes_after_index_receipt_commits_before_source_terminal(
 def test_backfill_resumes_after_only_some_source_markers_commit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     baseline = (
         b'{"type":"session_meta","payload":{"id":"session-1","timestamp":"2026-06-01T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","id":"one","role":"user","content":'
@@ -1901,7 +1901,7 @@ def test_backfill_resumes_after_only_some_source_markers_commit(
 
 
 def test_cold_rebuild_restores_overlapping_multi_session_bundles(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     bundle_a = _bundle(_chatgpt_session("s1", "old"), _chatgpt_session("s2", "only-two"))
     bundle_b = _bundle(
         _chatgpt_session("s1", "old", "extended"),
@@ -1939,7 +1939,7 @@ def test_cold_rebuild_restores_overlapping_multi_session_bundles(tmp_path: Path)
         ).fetchone() == (0,)
 
     (tmp_path / "index.db").unlink()
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     rebuilt = backfill_historical_revision_evidence(tmp_path)
     assert rebuilt.replayed_logical_sources == 3
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -1951,7 +1951,7 @@ def test_cold_rebuild_restores_overlapping_multi_session_bundles(tmp_path: Path)
 
 
 def test_divergent_bundle_member_does_not_block_safe_members(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         raw_a = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -2002,7 +2002,7 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
     exact fidelity-downgrade bug this retirement path exists to prevent, one
     layer down.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     correct_key = "chatgpt-export:s1"
     stale_key = "chatgpt-export:s1-0"
 
@@ -2073,7 +2073,7 @@ def test_stale_pre_fix_identity_split_folds_into_one_ambiguous_cohort(tmp_path: 
 
 
 def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -2116,7 +2116,7 @@ def test_divergent_bundle_member_preserves_last_accepted_session(tmp_path: Path)
 def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         selected_raw = archive.write_raw_payload(
             provider=Provider.CHATGPT,
@@ -2142,7 +2142,7 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
     # authority catalog.
     backfill_historical_revision_evidence(tmp_path)
     (tmp_path / "index.db").unlink()
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         unrelated_before = conn.execute(
             "SELECT parser_fingerprint, status, member_count, detail FROM raw_membership_census WHERE raw_id = ?",
@@ -2176,7 +2176,7 @@ def test_targeted_rebuild_expands_same_session_across_source_paths_only(
 
 
 def test_membership_census_retains_only_one_logical_cohort_at_scale(tmp_path: Path) -> None:
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     independent_raw_count = 64
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(independent_raw_count):
@@ -2218,7 +2218,7 @@ def test_historical_backfill_reparses_multi_gib_shaped_raw_instead_of_spilling_a
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A cache miss reparses durable bytes rather than retaining a giant cohort tree."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     # polylogue-9ykn: a session_meta-only stream carries no positive
     # conversational evidence and is refused -- append one real message
     # record so this fixture keeps testing the cache/reparse mechanics it is
@@ -2264,7 +2264,7 @@ def test_historical_backfill_reparses_multi_gib_shaped_raw_instead_of_spilling_a
 
 def _append_chain_archive(root: Path) -> tuple[str, str]:
     """Two revisions of one logical session: an accepted-cohort replay fixture."""
-    initialize_active_archive_root(root)
+    bootstrap_archive_root(root)
     baseline = (
         b'{"type":"session_meta","payload":{"id":"chain","timestamp":"2026-07-01T00:00:00Z"}}\n'
         b'{"type":"response_item","payload":{"type":"message","role":"user","content":'
@@ -2406,7 +2406,7 @@ def test_parallel_census_matches_sequential_archive_state(tmp_path: Path) -> Non
     sequential_root = tmp_path / "sequential"
     parallel_root = tmp_path / "parallel"
     for root in (sequential_root, parallel_root):
-        initialize_active_archive_root(root)
+        bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             for index in range(6):
                 payload = _bundle(_chatgpt_session(f"session-{index}", f"hello {index}", f"world {index}"))
@@ -2450,7 +2450,7 @@ def test_backfill_content_cache_across_pages_reduces_parses_and_matches_uncached
     other_payload = _bundle(_chatgpt_session("other-session", "distinct", "content"))
 
     for root in (cached_root, uncached_root):
-        initialize_active_archive_root(root)
+        bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             page_a_raw_id = archive.write_raw_payload(
                 provider=Provider.CHATGPT,
@@ -2581,7 +2581,7 @@ def test_parallel_census_threads_hermes_sqlite_payload_path(tmp_path: Path) -> N
     fallback. Two independent single-session state.db raws force
     ingest_workers>1 to actually dispatch through the process pool.
     """
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(2):
             payload = _state_db_bytes_for_session(tmp_path, session_id=f"hermes-{index}", message_text=f"hi {index}")
@@ -3142,7 +3142,7 @@ def test_parse_retained_raws_small_batch_never_creates_a_pool(monkeypatch: pytes
     claim is exercised deterministically regardless of which interpreter
     (GIL or genuinely free-threaded) runs the suite."""
     monkeypatch.setattr(revision_backfill, "parallel_threads_effective", lambda: False)
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(3):
             payload = (
@@ -3192,7 +3192,7 @@ def test_thread_parse_matches_sequential_archive_state(tmp_path: Path, monkeypat
     sequential_root = tmp_path / "sequential"
     thread_root = tmp_path / "threaded"
     for root in (sequential_root, thread_root):
-        initialize_active_archive_root(root)
+        bootstrap_archive_root(root)
         with ArchiveStore.open_existing(root, read_only=False) as archive:
             for index in range(6):
                 payload = _bundle(_chatgpt_session(f"session-{index}", f"hello {index}", f"world {index}"))
@@ -3221,7 +3221,7 @@ def test_thread_parse_normalizes_derived_timestamps_matching_sequential(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Stateless workers still apply the retained timestamp authority contract."""
-    initialize_active_archive_root(tmp_path)
+    bootstrap_archive_root(tmp_path)
     raw_ids: list[str] = []
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
         for index in range(2):
@@ -3322,7 +3322,7 @@ def test_thread_parse_recovers_append_native_id_matching_sequential(
     takes the thread-pool branch when ``record_count > 1``.
     """
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         _write_append_raw_with_recovered_identity(
             archive,
@@ -3663,7 +3663,7 @@ def test_whale_eviction_degrades_to_sqlite_spill_courtesy(monkeypatch: pytest.Mo
     monkeypatch.setattr(revision_backfill._ParsedSessionSpill, "_WHALE_CACHE_MAX_TREE_BYTES", 140_000)
 
     archive_root = tmp_path / "archive"
-    initialize_active_archive_root(archive_root)
+    bootstrap_archive_root(archive_root)
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
         first_id = archive.write_raw_payload(
             provider=Provider.CODEX,
@@ -3772,7 +3772,7 @@ def _pipeline_equivalence_corpus(root: Path) -> None:
     raws (byte-proven cohorts) plus a multi-session bundle (membership
     cohorts), so the pipelined decode is proven over each ``for_raw`` call
     site in ``backfill_historical_revision_evidence``."""
-    initialize_active_archive_root(root)
+    bootstrap_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for index in range(10):
             payload = _bundle(_chatgpt_session(f"pipe-{index}", f"hello {index}", f"world {index}"))
@@ -3962,7 +3962,7 @@ def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
     (native_ids sort BEFORE the parent) that each replay the parent's full
     message prefix plus one new tail message -- a real Codex resume shape.
     """
-    initialize_active_archive_root(root)
+    bootstrap_archive_root(root)
     parent_native_id = "zparent"
     parent_texts = [f"parent-{i}" for i in range(4)]
     with ArchiveStore.open_existing(root, read_only=False) as archive:
@@ -3983,7 +3983,23 @@ def _seed_lineage_fixture(root: Path, *, n_children: int) -> None:
             )
 
 
-def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path) -> None:
+def _lexicographic_replay_schedule(
+    logical_keys: set[str],
+    archive: ArchiveStore,
+    spill: Any,
+    archive_root: Path,
+) -> revision_backfill.ReplaySchedule:
+    """The pre-polylogue-5q2u schedule: sorted keys, no lineage edges. Used
+    to force the old order so a lineage-aware run can be compared against it."""
+    order = tuple(sorted(logical_keys))
+    return revision_backfill.ReplaySchedule(
+        order=order,
+        topology=dict.fromkeys(order, revision_backfill.ReplayTopologyState.ROOT),
+        parent_of=dict.fromkeys(order, None),
+    )
+
+
+def test_lineage_aware_replay_schedule_visits_parent_before_children(tmp_path: Path) -> None:
     """polylogue-5q2u: roots first, then each child only after its parent --
     NOT the lexicographic order a plain ``sorted()`` would produce (the
     parent's native id, "zparent", sorts LAST here)."""
@@ -3999,7 +4015,9 @@ def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path
         archive.commit()
         _expanded, logical_keys = archive.expand_raw_membership_selection(None)
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
-            order = _lineage_aware_replay_order(set(logical_keys), archive, spill, root)
+            schedule = _lineage_aware_replay_schedule(set(logical_keys), archive, spill, root)
+            order = list(schedule.order)
+            topology = dict(schedule.topology)
 
     assert order[0] == "codex-session:zparent"
     parent_position = order.index("codex-session:zparent")
@@ -4009,16 +4027,18 @@ def test_lineage_aware_replay_order_visits_parent_before_children(tmp_path: Path
         assert order.index(child_key) > parent_position
     # Lexicographic order would have put every child before the parent.
     assert sorted(logical_keys)[0] != "codex-session:zparent"
+    assert topology["codex-session:zparent"] is revision_backfill.ReplayTopologyState.ROOT
+    assert {topology[f"codex-session:achild{index}"] for index in range(5)} == {
+        revision_backfill.ReplayTopologyState.DESCENDANT
+    }
 
 
-def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
+def test_lineage_aware_replay_schedule_falls_back_for_unresolvable_parent(tmp_path: Path) -> None:
     """A parent outside this call's ``logical_keys`` set (missing/external/
-    cross-batch) must not crash or drop the child -- it degrades to the
-    lexicographic position among the unresolved remainder. Two orphans (not
-    one) so the real DB lookup + ``spill.for_raw`` path is exercised instead
-    of the single-key short-circuit."""
+    cross-batch) must not crash or drop the child -- it degrades to a
+    typed ``UNRESOLVED_PARENT`` root at its lexicographic position."""
     root = tmp_path / "archive"
-    initialize_active_archive_root(root)
+    bootstrap_archive_root(root)
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         for native_id in ("zorphan", "aorphan"):
             archive.write_raw_payload(
@@ -4028,23 +4048,32 @@ def test_lineage_aware_replay_order_falls_back_for_unresolvable_parent(tmp_path:
                 acquired_at_ms=1,
             )
         with revision_backfill._ParsedSessionSpill(root, max_cached_payload_bytes=None) as spill:
-            order = _lineage_aware_replay_order(
+            revision_backfill._census_historical_revision_evidence(
+                archive, spill, selected_raw_ids=None, max_payload_bytes=None
+            )
+            archive.commit()
+            schedule = _lineage_aware_replay_schedule(
                 {"codex-session:zorphan", "codex-session:aorphan"}, archive, spill, root
             )
+    order = list(schedule.order)
     assert sorted(order) == ["codex-session:aorphan", "codex-session:zorphan"]
     # Neither key's parent is in the set, so both are roots -- fallback
     # degrades to lexicographic order among them.
     assert order == ["codex-session:aorphan", "codex-session:zorphan"]
+    assert set(schedule.topology.values()) == {revision_backfill.ReplayTopologyState.UNRESOLVED_PARENT}
+    assert set(schedule.parent_of.values()) == {None}
 
 
-def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lineage_aware_replay_schedule_reduces_deferred_tail_hits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-5q2u AC1: lineage-aware replay must trigger the #2467
     deferred-tail/orphaned-child normalization path (``_reextract_prefix_tail_db``)
     strictly less often than the previous lexicographic order for a
     representative parent-with-many-children fixture, where the parent's
     native id sorts lexicographically AFTER its children's.
 
-    Anti-vacuity: reverting the ``_lineage_aware_replay_order`` call at the
+    Anti-vacuity: reverting the ``_lineage_aware_replay_schedule`` call at the
     ``for logical_key in ...:`` call site back to ``sorted(logical_keys)``
     makes this test fail (both counts become equal and >0, since every
     child would then replay before the parent it depends on).
@@ -4068,8 +4097,8 @@ def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, m
         if force_lexicographic:
             monkeypatch.setattr(
                 revision_backfill,
-                "_lineage_aware_replay_order",
-                lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+                "_lineage_aware_replay_schedule",
+                _lexicographic_replay_schedule,
             )
         backfill_historical_revision_evidence(root)
         monkeypatch.undo()
@@ -4088,7 +4117,9 @@ def test_lineage_aware_replay_order_reduces_deferred_tail_hits(tmp_path: Path, m
     )
 
 
-def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_lineage_aware_replay_schedule_preserves_outcome_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """polylogue-5q2u AC2: lineage-aware scheduling must not change WHAT gets
     replayed/adopted -- only the order. Two archives seeded identically,
     replayed once under lineage order and once forced to the previous
@@ -4107,8 +4138,8 @@ def test_lineage_aware_replay_order_preserves_outcome_parity(tmp_path: Path, mon
 
     monkeypatch.setattr(
         revision_backfill,
-        "_lineage_aware_replay_order",
-        lambda logical_keys, archive, spill, archive_root: sorted(logical_keys),
+        "_lineage_aware_replay_schedule",
+        _lexicographic_replay_schedule,
     )
     lexicographic_result = backfill_historical_revision_evidence(lexicographic_root)
 

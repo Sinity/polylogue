@@ -21,9 +21,9 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Final, TypeAlias
 
+from polylogue.core.digest import nfc
 from polylogue.core.hashing import hash_payload
 from polylogue.core.refs import ObjectRef
-from polylogue.core.text_identity import nfc
 
 QUERY_REF_KIND: Final = "query"
 QUERY_RUN_REF_KIND: Final = "query-run"

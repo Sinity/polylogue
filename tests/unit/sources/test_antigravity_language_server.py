@@ -150,7 +150,7 @@ def test_export_markdown_returns_string(
     monkeypatch.setattr(
         fake_client,
         "_post",
-        lambda endpoint, payload: {"markdown": "### User Input\n\nhello\n"},
+        lambda endpoint, payload, **_kwargs: {"markdown": "### User Input\n\nhello\n"},
     )
     assert "User Input" in fake_client.export_markdown("cascade-1")
 
@@ -159,15 +159,15 @@ def test_export_markdown_rejects_missing_or_empty_markdown(
     fake_client: AntigravityLanguageServerClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_k: {})
+    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_kwargs: {})
     with pytest.raises(AntigravityExportError):
         fake_client.export_markdown("cascade-1")
 
-    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_k: {"markdown": ""})
+    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_kwargs: {"markdown": ""})
     with pytest.raises(AntigravityExportError):
         fake_client.export_markdown("cascade-1")
 
-    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_k: {"markdown": 42})
+    monkeypatch.setattr(fake_client, "_post", lambda *_a, **_kwargs: {"markdown": 42})
     with pytest.raises(AntigravityExportError):
         fake_client.export_markdown("cascade-1")
 
@@ -197,6 +197,52 @@ def test_post_wraps_transport_timeouts(
 
     with pytest.raises(AntigravityExportError, match="timed out"):
         fake_client._post("/endpoint", {})
+
+
+def test_conversion_outlives_the_probe_budget(
+    fake_client: AntigravityLanguageServerClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conversion slower than a readiness probe still yields its conversation.
+
+    Real trajectories have taken longer than the probe budget on a loaded
+    host, and an expired conversion request is a conversation missing from the
+    archive. Anti-vacuity: spend the probe budget on the conversion instead and
+    this raises.
+    """
+    vendor_conversion_s = antigravity._REQUEST_TIMEOUT_S + 5.0
+
+    def fake_urlopen(_request: object, *, timeout: float) -> _FakeHTTPResponse:
+        if timeout < vendor_conversion_s:
+            raise TimeoutError("timed out")
+        return _FakeHTTPResponse(b'{"markdown": "### User Input\\n\\nhello"}')
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+
+    assert fake_client.export_markdown("cascade").startswith("### User Input")
+
+
+def test_probe_and_search_keep_the_short_budget(
+    fake_client: AntigravityLanguageServerClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only conversion gets the long budget; a dead server must still fail fast.
+
+    Anti-vacuity: widen the probe budget to the conversion budget and the
+    equality below fails.
+    """
+    budgets: list[float] = []
+
+    def fake_urlopen(_request: object, *, timeout: float) -> _FakeHTTPResponse:
+        budgets.append(timeout)
+        return _FakeHTTPResponse(b'{"results": []}')
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+
+    fake_client.search_sessions()
+
+    assert budgets == [antigravity._REQUEST_TIMEOUT_S]
+    assert antigravity._CONVERSION_TIMEOUT_S > antigravity._REQUEST_TIMEOUT_S
 
 
 def test_post_rejects_non_object_responses(
@@ -688,7 +734,7 @@ def test_readiness_retries_past_a_probe_that_spends_the_whole_request_budget(
     client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.0)
     attempts: list[int] = []
 
-    def flaky_post(endpoint: str, payload: JSONDocument) -> JSONDocument:
+    def flaky_post(endpoint: str, payload: JSONDocument, *, timeout: float | None = None) -> JSONDocument:
         attempts.append(len(attempts))
         if len(attempts) < 3:
             raise AntigravityExportError("timed out")
@@ -704,7 +750,7 @@ def test_readiness_failure_reports_how_many_probes_ran(tmp_path: Path, monkeypat
     monkeypatch.setattr(antigravity, "_READY_RETRY_SLEEP_S", 0.0)
     client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=0.0)
 
-    def always_failing(endpoint: str, payload: JSONDocument) -> JSONDocument:
+    def always_failing(endpoint: str, payload: JSONDocument, *, timeout: float | None = None) -> JSONDocument:
         raise AntigravityExportError("connection refused")
 
     client._post = always_failing  # type: ignore[method-assign]

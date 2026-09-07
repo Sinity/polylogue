@@ -2981,6 +2981,10 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if session is None:
             return None
         resolved_session_id = str(session.id)
+        # The envelope read that backs get_session does not carry session_events,
+        # and the digest's compaction geometry (polylogue-4ts.5) is stored there.
+        events = await self.repository.get_session_event_models(resolved_session_id)
+        session = session.model_copy(update={"session_events": tuple(events)})
         session_links: list[dict[str, object]] = await self.repository.queries.list_session_links_for_session(
             resolved_session_id
         )

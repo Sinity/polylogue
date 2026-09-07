@@ -27,10 +27,12 @@ from devtools.pytest_invocation import (
     IGNORED_COLLECTION_ARGS,
     MANAGED_PLUGIN_ARGS,
     REPORT_PLUGIN_ARGS,
+    SUITE_COST_PLUGIN_NAME,
     managed_plugin_args,
 )
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.required_gate import executable_gate_result
 from devtools.testmon_provision import (
     TESTMON_COVERAGE_CORE,
@@ -194,6 +196,8 @@ def _pytest_steps(*, selection: str, worker_args: Sequence[str]) -> list[tuple[s
         f"--junitxml={PYTEST_JUNIT_REPORT_DIR}/verify-latest.xml",
         report_file_argument(PYTEST_REPORT_PATH),
         *DEVTOOLS_PLUGIN_ARGS,
+        "-p",
+        SUITE_COST_PLUGIN_NAME,
         *managed_plugin_args(testmon=testmon),
         *collection_args,
         *(["--testmon", f"--testmon-env={TESTMON_ENVIRONMENT}", select_flag] if testmon else []),
@@ -563,6 +567,9 @@ def _run(label: str, command: list[str], *, run: VerifyRun) -> tuple[int, float,
         metadata["pytest_slot"] = slot
         if metadata_receipt is not None:
             metadata["pytest_slot_receipt"] = metadata_receipt
+        suite_cost_receipt = write_run_receipt(env.get(SUITE_COST_DIR_ENV))
+        if suite_cost_receipt is not None:
+            metadata["suite_cost_receipt"] = str(suite_cost_receipt)
         if rerun is not None:
             metadata["rerun"] = rerun
             if not rerun["still_failed"]:

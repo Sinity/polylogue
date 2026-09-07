@@ -9,7 +9,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Callable, Iterator, Sequence, Set
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
@@ -40,7 +40,7 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
-from polylogue.core.enums import Origin, Provider
+from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_revision_projection
@@ -2080,12 +2080,177 @@ def census_historical_revision_evidence(
     )
 
 
-def _lineage_aware_replay_order(
+class ReplayTopologyState(PolylogueStrEnum):
+    """Why one logical key sits where it does in a rebuild's replay schedule.
+
+    Every key in a rebuild carries exactly one state, so a schedule can be
+    checked for topology -- nothing skipped, no parent fabricated -- without
+    re-deriving the lineage graph from the archive.
+    """
+
+    ROOT = "root"
+    """No parent claim at all; replays first, in lexicographic order."""
+
+    DESCENDANT = "descendant"
+    """Parent claim resolved to another key in this rebuild; replays after it."""
+
+    ALIAS = "alias"
+    """A second spelling -- provider form against public-origin form -- of
+    another key in this rebuild; replays immediately after that spelling."""
+
+    SELF_PARENT = "self_parent"
+    """Claims its own identity as its parent; replays as a root."""
+
+    UNRESOLVED_PARENT = "unresolved_parent"
+    """Claims a parent that is missing, external, or in another rebuild
+    batch; replays as a root with the edge left unresolved."""
+
+    CYCLE = "cycle"
+    """Sits on a parent cycle, so no member can precede all the others. The
+    component replays after the roots, entered at its lexicographically
+    smallest member."""
+
+    SOLE = "sole"
+    """The rebuild holds this key alone. There is nothing to order, so no
+    parent claim was read -- reading one would parse a raw the census may
+    have proven superseded without parsing."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReplaySchedule:
+    """One rebuild's replay order together with the topology that produced it.
+
+    ``parent_of`` carries the edge resolved INSIDE this rebuild, so ``None``
+    covers both "claimed nothing" and "claimed something absent";
+    ``topology`` tells those apart.
+    """
+
+    order: tuple[str, ...]
+    topology: Mapping[str, ReplayTopologyState]
+    parent_of: Mapping[str, str | None]
+
+
+#: Representative-raw lookups run in chunks of this many keys, so a full
+#: rebuild's tens of thousands of logical keys never become one statement's
+#: parameter list.
+_REPLAY_KEY_QUERY_CHUNK: Final = 500
+
+
+def _canonical_replay_key(logical_key: str) -> str | None:
+    """Public-origin form of ``logical_key``, or ``None`` when it has no
+    identity to canonicalize (a ``pending-raw:`` envelope, a legacy prefix).
+    Such a key still schedules -- it simply resolves no lineage edge."""
+    try:
+        return canonical_authority_logical_key(logical_key)
+    except ValueError:
+        return None
+
+
+def _replay_representative_raw_ids(sorted_keys: list[str], archive_root: Path) -> dict[str, str]:
+    """Pick one raw per logical key to read that key's parent claim from.
+
+    Newest acquisition wins and ``raw_id`` breaks ties, so a cohort whose
+    raws claim different parents resolves to the same claim on every run.
+    """
+    representative: dict[str, str] = {}
+    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        for start in range(0, len(sorted_keys), _REPLAY_KEY_QUERY_CHUNK):
+            chunk = sorted_keys[start : start + _REPLAY_KEY_QUERY_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(
+                f"""
+                SELECT logical_source_key, raw_id
+                FROM raw_sessions
+                WHERE logical_source_key IN ({placeholders})
+                ORDER BY logical_source_key, acquired_at_ms DESC, raw_id ASC
+                """,
+                chunk,
+            )
+            for logical_source_key, raw_id in rows:
+                representative.setdefault(str(logical_source_key), str(raw_id))
+    return representative
+
+
+def _replay_parent_claims(
+    sorted_keys: list[str],
+    archive: ArchiveStore,
+    spill: _ParsedSessionSpill,
+    archive_root: Path,
+) -> dict[str, str | None]:
+    """Read each key's claimed parent logical key from its representative raw.
+
+    The claim comes from the parsed session whose OWN logical key is the key
+    being resolved. A raw can carry many sessions, so reading the first
+    one's claim would attribute a parent to a session that never made it;
+    a key whose representative raw yields no matching session claims nothing.
+    """
+    representative = _replay_representative_raw_ids(sorted_keys, archive_root)
+    keys_by_raw: dict[str, list[str]] = {}
+    for key in sorted_keys:
+        raw_id = representative.get(key)
+        if raw_id is not None:
+            keys_by_raw.setdefault(raw_id, []).append(key)
+
+    claims: dict[str, str | None] = dict.fromkeys(sorted_keys, None)
+    for raw_id, keys in keys_by_raw.items():
+        try:
+            sessions, _payload_bytes = spill.for_raw(archive, raw_id)
+        except Exception:
+            # Lineage ordering is a scheduling optimization only -- any
+            # failure here degrades to "claims nothing", never to a replay
+            # or adoption failure.
+            continue
+        claim_by_canonical: dict[str, str] = {}
+        for session in sessions:
+            parent_provider_id = session.parent_session_provider_id
+            if not parent_provider_id:
+                continue
+            origin = origin_from_provider(session.source_name)
+            own_key = _canonical_replay_key(f"{origin.value}:{session.provider_session_id}")
+            if own_key is None:
+                continue
+            # A raw that repeats one key across sessions keeps the first
+            # claim in parse order, which is fixed for a given raw.
+            claim_by_canonical.setdefault(own_key, f"{origin.value}:{parent_provider_id}")
+        for key in keys:
+            canonical_key = _canonical_replay_key(key)
+            if canonical_key is not None:
+                claims[key] = claim_by_canonical.get(canonical_key)
+    return claims
+
+
+def _replay_cycle_members(sorted_keys: list[str], edge: Mapping[str, str | None]) -> set[str]:
+    """Return every key sitting ON a parent cycle.
+
+    Each key has at most one parent edge, so a cycle is exactly a chain that
+    re-enters a key still on the current walk. Keys that merely descend from
+    a cycle are not members: they have a parent that precedes them.
+    """
+    members: set[str] = set()
+    settled: set[str] = set()
+    for start in sorted_keys:
+        if start in settled:
+            continue
+        walk: list[str] = []
+        position: dict[str, int] = {}
+        node: str | None = start
+        while node is not None and node not in settled:
+            if node in position:
+                members.update(walk[position[node] :])
+                break
+            position[node] = len(walk)
+            walk.append(node)
+            node = edge.get(node)
+        settled.update(walk)
+    return members
+
+
+def _lineage_aware_replay_schedule(
     logical_keys: set[str],
     archive: ArchiveStore,
     spill: _ParsedSessionSpill,
     archive_root: Path,
-) -> list[str]:
+) -> ReplaySchedule:
     """Order one rebuild's byte-typed logical keys so a parent's cohort
     replays before any of its children's (polylogue-5q2u).
 
@@ -2094,88 +2259,97 @@ def _lineage_aware_replay_order(
     (delete the duplicate prefix rows, remap ``session_events`` refs, delete
     prefix-scoped dependents) once the parent finally arrives -- the
     #2467 deferred-tail path, O(orphaned_children * shared_prefix_size) real
-    row-mutation work. The previous ``sorted(logical_keys)`` lexicographic
-    order has zero relationship to parent/child lineage, so it triggers this
-    expensive path roughly as often as not during a cold/full rebuild.
-    Visiting roots first (and each child only after its parent) minimizes
-    how often it triggers.
+    row-mutation work. Lexicographic order has zero relationship to
+    parent/child lineage, so it triggers this expensive path roughly as often
+    as not during a cold/full rebuild. Visiting roots first, and each child
+    only after its parent, minimizes how often it triggers.
 
     This is deliberately scheduling-only: it must never change WHAT gets
     replayed or adopted, only the order this module's own replay loop visits
-    logical keys in. A key whose parent cannot be resolved here -- no
-    ``parent_session_provider_id``, a parent outside this rebuild's
-    ``logical_keys`` (missing/external/cross-batch parent), or a lineage
-    cycle -- degrades to the original lexicographic position among the
-    unresolved remainder. Nothing is ever skipped.
+    logical keys in. Every key in ``logical_keys`` appears exactly once in
+    ``order`` whatever its topology, and every key carries a
+    ``ReplayTopologyState`` saying which rule placed it, so a caller can
+    check a schedule without re-deriving the graph. The order is a function
+    of the archive alone: ties break lexicographically at every step, and
+    each component is entered at its lexicographically smallest member.
     """
     sorted_keys = sorted(logical_keys)
     if len(sorted_keys) <= 1:
-        return sorted_keys
+        return ReplaySchedule(
+            order=tuple(sorted_keys),
+            topology=dict.fromkeys(sorted_keys, ReplayTopologyState.SOLE),
+            parent_of=dict.fromkeys(sorted_keys, None),
+        )
 
-    placeholders = ",".join("?" for _ in sorted_keys)
-    with sqlite_connection(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
-        rows = conn.execute(
-            f"""
-            SELECT logical_source_key, raw_id
-            FROM raw_sessions
-            WHERE logical_source_key IN ({placeholders})
-            ORDER BY logical_source_key, acquired_at_ms DESC
-            """,
-            sorted_keys,
-        ).fetchall()
-    representative_raw_id: dict[str, str] = {}
-    for logical_source_key, raw_id in rows:
-        representative_raw_id.setdefault(str(logical_source_key), str(raw_id))
+    claims = _replay_parent_claims(sorted_keys, archive, spill, archive_root)
 
-    parent_of: dict[str, str | None] = {}
+    # One spelling represents each identity; the others are its aliases.
+    representative_spelling: dict[str, str] = {}
     for key in sorted_keys:
-        parent_key: str | None = None
-        raw_id = representative_raw_id.get(key)
-        if raw_id is not None:
-            try:
-                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
-            except Exception:
-                # Lineage ordering is a scheduling optimization only -- any
-                # failure here degrades to "treat as unresolved", never to a
-                # replay/adoption failure.
-                sessions = []
-            if sessions:
-                session = sessions[0]
-                parent_provider_id = session.parent_session_provider_id
-                if parent_provider_id:
-                    parent_key = f"{origin_from_provider(session.source_name).value}:{parent_provider_id}"
-        parent_of[key] = parent_key
+        canonical_key = _canonical_replay_key(key)
+        if canonical_key is not None:
+            representative_spelling.setdefault(canonical_key, key)
+
+    topology: dict[str, ReplayTopologyState] = {}
+    edge: dict[str, str | None] = {}
+    for key in sorted_keys:
+        canonical_key = _canonical_replay_key(key)
+        if canonical_key is not None and representative_spelling[canonical_key] != key:
+            edge[key] = representative_spelling[canonical_key]
+            topology[key] = ReplayTopologyState.ALIAS
+            continue
+        claim = claims[key]
+        canonical_claim = None if claim is None else _canonical_replay_key(claim)
+        target = None if canonical_claim is None else representative_spelling.get(canonical_claim)
+        if claim is None:
+            edge[key] = None
+            topology[key] = ReplayTopologyState.ROOT
+        elif target is None:
+            edge[key] = None
+            topology[key] = ReplayTopologyState.UNRESOLVED_PARENT
+        elif target == key:
+            edge[key] = None
+            topology[key] = ReplayTopologyState.SELF_PARENT
+        else:
+            edge[key] = target
+            topology[key] = ReplayTopologyState.DESCENDANT
+
+    cycle_members = _replay_cycle_members(sorted_keys, edge)
+    for key in cycle_members:
+        topology[key] = ReplayTopologyState.CYCLE
 
     children: dict[str, list[str]] = {}
-    roots: list[str] = []
     for key in sorted_keys:
-        parent_key = parent_of[key]
-        if parent_key is not None and parent_key in logical_keys and parent_key != key:
-            children.setdefault(parent_key, []).append(key)
-        else:
-            roots.append(key)
+        target = edge[key]
+        if target is not None:
+            children.setdefault(target, []).append(key)
 
-    ordered: list[str] = []
+    order: list[str] = []
     seen: set[str] = set()
 
-    def visit(key: str) -> None:
-        if key in seen:
-            return
-        seen.add(key)
-        ordered.append(key)
-        for child in children.get(key, ()):
-            visit(child)
+    def visit(start: str) -> None:
+        # Iterative: a resume chain is as deep as the archive is old.
+        stack = [start]
+        while stack:
+            key = stack.pop()
+            if key in seen:
+                continue
+            seen.add(key)
+            order.append(key)
+            stack.extend(reversed(children.get(key, ())))
 
-    for key in roots:
-        visit(key)
-    # Cycles: every remaining member has a not-yet-visited parent inside the
-    # set. Fall back to lexicographic order for the unresolved remainder --
-    # ``visit`` still walks each one's children once reached, so nothing is
-    # skipped or duplicated.
+    # Roots first, then each remaining component entered at its
+    # lexicographically smallest cycle member. Every key carries at most one
+    # parent edge, so its chain ends at a root or closes a cycle: these two
+    # passes together reach every key exactly once.
     for key in sorted_keys:
-        if key not in seen:
+        if edge[key] is None:
             visit(key)
-    return ordered
+    for key in sorted_keys:
+        if key in cycle_members:
+            visit(key)
+
+    return ReplaySchedule(order=tuple(order), topology=topology, parent_of=edge)
 
 
 def backfill_historical_revision_evidence(
@@ -2396,14 +2570,15 @@ def backfill_historical_revision_evidence(
         )
         # polylogue-5q2u: replay in lineage order (roots, then children after
         # their parent) instead of lexicographic order -- see
-        # ``_lineage_aware_replay_order``'s docstring. Scheduling-only: the
+        # ``_lineage_aware_replay_schedule``'s docstring. Scheduling-only: the
         # SET of keys replayed and the plan/adoption outcome for each is
         # unaffected, only wall-clock and how often the deferred-tail path
         # (#2467) triggers. Both the pipeline-decode prefetcher and the
         # writer's own replay loop consume this SAME order so the
         # prefetcher's lookahead actually matches what the writer visits
         # next.
-        ordered_logical_keys = _lineage_aware_replay_order(logical_keys, archive, spill, archive_root)
+        replay_schedule = _lineage_aware_replay_schedule(logical_keys, archive, spill, archive_root)
+        ordered_logical_keys = list(replay_schedule.order)
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(spill, archive_root=archive_root)
