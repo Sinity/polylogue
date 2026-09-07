@@ -569,7 +569,7 @@ These run automatically inside the daemon process:
 
 | Task | Frequency | Description |
 |------|-----------|-------------|
-| WAL checkpoint | Every 5 minutes | Keeps the WAL file bounded via `PRAGMA wal_checkpoint(TRUNCATE)` |
+| WAL checkpoint | Every 5 minutes | The process' only ordinary checkpoint owner: `PRAGMA wal_checkpoint(PASSIVE)` over every tier, holding the writer gate under its own `maintenance.wal_checkpoint` budget. A busy reader retains the WAL and is reported, not fought. |
 | Heartbeat | Every 15 minutes | Logs session/message counts as structured heartbeat |
 | FTS convergence | Every 10 minutes | Verifies FTS coverage, rebuilds if messages are unindexed |
 | Health checks | Configurable (default 5 min) | Runs FAST + MEDIUM health checks by default, sends notifications on non-OK status. EXPENSIVE checks remain an explicit operator diagnostic. |
@@ -731,8 +731,8 @@ to object storage. Integration guidance:
 1. Install Litestream and configure it to watch the Polylogue tier files you
    need to preserve continuously. Prioritize `source.db`, `user.db`, and
    `embeddings.db`; include `index.db` when avoiding reindex time matters.
-2. The daemon's periodic WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`)
-   triggers Litestream to create new generations. No daemon changes needed.
+2. The daemon's periodic PASSIVE WAL checkpoint triggers Litestream to create
+   new generations. No daemon changes needed.
 3. Test restores periodically: `litestream restore -o /tmp/restore.db <path>`.
 
 A sample Litestream config:

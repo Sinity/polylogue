@@ -941,10 +941,13 @@ autocheckpoint to fight WAL growth (per-commit cost, symptom not cause).
 
 ### Daemon-side periodic checkpoint
 
-The daemon runs `maybe_checkpoint_wal()` every 5 minutes via the
-periodic loop. This explicit TRUNCATE pass is the primary mechanism
-that exercises the `journal_size_limit` cap in production — once the
-reader contention clears, the next periodic pass shrinks the WAL.
+The daemon runs `checkpoint_archive_wals()` every 5 minutes and is the
+process' only ordinary checkpoint owner; every writable connection it opens
+sets `wal_autocheckpoint = 0` so no implicit checkpoint can run inside a
+publication hold. Recurring escalation is PASSIVE. RESTART needs a declared
+quiescent boundary and TRUNCATE belongs to seal, shutdown and offline
+generation lifecycle, so the `journal_size_limit` cap is what shrinks a
+reader-blocked WAL once contention clears.
 
 ## Content Hash Model
 

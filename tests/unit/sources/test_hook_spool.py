@@ -29,6 +29,7 @@ from polylogue.sources.hooks import (
     hook_spool_pending_depth,
     hook_spool_root,
     pending_hook_spool_dir,
+    read_hook_spool_record,
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
@@ -1075,3 +1076,65 @@ def test_drain_accepts_a_camelcase_envelope_and_keeps_its_payload_verbatim(tmp_p
     stored = json.loads(row[2])
     assert stored["event_id"] == "camel-event"
     assert stored["payload"] == {"toolName": "Bash", "toolUseId": "toolu_1", "toolResultTruncated": True}
+
+
+def _journal_record() -> dict[str, object]:
+    """One record in the per-session ``<hooks>/<provider>-<session>.jsonl`` shape.
+
+    The five top-level keys are the journal envelope's whole vocabulary; a
+    spool envelope additionally carries ``event_id`` and the derived
+    ``observed_at_ms``.
+    """
+
+    return {
+        "event_type": "PreToolUse",
+        "session_id": "0fe73aeb-5d82-4124-a24a-d764a94fbf05",
+        "timestamp": "2026-08-11T20:00:23Z",
+        "provider": "claude-code",
+        "payload": {"tool_name": "Bash", "tool_input": {"command": "true"}, "cwd": "/home/user"},
+    }
+
+
+def test_a_hook_journal_record_is_refused_by_the_spool_validator(tmp_path: Path) -> None:
+    """The per-session journal envelope is not an ingest surface.
+
+    It carries no event identity, and the spool's idempotence is keyed on one
+    -- ``hook:<event_id>`` is the source-tier key a replay reuses. Deriving an
+    id from the content would mint a second identity for events the spool
+    already carries under their producer's own: every journal record is
+    already enveloped. ``docs/hooks.md`` carries the census.
+
+    Anti-vacuity: accepting the journal envelope -- by making ``event_id``
+    optional or deriving one -- makes this red, which is the point. Reversing
+    the verdict is a decision, not a refactoring.
+    """
+
+    journal_record = tmp_path / "journal-record.json"
+    journal_record.write_text(json.dumps(_journal_record()), encoding="utf-8")
+
+    with pytest.raises(HookSpoolRecordError, match="no event_id"):
+        read_hook_spool_record(journal_record)
+
+
+def test_a_journal_record_in_pending_is_never_acknowledged(tmp_path: Path) -> None:
+    """The refusal is the drain's, not only the validator's.
+
+    Anti-vacuity: a drain that admitted the journal shape would write a
+    ``raw_hook_events`` row here and acknowledge the file.
+    """
+
+    spool_root = tmp_path / "hooks"
+    archive_root = tmp_path / "archive"
+    pending = pending_hook_spool_dir(spool_root) / "2026-08-11"
+    pending.mkdir(parents=True)
+    admitted = pending / "journal-record.json"
+    admitted.write_text(json.dumps(_journal_record()), encoding="utf-8")
+
+    result = drain_hook_event_spool(archive_root, root=spool_root)
+
+    assert result.acknowledged == 0
+    assert result.failed == 1
+    assert admitted.is_file()
+    assert not (acknowledged_hook_spool_dir(spool_root)).exists()
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        assert conn.execute("SELECT count(*) FROM raw_hook_events").fetchone()[0] == 0

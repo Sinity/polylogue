@@ -465,6 +465,13 @@ class HookEventSpoolProver:
     spool file does not carry, and both sides are serialized independently.
     Byte equality is therefore the wrong law here: the proof is equality of
     the production-route record, which is what admission would reproduce.
+
+    The proposition is that acquisition still reaches the content, not that
+    the bytes exist somewhere under a declared root. Only ``pending/`` is
+    read: ``drain_hook_event_spool`` and ``hook_watch_sources`` both take
+    :func:`pending_hook_spool_dir`, and an ``acknowledged/`` receipt is a
+    commit record for the source.db that consumed it -- a fresh archive
+    re-ingests nothing from there.
     """
 
     name = "hook-event-spool"
@@ -477,9 +484,11 @@ class HookEventSpoolProver:
     def _spool_index(self) -> dict[str, tuple[str, Path]]:
         if self._index is not None:
             return self._index
+        from polylogue.sources.hooks import pending_hook_spool_dir
+
         index: dict[str, tuple[str, Path]] = {}
         for source_id, root in self._sources:
-            for directory, subdirectories, filenames in os.walk(root):
+            for directory, subdirectories, filenames in os.walk(pending_hook_spool_dir(root)):
                 subdirectories.sort()
                 for filename in sorted(filenames):
                     if not filename.endswith(".json"):

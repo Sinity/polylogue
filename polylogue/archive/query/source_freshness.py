@@ -20,12 +20,11 @@ import os
 import sqlite3
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Final, Literal, cast
-from urllib.parse import quote
 
 from polylogue.core.dates import utc_now
 from polylogue.core.evidence_families import SOURCE_CURSOR_BYTE_LAG_FAMILY
@@ -39,6 +38,7 @@ from polylogue.core.evidence_value import (
     sum_evidence_values,
 )
 from polylogue.core.refs import ObjectRef
+from polylogue.storage.sqlite.connection_profile import READ_PROFILES, open_readonly_connection
 
 _RAW_AUTHORITY_OWNER: Final = "polylogue-lkrc"
 _REPLAY_PREVENTION_OWNER: Final = "polylogue-yla8"
@@ -314,16 +314,20 @@ class _ReadonlyDatabase(AbstractContextManager["_ReadonlyDatabase"]):
         self._progress_ticks = 0
 
     def __enter__(self) -> _ReadonlyDatabase:
-        uri = f"file:{quote(str(self.path.resolve()))}?mode=ro"
-        conn = sqlite3.connect(
-            uri,
-            uri=True,
-            timeout=max(self.limits.busy_timeout_ms, 1) / 1000.0,
+        # A freshness probe that waits out a writer has already failed its
+        # purpose, so it derives a much tighter lock-wait from the
+        # interactive-read class rather than adopting it: the declared class is
+        # the floor for a read that must succeed, this one must be fast or not
+        # answer at all. Everything else about the profile is the declared one.
+        busy_timeout_ms = max(self.limits.busy_timeout_ms, 1)
+        profile = replace(
+            READ_PROFILES["interactive-read"],
+            timeout_seconds=busy_timeout_ms / 1000.0,
+            busy_timeout_ms=busy_timeout_ms,
         )
+        conn = open_readonly_connection(self.path.resolve(), profile=profile, validate_schema=False)
         conn.row_factory = sqlite3.Row
         conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, self.limits.sqlite_value_bytes)
-        conn.execute("PRAGMA query_only = ON")
-        conn.execute(f"PRAGMA busy_timeout = {max(self.limits.busy_timeout_ms, 1)}")
         self.conn = conn
         return self
 

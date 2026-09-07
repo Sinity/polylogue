@@ -265,7 +265,13 @@ every `restore_required` carrier into its ordinary spool and reads the
 published material back — the capture receiver publishes acquired bytes
 verbatim, so a restored capture is verified byte-for-byte, while a hook event
 is verified through the production read route that derives the fields the
-spool file does not carry. It then deletes, through the canonical blob-GC
+spool file does not carry. One provider session keeps one capture artifact, so
+a carrier arriving at an occupied artifact name is a revision the spool
+converges: the newer or richer capture is published and the rest report
+`restoration_superseded`, which is a completed restoration because the
+artifact holding that identity carries the material. Only a malformed
+envelope, a genuinely different session claiming the artifact name, or the
+spool quota refuses a carrier. It then deletes, through the canonical blob-GC
 seam, every member no durable row references: the same objects recurring GC
 would take, plus the namespace's non-blob entries (a SQLite `-wal` or `-shm`
 stranded beside a content-addressed object, whose bytes are that object's
@@ -279,7 +285,10 @@ what a durable row still references, and the receipt's `cohorts` block says
 how much of that is still unexplained.
 
 `apply` is a dry rehearsal without `--active`, and the rehearsal reports the
-totals its active twin would. A stale digest, a namespace that is not the
+totals and counts its active twin would: it resolves every restoration
+destination and evaluates the same admission rule, carrying what it would have
+published so a second carrier of one identity converges in the rehearsal
+exactly as it does in the run. A stale digest, a namespace that is not the
 plan's, a drifted denominator, or an active archive writer refuses the run
 before any effect. A carrier whose restoration did not complete keeps its blob
 and reports `blocked`. A pass interrupted part-way is resumed by re-running

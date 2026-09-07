@@ -31,6 +31,7 @@ from polylogue.schemas.runtime_registry import SchemaRegistry
 from polylogue.sources.parsers.hermes_state import looks_like_state_db_path
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 _SCHEMA_REGISTRY = SchemaRegistry()
 _HERMES_STATE_DB_MARKER = "hermes_state_db"
@@ -112,10 +113,7 @@ def _resolve_payload_support(
 
 def _hermes_state_db_schema_version(path: Path, *, immutable: bool = False) -> int | None:
     try:
-        uri = path.resolve().as_uri() + "?mode=ro"
-        if immutable:
-            uri += "&immutable=1"
-        with closing(sqlite3.connect(uri, uri=True)) as conn:
+        with closing(open_readonly_connection(path.resolve(), immutable=immutable, validate_schema=False)) as conn:
             row = conn.execute("SELECT version FROM schema_version ORDER BY rowid DESC LIMIT 1").fetchone()
     except sqlite3.Error:
         return None
