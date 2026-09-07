@@ -21,6 +21,7 @@ from pydantic import ValidationError
 from polylogue.surfaces.outcome import (
     OUTCOME_EXIT_CODES,
     OutcomeEnvelope,
+    TerminalOutcomeState,
     combine_outcomes,
     decide_outcome,
     lineage_page_outcome,
@@ -100,8 +101,8 @@ class TestOutcomeDecision:
 
 class TestTransportMapping:
     @pytest.mark.parametrize(("state", "code"), [("ok", 0), ("empty", 2), ("degraded", 1), ("error", 1)])
-    def test_exit_codes(self, state: str, code: int) -> None:
-        assert outcome_exit_code(OutcomeEnvelope(state=cast("str", state))) == code  # type: ignore[arg-type]
+    def test_exit_codes(self, state: TerminalOutcomeState, code: int) -> None:
+        assert outcome_exit_code(OutcomeEnvelope(state=state)) == code
 
     def test_exit_table_covers_the_closed_vocabulary(self) -> None:
         assert set(OUTCOME_EXIT_CODES) == set(ALL_STATES)
@@ -110,8 +111,8 @@ class TestTransportMapping:
         assert outcome_exit_code(decide_outcome(matched=0)) != 0
 
     @pytest.mark.parametrize("state", ["ok", "empty", "degraded"])
-    def test_served_envelopes_are_200(self, state: str) -> None:
-        assert outcome_http_status(OutcomeEnvelope(state=cast("str", state))) == 200  # type: ignore[arg-type]
+    def test_served_envelopes_are_200(self, state: TerminalOutcomeState) -> None:
+        assert outcome_http_status(OutcomeEnvelope(state=state)) == 200
 
     def test_error_is_a_server_failure(self) -> None:
         assert outcome_http_status(OutcomeEnvelope(state="error")) == 500
@@ -281,4 +282,4 @@ class TestHttpTerminalOutcomes:
         _seed_session(workspace_env)
         status, payload = self._get("/api/sessions?query=probe&origin=bogus-origin")
         assert status == 400, payload
-        assert cast(dict[str, object], payload).get("outcome") is None
+        assert payload.get("outcome") is None
