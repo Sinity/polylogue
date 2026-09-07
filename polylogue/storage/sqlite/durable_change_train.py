@@ -11,8 +11,8 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Callable, Sequence
-from contextlib import closing
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
@@ -2910,8 +2910,15 @@ def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archiv
     return "validated one raw failure disposition without mutation"
 
 
-def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
-    """Open an existing durable tier without allowing SQLite to create it."""
+@contextmanager
+def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open an existing durable tier without allowing SQLite to create it.
+
+    The connection is owned for the block: committed or rolled back like the
+    builtin ``with sqlite3.connect(...)`` form, and always closed. Startup
+    reconciliation runs on every archive open, so a connection left to the
+    collector here retains three descriptors per open.
+    """
     try:
         metadata = tier_path.lstat()
     except FileNotFoundError as exc:
@@ -2923,9 +2930,11 @@ def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
             "durable tier was replaced by an unsafe file; refusing startup initialization/release"
         )
     try:
-        return sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        connection = sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     except (OSError, sqlite3.Error) as exc:
         raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
+    with closing(connection), connection:
+        yield connection
 
 
 def _verify_persisted_live_tier_continuity(
@@ -3210,8 +3219,7 @@ def _prove_and_release_persisted_train(
     """Finish a persisted applied/proven train after an interrupted process."""
     tier_path = archive_root / f"{train.tier.value}.db"
     if train.state is DurableChangeTrainState.APPLIED:
-        live = _open_existing_tier(tier_path)
-        try:
+        with _open_existing_tier(tier_path) as live:
             _verify_persisted_live_tier_continuity(live, train)
             if train.reservation is not None and train.reservation.active:
                 previous_revision = train.revision
@@ -3242,8 +3250,6 @@ def _prove_and_release_persisted_train(
             )
             _verify_persisted_live_tier_continuity(live, train)
             train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
-        finally:
-            live.close()
     if train.state is DurableChangeTrainState.PROVEN:
         with _open_existing_tier(tier_path) as live:
             _verify_persisted_live_tier_continuity(live, train)
