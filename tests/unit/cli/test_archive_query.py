@@ -40,7 +40,7 @@ from polylogue.cli.archive_query import (
     _sort,
     _spec_filter_kwargs,
     _stats_by_line,
-    _summary_line,
+    _summary_line_renderer,
     _summary_payload,
     _tool_tokens,
     _tuple_tokens,
@@ -616,9 +616,9 @@ class TestCsv:
 # carries the equivalent behavior tests in tests/unit/archive/test_search_hits.py.
 
 
-# Tests for _summary_line
+# Tests for _summary_line_renderer
 class TestSummaryLine:
-    """Tests for _summary_line."""
+    """Tests for _summary_line_renderer."""
 
     def test_summary_line_format(self) -> None:
         """Summary line contains expected fields."""
@@ -630,7 +630,7 @@ class TestSummaryLine:
             "origin": "claude-code-session",
             "message_count": 42,
         }
-        result = _summary_line(item)
+        result = _summary_line_renderer([item])(item)
         assert "abc123def456" in result
         assert "2026-01-15" in result
         assert "claude-code-session" in result
@@ -644,7 +644,7 @@ class TestSummaryLine:
             "origin": "chatgpt-export",
             "created_at": "2026-01-15T10:00:00Z",
         }
-        result = _summary_line(item)
+        result = _summary_line_renderer([item])(item)
         assert "abc123" in result
 
     def test_summary_line_bounds_multiline_title(self) -> None:
@@ -655,7 +655,7 @@ class TestSummaryLine:
             "created_at": "2026-01-15T10:00:00Z",
         }
 
-        result = _summary_line(item)
+        result = _summary_line_renderer([item])(item)
 
         assert "\n" not in result
         assert "/tmp/hermes-agent/path-20.py" not in result
