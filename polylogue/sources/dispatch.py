@@ -13,7 +13,13 @@ from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider, TitleSource
-from polylogue.core.json import JSONDocument, JSONValue, is_json_document, is_json_value, normalize_json_decimal
+from polylogue.core.json import (
+    JSONDocument,
+    JSONValue,
+    is_json_value,
+    json_document_or_none,
+    normalize_json_decimal,
+)
 from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.logging import get_logger
@@ -108,8 +114,7 @@ class ChatGPTLoweredDocument:
 
 
 def _payload_record(value: object) -> PayloadRecord | None:
-    normalized = normalize_json_decimal(value)
-    return normalized if is_json_document(normalized) else None
+    return json_document_or_none(value)
 
 
 def _payload_sequence(value: object) -> PayloadSequence | None:
@@ -972,7 +977,7 @@ def _claude_code_multiway_parse(
     accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
     group_order: list[str] = []
     provisional_groups: set[str] = set()
-    pending_prefix: list[object] = []
+    pending_prefix: list[tuple[object, PayloadRecord | None]] = []
     current_group_id: str | None = None
     primary_started = False
     primary_uuids: set[str] = set()
@@ -985,10 +990,12 @@ def _claude_code_multiway_parse(
             is_acompact=group_fallback_id.startswith("agent-acompact-"),
         )
 
-    def fold_into(group_id: str, index: int, item: object) -> None:
+    def fold_into(group_id: str, index: int, item: object, record: PayloadRecord | None) -> None:
+        # ``record`` is the caller's already-coerced view of ``item``. Coercing
+        # walks the whole decoded record, so it happens once per record here,
+        # not once per read of a field.
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
-        record = _payload_record(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
             uuid = optional_string(record.get("uuid"))
             if uuid is not None:
@@ -1004,9 +1011,9 @@ def _claude_code_multiway_parse(
 
         if session_id is None:
             if current_group_id is None:
-                pending_prefix.append(item)
+                pending_prefix.append((item, record))
                 continue
-            fold_into(current_group_id, record_index, item)
+            fold_into(current_group_id, record_index, item, record)
             continue
 
         if session_id not in accumulators:
@@ -1028,13 +1035,13 @@ def _claude_code_multiway_parse(
             if not is_agent_fallback and session_id == fallback_id:
                 primary_started = True
             prefix_index = record_index - len(pending_prefix)
-            for prefix_item in pending_prefix:
+            for prefix_item, prefix_record in pending_prefix:
                 prefix_index += 1
-                fold_into(session_id, prefix_index, prefix_item)
+                fold_into(session_id, prefix_index, prefix_item, prefix_record)
             pending_prefix = []
 
         current_group_id = session_id
-        fold_into(session_id, record_index, item)
+        fold_into(session_id, record_index, item, record)
 
     if not accumulators:
         # No sessionId ever appeared -- either a genuinely empty stream or
@@ -1045,8 +1052,8 @@ def _claude_code_multiway_parse(
         group_order.append(fallback_id)
         if sidecar_accumulators is not None:
             sidecar_accumulators[fallback_id] = new_sidecar_accumulator()
-        for index, prefix_item in enumerate(pending_prefix, start=1):
-            fold_into(fallback_id, index, prefix_item)
+        for index, (prefix_item, prefix_record) in enumerate(pending_prefix, start=1):
+            fold_into(fallback_id, index, prefix_item, prefix_record)
 
     # Provisional groups (non-agent, own sessionId != fallback_id, first
     # encountered before the primary group had started) can only be

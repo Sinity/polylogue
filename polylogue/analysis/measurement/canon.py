@@ -18,10 +18,10 @@ NFC-normalized before hashing -- ``hash_payload`` itself deliberately does
 from __future__ import annotations
 
 import json
-import unicodedata
 from collections.abc import Mapping
 
 from polylogue.core.hashing import hash_payload
+from polylogue.core.text_identity import nfc
 
 JSONScalar = str | int | float | bool | None
 
@@ -48,21 +48,17 @@ def canonicalize(value: object) -> object:
     """
     if isinstance(value, Mapping):
         return {
-            _nfc(str(key)): canonicalize(inner) for key, inner in sorted(value.items(), key=lambda kv: _nfc(str(kv[0])))
+            nfc(str(key)): canonicalize(inner) for key, inner in sorted(value.items(), key=lambda kv: nfc(str(kv[0])))
         }
     if isinstance(value, (set, frozenset)):
         return sorted((canonicalize(inner) for inner in value), key=_sort_key)
     if isinstance(value, (list, tuple)):
         return [canonicalize(inner) for inner in value]
     if isinstance(value, str):
-        return _nfc(value)
+        return nfc(value)
     if isinstance(value, JSONScalar):
         return value
     raise TypeError(f"cannot canonicalize value of type {type(value)!r}: {value!r}")
-
-
-def _nfc(value: str) -> str:
-    return unicodedata.normalize("NFC", value)
 
 
 def _sort_key(value: object) -> str:

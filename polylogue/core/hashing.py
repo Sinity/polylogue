@@ -7,8 +7,9 @@ implementations scattered across the codebase.
 from __future__ import annotations
 
 import hashlib
-import unicodedata
 from pathlib import Path
+
+from polylogue.core.text_identity import nfc
 
 
 def hash_text(text: str) -> str:
@@ -19,8 +20,7 @@ def hash_text(text: str) -> str:
     """
     # Normalize to NFC (Canonical Decomposition, followed by Canonical Composition)
     # This ensures "café" hashes the same whether é is precomposed or decomposed
-    normalized = unicodedata.normalize("NFC", text)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return hashlib.sha256(nfc(text).encode("utf-8")).hexdigest()
 
 
 def hash_text_short(text: str, length: int = 16) -> str:

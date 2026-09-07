@@ -6,7 +6,7 @@ import io
 import json
 import re
 from collections.abc import Iterable
-from typing import IO, Protocol, TypeAlias, TypeGuard
+from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
 import ijson
 
@@ -135,10 +135,11 @@ def _yield_jsonl_pending(
     except JSONDecodeError:
         parsed = None
     else:
-        if _is_json_value(parsed):
-            return ([parsed], 0, None)
-        logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
-        return ([], 0, None)
+        # Every backend the facade selects decodes into JSON's own vocabulary
+        # and nothing else, so a successful decode is a ``JsonValue`` by
+        # construction. Re-walking each record to rediscover that is the
+        # dominant cost of the JSONL decode boundary, not the C decode itself.
+        return ([parsed], 0, None)
 
     if isinstance(raw_pending, bytes):
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
@@ -158,10 +159,7 @@ def _yield_jsonl_pending(
             logger_obj.debug("Skipping truncated trailing line in %s: %s", path_name, exc)
             return ([], 1, line_number)
         return ([], 1, line_number)
-    if _is_json_value(parsed):
-        return ([parsed], 0, None)
-    logger_obj.debug("Skipping non-JSON-compatible decoded line from %s", path_name)
-    return ([], 0, None)
+    return ([cast(JsonValue, parsed)], 0, None)
 
 
 def _iter_jsonl_stream(

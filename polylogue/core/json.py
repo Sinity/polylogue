@@ -172,14 +172,91 @@ def json_document_list(value: object) -> JSONDocumentList:
 
 
 def normalize_json_decimal(value: object) -> object:
-    """Recursively lower JSON parser Decimal values to JSON numbers."""
+    """Recursively lower JSON parser Decimal values to JSON numbers.
+
+    Returns *value* itself when the tree holds no ``Decimal``, so a caller
+    that keeps the result does not pay for a rebuilt copy of every decoded
+    record. ``ijson`` is the only decoder in the pipeline that produces
+    ``Decimal``; msgspec and stdlib ``json`` never do.
+    """
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, list):
-        return [normalize_json_decimal(item) for item in value]
+        changed = False
+        items: list[object] = []
+        for item in value:
+            lowered = normalize_json_decimal(item)
+            changed = changed or lowered is not item
+            items.append(lowered)
+        return items if changed else value
     if isinstance(value, dict):
-        return {key: normalize_json_decimal(item) for key, item in value.items()}
+        changed = False
+        mapping: dict[object, object] = {}
+        for key, item in value.items():
+            lowered = normalize_json_decimal(item)
+            changed = changed or lowered is not item
+            mapping[key] = lowered
+        return mapping if changed else value
     return value
+
+
+class _NotJSON:
+    """Sentinel for a node outside JSON's own type vocabulary."""
+
+    __slots__ = ()
+
+
+_NOT_JSON = _NotJSON()
+
+
+def json_document_or_none(value: object) -> JSONDocument | None:
+    """Return *value* as a JSON object with Decimal lowered, else ``None``.
+
+    One walk where ``normalize_json_decimal`` followed by
+    :func:`is_json_document` walks twice and rebuilds the whole tree. The
+    validation and the lowering answer the same question about the same node,
+    so they are asked together; a node outside JSON's vocabulary aborts the
+    walk instead of being discovered by a second pass.
+    """
+    if not isinstance(value, dict):
+        return None
+    lowered = _lower_json_value(value)
+    return cast(JSONDocument, lowered) if lowered is not _NOT_JSON else None
+
+
+def _lower_json_value(value: object) -> object:
+    """Lower Decimal and validate in one pass; ``_NOT_JSON`` on a bad node.
+
+    Identity-preserving: a subtree needing no change is returned as itself, so
+    the common case allocates nothing.
+    """
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, Decimal):
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, list):
+        changed = False
+        items: list[object] = []
+        for item in value:
+            lowered = _lower_json_value(item)
+            if lowered is _NOT_JSON:
+                return _NOT_JSON
+            changed = changed or lowered is not item
+            items.append(lowered)
+        return items if changed else value
+    if isinstance(value, dict):
+        changed = False
+        mapping: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                return _NOT_JSON
+            lowered = _lower_json_value(item)
+            if lowered is _NOT_JSON:
+                return _NOT_JSON
+            changed = changed or lowered is not item
+            mapping[key] = lowered
+        return mapping if changed else value
+    return _NOT_JSON
 
 
 # The type vocabulary JSON itself defines (plus `tuple`, which every backend
