@@ -6234,12 +6234,12 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
     assert BlobStore(tmp_path / "blob").read_all(bytes(row[1]).hex()) == payload
     assert row[2] == len(payload)
     assert row[3:13] == (
-        "codex-session:blob-retry",
+        f"pending-raw:codex-session:0:{source}:{raw_id}",
         "full",
         sha256(payload).hexdigest(),
         None,
         None,
-        raw_id,
+        None,
         None,
         None,
         0,
