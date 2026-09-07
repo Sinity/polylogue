@@ -78,7 +78,6 @@ from polylogue.storage.raw_convergence import raw_materialization_replay_backlog
 from polylogue.storage.raw_retention import raw_frontier_integrity_projection, raw_frontier_integrity_summary
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection as _open_readonly_connection
-from polylogue.surfaces.outcome import decide_outcome
 
 logger = get_logger(__name__)
 
@@ -2958,7 +2957,7 @@ def _archive_debt_status_summary() -> dict[str, object]:
         payload = archive_debt_list(archive_root=archive_root(), limit=5, exact_fts=False)
     except Exception:
         # A failed scan and a feature that was never asked for both produce
-        # zero rows; the reason and outcome are what tell them apart.
+        # zero rows; the log and the reason are what tell them apart.
         logger.warning("archive-debt status summary failed", exc_info=True)
         return {
             "endpoint": "/api/archive-debt",
@@ -2966,14 +2965,12 @@ def _archive_debt_status_summary() -> dict[str, object]:
             "reason": "archive_debt_scan_failed",
             "rows": [],
             "totals": {},
-            "outcome": decide_outcome(matched=0, error="archive_debt_scan_failed").to_dict(),
         }
     return {
         "endpoint": "/api/archive-debt",
         "available": True,
         "rows": [row.model_dump(mode="json", exclude_none=True) for row in payload.rows],
         "totals": payload.totals.model_dump(mode="json"),
-        "outcome": decide_outcome(matched=len(payload.rows)).to_dict(),
     }
 
 
@@ -2985,7 +2982,6 @@ def _excluded_archive_debt_status_summary() -> dict[str, object]:
         "reason": "excluded_from_bounded_status_snapshot",
         "rows": [],
         "totals": {},
-        "outcome": decide_outcome(matched=0, degraded=("excluded_from_bounded_status_snapshot",)).to_dict(),
     }
 
 

@@ -34,7 +34,7 @@ from polylogue.cli.read_view_registry import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
-from polylogue.surfaces.outcome import OutcomeEnvelope, outcome_exit_code, render_outcome_line
+from polylogue.surfaces.outcome import render_outcome_line
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -145,15 +145,15 @@ def _emit_idf_buckets(idf: dict[str, dict[str, float]], *, limit: int = _FACET_T
 
 
 def emit_facets_response(response: FacetsResponse, *, output_format: str | None) -> None:
-    """Emit a facets response and exit on the outcome the operation decided.
+    """Emit a facets response, always carrying the outcome the operation decided.
 
-    Every facets caller terminates here, so the exit convention is stated once
-    and an empty or gap-shaped facet view can never leave a bare exit 0.
+    Every facets caller terminates here, so a zero-row or gap-shaped facet view
+    always states which of the two it is -- in the envelope for machine output
+    and on its own line for the terminal.
     """
 
     if output_format == "json":
         click.echo(json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
-        _exit_on_outcome(response.outcome)
         return
     scope_label = "scoped" if response.scoped_to_query else "global"
 
@@ -201,13 +201,6 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
     _emit_facet_bucket(_status_label("has_flags"), response.scoped.has_flags)
     _emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", response.scoped.omitted)
     _emit_idf_buckets(response.idf)
-    _exit_on_outcome(response.outcome)
-
-
-def _exit_on_outcome(outcome: OutcomeEnvelope) -> None:
-    code = outcome_exit_code(outcome)
-    if code:
-        raise SystemExit(code)
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →

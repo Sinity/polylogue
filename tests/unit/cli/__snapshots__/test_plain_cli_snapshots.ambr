@@ -448,6 +448,11 @@
       "origins": {
         "chatgpt-export": 0.0
       }
+    },
+    "outcome": {
+      "state": "ok",
+      "reason": null,
+      "detail": {}
     }
   }
   

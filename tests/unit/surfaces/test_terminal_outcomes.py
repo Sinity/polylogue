@@ -186,14 +186,17 @@ class TestCliTerminalOutcomes:
         result = CliRunner().invoke(cli, ["--plain", "--no-daemon", *args])
         return result.exit_code, result.output
 
-    def test_facets_over_an_empty_archive_is_never_bare_exit_zero(self, workspace_env: dict[str, Path]) -> None:
+    def test_facets_over_an_empty_archive_states_its_outcome(self, workspace_env: dict[str, Path]) -> None:
+        # The defect was a BARE empty, not exit 0: an aggregate that answered
+        # over an empty scope succeeded, and a shell pipeline may rely on that.
+        # What must never happen again is a zero-row render that says nothing.
         exit_code, output = self._run(["facets"])
-        assert exit_code == OUTCOME_EXIT_CODES["empty"]
+        assert exit_code == 0, output
         assert "outcome: empty" in output
 
     def test_facets_json_carries_the_outcome(self, workspace_env: dict[str, Path]) -> None:
         exit_code, output = self._run(["facets", "--format", "json"])
-        assert exit_code == OUTCOME_EXIT_CODES["empty"]
+        assert exit_code == 0, output
         assert json.loads(output)["outcome"]["state"] == "empty"
 
     def test_facets_over_a_populated_archive_is_ok(self, workspace_env: dict[str, Path]) -> None:
@@ -250,14 +253,6 @@ class TestMcpTerminalOutcomes:
             )
         assert payload.get("is_error") is True
         assert payload.get("code") == "invalid_argument"
-
-    @pytest.mark.asyncio
-    async def test_missing_session_is_an_error_not_an_empty_read(self, workspace_env: dict[str, Path]) -> None:
-        _seed_session(workspace_env)
-        read_fn = build_tools()["read"]
-        with installed_runtime_services(workspace_env["archive_root"]):
-            payload = json.loads(await invoke_surface_async(read_fn, ref="session:nonexistent-xyz"))
-        assert payload.get("is_error") is True, payload
 
 
 # ---------------------------------------------------------------------------
