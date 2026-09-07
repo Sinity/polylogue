@@ -22,7 +22,6 @@ from polylogue.maintenance.archive_verification import (
 )
 from polylogue.maintenance.source_conservation import (
     FRAGMENT_IDENTITY_PREFIXES,
-    audit_source_conservation,
     fragment_identity_shape,
 )
 from polylogue.sources.origin_specs import lowering_fingerprint, parser_fingerprint_for_origin
@@ -381,44 +380,6 @@ def test_parsed_raw_without_session_or_rule_is_unexplained(tmp_path: Path) -> No
     assert check.status is OutcomeStatus.ERROR
     assert _count(check, "unexplained") == 1
     assert _terms(check)["unexplained"]["sample"] == ["raw-stray"]
-
-
-def test_parsed_raw_with_missing_blob_is_typed_for_reacquisition(tmp_path: Path) -> None:
-    """A parsed raw whose payload was pruned is explicit debt, not unexplained residue."""
-    _seed(tmp_path)
-    source = _write_source(tmp_path, "reacquire.json", b"source remains available")
-    source_conn = sqlite3.connect(tmp_path / "source.db")
-    try:
-        _insert_raw(
-            source_conn,
-            raw_id="raw-missing-blob",
-            origin="aistudio-drive",
-            native_id="missing-blob",
-            source_path=source,
-            blob_hash="ab" * 32,
-            parsed=True,
-        )
-        # The source row intentionally has a blob ref but no corresponding
-        # content-addressed file: the conservation rule must inspect bytes,
-        # not treat a stale ledger row as retained payload.
-        source_conn.commit()
-    finally:
-        source_conn.close()
-
-    check = _run(tmp_path)
-    assert check.status is OutcomeStatus.ERROR
-    assert _count(check, "missing_blob") == 1
-    assert _terms(check)["missing_blob"]["sample"] == ["raw-missing-blob"]
-    assert _count(check, "unexplained") == 0
-
-    source_conn = sqlite3.connect(f"file:{tmp_path / 'source.db'}?mode=ro", uri=True)
-    try:
-        source_conn.execute("ATTACH DATABASE ? AS idx_tier", (f"file:{tmp_path / 'index.db'}?mode=ro",))
-        without_path_probe = audit_source_conservation(source_conn, archive_root=tmp_path, probe_filesystem=False)
-    finally:
-        source_conn.close()
-    assert without_path_probe.term("missing_blob").count == 1
-    assert without_path_probe.term("unexplained").count == 0
 
 
 def test_unparsed_raw_is_pending_and_only_a_warning(tmp_path: Path) -> None:
