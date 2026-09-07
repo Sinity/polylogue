@@ -1,6 +1,9 @@
 export function classifyBrowserActionFailure(value, retryAfterSeconds = null) {
   const detail = String(value?.message || value || "browser_action_failed");
   const text = detail.toLowerCase();
+  if (value?.outcome === "rate_limited") {
+    return { outcome: "rate_limited", retry_after_seconds: retryAfterSeconds, detail };
+  }
   if (/temporarily limited access.*protect your data|provider soft warning/.test(text)) {
     return { outcome: "provider_warning", retry_after_seconds: retryAfterSeconds, detail };
   }

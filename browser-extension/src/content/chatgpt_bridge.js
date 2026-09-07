@@ -141,6 +141,7 @@
       status: response.status,
       ok: response.ok,
       contentType,
+      retryAfter: response.headers.get("retry-after") || null,
       body,
       capturedAt: new Date().toISOString()
     };
@@ -152,7 +153,7 @@
     if (data.type !== nativeFetchRequestMessage || !data.requestId || !data.conversationId) return;
     try {
       const capture = await fetchConversation(data.conversationId);
-      if (capture.ok && capture.body) remember(capture);
+      if (capture.ok && capture.body) remember({ ...capture, source: "polylogue_native_fetch" });
       window.postMessage({ type: nativeFetchResponseMessage, requestId: data.requestId, capture }, currentOrigin);
     } catch (error) {
       window.postMessage(

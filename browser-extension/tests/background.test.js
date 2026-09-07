@@ -2329,6 +2329,79 @@ describe("background receiver diagnostics", () => {
     expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 101_000 });
   });
 
+  it("applies a typed freshness rate limit to every ChatGPT conversation", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/throttled-one", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-freshness-throttle",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-freshness-throttle", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: 73,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "throttled-one",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "throttled-two",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt).toBe(173_000));
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+
+    now.mockReturnValue(101_000);
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+    const freshnessAlarms = globalThis.chrome.alarms.create.mock.calls
+      .filter(([name]) => name === "polylogueCaptureFreshnessWake");
+    expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 173_000 });
+  });
+
+  it("persists a content-reported rate limit before another conversation can capture", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/content-rate-limit", title: "ChatGPT" }];
+    await sendRuntimeMessage({
+      type: "polylogue.providerRateLimited",
+      provider: "chatgpt",
+      retry_after_seconds: 73,
+    });
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "other-conversation",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+
+    expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt).toBe(173_000);
+    expect(globalThis.chrome.tabs.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("serializes concurrent captures without losing either ledger or timeline entry", async () => {
     globalThis.fetch = vi.fn(async (_url, options) => {
       const session = JSON.parse(options.body).session;
