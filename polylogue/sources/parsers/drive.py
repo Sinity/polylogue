@@ -245,6 +245,17 @@ def _model_config_event(
     )
 
 
+def _citations_event(payload: JSONDocument) -> ParsedSessionEvent | None:
+    """Retain the export envelope's grounding citations as session evidence."""
+    citations = payload.get("citations")
+    if not isinstance(citations, list) or not citations:
+        return None
+    return ParsedSessionEvent(
+        event_type="gemini_citations",
+        payload={"citations": citations},
+    )
+
+
 def _pending_drafts(pending_inputs: object) -> list[dict[str, object]]:
     """Extract non-blank ``chunkedPrompt.pendingInputs`` entries.
 
@@ -358,6 +369,8 @@ def parse_chunked_prompt(provider: Provider | str, payload: JSONDocument, fallba
         models_used.add(default_model_name)
     if model_event := _model_config_event(run_settings, timestamp=default_timestamp):
         session_events.append(model_event)
+    if citations_event := _citations_event(payload):
+        session_events.append(citations_event)
     branch_child_parents, ambiguous_branch_child_ids = _branch_child_parent_map(chunks)
     message_position = 0
     for _idx, chunk in enumerate(chunks, start=1):
