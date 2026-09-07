@@ -39,12 +39,14 @@ from polylogue.cli.verb_cardinality import (
     EmptyCardinalityError,
     check_cardinality,
 )
+from polylogue.core.enums import Origin
+from polylogue.core.types import SessionId
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from tests.infra.storage_records import SessionBuilder
 
 
-def _all_subclasses(root: type) -> set[type]:
-    found: set[type] = set()
+def _all_subclasses(root: type[ContextualCliError]) -> set[type[ContextualCliError]]:
+    found: set[type[ContextualCliError]] = set()
     pending = [root]
     while pending:
         current = pending.pop()
@@ -57,7 +59,7 @@ def _all_subclasses(root: type) -> set[type]:
 
 def test_every_contextual_error_class_declares_a_next_action() -> None:
     """A refusal class with no declared action can only produce a dead end."""
-    classes = {ContextualCliError, *_all_subclasses(ContextualCliError)}
+    classes: set[type[ContextualCliError]] = {ContextualCliError, *_all_subclasses(ContextualCliError)}
     without = sorted(cls.__name__ for cls in classes if not cls.default_next_actions)
     assert without == []
 
@@ -112,7 +114,7 @@ def _env(*, plain: bool) -> object:
 
 
 def _summaries(*ids: str) -> list[SessionSummary]:
-    return [SessionSummary(id=ref, origin="claude-ai-export", title=f"Session {ref}") for ref in ids]
+    return [SessionSummary(id=SessionId(ref), origin=Origin.CLAUDE_AI_EXPORT, title=f"Session {ref}") for ref in ids]
 
 
 def _loader(*ids: str) -> object:

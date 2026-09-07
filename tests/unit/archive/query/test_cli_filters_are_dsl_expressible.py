@@ -29,7 +29,7 @@ import pytest
 from polylogue.archive.query.expression import compile_expression
 from polylogue.archive.query.filter_kwargs import spec_session_filter_kwargs
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.cli.click_option_groups import FILTER_OPTION_DECORATORS
+from polylogue.cli.click_option_groups import FILTER_OPTION_DECORATORS, ClickCallable
 
 #: ``(filter key, option params, DSL expression)`` — the option route and the
 #: DSL route must lower to the same value for that key.
@@ -91,7 +91,7 @@ def _filter_option_names() -> frozenset[str]:
 
     def _target() -> None: ...
 
-    decorated: object = _target
+    decorated: ClickCallable = _target
     for decorator in FILTER_OPTION_DECORATORS:
         decorated = decorator(decorated)
     params: list[click.Parameter] = decorated.__click_params__  # type: ignore[attr-defined]
