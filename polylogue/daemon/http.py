@@ -1665,12 +1665,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
             try:
                 if mutating:
-                    # A mutation may not use the read contract, which
-                    # deliberately leaves timed-out work running: its
-                    # route-level writer lease must stay held until the
-                    # substrate call finishes. The control class reserves
-                    # capacity precisely so this wait is bounded by the
-                    # mutation itself rather than by read pressure.
+                    # The control class reserves capacity, so this wait is
+                    # bounded by the mutation itself, not by read pressure.
                     return submitted.future.result()
                 try:
                     return submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
