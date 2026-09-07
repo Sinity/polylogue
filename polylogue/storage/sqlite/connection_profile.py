@@ -1055,9 +1055,9 @@ class ReadFrameExpiredError(RuntimeError):
 class StaleContinuationError(RuntimeError):
     """A continuation cannot be resumed against an equivalent frame.
 
-    Raised instead of resuming on a moved generation whose anchor no longer
-    holds: continuing there would skip or duplicate rows, and the caller can
-    only decide which of those it can tolerate.
+    Raised instead of resuming where the anchor no longer holds the position:
+    continuing there would skip or duplicate rows, and only the caller can
+    decide which of those it can tolerate.
     """
 
     code = "stale_continuation"
