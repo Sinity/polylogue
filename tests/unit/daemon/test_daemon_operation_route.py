@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import threading
 from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from time import sleep
 
@@ -79,6 +80,20 @@ def test_one_uds_operation_request_returns_typed_result_without_health_probe(
     assert timing["elapsed_ms"] >= 25
     assert timing["queue_ms"] >= 0
     assert units["timing"]["elapsed_ms"] >= 25
+
+
+def test_machine_handler_is_not_the_browser_handler_or_route_dispatcher() -> None:
+    """The UDS listener cannot acquire browser routes through inheritance."""
+
+    from polylogue.daemon.uds import machine_operation_handler
+
+    handler = machine_operation_handler(DaemonAPIHandler)
+
+    assert not issubclass(handler, DaemonAPIHandler)
+    assert handler.__bases__ == (BaseHTTPRequestHandler,)
+    assert "do_GET" in handler.__dict__
+    assert "do_POST" in handler.__dict__
+    assert "_api_get_routes" not in handler.__dict__
 
 
 def test_operation_route_bounds_the_serialized_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
