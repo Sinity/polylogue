@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from polylogue.api.archive import read_frame
+from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.core.identity_law import transcript_order_sql
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.rendering.block_models import RenderableBlock
@@ -36,33 +37,45 @@ def stream_exact_session_markdown(
 
     try:
         frame = read_frame(db_path, timeout_class="background-read")
-    except sqlite3.Error:
-        return False
+    except sqlite3.Error as exc:
+        raise _index_unavailable(db_path, exc) from exc
     try:
-        conn = frame.connection
-        session_id = _resolve_session_id(conn, session_ref)
-        if session_id is None or _has_prefix_sharing_edge(conn, session_id):
-            return False
-        session = conn.execute(
-            """
-            SELECT session_id, native_id, origin, title
-            FROM sessions
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        if session is None:
-            return False
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with out_path.open("w", encoding="utf-8") as fh:
-            title = session["title"] or session["native_id"] or session["session_id"]
-            fh.write(f"# {title}\n\n")
-            fh.write(f"Origin: {session['origin']}\n")
-            fh.write(f"Session ID: {session['session_id']}\n\n")
-            _write_message_stream(frame, session_id, fh, prose_only=prose_only)
-        return True
+        try:
+            conn = frame.connection
+            session_id = _resolve_session_id(conn, session_ref)
+            if session_id is None or _has_prefix_sharing_edge(conn, session_id):
+                return False
+            session = conn.execute(
+                """
+                SELECT session_id, native_id, origin, title
+                FROM sessions
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+            if session is None:
+                return False
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("w", encoding="utf-8") as fh:
+                title = session["title"] or session["native_id"] or session["session_id"]
+                fh.write(f"# {title}\n\n")
+                fh.write(f"Origin: {session['origin']}\n")
+                fh.write(f"Session ID: {session['session_id']}\n\n")
+                _write_message_stream(frame, session_id, fh, prose_only=prose_only)
+            return True
+        except sqlite3.Error as exc:
+            raise _index_unavailable(db_path, exc) from exc
     finally:
         frame.close()
+
+
+def _index_unavailable(db_path: Path, exc: sqlite3.Error) -> ArchiveTierUnavailableError:
+    return ArchiveTierUnavailableError(
+        tier="index",
+        path=str(db_path.resolve(strict=False)),
+        reason=f"cannot read SQLite database ({exc})",
+        guidance="rebuild the derived index tier from durable evidence through the daemon route, then retry the export",
+    )
 
 
 def _resolve_session_id(conn: sqlite3.Connection, token: str) -> str | None:
