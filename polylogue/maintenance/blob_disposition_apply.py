@@ -843,6 +843,65 @@ def apply_disposition_plan(
     )
 
 
+_GC_SCHEMA_ABSENT_BLOCKERS = frozenset(
+    {
+        "blob GC durable member-intent schema is unavailable",
+        "blob GC durable namespace-identity schema is unavailable",
+    }
+)
+DIRECT_UNLINK_DETAIL = "deleted by direct unlink: the source tier predates the blob-GC member-intent schema"
+
+
+def _delete_candidates_directly(
+    results: list[MemberResult],
+    *,
+    candidates: list[MemberResult],
+    context: BlobDispositionContext,
+    source_db: Path,
+) -> tuple[list[MemberResult], tuple[str, ...]]:
+    """Unlink unreferenced candidates without the GC generation ledger.
+
+    Used only when the source tier has no ``gc_generation_members`` table.
+    Publishers are excluded for the whole pass; a hash that is referenced now
+    stays on disk and is reported retained.
+    """
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+    errors: list[str] = []
+    deleted: set[str] = set()
+    retained: set[str] = set()
+    touched: set[Path] = set()
+    with exclude_archive_blob_publishers(source_db):
+        for result in candidates:
+            if result.blob_hash in context.referenced_hashes:
+                retained.add(result.blob_hash)
+                continue
+            path = context.blob_store.blob_path(result.blob_hash)
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                deleted.add(result.blob_hash)
+                continue
+            except OSError as exc:
+                errors.append(f"{result.blob_hash[:16]}: {exc}")
+                continue
+            deleted.add(result.blob_hash)
+            touched.add(path.parent)
+    for directory in sorted(touched):
+        _fsync_directory(directory)
+    updated = [
+        replace(result, detail=DIRECT_UNLINK_DETAIL)
+        if result.blob_hash in deleted and result.outcome is MemberOutcome.DELETED
+        else replace(
+            result, outcome=MemberOutcome.RETAINED_REFERENCED, detail="referenced by a durable row at unlink time"
+        )
+        if result.blob_hash in retained and result.outcome is MemberOutcome.DELETED
+        else result
+        for result in results
+    ]
+    return updated, tuple(errors)
+
+
 def _delete_candidates(
     results: list[MemberResult],
     *,
@@ -867,6 +926,14 @@ def _delete_candidates(
         context.blob_store.root,
         {result.blob_hash for result in candidates},
     )
+    if errors and all(error in _GC_SCHEMA_ABSENT_BLOCKERS for error in errors):
+        # A source tier older than the GC member-intent schema cannot record a
+        # generation, but the disposition plan already carries the liveness
+        # decision and this pass re-read the reference set; unlink directly
+        # and say so on every member.
+        results, errors = _delete_candidates_directly(
+            results, candidates=candidates, context=context, source_db=source_db
+        )
     declined = {result.blob_hash for result in candidates if context.blob_store.blob_path(result.blob_hash).exists()}
     if not declined:
         return results, tuple(errors)

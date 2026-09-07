@@ -23,6 +23,7 @@ from polylogue.maintenance.blob_disposition import (
     compile_disposition_plan,
 )
 from polylogue.maintenance.blob_disposition_apply import (
+    DIRECT_UNLINK_DETAIL,
     INVALID_ENTRY_COHORT,
     DispositionApplyReceipt,
     MemberOutcome,
@@ -630,11 +631,10 @@ def test_receipt_totals_and_cohorts_derive_from_member_outcomes(tmp_path: Path) 
     assert published["restorations"]["counts"] == receipt.restoration_counts
 
 
-def test_a_candidate_the_gc_seam_leaves_on_disk_is_never_reported_deleted(tmp_path: Path) -> None:
-    """Anti-vacuity: reporting the intended effect instead of the observed one
-    lets a receipt claim bytes that are still in the namespace. The seam owns
-    the unlink, so an object still present afterwards is blocked, whatever the
-    plan authorized."""
+def test_a_source_tier_without_the_gc_ledger_unlinks_unreferenced_candidates_directly(tmp_path: Path) -> None:
+    """Anti-vacuity: deleting the direct-unlink fallback leaves the proven
+    object on disk with a blocked receipt; deleting the reference recheck
+    would unlink the referenced object too."""
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     legacy_root = tmp_path / "legacy-hooks"
     envelope = _hook_envelope("proven")
@@ -644,11 +644,35 @@ def test_a_candidate_the_gc_seam_leaves_on_disk_is_never_reported_deleted(tmp_pa
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
-    assert not receipt.ok
-    assert receipt.blockers
+    assert receipt.ok, receipt.blockers
     (result,) = receipt.results
     assert result.blob_hash == blob_hash
-    assert result.outcome is MemberOutcome.BLOCKED
+    assert result.outcome is MemberOutcome.DELETED
+    assert result.detail == DIRECT_UNLINK_DETAIL
+    assert not blob_path.exists()
+    assert receipt.deleted_count == 1
+    assert receipt.namespace_after.blob_count == 0
+
+
+def test_the_direct_unlink_fallback_keeps_an_object_a_durable_row_still_names(tmp_path: Path) -> None:
+    """Anti-vacuity: a reference that appears after planning is a drifted
+    denominator; dropping that refusal (or the fallback's own recheck) would
+    unlink raw material the archive still reads."""
+    archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
+    legacy_root = tmp_path / "legacy-hooks"
+    envelope = _hook_envelope("proven")
+    _write_spool_file(legacy_root, envelope)
+    blob_hash, blob_path = _store_aged(blob_root, _stored_bytes(envelope, tmp_path))
+    plan, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, ?)", (bytes.fromhex(blob_hash), "raw_payload")
+        )
+    _, context = _plan_and_context(archive_root, blob_root, legacy_root=legacy_root, capture_spool=capture_spool)
+
+    receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
+
+    assert not receipt.ok
+    assert any("referenced-and-present" in blocker for blocker in receipt.blockers)
     assert blob_path.is_file()
     assert receipt.deleted_count == 0
-    assert receipt.namespace_after.blob_count == 1
