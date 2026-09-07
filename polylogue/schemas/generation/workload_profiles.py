@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import unicodedata
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from polylogue.core.digest import RECEIPT, digest
 from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
 from polylogue.schemas.generation.models import _PackageAccumulator, _UnitMembership
@@ -24,32 +22,10 @@ _STRUCTURAL_VARIANT_CAP = 256
 _TOOL_IDS_PER_SCOPE_CAP = 4_096
 
 
-def _normalize_profile_strings(value: object) -> object:
-    if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
-    if isinstance(value, Mapping):
-        normalized: dict[str, object] = {}
-        for key, child in value.items():
-            normalized_key = unicodedata.normalize("NFC", key)
-            if normalized_key in normalized:
-                raise ValueError(f"Workload profile keys collide after NFC normalization: {normalized_key!r}")
-            normalized[normalized_key] = _normalize_profile_strings(child)
-        return normalized
-    if isinstance(value, list):
-        return [_normalize_profile_strings(child) for child in value]
-    return value
-
-
 def workload_profile_identity(profile: Mapping[str, object]) -> str:
     """Return a deterministic identity for a content-only workload profile."""
     payload = {key: value for key, value in profile.items() if key != "profile_id"}
-    encoded = json.dumps(
-        _normalize_profile_strings(payload),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+    return f"sha256:{digest(payload, RECEIPT)}"
 
 
 _PARENT_FIELD_NAMES = frozenset(
