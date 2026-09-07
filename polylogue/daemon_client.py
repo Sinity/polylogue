@@ -94,22 +94,6 @@ class DaemonClient:
             return None
         return payload
 
-    def request_mutation_json(
-        self,
-        method: str,
-        path: str,
-        body: dict[str, object] | None = None,
-    ) -> dict[str, Any] | None:
-        """Submit a confirmed mutation without conflating no-daemon and no-receipt."""
-
-        response = self._request_json_response(method, path, body, mutation=True)
-        if response is None:
-            return None
-        status, payload = response
-        if status != 200:
-            self._raise_response_error(status, payload)
-        return payload
-
     @staticmethod
     def _raise_response_error(status: int, payload: dict[str, Any] | None) -> None:
         envelope = payload if isinstance(payload, dict) else {}
@@ -166,9 +150,6 @@ class DaemonClient:
             return None
         finally:
             connection.close()
-
-    def cli_query(self, params: dict[str, object]) -> dict[str, Any] | None:
-        return self.request_json("POST", "/api/cli/query", {"params": params})
 
     def operation(
         self,

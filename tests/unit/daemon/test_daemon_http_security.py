@@ -1047,10 +1047,11 @@ class TestNoTokenLogging:
             (Path("polylogue/browser_capture/server.py"), "_pairing_redeem", "_send_json"),
             # `_handle_cli_delete_authorize` mints a single-use delete
             # authorization and returns it to the authenticated CLI caller that
-            # just requested it -- the caller must present it back to
-            # `/api/cli/delete` to confirm. Handing the token to its rightful
-            # owner is the entire point of the endpoint, the same shape as the
-            # pairing redemption above, and delete has no non-daemon route.
+            # just requested it -- the caller must present it back through
+            # `mutation.session.delete.execute` to confirm. Handing the token to
+            # its rightful owner is the entire point of the operation, the same
+            # shape as the pairing redemption above, and delete has no
+            # non-daemon route.
             (Path("polylogue/daemon/http.py"), "_handle_cli_delete_authorize", "_send_json"),
         }
         safe_token_container_results = {

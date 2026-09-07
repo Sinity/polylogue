@@ -141,26 +141,18 @@ def _delete_authority_daemon(monkeypatch: pytest.MonkeyPatch, archive_root: Path
         thread.join(timeout=2)
 
 
-_DELETE_OPERATIONS = {
-    "/api/cli/delete/prepare": "mutation.session.delete.preview",
-    "/api/cli/delete/authorize": "mutation.session.delete.authorize",
-    "/api/cli/delete/cancel": "mutation.session.delete.cancel",
-    "/api/cli/delete": "mutation.session.delete.execute",
-}
-
-
-def _delete_operation(client: object, path: str, body: dict[str, object]) -> dict[str, object]:
+def _delete_operation(client: object, step: str, body: dict[str, object]) -> dict[str, object]:
     """Drive one delete-lifecycle step over the declared operation envelope.
 
-    The bespoke ``/api/cli/delete*`` transport is gone: every step is an
-    operation request, and a typed envelope error is re-raised in the shape
-    the surrounding assertions read.
+    ``step`` is the lifecycle stage — ``preview``, ``authorize``, ``cancel``
+    or ``execute``. A typed envelope error is re-raised in the shape the
+    surrounding assertions read.
     """
     from polylogue.daemon_client import DaemonClient, DaemonResponseError
 
     assert isinstance(client, DaemonClient)
-    envelope = client.operation(_DELETE_OPERATIONS[path], body)
-    assert envelope is not None, f"daemon did not answer {path}"
+    envelope = client.operation(f"mutation.session.delete.{step}", body)
+    assert envelope is not None, f"daemon did not answer {step}"
     error = envelope.get("error")
     if error:
         data = error.get("data") or {}
@@ -176,10 +168,10 @@ def _delete_operation(client: object, path: str, body: dict[str, object]) -> dic
 
 
 def _prepare_authorize(client: object, session_ids: tuple[str, ...]) -> str:
-    preview = _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": list(session_ids)})
+    preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
     assert preview is not None
     assert preview["session_ids"] == list(session_ids)
-    authorization = _delete_operation(client, "/api/cli/delete/authorize", {"preview_ref": preview["preview_ref"]})
+    authorization = _delete_operation(client, "authorize", {"preview_ref": preview["preview_ref"]})
     assert authorization is not None
     return str(authorization["authorization_token"])
 
@@ -205,33 +197,31 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
     success_id, replay_id, substitute_id, stale_a, stale_b, expiry_id = _seed_delete_authority_archive(archive_root, 6)
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         success_token = _prepare_authorize(client, (success_id,))
-        result = _delete_operation(client, "/api/cli/delete", {"authorization_token": success_token})
+        result = _delete_operation(client, "execute", {"authorization_token": success_token})
         assert result == {"status": "deleted", "operation": "delete", "session_count": 1, "affected_count": 1}
         _assert_session_exists(archive_root, success_id, expected=False)
 
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "/api/cli/delete", {"session_ids": [replay_id]})
+            _delete_operation(client, "execute", {"session_ids": [replay_id]})
         _assert_session_exists(archive_root, replay_id, expected=True)
 
         replay_token = _prepare_authorize(client, (replay_id,))
-        _delete_operation(client, "/api/cli/delete", {"authorization_token": replay_token})
+        _delete_operation(client, "execute", {"authorization_token": replay_token})
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "/api/cli/delete", {"authorization_token": replay_token})
+            _delete_operation(client, "execute", {"authorization_token": replay_token})
         _assert_session_exists(archive_root, substitute_id, expected=True)
 
         substitute_token = _prepare_authorize(client, (substitute_id,))
         with pytest.raises(DaemonResponseError):
-            _delete_operation(
-                client, "/api/cli/delete", {"authorization_token": substitute_token, "session_ids": [stale_a]}
-            )
+            _delete_operation(client, "execute", {"authorization_token": substitute_token, "session_ids": [stale_a]})
         _assert_session_exists(archive_root, substitute_id, expected=True)
-        _delete_operation(client, "/api/cli/delete", {"authorization_token": substitute_token})
+        _delete_operation(client, "execute", {"authorization_token": substitute_token})
 
         stale_token = _prepare_authorize(client, (stale_a, stale_b))
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
             archive.delete_sessions((stale_a,))
         with pytest.raises(DaemonResponseError) as stale_error:
-            _delete_operation(client, "/api/cli/delete", {"authorization_token": stale_token})
+            _delete_operation(client, "execute", {"authorization_token": stale_token})
         assert stale_error.value.status == HTTPStatus.CONFLICT
         assert stale_error.value.code == "delete_authorization_denied"
         assert stale_error.value.detail == "selection_changed_after_authorization"
@@ -251,7 +241,7 @@ def test_cli_delete_uses_real_uds_client_api_authority_and_audit(
                 (hashlib.sha256(expiry_token.encode()).hexdigest(),),
             )
         with pytest.raises(DaemonResponseError):
-            _delete_operation(client, "/api/cli/delete", {"authorization_token": expiry_token})
+            _delete_operation(client, "execute", {"authorization_token": expiry_token})
         _assert_session_exists(archive_root, expiry_id, expected=True)
 
     expected_actor = f"daemon:bearer:{hashlib.sha256(b'delete-authority-token').hexdigest()}"
@@ -348,13 +338,13 @@ def test_cli_delete_real_daemon_route_cancels_an_unconfirmed_preview(
     (session_id,) = _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        preview = _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": [session_id]})
+        preview = _delete_operation(client, "preview", {"session_ids": [session_id]})
         assert preview is not None
         preview_ref = str(preview["preview_ref"])
-        cancelled = _delete_operation(client, "/api/cli/delete/cancel", {"preview_ref": preview_ref})
+        cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
         assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
         with pytest.raises(DaemonResponseError) as authorization_error:
-            _delete_operation(client, "/api/cli/delete/authorize", {"preview_ref": preview_ref})
+            _delete_operation(client, "authorize", {"preview_ref": preview_ref})
 
     assert authorization_error.value.status == HTTPStatus.CONFLICT
     _assert_session_exists(archive_root, session_id, expected=True)
@@ -374,7 +364,7 @@ def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
     (session_id,) = _seed_delete_authority_archive(archive_root, 1)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        preview = _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": [session_id]})
+        preview = _delete_operation(client, "preview", {"session_ids": [session_id]})
         assert preview is not None
         preview_ref = str(preview["preview_ref"])
         with sqlite3.connect(archive_root / "audit.db") as conn:
@@ -383,7 +373,7 @@ def test_cli_delete_real_daemon_route_cancels_an_expired_preview(
                 (preview_ref,),
             )
 
-        cancelled = _delete_operation(client, "/api/cli/delete/cancel", {"preview_ref": preview_ref})
+        cancelled = _delete_operation(client, "cancel", {"preview_ref": preview_ref})
 
     assert cancelled == {"status": "cancelled", "preview_ref": preview_ref}
     _assert_session_exists(archive_root, session_id, expected=True)
@@ -486,17 +476,17 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
     session_ids = _seed_delete_authority_archive(archive_root, 513)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        preview = _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": list(session_ids)})
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
         assert preview is not None
         preview_refs = preview["preview_refs"]
         assert isinstance(preview_refs, list)
         assert len(preview_refs) == 3
-        authorization = _delete_operation(client, "/api/cli/delete/authorize", {"preview_refs": preview_refs})
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
         tokens = authorization["authorization_tokens"]
         assert isinstance(tokens, list)
         assert len(tokens) == 3
-        result = _delete_operation(client, "/api/cli/delete", {"authorization_tokens": tokens})
+        result = _delete_operation(client, "execute", {"authorization_tokens": tokens})
 
     assert result == {"status": "deleted", "operation": "delete", "session_count": 513, "affected_count": 513}
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -514,11 +504,11 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     session_ids = _seed_delete_authority_archive(archive_root, 513)
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        preview = _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": list(session_ids)})
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
         assert preview is not None
         preview_refs = preview["preview_refs"]
         assert isinstance(preview_refs, list)
-        authorization = _delete_operation(client, "/api/cli/delete/authorize", {"preview_refs": preview_refs})
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
         assert authorization is not None
         tokens = authorization["authorization_tokens"]
         assert isinstance(tokens, list)
@@ -536,7 +526,7 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
             side_effect=consume_with_failure,
         ):
             with pytest.raises(DaemonResponseError) as error:
-                _delete_operation(client, "/api/cli/delete", {"authorization_tokens": tokens})
+                _delete_operation(client, "execute", {"authorization_tokens": tokens})
 
     assert getattr(error.value, "code", None) == "delete_partially_applied"
     assert getattr(error.value, "completed_chunks", None) == 2
@@ -565,7 +555,7 @@ def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budg
 
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         with pytest.raises(DaemonResponseError) as error:
-            _delete_operation(client, "/api/cli/delete/prepare", {"session_ids": selection})
+            _delete_operation(client, "preview", {"session_ids": selection})
 
     assert error.value.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     assert error.value.code == "selection_exceeds_preview_work_budget"
