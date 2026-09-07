@@ -148,6 +148,32 @@ def test_run_receipt_is_absent_without_a_directory_or_workers(tmp_path: Path) ->
     assert not list(tmp_path.iterdir())
 
 
+def test_managed_pytest_step_sets_the_receipt_directory_itself(tmp_path: Path) -> None:
+    """A managed run measures itself without an ambient switch.
+
+    Anti-vacuity: the queue reduces the submitting client's environment, so a
+    step that only read ``POLYLOGUE_SUITE_COST_DIR`` from the ambient
+    environment produced no receipt on any managed route. Dropping the
+    assignment leaves the key absent below.
+    """
+    from devtools.verify_runs import VerifyRun, env_for_pytest_step
+
+    run = VerifyRun(tier="focused-test", argv=["tests"], git_head="0" * 40, root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+
+    resolved = env_for_pytest_step({}, run=run, artifacts=artifacts)
+    assert resolved[suite_cost.SUITE_COST_DIR_ENV] == str(artifacts.step_dir / "suite-cost")
+
+    # An explicit directory still wins, so a comparison run can collect
+    # several steps' receipts in one place.
+    override = env_for_pytest_step(
+        {suite_cost.SUITE_COST_DIR_ENV: str(tmp_path / "elsewhere")},
+        run=run,
+        artifacts=artifacts,
+    )
+    assert override[suite_cost.SUITE_COST_DIR_ENV] == str(tmp_path / "elsewhere")
+
+
 def _run_child(
     test_path: Path,
     *,
