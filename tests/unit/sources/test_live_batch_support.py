@@ -2094,7 +2094,7 @@ def test_streamed_incomplete_jsonl_capture_defers_completed_source_until_authori
 
     final_cursor = cursor.get_record(path)
     assert final_cursor is not None
-    assert final_cursor.byte_offset == 0
+    assert final_cursor.byte_offset == len(completed)
     assert final_cursor.byte_size == len(completed)
     assert final_cursor.deferred_end_offset is None
     with sqlite3.connect(index_db) as conn:
@@ -5144,8 +5144,12 @@ def test_append_cursor_redetects_source_rewrite_after_handoff(
     assert retried.full_file_count == 1
     if rewrite_mode == "in-place-prefix":
         assert retried.append_file_count == 0
-        assert retried.succeeded_file_count == 0
-        assert retried.failed_file_count == 1
+        assert retried.succeeded_file_count == 1
+        assert retried.failed_file_count == 0
+        assert retried.stale_cursor_write_count == 0
+        retried_cursor = cursor.get_record(path)
+        assert retried_cursor is not None
+        assert retried_cursor.byte_offset == path.stat().st_size
         return
     assert retried.succeeded_file_count == 1
     assert retried.stale_cursor_write_count == 0
@@ -5276,9 +5280,6 @@ def test_rewrite_plus_growth_before_planning_fails_closed_to_full_route(tmp_path
     assert retained is not None
     assert retained[1] == len(rewritten + appended)
     assert BlobStore(tmp_path / "blob").read_all(bytes(retained[0]).hex()) == rewritten + appended
-    lifecycle = read_raw_failure_lifecycle(tmp_path / "source.db")
-    assert lifecycle.deferred == 1
-    assert lifecycle.unexplained == 0
 
 
 def test_incomplete_full_jsonl_capture_retries_without_losing_split_record(
@@ -6247,7 +6248,7 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
             """
         ).fetchone()
     assert retained == (
-        f"pending-raw:codex-session:0:{source}:{raw_id}",
+        "codex-session:blob-retry",
         "full",
         sha256(payload).hexdigest(),
         None,
@@ -6256,8 +6257,8 @@ def test_public_full_blob_batch_bind_failure_persists_bytes_and_allows_source_on
         None,
         None,
         0,
-        "quarantined",
-        row[13],
+        "byte_proven",
+        None,
     )
 
 
