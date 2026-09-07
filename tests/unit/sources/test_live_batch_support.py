@@ -6,6 +6,7 @@ import json
 import os
 import sqlite3
 import zipfile
+from contextlib import closing
 from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -361,6 +362,7 @@ def test_append_capability_receipt_is_keyed_to_live_identity_contract(
         assert payload["reason"] is None
 
 
+from polylogue.sources.sqlite_export import open_logical_source
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
     ARCHIVE_TIER_SPECS,
@@ -1474,7 +1476,7 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
     monkeypatch: pytest.MonkeyPatch,
     state_name: str,
 ) -> None:
-    """A direct file copy loses an uncheckpointed WAL row; the snapshot retains it."""
+    """A direct file copy loses an uncheckpointed WAL row; the export retains it."""
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     initialize_active_archive_root(tmp_path)
@@ -1509,8 +1511,9 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
 
     with sqlite3.connect(tmp_path / "source.db") as conn:
         blob_hash = str(conn.execute("SELECT hex(blob_hash) FROM raw_sessions").fetchone()[0]).lower()
-    with sqlite3.connect(BlobStore(tmp_path / "blob").blob_path(blob_hash)) as snapshot:
-        assert snapshot.execute("SELECT value FROM retained_wal_row").fetchall() == [("must survive",)]
+    retained = BlobStore(tmp_path / "blob").blob_path(blob_hash)
+    with closing(open_logical_source(retained)) as export:
+        assert export.execute("SELECT value FROM retained_wal_row").fetchall() == [("must survive",)]
 
 
 def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
