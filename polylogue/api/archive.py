@@ -6010,6 +6010,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         from polylogue.archive.query.facets import (
             compute_idf,
         )
+        from polylogue.surfaces.outcome import decide_outcome
         from polylogue.surfaces.payloads import (
             FacetBucketsPayload,
             FacetsResponse,
@@ -6059,8 +6060,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         active = scoped_buckets if scoped_to_query else global_buckets
         complete_families = _FACET_COMPLETE_FAMILIES if include_deferred else _FACET_CORE_FAMILIES
         deferred_families = {} if include_deferred else dict.fromkeys(_FACET_DEFERRED_FAMILIES, "deferred_by_default")
+        # A projection that missed its budget or lost a prerequisite is a named
+        # gap: without it, zero facet rows at live scale reads identically to a
+        # genuinely empty archive. Deferral is declared scope, not a gap.
+        facet_gaps: list[str] = []
+        if availability.state != "ready":
+            facet_gaps.append(f"facets_{availability.state}")
         return FacetsResponse.model_validate(
             {
+                "outcome": decide_outcome(matched=active.total_sessions, degraded=facet_gaps),
                 "scoped_to_query": scoped_to_query,
                 "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
                 "stale": False,

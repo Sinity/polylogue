@@ -44,6 +44,7 @@ from polylogue.surfaces.action_affordances import (
     assertion_candidate_review_affordances,
 )
 from polylogue.surfaces.authority import AuthorityEnvelope
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 MutationStatus: TypeAlias = Literal[
     "ok",
@@ -1608,6 +1609,7 @@ class SessionListResponse(SurfacePayloadModel):
     diagnostics: QueryMissDiagnosticsPayload | None = None
     route_state: RouteReadinessPayload | None = None
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 # ---------------------------------------------------------------------------
@@ -1702,6 +1704,7 @@ class SearchEnvelope(SurfacePayloadModel):
     failed_lanes: tuple[dict[str, str], ...] = ()
     advisories: tuple[str, ...] = ()
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 QueryUnitKind: TypeAlias = Literal[
@@ -3417,6 +3420,7 @@ class QueryUnitEnvelope(SurfacePayloadModel):
     continuation: str | None = None
     _transaction_request: object | None = PrivateAttr(default=None)
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 class QueryUnitAggregateEnvelope(SurfacePayloadModel):
@@ -3443,6 +3447,7 @@ class QueryUnitAggregateEnvelope(SurfacePayloadModel):
     continuation: str | None = None
     _transaction_request: object | None = PrivateAttr(default=None)
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 QueryUnitResultEnvelope: TypeAlias = QueryUnitEnvelope | QueryUnitAggregateEnvelope
@@ -3525,11 +3530,19 @@ def build_query_unit_envelope(
     query_ref: str | None = None,
     result_ref: str | None = None,
     continuation: str | None = None,
+    degraded: Sequence[str] = (),
+    error: str | None = None,
 ) -> QueryUnitEnvelope:
-    """Construct the canonical terminal query-unit response envelope."""
+    """Construct the canonical terminal query-unit response envelope.
+
+    ``degraded`` names the gaps that shaped this page and ``error`` the reason
+    no valid answer exists. Both are facts only the executing operation holds,
+    and they are what keeps a zero-row page distinguishable from a broken one.
+    """
 
     items_tuple = tuple(items)
     return QueryUnitEnvelope(
+        outcome=decide_outcome(matched=len(items_tuple), degraded=degraded, error=error),
         unit=unit,
         query=query,
         items=items_tuple,
@@ -3559,11 +3572,14 @@ def build_query_unit_aggregate_envelope(
     query_ref: str | None = None,
     result_ref: str | None = None,
     continuation: str | None = None,
+    degraded: Sequence[str] = (),
+    error: str | None = None,
 ) -> QueryUnitAggregateEnvelope:
     """Construct the canonical terminal aggregate response envelope."""
 
     items_tuple = tuple(items)
     return QueryUnitAggregateEnvelope(
+        outcome=decide_outcome(matched=len(items_tuple), degraded=degraded, error=error),
         unit=unit,
         query=query,
         items=items_tuple,
@@ -3815,7 +3831,14 @@ def build_search_envelope(
         from polylogue.operations.action_contracts import query_result_action_affordance_payloads
 
         action_affordances = query_result_action_affordance_payloads()
+    # A lane that failed or was unavailable is a named gap: hits absent behind
+    # one of those is degraded evidence, never an authoritative empty archive.
+    gaps: list[str] = []
+    if execution is not None:
+        gaps.extend(f"lane_failed:{failure.lane}" for failure in execution.failed_lanes)
+        gaps.extend(f"lane_unavailable:{lane}" for lane in execution.unavailable_lanes)
     return SearchEnvelope(
+        outcome=decide_outcome(matched=len(hits_tuple), degraded=gaps),
         hits=hits_tuple,
         total=total,
         limit=limit,
@@ -3941,6 +3964,7 @@ class SessionMessagesResponsePayload(SurfacePayloadModel):
     lineage_complete: bool = True
     lineage_truncation_reason: str | None = None
     authority: AuthorityEnvelope | None = None
+    outcome: OutcomeEnvelope
 
 
 ProjectionAvailabilityState = Literal["ready", "degraded", "unavailable"]
@@ -4085,6 +4109,7 @@ class FacetsResponse(SurfacePayloadModel):
         serialization_alias="global",
     )
     idf: dict[str, dict[str, float]] = Field(default_factory=dict)
+    outcome: OutcomeEnvelope
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 

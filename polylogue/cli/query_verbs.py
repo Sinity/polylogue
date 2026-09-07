@@ -34,6 +34,7 @@ from polylogue.cli.read_view_registry import (
 )
 from polylogue.cli.shared.types import AppEnv
 from polylogue.cli.verb_names import VERB_NAMES
+from polylogue.surfaces.outcome import OutcomeEnvelope, outcome_exit_code, render_outcome_line
 
 _FACET_TERMINAL_BUCKET_LIMIT = 12
 _FACET_TERMINAL_IDF_LIMIT = 12
@@ -144,10 +145,15 @@ def _emit_idf_buckets(idf: dict[str, dict[str, float]], *, limit: int = _FACET_T
 
 
 def emit_facets_response(response: FacetsResponse, *, output_format: str | None) -> None:
-    """Emit a facets response in the shared terminal or JSON shape."""
+    """Emit a facets response and exit on the outcome the operation decided.
+
+    Every facets caller terminates here, so the exit convention is stated once
+    and an empty or gap-shaped facet view can never leave a bare exit 0.
+    """
 
     if output_format == "json":
         click.echo(json.dumps(response.model_dump(mode="json", by_alias=True), indent=2))
+        _exit_on_outcome(response.outcome)
         return
     scope_label = "scoped" if response.scoped_to_query else "global"
 
@@ -156,15 +162,17 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
         return status.label if status is not None and status.label else family.replace("_", " ").title()
 
     click.echo(f"Facets ({scope_label}) — matched result set:")
+    outcome_line = render_outcome_line(response.outcome)
+    if outcome_line is not None:
+        click.secho(f"  {outcome_line}", fg="yellow" if response.outcome.state != "empty" else None)
     if response.availability is not None:
         avail = response.availability
-        marker = {"ready": "ready", "degraded": "DEGRADED", "unavailable": "UNAVAILABLE"}[avail.state]
         budget = (
             f"; budget {avail.elapsed_s:.2f}s/{avail.deadline_s:.2f}s"
             if avail.elapsed_s is not None and avail.deadline_s is not None
             else ""
         )
-        click.echo(f"  readiness: {marker} (cost_class={avail.cost_class}{budget})")
+        click.echo(f"  readiness: cost_class={avail.cost_class}{budget}")
         if avail.detail:
             click.secho(f"  {avail.detail}", fg="yellow")
     click.echo(f"  sessions: {response.scoped.total_sessions}  messages: {response.scoped.total_messages}")
@@ -193,6 +201,13 @@ def emit_facets_response(response: FacetsResponse, *, output_format: str | None)
     _emit_facet_bucket(_status_label("has_flags"), response.scoped.has_flags)
     _emit_facet_bucket("Omitted/noisy facet counts (not canonical facets)", response.scoped.omitted)
     _emit_idf_buckets(response.idf)
+    _exit_on_outcome(response.outcome)
+
+
+def _exit_on_outcome(outcome: OutcomeEnvelope) -> None:
+    code = outcome_exit_code(outcome)
+    if code:
+        raise SystemExit(code)
 
 
 # Deferred imports: RootModeRequest triggers the archive.query.spec →

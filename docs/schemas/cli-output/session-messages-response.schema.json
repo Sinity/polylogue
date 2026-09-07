@@ -349,6 +349,44 @@
       "title": "MessageRowEnvelope",
       "type": "object"
     },
+    "OutcomeEnvelope": {
+      "additionalProperties": false,
+      "description": "The terminal outcome of one operation, decided at the operation boundary.",
+      "properties": {
+        "detail": {
+          "additionalProperties": true,
+          "title": "Detail",
+          "type": "object"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "state": {
+          "enum": [
+            "ok",
+            "empty",
+            "degraded",
+            "error"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "title": "OutcomeEnvelope",
+      "type": "object"
+    },
     "ReaderActionAvailabilityPayload": {
       "additionalProperties": false,
       "description": "Per-target reader action availability with explicit disabled reason.\n\nReader actions surface seven distinct states (see :data:`ReaderActionState`)\nso the UI can render \"disabled because X\" / \"loading\" / \"dangerous\"\nwithout conflating them under a single boolean (#1488). ``enabled`` is the\ncompact actionability bit consumed by current reader clients; ``state`` is\nthe richer reason category.",
@@ -533,6 +571,9 @@
       "title": "Offset",
       "type": "integer"
     },
+    "outcome": {
+      "$ref": "#/$defs/OutcomeEnvelope"
+    },
     "session_id": {
       "title": "Session Id",
       "type": "string"
@@ -547,7 +588,8 @@
     "messages",
     "total",
     "limit",
-    "offset"
+    "offset",
+    "outcome"
   ],
   "title": "Session Messages Response",
   "type": "object",

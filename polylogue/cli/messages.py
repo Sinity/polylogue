@@ -20,6 +20,7 @@ from polylogue.rendering.semantic_cards import (
     lineage_descriptor_from_session,
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
+from polylogue.surfaces.outcome import lineage_page_outcome
 from polylogue.surfaces.payloads import (
     SessionMessagesResponsePayload,
     message_row_envelope_from_domain,
@@ -87,6 +88,11 @@ def run_messages(
                         lineage_complete=completeness.complete,
                         lineage_truncation_reason=completeness.truncation_reason,
                         authority=authority_for_config(api.config, server_identity="direct", started_at=started_at),
+                        outcome=lineage_page_outcome(
+                            matched=len(messages),
+                            complete=completeness.complete,
+                            truncation_reason=completeness.truncation_reason,
+                        ),
                     ),
                     exclude_none=True,
                 )

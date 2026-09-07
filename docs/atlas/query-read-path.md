@@ -28,6 +28,18 @@ parent prefixes and report depth-limit or dangling-branch-point status rather
 than silently claiming completeness
 (`polylogue/storage/sqlite/archive_tiers/write.py:1488-1555`).
 
+## Terminal outcome
+
+Every row-bearing envelope carries one typed outcome -- `ok`, `empty`,
+`degraded`, or `error` -- decided at the operation boundary
+(`polylogue/surfaces/outcome.py:1-60`). `empty` means the declared scope
+completed and holds zero rows; `degraded` means named gaps shaped the answer,
+so absent rows may be the gap rather than the archive; `error` means no valid
+answer. Surfaces serialize that decision and map it to their transport: the
+CLI exit table is `OUTCOME_EXIT_CODES`, and the daemon's readiness chips are
+projections of it. A surface that re-derives readiness from `not rows` has
+reintroduced the ambiguity the type removes.
+
 ## Surface ownership
 
 - `polylogue/cli/` owns command grammar and human/machine presentation.

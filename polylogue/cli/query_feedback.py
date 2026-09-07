@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from polylogue.archive.query.fields import describe_spec_selection_fields
 from polylogue.cli.convergence_feedback import convergence_warning_line
 from polylogue.cli.shared.machine_errors import error_no_results
+from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
 
 if TYPE_CHECKING:
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
@@ -62,7 +63,7 @@ def emit_no_results(
     output_format: str = "text",
     message: str | None = None,
     hint: str | None = None,
-    exit_code: int | None = 2,
+    exit_code: int | None = OUTCOME_EXIT_CODES["empty"],
 ) -> None:
     """Render a canonical no-results message for human and machine surfaces."""
     filters = describe_spec_selection_fields(selection) if selection is not None else []
@@ -72,7 +73,7 @@ def emit_no_results(
             resolved_message,
             filters=filters or None,
             diagnostics=diagnostics.to_dict() if diagnostics is not None else None,
-        ).emit(exit_code=exit_code or 2)
+        ).emit(exit_code=exit_code or OUTCOME_EXIT_CODES["empty"])
 
     warning = convergence_warning_line()
     if filters and message is None:
