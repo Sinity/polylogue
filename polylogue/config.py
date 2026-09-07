@@ -15,6 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 import tomllib
 
@@ -22,6 +23,9 @@ from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .paths import GEMINI_DRIVE_FOLDER
 from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
+
+if TYPE_CHECKING:
+    from .maintenance.source_manifest_continuity import SourceDeclaration, SourceFrontier
 
 
 class ConfigError(PolylogueError):
@@ -205,6 +209,39 @@ def active_archive_root(config: Config) -> Path:
 def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
     """Return a defensive source list from an already-resolved runtime."""
     return list(runtime.sources)
+
+
+def source_declarations(runtime: ResolvedRuntimeConfig) -> tuple[SourceDeclaration, ...]:
+    """Return canonical declarations for every configured local source.
+
+    The returned declarations intentionally include explicit roots even when
+    they do not exist yet.  Discovery-only defaults remain presence-gated,
+    while configured roots are part of the conservation denominator.
+    """
+    from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
+
+    declarations: list[SourceDeclaration] = []
+    # Runtime discovery roots are ambient provider state and can be very
+    # large; only roots explicitly configured by the operator are a proof
+    # denominator.  They are retained even when missing.
+    declarations.extend(
+        SourceDeclaration(f"configured-{n}", SourceRole.DIRECTORY, path, True)
+        for n, path in enumerate(runtime.source_paths.explicit)
+    )
+    return tuple(declarations)
+
+
+def configured_source_frontier(runtime: ResolvedRuntimeConfig | None = None) -> SourceFrontier:
+    """Build the complete configured-source denominator for a runtime."""
+    from polylogue.maintenance.source_manifest_continuity import build_source_frontier
+
+    resolved = runtime if runtime is not None else resolve_runtime_config()
+    return build_source_frontier(source_declarations(resolved))
+
+
+# Descriptive alias used by maintenance callers that need declarations but do
+# not yet need to enumerate their members.
+configured_source_declarations = source_declarations
 
 
 def get_drive_config(runtime: ResolvedRuntimeConfig) -> DriveConfig:
@@ -2289,7 +2326,11 @@ def resolve_runtime_config(
         ("inbox", source_paths.inbox),
         ("hooks", source_paths.hooks_pending),
     )
+    # Explicit roots are declarations, not discovery hints: retaining a
+    # missing root in the runtime source set lets conservation report a typed
+    # unavailable input instead of silently shrinking its denominator.
     sources = [Source(name=name, path=path) for name, path in local_candidates if path.exists()]
+    sources.extend(Source(name=f"configured-{n}", path=path) for n, path in enumerate(explicit_roots))
     gemini_cache = drive_cache / "gemini"
     if gemini_cache.exists() or drive_credentials.exists() or drive_token.exists():
         sources.append(Source(name="aistudio", folder=GEMINI_DRIVE_FOLDER, path=gemini_cache))
