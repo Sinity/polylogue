@@ -460,20 +460,6 @@ def _seed_minimal_archive(db_path: Path, source_path: Path, *, session_id: str =
         conn.commit()
 
 
-def test_archive_missing_profile_selector_limits_after_stale_filter(tmp_path: Path) -> None:
-    archive_db = tmp_path / "index.db"
-    with sqlite3.connect(archive_db) as conn:
-        initialize_archive_tier(conn, ArchiveTier.INDEX)
-        session_ids = [
-            _seed_index_session(conn, session_id="codex-session:s1", text="profiled"),
-            _seed_index_session(conn, session_id="codex-session:s2", text="missing two"),
-            _seed_index_session(conn, session_id="codex-session:s3", text="missing three"),
-        ]
-        stages._archive_insights_execute_ids(conn, [session_ids[0]])
-
-        assert stages._schema_archive_session_ids_missing_profiles(conn, limit=2) == session_ids[1:]
-
-
 def test_fts_stage_converges_archive_source_path_sessions(tmp_path: Path) -> None:
     """Foreground source-path convergence indexes the path's sessions.
 
@@ -863,10 +849,10 @@ def test_archive_insights_path_batch_does_not_fallback_to_global_missing_profile
         stages, "_schema_archive_session_ids_for_source_paths", lambda _conn, _paths, **_kw: {source_path: []}
     )
 
-    def fail_global_missing_profiles(_conn: sqlite3.Connection) -> list[str]:
-        raise AssertionError("path-scoped insight convergence must not scan global missing profiles")
+    def fail_global_scope(_conn: sqlite3.Connection) -> list[str]:
+        raise AssertionError("path-scoped insight convergence must not scan the whole archive")
 
-    monkeypatch.setattr(stages, "_schema_archive_session_ids_missing_profiles", fail_global_missing_profiles)
+    monkeypatch.setattr(stages, "_session_ids_missing_profiles", fail_global_scope)
 
     assert stages._archive_insights_check_many(archive_db, [source_path]) == set()
     result = stages._archive_insights_execute_many(archive_db, [source_path])
@@ -1664,7 +1650,7 @@ def test_archive_insights_execute_ids_preserves_millisecond_sort_key(tmp_path: P
         assert profile["source_sort_key"] == pytest.approx(source_sort_key_ms / 1000.0)
         assert latency_profile is not None
         assert latency_profile["source_sort_key"] == pytest.approx(source_sort_key_ms / 1000.0)
-        assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
+        assert stages._stale_session_profile_ids(conn, [session_id]) == []
 
 
 def test_archive_insights_execute_ids_propagates_provider_high_water_mark(tmp_path: Path) -> None:
@@ -1740,7 +1726,7 @@ def test_archive_insights_created_without_updated_stays_ready_after_materializat
         assert latency_profile is not None
         assert latency_profile["source_updated_at"] is None
         assert latency_profile["source_sort_key"] == pytest.approx(created_at_ms / 1000.0)
-        assert stages._archive_stale_session_profile_ids(conn, [session_id]) == []
+        assert stages._stale_session_profile_ids(conn, [session_id]) == []
         assert session_insight_status_sync(conn).stale_latency_profile_row_count == 0
 
 
@@ -1769,7 +1755,7 @@ def test_archive_insights_execute_ids_deduplicates_session_ids(tmp_path: Path, m
 
     monkeypatch.setattr("polylogue.storage.derived.session.rebuild.rebuild_session_insights_sync", fake_rebuild)
     monkeypatch.setattr(stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: set())
-    monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
+    monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
         result = stages._archive_insights_execute_ids(
@@ -1818,7 +1804,7 @@ def test_archive_insights_execute_ids_rebuilds_quiet_subset_when_some_sessions_a
     monkeypatch.setattr(
         stages, "_archive_hot_insight_session_ids", lambda _conn, _ids, **_kw: {"codex-session:conv-hot"}
     )
-    monkeypatch.setattr(stages, "_archive_stale_session_profile_ids", lambda _conn, _ids: [])
+    monkeypatch.setattr(stages, "_stale_session_profile_ids", lambda _conn, _ids: [])
 
     with sqlite3.connect(db_path) as conn:
         result = stages._archive_insights_execute_ids(

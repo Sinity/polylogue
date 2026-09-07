@@ -18,22 +18,29 @@ contract either way.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+
+import aiosqlite
 
 from polylogue.storage.derived.session.input_binding import (
     SESSION_INPUT_RECIPE_VERSION,
     session_input_bindings,
+    session_input_bindings_async,
 )
 from polylogue.storage.sqlite.write_lease import write_lease
 
 __all__ = [
+    "SESSION_PARTITION_INSPECT_CHUNK",
     "SESSION_PROFILE_DOMAIN",
     "SessionProfileDerivation",
     "SessionProfileReplacement",
     "SESSION_PROFILE_RECIPE_VERSION",
+    "archive_session_partition_statuses",
+    "archive_session_partition_statuses_async",
     "excess_session_profiles",
     "inspect_session_profiles",
+    "inspect_session_profiles_async",
     "publish_session_profile",
     "stored_session_profile_binding",
 ]
@@ -47,10 +54,39 @@ _STALE = "stale"
 
 
 @dataclass(frozen=True, slots=True)
-class _StoredBinding:
+class _StoredPartition:
+    """One session partition as the output relations themselves report it."""
+
     present: bool
     materializer_version: int | None
     input_binding: str | None
+    declared_work_events: int = 0
+    declared_phases: int = 0
+    stored_work_events: int = 0
+    stored_phases: int = 0
+    latency_rows: int = 0
+
+
+_ABSENT_PARTITION = _StoredPartition(present=False, materializer_version=None, input_binding=None)
+
+#: The partition's sibling relations, read back per session. They are written
+#: inside the same replacement as the profile row, so a partition whose siblings
+#: disagree with the profile is not a fresh output with an accounting quirk --
+#: it is a half-replaced partition, and inspecting only the profile row would
+#: certify it.
+_STORED_PARTITION_SQL = """
+SELECT
+    sp.session_id,
+    sp.materializer_version,
+    sp.input_content_hash,
+    sp.work_event_count,
+    sp.phase_count,
+    (SELECT COUNT(*) FROM session_work_events e WHERE e.session_id = sp.session_id),
+    (SELECT COUNT(*) FROM session_phases p WHERE p.session_id = sp.session_id),
+    (SELECT COUNT(*) FROM session_latency_profiles l WHERE l.session_id = sp.session_id)
+FROM session_profiles sp
+WHERE sp.session_id IN ({placeholders})
+"""
 
 
 def stored_session_profile_binding(conn: sqlite3.Connection, session_id: str) -> str | None:
@@ -64,29 +100,58 @@ def stored_session_profile_binding(conn: sqlite3.Connection, session_id: str) ->
     return str(row[0])
 
 
-def _stored_bindings(conn: sqlite3.Connection, session_ids: Sequence[str]) -> Mapping[str, _StoredBinding]:
+def _count(value: object) -> int:
+    return int(value) if isinstance(value, int | float | str) else 0
+
+
+def _partition_row(row: Sequence[object]) -> _StoredPartition:
+    return _StoredPartition(
+        present=True,
+        materializer_version=None if row[1] is None else _count(row[1]),
+        input_binding=None if row[2] is None else str(row[2]),
+        declared_work_events=_count(row[3]),
+        declared_phases=_count(row[4]),
+        stored_work_events=_count(row[5]),
+        stored_phases=_count(row[6]),
+        latency_rows=_count(row[7]),
+    )
+
+
+def _classify_partition(
+    stored: _StoredPartition,
+    current_binding: str | None,
+    *,
+    materializer_version: int,
+) -> str:
+    """The one place a session partition's status is decided.
+
+    Shared verbatim by every caller -- the batch route, the archive-wide route,
+    and the async status route -- so no two of them can disagree about whether
+    a partition is current.
+    """
+    if not stored.present:
+        return _MISSING
+    if stored.materializer_version != materializer_version:
+        return _STALE
+    if stored.input_binding is None or stored.input_binding != current_binding:
+        return _STALE
+    if stored.stored_work_events != stored.declared_work_events:
+        return _STALE
+    if stored.stored_phases != stored.declared_phases:
+        return _STALE
+    if stored.latency_rows != 1:
+        return _STALE
+    return _VALID
+
+
+def _stored_partitions(conn: sqlite3.Connection, session_ids: Sequence[str]) -> Mapping[str, _StoredPartition]:
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
         return {}
-    placeholders = ",".join("?" * len(unique))
-    rows = conn.execute(
-        f"""
-        SELECT session_id, materializer_version, input_content_hash
-        FROM session_profiles
-        WHERE session_id IN ({placeholders})
-        """,
-        unique,
-    ).fetchall()
-    stored = {
-        str(row[0]): _StoredBinding(
-            present=True,
-            materializer_version=None if row[1] is None else int(row[1]),
-            input_binding=None if row[2] is None else str(row[2]),
-        )
-        for row in rows
-    }
+    sql = _STORED_PARTITION_SQL.format(placeholders=",".join("?" * len(unique)))
+    stored = {str(row[0]): _partition_row(row) for row in conn.execute(sql, unique).fetchall()}
     for session_id in unique:
-        stored.setdefault(session_id, _StoredBinding(present=False, materializer_version=None, input_binding=None))
+        stored.setdefault(session_id, _ABSENT_PARTITION)
     return stored
 
 
@@ -96,31 +161,117 @@ def inspect_session_profiles(
     *,
     materializer_version: int,
 ) -> Mapping[str, str]:
-    """Classify each session's profile from the output relation and its binding.
+    """Classify each session partition from its output relations and binding.
 
-    A profile is valid only when it exists, was built by the current
-    materializer, and its stored binding equals the digest recomputed now from
-    the authoritative message projection. A profile with no stored binding is
-    stale, never valid: a row that cannot say what it was computed from cannot
-    certify itself.
+    The partition is the family: the profile row plus the work events, phases
+    and latency profile written in the same replacement. It is valid only when
+    every one of those exists as the profile declares, the profile was built by
+    the current materializer, and its stored binding equals the digest
+    recomputed now from the authoritative message projection.
+
+    A profile with no stored binding is stale, never valid: a row that cannot
+    say what it was computed from cannot certify itself. A profile whose sibling
+    relations disagree with its own declared counts is stale for the same
+    reason -- the binding covers the whole partition, so half of it is none.
     """
     unique = tuple(dict.fromkeys(session_ids))
     if not unique:
         return {}
-    stored = _stored_bindings(conn, unique)
-    current = session_input_bindings(conn, unique)
-    statuses: dict[str, str] = {}
-    for session_id in unique:
-        record = stored[session_id]
-        stale = (
-            record.materializer_version != materializer_version
-            or record.input_binding is None
-            or record.input_binding != current.get(session_id)
+    stored = _stored_partitions(conn, unique)
+    # A session with no profile row is MISSING whatever its inputs say, so its
+    # projection is not read. Absence is the one status identity settles.
+    built = tuple(session_id for session_id in unique if stored[session_id].present)
+    current = session_input_bindings(conn, built) if built else {}
+    return {
+        session_id: _classify_partition(
+            stored[session_id],
+            current.get(session_id),
+            materializer_version=materializer_version,
         )
-        if not record.present:
-            statuses[session_id] = _MISSING
-        else:
-            statuses[session_id] = _STALE if stale else _VALID
+        for session_id in unique
+    }
+
+
+async def inspect_session_profiles_async(
+    conn: aiosqlite.Connection,
+    session_ids: Sequence[str],
+    *,
+    materializer_version: int,
+) -> Mapping[str, str]:
+    """:func:`inspect_session_profiles` over an async connection.
+
+    Same SQL, same classification. Only the cursor loop differs, because the
+    two connection types have no common one.
+    """
+    unique = tuple(dict.fromkeys(session_ids))
+    if not unique:
+        return {}
+    sql = _STORED_PARTITION_SQL.format(placeholders=",".join("?" * len(unique)))
+    stored: dict[str, _StoredPartition] = {}
+    async with conn.execute(sql, unique) as cursor:
+        async for row in cursor:
+            stored[str(row[0])] = _partition_row(row)
+    built = tuple(session_id for session_id in unique if session_id in stored)
+    current = await session_input_bindings_async(conn, built) if built else {}
+    return {
+        session_id: _classify_partition(
+            stored.get(session_id, _ABSENT_PARTITION),
+            current.get(session_id),
+            materializer_version=materializer_version,
+        )
+        for session_id in unique
+    }
+
+
+#: Sessions inspected per round trip. Bounds the placeholder list and the
+#: projection working set; it is not a limit on how much of the archive is
+#: inspected, which is always all of it.
+SESSION_PARTITION_INSPECT_CHUNK = 500
+
+#: Archive-wide enumeration. Every session is a required key, so the scope is
+#: the ``sessions`` relation itself -- no cursor, no queue, no dirty list. A
+#: restart that lost every scheduling hint reconstructs this set exactly.
+_ARCHIVE_SESSION_IDS_SQL = "SELECT session_id FROM sessions ORDER BY session_id"
+
+
+def _chunked(values: Sequence[str], size: int) -> Iterator[tuple[str, ...]]:
+    for start in range(0, len(values), size):
+        yield tuple(values[start : start + size])
+
+
+def archive_session_partition_statuses(
+    conn: sqlite3.Connection,
+    *,
+    materializer_version: int,
+    chunk_size: int = SESSION_PARTITION_INSPECT_CHUNK,
+) -> dict[str, str]:
+    """Every session partition's status, by the same inspection as one batch.
+
+    Archive-wide inspection costs a pass over the message projection, which is
+    what an authoritative answer costs. Narrowing the candidate set by an
+    identity prefilter first would make it cheap and wrong: identity does not
+    move when a role, a model name, or a token count does, so a prefiltered
+    pass never reaches the sessions whose output actually changed.
+    """
+    session_ids = [str(row[0]) for row in conn.execute(_ARCHIVE_SESSION_IDS_SQL).fetchall()]
+    statuses: dict[str, str] = {}
+    for chunk in _chunked(session_ids, max(1, chunk_size)):
+        statuses.update(inspect_session_profiles(conn, chunk, materializer_version=materializer_version))
+    return statuses
+
+
+async def archive_session_partition_statuses_async(
+    conn: aiosqlite.Connection,
+    *,
+    materializer_version: int,
+    chunk_size: int = SESSION_PARTITION_INSPECT_CHUNK,
+) -> dict[str, str]:
+    """:func:`archive_session_partition_statuses` over an async connection."""
+    async with conn.execute(_ARCHIVE_SESSION_IDS_SQL) as cursor:
+        session_ids = [str(row[0]) async for row in cursor]
+    statuses: dict[str, str] = {}
+    for chunk in _chunked(session_ids, max(1, chunk_size)):
+        statuses.update(await inspect_session_profiles_async(conn, chunk, materializer_version=materializer_version))
     return statuses
 
 
