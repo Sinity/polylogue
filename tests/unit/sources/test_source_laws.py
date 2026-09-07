@@ -1734,6 +1734,52 @@ def test_merge_parsed_session_chunks_reduces_claude_coverage_once() -> None:
     }
 
 
+def test_merge_parsed_session_chunks_reduces_claude_session_environment_once() -> None:
+    """A session's environment summary describes the whole input, not a chunk.
+
+    Leaving the per-chunk rows in place makes the number of environment events,
+    and every count inside them, depend on how the stream happened to be split
+    -- the same defect the coverage reduction beside it exists to prevent.
+    """
+    chunks = [
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="environment-chunks",
+            updated_at="2026-10-01T00:00:00Z",
+            messages=[],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_session_environment",
+                    timestamp="2026-10-01T00:00:00Z",
+                    payload={"entrypoints": {"sdk-cli": 4}, "cli_versions": {"2.1.261": 4}},
+                ),
+            ],
+        ),
+        ParsedSession(
+            source_name=Provider.CLAUDE_CODE,
+            provider_session_id="environment-chunks",
+            updated_at="2026-10-01T00:01:00Z",
+            messages=[],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="claude_session_environment",
+                    timestamp="2026-10-01T00:01:00Z",
+                    payload={"entrypoints": {"sdk-cli": 3}, "cli_versions": {"2.1.263": 3}},
+                ),
+            ],
+        ),
+    ]
+
+    events = merge_parsed_session_chunks(chunks)[0].session_events
+
+    assert [event.event_type for event in events] == ["claude_session_environment"]
+    assert events[0].timestamp == "2026-10-01T00:01:00Z"
+    assert events[0].payload == {
+        "entrypoints": {"sdk-cli": 7},
+        "cli_versions": {"2.1.261": 4, "2.1.263": 3},
+    }
+
+
 def test_merge_parsed_session_chunks_prefers_stronger_title_evidence_over_first_chunk() -> None:
     """bd polylogue-t5lg: a huge Claude Code session split across streamed
     chunks must not freeze a weakly-resolved title (the first-human-message
