@@ -2546,7 +2546,7 @@ def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
     # ``promptSource`` are per-record state, so their counts are the session's
     # distribution: how many of its turns the operator typed versus the system
     # or a queue supplied.
-    session_environment_payload = {
+    session_environment_payload: dict[str, object] = {
         key: dict(sorted(counts.items()))
         for key, counts in (
             ("entrypoints", acc.entrypoint_counts),
