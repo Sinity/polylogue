@@ -1677,6 +1677,9 @@ def _project_background_task_completions(
                 "metadata": metadata,
                 "is_error": None if notification.exit_code is None else notification.exit_code != 0,
                 "exit_code": notification.exit_code,
+                "outcome_unknown_reason": (
+                    None if notification.exit_code is not None else ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT.value
+                ),
             }
         )
         blocks = list(message.blocks)

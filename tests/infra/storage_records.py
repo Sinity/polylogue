@@ -887,20 +887,34 @@ def _record_to_parsed_session(
         return None
 
     def _blocks(message: MessageRecord) -> list[ParsedContentBlock]:
-        return [
-            ParsedContentBlock(
-                type=block.type,
-                text=block.text,
-                tool_name=block.tool_name,
-                tool_id=block.tool_id,
-                tool_input=_maybe_json_object(block.tool_input),
-                metadata=_maybe_json_object(block.metadata),
-                is_error=None if block.tool_result_is_error is None else bool(block.tool_result_is_error),
-                exit_code=block.tool_result_exit_code,
-                tool_outcome=block.tool_outcome,
+        parsed_blocks: list[ParsedContentBlock] = []
+        for block in message.blocks or []:
+            is_error = None if block.tool_result_is_error is None else bool(block.tool_result_is_error)
+            exit_code = block.tool_result_exit_code
+            unknown_reason = block.tool_result_outcome_unknown_reason
+            if (
+                block.type is BlockType.TOOL_RESULT
+                and is_error is None
+                and exit_code is None
+                and block.tool_outcome is None
+                and unknown_reason is None
+            ):
+                unknown_reason = "not_reported"
+            parsed_blocks.append(
+                ParsedContentBlock(
+                    type=block.type,
+                    text=block.text,
+                    tool_name=block.tool_name,
+                    tool_id=block.tool_id,
+                    tool_input=_maybe_json_object(block.tool_input),
+                    metadata=_maybe_json_object(block.metadata),
+                    is_error=is_error,
+                    exit_code=exit_code,
+                    tool_outcome=block.tool_outcome,
+                    outcome_unknown_reason=unknown_reason,
+                )
             )
-            for block in (message.blocks or [])
-        ]
+        return parsed_blocks
 
     parsed_messages = [
         ParsedMessage(

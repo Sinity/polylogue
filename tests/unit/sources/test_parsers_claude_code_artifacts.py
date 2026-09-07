@@ -653,6 +653,7 @@ def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_
     failed_start = by_id["start-fail"].blocks[0]
     assert failed_start.exit_code == 1
     assert failed_start.is_error is True
+    assert failed_start.outcome_unknown_reason is None
     assert failed_start.metadata == {
         "claude_background_task_id": "task-fail",
         "claude_background_completion_status": "failed",
@@ -737,6 +738,7 @@ def test_parse_code_degrades_changed_background_completion_template_to_unknown()
     foreground = by_id["result-foreground"].blocks[0]
     assert failed_start.exit_code is None
     assert failed_start.is_error is None
+    assert failed_start.outcome_unknown_reason == "unsupported_construct"
     assert foreground.exit_code is None
     assert foreground.is_error is False
 
