@@ -20,13 +20,15 @@ from polylogue.core.errors import ArchiveTierUnavailableError
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from tests.infra.live_ingest import write_index_session
 
 _NOW_MS = 1_700_000_000_000
 
 
 def _seed(root: Path) -> str:
     with ArchiveStore(root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="queue-admission",
@@ -40,7 +42,7 @@ def _seed(root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="source message")],
                     )
                 ],
-            )
+            ),
         )
     with sqlite3.connect(root / "user.db") as conn:
         for assertion_id, expires_at_ms in (

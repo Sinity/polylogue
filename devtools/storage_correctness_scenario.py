@@ -26,6 +26,7 @@ from polylogue.storage.fts.fts_lifecycle import message_fts_readiness_sync
 from polylogue.storage.search import search_messages
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
+from tests.infra.live_ingest import write_index_session
 
 STORAGE_CORRECTNESS_SCENARIO_NAME = "storage-correctness"
 STORAGE_CORRECTNESS_SCOPE_ADJUDICATION = {
@@ -382,9 +383,9 @@ def _storage_lineage_composition_check() -> dict[str, object]:
     with _storage_archive_root() as temp_root:
         root = Path(temp_root)
         with ArchiveStore(root) as archive:
-            parent_id = archive.write_parsed(parent, content_hash=str(session_content_hash(parent)))
-            child_id = archive.write_parsed(child, content_hash=str(session_content_hash(child)))
-            archive.write_parsed(parent_grown, content_hash=str(session_content_hash(parent_grown)))
+            parent_id = write_index_session(archive, parent, content_hash=str(session_content_hash(parent)))
+            child_id = write_index_session(archive, child, content_hash=str(session_content_hash(child)))
+            write_index_session(archive, parent_grown, content_hash=str(session_content_hash(parent_grown)))
             archive.commit()
         with sqlite3.connect(root / "index.db") as conn:
             conn.row_factory = sqlite3.Row

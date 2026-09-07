@@ -16,6 +16,7 @@ from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.hydrators import session_from_records
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_scenarios import read_session_records
+from tests.infra.live_ingest import write_index_session
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,7 +61,7 @@ def write_and_hydrate(roundtrip: PipelineRoundtrip, db_conn: sqlite3.Connection)
         Path(str(path)) for _sequence, name, path in db_conn.execute("PRAGMA database_list") if name == "main" and path
     )
     with ArchiveStore.open_existing(database_path.parent, read_only=False) as archive:
-        archive.write_parsed(parsed, content_hash=roundtrip.content_hash)
+        write_index_session(archive, parsed, content_hash=roundtrip.content_hash)
     conv_record, msg_records, attachment_records = read_session_records(db_conn, session_id)
     if any(attachment.inline_bytes is not None for attachment in parsed.attachments):
         blob_hashes = {

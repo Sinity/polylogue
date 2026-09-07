@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
+from tests.infra.live_ingest import write_index_session
 
 # The stub must embed under the model the archive is configured for: the
 # status projection and generation queries scope by the configured model,
@@ -59,7 +60,8 @@ class _FakeVectorProvider:
 
 def _write_session(root: Path, *, native_id: str, text: str, origin: Provider = Provider.CODEX) -> str:
     with ArchiveStore(root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=origin,
                 provider_session_id=native_id,
@@ -72,7 +74,7 @@ def _write_session(root: Path, *, native_id: str, text: str, origin: Provider = 
                         material_origin=MaterialOrigin.HUMAN_AUTHORED,
                     )
                 ],
-            )
+            ),
         )
 
 

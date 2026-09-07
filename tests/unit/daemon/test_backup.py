@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.migration_runner import validate_migration_backup_manifest
+from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -1105,7 +1106,7 @@ def test_full_evidence_backup_restores_index_only_attachment_blob(
         ],
     )
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_parsed(session)
+        write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
     with sqlite3.connect(archive_root / "source.db") as conn:
@@ -1154,7 +1155,7 @@ def test_full_evidence_backup_preserves_index_attachment_for_historical_source_s
         ],
     )
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_parsed(session)
+        write_index_session(archive, session)
 
     blob_hash = hashlib.sha256(payload).hexdigest()
     with sqlite3.connect(archive_root / "source.db") as source:
@@ -1201,7 +1202,7 @@ def test_backup_attachment_oracle_rejects_a_projection_that_omits_readable_index
         ],
     )
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_parsed(session)
+        write_index_session(archive, session)
 
     original_inventory = backup_mod._inventory_from_liveness
 
@@ -1237,7 +1238,7 @@ def test_backup_creation_oracle_rejects_projection_omitting_independent_attachme
         attachments=[ParsedAttachment(provider_attachment_id="a1", message_provider_id="m1", inline_bytes=payload)],
     )
     with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-        archive.write_parsed(session)
+        write_index_session(archive, session)
     omitted_hash = hashlib.sha256(payload).hexdigest()
     original_projection = backup_mod._source_blob_liveness_projection
 

@@ -23,6 +23,7 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.mcp.declarations.models import MCPCapabilities
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
 
@@ -34,7 +35,8 @@ def _seed_archive(archive_root: Path) -> str:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     with ArchiveStore(archive_root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CHATGPT,
                 provider_session_id="privileged-contract",
@@ -47,7 +49,7 @@ def _seed_archive(archive_root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="needle privileged contract evidence")],
                     )
                 ],
-            )
+            ),
         )
 
 

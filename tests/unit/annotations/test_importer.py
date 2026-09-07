@@ -24,6 +24,7 @@ from polylogue.operations.mutation_transaction import OperationExecutor
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate
+from tests.infra.live_ingest import write_index_session
 from tests.infra.user_tier import connect_user_db
 
 
@@ -142,13 +143,14 @@ async def test_import_roundtrip_keeps_failures_candidates_and_independent_batche
 
     archive_root = workspace_env["archive_root"]
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="annotation-target",
                 title="Annotation target",
                 messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
-            )
+            ),
         )
     index_db = archive_root / "index.db"
     assert session_id == "codex-session:annotation-target"
@@ -234,8 +236,9 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
     """
     archive_root = workspace_env["archive_root"]
     with ArchiveStore(archive_root) as archive:
-        parent_session_id = archive.write_parsed(_delegation_parent())
-        archive.write_parsed(
+        parent_session_id = write_index_session(archive, _delegation_parent())
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id="import-child",
@@ -243,7 +246,7 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
                 messages=[ParsedMessage(provider_message_id="c1", role=Role.ASSISTANT, text="working")],
                 parent_session_provider_id="import-parent",
                 branch_type=BranchType.SUBAGENT,
-            )
+            ),
         )
     instruction_block_id = f"{parent_session_id}:n:dispatch:0"
     target_ref = f"delegation:{instruction_block_id}"

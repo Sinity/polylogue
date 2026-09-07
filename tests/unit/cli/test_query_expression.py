@@ -71,6 +71,7 @@ from polylogue.archive.query.spec import SessionQuerySpec
 from polylogue.core.refs import ObjectRef
 from polylogue.storage.runtime import MessageRecord
 from tests.infra.identity import archive_block_id, archive_message_id
+from tests.infra.live_ingest import write_index_session
 
 
 def _mid(session_id: str, native_id: str, *, position: int = 0) -> str:
@@ -3090,7 +3091,7 @@ class TestBooleanQueryExpression:
 
         archive_root = workspace_env["archive_root"]
         with ArchiveStore(archive_root) as archive:
-            session_id = archive.write_parsed(parsed)
+            session_id = write_index_session(archive, parsed)
 
         source = parse_unit_source_expression("actions where command:polylogue")
         assert source is not None

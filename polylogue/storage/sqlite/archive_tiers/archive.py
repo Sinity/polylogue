@@ -306,7 +306,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     ArchiveSessionPhase,
     ArchiveSessionWorkEvent,
-    ArchiveWriteOutcome,
     PreparedRows,
     PreparedSessionShardRows,
     bind_session_shard,
@@ -318,7 +317,6 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     refresh_and_sweep_attachment_rows,
     search_archive_blocks,
     session_attachment_ids,
-    write_parsed_session_to_archive,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import ShardRefusedError, open_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import attached_session_shard as attach_session_shard
@@ -1161,36 +1159,6 @@ class ArchiveStore:
         finally:
             attachment.__exit__(None, None, None)
 
-    def write_parsed(
-        self,
-        session: ParsedSession,
-        *,
-        content_hash: str | None = None,
-        fresh_build: bool = False,
-    ) -> str:
-        """Write a parsed session to index.db."""
-        self._require_writable("write index.db")
-        acquired, refs = self._preacquire_attachment_blobs(
-            session,
-            source_path=f"session:{session.provider_session_id}",
-            acquired_at_ms=int(time.time() * 1000),
-        )
-        if self._blob_publisher is not None:
-            self._blob_publisher.flush()
-        session_id = write_parsed_session_to_archive(
-            self._conn,
-            session,
-            content_hash=content_hash,
-            fresh_build=fresh_build,
-            preacquired_attachment_blobs=acquired,
-            source_conn=self._optional_source_conn(),
-        )
-        self._pending_index_blob_receipts.extend(
-            (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
-        )
-        self._consume_index_blob_receipts()
-        return session_id
-
     def append_work_event(
         self,
         *,
@@ -1241,41 +1209,6 @@ class ArchiveStore:
             "summary": summary,
             "content_changed": result.content_changed,
         }
-
-    def write_parsed_result(
-        self,
-        session: ParsedSession,
-        *,
-        content_hash: str | None = None,
-        fresh_build: bool = False,
-    ) -> dict[str, int]:
-        """Write a parsed session and report whether precedence skipped it."""
-        self._require_writable("write index.db")
-        acquired, refs = self._preacquire_attachment_blobs(
-            session,
-            source_path=f"session:{session.provider_session_id}",
-            acquired_at_ms=int(time.time() * 1000),
-        )
-        if self._blob_publisher is not None:
-            self._blob_publisher.flush()
-        outcomes: list[ArchiveWriteOutcome] = []
-        write_parsed_session_to_archive(
-            self._conn,
-            session,
-            content_hash=content_hash,
-            fresh_build=fresh_build,
-            preacquired_attachment_blobs=acquired,
-            source_conn=self._optional_source_conn(),
-            write_outcome=outcomes,
-        )
-        self._pending_index_blob_receipts.extend(
-            (ref.publication_receipt_id, ref.blob_hash) for ref in refs if ref.publication_receipt_id is not None
-        )
-        self._consume_index_blob_receipts()
-        stale_skipped = bool(outcomes and outcomes[0].stale_skipped)
-        counts = self._skipped_counts(session) if stale_skipped else self._write_counts(session)
-        counts["stale_skipped"] = int(stale_skipped)
-        return counts
 
     def _consume_index_blob_receipts(self) -> None:
         """Consume receipts only after index attachment rows are committed."""

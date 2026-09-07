@@ -2,7 +2,7 @@
 
 The legacy ``SessionRepository`` write surface (``save_session`` with
 record/domain overloads, session-event re-save, hash-skip counts) is gone. The
-archive write path is ``ArchiveStore.write_parsed`` (driven here through
+index-only fixture seam is the live writer (driven here through
 ``SessionBuilder``); the user-facing mutation surface is the async
 ``Polylogue`` facade (``add_tag`` / ``remove_tag`` / ``set_metadata`` /
 ``update_metadata`` / ``delete_metadata`` / ``delete_session``).

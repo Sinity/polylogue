@@ -25,11 +25,13 @@ from polylogue.rendering.semantic_cards import build_semantic_transcript, lineag
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed_parity_fixture(archive_root: Path) -> tuple[str, str]:
     with ArchiveStore(archive_root) as archive:
-        parent_id = archive.write_parsed(
+        parent_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="parity-parent",
@@ -57,9 +59,10 @@ def _seed_parity_fixture(archive_root: Path) -> tuple[str, str]:
                         ],
                     ),
                 ],
-            )
+            ),
         )
-        child_id = archive.write_parsed(
+        child_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="parity-child",
@@ -108,7 +111,7 @@ def _seed_parity_fixture(archive_root: Path) -> tuple[str, str]:
                         ],
                     ),
                 ],
-            )
+            ),
         )
     return parent_id, child_id
 

@@ -10,6 +10,7 @@ from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.claude.common import normalize_timestamp
 from polylogue.sources.parsers.claude.orchestration import parse_claude_orchestration_artifact
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 
 def test_normalize_timestamp_returns_canonical_iso_text() -> None:
@@ -559,7 +560,7 @@ def test_parse_code_projects_queue_attachment_and_user_completion_shapes(tmp_pat
 
     archive_root = tmp_path / "background-sidecars"
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(parsed)
+        session_id = write_index_session(archive, parsed)
         actions = archive.query_session_actions([session_id], limit=10)
 
     assert {action.tool_command: (action.is_error, action.exit_code) for action in actions} == {
@@ -683,7 +684,7 @@ def test_parse_code_projects_background_completion_outcomes_through_actions(tmp_
 
     archive_root = tmp_path / "background-outcomes"
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(parsed)
+        session_id = write_index_session(archive, parsed)
         actions = archive.query_session_actions([session_id], limit=10)
 
     with sqlite3.connect(archive_root / "index.db") as conn:
@@ -936,7 +937,7 @@ def test_parse_code_projects_task_output_exit_code_through_actions(tmp_path: Pat
     parsed = parse_code(records, "task-output-actions")
     archive_root = tmp_path / "task-output-actions"
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(parsed)
+        session_id = write_index_session(archive, parsed)
         actions = archive.query_session_actions([session_id], limit=10)
 
     outcomes = {action.tool_name: (action.is_error, action.exit_code) for action in actions}

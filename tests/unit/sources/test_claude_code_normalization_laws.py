@@ -25,6 +25,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveSessionEnvelope,
     read_archive_session_envelope,
 )
+from tests.infra.live_ingest import write_index_session
 
 _FIXTURE_ROOT = Path(__file__).parents[2] / "fixtures" / "claude-code"
 _FAMILY_FIXTURE = _FIXTURE_ROOT / "claude-normalization-main.jsonl"
@@ -244,7 +245,7 @@ def test_family_fixture_survives_acquire_parse_store_read_and_action_pairing(tmp
 
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(main)
+        session_id = write_index_session(archive, main)
         envelope = read_archive_session_envelope(archive._conn, session_id)
         actions = archive.query_session_actions([session_id], limit=10)
 
@@ -359,11 +360,11 @@ def test_acompact_resume_replayed_prefix_is_stored_once_and_composed(
 
     with ArchiveStore(tmp_path / ("parent-first" if write_parent_first else "child-first")) as archive:
         if write_parent_first:
-            archive.write_parsed(parent)
-            child_id = archive.write_parsed(child)
+            write_index_session(archive, parent)
+            child_id = write_index_session(archive, child)
         else:
-            child_id = archive.write_parsed(child)
-            archive.write_parsed(parent)
+            child_id = write_index_session(archive, child)
+            write_index_session(archive, parent)
 
         positions = archive._conn.execute(
             "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
@@ -427,11 +428,11 @@ def test_parent_membership_overrides_conservative_fresh_head_hint(
 
     with ArchiveStore(tmp_path / ("hint-parent-first" if write_parent_first else "hint-child-first")) as archive:
         if write_parent_first:
-            archive.write_parsed(parent)
-            child_id = archive.write_parsed(child)
+            write_index_session(archive, parent)
+            child_id = write_index_session(archive, child)
         else:
-            child_id = archive.write_parsed(child)
-            archive.write_parsed(parent)
+            child_id = write_index_session(archive, child)
+            write_index_session(archive, parent)
         positions = archive._conn.execute(
             "SELECT position FROM messages WHERE session_id = ? ORDER BY position",
             (child_id,),
@@ -479,11 +480,11 @@ def test_subagent_self_compaction_stays_whole_and_never_composes_main_prefix(
 
     with ArchiveStore(tmp_path / ("task-parent-first" if write_parent_first else "task-child-first")) as archive:
         if write_parent_first:
-            archive.write_parsed(parent)
-            child_id = archive.write_parsed(child)
+            write_index_session(archive, parent)
+            child_id = write_index_session(archive, child)
         else:
-            child_id = archive.write_parsed(child)
-            archive.write_parsed(parent)
+            child_id = write_index_session(archive, child)
+            write_index_session(archive, parent)
 
         stored_count = archive._conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
@@ -584,11 +585,11 @@ def test_ambiguous_acompact_is_reclassified_by_parent_content_membership(
         tmp_path / ("membership-parent-first" if write_parent_first else "membership-child-first")
     ) as archive:
         if write_parent_first:
-            archive.write_parsed(parent)
-            child_id = archive.write_parsed(child)
+            write_index_session(archive, parent)
+            child_id = write_index_session(archive, child)
         else:
-            child_id = archive.write_parsed(child)
-            archive.write_parsed(parent)
+            child_id = write_index_session(archive, child)
+            write_index_session(archive, parent)
         stored_count = archive._conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (child_id,),
@@ -625,8 +626,8 @@ def test_subagent_child_arriving_before_parent_resolves_as_spawned_fresh(tmp_pat
     child = parse_payload(Provider.CLAUDE_CODE, _records(_AGENT_FIXTURE), _AGENT_FALLBACK_ID)[0]
 
     with ArchiveStore(tmp_path / "subagent-child-first") as archive:
-        child_id = archive.write_parsed(child)
-        archive.write_parsed(parent)
+        child_id = write_index_session(archive, child)
+        write_index_session(archive, parent)
         stored_count = archive._conn.execute(
             "SELECT COUNT(*) FROM messages WHERE session_id = ?",
             (child_id,),

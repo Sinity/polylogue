@@ -41,6 +41,7 @@ from polylogue.archive.query.transaction import QueryContinuationStaleError
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
 
 pytestmark = pytest.mark.xdist_group("web-reader")
@@ -48,7 +49,8 @@ pytestmark = pytest.mark.xdist_group("web-reader")
 
 def _write_needle_message(archive_root: Path, native_id: str, text: str) -> None:
     with ArchiveStore(archive_root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=native_id,
@@ -61,7 +63,7 @@ def _write_needle_message(archive_root: Path, native_id: str, text: str) -> None
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
-            )
+            ),
         )
 
 

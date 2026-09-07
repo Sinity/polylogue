@@ -31,6 +31,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     iter_messages,
 )
 from tests.infra.identity import archive_message_id
+from tests.infra.live_ingest import write_index_session
 from tests.infra.mcp import ALL_CAPABILITIES, MCPServerUnderTest, invoke_surface_async
 
 _PARENT_NATIVE_ID = "order-parity"
@@ -70,15 +71,17 @@ def _message(native_id: str, position: int, text: str) -> ParsedMessage:
 def _seed(root: Path) -> tuple[str, str]:
     """Write an adversarially clocked session and a prefix-sharing fork of it."""
     with ArchiveStore(root) as store:
-        parent_id = store.write_parsed(
+        parent_id = write_index_session(
+            store,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=_PARENT_NATIVE_ID,
                 title="Order parity",
                 messages=[_message(f"p{position}", position, _body(position)) for position in range(_PARENT_LENGTH)],
-            )
+            ),
         )
-        child_id = store.write_parsed(
+        child_id = write_index_session(
+            store,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=_CHILD_NATIVE_ID,
@@ -89,7 +92,7 @@ def _seed(root: Path) -> tuple[str, str]:
                     *(_message(f"p{position}", position, _body(position)) for position in range(_BRANCH_LENGTH)),
                     *(_message(f"c{index}", _BRANCH_LENGTH + index, f"tail {index}") for index in range(_TAIL_LENGTH)),
                 ],
-            )
+            ),
         )
     return parent_id, child_id
 

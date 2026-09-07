@@ -28,6 +28,7 @@ from polylogue.daemon.http import DaemonAPIHandler, DaemonAPIHTTPServer
 from polylogue.demo.seed import seed_demo_archive
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 
 LARGE_SESSION_PROVIDER_ID = "webui-v2-e2e-large-session"
 LARGE_SESSION_MESSAGE_COUNT = 90
@@ -48,7 +49,8 @@ def _configure_archive(root: Path) -> None:
 
 def _write_large_session(archive_root: Path) -> str:
     with ArchiveStore(archive_root) as archive:
-        return archive.write_parsed(
+        return write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=LARGE_SESSION_PROVIDER_ID,
@@ -63,7 +65,7 @@ def _write_large_session(archive_root: Path) -> str:
                     )
                     for i in range(LARGE_SESSION_MESSAGE_COUNT)
                 ],
-            )
+            ),
         )
 
 

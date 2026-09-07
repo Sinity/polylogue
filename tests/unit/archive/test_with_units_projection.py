@@ -30,6 +30,7 @@ from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, Pa
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.identity import archive_message_id
+from tests.infra.live_ingest import write_index_session
 
 # ---------------------------------------------------------------------------
 # Parser: split + validation
@@ -139,7 +140,8 @@ class TestWithClauseParsing:
 
 def _seed_session_with_assertion(root: Path) -> str:
     with ArchiveStore(root) as archive_db:
-        archive_db.write_parsed(
+        write_index_session(
+            archive_db,
             ParsedSession(
                 source_name=Provider.CLAUDE_AI,
                 provider_session_id="conv-alpha",
@@ -152,7 +154,7 @@ def _seed_session_with_assertion(root: Path) -> str:
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="alpha body")],
                     ),
                 ],
-            )
+            ),
         )
     session_id = "claude-ai-export:conv-alpha"
     conn = sqlite3.connect(root / "user.db")

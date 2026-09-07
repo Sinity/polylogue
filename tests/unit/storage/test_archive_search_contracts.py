@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ from polylogue.storage.search_providers.hybrid_sessions import (
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from tests.infra.identity import archive_message_id
-from tests.infra.live_ingest import ingest_session
+from tests.infra.live_ingest import ingest_session, write_session_counts_sync
 
 
 def _session_record(session_id: str, *, title: str, source_name: str = "chatgpt") -> SessionRecord:
@@ -404,9 +405,16 @@ async def test_repository_save_reports_stale_skip_truthfully(tmp_path: Path) -> 
 
     try:
         first = parsed("new", "2026-06-02T00:00:00Z")
-        await repo.save_parsed_session(first, session_content_hash(first))
+        await asyncio.to_thread(
+            write_session_counts_sync, backend.db_path, first, content_hash=session_content_hash(first)
+        )
         stale = parsed("old", "2026-06-01T00:00:00Z")
-        counts = await repo.save_parsed_session(stale, session_content_hash(stale))
+        counts = await asyncio.to_thread(
+            write_session_counts_sync,
+            backend.db_path,
+            stale,
+            content_hash=session_content_hash(stale),
+        )
     finally:
         await repo.close()
 

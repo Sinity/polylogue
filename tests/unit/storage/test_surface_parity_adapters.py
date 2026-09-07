@@ -28,6 +28,7 @@ from polylogue.api import Polylogue
 from polylogue.core.enums import Provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.live_ingest import write_index_session
 from tests.infra.storage_records import SessionBuilder, _record_to_parsed_session, db_setup
 
 # ---------------------------------------------------------------------------
@@ -97,7 +98,7 @@ def _seed(workspace_env: dict[str, Path]) -> tuple[Path, dict[str, str]]:
             builder = SessionBuilder(db_path, scenario.name).provider(scenario.provider).title(scenario.title)
             for role, text in scenario.messages:
                 builder.add_message(role=role, text=text)
-            archive.write_parsed(_record_to_parsed_session(builder.conv, builder.messages, builder.attachments))
+            write_index_session(archive, _record_to_parsed_session(builder.conv, builder.messages, builder.attachments))
             ids[scenario.name] = builder.native_session_id()
     return db_path, ids
 

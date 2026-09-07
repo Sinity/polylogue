@@ -21,6 +21,7 @@ from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.live_ingest import write_index_session
 
 
 def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
@@ -29,7 +30,8 @@ def _seed(archive_root: Path, *, provider_session_id: str, text: str) -> None:
 
 def _seed_messages(archive_root: Path, *, provider_session_id: str, texts: tuple[str, ...]) -> None:
     with ArchiveStore(archive_root) as archive:
-        archive.write_parsed(
+        write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id=provider_session_id,
@@ -45,7 +47,7 @@ def _seed_messages(archive_root: Path, *, provider_session_id: str, texts: tuple
                     )
                     for index, text in enumerate(texts, start=1)
                 ],
-            )
+            ),
         )
 
 

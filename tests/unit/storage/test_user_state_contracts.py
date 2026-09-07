@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
+from tests.infra.live_ingest import write_index_session
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -39,7 +40,8 @@ def _seed_user_state_session(
     text: str = "Important message",
 ) -> tuple[str, str]:
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CLAUDE_CODE,
                 provider_session_id=native_id,
@@ -51,7 +53,7 @@ def _seed_user_state_session(
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
                     )
                 ],
-            )
+            ),
         )
         envelope = archive.read_session(session_id)
     return session_id, envelope.messages[0].message_id
@@ -295,7 +297,8 @@ async def test_tags_and_metadata_are_assertion_backed_user_metadata(
 async def test_user_state_target_resolution_reads_archive_file_set_from_archive_tiers(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
     with ArchiveStore(archive_root) as archive:
-        session_id = archive.write_parsed(
+        session_id = write_index_session(
+            archive,
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="user-state-v1-only",
@@ -308,7 +311,7 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
                         blocks=[ParsedContentBlock(type=BlockType.TEXT, text="mark me")],
                     )
                 ],
-            )
+            ),
         )
         envelope = archive.read_session(session_id)
     with sqlite3.connect(archive_root / "index.db") as conn:

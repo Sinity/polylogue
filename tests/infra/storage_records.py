@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import sqlite3
 import threading
@@ -43,6 +44,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
+from tests.infra.live_ingest import write_session_counts_sync
 
 if TYPE_CHECKING:
     from polylogue.archive.session.domain_models import Session
@@ -1022,8 +1024,12 @@ async def save_current_archive_records(
     """Seed current archive rows through the parsed-session writer."""
 
     parsed = _record_to_parsed_session(session, messages, attachments)
-    result: dict[str, int] = await repository.save_parsed_session(parsed, _writer_hash(session.content_hash))
-    return result
+    return await asyncio.to_thread(
+        write_session_counts_sync,
+        repository.backend.db_path,
+        parsed,
+        content_hash=_writer_hash(session.content_hash),
+    )
 
 
 async def save_session_to_archive(
@@ -1041,10 +1047,9 @@ async def save_session_to_archive(
     backend write path. Content blocks must be attached to their
     ``MessageRecord.content_blocks`` (no separate block-write step exists).
 
-    ``raw_id`` is not propagated by the parsed-session writer path
-    (``ArchiveStore.write_parsed`` never receives it), so a follow-up UPDATE
-    keyed on ``(origin, native_id)`` patches the column when the session
-    record carries one.
+    ``raw_id`` is not propagated by the index-only parsed-session fixture seam,
+    so a follow-up UPDATE keyed on ``(origin, native_id)`` patches the column
+    when the session record carries one.
     """
     from polylogue.storage.repository import SessionRepository
 
