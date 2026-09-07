@@ -526,7 +526,7 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
         "-n",
         str(CORPUS_MAX_WORKERS),
     ]
-    paths = _pytest_slice(tmp_path, current_mib=350)
+    paths = _pytest_slice(tmp_path, current_mib=2000)
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
@@ -547,4 +547,4 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     assert outcome.receipt is not None
     assert outcome.receipt["sizing"]["workers"] == workers
     # The width it ran at fits the slice that would otherwise have killed it.
-    assert 350 + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB
+    assert 2000 + _peak_mib(workers) <= PYTEST_SLICE_HIGH_MIB

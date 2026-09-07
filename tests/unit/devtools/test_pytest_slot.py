@@ -350,8 +350,14 @@ def test_an_unknown_terminal_phase_is_unavailable(tmp_path: Path, monkeypatch: p
 def test_a_timed_out_job_reports_the_typed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _install_fake_agentctl(tmp_path, monkeypatch, job_id=12, phase="timeout", exit_code=124)
     receipt_path = tmp_path / ".cache" / "verify" / f"pytest-slot-{os.getpid()}.result.json"
-    receipt_path.parent.mkdir(parents=True, exist_ok=True)
-    receipt_path.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+
+    def _wait(_job_id: int, *, env: dict[str, str]) -> dict[str, Any]:
+        del env
+        receipt_path.parent.mkdir(parents=True, exist_ok=True)
+        receipt_path.write_text(json.dumps({"status": "timed_out", "diagnosis": "pytest_deadline"}), encoding="utf-8")
+        return {"phase": "timeout", "exit_code": 124}
+
+    monkeypatch.setattr(pytest_slot, "_wait_for", _wait)
 
     outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
 
