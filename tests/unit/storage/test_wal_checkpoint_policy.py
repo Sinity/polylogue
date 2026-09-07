@@ -164,6 +164,21 @@ def test_missing_tiers_are_skipped_rather_than_failing_the_sweep(tmp_path: Path)
     assert len(observations) == 1
 
 
+def test_a_failed_open_reports_no_mode_and_the_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing ran, so no mode is claimed -- but the failure is still evidence."""
+    db = tmp_path / "index.db"
+    _seed_wal(db, rows=64)
+
+    def refuse(*_args: object, **_kwargs: object) -> sqlite3.Connection:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(wal_checkpoint, "open_daemon_connection", refuse)
+    observation = wal_checkpoint.checkpoint_wal(db, reason="unit", warn_bytes=1)
+    assert observation.mode == "none"
+    assert not observation.ran
+    assert observation.error == "database is locked"
+
+
 def test_unsupported_checkpoint_mode_is_refused(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     _seed_wal(db, rows=1)

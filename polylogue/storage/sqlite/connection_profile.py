@@ -401,6 +401,13 @@ def recurring_checkpoint_owner_armed() -> bool:
     return _RECURRING_CHECKPOINT_OWNER.is_set()
 
 
+def _set_recurring_checkpoint_owner(armed: bool) -> None:
+    if armed:
+        _RECURRING_CHECKPOINT_OWNER.set()
+    else:
+        _RECURRING_CHECKPOINT_OWNER.clear()
+
+
 @contextmanager
 def arm_recurring_checkpoint_owner(*, armed: bool = True) -> Iterator[None]:
     """Claim recurring checkpoint ownership for this process.
@@ -410,11 +417,11 @@ def arm_recurring_checkpoint_owner(*, armed: bool = True) -> Iterator[None]:
     checkpointing for all of them.
     """
     previous = _RECURRING_CHECKPOINT_OWNER.is_set()
-    _RECURRING_CHECKPOINT_OWNER.set() if armed else _RECURRING_CHECKPOINT_OWNER.clear()
+    _set_recurring_checkpoint_owner(armed)
     try:
         yield
     finally:
-        _RECURRING_CHECKPOINT_OWNER.set() if previous else _RECURRING_CHECKPOINT_OWNER.clear()
+        _set_recurring_checkpoint_owner(previous)
 
 
 def write_connection_pragma_statements(profile: SQLiteConnectionProfile) -> tuple[str, ...]:

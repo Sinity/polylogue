@@ -19,7 +19,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.sqlite.connection_profile import open_connection, open_daemon_connection
+from polylogue.storage.sqlite.connection_profile import (
+    open_connection,
+    open_daemon_connection,
+    open_isolated_write_connection,
+)
 from polylogue.storage.sqlite.write_lease import (
     UnleasedWriteError,
     WriteHoldExceededError,
@@ -52,6 +56,8 @@ def test_an_unleased_write_open_is_refused_where_enforcement_is_armed(db_path: P
             open_connection(db_path, validate_schema=False)
         with pytest.raises(UnleasedWriteError):
             open_daemon_connection(db_path, validate_schema=False)
+        with pytest.raises(UnleasedWriteError):
+            open_isolated_write_connection(db_path, purpose="probe")
 
 
 def test_a_leased_write_open_succeeds(db_path: Path) -> None:
@@ -149,7 +155,11 @@ def test_every_write_mode_factory_in_storage_routes_through_the_lease() -> None:
     #: Every function in ``polylogue/storage`` that opens a write-mode SQLite
     #: connection to an archive tier. Read-only opens are deliberately absent.
     write_mode_factories = {
-        "polylogue/storage/sqlite/connection_profile.py": {"open_connection", "open_daemon_connection"},
+        "polylogue/storage/sqlite/connection_profile.py": {
+            "open_connection",
+            "open_daemon_connection",
+            "open_isolated_write_connection",
+        },
         "polylogue/storage/sqlite/connection.py": {"_get_cached_connection"},
     }
 

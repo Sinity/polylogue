@@ -704,7 +704,7 @@ async def _periodic_wal_checkpoint() -> None:
                 collect_blockers=True,
             )
             for observation in observations:
-                if not observation.ran:
+                if not observation.ran and observation.error is None:
                     continue
                 logger.info(
                     "daemon: WAL checkpoint %s before=%d after=%d busy=%d checkpointed=%d "
