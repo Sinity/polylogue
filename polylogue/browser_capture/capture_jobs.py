@@ -26,7 +26,8 @@ from polylogue.browser_capture.capture_job_events import (
     read_capture_job_retention,
 )
 from polylogue.browser_capture.receiver import backfill_checkpoint_root
-from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes, digest
+from polylogue.core.digest import CAPTURE, CanonicalizationError, KeyCollisionError, canonical_bytes
+from polylogue.core.digest import digest as profile_digest
 from polylogue.paths import browser_capture_spool_root
 
 _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandoned"})
@@ -56,7 +57,7 @@ def canonical_json(value: object) -> str:
 
 def canonical_digest(value: object) -> str:
     try:
-        return digest(value, CAPTURE)
+        return profile_digest(value, CAPTURE)
     except KeyCollisionError as exc:
         raise CaptureJobError(400, "non_canonical_key_collision") from exc
     except (CanonicalizationError, TypeError, UnicodeEncodeError) as exc:
