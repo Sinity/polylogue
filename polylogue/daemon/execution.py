@@ -453,10 +453,10 @@ class BoundedComputeAdapter:
                 )
             self._acquire_locked(self._classes[admission_class], units, estimated_bytes)
             self._queues[admission_class].append(task)
-            runnable = self._select_locked()
+            runnable = self._drain_locked()
 
         handle.add_listener(lambda: self._cancel_before_start(task))
-        self._run_task(runnable)
+        self._run_all(runnable)
         return SubmittedOperation(future=future, cancellation=handle, _task=task)
 
     # -- dispatch -------------------------------------------------------
@@ -491,6 +491,23 @@ class BoundedComputeAdapter:
             state.max_wait_s = max(state.max_wait_s, task.queue_delay_s)
             return task
         return None
+
+    def _drain_locked(self) -> list[_Task]:
+        """Dispatch every task the current capacity admits, not only the first.
+
+        One completion can free several slots when a unit occupies more than
+        one; stopping after one dispatch would leave the rest idle until the
+        next unrelated event.
+        """
+
+        runnable: list[_Task] = []
+        while (task := self._select_locked()) is not None:
+            runnable.append(task)
+        return runnable
+
+    def _run_all(self, tasks: list[_Task]) -> None:
+        for task in tasks:
+            self._run_task(task)
 
     def _run_task(self, task: _Task | None) -> None:
         if task is None:
@@ -536,8 +553,8 @@ class BoundedComputeAdapter:
                 self._active_slots -= task.slots
                 state.active_units -= task.units
                 state.active_slots -= task.slots
-            runnable = self._select_locked()
-        self._run_task(runnable)
+            runnable = self._drain_locked()
+        self._run_all(runnable)
 
     def _cancel_before_start(self, task: _Task) -> None:
         """Drop an admitted-but-unstarted task and return its reservation."""
