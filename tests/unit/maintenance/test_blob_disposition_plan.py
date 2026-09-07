@@ -770,11 +770,13 @@ def test_a_source_that_lost_stored_material_proves_nothing(tmp_path: Path) -> No
 def test_a_source_that_grew_past_the_carrier_contains_it(tmp_path: Path) -> None:
     """An append-structured carrier is contained by the file that outgrew it."""
     lines = _CLAUDE_CODE_FIXTURE.read_bytes().splitlines(keepends=True)
-    stored = tmp_path / "stored.jsonl"
-    stored.write_bytes(b"".join(lines[:-1]))
+    later_turn = json.loads(lines[8])
+    later_turn["uuid"] = "main-a3"
+    later_turn["parentUuid"] = "main-a2"
     store = BlobStore(tmp_path / "blob")
-    blob_hash, size = store.write_from_path(stored)
+    blob_hash, size = store.write_from_path(_CLAUDE_CODE_FIXTURE)
     grown = _rewritten_header(_CLAUDE_CODE_FIXTURE, tmp_path / "session.jsonl")
+    grown.write_bytes(grown.read_bytes() + json.dumps(later_turn).encode("utf-8") + b"\n")
 
     plan = _carrier_plan(tmp_path, blob_hash=blob_hash, size=size, source_path=grown)
 
@@ -823,11 +825,11 @@ def test_material_the_admission_route_refuses_proves_nothing(tmp_path: Path) -> 
     admission check would call every unparsable carrier reacquirable.
     """
     stored = tmp_path / "stored.jsonl"
-    stored.write_bytes(b"{}\n")
+    stored.write_bytes(b'{"not": "a session"}\n')
     store = BlobStore(tmp_path / "blob")
     blob_hash, size = store.write_from_path(stored)
     source = tmp_path / "session.jsonl"
-    source.write_bytes(b"{}\n{}\n")
+    source.write_bytes(b'{"also": "not a session"}\n{"nor": "this"}\n')
 
     plan = _carrier_plan(tmp_path, blob_hash=blob_hash, size=size, source_path=source)
 
