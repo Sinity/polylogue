@@ -638,6 +638,22 @@ def derive_attachment_provenance(
     return None, None
 
 
+#: The metadata keys an export may carry a provider-assigned attachment
+#: identity under. When none is present, ``attachment_from_meta`` seeds a
+#: synthetic identity from the owning message id, so the same physical file
+#: recorded under two different message ids -- or under none -- mints two
+#: identities. A caller that reconciles such records must ask
+#: :func:`meta_carries_provider_attachment_id` first.
+PROVIDER_ATTACHMENT_ID_KEYS = ("id", "file_id", "fileId", "uuid", "file_uuid")
+
+
+def meta_carries_provider_attachment_id(meta: object) -> bool:
+    """Report whether attachment metadata names its own provider identity."""
+    if not isinstance(meta, dict):
+        return False
+    return any(meta.get(key) for key in PROVIDER_ATTACHMENT_ID_KEYS)
+
+
 def attachment_from_meta(
     meta: object,
     message_id: str | None,
@@ -646,9 +662,7 @@ def attachment_from_meta(
 ) -> ParsedAttachment | None:
     if not isinstance(meta, dict):
         return None
-    attachment_id = (
-        meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid") or meta.get("file_uuid")
-    )
+    attachment_id = next((meta.get(key) for key in PROVIDER_ATTACHMENT_ID_KEYS if meta.get(key)), None)
     name = meta.get("name") or meta.get("filename") or meta.get("file_name")
     mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type") or meta.get("file_type")
     if not attachment_id:
