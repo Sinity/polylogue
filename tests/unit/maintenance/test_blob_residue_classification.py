@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
@@ -181,7 +182,7 @@ def test_sqlite_route_uses_immutable_read_only_connections(tmp_path: Path, monke
 
     immutable_args: list[bool] = []
     codex_state_module = cast(Any, codex_state)
-    original_shape = codex_state_module.logical_source_shape
+    original_shape = cast(Callable[..., dict[str, tuple[str, ...]]], codex_state_module.logical_source_shape)
 
     def logical_shape(path: Path, *, immutable: bool = False) -> dict[str, tuple[str, ...]]:
         immutable_args.append(immutable)
