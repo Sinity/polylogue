@@ -117,25 +117,58 @@ class ProviderCost:
     value: float
 
 
-def _write_provider_cost(conn: sqlite3.Connection, session_id: str, model_name: str, cost: ProviderCost) -> None:
-    """Pass through a provider dollar value without catalog computation.
+def _write_provider_cost(
+    conn: sqlite3.Connection, session_id: str, model_names: Sequence[str], cost: ProviderCost
+) -> None:
+    """Pass a provider dollar total through to a session's model rows.
 
-    The value is one exact dollar total for the whole session, so it lives on
-    exactly one model row. A merge-append that switches models carries the
-    total to the new row; leaving it on the superseded one would double-count
-    it in every sum over the session.
+    The provider prices the session, not the model, so the one exact total is
+    split across the rows the session declares in proportion to the evidence
+    that is genuinely per-model: catalog dollars, else billable tokens, else an
+    equal share. Every declared row therefore carries a share and every other
+    row for the session is cleared, so ``SUM(provider_cost_usd)`` over the
+    session is the reported total exactly once and no row of a
+    provider-priced session falls through to the catalog fallback in
+    ``COALESCE(SUM(provider), SUM(catalog))``. A merge-append that switches
+    models carries the total to the incoming rows.
     """
     if not isinstance(cost, ProviderCost):
         raise TypeError("provider cost writes require ProviderCost")
+    names = list(dict.fromkeys(model_names))
+    if not names:
+        return
+    placeholders = ", ".join("?" for _ in names)
+    weight_rows = conn.execute(
+        f"""SELECT model_name,
+                   COALESCE(catalog_cost_usd, 0.0) AS catalog,
+                   COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)
+                   + COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0) AS tokens
+            FROM session_model_usage
+            WHERE session_id = ? AND model_name IN ({placeholders})""",
+        (session_id, *names),
+    ).fetchall()
+    catalog = {str(row[0]): float(row[1] or 0.0) for row in weight_rows}
+    tokens = {str(row[0]): float(row[2] or 0) for row in weight_rows}
+    weights = [catalog.get(name, 0.0) for name in names]
+    if sum(weights) <= 0.0:
+        weights = [tokens.get(name, 0.0) for name in names]
+    if sum(weights) <= 0.0:
+        weights = [1.0] * len(names)
+    total_weight = sum(weights)
+    # The residue lands on the final row so the shares re-sum to the exact
+    # reported total rather than a rounded one.
+    shares = [cost.value * weight / total_weight for weight in weights[:-1]]
+    shares.append(cost.value - sum(shares))
+    for name, share in zip(names, shares, strict=True):
+        conn.execute(
+            """UPDATE session_model_usage SET provider_cost_usd = ?
+               WHERE session_id = ? AND model_name = ?""",
+            (share, session_id, name),
+        )
     conn.execute(
-        """UPDATE session_model_usage SET provider_cost_usd = ?
-           WHERE session_id = ? AND model_name = ?""",
-        (cost.value, session_id, model_name),
-    )
-    conn.execute(
-        """UPDATE session_model_usage SET provider_cost_usd = NULL
-           WHERE session_id = ? AND model_name <> ?""",
-        (session_id, model_name),
+        f"""UPDATE session_model_usage SET provider_cost_usd = NULL
+            WHERE session_id = ? AND model_name NOT IN ({placeholders})""",
+        (session_id, *names),
     )
 
 
@@ -707,21 +740,41 @@ def write_parsed_session_to_archive(
                     session_row_existed = True
                     existing_session_raw_id = existing_raw_id_row[0]
             t0 = time.perf_counter()
+            session_row_values = {
+                "native_id": native_id,
+                "origin": origin.value,
+                "raw_id": raw_id,
+                "parser_fingerprint": parser_semantic_fingerprint,
+                "lowering_fingerprint": lowering_semantic_fingerprint,
+                "branch_type": _enum_value(session.branch_type),
+                "active_leaf_message_id": active_leaf_message_id,
+                "title": _sqlite_text(session.title),
+                "session_kind": admitted_session_kind(
+                    effective_session_kind,
+                    branch_type=session.branch_type,
+                ).value,
+                "title_source": _enum_value(session.title_source),
+                "title_ref": _sqlite_text(session.title_ref),
+                "display_name": _sqlite_text(session.display_name),
+                "pending_drafts_json": _json_dumps(session.pending_drafts) if session.pending_drafts else None,
+                "git_branch": _sqlite_text(session.git_branch),
+                "git_repository_url": _sqlite_text(session.git_repository_url),
+                "commit_hash": _sqlite_text(session.git_commit_hash),
+                "instructions_text": _sqlite_text(session.instructions_text),
+                "reported_duration_ms": session.reported_duration_ms,
+                "reported_cost_usd": session.reported_cost_usd,
+                "provider_project_ref": _sqlite_text(session.provider_project_ref),
+                "content_hash": session_content_hash,
+                "created_at_ms": session_created_at_ms,
+                "updated_at_ms": session_updated_at_ms,
+                **session_counts,
+            }
+            sessions_spec = archive_tiers_specs.SESSIONS_SPEC
             conn.execute(
-                """
+                f"""
                 INSERT INTO sessions (
-                    native_id, origin, raw_id, parser_fingerprint, lowering_fingerprint,
-                    branch_type, active_leaf_message_id,
-                    title, session_kind, title_source, title_ref,
-                    display_name, pending_drafts_json,
-                    git_branch, git_repository_url, commit_hash,
-                    instructions_text, reported_duration_ms, reported_cost_usd, provider_project_ref,
-                    message_count, word_count, tool_use_count, thinking_count,
-                    paste_count, user_message_count, authored_user_message_count,
-                    assistant_message_count, system_message_count,
-                    tool_message_count, user_word_count, authored_user_word_count, assistant_word_count,
-                    content_hash, created_at_ms, updated_at_ms
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    {sessions_spec.insert_column_names}
+                ) VALUES ({sessions_spec.insert_placeholder_string})
                 ON CONFLICT(origin, native_id) DO UPDATE SET
                     raw_id = excluded.raw_id,
                     parser_fingerprint = excluded.parser_fingerprint,
@@ -818,45 +871,7 @@ def write_parsed_session_to_archive(
                     END
                 """,
                 (
-                    native_id,
-                    origin.value,
-                    raw_id,
-                    parser_semantic_fingerprint,
-                    lowering_semantic_fingerprint,
-                    _enum_value(session.branch_type),
-                    active_leaf_message_id,
-                    _sqlite_text(session.title),
-                    admitted_session_kind(
-                        effective_session_kind,
-                        branch_type=session.branch_type,
-                    ).value,
-                    _enum_value(session.title_source),
-                    _sqlite_text(session.title_ref),
-                    _sqlite_text(session.display_name),
-                    _json_dumps(session.pending_drafts) if session.pending_drafts else None,
-                    _sqlite_text(session.git_branch),
-                    _sqlite_text(session.git_repository_url),
-                    _sqlite_text(session.git_commit_hash),
-                    _sqlite_text(session.instructions_text),
-                    session.reported_duration_ms,
-                    session.reported_cost_usd,
-                    _sqlite_text(session.provider_project_ref),
-                    session_counts["message_count"],
-                    session_counts["word_count"],
-                    session_counts["tool_use_count"],
-                    session_counts["thinking_count"],
-                    session_counts["paste_count"],
-                    session_counts["user_message_count"],
-                    session_counts["authored_user_message_count"],
-                    session_counts["assistant_message_count"],
-                    session_counts["system_message_count"],
-                    session_counts["tool_message_count"],
-                    session_counts["user_word_count"],
-                    session_counts["authored_user_word_count"],
-                    session_counts["assistant_word_count"],
-                    session_content_hash,
-                    session_created_at_ms,
-                    session_updated_at_ms,
+                    *sessions_spec.extract_tuple(session_row_values),
                     producer_created,
                     force_replace,
                     producer_updated,
@@ -5907,27 +5922,20 @@ def _seed_session_model_usage_rows(
         ON CONFLICT(session_id, model_name) DO NOTHING
         """
     )
-    for model_name in sorted(model_names):
-        conn.execute(model_usage_sql, (session_id, _sqlite_text(model_name)))
-    if session.reported_cost_usd is not None and len(model_names) == 1:
-        current_model = next(iter(model_names))
+    stored_model_names = [cast(str, _sqlite_text(model_name)) for model_name in sorted(model_names)]
+    for stored_model_name in stored_model_names:
+        conn.execute(model_usage_sql, (session_id, stored_model_name))
+    if aggregate_message_tokens:
+        _aggregate_message_tokens_into_model_usage(conn, session_id)
+    # After aggregation: the catalog dollars that weight the provider total's
+    # split across this session's models are written by the pass above.
+    if session.reported_cost_usd is not None:
         _write_provider_cost(
             conn,
             session_id,
-            current_model,
+            stored_model_names,
             ProviderCost(session.reported_cost_usd),
         )
-        # The provider reports one total for the session and it is attributed
-        # to the single model in play. On append the prior model's rows
-        # survive, so leaving their attributed total behind makes the
-        # session's SUM(provider_cost_usd) count the same dollars twice.
-        conn.execute(
-            """UPDATE session_model_usage SET provider_cost_usd = NULL
-               WHERE session_id = ? AND model_name != ? AND provider_cost_usd IS NOT NULL""",
-            (session_id, _sqlite_text(current_model)),
-        )
-    if aggregate_message_tokens:
-        _aggregate_message_tokens_into_model_usage(conn, session_id)
 
 
 def _aggregate_message_tokens_into_model_usage(conn: sqlite3.Connection, session_id: str) -> None:

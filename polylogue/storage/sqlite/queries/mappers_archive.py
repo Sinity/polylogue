@@ -11,7 +11,6 @@ from polylogue.core.enums import (
     ArtifactSupportStatus,
     Origin,
     Provider,
-    SessionKind,
     ValidationMode,
     ValidationStatus,
 )
@@ -33,7 +32,6 @@ from polylogue.storage.sqlite.queries.mappers_support import (
     _json_object,
     _json_object_list,
     _parse_json,
-    _row_float,
     _row_get,
     _row_int,
     _row_optional_bool,
@@ -45,15 +43,12 @@ def _row_to_session(row: sqlite3.Row) -> SessionRecord:
     values = SESSIONS_SPEC.row_to_record_kwargs(row)
     parent_session_id = _row_text(row, "parent_session_id")
     branch_type = _row_text(row, "branch_type")
-    values["session_kind"] = SessionKind.normalize(_row_text(row, "session_kind"))
     values["parent_session_id"] = SessionId(parent_session_id) if parent_session_id is not None else None
     values["branch_type"] = BranchType(branch_type) if branch_type is not None else None
     values["metadata"] = _json_object(_parse_json(row["metadata"], field="metadata", record_id=row["session_id"]))
     values["pending_drafts"] = _json_object_list(
         _parse_json(_row_get(row, "pending_drafts_json"), field="pending_drafts_json", record_id=row["session_id"])
     )
-    values["sort_key"] = _row_float(row, "sort_key")
-    values["reported_cost_usd"] = _row_float(row, "reported_cost_usd")
     return SessionRecord(**values)
 
 

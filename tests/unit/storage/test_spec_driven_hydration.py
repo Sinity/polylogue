@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.enums import BlockType, Origin, Provider, Role
+from polylogue.core.enums import BlockType, Origin, Provider, Role, ToolOutcome
+from polylogue.core.types import ContentHash, MessageId, SessionId
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.hydrators import message_from_record
-from polylogue.storage.runtime import SessionRecord
+from polylogue.storage.runtime import BlockRecord, MessageRecord, SessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import BLOCKS_SPEC, MESSAGES_SPEC, SESSIONS_SPEC
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries import message_query_reads, sessions_reads
@@ -140,3 +141,78 @@ async def test_session_reads_hydrate_records_through_the_declared_projection(tmp
 
     assert [str(item.session_id) for item in listed] == [session_id]
     assert listed[0].title == "Session projection"
+
+
+def test_sessions_insert_statement_is_generated_from_the_declaration() -> None:
+    """The sessions write supplies values by name, not by tuple position.
+
+    Red when a column loses its extractor (it silently drops out of the
+    statement), when a lifecycle-owned column stops being declared
+    ``deferred_write`` (the write would have to invent a value for it), or when
+    the generated column list and placeholder string stop agreeing.
+    """
+    insert_names = [column.name for column in SESSIONS_SPEC.insert_columns]
+    assert SESSIONS_SPEC.insert_column_names == ", ".join(insert_names)
+    assert SESSIONS_SPEC.insert_placeholder_string.count("?") == len(insert_names)
+    # Generated identity and the two columns lineage resolution writes later
+    # are the only stored columns the session INSERT does not supply.
+    declared = {column.name for column in SESSIONS_SPEC.all_columns}
+    assert declared - set(insert_names) == {
+        "session_id",
+        "sort_key_ms",
+        "parent_session_id",
+        "root_session_id",
+    }
+    values = dict.fromkeys(insert_names, None)
+    assert len(SESSIONS_SPEC.extract_tuple(values)) == len(insert_names)
+
+
+def test_blocks_spec_declares_every_domain_field_the_hydrator_emits() -> None:
+    """``message_from_record`` projects blocks through BLOCKS_SPEC.
+
+    Red when a block column loses its ``domain_name``: the hydrated block drops
+    that field, and a reader that expects it silently sees nothing.
+    """
+    record = BlockRecord(
+        block_id="s:m:0",
+        message_id=MessageId("s:m"),
+        session_id=SessionId("s"),
+        block_index=0,
+        type=BlockType.TOOL_USE,
+        text="ran it",
+        tool_name="Bash",
+        tool_id="toolu_1",
+        tool_input='{"command": "ls"}',
+        semantic_type=None,
+        tool_outcome=ToolOutcome.OK,
+        signature=None,
+    )
+    projected = BLOCKS_SPEC.domain_kwargs(record)
+    assert set(projected) == {
+        "id",
+        "type",
+        "text",
+        "tool_name",
+        "tool_id",
+        "tool_input",
+        "semantic_type",
+        "tool_result_is_error",
+        "tool_result_exit_code",
+        "tool_outcome",
+        "tool_result_outcome_unknown_reason",
+        "signature",
+    }
+    # Enum members lower to their wire text and JSON payloads decode; neither
+    # is left to a per-family mapper.
+    assert projected["type"] == "tool_use"
+    assert projected["tool_outcome"] == "ok"
+    assert projected["tool_input"] == {"command": "ls"}
+
+    message = MessageRecord(
+        message_id=MessageId("s:m"),
+        session_id=SessionId("s"),
+        content_hash=ContentHash("0" * 64),
+        blocks=[record],
+    )
+    hydrated = message_from_record(message, [], origin=Origin.CLAUDE_CODE_SESSION)
+    assert set(hydrated.blocks[0]) >= set(projected)

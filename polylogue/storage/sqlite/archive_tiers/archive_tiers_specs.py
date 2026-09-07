@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
+from json import JSONDecodeError
 from operator import itemgetter
 from typing import get_args
 
@@ -39,6 +40,7 @@ from polylogue.core.enums import (
     TopologyEdgeStatus,
     WebConstructType,
 )
+from polylogue.core.json import loads
 from polylogue.storage.sqlite.archive_tiers.column_spec import ColumnSpec, TableColumnSpec
 from polylogue.storage.sqlite.archive_tiers.common import (
     CONTENT_HASH_CHECK,
@@ -74,6 +76,31 @@ def _epoch_seconds_to_datetime(value: object) -> datetime | None:
 
 def _bool_value(value: object) -> bool:
     return bool(value)
+
+
+def _text_value(value: object) -> str:
+    return str(value)
+
+
+def _optional_text_value(value: object) -> str | None:
+    return None if value is None else str(value)
+
+
+def _decoded_json_value(value: object) -> object:
+    """Decode a persisted JSON payload column for a domain projection.
+
+    Canonical storage keeps ``tool_input``/``metadata`` as JSON text; the
+    domain block carries the structure, and a payload that will not decode is
+    handed back verbatim rather than discarded.
+    """
+    if value in {None, ""}:
+        return None
+    if isinstance(value, (dict, list)) or not isinstance(value, str):
+        return value
+    try:
+        return loads(value)
+    except (JSONDecodeError, ValueError):
+        return value
 
 
 def _optional_bool_value(value: object) -> bool | None:
@@ -325,28 +352,36 @@ def _make_blocks_spec() -> TableColumnSpec:
     )
 
     record_columns = (ColumnSpec("metadata", record_name="metadata", select_expression="NULL"),)
-    mappings = {
-        "block_id": ("block_id", None),
-        "message_id": ("message_id", None),
-        "session_id": ("session_id", None),
-        "position": ("block_index", None),
-        "block_type": ("type", None),
-        "text": ("text", None),
-        "tool_name": ("tool_name", None),
-        "tool_id": ("tool_id", None),
-        "tool_input": ("tool_input", None),
-        "semantic_type": ("semantic_type", None),
-        "tool_result_is_error": ("tool_result_is_error", None),
-        "tool_result_exit_code": ("tool_result_exit_code", None),
-        "tool_outcome": ("tool_outcome", None),
-        "tool_result_outcome_unknown_reason": ("tool_result_outcome_unknown_reason", None),
-        "signature": ("signature", None),
+    # (record field, domain field, domain transform). A ``None`` domain field
+    # is storage/record identity the domain block never carries.
+    mappings: dict[str, tuple[str, str | None, Callable[[object], object] | None]] = {
+        "block_id": ("block_id", "id", None),
+        "message_id": ("message_id", None, None),
+        "session_id": ("session_id", None, None),
+        "position": ("block_index", None, None),
+        "block_type": ("type", "type", _text_value),
+        "text": ("text", "text", None),
+        "tool_name": ("tool_name", "tool_name", None),
+        "tool_id": ("tool_id", "tool_id", None),
+        "tool_input": ("tool_input", "tool_input", _decoded_json_value),
+        "semantic_type": ("semantic_type", "semantic_type", _optional_text_value),
+        "tool_result_is_error": ("tool_result_is_error", "tool_result_is_error", None),
+        "tool_result_exit_code": ("tool_result_exit_code", "tool_result_exit_code", None),
+        "tool_outcome": ("tool_outcome", "tool_outcome", _optional_text_value),
+        "tool_result_outcome_unknown_reason": (
+            "tool_result_outcome_unknown_reason",
+            "tool_result_outcome_unknown_reason",
+            None,
+        ),
+        "signature": ("signature", "signature", None),
     }
     all_columns = tuple(
         replace(
             col,
             extract=_value(col.name) if col.extract_placeholder == "?" else None,
             record_name=mappings[col.name][0],
+            domain_name=mappings[col.name][1],
+            domain_transform=mappings[col.name][2],
         )
         if col.name in mappings
         else replace(col, extract=_value(col.name) if col.extract_placeholder == "?" else None)
@@ -380,17 +415,26 @@ def _make_blocks_spec() -> TableColumnSpec:
 # Index-tier table specs. Each rendered table body is sourced from these
 # column definitions plus its table-level constraints; indexes, triggers,
 # and virtual tables remain in index.py because they are not row schemas.
+_DEFERRED_WRITE = "deferred"
+
+
 def _raw_column(
     name: str,
     ddl_sql: str,
     *,
     record_name: str | None = None,
     select_expression: str | None = None,
+    record_transform: Callable[[object], object] | None = None,
+    domain_name: str | None = None,
+    domain_transform: Callable[[object], object] | None = None,
+    deferred_write: bool = False,
 ) -> ColumnSpec:
     """Declare a stored column and, where it has one, its record projection.
 
     ``record_name`` is the label the record mapper consumes; a column without
-    one is storage-only and never reaches a runtime record.
+    one is storage-only and never reaches a runtime record. ``deferred_write``
+    marks a column the table's own INSERT does not supply because a later
+    owner (lineage resolution, a rollup pass) writes it.
     """
     return ColumnSpec(
         name=name,
@@ -398,6 +442,10 @@ def _raw_column(
         ddl_sql=ddl_sql,
         record_name=record_name,
         select_expression=select_expression,
+        record_transform=record_transform,
+        domain_name=domain_name,
+        domain_transform=domain_transform,
+        extract_placeholder=_DEFERRED_WRITE if deferred_write else "?",
     )
 
 
@@ -408,10 +456,24 @@ def _make_table_spec(
     record_only_columns: tuple[ColumnSpec, ...] = (),
     table_constraints: tuple[str, ...] = (),
 ) -> TableColumnSpec:
+    """Bind each writable column to its value in the table's insert mapping.
+
+    A writable column's INSERT value is read from the mapping under its own
+    storage name; a ``deferred_write`` column has no value here and drops out
+    of the generated statement entirely.
+    """
+    bound = tuple(
+        replace(column, extract=None, extract_placeholder="?")
+        if column.extract_placeholder == _DEFERRED_WRITE
+        else replace(column, extract=_value(column.name))
+        if not column.is_generated
+        else column
+        for column in columns
+    )
     return TableColumnSpec(
         table_name=table_name,
-        all_columns=columns,
-        writable_columns=tuple(column for column in columns if not column.is_generated),
+        all_columns=bound,
+        writable_columns=tuple(column for column in bound if not column.is_generated),
         record_only_columns=record_only_columns,
         table_constraints=table_constraints,
     )
@@ -578,9 +640,12 @@ SESSIONS_SPEC = _make_table_spec(
             "parent_session_id",
             """parent_session_id       TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
             record_name="parent_session_id",
+            deferred_write=True,
         ),
         _raw_column(
-            "root_session_id", """root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL"""
+            "root_session_id",
+            """root_session_id         TEXT REFERENCES sessions(session_id) ON DELETE SET NULL""",
+            deferred_write=True,
         ),
         _raw_column("raw_id", """raw_id                  TEXT""", record_name="raw_id"),
         _raw_column(

@@ -99,14 +99,24 @@ class TableColumnSpec:
         return ",\n    ".join((*definitions, *self.table_constraints))
 
     @property
+    def insert_columns(self) -> tuple[ColumnSpec, ...]:
+        """Writable columns whose value this table's canonical INSERT supplies.
+
+        A writable column that declares neither an extractor nor a literal
+        placeholder has no value at insert time; a later owner (lineage
+        resolution, a rollup pass) writes it, so it stays out of the statement.
+        """
+        return tuple(col for col in self.writable_columns if col.extract is not None or col.extract_placeholder != "?")
+
+    @property
     def insert_column_names(self) -> str:
         """Generate INSERT column list."""
-        return ", ".join(col.name for col in self.writable_columns)
+        return ", ".join(col.name for col in self.insert_columns)
 
     @property
     def insert_placeholder_string(self) -> str:
         """Generate VALUES placeholder string (?, ?, NULL, etc)."""
-        return ", ".join(col.extract_placeholder for col in self.writable_columns)
+        return ", ".join(col.extract_placeholder for col in self.insert_columns)
 
     @property
     def select_column_names(self) -> str:
@@ -118,20 +128,18 @@ class TableColumnSpec:
         return ",\n    ".join(col.select_sql(table_alias) for col in self.record_columns)
 
     def extract_tuple(self, source_obj: Any) -> tuple[Any, ...]:
-        """Extract a tuple of values from a source object in writable column order.
+        """Extract a tuple of values from a source object in insert-column order.
 
-        Skips columns with extract_placeholder != "?" (e.g., NULL literals).
-        Those are included in the SQL VALUES clause but not in the tuple.
+        Columns with a literal placeholder (NULL, an expression) appear in the
+        VALUES clause but carry no bound value, so they are skipped here.
         """
         result = []
-        for col in self.writable_columns:
-            # Skip columns with non-standard placeholders (NULL, expressions, etc)
+        for col in self.insert_columns:
             if col.extract_placeholder != "?":
                 continue
-            if col.extract is not None:
-                result.append(col.extract(source_obj))
-            else:
+            if col.extract is None:
                 raise ValueError(f"No extractor defined for column {col.name}")
+            result.append(col.extract(source_obj))
         return tuple(result)
 
     def row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
