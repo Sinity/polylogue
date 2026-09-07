@@ -1990,12 +1990,6 @@ def _runtime_consumer_results(
                     detail = _probe_raw_failure_lifecycle(
                         cast(Callable[..., object], value), archive_root, train.target_version
                     )
-                elif reference.endswith(":apply_raw_failure_dispositions"):
-                    if train.tier is not ArchiveTier.SOURCE:
-                        raise DurableChangeTrainError(
-                            f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
-                        )
-                    detail = _probe_raw_failure_disposition_apply(cast(Callable[..., object], value), archive_root)
                 elif reference.endswith(":replace_raw_backed_blob_reference_debt_from_source"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -2852,62 +2846,6 @@ def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Pa
     if not getattr(snapshot, "available", False):
         raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
     return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"
-
-
-def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archive_root: Path) -> str:
-    """Exercise the disposition actuator's read-only validation route."""
-    del archive_root
-    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
-
-    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-disposition-") as directory:
-        root = Path(directory)
-        source_path = root / "source.db"
-        with sqlite_connection(source_path) as connection:
-            initialize_archive_tier(connection, ArchiveTier.SOURCE)
-            _seed_probe_raw_row(
-                connection,
-                raw_id="durable-change-train-disposition-raw",
-                source_path="/durable-change-train/disposition-probe.jsonl",
-                blob_hash=b"\0" * 32,
-                parse_error="durable change train probe failure",
-            )
-            connection.execute(
-                """
-                INSERT INTO raw_artifacts (
-                    artifact_id, raw_id, origin, source_path, source_index,
-                    artifact_kind, support_status, classification_reason,
-                    first_observed_at_ms, last_observed_at_ms
-                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
-                """,
-                (
-                    "durable-change-train-disposition-artifact",
-                    "durable-change-train-disposition-raw",
-                    "claude-code-session",
-                    "/durable-change-train/disposition-probe.jsonl",
-                    "coordinator_session_stream",
-                    "supported_parseable",
-                    "durable change train probe",
-                    1_780_000_000_000,
-                    1_780_000_000_000,
-                ),
-            )
-            connection.commit()
-        manifest_path = root / "dispositions.jsonl"
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "raw_id": "durable-change-train-disposition-raw",
-                    "disposition_kind": "terminal_corrupt_input",
-                    "detail": "durable change train read-only probe",
-                }
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        report = actuator(root, manifest_path=manifest_path, dry_run=True)
-    if getattr(report, "applied", True) or getattr(report, "candidate_count", 0) != 1:
-        raise DurableChangeTrainError("raw failure disposition probe did not remain read-only")
-    return "validated one raw failure disposition without mutation"
 
 
 def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
