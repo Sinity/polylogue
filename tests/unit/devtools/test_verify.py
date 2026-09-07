@@ -156,7 +156,7 @@ def test_broken_venv_script_shebang_is_typed_as_missing(monkeypatch: pytest.Monk
 
 
 def test_mypy_gate_uses_a_foreground_checkout_local_process() -> None:
-    assert gate.mypy_command() == [str(verify.ROOT / ".venv/bin/mypy")]
+    assert gate.mypy_command() == [str(verify.ROOT / ".venv/bin/python"), "-m", "devtools.mypy_gate"]
 
 
 def test_removed_lab_mode_is_not_accepted(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import os
 import shutil
@@ -176,6 +177,22 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_make_parametrize_id(config: pytest.Config, val: object, argname: str | None) -> str | None:
+    """Keep pathological parameter representations out of every node id.
+
+    Payload and schema fixtures sometimes stringify multi-kilobyte objects for
+    an otherwise uninteresting case label.  The value remains available to
+    the test; only its collection-time display label is shortened.
+    """
+    del config
+    rendered = repr(val)
+    if len(rendered) <= 80:
+        return None
+    digest = hashlib.blake2b(rendered.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
+    prefix = argname or "param"
+    return f"{prefix}-{digest}"
+
+
 def _file_batch(path: Path, count: int) -> int:
     if path.is_absolute():
         path = path.relative_to(_TESTS_REPO_ROOT)
@@ -211,11 +228,16 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
     for item in items:
         marker = item.get_closest_marker("timeout")
-        if marker is None:
-            continue
-        issue = timeout_marker_error(marker)
+        issue = None if marker is None else timeout_marker_error(marker)
         if issue is not None:
             raise pytest.UsageError(f"{item.nodeid}: {issue}")
+
+        # Keep xdist's controller map and every worker's node metadata bounded
+        # when a parameter's repr is a complete JSON/export payload.
+        if len(item.nodeid) > 100:
+            stem, _, _ = item.nodeid.partition("[")
+            digest = hashlib.blake2b(item.nodeid.encode("utf-8", "backslashreplace"), digest_size=8).hexdigest()
+            item._nodeid = f"{stem}[param-{digest}]"
 
 
 # ---------------------------------------------------------------------------
