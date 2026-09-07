@@ -2545,9 +2545,9 @@ async def run_daemon_services(
     those routes can run, and the daemon must prevent a rebuild from starting
     until its writer coordinator has drained.
     """
+    from polylogue.core.write_lease import arm_write_lease_enforcement
     from polylogue.maintenance.raw_authority import archive_writer_rebuild_exclusion
     from polylogue.paths import archive_root
-    from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)

@@ -31,6 +31,7 @@ from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.sources import provider_from_origin
+from polylogue.core.write_lease import require_write_lease, write_lease
 from polylogue.daemon.cli import checkpoint_connection
 from polylogue.daemon.status import open_readonly_connection
 from polylogue.logging import get_logger
@@ -51,8 +52,6 @@ from polylogue.storage.blob_integrity import (
     project_source_blob_liveness,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
-from polylogue.storage.sqlite.write_lease import write_lease
 
 logger = get_logger(__name__)
 
@@ -469,12 +468,10 @@ def _checkpoint_sqlite_for_snapshot(conn: sqlite3.Connection, path: Path) -> Non
 def _backup_sqlite(src: Path, dst: Path) -> tuple[int, dict[str, object]]:
     """Copy a checkpointed tier while excluding concurrent SQLite writers."""
     live_path = src.resolve(strict=True)
-    conn = open_isolated_write_connection(
-        live_path,
-        purpose=f"backup snapshot({live_path})",
-        archive_root=archive_root(),
-    )
+    require_write_lease(f"backup snapshot({live_path})", archive_root=archive_root())
+    conn = sqlite3.connect(str(live_path), timeout=30.0)
     try:
+        conn.execute("PRAGMA busy_timeout = 30000")
         for _attempt in range(_SNAPSHOT_LOCK_ATTEMPTS):
             _checkpoint_sqlite_for_snapshot(conn, live_path)
             conn.execute("BEGIN IMMEDIATE")

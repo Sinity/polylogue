@@ -23,8 +23,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, ParamSpec, TypeVar
 
+from polylogue.core.write_lease import bind_write_lease_thread, current_write_lease, write_lease
 from polylogue.logging import get_logger
-from polylogue.storage.sqlite.write_lease import bind_write_lease_thread, current_write_lease, write_lease
 
 logger = get_logger(__name__)
 
