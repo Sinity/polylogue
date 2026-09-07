@@ -43,7 +43,9 @@ class _Blocker:
         with self._lock:
             self.starts += 1
         self._started.release()
-        return self.release.wait(5)
+        # Long enough that a loaded host cannot let the body finish on its own
+        # and turn a saturation law into a vacuous pass.
+        return self.release.wait(60)
 
     def wait_started(self, count: int, timeout: float = 5.0) -> bool:
         return all(self._started.acquire(timeout=timeout) for _ in range(count))
