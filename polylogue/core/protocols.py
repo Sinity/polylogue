@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import builtins
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -49,6 +50,12 @@ if TYPE_CHECKING:
         RawAdmissionRequest,
     )
     from polylogue.storage.sqlite.queries.stats import AggregateMessageStats
+
+
+class ArchiveRootOwner(Protocol):
+    """Minimal archive handle required by live-ingest coordination."""
+
+    archive_root: Path
 
 
 @runtime_checkable

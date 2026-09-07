@@ -98,9 +98,9 @@ def read_pending_message_count(
     try:
         total = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
         if max_sessions is not None or max_messages is not None:
-            from polylogue.api import select_pending_embedding_session_window
+            from polylogue.storage.embeddings.materialization import select_pending_session_window
 
-            pending = select_pending_embedding_session_window(
+            pending = select_pending_session_window(
                 conn,
                 rebuild=rebuild,
                 max_sessions=max_sessions,

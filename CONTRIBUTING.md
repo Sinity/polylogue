@@ -30,7 +30,9 @@ devtools render all
 
 ### Audit tooling
 
-The `audit` dependency group supplies `ast-grep` for local structural candidate generation:
+The `audit` dependency group supplies the Python audit roster (`grimp`,
+`import-linter`, `vulture`, `radon`, `jedi`, `duckdb`, `networkx`, `libcst`)
+and `ast-grep` for local structural candidate generation:
 
 ```bash
 uv sync --extra dev --group audit --frozen
