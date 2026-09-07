@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from io import BytesIO
 from pathlib import Path
 
 import pytest
@@ -29,7 +30,7 @@ from polylogue.maintenance.blob_disposition import (
     SourceProofMode,
     append_successors_by_hash,
     build_disposition_context,
-    codex_state_evidence_payload_hashes,
+    codex_state_logical_export_hashes,
     compile_disposition_plan,
     hook_event_carriers_by_hash,
     raw_source_carriers_by_hash,
@@ -586,47 +587,30 @@ def _codex_state_db(path: Path, *, title: str = "a thread title") -> Path:
     return path
 
 
-def _codex_evidence_payloads(state_db: Path) -> list[bytes]:
-    """Every payload the production writer emits for one state snapshot."""
-    from polylogue.sources.codex_state_evidence import write_codex_thread_state_evidence
-    from polylogue.sources.parsers import codex_state
+def _codex_logical_export_bytes(state_db: Path) -> bytes:
+    """The canonical logical export retained for one state snapshot."""
+    from polylogue.sources.sqlite_export import member_export_scope, write_logical_export
 
-    captured: list[bytes] = []
-
-    class _CapturingArchive:
-        def write_hook_event(self, *, payload: bytes, **_ignored: object) -> None:
-            captured.append(payload)
-
-    write_codex_thread_state_evidence(
-        _CapturingArchive(),
-        codex_state.parse_codex_state_db(state_db, immutable=True),
-        source_path=str(state_db),
-        acquired_at_ms=0,
-    )
-    return captured
+    output = BytesIO()
+    write_logical_export(state_db, output, scope=member_export_scope(state_db), immutable=True)
+    return output.getvalue()
 
 
-def test_codex_state_payload_hashes_match_the_production_writer(tmp_path: Path) -> None:
-    """The prover mirrors an encoding it cannot call; this is the drift guard.
-
-    Red the moment ``write_codex_thread_state_evidence`` changes what it
-    encodes without the mirror following, which would silently stop proving
-    payloads the live source still emits.
-    """
+def test_codex_state_logical_export_hash_matches_the_production_route(tmp_path: Path) -> None:
+    """The prover and acquisition route must agree on the retained export."""
     state_db = _codex_state_db(tmp_path / "state_5.sqlite")
 
-    written = {hashlib.sha256(payload).hexdigest() for payload in _codex_evidence_payloads(state_db)}
+    written = {hashlib.sha256(_codex_logical_export_bytes(state_db)).hexdigest()}
 
     assert written
-    assert codex_state_evidence_payload_hashes(state_db) == written
+    assert codex_state_logical_export_hashes(state_db) == written
 
 
-def test_a_state_row_payload_is_proven_against_the_live_database(tmp_path: Path) -> None:
-    """A payload synthesized from a row has no byte carrier to hash."""
+def test_a_state_export_is_proven_against_the_live_database(tmp_path: Path) -> None:
+    """A retained logical export is proven against the current database."""
     state_db = _codex_state_db(tmp_path / "state_5.sqlite")
     store = BlobStore(tmp_path / "blob")
-    payloads = _codex_evidence_payloads(state_db)
-    hashes = [_publish_blob(store, payload) for payload in payloads]
+    hashes = [_publish_blob(store, _codex_logical_export_bytes(state_db))]
     source_db = _source_db_with_rows(
         tmp_path / "source.db",
         hook_events=tuple((blob_hash, str(state_db)) for blob_hash in hashes),
@@ -635,7 +619,7 @@ def test_a_state_row_payload_is_proven_against_the_live_database(tmp_path: Path)
 
     plan = _plan_over(tmp_path, source_db=source_db)
 
-    assert len(hashes) == 2
+    assert len(hashes) == 1
     for blob_hash in hashes:
         member = _member(plan, blob_hash)
         assert member.disposition is BlobDisposition.SOURCE_PRESENT
@@ -645,11 +629,11 @@ def test_a_state_row_payload_is_proven_against_the_live_database(tmp_path: Path)
     assert plan.accepted is True
 
 
-def test_a_state_payload_the_database_no_longer_emits_is_not_proven(tmp_path: Path) -> None:
-    """Red if the prover matches on the carrier path instead of the content."""
+def test_a_state_export_the_database_no_longer_matches_is_not_proven(tmp_path: Path) -> None:
+    """Red if the prover matches on the carrier path instead of logical content."""
     state_db = _codex_state_db(tmp_path / "state_5.sqlite", title="the title at acquisition")
     store = BlobStore(tmp_path / "blob")
-    stale = _publish_blob(store, _codex_evidence_payloads(state_db)[0])
+    stale = _publish_blob(store, _codex_logical_export_bytes(state_db))
     state_db.unlink()
     _codex_state_db(state_db, title="the title now")
     source_db = _source_db_with_rows(tmp_path / "source.db", hook_events=((stale, str(state_db)),), blob_refs=(stale,))

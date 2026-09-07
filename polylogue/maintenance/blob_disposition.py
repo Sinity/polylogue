@@ -705,15 +705,12 @@ class AppendPrefixProver:
 
 
 class CodexStateEvidenceProver:
-    """Prove a Codex state-evidence payload against the live state database.
+    """Prove a retained Codex state export against its live logical source.
 
-    A payload synthesized from a database row has no byte carrier: the state
-    file never contained those bytes, so no filesystem walk can reach them.
-    The production writer that encodes a thread or spawn edge is the only
-    thing that reproduces one, and re-running that encoding over the live
-    database is the proof. A row the database no longer holds -- a retitled
-    thread, a deleted edge -- simply fails to reproduce, which is the honest
-    answer for a payload the current source no longer emits.
+    Codex state is acquired through ``snapshot_sqlite_to_blob`` as a
+    canonical logical export, not as row-shaped hook payloads. Recomputing
+    that export digest over the live database is the source-authoritative
+    proof and remains valid across SQLite page-layout changes.
     """
 
     name = "codex-state-evidence"
@@ -725,7 +722,7 @@ class CodexStateEvidenceProver:
     def _payload_hashes(self, source_path: str) -> frozenset[str]:
         cached = self._payloads.get(source_path)
         if cached is None:
-            cached = codex_state_evidence_payload_hashes(Path(source_path))
+            cached = codex_state_logical_export_hashes(Path(source_path))
             self._payloads[source_path] = cached
         return cached
 
@@ -738,54 +735,22 @@ class CodexStateEvidenceProver:
                 mode=SourceProofMode.SEMANTIC_EQUIVALENT,
                 source_id="codex-state-db",
                 source_path=source_path,
-                detail="the live state database re-emits this evidence payload through the production writer",
+                detail="the live state database re-emits the retained canonical logical export",
             )
         return None
 
 
-def codex_state_evidence_payload_hashes(state_db: Path) -> frozenset[str]:
-    """Hash every evidence payload the current writer emits for a state DB.
-
-    This mirrors ``sources.codex_state_evidence.write_codex_thread_state_evidence``
-    rather than calling it, because that writer needs a writable archive.
-    The mirror is load-bearing: if the encoding there changes and this does
-    not, payloads the live source still emits stop proving their blobs.
-    """
+def codex_state_logical_export_hashes(state_db: Path) -> frozenset[str]:
+    """Return the canonical logical-export digest emitted for a state DB."""
     from polylogue.sources.parsers import codex_state
+    from polylogue.sources.sqlite_snapshot import sqlite_member_revision
 
     try:
         if codex_state.classify_codex_sqlite_path(state_db, immutable=True) != "thread_state":
             return frozenset()
-        snapshot = codex_state.parse_codex_state_db(state_db, immutable=True)
+        return frozenset({sqlite_member_revision(state_db, immutable=True)})
     except Exception:
         return frozenset()
-    payloads: list[dict[str, object]] = [
-        {
-            "thread_id": thread.thread_id,
-            "title": thread.title,
-            "cwd": thread.cwd,
-            "source": thread.source,
-            "model": thread.model,
-            "agent_nickname": thread.agent_nickname,
-            "agent_role": thread.agent_role,
-            "archived": thread.archived,
-        }
-        for thread in snapshot.threads
-    ]
-    payloads.extend(
-        {
-            "parent_thread_id": edge.parent_thread_id,
-            "child_thread_id": edge.child_thread_id,
-            "status": edge.status,
-        }
-        for edge in snapshot.spawn_edges
-    )
-    return frozenset(
-        hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        for payload in payloads
-    )
 
 
 class ExportArchiveMemberProver:
@@ -1286,7 +1251,7 @@ __all__ = [
     "append_successors_by_hash",
     "build_disposition_context",
     "classify_blob",
-    "codex_state_evidence_payload_hashes",
+    "codex_state_logical_export_hashes",
     "compile_disposition_plan",
     "explain_invalid_namespace_entry",
     "hook_event_carriers_by_hash",

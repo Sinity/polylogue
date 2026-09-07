@@ -450,21 +450,26 @@ def test_a_referenced_member_is_never_deleted(tmp_path: Path) -> None:
     assert receipt.cohorts[BlobDisposition.SOURCE_PRESENT.value]["retained_bytes"] == result.size_bytes
 
 
-def test_an_unreferenced_orphan_is_deleted_though_no_prover_explains_it(tmp_path: Path) -> None:
-    """Anti-vacuity: bounding deletion to proven dispositions leaves the whole
-    orphan cohort on disk forever. Nothing names this object, so recurring GC
-    would take it, and the receipt says exactly that."""
+def test_an_unreferenced_orphan_is_deleted_when_live_eligibility_holds(tmp_path: Path) -> None:
+    """An unnamed object is GC-eligible even when no source prover explains it.
+
+    The plan records the positive ``unreferenced`` disposition, while apply
+    rechecks the live relation before deletion. A newly added reference must
+    therefore retain the object instead of trusting the stale plan.
+    """
     archive_root, blob_root, hooks_root, capture_spool = _real_archive(tmp_path)
     orphan_hash, orphan_path = _store_aged(blob_root, b"%PDF-1.5\nunexplained\n")
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
-    assert plan.members[0].disposition is BlobDisposition.UNRESOLVED
+    assert plan.members[0].disposition is BlobDisposition.UNREFERENCED
+    assert not plan.members[0].referenced
+    assert plan.accepted
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
     assert receipt.ok, receipt.blockers
     (result,) = receipt.results
     assert result.outcome is MemberOutcome.DELETED
-    assert result.cohort == BlobDisposition.UNRESOLVED.value
+    assert result.cohort == BlobDisposition.UNREFERENCED.value
     assert not result.referenced
     assert not orphan_path.exists()
     assert receipt.deleted_count == 1
@@ -515,7 +520,10 @@ def test_invalid_namespace_entries_are_removed(tmp_path: Path) -> None:
     stray = shard / "index.db-wal"
     stray.write_bytes(b"stale write-ahead log\n")
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
-    assert plan.denominator.invalid_namespace_entries == ("ab/index.db-wal: invalid_leaf_name",)
+    (invalid_entry,) = plan.denominator.invalid_namespace_entries
+    assert invalid_entry.relative_path == "ab/index.db-wal"
+    assert invalid_entry.issue == "invalid_leaf_name"
+    assert not invalid_entry.explained
 
     receipt = _apply(plan, context, archive_root, hooks_root, capture_spool, dry_run=False)
 
