@@ -94,6 +94,80 @@ def test_slug_absent_leaves_display_name_none() -> None:
     assert parsed.display_name is None
 
 
+def test_team_name_is_captured_once_as_a_session_event() -> None:
+    """The top-level ``teamName`` is session identity, not message metadata."""
+    parsed = parse_code(
+        [
+            {
+                "type": "user",
+                "uuid": "u1",
+                "sessionId": "sess-team",
+                "teamName": "structural-consolidation",
+                "message": {"role": "user", "content": "hello"},
+            },
+            {
+                "type": "assistant",
+                "uuid": "a1",
+                "sessionId": "sess-team",
+                "teamName": "structural-consolidation",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+            },
+        ],
+        "sess-team",
+    )
+    team_events = [event for event in parsed.session_events if event.event_type == "claude_team_name"]
+    assert parsed.team_name == "structural-consolidation"
+    assert len(team_events) == 1
+    assert team_events[0].payload["team_name"] == "structural-consolidation"
+
+
+def test_advisor_model_is_kept_on_the_usage_turn() -> None:
+    """The real top-level ``advisorModel`` shape remains linked to its turn."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a-advisor",
+                "sessionId": "sess-advisor",
+                "advisorModel": "claude-opus-4-7",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "advised"}],
+                    "usage": {"input_tokens": 2, "output_tokens": 3},
+                },
+            },
+        ],
+        "sess-advisor",
+    )
+    advisor_events = [event for event in parsed.session_events if event.event_type == "claude_advisor_model"]
+    assert len(advisor_events) == 1
+    assert advisor_events[0].source_message_provider_id == "a-advisor"
+    assert advisor_events[0].payload["advisor_model"] == "claude-opus-4-7"
+    usage_events = [event for event in parsed.session_events if event.event_type == "message_usage"]
+    assert usage_events[0].payload["advisor_model"] == "claude-opus-4-7"
+
+
+def test_aborted_mid_stream_is_a_linked_turn_outcome() -> None:
+    """Top-level ``isAbortedMidStream`` must not read as a complete answer."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "a-aborted",
+                "sessionId": "sess-aborted",
+                "isAbortedMidStream": True,
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "partial"}]},
+            },
+        ],
+        "sess-aborted",
+    )
+    aborted_events = [event for event in parsed.session_events if event.event_type == "claude_aborted_mid_stream"]
+    assert parsed.messages[0].is_aborted_mid_stream is True
+    assert len(aborted_events) == 1
+    assert aborted_events[0].source_message_provider_id == "a-aborted"
+    assert aborted_events[0].payload["aborted"] is True
+
+
 def test_pr_link_becomes_a_typed_session_ref() -> None:
     """``pr-link`` must persist as a tracker-agnostic ``ParsedSessionRef``, not only an event.
 

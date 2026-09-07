@@ -21,6 +21,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import TypedDict
 
+from polylogue.api.archive import open_readonly_connection
 from polylogue.core.evidence import Empty, Evidence, Measured, Unavailable, resolve
 from polylogue.core.user_state_targets import (
     TARGET_ATTACHMENT,
@@ -62,7 +63,9 @@ def _index_db_path(archive_root: Path) -> Evidence[Path]:
     if not candidate.exists():
         return Empty()
     try:
-        with closing(sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)) as conn:
+        with closing(
+            open_readonly_connection(candidate, timeout_class="interactive-read", validate_schema=False)
+        ) as conn:
             row = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone()
     except sqlite3.Error as exc:
         return Unavailable(reason="index_tier_unreadable", detail=f"{type(exc).__name__}: {exc}")
@@ -85,7 +88,7 @@ def _existence(evidence: Evidence[bool], *, subject: str) -> bool:
 
 
 def _row_exists_sync(db_path: Path, sql: str, params: tuple[object, ...]) -> bool:
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
         row = conn.execute(sql, params).fetchone()
     return row is not None
 
@@ -110,7 +113,7 @@ def _block_exists_sync(
     message_id: str,
     block_index: int,
 ) -> bool:
-    with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+    with closing(open_readonly_connection(db_path, timeout_class="interactive-read", validate_schema=False)) as conn:
         row = conn.execute(
             """
             SELECT 1

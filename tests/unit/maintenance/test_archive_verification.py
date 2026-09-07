@@ -61,6 +61,30 @@ def _connect(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
 
 
+def _add_historical_supersession_receipts(conn: sqlite3.Connection) -> None:
+    """Give the tier the retired receipt table a migrated historical archive keeps.
+
+    Fresh source generations no longer declare it, so the source-index coverage
+    law's historical-explanation branch needs the table put back by hand.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS raw_byte_duplicate_supersession_receipts (
+            raw_id                      TEXT PRIMARY KEY REFERENCES raw_sessions(raw_id) ON DELETE CASCADE,
+            blob_hash                   BLOB NOT NULL CHECK(length(blob_hash) = 32),
+            blob_size                   INTEGER NOT NULL CHECK(blob_size >= 0),
+            duplicate_of_raw_id         TEXT NOT NULL,
+            duplicate_of_session_id     TEXT NOT NULL,
+            previous_revision_authority TEXT NOT NULL,
+            promoted_at_ms              INTEGER NOT NULL CHECK(promoted_at_ms >= 0),
+            tool_version                TEXT NOT NULL,
+            backup_manifest_path        TEXT NOT NULL,
+            detail                      TEXT NOT NULL DEFAULT ''
+        ) STRICT
+        """
+    )
+
+
 def _insert_claude_identity_collision_rows(source_db: Path) -> tuple[str, ...]:
     """Add decoys that independently collide on origin and logical source key."""
     collision_rows = (
@@ -847,6 +871,7 @@ def test_valid_byte_supersession_receipt_covers_unindexed_head(tmp_path: Path) -
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(source_conn)
         source_conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -887,6 +912,7 @@ def test_byte_supersession_receipt_requires_matching_source_semantics(tmp_path: 
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -924,6 +950,7 @@ def test_invalid_byte_supersession_receipt_does_not_cover_unindexed_head(tmp_pat
             """,
             (b"z" * 32,),
         )
+        _add_historical_supersession_receipts(source_conn)
         source_conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -1994,6 +2021,7 @@ def test_convergence_freshness_excludes_a_receipt_backed_duplicate(tmp_path: Pat
             FROM raw_sessions WHERE raw_id = 'raw-1'
             """
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(
@@ -2045,6 +2073,7 @@ def test_convergence_freshness_counts_a_receipt_with_the_wrong_twin_bytes(tmp_pa
             """,
             (b"z" * 32,),
         )
+        _add_historical_supersession_receipts(conn)
         conn.execute(
             """
             INSERT INTO raw_byte_duplicate_supersession_receipts(

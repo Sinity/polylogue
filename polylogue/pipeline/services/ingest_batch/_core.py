@@ -872,6 +872,8 @@ def _write_session(
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
 ) -> tuple[bool, dict[str, int]]:
     """Write one parsed session payload into the current archive index.
 
@@ -892,10 +894,22 @@ def _write_session(
         "sidecar_blobs_written": 0,
     }
 
-    existing_row = conn.execute(
-        "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
-        (payload.session_id,),
-    ).fetchone()
+    existing_row = None
+    if not fresh_build:
+        existing_row = conn.execute(
+            "SELECT content_hash, raw_id, updated_at_ms FROM sessions WHERE session_id = ?",
+            (payload.session_id,),
+        ).fetchone()
+    elif conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (payload.session_id,)).fetchone() is not None:
+        raise AssertionError(f"fresh_build requires an absent session_id: {payload.session_id}")
+    if (
+        fresh_build
+        and (fresh_build_batch is None or not fresh_build_batch)
+        and conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is not None
+    ):
+        raise AssertionError("fresh_build requires an empty archive generation")
+    if fresh_build_batch is not None:
+        fresh_build_batch.add(payload.session_id)
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == payload.content_hash
@@ -1154,6 +1168,7 @@ def _write_session(
         # whale-session rewrite held the daemon writer >1h at 260GB of reads
         # with zero commits (2026-07-22) under per-row mode.
         bulk_fts=True,
+        fresh_build=fresh_build,
         write_outcome=writer_outcomes,
     )
     if writer_outcomes and writer_outcomes[0].stale_skipped:
@@ -1267,6 +1282,8 @@ def _write_session_entry(
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
 ) -> bool:
     try:
         t_write = time.perf_counter()
@@ -1280,6 +1297,8 @@ def _write_session_entry(
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
             source_conn=source_conn,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
         )
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -1392,8 +1411,11 @@ def _drain_ready_session_entries(
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
 ) -> int:
-    _delete_stale_sessions_for_raw_entries(conn, ready_entries)
+    if not fresh_build:
+        _delete_stale_sessions_for_raw_entries(conn, ready_entries)
     from polylogue.storage.fts.freshness import message_fts_recorded_exact_stale_sync
 
     if message_fts_recorded_exact_stale_sync(conn):
@@ -1408,6 +1430,8 @@ def _drain_ready_session_entries(
     # (#2475, hotspot 1). Entries are invalidated when their own rows are
     # rewritten or re-extracted in this same batch.
     signature_cache: dict[str, list[tuple[str, str]]] = {}
+    if fresh_build and fresh_build_batch is None:
+        fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
         wrote = _write_session_entry(
             conn,
@@ -1419,6 +1443,8 @@ def _drain_ready_session_entries(
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
             source_conn=source_conn,
+            fresh_build=fresh_build,
+            fresh_build_batch=fresh_build_batch,
         )
         discard_session_data_payload(cdata)
         if not wrote:
@@ -1646,6 +1672,8 @@ def _drain_ingest_result(
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
+    fresh_build: bool = False,
+    fresh_build_batch: set[str] | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -1703,6 +1731,8 @@ def _drain_ingest_result(
         blob_publisher=blob_publisher,
         pending_attachment_receipts=pending_attachment_receipts,
         source_conn=source_conn,
+        fresh_build=fresh_build,
+        fresh_build_batch=fresh_build_batch,
     )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -1736,6 +1766,7 @@ def _consume_ingest_results(
     blob_publisher: ArchiveBlobPublisher | None = None,
     pending_attachment_receipts: list[tuple[str, bytes]] | None = None,
     source_conn: sqlite3.Connection | None = None,
+    fresh_build: bool = False,
 ) -> bool:
     result_iterator = iter(
         _iter_ingest_results_sync(
@@ -1749,6 +1780,7 @@ def _consume_ingest_results(
         )
     )
     transaction_started = False
+    fresh_build_batch: set[str] | None = set() if fresh_build else None
 
     def ensure_index_transaction() -> None:
         nonlocal transaction_started
@@ -1785,6 +1817,8 @@ def _consume_ingest_results(
                 blob_publisher=blob_publisher,
                 pending_attachment_receipts=pending_attachment_receipts,
                 source_conn=source_conn,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -1869,6 +1903,7 @@ def _process_ingest_batch_sync(
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
     force_process_pool: bool = False,
+    fresh_build: bool = False,
 ) -> _IngestBatchSummary:
     if progress is None:
         progress = _WorkerProgress()
@@ -1927,6 +1962,7 @@ def _process_ingest_batch_sync(
             blob_publisher=blob_publisher,
             pending_attachment_receipts=pending_attachment_receipts,
             source_conn=source_conn,
+            fresh_build=fresh_build,
         )
         _flush_ingest_results(
             conn,
@@ -2028,6 +2064,7 @@ async def process_ingest_batch(
     repair_message_fts: bool = True,
     ingest_result_chunk_size: int = 0,
     suspend_fts_triggers: bool = False,
+    fresh_build: bool = False,
 ) -> ParseBatchObservation | None:
     """Process a batch of raw records through the unified ingest pipeline.
 
@@ -2060,20 +2097,25 @@ async def process_ingest_batch(
     validation_mode = _resolved_settings.schema_validation
     publication_mode = PublicationMode.from_string(_resolved_settings.sinex_mode)
 
+    sync_kwargs: dict[str, object] = {
+        "db_path": backend.db_path,
+        "archive_root_str": archive_root_str,
+        "blob_root_str": blob_root_str,
+        "validation_mode": validation_mode,
+        "ingest_workers": service.ingest_workers,
+        "measure_ingest_result_size": service.measure_ingest_result_size,
+        "publication_mode": publication_mode,
+        "force_write": force_write,
+        "repair_message_fts": repair_message_fts,
+        "ingest_result_chunk_size": ingest_result_chunk_size,
+        "suspend_fts_triggers": suspend_fts_triggers,
+    }
+    if fresh_build:
+        sync_kwargs["fresh_build"] = True
     batch_summary = await asyncio.to_thread(
-        _process_ingest_batch_sync,
+        cast(Callable[..., _IngestBatchSummary], _process_ingest_batch_sync),
         raw_artifacts,
-        db_path=backend.db_path,
-        archive_root_str=archive_root_str,
-        blob_root_str=blob_root_str,
-        validation_mode=validation_mode,
-        ingest_workers=service.ingest_workers,
-        measure_ingest_result_size=service.measure_ingest_result_size,
-        publication_mode=publication_mode,
-        force_write=force_write,
-        repair_message_fts=repair_message_fts,
-        ingest_result_chunk_size=ingest_result_chunk_size,
-        suspend_fts_triggers=suspend_fts_triggers,
+        **sync_kwargs,
     )
     heavy_batch = (
         batch_summary.total_blob_mb >= INGEST_RELEASE_BLOB_MB_THRESHOLD

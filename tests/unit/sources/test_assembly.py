@@ -87,13 +87,13 @@ def _thread_sidecars(
     thread_names: dict[str, str] | None = None,
     history_titles: dict[str, str] | None = None,
     state_titles: dict[str, str] | None = None,
-    hook_event_titles: dict[str, str] | None = None,
+    retained_state_titles: dict[str, str] | None = None,
 ) -> SidecarData:
     return {
         "thread_names": {} if thread_names is None else thread_names,
         "history_titles": {} if history_titles is None else history_titles,
         "state_titles": {} if state_titles is None else state_titles,
-        "hook_event_titles": {} if hook_event_titles is None else hook_event_titles,
+        "retained_state_titles": {} if retained_state_titles is None else retained_state_titles,
     }
 
 
@@ -1115,35 +1115,35 @@ class TestCodexStateTitles:
         assert _parse_codex_state_titles(sessions_root) == {}
 
     # -----------------------------------------------------------------
-    # bd polylogue-foee: acquired codex_thread_title hook events (step 3b)
+    # Projected retained-state titles (step 3b)
     # -----------------------------------------------------------------
 
-    def test_hook_event_title_fills_gap_when_nothing_else_resolves(self) -> None:
+    def test_retained_state_title_fills_gap_when_nothing_else_resolves(self) -> None:
         spec = CodexAssemblySpec()
         conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
-        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+        sidecar_data = _thread_sidecars(retained_state_titles={"thread-1": "Durable acquired title"})
 
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Durable acquired title"
         assert enriched.title_source == TitleSource.ORIGIN
-        assert enriched.title_ref == "codex-thread-title-hook-event:thread-1"
+        assert enriched.title_ref == "codex-retained-state-title:thread-1"
 
-    def test_state_title_beats_hook_event_title(self) -> None:
-        """A live state_5.sqlite read (step 3) is fresher than the durable
-        hook-event snapshot (step 3b) -- it wins when both resolve."""
+    def test_state_title_beats_retained_state_title(self) -> None:
+        """A live state_5.sqlite read (step 3) is fresher than the projection of
+        the retained export (step 3b) -- it wins when both resolve."""
         spec = CodexAssemblySpec()
         conv = _parsed_session(Provider.CODEX, "thread-1", "thread-1", [])
         sidecar_data = _thread_sidecars(
             state_titles={"thread-1": "Live-read title"},
-            hook_event_titles={"thread-1": "Stale acquired title"},
+            retained_state_titles={"thread-1": "Stale acquired title"},
         )
 
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Live-read title"
 
-    def test_hook_event_title_beats_first_message_fallback(self) -> None:
+    def test_retained_state_title_beats_first_message_fallback(self) -> None:
         spec = CodexAssemblySpec()
         conv = _parsed_session(
             Provider.CODEX,
@@ -1151,14 +1151,14 @@ class TestCodexStateTitles:
             "thread-1",
             [_authored_message("m1", "message body that would otherwise win")],
         )
-        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+        sidecar_data = _thread_sidecars(retained_state_titles={"thread-1": "Durable acquired title"})
 
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title == "Durable acquired title"
         assert enriched.title_source == TitleSource.ORIGIN
 
-    def test_hook_event_title_downgrades_when_it_echoes_the_first_prompt(self) -> None:
+    def test_retained_state_title_downgrades_when_it_echoes_the_first_prompt(self) -> None:
         spec = CodexAssemblySpec()
         conv = _parsed_session(
             Provider.CODEX,
@@ -1167,17 +1167,17 @@ class TestCodexStateTitles:
             [_authored_message("m1", "find, using whatever means, either directly ~/.codex or polylogue")],
         )
         sidecar_data = _thread_sidecars(
-            hook_event_titles={"thread-1": "find, using whatever means, either directly ~/.codex or polylogue"}
+            retained_state_titles={"thread-1": "find, using whatever means, either directly ~/.codex or polylogue"}
         )
 
         enriched = spec.enrich_session(conv, sidecar_data)
 
         assert enriched.title_source == TitleSource.HEURISTIC
 
-    def test_hook_event_title_never_replaces_real_title(self) -> None:
+    def test_retained_state_title_never_replaces_real_title(self) -> None:
         spec = CodexAssemblySpec()
         conv = _parsed_session(Provider.CODEX, "thread-1", "A real existing title", [])
-        sidecar_data = _thread_sidecars(hook_event_titles={"thread-1": "Durable acquired title"})
+        sidecar_data = _thread_sidecars(retained_state_titles={"thread-1": "Durable acquired title"})
 
         result = spec.enrich_session(conv, sidecar_data)
 

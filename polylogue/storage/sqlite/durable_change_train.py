@@ -11,8 +11,8 @@ import os
 import re
 import sqlite3
 import tempfile
-from collections.abc import Callable, Sequence
-from contextlib import closing
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from importlib import resources
 from pathlib import Path
@@ -2848,8 +2848,71 @@ def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Pa
     return f"read raw failure lifecycle state={getattr(snapshot, 'state', 'unknown')}"
 
 
-def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
-    """Open an existing durable tier without allowing SQLite to create it."""
+def _probe_raw_failure_disposition_apply(actuator: Callable[..., object], archive_root: Path) -> str:
+    """Exercise the disposition actuator's read-only validation route."""
+    del archive_root
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+
+    with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-disposition-") as directory:
+        root = Path(directory)
+        source_path = root / "source.db"
+        with sqlite_connection(source_path) as connection:
+            initialize_archive_tier(connection, ArchiveTier.SOURCE)
+            _seed_probe_raw_row(
+                connection,
+                raw_id="durable-change-train-disposition-raw",
+                source_path="/durable-change-train/disposition-probe.jsonl",
+                blob_hash=b"\0" * 32,
+                parse_error="durable change train probe failure",
+            )
+            connection.execute(
+                """
+                INSERT INTO raw_artifacts (
+                    artifact_id, raw_id, origin, source_path, source_index,
+                    artifact_kind, support_status, classification_reason,
+                    first_observed_at_ms, last_observed_at_ms
+                ) VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "durable-change-train-disposition-artifact",
+                    "durable-change-train-disposition-raw",
+                    "claude-code-session",
+                    "/durable-change-train/disposition-probe.jsonl",
+                    "coordinator_session_stream",
+                    "supported_parseable",
+                    "durable change train probe",
+                    1_780_000_000_000,
+                    1_780_000_000_000,
+                ),
+            )
+            connection.commit()
+        manifest_path = root / "dispositions.jsonl"
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "raw_id": "durable-change-train-disposition-raw",
+                    "disposition_kind": "terminal_corrupt_input",
+                    "detail": "durable change train read-only probe",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        report = actuator(root, manifest_path=manifest_path, dry_run=True)
+    if getattr(report, "applied", True) or getattr(report, "candidate_count", 0) != 1:
+        raise DurableChangeTrainError("raw failure disposition probe did not remain read-only")
+    return "validated one raw failure disposition without mutation"
+
+
+@contextmanager
+def _open_existing_tier(tier_path: Path) -> Iterator[sqlite3.Connection]:
+    """Open an existing durable tier without allowing SQLite to create it.
+
+    The connection is owned for the block: committed or rolled back like the
+    builtin ``with sqlite3.connect(...)`` form, and always closed. Startup
+    reconciliation runs on every archive open, so a connection left to the
+    collector here retains three descriptors per open.
+    """
     try:
         metadata = tier_path.lstat()
     except FileNotFoundError as exc:
@@ -2861,9 +2924,11 @@ def _open_existing_tier(tier_path: Path) -> sqlite3.Connection:
             "durable tier was replaced by an unsafe file; refusing startup initialization/release"
         )
     try:
-        return sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
+        connection = sqlite3.connect(f"{tier_path.resolve(strict=True).as_uri()}?mode=rw", uri=True)
     except (OSError, sqlite3.Error) as exc:
         raise DurableChangeTrainError("durable tier could not be opened without initialization") from exc
+    with closing(connection), connection:
+        yield connection
 
 
 def _verify_persisted_live_tier_continuity(
@@ -3148,8 +3213,7 @@ def _prove_and_release_persisted_train(
     """Finish a persisted applied/proven train after an interrupted process."""
     tier_path = archive_root / f"{train.tier.value}.db"
     if train.state is DurableChangeTrainState.APPLIED:
-        live = _open_existing_tier(tier_path)
-        try:
+        with _open_existing_tier(tier_path) as live:
             _verify_persisted_live_tier_continuity(live, train)
             if train.reservation is not None and train.reservation.active:
                 previous_revision = train.revision
@@ -3180,8 +3244,6 @@ def _prove_and_release_persisted_train(
             )
             _verify_persisted_live_tier_continuity(live, train)
             train = _persist_train_transition(manifest_path, train, expected_revision=previous_revision)
-        finally:
-            live.close()
     if train.state is DurableChangeTrainState.PROVEN:
         with _open_existing_tier(tier_path) as live:
             _verify_persisted_live_tier_continuity(live, train)

@@ -256,19 +256,6 @@ class SchemaDisposition:
     successor_or_authorization: str
 
 
-_PURGE_TABLES = frozenset(
-    {
-        "raw_append_chain_backfill_receipts",
-        "raw_authority_verdicts",
-        "raw_byte_duplicate_supersession_receipts",
-        "raw_live_source_reconciliation_receipts",
-        "raw_membership_writeback_receipts",
-        "raw_non_session_duplicate_exclusion_receipts",
-        "raw_quarantine_group_dedup_receipts",
-        "raw_unknown_export_reclassification_receipts",
-    }
-)
-
 _QUERY_TIME_DERIVED_INDEX_VIEWS = frozenset({"threads", "thread_sessions", "session_tag_rollups"})
 
 
@@ -282,12 +269,7 @@ def _object_decision(obj: object) -> SchemaDisposition:
     owner = "canonical schema owner"
     evidence = "reachable canonical declaration; live counts are evidence only"
     bead = "polylogue-20eld"
-    if table_name in _PURGE_TABLES:
-        disposition = "PURGE"
-        owner = "historical repair retirement"
-        bead = "2x6xu"
-        evidence = "positive retirement decision removes the historical repair receipt family"
-    elif table_name == "excised_content":
+    if table_name == "excised_content":
         disposition = "TRANSITION"
         owner = "durable excision authority"
         bead = "1sb32"

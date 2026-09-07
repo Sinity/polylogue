@@ -469,6 +469,12 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # from the canonical column instead of the legacy is_error/exit_code pair.
 # The DDL edit moves the derived schema identity, so an existing archive meets
 # it as a typed SchemaSkew and reconverges through the daemon route.
+# polylogue-8t81f: v98 projects Codex thread titles and spawn edges from the
+# retained state export into ``codex_thread_state`` /
+# ``codex_thread_spawn_edges``. They were durable per-row hook material no
+# prover could reproduce from the live database; they are derived data
+# recomputed from the current export. SEMANTIC_REPARSE: the rows exist only
+# in the acquired export.
 # polylogue-vtyud: v97 reads Codex's ``item_completed`` executions. The current
 # Codex wire generation states each shell/patch operation the code-mode ``exec``
 # program performed -- argv, cwd, full output, and the exit code -- in a record
@@ -477,7 +483,7 @@ from polylogue.storage.sqlite.delegation_facts import delegation_facts_insert_sq
 # become the code-mode child's tool_result text and its structural
 # ``tool_outcome``. SEMANTIC_REPARSE: the evidence exists only in the acquired
 # source, so stored rows cannot recover it.
-INDEX_SCHEMA_VERSION = 97
+INDEX_SCHEMA_VERSION = 98
 
 # polylogue-v6i3: shared WHEN-clause fragment gating the blocks_command_trigram
 # trigger BODIES on the same dedicated bulk-build guard row messages_fts's
@@ -1470,6 +1476,49 @@ CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_source
 ON work_evidence_edges(graph_id, source_ref, edge_kind);
 CREATE INDEX IF NOT EXISTS idx_work_evidence_edges_target
 ON work_evidence_edges(graph_id, target_ref, edge_kind);
+
+-- Codex's own orchestration record of a thread: the curated title and the
+-- parent/child spawn edges, projected from the retained state export. The
+-- export is the durable evidence; these rows are recomputed from it, so a
+-- reindex reproduces them and nothing here is a second authority.
+CREATE TABLE IF NOT EXISTS codex_thread_state (
+    thread_id        TEXT PRIMARY KEY,
+    title            TEXT,
+    cwd              TEXT,
+    created_at_ms    INTEGER,
+    updated_at_ms    INTEGER,
+    source           TEXT,
+    model            TEXT,
+    agent_nickname   TEXT,
+    agent_role       TEXT,
+    archived         INTEGER NOT NULL DEFAULT 0 CHECK(archived IN (0, 1)),
+    observed_at_ms   INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS codex_thread_spawn_edges (
+    parent_thread_id TEXT NOT NULL,
+    child_thread_id  TEXT NOT NULL,
+    status           TEXT NOT NULL,
+    observed_at_ms   INTEGER NOT NULL,
+    PRIMARY KEY (parent_thread_id, child_thread_id)
+) STRICT;
+
+-- The write path resolves a parent from the CHILD's thread id.
+CREATE INDEX IF NOT EXISTS idx_codex_thread_spawn_edges_child
+ON codex_thread_spawn_edges(child_thread_id);
+
+-- Which retained export the two projections above were computed from, so a
+-- newer acquisition is recognised without rereading the export.
+CREATE TABLE IF NOT EXISTS codex_thread_state_provenance (
+    singleton         INTEGER PRIMARY KEY CHECK(singleton = 0),
+    raw_id            TEXT NOT NULL,
+    blob_hash         TEXT NOT NULL,
+    observed_at_ms    INTEGER NOT NULL,
+    -- Durable receipt order of the export this projection was computed from.
+    -- Replay applies raws in no particular order, so an older export reaching
+    -- the projection after a newer one must not overwrite it.
+    observation_order INTEGER NOT NULL DEFAULT 0
+) STRICT;
 
 -- 100% derivable from existing tables. Keep the public relation name as the
 -- view so delegation readers do not depend on a materialized copy.
