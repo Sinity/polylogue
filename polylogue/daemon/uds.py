@@ -12,10 +12,11 @@ import asyncio
 import socketserver
 import threading
 from collections import deque
+from collections.abc import Callable
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.socket_path import daemon_socket_path
@@ -64,6 +65,35 @@ def machine_operation_handler(operation_adapter: type[object] | None = None) -> 
                 return
             self._handle_daemon_operation()
 
+        def _operation_helper(self, name: str) -> Callable[..., object]:
+            adapter = getattr(self.server, "operation_adapter", None)
+            if adapter is None:
+                raise RuntimeError("machine operation executor is unavailable")
+            member = getattr(adapter, name)
+            descriptor = getattr(member, "__get__", None)
+            return cast(Callable[..., object], descriptor(self, type(self)) if descriptor is not None else member)
+
+        def _check_host_admission(self) -> bool:
+            if operation_adapter is None:
+                return True
+            return bool(self._operation_helper("_check_host_admission")())
+
+        def _reject_credential_query(self) -> bool:
+            if operation_adapter is None:
+                return False
+            return bool(self._operation_helper("_reject_credential_query")())
+
+        def _check_auth(self, *args: object, **kwargs: object) -> bool:
+            if operation_adapter is None:
+                return True
+            return bool(self._operation_helper("_check_auth")(*args, **kwargs))
+
+        def _handle_daemon_operation(self) -> None:
+            if operation_adapter is None:
+                self.send_error(503, "machine operation executor is unavailable")
+                return
+            self._operation_helper("_handle_daemon_operation")()
+
     if operation_adapter is not None:
         # The operation code has a large set of small private helpers.  Bind
         # one only when the canonical implementation asks for it; copying the
@@ -78,16 +108,6 @@ def machine_operation_handler(operation_adapter: type[object] | None = None) -> 
             return descriptor(self, type(self)) if descriptor is not None else member
 
         MachineOperationHandler.__getattr__ = _machine_getattr  # type: ignore[attr-defined]
-    else:
-
-        def unavailable(self: BaseHTTPRequestHandler) -> None:
-            self.send_error(503, "machine operation executor is unavailable")
-
-        MachineOperationHandler._check_host_admission = lambda self: True  # type: ignore[attr-defined]
-        MachineOperationHandler._reject_credential_query = lambda self: False  # type: ignore[attr-defined]
-        MachineOperationHandler._check_auth = lambda self, *_args, **_kwargs: True  # type: ignore[attr-defined]
-        MachineOperationHandler._handle_daemon_operation = unavailable  # type: ignore[attr-defined]
-
     return MachineOperationHandler
 
 

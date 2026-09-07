@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -96,9 +97,11 @@ def test_archive_identity_contains_readiness_and_generation(tmp_path: Path) -> N
 
     assert identity["root"] == str(archive)
     assert isinstance(identity["archive_identity"], str)
-    assert generation["index_schema_version"] == identity["tier_schema_versions"]["index"]
-    assert generation["id"].startswith("dev:")
+    tiers = cast(dict[str, int], identity["tier_schema_versions"])
+    generation_id = cast(str, generation["id"])
+    assert generation["index_schema_version"] == tiers["index"]
+    assert generation_id.startswith("dev:")
     assert identity["tier_schema_versions"] == generation["tier_schema_versions"]
-    assert {"source", "index", "embeddings", "user", "audit", "ops"} <= set(identity["tier_schema_versions"])
+    assert {"source", "index", "embeddings", "user", "audit", "ops"} <= set(tiers)
     assert readiness == {"state": "ready", "ready": True, "reason": None, "degraded_components": []}
     assert DAEMON_OPERATION_PROTOCOL == "polylogue.daemon-operation/v1"

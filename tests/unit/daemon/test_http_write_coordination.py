@@ -490,11 +490,13 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
         payload={"prefix": "x"},
         request_id="request-id-reused",
     )
+    request_id = original.request_id
+    assert request_id is not None
     body = json.dumps(conflicting.to_dict()).encode()
     handler = _operation_handler([], body)
-    accepted_payload = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": original.request_id}
-    handler.server.operation_ids_seen = {original.request_id}
-    handler.server.operation_results = {original.request_id: (original.fingerprint, 200, accepted_payload)}
+    accepted_payload: dict[str, object] = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": request_id}
+    handler.server.operation_ids_seen = {request_id}
+    handler.server.operation_results = {request_id: (original.fingerprint, 200, accepted_payload)}
     handler.server.operation_ids_lock = threading.Lock()
     responses: list[tuple[HTTPStatus, object]] = []
     handler._send_json = lambda status, payload, **_kwargs: responses.append((status, payload))  # type: ignore[method-assign]
@@ -520,7 +522,7 @@ def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
         "code": "duplicate_request_id_conflict",
         "detail": "request_id was already used for a different request",
     }
-    assert handler.server.operation_results[original.request_id] == (original.fingerprint, 200, accepted_payload)
+    assert handler.server.operation_results[request_id] == (original.fingerprint, 200, accepted_payload)
 
 
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
