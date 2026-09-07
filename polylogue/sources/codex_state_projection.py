@@ -233,18 +233,26 @@ def apply_retained_state_export(
     Returns whether the projection was written. Acquire-only ingestion holds
     no index handle at all, and that is not a failure: the export is durable,
     so the next pass with a derived tier recomputes from it.
+
+    The durable ``raw_payload`` receipt orders this observation, the same term
+    :func:`latest_retained_state_export` reads, so the two routes never
+    disagree about which export is current. ``observed_at_ms`` stands in only
+    for a raw with no receipt row yet.
     """
     index_conn = archive.index_connection
     if index_conn is None:
         return False
     snapshot = codex_state.parse_codex_state_db(export_path, immutable=True)
-    receipt_at_ms, receipt_order = archive.raw_revision_observation_order(raw_id)
+    try:
+        receipt_at_ms, receipt_order = archive.raw_revision_observation_order(raw_id)
+    except KeyError:
+        receipt_at_ms, receipt_order = observed_at_ms, 0
     return write_thread_state_projection(
         index_conn,
         snapshot,
         raw_id=raw_id,
         blob_hash=blob_hash,
-        observed_at_ms=max(observed_at_ms, receipt_at_ms),
+        observed_at_ms=receipt_at_ms,
         observation_order=receipt_order,
     )
 
