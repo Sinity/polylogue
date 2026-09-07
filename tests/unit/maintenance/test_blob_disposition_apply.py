@@ -158,6 +158,35 @@ def test_restoration_is_idempotent_by_logical_identity(tmp_path: Path) -> None:
     assert [path.name for path in hooks_root.rglob("*.json")] == ["sole-copy.json"]
 
 
+def test_an_acknowledged_receipt_does_not_count_as_a_restored_copy(tmp_path: Path) -> None:
+    """Anti-vacuity: an rglob over the whole spool root reports this already present.
+
+    The event would then be recorded as restored while living only in
+    ``acknowledged/``, which no drain and no watcher reads -- and the carrier
+    becomes deletable on that report.
+    """
+    archive_root, blob_root, hooks_root, capture_spool = _archive(tmp_path)
+    store = BlobStore(blob_root)
+    envelope = _hook_envelope("acknowledged-only")
+    store.write_from_bytes(_stored_bytes(envelope, tmp_path))
+    receipt = hooks_root / "acknowledged" / "2026-07-15"
+    receipt.mkdir(parents=True)
+    (receipt / "acknowledged-only.json").write_text(
+        json.dumps(envelope, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+    )
+    plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
+
+    (result,) = restore_plan_members(
+        plan, context=context, hook_spool_root=hooks_root, browser_capture_spool=capture_spool, dry_run=False
+    )
+
+    assert result.outcome is MemberOutcome.RESTORED
+    restored = Path(result.detail)
+    assert restored.is_relative_to(hooks_root / "pending")
+    assert read_hook_spool_record(restored) == read_hook_spool_record(receipt / "acknowledged-only.json")
+    assert (receipt / "acknowledged-only.json").is_file()
+
+
 def test_restoration_blocks_on_a_hostile_collision(tmp_path: Path) -> None:
     """Anti-vacuity: overwriting on identity collision loses the resident event."""
     archive_root, blob_root, hooks_root, capture_spool = _archive(tmp_path)

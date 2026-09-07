@@ -141,13 +141,20 @@ def _revalidate(member: BlobDispositionMember, *, context: BlobDispositionContex
 
 
 def _resident_hook_event(spool_root: Path, event_id: str) -> Path | None:
-    """Locate an event anywhere in the spool, not only in today's shard.
+    """Locate an already-acquirable copy of *event_id*, in any day shard.
 
     ``enqueue_hook_event`` shards by the current day and only refuses a
     collision inside that shard, so a same-identity event spooled on another
     day would be delivered twice.
+
+    Only ``pending/`` counts as present. An ``acknowledged/`` file is a commit
+    receipt for the source.db that consumed it, which no drain or watcher
+    reads; treating one as the destination's copy would report a carrier
+    restored while leaving its event unacquirable.
     """
-    for candidate in sorted(spool_root.rglob(f"{event_id}.json")):
+    from polylogue.sources.hooks import pending_hook_spool_dir
+
+    for candidate in sorted(pending_hook_spool_dir(spool_root).rglob(f"{event_id}.json")):
         if candidate.is_file():
             return candidate
     return None
