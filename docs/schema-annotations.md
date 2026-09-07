@@ -30,7 +30,9 @@ measures:
 
 - `engaged_duration_ms`: message-clustered wall clock. It sums phase intervals
   separated by no more than the current five-minute phase idle threshold. This
-  does not measure human attention or foreground focus.
+  does not measure human attention or foreground focus. If no timestamped phase
+  has a positive interval, it is zero with an `unknown` source rather than a
+  copy of the session wall-clock total.
 - `phase_idle_threshold_ms`: the idle threshold recorded on every materialized
   session phase. It is currently 300000ms and explains why message-clustered
   wall clock split or dropped long gaps.

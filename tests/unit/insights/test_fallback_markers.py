@@ -54,7 +54,7 @@ def test_profile_inference_fallback_reasons_flags_empty_work_and_phases() -> Non
     reasons = profile_inference_fallback_reasons(profile)  # type: ignore[arg-type]
 
     assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES in reasons
-    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL in reasons
+    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL not in reasons
 
 
 def test_enrichment_fallback_reasons_flags_missing_analysis_and_no_user_turns() -> None:
@@ -69,7 +69,7 @@ def test_profile_inference_payload_serializes_fallback_reasons() -> None:
     payload = profile_inference_payload(profile)  # type: ignore[arg-type]
 
     assert FallbackReason.NO_WORK_EVENTS_AND_NO_PHASES in payload.fallback_reasons
-    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL in payload.fallback_reasons
+    assert FallbackReason.ENGAGED_DURATION_SESSION_TOTAL not in payload.fallback_reasons
 
 
 def test_profile_inference_fallback_reasons_do_not_classify_phase_intervals() -> None:
