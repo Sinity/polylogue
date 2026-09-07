@@ -22,6 +22,11 @@ The detectors feed the postmortem report's pathology fields. Emitting
 ``Assertion(kind=pathology)`` candidate rows and the cross-archive distribution
 query are a follow-up slice (they require a new ``AssertionKind`` member, a
 schema-CHECK change, and the assertion candidate lifecycle).
+
+This detector module and MCP ``query(projection="pathologies")`` are retained
+as a live, read-only product capability. They deliberately do not provide
+fixture admission, incident identity, or catalogue lifecycle authority; those
+responsibilities belong to the owning semantic tests and source builders.
 """
 
 from __future__ import annotations
