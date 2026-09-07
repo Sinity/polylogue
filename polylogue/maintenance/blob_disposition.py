@@ -6,23 +6,24 @@ configured source:
 
 ``source_present``
     Current source material reproduces the object's content, byte-identically
-    or through the owning production route's semantic equality. The object is
-    redundant storage and may be removed.
+    or through the owning production route's semantic equality.
 ``superseded_prefix``
     The object is the exact prefix of a larger retained carrier of the same
-    logical source item (append lineage). It may be removed.
+    logical source item (append lineage).
 ``restore_required``
     The object is the only verified carrier of wanted material and names an
     ordinary spool destination that current acquisition admits. Restoration
     precedes any removal.
 ``unresolved``
-    Nothing above holds. Unresolved blocks: it is never downgraded to
-    discard, and it never authorizes restoration.
+    Nothing above holds. Unresolved is never downgraded to discard and never
+    authorizes restoration.
 
-A plan is acceptable only at zero unresolved members. It is immutable, bound
-to the archive identity, blob namespace identity, and exact denominators it
-was compiled from, and consumed by :mod:`polylogue.maintenance.
-blob_disposition_apply` under a separate authorization.
+``accepted`` reports whether anything is still unexplained. The plan is
+immutable, bound to the archive identity, blob namespace identity, and exact
+denominators it was compiled from, and consumed by :mod:`polylogue.
+maintenance.blob_disposition_apply` under a separate authorization. Apply
+deletes on unreferencedness, so a disposition here decides what is restored
+first, never what is removed.
 
 This is a one-time transition planner. Its deletion trigger is the terminal
 disposition receipt: once the physical namespace is accounted for, this
@@ -67,8 +68,18 @@ class BlobDisposition(StrEnum):
     UNRESOLVED = "unresolved"
 
 
-# Apply's only deletion set: the dispositions that authorize removal at all.
+# The dispositions that prove an object redundant against a configured source.
 _REMOVABLE_DISPOSITIONS = (BlobDisposition.SOURCE_PRESENT, BlobDisposition.SUPERSEDED_PREFIX)
+
+#: Every durable relation that names a physical blob hash. A blob no row here
+#: names is unreferenced, which is what both recurring GC and apply delete on.
+BLOB_REFERENCE_RELATIONS: tuple[tuple[str, str], ...] = (
+    ("blob_refs", "blob_hash"),
+    ("raw_sessions", "blob_hash"),
+    ("raw_hook_events", "blob_hash"),
+    ("raw_artifacts", "blob_hash"),
+    ("blob_publication_reservations", "blob_hash"),
+)
 
 
 class SourceProofMode(StrEnum):
@@ -191,12 +202,11 @@ class BlobDispositionPlan:
 
     @property
     def reclaimable_bytes(self) -> int:
-        """Bytes apply can actually unlink.
+        """Bytes proven redundant that no durable row names.
 
-        Apply deletes only an unreferenced member whose disposition
-        authorizes removal, so a member a durable row still names, and a
-        ``restore_required`` member apply only ever restores, are both
-        outside this total.
+        Split out from :attr:`retained_by_reference_bytes` because apply
+        deletes on unreferencedness, not on disposition: this half goes, and
+        a member a durable row still names stays whatever its proof says.
         """
         return sum(
             member.size_bytes
@@ -212,7 +222,7 @@ class BlobDispositionPlan:
 
     @property
     def retained_by_reference_bytes(self) -> int:
-        """Bytes proven at a source that a durable reference keeps on disk."""
+        """Bytes proven redundant that a durable reference still names."""
         return sum(
             member.size_bytes
             for member in self.members
@@ -229,7 +239,7 @@ class BlobDispositionPlan:
 
     @property
     def accepted(self) -> bool:
-        """A plan is acceptable only when nothing is unexplained."""
+        """Whether the namespace is completely explained by this plan."""
         return self.unresolved_count == 0 and not self.denominator.invalid_namespace_entries
 
     def members_for(self, disposition: BlobDisposition) -> tuple[BlobDispositionMember, ...]:
@@ -624,20 +634,13 @@ def referenced_blob_hashes(source_db: Path) -> frozenset[str]:
     set: reading zero references from an unreadable tier would license
     deleting the whole namespace.
     """
-    relations = (
-        ("blob_refs", "blob_hash"),
-        ("raw_sessions", "blob_hash"),
-        ("raw_hook_events", "blob_hash"),
-        ("raw_artifacts", "blob_hash"),
-        ("blob_publication_reservations", "blob_hash"),
-    )
     hashes: set[str] = set()
     with closing(_open_ro(source_db)) as conn:
         present = {
             str(row[0])
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')").fetchall()
         }
-        for table, column in relations:
+        for table, column in BLOB_REFERENCE_RELATIONS:
             if table not in present:
                 continue
             try:
@@ -864,6 +867,7 @@ def compile_disposition_plan(
 
 __all__ = [
     "TOOL_VERSION",
+    "BLOB_REFERENCE_RELATIONS",
     "AppendPrefixProver",
     "BlobDisposition",
     "BlobDispositionContext",

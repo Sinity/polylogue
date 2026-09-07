@@ -178,17 +178,14 @@ before treating the pass as complete.
 One-time transition tooling for the blob-store maneuver. `plan` is read-only:
 it walks the complete physical namespace and gives every object exactly one
 disposition proven against a configured source — `source_present`,
-`superseded_prefix`, `restore_required`, or `unresolved`. A plan is acceptable
-only at zero unresolved members, and its digest binds the archive identity,
-the namespace, the denominators, and every member outcome.
+`superseded_prefix`, `restore_required`, or `unresolved`. Its digest binds the
+archive identity, the namespace, the denominators, and every member outcome,
+and `accepted` reports whether anything is still unexplained.
 
-The plan reports two separate totals. `reclaimable_bytes` counts only the
-`source_present` and `superseded_prefix` members that no durable row
-references — exactly what `apply` can unlink. `retained_by_reference_bytes`
-counts the members proven at a source that a durable reference keeps on disk;
-removing those is the reference owner's decision, and the GC seam refuses them
-anyway. `restore_required` members are in neither total: `apply` restores them
-and never deletes them.
+The plan splits the redundant population two ways. `reclaimable_bytes` counts
+the `source_present` and `superseded_prefix` members no durable row
+references; `retained_by_reference_bytes` counts the ones a durable reference
+still names. Only the first half can go, whatever the second half's proofs say.
 
 ```bash
 polylogue ops maintenance blob-disposition plan \
@@ -202,18 +199,42 @@ polylogue ops maintenance blob-disposition apply \
 ```
 
 `restore` is the additive half on its own: it publishes sole-copy carriers
-into their ordinary spool and deletes nothing, so it does not wait on the
-plan reaching zero unresolved. `apply` is a dry rehearsal without `--active`. It makes no classification
-judgment: it revalidates every member's own proof immediately before its
-effect, restores sole-copy carriers into their ordinary spool before any
-deletion, never touches a historical carrier during restoration, and deletes
-only unreferenced members through the canonical blob-GC seam. Any drift — a
-changed source, a changed object, a new referent, a different digest or
-denominator — refuses the whole plan.
+into their ordinary spool and deletes nothing.
 
-Hook-event and browser-capture carriers are proven by the owning production
-read route, not by bytes: acquisition derives fields the spool file does not
-carry, so byte equality would misreport reproducible material as a sole copy.
+`apply` does two things, in an order that cannot lose material. It restores
+every `restore_required` carrier into its ordinary spool and reads the
+published material back — the capture receiver publishes acquired bytes
+verbatim, so a restored capture is verified byte-for-byte, while a hook event
+is verified through the production read route that derives the fields the
+spool file does not carry. It then deletes, through the canonical blob-GC
+seam, every member no durable row references: the same objects recurring GC
+would take, plus the namespace's non-blob entries (a SQLite `-wal` or `-shm`
+stranded beside a content-addressed object, whose bytes are that object's
+identity, so the sidecar has no owner).
+
+Deletion is bounded by unreferencedness, not by disposition. A referenced
+object is never deleted whatever its proof; an `unresolved` orphan nothing
+names goes, because being unreferenced is its disposition. The plan's
+unresolved count gates nothing — what stays in the namespace after a pass is
+what a durable row still references, and the receipt's `cohorts` block says
+how much of that is still unexplained.
+
+`apply` is a dry rehearsal without `--active`, and the rehearsal reports the
+totals its active twin would. A stale digest, a namespace that is not the
+plan's, a drifted denominator, or an active archive writer refuses the run
+before any effect. A carrier whose restoration did not complete keeps its blob
+and reports `blocked`. A pass interrupted part-way is resumed by re-running
+it: an object a previous pass deleted is reported `retained_absent`, and a
+carrier an earlier pass already restored is proven at the spool it was
+restored into rather than published a second time.
+
+The receipt records, per member: hash, cohort, referenced flag, size, source
+path, restoration outcome and spool path, and terminal outcome; plus `counts`,
+`cohorts` (everything deleted and everything left, per disposition, with
+bytes), `totals` (blob count and bytes in the namespace before and after),
+`restorations` (every sole copy and where the spool now holds it), and
+`reference_relations` — the durable relations a deleted member's
+`referenced: false` was decided against.
 
 Deletion trigger: this command, both maintenance modules, and their tests are
 removed with the terminal disposition receipt. The recurring liveness,
