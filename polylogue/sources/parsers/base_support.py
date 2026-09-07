@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Callable, Iterator, Sequence
 from functools import wraps
 from typing import Any, Literal, TypeVar
@@ -654,6 +656,19 @@ def meta_carries_provider_attachment_id(meta: object) -> bool:
     return any(meta.get(key) for key in PROVIDER_ATTACHMENT_ID_KEYS)
 
 
+def decode_attachment_base64(value: object, *, field_name: str = "content_base64") -> bytes:
+    """Decode a declared attachment byte carrier or fail explicitly."""
+    if not isinstance(value, str):
+        raise ValueError(f"invalid base64 for attachment field {field_name!r}")
+    data = value
+    if value.startswith("data:") and ";base64," in value:
+        _, data = value.split(";base64,", 1)
+    try:
+        return base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ValueError(f"invalid base64 for attachment field {field_name!r}") from exc
+
+
 def attachment_from_meta(
     meta: object,
     message_id: str | None,
@@ -694,11 +709,15 @@ def attachment_from_meta(
         except ValueError:
             size_bytes = None
     inline_bytes = None
-    extracted_content = meta.get("extracted_content")
-    if isinstance(extracted_content, str):
-        inline_bytes = extracted_content.encode("utf-8")
-        if size_bytes is None:
-            size_bytes = len(inline_bytes)
+    binary_carrier = meta.get("content_base64")
+    if binary_carrier is not None:
+        inline_bytes = decode_attachment_base64(binary_carrier)
+    else:
+        extracted_content = meta.get("extracted_content")
+        if isinstance(extracted_content, str):
+            inline_bytes = extracted_content.encode("utf-8")
+    if inline_bytes is not None and size_bytes is None:
+        size_bytes = len(inline_bytes)
     # #1252: promote native identifiers when present. claude-code/codex
     # attachments arrive via OAuth-authenticated session/export.
     file_id_raw = meta.get("file_id") or meta.get("fileId") or meta.get("file_uuid")
