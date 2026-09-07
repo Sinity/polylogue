@@ -66,12 +66,10 @@ This direction has not landed in this HEAD. Current code still exposes the gener
 
 ## Workload-probe honesty
 
-Open pointer: `polylogue-uuf2g`.
-
-- `_scalar_int` catches any `sqlite3.Error` and returns ordinary integer zero (`polylogue/operations/daemon_workload_probe.py:167-172`).
-- Exact table counts label that result `"exact"`, making an SQL failure indistinguishable from a genuinely empty table (`polylogue/operations/daemon_workload_probe.py:203-212`).
-- Exact readiness counts use the same helper directly (`polylogue/operations/daemon_workload_probe.py:291-294`).
-- Consequently, workload and readiness reports can claim exact zero and derive false readiness after lock, I/O, or corruption errors. Treat exact zero as untrustworthy until uuf2g closes (`polylogue/operations/daemon_workload_probe.py:1378-1405`).
+- `_scalar_int` returns `Evidence[int]`, so a failed read is `Unavailable` and cannot be spelled as zero (`polylogue/operations/daemon_workload_probe.py:169-182`).
+- A cheap table count that did not answer is labelled `"unavailable"` with `UNKNOWN_TABLE_COUNT`, never `"exact"` (`polylogue/operations/daemon_workload_probe.py:215-232`).
+- A readiness count that did not answer refuses the whole derived-readiness block, which reports `checked: false` plus the sqlite reason instead of comparing zero to zero and claiming ready (`polylogue/operations/daemon_workload_probe.py:1471-1500`).
+- Diagnostic attempt counts report `null` for an unanswered read, distinct from a measured `0` (`polylogue/operations/daemon_workload_probe.py:594-612`).
 
 ## Gotchas
 
