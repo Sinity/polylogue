@@ -14,6 +14,7 @@ as unresolved residue for as long as the archive exists.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,24 @@ def thread_state_member_filenames() -> tuple[str, ...]:
     )
 
 
-def latest_retained_state_export(source_conn: sqlite3.Connection) -> tuple[str, str, int] | None:
-    """Return ``(raw_id, blob_hash, acquired_at_ms)`` of the newest state export.
+@dataclass(frozen=True, slots=True)
+class RetainedStateExport:
+    """The newest retained state export, by its durable receipt order."""
+
+    raw_id: str
+    blob_hash: str
+    observed_at_ms: int
+    observation_order: int
+
+
+def latest_retained_state_export(source_conn: sqlite3.Connection) -> RetainedStateExport | None:
+    """Return the newest retained state export by durable receipt order.
+
+    Ordered exactly as ``raw_revision_observation_order`` orders one raw --
+    newest ``raw_payload`` receipt first -- so a reconciliation pass and a
+    per-export apply never disagree about which observation is current. A live
+    database that went A -> B -> A reuses A's content-derived raw id, so the
+    receipt log, not ``raw_sessions.acquired_at_ms``, is the authority.
 
     Scans the durable tier, so callers reconcile once per pass rather than
     once per session.
@@ -55,19 +72,34 @@ def latest_retained_state_export(source_conn: sqlite3.Connection) -> tuple[str, 
     parameters: list[str] = [Origin.CODEX_SESSION.value]
     for filename in filenames:
         parameters.extend((filename, f"%/{filename}"))
-    row = source_conn.execute(
-        f"""
-        SELECT raw_id, lower(hex(blob_hash)), acquired_at_ms
-        FROM raw_sessions
-        WHERE origin = ? AND parse_error IS NULL AND ({clauses})
-        ORDER BY acquired_at_ms DESC, raw_id DESC
+    receipt = """
+        SELECT b.{column}
+        FROM blob_refs AS b
+        WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+        ORDER BY b.acquired_at_ms DESC, b.rowid DESC
         LIMIT 1
-        """,
-        parameters,
-    ).fetchone()
+    """
+    try:
+        row = source_conn.execute(
+            f"""
+            SELECT
+                r.raw_id,
+                lower(hex(r.blob_hash)),
+                COALESCE(({receipt.format(column="acquired_at_ms")}), r.acquired_at_ms),
+                COALESCE(({receipt.format(column="rowid")}), r.rowid)
+            FROM raw_sessions AS r
+            WHERE r.origin = ? AND r.parse_error IS NULL AND ({clauses})
+            ORDER BY 3 DESC, 4 DESC, r.raw_id DESC
+            LIMIT 1
+            """,
+            parameters,
+        ).fetchone()
+    except sqlite3.Error as exc:
+        logger.debug("Failed to read the newest retained Codex state export: %s", exc)
+        return None
     if row is None:
         return None
-    return str(row[0]), str(row[1]), int(row[2])
+    return RetainedStateExport(str(row[0]), str(row[1]), int(row[2]), int(row[3]))
 
 
 @dataclass(frozen=True, slots=True)
@@ -220,7 +252,7 @@ def ensure_thread_state_projection(
     index_conn: sqlite3.Connection,
     source_conn: sqlite3.Connection,
     *,
-    blob_path_for_hash: Any,
+    blob_path_for_hash: Callable[[str], Path | None],
 ) -> bool:
     """Reconcile the projection against the newest retained state export.
 
@@ -232,31 +264,31 @@ def ensure_thread_state_projection(
     latest = latest_retained_state_export(source_conn)
     if latest is None:
         return False
-    raw_id, blob_hash, observed_at_ms = latest
     current = projection_provenance(index_conn)
-    if current is not None and current.raw_id == raw_id and current.blob_hash == blob_hash:
+    if current is not None and current.raw_id == latest.raw_id and current.blob_hash == latest.blob_hash:
         return False
-    export_path = blob_path_for_hash(blob_hash)
+    export_path = blob_path_for_hash(latest.blob_hash)
     if export_path is None or not Path(export_path).is_file():
         return False
     try:
         snapshot = codex_state.parse_codex_state_db(Path(export_path), immutable=True)
     except sqlite3.Error as exc:
-        logger.warning("codex state: retained export %s is not readable as thread state: %s", raw_id, exc)
+        logger.warning("codex state: retained export %s is not readable as thread state: %s", latest.raw_id, exc)
         return False
     return write_thread_state_projection(
         index_conn,
         snapshot,
-        raw_id=raw_id,
-        blob_hash=blob_hash,
-        observed_at_ms=observed_at_ms,
+        raw_id=latest.raw_id,
+        blob_hash=latest.blob_hash,
+        observed_at_ms=latest.observed_at_ms,
+        observation_order=latest.observation_order,
     )
 
 
 def read_thread_titles(
     index_conn: sqlite3.Connection,
     *,
-    thread_ids: Any = None,
+    thread_ids: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Return ``{thread_id: title}`` from the projected Codex thread state.
 
@@ -336,6 +368,7 @@ def read_parent_thread_id(index_conn: sqlite3.Connection, child_thread_id: str) 
 __all__ = [
     "THREAD_STATE_KIND",
     "ProjectionProvenance",
+    "RetainedStateExport",
     "apply_retained_state_export",
     "ensure_thread_state_projection",
     "latest_retained_state_export",

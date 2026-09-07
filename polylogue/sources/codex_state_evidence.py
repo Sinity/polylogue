@@ -116,7 +116,7 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
             current = codex_state_projection.projection_provenance(index_conn)
     except sqlite3.Error:
         return True
-    return current is not None and current.raw_id == latest[0] and current.blob_hash == latest[1]
+    return current is not None and current.raw_id == latest.raw_id and current.blob_hash == latest.blob_hash
 
 
 def resolve_retained_codex_state_receipts(archive_root: Path) -> int:

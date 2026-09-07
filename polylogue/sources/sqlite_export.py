@@ -453,7 +453,7 @@ def open_logical_source(path: Path, *, immutable: bool = False, timeout: float =
     reconstruction.unlink()
     try:
         materialize_export(path, reconstruction)
-        conn = sqlite3.connect(reconstruction, timeout=timeout)
+        conn = sqlite3.connect(f"{reconstruction.as_uri()}?mode=ro", uri=True, timeout=timeout)
     except BaseException:
         reconstruction.unlink(missing_ok=True)
         raise
