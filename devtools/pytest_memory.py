@@ -178,8 +178,14 @@ class ProcessGroupMemorySampler:
             if not readings:
                 return
             self._observed += 1
-            if totals["pss_kib"] > self._aggregate_peak["pss_kib"]:
-                self._aggregate_peak = totals
+            previous_pss = self._aggregate_peak["pss_kib"]
+            # Keep each metric's peak independently. PSS determines which
+            # moment names the group peak, but RSS/private/swap can spike at
+            # a different sample and still belong in the receipt.
+            for measure in _MEASURES:
+                if totals[measure] > self._aggregate_peak[measure]:
+                    self._aggregate_peak[measure] = totals[measure]
+            if totals["pss_kib"] > previous_pss:
                 self._peak_processes = len(readings)
                 self._peak_at_s = round(elapsed, 1)
             for pid, rollup in readings:
