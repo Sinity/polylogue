@@ -1470,13 +1470,21 @@ def test_source_only_codex_state_recovery_replays_retained_thread_evidence(tmp_p
         ).fetchall() == [("codex-thread", "codex-child", "closed")]
 
 
-@pytest.mark.parametrize("state_name", ["state.db", "verification_evidence.db"])
+@pytest.mark.parametrize(
+    ("state_name", "declared_table"),
+    [("state.db", "schema_version"), ("verification_evidence.db", "meta")],
+)
 def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     state_name: str,
+    declared_table: str,
 ) -> None:
-    """A direct file copy loses an uncheckpointed WAL row; the export retains it."""
+    """A direct file copy loses an uncheckpointed WAL row; the export retains it.
+
+    The row lives in one of the member's declared ``logical_tables``, because
+    that declared product is exactly what acquisition retains.
+    """
     from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
 
     initialize_active_archive_root(tmp_path)
@@ -1485,9 +1493,9 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
     state_db.parent.mkdir(parents=True)
     writer = sqlite3.connect(state_db)
     writer.execute("PRAGMA journal_mode=WAL")
-    writer.execute("CREATE TABLE retained_wal_row (value TEXT NOT NULL)")
+    writer.execute(f"CREATE TABLE {declared_table} (value TEXT NOT NULL)")
     writer.commit()
-    writer.execute("INSERT INTO retained_wal_row VALUES ('must survive')")
+    writer.execute(f"INSERT INTO {declared_table} VALUES ('must survive')")
     writer.commit()
     index_db = tmp_path / "index.db"
     processor = LiveBatchProcessor(
@@ -1513,7 +1521,7 @@ def test_source_only_hermes_named_sqlite_uses_consistent_backup_before_generic_c
         blob_hash = str(conn.execute("SELECT hex(blob_hash) FROM raw_sessions").fetchone()[0]).lower()
     retained = BlobStore(tmp_path / "blob").blob_path(blob_hash)
     with closing(open_logical_source(retained)) as export:
-        assert export.execute("SELECT value FROM retained_wal_row").fetchall() == [("must survive",)]
+        assert export.execute(f"SELECT value FROM {declared_table}").fetchall() == [("must survive",)]
 
 
 def test_full_ingest_acquires_when_index_is_genuinely_semantic_distance_stale(
