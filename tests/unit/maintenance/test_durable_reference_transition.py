@@ -22,6 +22,7 @@ from polylogue.maintenance.assertion_transition import (
     SourceIdentityClaims,
 )
 from polylogue.maintenance.durable_reference_transition import (
+    DurableReferenceTransition,
     apply_durable_reference_transition,
     governed_target,
     index_identity,
@@ -146,7 +147,14 @@ def _durable_tiers(refs: tuple[str, ...]) -> tuple[sqlite3.Connection, sqlite3.C
     return user, audit
 
 
-def _plan(user, audit, candidate, predecessor, *, claims=SourceIdentityClaims.from_refs(())):
+def _plan(
+    user: sqlite3.Connection,
+    audit: sqlite3.Connection,
+    candidate: sqlite3.Connection,
+    predecessor: sqlite3.Connection,
+    *,
+    claims: SourceIdentityClaims = SourceIdentityClaims.from_refs(()),
+) -> DurableReferenceTransition:
     return plan_durable_reference_transition(
         user_conn=user,
         audit_conn=audit,
