@@ -114,7 +114,8 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
             return True
         with closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn:
             current = codex_state_projection.projection_provenance(index_conn)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.debug("codex state: could not compare the retained export against the projection: %s", exc)
         return True
     return current is not None and current.raw_id == latest.raw_id and current.blob_hash == latest.blob_hash
 

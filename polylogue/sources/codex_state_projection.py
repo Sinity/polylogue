@@ -119,7 +119,8 @@ def projection_provenance(index_conn: sqlite3.Connection) -> ProjectionProvenanc
             "SELECT raw_id, blob_hash, observed_at_ms, observation_order "
             "FROM codex_thread_state_provenance WHERE singleton = 0"
         ).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.debug("Failed to read the Codex thread-state projection provenance: %s", exc)
         return None
     if row is None:
         return None
@@ -357,7 +358,8 @@ def read_parent_thread_id(index_conn: sqlite3.Connection, child_thread_id: str) 
             """,
             (child_thread_id,),
         ).fetchone()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.debug("Failed to read the projected Codex spawn-edge parent: %s", exc)
         return None
     if row is None or row[0] is None:
         return None
