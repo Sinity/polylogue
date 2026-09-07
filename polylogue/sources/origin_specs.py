@@ -1491,7 +1491,14 @@ def _chatgpt_spec() -> OriginSpec:
         spec,
         topology_capabilities=TopologyCapabilities(
             message_parent=TopologyCapability("carried", ("chatgpt.mapping.parent",)),
-            message_branch_state=TopologyCapability("carried", ("chatgpt.mapping.children",)),
+            message_branch_state=TopologyCapability(
+                "carried",
+                # ``children`` states sibling order where the export ships
+                # it; the reduced export shape ships none, and the ordinal
+                # among the siblings naming the same ``parent`` carries the
+                # same sequence.
+                ("chatgpt.mapping.children", "chatgpt.mapping.parent"),
+            ),
             session_parent_target=_absent_topology("ChatGPT exports carry no session-parent target"),
             inheritance_branch_point=_absent_topology(
                 "ChatGPT mapping ancestry is intra-session message topology, not cross-session inheritance"
