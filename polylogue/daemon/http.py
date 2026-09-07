@@ -5362,7 +5362,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 ids_order = getattr(self.server, "operation_ids_order", None)
                 if ids_order is not None:
                     if len(ids_order) == ids_order.maxlen:
-                        seen_ids.discard(ids_order[0])
+                        evicted = ids_order[0]
+                        seen_ids.discard(evicted)
+                        getattr(self.server, "operation_results", {}).pop(evicted, None)
                     ids_order.append(request.request_id)
 
         captured: list[tuple[HTTPStatus, object]] = []
