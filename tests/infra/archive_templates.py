@@ -144,18 +144,24 @@ def _is_pristine_destination(root: Path) -> bool:
         return False
     if not root.exists():
         return True
-    return root.is_dir() and next(os.scandir(root), None) is None
+    if not root.is_dir():
+        return False
+    # Closed explicitly: an unclosed scandir holds a directory descriptor until
+    # collection, and this runs once per archive root the suite builds.
+    with os.scandir(root) as entries:
+        return next(entries, None) is None
 
 
 def bootstrap_archive_root(root: Path) -> Path:
     """Materialise an empty archive root, by reflink clone where that is faithful.
 
-    A page-copy prototype still writes every tier's pages: measured on this
-    checkout, ``initialize_active_archive_root`` costs 4.33 MB of write bytes
-    per root, while cloning the sealed template costs 0.15 MB. Cloning is only
-    equivalent for a destination with nothing in it -- an archive the caller
-    has already seeded, or one carrying durable-train state, must take the
-    production route so that route's own reconciliation decides its outcome.
+    A page-copy prototype still writes every tier's pages. Measured over 20
+    roots with the per-tier prototype cache warm, ``initialize_active_archive_root``
+    costs 5.88 MB of write bytes per root and 6 tier initializations; cloning
+    the sealed template costs 0.51 MB and none. Cloning is only equivalent for
+    a destination with nothing in it -- an archive the caller has already
+    seeded, or one carrying durable-train state, must take the production route
+    so that route's own reconciliation decides its outcome.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 

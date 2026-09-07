@@ -58,7 +58,8 @@ def _tree_bytes(root: Path) -> tuple[int, int]:
     while stack:
         current = stack.pop()
         try:
-            entries = list(os.scandir(current))
+            with os.scandir(current) as scan:
+                entries = list(scan)
         except OSError:
             continue
         for entry in entries:
@@ -149,6 +150,11 @@ def pytest_configure(config: pytest.Config) -> None:
     if not directory:
         return
     worker_id = getattr(config, "workerinput", {}).get("workerid", "master")
+    # Under xdist every archive is built in a worker; the controller only
+    # collects and dispatches. Its receipt would be counted as a worker with no
+    # tests, dividing the run's write bytes by one process too many.
+    if worker_id == "master" and getattr(config.option, "numprocesses", 0):
+        return
 
     def resolve_basetemp() -> Path | None:
         factory = getattr(config, "_tmp_path_factory", None)

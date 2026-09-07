@@ -114,6 +114,8 @@ def test_plugin_writes_one_receipt_per_worker_under_xdist(tmp_path: Path) -> Non
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+    # The controller writes nothing: counting it would report three workers
+    # sharing the run's write bytes when only two built anything.
     names = sorted(path.name for path in receipts.glob("*.json"))
     assert names == ["gw0.json", "gw1.json"]
     aggregate = suite_cost.aggregate_suite_cost(receipts)
