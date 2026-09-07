@@ -19,9 +19,18 @@ from ``find QUERY``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import click
+
+from polylogue.cli.contextual_errors import (
+    AmbiguousSelectionError,
+    ContextualCliError,
+    EmptySelectionError,
+    NextAction,
+    ambiguous_selection_actions,
+)
 
 if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
@@ -29,8 +38,16 @@ if TYPE_CHECKING:
     from polylogue.cli.shared.types import AppEnv
 
 
-class CardinalityError(click.UsageError):
+class CardinalityError(ContextualCliError):
     """Raised when a verb's cardinality constraint is violated."""
+
+
+class EmptyCardinalityError(EmptySelectionError, CardinalityError):
+    """Nothing matched, so the verb has nothing to act on."""
+
+
+class AmbiguousCardinalityError(AmbiguousSelectionError, CardinalityError):
+    """Several sessions matched where the verb needs exactly one."""
 
 
 def check_cardinality(
@@ -40,6 +57,8 @@ def check_cardinality(
     first_only: bool,
     operation: str = "operate on sessions",
     multi_match_hint: str | None = None,
+    candidates: Sequence[str] = (),
+    bounded: bool = False,
 ) -> None:
     """Enforce the singleton / ``--all`` / ``--first`` cardinality contract.
 
@@ -63,13 +82,26 @@ def check_cardinality(
         CardinalityError: when the cardinality constraint is not satisfied.
     """
     if count == 0:
-        raise CardinalityError(f"No sessions matched; cannot {operation}.")
+        raise EmptyCardinalityError(f"No sessions matched; cannot {operation}.")
     if count == 1:
         return
     if allow_all or first_only:
         return
     hint = multi_match_hint or "Use --first to act on the first match only, or --all to act on all."
-    raise CardinalityError(f"'{operation}' matched {count} sessions. {hint}")
+    refs = tuple(str(candidate) for candidate in candidates)
+    actions = ambiguous_selection_actions(operation, refs[0] if refs else None)
+    if multi_match_hint is None:
+        actions = (
+            *actions,
+            NextAction("Act on the first match only", f"polylogue find <QUERY> then {operation} --first"),
+            NextAction("Act on every match", f"polylogue find <QUERY> then {operation} --all"),
+        )
+    raise AmbiguousCardinalityError(
+        f"'{operation}' matched {count} sessions. {hint}",
+        candidates=refs,
+        next_actions=actions,
+        bounded=bounded,
+    )
 
 
 def _reject_sample_for_mutating_verb(request: RootModeRequest) -> None:
@@ -155,7 +187,9 @@ async def _async_resolve_ids(env: AppEnv, request: RootModeRequest) -> list[str]
 
 
 __all__ = [
+    "AmbiguousCardinalityError",
     "CardinalityError",
+    "EmptyCardinalityError",
     "check_cardinality",
     "probe_session_ids_for_verb",
     "resolve_session_ids_for_verb",

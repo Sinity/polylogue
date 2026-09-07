@@ -129,6 +129,24 @@ EXPRESSION_FIELD_REGISTRY: dict[str, dict[str, str]] = {
         "negatable": "yes",
         "example": "action:file_edit",
     },
+    "action_sequence": {
+        "description": "Require an ordered action subsequence, arrow-separated",
+        "spec_field": "action_sequence",
+        "negatable": "no",
+        "example": "action_sequence:file_edit>shell",
+    },
+    "action_text": {
+        "description": "Require text within normalized action evidence (repeat to AND)",
+        "spec_field": "action_text_terms",
+        "negatable": "no",
+        "example": "action_text:pytest",
+    },
+    "since_session": {
+        "description": "Sessions in the same working directory after this session ref",
+        "spec_field": "since_session_id",
+        "negatable": "no",
+        "example": "since_session:claude-code-session:abc123",
+    },
     "has": {
         "description": "Filter by session content/evidence presence (paste evidence, tools, thinking)",
         "spec_field": "filter_has_paste/filter_has_tool_use/filter_has_thinking/has_types",
