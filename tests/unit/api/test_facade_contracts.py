@@ -1551,6 +1551,7 @@ async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_
     """Same review fix as the context-delivery correlation, for the lifecycle reconciliation seam."""
 
     archive = _archive(tmp_path)
+    read_failed = "hermes_session_lifecycle reconciliation (hermes_session_native_id=hermes-conv-1) read failed"
     try:
         with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
             never_initialized = Polylogue(
@@ -1561,7 +1562,7 @@ async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_
                 assert absent is None
             finally:
                 await never_initialized.close()
-        assert "hermes_session_lifecycle reconciliation read failed" not in caplog.text
+        assert read_failed not in caplog.text
         caplog.clear()
 
         # Present-but-corrupt case: source.db exists but is not a valid sqlite file
@@ -1570,7 +1571,7 @@ async def test_reconcile_hermes_session_lifecycle_distinguishes_corruption_from_
         with caplog.at_level(logging.WARNING, logger="polylogue.api.archive"):
             corrupted = await archive.reconcile_hermes_session_lifecycle("hermes-conv-1")
         assert corrupted is None
-        assert "hermes_session_lifecycle reconciliation read failed" in caplog.text
+        assert read_failed in caplog.text
     finally:
         await archive.close()
 
