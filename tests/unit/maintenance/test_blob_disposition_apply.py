@@ -142,6 +142,15 @@ def _reference(archive_root: Path, blob_hash: str) -> None:
         )
 
 
+def _stub_reference(source_db: Path, *blob_hashes: str) -> None:
+    """Name blobs in a durable relation so liveness, not silence, decides."""
+    with sqlite3.connect(source_db) as conn:
+        conn.executemany(
+            "INSERT INTO blob_refs (blob_hash, ref_type) VALUES (?, 'raw_payload')",
+            [(bytes.fromhex(blob_hash),) for blob_hash in blob_hashes],
+        )
+
+
 def _plan_and_context(
     archive_root: Path,
     blob_root: Path,
@@ -304,7 +313,8 @@ def test_restoration_proceeds_while_other_members_are_unresolved(tmp_path: Path)
     archive_root, blob_root, hooks_root, capture_spool = _stub_archive(tmp_path)
     store = BlobStore(blob_root)
     sole_hash, _ = store.write_from_bytes(_stored_bytes(_hook_envelope("sole-copy"), tmp_path))
-    store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
+    mystery_hash, _ = store.write_from_bytes(b"%PDF-1.5\nunexplained\n")
+    _stub_reference(archive_root / "source.db", mystery_hash)
     plan, context = _plan_and_context(archive_root, blob_root, capture_spool=capture_spool)
     assert not plan.accepted
 
