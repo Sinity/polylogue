@@ -468,6 +468,61 @@ def test_delete_preview_operation_bounds_body_bytes_and_reads_before_the_writer_
     ]
 
 
+def test_conflicting_operation_request_id_never_reenters_the_replay_lock(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A conflicting retry responds without replacing the accepted request.
+
+    Anti-vacuity: sending the duplicate error while ``operation_ids_lock`` is
+    held deadlocks because response recording needs that same lock.
+    """
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL, DaemonOperationRequest
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    (tmp_path / "index.db").write_bytes(b"index")
+    original = DaemonOperationRequest(
+        operation="status",
+        payload={},
+        request_id="request-id-reused",
+    )
+    conflicting = DaemonOperationRequest(
+        operation="completion",
+        payload={"prefix": "x"},
+        request_id="request-id-reused",
+    )
+    body = json.dumps(conflicting.to_dict()).encode()
+    handler = _operation_handler([], body)
+    accepted_payload = {"protocol": DAEMON_OPERATION_PROTOCOL, "request_id": original.request_id}
+    handler.server.operation_ids_seen = {original.request_id}
+    handler.server.operation_results = {original.request_id: (original.fingerprint, 200, accepted_payload)}
+    handler.server.operation_ids_lock = threading.Lock()
+    responses: list[tuple[HTTPStatus, object]] = []
+    handler._send_json = lambda status, payload, **_kwargs: responses.append((status, payload))  # type: ignore[method-assign]
+
+    failure: list[BaseException] = []
+
+    def invoke() -> None:
+        try:
+            handler._handle_daemon_operation()
+        except BaseException as exc:  # pragma: no cover - assertion below reports it
+            failure.append(exc)
+
+    thread = threading.Thread(target=invoke, daemon=True)
+    thread.start()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive(), "conflicting duplicate request id deadlocked the machine endpoint"
+    assert failure == []
+    assert responses and responses[0][0] is HTTPStatus.CONFLICT
+    response = responses[0][1]
+    assert isinstance(response, dict)
+    assert response["error"] == {
+        "code": "duplicate_request_id_conflict",
+        "detail": "request_id was already used for a different request",
+    }
+    assert handler.server.operation_results[original.request_id] == (original.fingerprint, 200, accepted_payload)
+
+
 def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

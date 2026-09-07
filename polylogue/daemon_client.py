@@ -15,6 +15,7 @@ from polylogue.operations.daemon_protocol import (
     MAX_OPERATION_RESULT_BYTES,
     DaemonAuthority,
     DaemonOperationRequest,
+    archive_identity,
     daemon_operation_spec,
 )
 
@@ -171,6 +172,8 @@ class DaemonClient:
         archive_root: str | None = None,
         index_schema_version: int | None = None,
         daemon_version: str | None = None,
+        expected_archive_identity: str | None = None,
+        expected_generation_id: str | None = None,
         request_id: str | None = None,
         deadline_ms: int | None = None,
         cancellation_token: str | None = None,
@@ -186,6 +189,8 @@ class DaemonClient:
             archive_root=archive_root,
             index_schema_version=index_schema_version,
             daemon_version=daemon_version,
+            expected_archive_identity=expected_archive_identity,
+            expected_generation_id=expected_generation_id,
             request_id=request_id or uuid.uuid4().hex,
             deadline_ms=deadline_ms or max(1, round(spec.deadline_s * 1000)),
             cancellation_token=cancellation_token,
@@ -248,21 +253,48 @@ class DaemonClient:
         if not spec.direct_allowed:
             raise DaemonOperationRejected("daemon-required", "daemon is required for this operation")
         result = direct_executor(payload or {})
+        if archive_root is None:
+            from polylogue.config import load_polylogue_config
+
+            root = Path(load_polylogue_config().archive_root)
+        else:
+            root = Path(archive_root)
+        from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
+        from polylogue.version import POLYLOGUE_VERSION
+
+        archive, generation, readiness = archive_identity(
+            root,
+            schema_version=INDEX_SCHEMA_VERSION,
+            daemon_version=POLYLOGUE_VERSION,
+        )
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):  # pragma: no cover - typed authority resolver
+            raise DaemonOperationProtocolError("archive authority omitted tier schema versions")
+        authority_snapshot = {
+            "archive_identity": archive["archive_identity"],
+            "generation": generation["id"],
+            "schema_versions": tier_schema_versions,
+            "served_by": "direct",
+            "elapsed_ms": 0,
+            "queue_ms": 0,
+            "degraded_components": ["daemon_unavailable"],
+        }
         return {
             "protocol": DAEMON_OPERATION_PROTOCOL,
             "operation": operation,
-            "archive": {"root": archive_root} if archive_root else {},
-            "generation": {},
-            "readiness": {"state": "ready", "ready": True},
+            "archive": archive,
+            "generation": generation,
+            "readiness": readiness,
             "authority": {"mode": "direct", "class": spec.authority.value, "fallback": spec.fallback.value},
             "progress": {"state": "complete"},
             "outcome": "completed",
             "served_by": {"client": "direct"},
             "timing": {"elapsed_ms": 0, "queue_ms": 0},
-            "degraded_components": [],
-            "schema_versions": {},
+            "degraded_components": ["daemon_unavailable"],
+            "schema_versions": tier_schema_versions,
             "result": result,
             "error": None,
+            "authority_snapshot": authority_snapshot,
         }
 
 

@@ -5185,6 +5185,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         from polylogue.version import POLYLOGUE_VERSION
 
         operation_started = monotonic()
+        self._operation_started = operation_started
         self._last_queue_delay_ms = 0
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         try:
@@ -5258,10 +5259,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 "the daemon build does not match the client",
             )
             return
+        if request.expected_archive_identity not in (None, archive.get("archive_identity")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "archive_identity_stale",
+                "the archive identity changed since the client snapshot",
+            )
+            return
+        if request.expected_generation_id not in (None, generation.get("id")):
+            self._send_operation_error(
+                HTTPStatus.CONFLICT,
+                request,
+                archive,
+                generation,
+                readiness,
+                "generation_stale",
+                "the active generation changed since the client snapshot",
+            )
+            return
 
         from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
 
         spec = daemon_operation_spec(request.operation)
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {"index": INDEX_SCHEMA_VERSION}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
         if spec is not None and content_length > spec.max_body_bytes:
             self._send_operation_error(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
@@ -5329,43 +5358,60 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         seen_ids = getattr(self.server, "operation_ids_seen", None)
         ids_lock = getattr(self.server, "operation_ids_lock", None)
         if request.request_id is not None and seen_ids is not None and ids_lock is not None:
+            replay: tuple[int, dict[str, object]] | None = None
+            duplicate_conflict = False
+            duplicate_incomplete = False
             with ids_lock:
                 results = getattr(self.server, "operation_results", {})
                 previous = results.get(request.request_id)
                 if previous is not None:
                     previous_fingerprint, previous_status, previous_payload = previous
                     if previous_fingerprint == request.fingerprint:
-                        self._send_json(HTTPStatus(previous_status), previous_payload)
+                        replay = (previous_status, previous_payload)
                     else:
-                        self._send_operation_error(
-                            HTTPStatus.CONFLICT,
-                            request,
-                            archive,
-                            generation,
-                            readiness,
-                            "duplicate_request_id_conflict",
-                            "request_id was already used for a different request",
-                        )
-                    return
-                if request.request_id in seen_ids:
-                    self._send_operation_error(
-                        HTTPStatus.CONFLICT,
-                        request,
-                        archive,
-                        generation,
-                        readiness,
-                        "duplicate_request_id",
-                        "request_id was already used before its result was durable",
-                    )
-                    return
-                seen_ids.add(request.request_id)
-                ids_order = getattr(self.server, "operation_ids_order", None)
-                if ids_order is not None:
-                    if len(ids_order) == ids_order.maxlen:
-                        evicted = ids_order[0]
-                        seen_ids.discard(evicted)
-                        getattr(self.server, "operation_results", {}).pop(evicted, None)
-                    ids_order.append(request.request_id)
+                        duplicate_conflict = True
+                elif request.request_id in seen_ids:
+                    duplicate_incomplete = True
+                else:
+                    seen_ids.add(request.request_id)
+                    ids_order = getattr(self.server, "operation_ids_order", None)
+                    if ids_order is not None:
+                        if len(ids_order) == ids_order.maxlen:
+                            evicted = ids_order[0]
+                            seen_ids.discard(evicted)
+                            getattr(self.server, "operation_results", {}).pop(evicted, None)
+                        ids_order.append(request.request_id)
+            # Do not write a response while ``operation_ids_lock`` is held.
+            # Error recording takes the same lock and a conflicting retry
+            # must not overwrite the original request's replay evidence.
+            if replay is not None:
+                previous_status, previous_payload = replay
+                self._send_json(HTTPStatus(previous_status), previous_payload)
+                return
+            if duplicate_conflict:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id_conflict",
+                    "request_id was already used for a different request",
+                    remember=False,
+                )
+                return
+            if duplicate_incomplete:
+                self._send_operation_error(
+                    HTTPStatus.CONFLICT,
+                    request,
+                    archive,
+                    generation,
+                    readiness,
+                    "duplicate_request_id",
+                    "request_id was already used before its result was durable",
+                    remember=False,
+                )
+                return
 
         captured: list[tuple[HTTPStatus, object]] = []
         original_send_json = self._send_json
@@ -5490,14 +5536,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 outcome=OperationStatus.FAILED,
                 served_by={"daemon_version": POLYLOGUE_VERSION},
                 timing=self._operation_timing(operation_started),
-                schema_versions={"index": INDEX_SCHEMA_VERSION},
+                schema_versions=cast(dict[str, int], tier_schema_versions),
                 authority_snapshot={
                     "archive_identity": archive.get("archive_identity"),
                     "generation": generation.get("id"),
-                    "schema_versions": {"index": INDEX_SCHEMA_VERSION},
+                    "schema_versions": tier_schema_versions,
                     "served_by": POLYLOGUE_VERSION,
                     **self._operation_timing(operation_started),
-                    "degraded_components": [],
+                    "degraded_components": degraded_components,
                 },
                 error={
                     "code": str(error.get("error", "operation_failed")),
@@ -5534,14 +5580,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             outcome=OperationStatus.COMPLETED,
             served_by={"daemon_version": POLYLOGUE_VERSION},
             timing=self._operation_timing(operation_started),
-            schema_versions={"index": INDEX_SCHEMA_VERSION},
+            schema_versions=cast(dict[str, int], tier_schema_versions),
             authority_snapshot={
                 "archive_identity": archive.get("archive_identity"),
                 "generation": generation.get("id"),
-                "schema_versions": {"index": INDEX_SCHEMA_VERSION},
+                "schema_versions": tier_schema_versions,
                 "served_by": POLYLOGUE_VERSION,
                 **self._operation_timing(operation_started),
-                "degraded_components": [],
+                "degraded_components": degraded_components,
             },
             result=result,
             accepted_reference=accepted_reference,
@@ -5591,10 +5637,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         detail: str,
         *,
         outcome: str = "failed",
+        remember: bool = True,
     ) -> None:
         from polylogue.operations.daemon_protocol import DaemonOperationEnvelope
+        from polylogue.version import POLYLOGUE_VERSION
 
         operation = getattr(request, "operation", "unknown")
+        tier_schema_versions = archive.get("tier_schema_versions")
+        if not isinstance(tier_schema_versions, dict):
+            tier_schema_versions = {}
+        degraded_components = readiness.get("degraded_components")
+        if not isinstance(degraded_components, list | tuple):
+            degraded_components = []
+        started = getattr(self, "_operation_started", None)
+        timing = self._operation_timing(started) if isinstance(started, float) else {"elapsed_ms": 0, "queue_ms": 0}
         envelope = DaemonOperationEnvelope(
             operation=str(operation),
             archive=archive,
@@ -5603,11 +5659,22 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             authority={"mode": "daemon", "writes": "daemon-owned"},
             progress={"state": "failed" if outcome == "failed" else outcome},
             outcome=outcome,
+            served_by={"daemon_version": POLYLOGUE_VERSION},
+            schema_versions=cast(dict[str, int], tier_schema_versions),
             error={"code": code, "detail": detail},
             request_id=getattr(request, "request_id", None),
+            authority_snapshot={
+                "archive_identity": archive.get("archive_identity"),
+                "generation": generation.get("id"),
+                "schema_versions": tier_schema_versions,
+                "served_by": POLYLOGUE_VERSION,
+                **timing,
+                "degraded_components": degraded_components,
+            },
         )
         payload = envelope.to_dict()
-        self._remember_operation_result(request, int(status), payload)
+        if remember:
+            self._remember_operation_result(request, int(status), payload)
         self._send_json(status, payload)
 
     @daemon_safe_handler

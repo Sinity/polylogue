@@ -41,7 +41,16 @@ def machine_operation_handler() -> type[BaseHTTPRequestHandler]:
             if path != "/api/operation":
                 self.send_error(404, "machine route not found")
                 return
-            super().do_POST()
+            # The machine listener has no browser dispatch.  Calling the
+            # browser handler's ``do_POST`` here would consult its complete
+            # route table before arriving at this operation adapter.
+            if not self._check_host_admission():
+                return
+            if self._reject_credential_query():
+                return
+            if not self._check_auth("read", allow_web=False):
+                return
+            self._handle_daemon_operation()
 
     return MachineOperationHandler
 

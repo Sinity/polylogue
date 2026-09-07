@@ -328,6 +328,8 @@ class DaemonOperationRequest:
     archive_root: str | None = None
     index_schema_version: int | None = None
     daemon_version: str | None = None
+    expected_archive_identity: str | None = None
+    expected_generation_id: str | None = None
     request_id: str | None = None
     deadline_ms: int | None = None
     idempotency_key: str | None = None
@@ -349,6 +351,8 @@ class DaemonOperationRequest:
         archive_root = raw.get("archive_root")
         schema = raw.get("index_schema_version")
         version = raw.get("daemon_version")
+        expected_archive_identity = raw.get("expected_archive_identity")
+        expected_generation_id = raw.get("expected_generation_id")
         request_id = raw.get("request_id")
         deadline_ms = raw.get("deadline_ms")
         idempotency_key = raw.get("idempotency_key")
@@ -359,6 +363,14 @@ class DaemonOperationRequest:
             raise ValueError("index_schema_version must be an integer")
         if version is not None and not isinstance(version, str):
             raise ValueError("daemon_version must be a string")
+        if expected_archive_identity is not None and (
+            not isinstance(expected_archive_identity, str) or not expected_archive_identity
+        ):
+            raise ValueError("expected_archive_identity must be a non-empty string")
+        if expected_generation_id is not None and (
+            not isinstance(expected_generation_id, str) or not expected_generation_id
+        ):
+            raise ValueError("expected_generation_id must be a non-empty string")
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a non-empty string")
         if deadline_ms is not None and (
@@ -377,6 +389,8 @@ class DaemonOperationRequest:
             archive_root,
             schema,
             version,
+            expected_archive_identity,
+            expected_generation_id,
             request_id,
             deadline_ms,
             idempotency_key,
@@ -397,6 +411,8 @@ class DaemonOperationRequest:
             "archive_root": self.archive_root,
             "index_schema_version": self.index_schema_version,
             "daemon_version": self.daemon_version,
+            "expected_archive_identity": self.expected_archive_identity,
+            "expected_generation_id": self.expected_generation_id,
             "request_id": self.request_id,
             "deadline_ms": self.deadline_ms,
         }
@@ -451,32 +467,43 @@ class DaemonOperationEnvelope:
 def archive_identity(
     archive_root: Path, *, schema_version: int, daemon_version: str
 ) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
-    """Build an identity/readiness projection without a separate probe."""
+    """Build one archive authority snapshot without a separate probe.
 
+    File size and mtime are not generation evidence: a WAL commit can change
+    neither.  The operation boundary already has a canonical archive identity
+    resolver which pins the active index generation and all tier versions.
+    Keep the historical parameters for callers while deriving the returned
+    evidence from that authority instead of inventing a second identity.
+    """
+
+    from polylogue.operations.authority import authority_for_root
+
+    authority = authority_for_root(archive_root, server_identity="daemon").to_dict()
+    tier_schema_versions = authority["tier_schema_versions"]
+    if not isinstance(tier_schema_versions, dict):  # pragma: no cover - AuthorityEnvelope is typed
+        raise RuntimeError("archive authority omitted tier schema versions")
     index_path = archive_root / "index.db"
-    try:
-        stat = index_path.stat()
-    except OSError:
-        stat = None
-    generation: dict[str, object] = {
-        "index_schema_version": schema_version,
-        "index_size_bytes": stat.st_size if stat is not None else 0,
-        "index_mtime_ns": stat.st_mtime_ns if stat is not None else None,
-    }
-    generation["id"] = hashlib.sha256(
-        f"{archive_root.resolve()}:{generation['index_schema_version']}:{generation['index_size_bytes']}:{generation['index_mtime_ns']}".encode()
-    ).hexdigest()[:32]
-    ready = stat is not None
+    ready = index_path.is_file()
+    actual_index_schema = tier_schema_versions.get("index")
+    if not isinstance(actual_index_schema, int):  # pragma: no cover - tier registry is typed
+        raise RuntimeError("archive authority omitted index schema version")
     archive: dict[str, object] = {
         "root": str(archive_root),
         "daemon_version": daemon_version,
-        "index_schema_version": schema_version,
-        "archive_identity": str(archive_root.resolve()),
+        "index_schema_version": actual_index_schema,
+        "archive_identity": authority["archive_epoch"],
+        "tier_schema_versions": tier_schema_versions,
+    }
+    generation: dict[str, object] = {
+        "id": authority["generation_id"],
+        "index_schema_version": actual_index_schema,
+        "tier_schema_versions": tier_schema_versions,
     }
     readiness: dict[str, object] = {
         "state": "ready" if ready else "unavailable",
         "ready": ready,
         "reason": None if ready else "index_missing",
+        "degraded_components": authority["degraded"],
     }
     return archive, generation, readiness
 
