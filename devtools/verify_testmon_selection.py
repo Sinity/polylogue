@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from devtools.pytest_invocation import MANAGED_PLUGIN_ARGS
+from devtools.testmon_provision import TESTMON_COVERAGE_CORE, TESTMON_ENVIRONMENT, inspect_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify import _pytest_worker_args
 from devtools.worker_memory import CORPUS_MAX_WORKERS
@@ -36,13 +37,16 @@ def main(_argv: list[str] | None = None) -> int:
         tests = root / "tests"
         tests.mkdir()
         for index in range(25):
-            (root / f"leaf{index}.py").write_text(f"VALUE = {index}\n", encoding="utf-8")
-            lines = [f"from leaf{index} import VALUE", ""]
+            (root / f"leaf{index}.py").write_text(f"def value():\n    return {index}\n", encoding="utf-8")
+            lines = [f"from leaf{index} import value", ""]
             for test_index in range(4):
-                lines += [f"def test_{test_index}():", f"    assert VALUE == {index}", ""]
+                lines += [f"def test_{test_index}():", f"    assert value() == {index}", ""]
             (tests / f"test_leaf{index}.py").write_text("\n".join(lines), encoding="utf-8")
+        (root / ".cache" / "testmon").mkdir(parents=True)
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join((str(root), env.get("PYTHONPATH", "")))
+        env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
+        env["TESTMON_DATAFILE"] = str(root / ".cache" / "testmon" / "testmondata")
         env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
         env.pop("PYTEST_ADDOPTS", None)
         env.pop("PYTEST_PLUGINS", None)
@@ -53,9 +57,18 @@ def main(_argv: list[str] | None = None) -> int:
             "-q",
             "-p",
             "pytest_jsonreport",
+            *MANAGED_PLUGIN_ARGS,
         ]
         first = subprocess.run(
-            [*base, "--json-report", f"--json-report-file={root / 'first.json'}", "tests"],
+            [
+                *base,
+                "--testmon",
+                f"--testmon-env={TESTMON_ENVIRONMENT}",
+                "--testmon-noselect",
+                "--json-report",
+                f"--json-report-file={root / 'first.json'}",
+                "tests",
+            ],
             cwd=root,
             env=env,
             capture_output=True,
@@ -65,18 +78,27 @@ def main(_argv: list[str] | None = None) -> int:
         if first.returncode != 0:
             print(first.stdout + first.stderr)
             return first.returncode or 1
-        (root / "leaf0.py").write_text("VALUE = 0  # changed\n", encoding="utf-8")
+        first_report = json.loads((root / "first.json").read_text(encoding="utf-8"))
+        seeded = len(first_report.get("tests", [])) if isinstance(first_report, dict) else 0
+        total = 100
+        if seeded != total:
+            print(f"testmon-selection: seed collected {seeded} of {total} tests")
+            return 1
+        seed = inspect_testmon_graph(root)
+        if not seed.usable:
+            print(f"testmon-selection: seed graph is not usable: {seed.reason}")
+            return 1
+        (root / "leaf0.py").write_text("def value():\n    return 0 + 0\n", encoding="utf-8")
         report_path = root / "report.json"
         second = subprocess.run(
             [
                 *base,
-                *MANAGED_PLUGIN_ARGS,
                 "--testmon",
-                "--testmon-env=polylogue",
+                f"--testmon-env={TESTMON_ENVIRONMENT}",
                 "--json-report",
                 f"--json-report-file={report_path}",
                 "--testmon-forceselect",
-                "tests/test_leaf0.py",
+                "tests",
             ],
             cwd=root,
             env=env,
@@ -89,10 +111,22 @@ def main(_argv: list[str] | None = None) -> int:
             return second.returncode or 1
         output = second.stdout + second.stderr
         report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.exists() else {}
-        selected = len(report.get("tests", [])) if isinstance(report, dict) else 0
-        total = 100
-        if not selected or not total or selected * 100 >= total * 5:
-            print(f"testmon-selection: selected {selected} of {total}, expected under 5%\n{output}")
+        selected_nodeids = (
+            [
+                test.get("nodeid")
+                for test in report.get("tests", [])
+                if isinstance(test, dict) and isinstance(test.get("nodeid"), str)
+            ]
+            if isinstance(report, dict)
+            else []
+        )
+        selected = len(selected_nodeids)
+        expected = {f"tests/test_leaf0.py::test_{index}" for index in range(4)}
+        if set(selected_nodeids) != expected:
+            print(
+                f"testmon-selection: selected {selected} of {total}, expected {len(expected)} leaf0 tests; "
+                f"nodeids={selected_nodeids!r}\n{output}"
+            )
             return 1
     print(f"testmon-selection: selected {selected} of {total}; workers={CORPUS_MAX_WORKERS}")
     return 0
