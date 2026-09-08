@@ -48,6 +48,11 @@ def _required_names(schema: Mapping[str, object]) -> set[str]:
     return {item for item in required if isinstance(item, str)} if isinstance(required, list) else set()
 
 
+def _schema_object(value: JSONValue) -> JSONDocument:
+    """Read an object node from an already JSON-typed schema."""
+    return value if isinstance(value, dict) else {}
+
+
 def _flatten_composite_branches(schema: JSONDocument) -> JSONDocument:
     """Fold ``anyOf``/``oneOf``/``allOf`` branches into the schema body.
 
@@ -63,10 +68,10 @@ def _flatten_composite_branches(schema: JSONDocument) -> JSONDocument:
     for keyword in _COMPOSITE_KEYWORDS:
         raw = schema.get(keyword)
         if isinstance(raw, list):
-            branches.extend(json_document(branch) for branch in raw)
+            branches.extend(_schema_object(branch) for branch in raw)
     if not branches:
         return schema
-    merged = json_document({key: value for key, value in schema.items() if key not in _COMPOSITE_KEYWORDS})
+    merged = {key: value for key, value in schema.items() if key not in _COMPOSITE_KEYWORDS}
     for branch in branches:
         merged = _merge_observed_structure_pair(merged, branch)
     return merged
@@ -92,25 +97,25 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
         type_values: list[JSONValue] = list(schema_types)
         merged["type"] = type_values
 
-    left_properties = json_document(left.get("properties"))
-    right_properties = json_document(right.get("properties"))
+    left_properties = _schema_object(left.get("properties"))
+    right_properties = _schema_object(right.get("properties"))
     property_names = sorted(set(left_properties) | set(right_properties))
     properties: JSONDocument = {}
     for name in property_names:
-        left_schema = json_document(left_properties.get(name))
-        right_schema = json_document(right_properties.get(name))
+        left_schema = _schema_object(left_properties.get(name))
+        right_schema = _schema_object(right_properties.get(name))
         properties[name] = _merge_observed_structure_pair(left_schema, right_schema)
 
     required = sorted(_required_names(left) & _required_names(right))
-    left_additional = json_document(left.get("additionalProperties"))
-    right_additional = json_document(right.get("additionalProperties"))
+    left_additional = _schema_object(left.get("additionalProperties"))
+    right_additional = _schema_object(right.get("additionalProperties"))
     additional = _merge_observed_structure_pair(left_additional, right_additional)
 
     already_high_cardinality = (
         left.get("x-polylogue-high-cardinality-keys") is True or right.get("x-polylogue-high-cardinality-keys") is True
     )
     if properties and (already_high_cardinality or should_collapse_observed_keys(properties.keys())):
-        additional = merge_observed_structure_schemas([additional, *map(json_document, properties.values())])
+        additional = merge_observed_structure_schemas([additional, *map(_schema_object, properties.values())])
         properties = {}
         required = []
         merged["x-polylogue-high-cardinality-keys"] = True
@@ -122,8 +127,8 @@ def _merge_observed_structure_pair(left: JSONDocument, right: JSONDocument) -> J
         required_values: list[JSONValue] = list(required)
         merged["required"] = required_values
 
-    left_items = json_document(left.get("items"))
-    right_items = json_document(right.get("items"))
+    left_items = _schema_object(left.get("items"))
+    right_items = _schema_object(right.get("items"))
     items = _merge_observed_structure_pair(left_items, right_items)
     if items:
         merged["items"] = items
