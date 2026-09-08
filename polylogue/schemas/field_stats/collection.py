@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Collection, Iterable, Mapping
+from functools import lru_cache
 from typing import TypeAlias
 
 from polylogue.schemas.field_stats.detection import (
@@ -95,6 +96,10 @@ def _collect_field_stats(
     current_session_id: str | None = None
     current_observed_at: str | None = None
 
+    @lru_cache(maxsize=4_096)
+    def _collapse_key_tuple(keys: tuple[str, ...]) -> bool:
+        return should_collapse_observed_keys(keys)
+
     def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
         if depth > max_depth:
             return
@@ -115,12 +120,14 @@ def _collect_field_stats(
         stats.value_count += 1
 
         if isinstance(value, Mapping):
+            items = tuple((str(key), item) for key, item in value.items())
+            keys = tuple(key for key, _item in items)
             if path not in dict_key_sets:
                 dict_key_sets[path] = set()
             key_evidence = dict_key_sets[path]
-            for key in value:
-                stats.object_key_distribution.observe(str(key))
-                stats.observe_object_key(str(key))
+            for key in keys:
+                stats.object_key_distribution.observe(key)
+                stats.observe_object_key(key)
                 if key in key_evidence or len(key_evidence) < _DICT_KEY_EVIDENCE_CAP:
                     key_evidence.add(key)
                 else:
@@ -128,8 +135,10 @@ def _collect_field_stats(
             _append_bounded(stats.object_key_counts, len(value), stats, "object_fanout_samples")
             stats.object_fanout_distribution.observe(len(value))
 
-            collapse_all = path in dynamic_paths or should_collapse_observed_keys(value.keys())
-            sibling_names = {str(key) for key in value if not collapse_all and not is_dynamic_key(str(key))}
+            collapse_all = path in dynamic_paths or (
+                _collapse_key_tuple(keys) if len(keys) <= 64 else should_collapse_observed_keys(keys)
+            )
+            sibling_names = {key for key in keys if not collapse_all and not is_dynamic_key(key)}
             for child_name in sibling_names:
                 child_stats = _ensure_stats(f"{path}.{child_name}")
                 for other_name in sibling_names:
@@ -142,9 +151,8 @@ def _collect_field_stats(
                             "co_occurring_fields",
                         )
 
-            for key, item in value.items():
-                key_text = str(key)
-                child_path = f"{path}.*" if collapse_all or is_dynamic_key(key_text) else f"{path}.{key_text}"
+            for key, item in items:
+                child_path = f"{path}.*" if collapse_all or is_dynamic_key(key) else f"{path}.{key}"
                 _walk(item, child_path, depth + 1, sample_idx)
             return
 
