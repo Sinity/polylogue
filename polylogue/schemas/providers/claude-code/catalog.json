@@ -1,6 +1,6 @@
 {
   "provider": "claude-code",
-  "generated_at": "2026-09-08T09:00:55.450565+00:00",
+  "generated_at": "2026-09-08T14:53:36.145846+00:00",
   "latest_version": "v2",
   "default_version": "v2",
   "recommended_version": "v2",
@@ -46,9 +46,9 @@
       "anchor_kind": "coordinator_session_stream",
       "default_element_kind": "coordinator_session_stream",
       "first_seen": "2026-09-08T09:00:55.450496+00:00",
-      "last_seen": "2026-09-08T09:00:55.450496+00:00",
-      "bundle_scope_count": 4034,
-      "sample_count": 4821099,
+      "last_seen": "2026-09-08T14:53:36.145774+00:00",
+      "bundle_scope_count": 4029,
+      "sample_count": 4821068,
       "anchor_profile_family_id": "7fec7d3f8add5f53b7e58339a5f580bea224a4a53d7db73936417def7c858351",
       "bundle_scope_identities": [],
       "profile_family_ids": [],
@@ -60,7 +60,7 @@
           "artifact_count": 10282,
           "supported": true,
           "first_seen": "2026-09-08T09:00:55.450496+00:00",
-          "last_seen": "2026-09-08T09:00:55.450496+00:00",
+          "last_seen": "2026-09-08T14:53:36.145774+00:00",
           "bundle_scope_count": 10282,
           "bundle_scope_identities": [],
           "exact_structure_ids": [],
@@ -72,17 +72,17 @@
         {
           "element_kind": "coordinator_session_stream",
           "schema_file": "coordinator_session_stream.schema.json.gz",
-          "sample_count": 2993635,
-          "artifact_count": 4034,
+          "sample_count": 2993604,
+          "artifact_count": 4029,
           "supported": true,
           "first_seen": "2026-09-08T09:00:55.450496+00:00",
-          "last_seen": "2026-09-08T09:00:55.450496+00:00",
-          "bundle_scope_count": 4034,
+          "last_seen": "2026-09-08T14:53:36.145774+00:00",
+          "bundle_scope_count": 4029,
           "bundle_scope_identities": [],
           "exact_structure_ids": [],
           "profile_family_ids": [],
           "profile_tokens": [],
-          "observed_artifact_count": 4034,
+          "observed_artifact_count": 4029,
           "observation_status": "current"
         },
         {
@@ -92,7 +92,7 @@
           "artifact_count": 1,
           "supported": true,
           "first_seen": "2026-09-08T09:00:55.450496+00:00",
-          "last_seen": "2026-09-08T09:00:55.450496+00:00",
+          "last_seen": "2026-09-08T14:53:36.145774+00:00",
           "bundle_scope_count": 1,
           "bundle_scope_identities": [],
           "exact_structure_ids": [],
@@ -109,11 +109,13 @@
   ],
   "observation_outcomes": {
     "source_input_bytes": 20585961558,
-    "source_record_count": 4821099,
+    "source_record_count": 4821068,
     "source_recipe": {
       "structure": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "structure",
         "reduction_revision": 1,
         "key_policy": {
@@ -128,6 +130,8 @@
       "statistics": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "statistics",
         "reduction_revision": 1,
         "key_policy": {
@@ -139,24 +143,25 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
-      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
-      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+      "structure_fingerprint": "29e59f8c29a1d8c7944b4ec4e81dde8ba80ceeca153cb75ef40bef5ce14057ff",
+      "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
+      "implementation_fingerprint": "64d6d69d5bca58a89e3d126c1a5e855e49347e931ddde3325b4bf9f9abafb33f"
     },
     "source_cache_phase_hits": {
-      "statistics": 708,
-      "structure": 14402
+      "statistics": 14327,
+      "structure": 14327
     },
     "source_cache_phase_misses": {
-      "statistics": 13694
+      "statistics": 75,
+      "structure": 75
     },
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 15110,
-    "source_cache_misses": 13694,
+    "source_cache_hits": 28654,
+    "source_cache_misses": 150,
     "source_terminal_outcomes": {
       "decode_failed": 1,
-      "included": 14433,
+      "included": 14428,
       "intentionally_excluded": 22712,
       "unsupported": 301
     },
@@ -178,12 +183,13 @@
       "source_class_non_session": 22712
     },
     "source_phase_timings_ms": {
-      "collect": 3715178.462,
-      "fold": 711851.687,
-      "hash": 182044.171,
-      "inventory": 1647.738,
-      "preliminary": 7097.387,
-      "statistics": 2814123.608
+      "collect": 835158.793,
+      "fold": 475186.246,
+      "hash": 104826.733,
+      "inventory": 2060.411,
+      "preliminary": 29105.605,
+      "revision_selection": 5897.104,
+      "statistics": 220081.733
     },
     "producer_version_counts": {
       "0.2.107": 1,
@@ -323,9 +329,9 @@
     "producer_version_missing_sources": 82,
     "producer_version_conflicting_sources": 176,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "45a25dea6ecada8a3f143929601d827197ca71b29574eaa85286bd755dd07328",
+    "source_input_manifest_digest": "15b59d917c7551526e151cd764b1e3b9bd265316fc6ddd67e9b8b7c5fb8e1f80",
     "source_candidate_count": 37416,
     "source_included_candidate_count": 14402,
-    "source_included_native_source_revision_count": 14433
+    "source_included_native_source_revision_count": 14428
   }
 }

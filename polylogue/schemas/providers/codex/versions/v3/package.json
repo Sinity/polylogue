@@ -1,34 +1,34 @@
 {
   "provider": "codex",
-  "version": "v2",
+  "version": "v3",
   "anchor_kind": "session_record_stream",
   "default_element_kind": "session_record_stream",
-  "first_seen": "2026-09-08T09:00:24.888637+00:00",
-  "last_seen": "2026-09-08T10:19:02.730160+00:00",
-  "bundle_scope_count": 7293,
-  "sample_count": 7351896,
-  "anchor_profile_family_id": "9c040d3475201c7a58838130dea732f17d075217a6faba1ca3ac589be5d78e6e",
+  "first_seen": "2026-09-08T14:31:53.459355+00:00",
+  "last_seen": "2026-09-08T14:31:53.459355+00:00",
+  "bundle_scope_count": 7300,
+  "sample_count": 7362854,
+  "anchor_profile_family_id": "f548ea4727a41f21d3936ca91772becf401f6d403e070ac39530cb99a3e91014",
   "bundle_scope_identities": [],
   "profile_family_ids": [],
   "elements": [
     {
       "element_kind": "session_record_stream",
       "schema_file": "session_record_stream.schema.json.gz",
-      "sample_count": 7351896,
-      "artifact_count": 7293,
+      "sample_count": 7362854,
+      "artifact_count": 7300,
       "supported": true,
-      "first_seen": "2026-09-08T09:00:24.888637+00:00",
-      "last_seen": "2026-09-08T10:19:02.730160+00:00",
-      "bundle_scope_count": 7293,
+      "first_seen": "2026-09-08T14:31:53.459355+00:00",
+      "last_seen": "2026-09-08T14:31:53.459355+00:00",
+      "bundle_scope_count": 7300,
       "bundle_scope_identities": [],
       "exact_structure_ids": [],
       "profile_family_ids": [],
       "profile_tokens": [],
-      "observed_artifact_count": 7293,
+      "observed_artifact_count": 7300,
       "observation_status": "current"
     }
   ],
   "orphan_adjunct_counts": {},
   "workload_profile_file": null,
-  "observation_status": "historical"
+  "observation_status": "current"
 }

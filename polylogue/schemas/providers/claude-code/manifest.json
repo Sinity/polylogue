@@ -1,12 +1,12 @@
 {
   "artifact_counts": {
     "agent_transcript": 1827463,
-    "coordinator_session_stream": 2993635,
+    "coordinator_session_stream": 2993604,
     "session_record_stream": 1
   },
   "cluster_count": 0,
   "clusters": [],
   "default_version": "v2",
-  "generated_at": "2026-09-08T09:00:55.450573+00:00",
+  "generated_at": "2026-09-08T14:53:36.145854+00:00",
   "provider": "claude-code"
 }
