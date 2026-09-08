@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
 from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
@@ -298,3 +300,19 @@ def test_reduced_cache_rows_survive_later_interruption_and_are_private(tmp_path:
     with SourceContributionCache(cache_path) as cache:
         assert cache.get(contribution.cache_key) == contribution
     assert cache_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_source_inputs_reject_sample_limited_calls(tmp_path: Path) -> None:
+    """Anti-vacuity: source inputs must never silently turn a full scan into a capped sample."""
+    from polylogue.schemas.operator.inference import infer_schema
+    from polylogue.schemas.operator.models import SchemaInferRequest
+
+    with pytest.raises(ValueError, match="complete inputs"):
+        infer_schema(
+            SchemaInferRequest(
+                provider="claude-code",
+                db_path=tmp_path / "index.db",
+                max_samples=2,
+                source_inputs=(SchemaSourceInput("claude-code", tmp_path),),
+            )
+        )

@@ -115,6 +115,8 @@ def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
     from polylogue.schemas.observation import PROVIDERS
     from polylogue.schemas.sampling import load_samples_from_db
 
+    if request.source_inputs and request.max_samples is not None:
+        raise ValueError("source schema inference requires complete inputs; --max-samples is unavailable")
     if request.source_inputs:
         result = generate_provider_schema_from_sources(
             request.provider,
