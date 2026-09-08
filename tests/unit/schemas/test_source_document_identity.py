@@ -56,3 +56,33 @@ def test_declared_document_ids_are_path_independent(tmp_path: Path) -> None:
             provider, payload, tmp_path / "b.json"
         )
         assert native_document_identity(provider, {}, tmp_path / "a.json") is None
+
+
+def test_source_inference_replaces_copied_chat_revision_and_keeps_subagent(tmp_path: Path) -> None:
+    """An unwired native identity helper counts all three captures as current."""
+    import json
+
+    from polylogue.schemas.generation.evidence import SchemaEvidence
+    from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
+
+    source_root = tmp_path / "sources"
+    source_root.mkdir()
+    common: JSONDocument = {
+        "sessionId": "process",
+        "kind": "main",
+        "startTime": "2026-01-01T00:00:00Z",
+        "messages": [{"id": "message", "type": "user", "content": "neutral"}],
+    }
+    for name, payload in (
+        ("original", {**common, "lastUpdated": "2026-01-01T00:01:00Z"}),
+        ("copy", {**common, "lastUpdated": "2026-01-01T00:02:00Z"}),
+        ("child", {**common, "kind": "subagent", "lastUpdated": "2026-01-01T00:03:00Z"}),
+    ):
+        (source_root / f"{name}.json").write_text(json.dumps(payload))
+    result = infer_sources(
+        (SchemaSourceInput("gemini-cli", source_root),), cache_path=tmp_path / "evidence.sqlite", max_workers=1
+    )
+    assert result.record_count == 2
+    evidence = SchemaEvidence.from_json(result.evidence_by_element["session_document"][0])
+    assert evidence.current_source_count == 2
+    assert evidence.historical_source_count == 1
