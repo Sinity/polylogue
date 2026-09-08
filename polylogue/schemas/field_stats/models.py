@@ -151,41 +151,51 @@ class FieldStats:
             if sequence[index + 1] >= sequence[index]:
                 self.ordered_increasing_pair_count += 1
 
-    def observe_equality_value(self, value: str, *, session_id: str | None = None) -> None:
+    def observe_equality_value(
+        self,
+        value: str,
+        *,
+        session_id: str | None = None,
+        digest: bytes | None = None,
+        session_token: str | None = None,
+    ) -> None:
         """Retain a bounded, private equality witness without retaining prose."""
         if value.lower() in _SAFE_STRUCTURAL_VALUES:
             self.safe_observed_values[value] += 1
         if "/" in value:
             self.slash_value_count += 1
-        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
-        if digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
+        value_digest = (digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()).hex()
+        if value_digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
             largest = max(self.equality_hash_counts)
-            if digest >= largest:
+            if value_digest >= largest:
                 self.truncated_evidence["equality_hashes"] += 1
                 return
             del self.equality_hash_counts[largest]
             self.equality_session_tokens.pop(largest, None)
             self.truncated_evidence["equality_hashes"] += 1
-        self.equality_hash_counts[digest] += 1
+        self.equality_hash_counts[value_digest] += 1
         if session_id is not None:
-            token = hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
-            tokens = self.equality_session_tokens.setdefault(digest, set())
+            token = session_token or hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+            tokens = self.equality_session_tokens.setdefault(value_digest, set())
             if token in tokens or len(tokens) < SESSION_EVIDENCE_CAP:
                 tokens.add(token)
             else:
                 self.truncated_evidence["equality_sessions"] += 1
 
-    def observe_object_key(self, value: str) -> None:
+    def observe_object_key(self, value: str, *, digest: bytes | None = None) -> None:
         """Retain a bounded private witness for one object key."""
-        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
-        if digest not in self.object_key_hash_counts and len(self.object_key_hash_counts) >= EQUALITY_EVIDENCE_CAP:
+        value_digest = (digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()).hex()
+        if (
+            value_digest not in self.object_key_hash_counts
+            and len(self.object_key_hash_counts) >= EQUALITY_EVIDENCE_CAP
+        ):
             largest = max(self.object_key_hash_counts)
-            if digest >= largest:
+            if value_digest >= largest:
                 self.truncated_evidence["object_key_hashes"] += 1
                 return
             del self.object_key_hash_counts[largest]
             self.truncated_evidence["object_key_hashes"] += 1
-        self.object_key_hash_counts[digest] += 1
+        self.object_key_hash_counts[value_digest] += 1
 
     def object_key_overlap(self, target: FieldStats) -> tuple[int, int, int] | None:
         """Return overlap counts using the target's retained hash domain."""
