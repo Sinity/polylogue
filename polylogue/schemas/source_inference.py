@@ -16,7 +16,7 @@ from collections import Counter
 from collections.abc import Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
@@ -249,6 +249,24 @@ def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
         return True
     except OSError:
         return False
+
+
+def _candidate_native_identity(candidate: _SourceCandidate) -> str:
+    """Read only JSONL record headers to scope revision selection by session."""
+    if candidate.path.suffix.lower() not in {".jsonl", ".ndjson"}:
+        return candidate.logical_source_id
+    try:
+        with candidate.path.open("rb") as handle:
+            for _index, line in zip(range(32), handle, strict=False):
+                if not line.strip() or len(line) > 1024 * 1024:
+                    continue
+                value = loads(line)
+                native = _native_source_id(Provider.from_string(candidate.provider), value, "")
+                if native:
+                    return native
+    except (OSError, JSONDecodeError):
+        pass
+    return candidate.logical_source_id
 
 
 def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
@@ -655,26 +673,29 @@ def infer_sources(
     # Equal immutable revisions are re-acquisitions of the same source
     # material. Select one deterministic physical representative before any
     # denominator-bearing evidence is collected.
-    selected_by_revision: dict[str, _SourceCandidate] = {}
+    selected_by_revision: dict[tuple[str, str], _SourceCandidate] = {}
     for candidate in discovered:
         try:
             digest, _byte_count = _stable_file_digest(candidate.path)
         except (OSError, SourceInferenceError):
             continue
-        previous = selected_by_revision.get(digest)
+        candidate = replace(candidate, logical_source_id=_candidate_native_identity(candidate))
+        key = candidate.logical_source_id, digest
+        previous = selected_by_revision.get(key)
         if previous is None or (candidate.logical_source_id, str(candidate.path)) < (
             previous.logical_source_id,
             str(previous.path),
         ):
-            selected_by_revision[digest] = candidate
+            selected_by_revision[key] = candidate
     candidates = tuple(
         candidate
-        for _digest, candidate in sorted(selected_by_revision.items(), key=lambda item: item[1].logical_source_id)
+        for _identity, candidate in sorted(selected_by_revision.items(), key=lambda item: item[1].logical_source_id)
     )
     maximal: list[_SourceCandidate] = []
     for candidate in candidates:
         if any(
-            candidate.provider == other.provider and _is_strict_file_prefix(candidate.path, other.path)
+            candidate.logical_source_id == other.logical_source_id
+            and _is_strict_file_prefix(candidate.path, other.path)
             for other in candidates
             if other is not candidate
         ):
