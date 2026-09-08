@@ -23,7 +23,12 @@ from polylogue.core.provider_identity import canonical_schema_provider as _canon
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
 from polylogue.paths import data_home
-from polylogue.schemas.generation.dynamic_keys import observed_structure_schema, structure_schema_digest
+from polylogue.schemas.generation.dynamic_keys import (
+    legacy_structure_schema_digest,
+    observed_structure_schema,
+    retain_exact_structure_witnesses,
+    structure_schema_digest,
+)
 from polylogue.schemas.observation import (
     derive_bundle_scope,
     extract_schema_units_from_payload,
@@ -93,8 +98,16 @@ def _is_source_structure_witness(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
-def _structure_witnesses(samples: Sequence[object]) -> tuple[str, ...]:
-    return tuple(sorted({structure_schema_digest(observed_structure_schema(sample)) for sample in samples}))
+def _structure_witnesses(samples: Sequence[object]) -> tuple[tuple[str, ...], ...]:
+    """Return canonical and shipped-order aliases for every sampled record."""
+
+    aliases: list[tuple[str, ...]] = []
+    for sample in samples:
+        schema = observed_structure_schema(sample)
+        canonical = structure_schema_digest(schema)
+        legacy = legacy_structure_schema_digest(schema)
+        aliases.append((canonical,) if canonical == legacy else (canonical, legacy))
+    return tuple(aliases)
 
 
 def _int_value(value: object) -> int:
@@ -730,6 +743,53 @@ class SchemaRegistry:
                 merged[key] = value
         return merged
 
+    @staticmethod
+    def _retain_element_structure_witnesses(
+        package: SchemaVersionPackage,
+        *,
+        schemas: ElementSchemaMap,
+        merged: ElementSchemaMap,
+        prior: SchemaVersionPackage | None,
+        prior_schemas: ElementSchemaMap,
+    ) -> tuple[SchemaVersionPackage, ElementSchemaMap]:
+        """Keep package manifests and schema extensions on one witness set."""
+
+        prior_elements = {element.element_kind: element for element in prior.elements} if prior is not None else {}
+        elements: list[SchemaElementManifest] = []
+        for element in package.elements:
+            kind = element.element_kind
+            incoming_schema = schemas.get(kind, {})
+            previous_schema = prior_schemas.get(kind, {})
+            previous_element = prior_elements.get(kind)
+            current_ids = [
+                *element.exact_structure_ids,
+                *_string_list(incoming_schema.get("x-polylogue-exact-structure-ids", [])),
+            ]
+            incoming_omitted_count = max(
+                element.omitted_current_structure_witness_count,
+                _int_value(incoming_schema.get("x-polylogue-omitted-current-structure-witness-count", 0)),
+            )
+            prior_ids = [
+                *(previous_element.exact_structure_ids if previous_element is not None else ()),
+                *_string_list(previous_schema.get("x-polylogue-exact-structure-ids", [])),
+            ]
+            retained = retain_exact_structure_witnesses(prior_ids, current_ids)
+            omitted_count = incoming_omitted_count + retained.omitted_current_witness_count
+            has_witness_metadata = bool(current_ids or prior_ids)
+            elements.append(
+                dataclasses.replace(
+                    element,
+                    exact_structure_ids=list(retained.exact_structure_ids),
+                    omitted_current_structure_witness_count=omitted_count,
+                )
+            )
+            if has_witness_metadata and kind in merged:
+                synchronized = dict(merged[kind])
+                synchronized["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
+                synchronized["x-polylogue-omitted-current-structure-witness-count"] = omitted_count
+                merged[kind] = synchronized
+        return dataclasses.replace(package, elements=elements), merged
+
     def replace_provider_packages(
         self,
         provider: str,
@@ -783,7 +843,13 @@ class SchemaRegistry:
                             if element.element_kind in prior_schemas:
                                 merged[element.element_kind] = prior_schemas[element.element_kind]
                             elements.append(dataclasses.replace(element, observation_status="historical"))
-                package = dataclasses.replace(package, elements=elements)
+                package, merged = self._retain_element_structure_witnesses(
+                    dataclasses.replace(package, elements=elements),
+                    schemas=schemas,
+                    merged=merged,
+                    prior=prior,
+                    prior_schemas=prior_schemas,
+                )
                 profile = (
                     package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
                 )
@@ -986,7 +1052,7 @@ class SchemaRegistry:
     ) -> _ResolutionCandidate | None:
         candidates: list[_ResolutionCandidate] = []
         observed_profile_tokens = set(observation.profile_tokens)
-        source_witnesses: tuple[str, ...] = ()
+        source_witnesses: tuple[tuple[str, ...], ...] = ()
         if any(
             _is_source_structure_witness(structure_id)
             for package in packages
@@ -1010,16 +1076,16 @@ class SchemaRegistry:
                         observation_index=observation_index,
                     )
                 )
-            source_witness = next(
-                (witness for witness in source_witnesses if witness in element.exact_structure_ids),
-                None,
+            source_matches = tuple(
+                next((witness for witness in aliases if witness in element.exact_structure_ids), None)
+                for aliases in source_witnesses
             )
-            if source_witness is not None:
+            if source_witnesses and all(source_matches):
                 candidates.append(
                     _ResolutionCandidate(
                         reason="exact_structure",
                         resolved=resolved,
-                        exact_structure_id=source_witness,
+                        exact_structure_id=source_matches[0],
                         bundle_scope=observation.bundle_scope,
                         observation_index=observation_index,
                     )

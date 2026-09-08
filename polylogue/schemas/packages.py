@@ -56,6 +56,7 @@ class SchemaElementManifest:
     bundle_scope_count: int = 0
     bundle_scope_identities: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
+    omitted_current_structure_witness_count: int = 0
     profile_family_ids: list[str] = field(default_factory=list)
     profile_tokens: list[str] = field(default_factory=list)
     observed_artifact_count: int = 0
@@ -74,6 +75,7 @@ class SchemaElementManifest:
                 "bundle_scope_count": self.bundle_scope_count,
                 "bundle_scope_identities": self.bundle_scope_identities,
                 "exact_structure_ids": self.exact_structure_ids,
+                "omitted_current_structure_witness_count": self.omitted_current_structure_witness_count,
                 "profile_family_ids": self.profile_family_ids,
                 "profile_tokens": self.profile_tokens,
                 "observed_artifact_count": self.observed_artifact_count,
@@ -94,6 +96,7 @@ class SchemaElementManifest:
             bundle_scope_count=_int_value(data.get("bundle_scope_count")),
             bundle_scope_identities=_string_list(data.get("bundle_scope_identities")),
             exact_structure_ids=_string_list(data.get("exact_structure_ids")),
+            omitted_current_structure_witness_count=_int_value(data.get("omitted_current_structure_witness_count")),
             profile_family_ids=_string_list(data.get("profile_family_ids")),
             profile_tokens=_string_list(data.get("profile_tokens")),
             observed_artifact_count=_int_value(data.get("observed_artifact_count")),

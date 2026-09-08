@@ -17,6 +17,7 @@ from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.schemas import source_inference as source
 from polylogue.schemas.field_stats import detection
+from polylogue.schemas.generation.dynamic_keys import legacy_structure_schema_digest, observed_structure_schema
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.source_cache import CachedContribution
 from polylogue.schemas.source_recipe import SourceEvidenceRecipe
@@ -740,7 +741,7 @@ def test_implementation_provenance_does_not_invalidate_semantically_unchanged_ev
     ("recipe", "hits", "misses"),
     [
         (SourceEvidenceRecipe(statistics_revision=2), {"structure": 1}, {"statistics": 1}),
-        (SourceEvidenceRecipe(structure_revision=2), {"statistics": 1}, {"structure": 1}),
+        (SourceEvidenceRecipe(structure_revision=3), {"statistics": 1}, {"structure": 1}),
         (SourceEvidenceRecipe(admission_revision=2), {}, {"structure": 1, "statistics": 1}),
         (SourceEvidenceRecipe(identity_revision=3), {}, {"structure": 1, "statistics": 1}),
     ],
@@ -764,6 +765,53 @@ def test_semantic_revision_invalidates_only_the_dependent_phase(
     assert upgraded.cache_phase_hits == hits
     assert upgraded.cache_phase_misses == misses
     assert upgraded.evidence_by_element == cold.evidence_by_element
+
+
+def test_structure_recipe_upgrade_replaces_old_shape_hashes_while_reusing_statistics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+) -> None:
+    """A warm statistics row must receive fresh canonical structure evidence."""
+    root = tmp_path / "inputs"
+    root.mkdir()
+    write_source(root, "session", extra={"z": 1, "a": 2})
+    cache = tmp_path / "cache.sqlite"
+    legacy = run(root, cache)
+    stale_hash = legacy_structure_schema_digest(
+        observed_structure_schema(
+            {
+                "type": "user",
+                "sessionId": "session",
+                "message": {"role": "user", "content": "synthetic"},
+                "z": 1,
+                "a": 2,
+            }
+        )
+    )
+    assert stale_hash not in result_evidence(legacy).shape_hashes
+    with source.SourceContributionCache(cache) as source_cache:
+        for cached in source_cache.iter_contributions():
+            address = cached.metadata.get("address")
+            if not isinstance(address, dict) or address.get("phase") != "statistics":
+                continue
+            stale = json.loads(json.dumps(cached.evidence))
+            rows = stale["contributions"]
+            assert isinstance(rows, list)
+            for row in rows:
+                assert isinstance(row, dict)
+                elements = row["elements"]
+                assert isinstance(elements, dict)
+                for payload in elements.values():
+                    assert isinstance(payload, dict)
+                    payload["shape_hashes"] = [stale_hash]
+            source_cache.put(replace(cached, evidence=stale))
+
+    monkeypatch.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(structure_revision=3))
+    upgraded = run(root, cache)
+    cold = run(root, tmp_path / "cold.sqlite")
+    assert upgraded.cache_phase_hits == {"statistics": 1}
+    assert upgraded.cache_phase_misses == {"structure": 1}
+    assert upgraded.evidence_by_element == cold.evidence_by_element
+    assert stale_hash not in result_evidence(upgraded).shape_hashes
 
 
 def test_key_limit_upgrade_recovers_collapsed_fields_and_reuses_other_structure(
