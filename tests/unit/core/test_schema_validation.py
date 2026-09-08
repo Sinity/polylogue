@@ -379,7 +379,7 @@ def test_looks_dynamic_key_matches_expected_identifier_patterns() -> None:
     assert validator._looks_dynamic_key("<source>\n/path</source>")
     assert not validator._looks_dynamic_key("title")
     assert not validator._looks_dynamic_key("message_text")
-    assert not validator._looks_dynamic_key("text/html")
+    assert validator._looks_dynamic_key("text/html")
 
 
 def test_available_providers(mock_schema_dir: Path) -> None:
