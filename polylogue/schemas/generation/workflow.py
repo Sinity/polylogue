@@ -167,12 +167,17 @@ def build_provider_bundle_from_sources(
         if preferred_anchor in emitted
         else max(emitted, key=lambda kind: (_artifact_priority(kind), kind))
     )
-    family = hash_payload(
-        {"anchor": anchor, "structure": canonicalize_structure_schema(evidence_by_kind[anchor].structure)}
-    )
-    version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
+    anchor_structure = evidence_by_kind[anchor].structure
+    canonical_family = hash_payload({"anchor": anchor, "structure": canonicalize_structure_schema(anchor_structure)})
+    legacy_family = hash_payload({"anchor": anchor, "structure": anchor_structure})
+    version = allocate_package_versions(
+        prior_catalog,
+        [(anchor, canonical_family)],
+        legacy_family_ids={(anchor, canonical_family): legacy_family},
+    )[0]
     now = datetime.now(tz=timezone.utc).isoformat()
     prior = next((item for item in prior_catalog.packages if item.version == version), None) if prior_catalog else None
+    family = prior.anchor_profile_family_id if prior is not None else canonical_family
     first_seen = prior.first_seen if prior is not None else now
     retained_witnesses = {}
     for kind, evidence in evidence_by_kind.items():
@@ -182,7 +187,12 @@ def build_provider_bundle_from_sources(
         )
         retained_witnesses[kind] = retained
         emitted[kind]["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
-        emitted[kind]["x-polylogue-omitted-current-structure-witness-count"] = retained.omitted_current_witness_count
+        emitted[kind]["x-polylogue-publication-omitted-structure-witness-count"] = (
+            retained.omitted_current_witness_count
+        )
+        emitted[kind]["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] = (
+            evidence.unretained_shape_observation_lower_bound
+        )
     counts = {kind: evidence.current_record_count for kind, evidence in evidence_by_kind.items()}
     elements = [
         SchemaElementManifest(
@@ -195,7 +205,10 @@ def build_provider_bundle_from_sources(
             first_seen=first_seen,
             last_seen=now,
             exact_structure_ids=list(retained_witnesses[kind].exact_structure_ids),
-            omitted_current_structure_witness_count=retained_witnesses[kind].omitted_current_witness_count,
+            publication_omitted_structure_witness_count=retained_witnesses[kind].omitted_current_witness_count,
+            source_evidence_unretained_shape_observation_lower_bound=(
+                evidence.unretained_shape_observation_lower_bound
+            ),
         )
         for kind, evidence in sorted(evidence_by_kind.items())
     ]
@@ -209,6 +222,7 @@ def build_provider_bundle_from_sources(
         bundle_scope_count=evidence_by_kind[anchor].current_source_count,
         sample_count=sum(counts.values()),
         anchor_profile_family_id=family,
+        canonical_anchor_profile_family_id=canonical_family if family != canonical_family else None,
         elements=elements,
     )
     catalog = SchemaPackageCatalog(

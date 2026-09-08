@@ -56,7 +56,9 @@ class SchemaElementManifest:
     bundle_scope_count: int = 0
     bundle_scope_identities: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
-    omitted_current_structure_witness_count: int = 0
+    publication_omitted_structure_witness_count: int = 0
+    # Collection/reduction loss includes current and historical observations.
+    source_evidence_unretained_shape_observation_lower_bound: int = 0
     profile_family_ids: list[str] = field(default_factory=list)
     profile_tokens: list[str] = field(default_factory=list)
     observed_artifact_count: int = 0
@@ -75,7 +77,10 @@ class SchemaElementManifest:
                 "bundle_scope_count": self.bundle_scope_count,
                 "bundle_scope_identities": self.bundle_scope_identities,
                 "exact_structure_ids": self.exact_structure_ids,
-                "omitted_current_structure_witness_count": self.omitted_current_structure_witness_count,
+                "publication_omitted_structure_witness_count": self.publication_omitted_structure_witness_count,
+                "source_evidence_unretained_shape_observation_lower_bound": (
+                    self.source_evidence_unretained_shape_observation_lower_bound
+                ),
                 "profile_family_ids": self.profile_family_ids,
                 "profile_tokens": self.profile_tokens,
                 "observed_artifact_count": self.observed_artifact_count,
@@ -96,7 +101,12 @@ class SchemaElementManifest:
             bundle_scope_count=_int_value(data.get("bundle_scope_count")),
             bundle_scope_identities=_string_list(data.get("bundle_scope_identities")),
             exact_structure_ids=_string_list(data.get("exact_structure_ids")),
-            omitted_current_structure_witness_count=_int_value(data.get("omitted_current_structure_witness_count")),
+            publication_omitted_structure_witness_count=_int_value(
+                data.get("publication_omitted_structure_witness_count")
+            ),
+            source_evidence_unretained_shape_observation_lower_bound=_int_value(
+                data.get("source_evidence_unretained_shape_observation_lower_bound")
+            ),
             profile_family_ids=_string_list(data.get("profile_family_ids")),
             profile_tokens=_string_list(data.get("profile_tokens")),
             observed_artifact_count=_int_value(data.get("observed_artifact_count")),
@@ -121,9 +131,10 @@ class SchemaVersionPackage:
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
     workload_profile_file: str | None = None
     observation_status: str = "current"
+    canonical_anchor_profile_family_id: str | None = None
 
     def to_dict(self) -> JSONDocument:
-        return json_document(
+        data = json_document(
             {
                 "provider": _provider_value(self.provider),
                 "version": self.version,
@@ -142,6 +153,9 @@ class SchemaVersionPackage:
                 "observation_status": self.observation_status,
             }
         )
+        if self.canonical_anchor_profile_family_id is not None:
+            data["canonical_anchor_profile_family_id"] = self.canonical_anchor_profile_family_id
+        return data
 
     @classmethod
     def from_dict(cls, data: JSONDocument) -> SchemaVersionPackage:
@@ -161,6 +175,7 @@ class SchemaVersionPackage:
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
             workload_profile_file=_string_or_none(data.get("workload_profile_file")),
             observation_status=str(data.get("observation_status", "unspecified")),
+            canonical_anchor_profile_family_id=_string_or_none(data.get("canonical_anchor_profile_family_id")),
         )
 
     def element(self, element_kind: str | None = None) -> SchemaElementManifest | None:
@@ -192,6 +207,18 @@ class SchemaPackageCatalog:
     def __post_init__(self) -> None:
         if not self.generated_at:
             self.generated_at = datetime.now(tz=timezone.utc).isoformat()
+
+    def family_versions(self) -> dict[tuple[str, str], str]:
+        """Each primary or canonical family identifier has one version owner."""
+        owners: dict[tuple[str, str], str] = {}
+        for package in self.packages:
+            for identifier in (package.anchor_profile_family_id, package.canonical_anchor_profile_family_id):
+                if not identifier:
+                    continue
+                previous = owners.setdefault((package.anchor_kind, identifier), package.version)
+                if previous != package.version:
+                    raise ValueError(f"Schema family has conflicting version labels: {previous}, {package.version}")
+        return owners
 
     def to_dict(self) -> JSONDocument:
         data = json_document(
