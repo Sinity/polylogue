@@ -15,6 +15,7 @@ import json
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -24,6 +25,7 @@ from polylogue.core.enums import Provider
 from polylogue.schemas import ValidationResult
 from polylogue.schemas.drift_sentinel import FIELD_CHANGED, NEW_FIELD, UNSEEN_SHAPE
 from polylogue.schemas.packages import SchemaResolution
+from polylogue.schemas.validator import PayloadValidation, SchemaValidator
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -99,15 +101,26 @@ def _rig_ingest(
                 drift_warnings=list(drift_warnings),
             )
 
-    def _fake_for_payload(
+    def _fake_validate_payload(
         provider: str | Provider,
         payload: JSONValue,
         *,
         source_path: str | None = None,
         schema_resolution: SchemaResolution | None = None,
+        schema_resolution_is_explicit: bool = True,
         strict: bool = True,
-    ) -> _FakeValidator:
-        return _FakeValidator()
+        max_samples: int | None = None,
+    ) -> PayloadValidation:
+        del provider, source_path, strict, max_samples
+        validator = _FakeValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample, include_drift=True) for sample in samples),
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+        )
 
     def _fake_parse_payload(
         provider: str | Provider,
@@ -130,7 +143,7 @@ def _rig_ingest(
             )
         ]
 
-    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.for_payload", _fake_for_payload)
+    monkeypatch.setattr("polylogue.schemas.validator.SchemaValidator.validate_payload", _fake_validate_payload)
     monkeypatch.setattr("polylogue.sources.dispatch.parse_payload", _fake_parse_payload)
 
 

@@ -216,6 +216,30 @@ class TestValidateRecordSyncDeterminism:
         out_a.counts_delta["validated"] = 999
         assert out_b.counts_delta.get("validated", 0) != 999
 
+    def test_current_payload_uses_one_schema_validation_pass(
+        self, blob_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The runtime consumes schema-selection verdicts instead of revalidating them."""
+        from polylogue.schemas.validator import SchemaValidator
+
+        payload = _claude_payload("single-pass")
+        digest = _write_blob(blob_root, payload)
+        record = _make_record(digest, payload=payload)
+        calls = 0
+        original_validate = SchemaValidator.validate
+
+        def count_validate(validator: SchemaValidator, sample: object, *, include_drift: bool | None = None) -> object:
+            nonlocal calls
+            calls += 1
+            return original_validate(validator, sample, include_drift=include_drift)
+
+        monkeypatch.setattr(SchemaValidator, "validate", count_validate)
+
+        outcome = _validate_record_sync(record, ValidationMode.STRICT, str(blob_root))
+
+        assert outcome.validation_status is ValidationStatus.PASSED
+        assert calls == 1
+
     @pytest.mark.asyncio
     async def test_evaluate_retained_wal_sqlite_keeps_blob_namespace_pristine(
         self, blob_root: Path, tmp_path: Path

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
 
 try:
@@ -300,28 +300,100 @@ class SchemaValidator:
         *,
         source_path: str | None = None,
         schema_resolution: SchemaResolution | None = None,
+        schema_resolution_is_explicit: bool = True,
         strict: bool = True,
     ) -> SchemaValidator:
+        """Select the validator that accepts a payload."""
+        return cls.validate_payload(
+            provider,
+            payload,
+            source_path=source_path,
+            schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+            strict=strict,
+        ).validator
+
+    @classmethod
+    def validate_payload(
+        cls,
+        provider: str | Provider,
+        payload: object,
+        *,
+        source_path: str | None = None,
+        schema_resolution: SchemaResolution | None = None,
+        schema_resolution_is_explicit: bool = True,
+        strict: bool = True,
+        max_samples: int | None = None,
+    ) -> PayloadValidation:
+        """Select a schema and validate each payload sample for one operation."""
+        selected: PayloadValidation | None = None
+        probed: dict[int, PayloadValidation] = {}
+
         def schema_accepts(schema: JSONDocument) -> bool:
+            nonlocal selected
             probe = cls(schema, strict=strict, provider=_canonical_provider(provider))
-            samples = probe.validation_samples(payload)
-            return not samples or all(probe.validate(sample, include_drift=False).is_valid for sample in samples)
+            samples = tuple(probe.validation_samples(payload, max_samples=max_samples))
+            results = tuple(probe.validate(sample, include_drift=True) for sample in samples)
+            candidate = PayloadValidation(
+                validator=probe,
+                samples=samples,
+                results=results,
+                schema_resolution=schema_resolution,
+                schema_resolution_is_explicit=schema_resolution_is_explicit,
+            )
+            probed[id(schema)] = candidate
+            if samples and not all(result.is_valid for result in results):
+                return False
+            selected = candidate
+            return True
 
         canonical, schema, base_key = resolve_payload_schema(
             provider,
             payload,
             source_path=source_path,
             schema_resolution=schema_resolution,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
             registry_cls=SchemaRegistry,
             schema_accepts=schema_accepts,
         )
+        candidate = selected or probed.get(id(schema))
+        if candidate is not None:
+            if schema_resolution is not None:
+                return replace(
+                    candidate,
+                    schema_resolution=replace(
+                        schema_resolution,
+                        provider=str(canonical),
+                        package_version=base_key[1],
+                        element_kind=base_key[2],
+                    ),
+                )
+            return candidate
+
         key = (*base_key, strict)
-        cached = cls._cache.get(key)
-        if cached is not None:
-            return cached
-        instance = cls(schema, strict=strict, provider=canonical)
-        cls._cache[key] = instance
-        return instance
+        validator = cls._cache.get(key)
+        if validator is None:
+            validator = cls(schema, strict=strict, provider=canonical)
+            cls._cache[key] = validator
+        samples = tuple(validator.validation_samples(payload, max_samples=max_samples))
+        results = tuple(validator.validate(sample, include_drift=True) for sample in samples)
+        resolved = (
+            replace(
+                schema_resolution,
+                provider=str(canonical),
+                package_version=base_key[1],
+                element_kind=base_key[2],
+            )
+            if schema_resolution is not None
+            else None
+        )
+        return PayloadValidation(
+            validator=validator,
+            samples=samples,
+            results=results,
+            schema_resolution=resolved,
+            schema_resolution_is_explicit=schema_resolution_is_explicit,
+        )
 
     @classmethod
     def available_providers(cls) -> list[str]:
@@ -353,6 +425,21 @@ class SchemaValidator:
         return looks_dynamic_key(key)
 
 
+@dataclass(frozen=True, slots=True)
+class PayloadValidation:
+    """Schema selection and sample verdicts for one payload operation."""
+
+    validator: SchemaValidator
+    samples: tuple[object, ...]
+    results: tuple[ValidationResult, ...]
+    schema_resolution: SchemaResolution | None
+    schema_resolution_is_explicit: bool
+
+    @property
+    def sample_results(self) -> tuple[tuple[object, ValidationResult], ...]:
+        return tuple(zip(self.samples, self.results, strict=True))
+
+
 def validate_provider_export(
     data: object,
     provider: str | Provider,
@@ -364,6 +451,7 @@ def validate_provider_export(
 
 
 __all__ = [
+    "PayloadValidation",
     "SchemaValidator",
     "ValidationResult",
     "collect_validation_samples",

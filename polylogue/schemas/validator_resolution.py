@@ -138,6 +138,7 @@ def resolve_payload_schema(
     *,
     source_path: str | None = None,
     schema_resolution: SchemaResolution | None = None,
+    schema_resolution_is_explicit: bool = True,
     registry_cls: type[SchemaRegistry] = SchemaRegistry,
     schema_accepts: Callable[[JSONDocument], bool] | None = None,
 ) -> tuple[Provider, JSONDocument, tuple[str, str, str]]:
@@ -173,7 +174,11 @@ def resolve_payload_schema(
         package_version=package_version,
         element_kind=element_kind,
     )
-    if schema_resolution is not None or schema_accepts is None or schema_accepts(schema):
+    if (
+        (schema_resolution is not None and schema_resolution_is_explicit)
+        or schema_accepts is None
+        or schema_accepts(schema)
+    ):
         return canonical, schema, (str(canonical), package_version, element_kind)
 
     for historical_version, historical_schema in _historical_schemas(
