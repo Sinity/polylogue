@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import (
@@ -115,8 +116,8 @@ def test_write_and_replace_provider_packages_retains_historical_versions(tmp_pat
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     old_catalog = _catalog(_package("v1"))
     new_catalog = _catalog(_package("v2"))
-    old_schema = {"type": "object", "properties": {"legacy": {"type": "string"}}}
-    new_schema = {"type": "object", "properties": {"current": {"type": "integer"}}}
+    old_schema: JSONDocument = {"type": "object", "properties": {"legacy": {"type": "string"}}}
+    new_schema: JSONDocument = {"type": "object", "properties": {"current": {"type": "integer"}}}
 
     registry.replace_provider_packages(
         "chatgpt",
