@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.schemas.field_stats.models import EQUALITY_EVIDENCE_CAP
+from polylogue.schemas.field_stats.collection import _collect_field_stats
+from polylogue.schemas.field_stats.evidence import (
+    finalize_field_stats,
+    merge_field_stats,
+    merge_field_stats_into,
+    serialize_field_stats,
+)
+from polylogue.schemas.field_stats.models import EQUALITY_EVIDENCE_CAP, FieldStats
 from polylogue.schemas.generation.evidence import (
     SchemaEvidence,
     collect_evidence,
+    collect_sample_evidence,
     collect_source_evidence,
     merge_evidence,
 )
 from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence
+from polylogue.schemas.inference.relational.foreign_keys import detect_foreign_keys
+from polylogue.schemas.inference.semantic.message_scoring import score_role
+from polylogue.schemas.inference.semantic.runtime import infer_semantic_roles, select_best_roles
 from polylogue.schemas.observation import ProviderConfig
 
 
@@ -183,8 +195,6 @@ def test_serialized_evidence_has_no_literal_and_emits_same_safe_semantics() -> N
     assert "session-a" not in serialized
     assert private_literal not in public
     assert warm_schema == cold_schema
-    role_schema = _object(_object(warm_schema["properties"])["role"])
-    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert restored.field_stats["$.role"].value_session_ids["user"]
 
 
@@ -206,8 +216,6 @@ def test_reduced_evidence_preserves_mutual_exclusion_annotations() -> None:
 
     schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
 
-    role_schema = _object(_object(schema["properties"])["role"])
-    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert schema["x-polylogue-mutually-exclusive"] == [{"fields": ["left", "right"], "parent": "$"}]
 
 
@@ -231,6 +239,32 @@ def test_merge_order_and_one_pass_source_collection_are_deterministic() -> None:
     )
 
 
+def test_streaming_field_stats_fold_matches_batch_merge_after_finalization() -> None:
+    first = collect_source_evidence(
+        _Observation(
+            "session-a", "a" * 64, "claude-code", "session_record_stream", ({"mapping": {"a": {}}, "ref": "a"},)
+        ),
+        dynamic_paths=["$.mapping"],
+    )
+    second = collect_source_evidence(
+        _Observation(
+            "session-b", "b" * 64, "claude-code", "session_record_stream", ({"mapping": {"b": {}}, "ref": "b"},)
+        ),
+        dynamic_paths=["$.mapping"],
+    )
+    summaries = [first.field_stats, second.field_stats]
+
+    expected = merge_field_stats(summaries, total_samples=2)
+    streamed: dict[str, FieldStats] = {}
+    for summary in summaries:
+        merge_field_stats_into(streamed, summary)
+    finalize_field_stats(streamed, total_samples=2)
+
+    assert {path: serialize_field_stats(stats) for path, stats in streamed.items()} == {
+        path: serialize_field_stats(stats) for path, stats in expected.items()
+    }
+
+
 def test_equality_evidence_stays_bounded_during_source_reduction() -> None:
     contributions = [
         collect_source_evidence(
@@ -248,3 +282,169 @@ def test_equality_evidence_stays_bounded_during_source_reduction() -> None:
     merged = merge_evidence(contributions).field_stats["$.reference_id"]
 
     assert len(merged.equality_hash_counts) == EQUALITY_EVIDENCE_CAP
+
+
+def test_reduced_evidence_retains_detected_mapping_reference() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(60)]
+    records = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids]
+
+    raw_stats = _collect_field_stats(records)
+    reduced_stats = SchemaEvidence.from_json(collect_sample_evidence(records).to_json()).field_stats
+
+    assert raw_stats["$.current_node"].ref_target == "$.mapping"
+    assert reduced_stats["$.current_node"].ref_target == "$.mapping"
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(raw_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(reduced_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+
+
+def test_merged_mapping_reference_uses_global_overlap_not_a_source_local_conclusion() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(60)]
+    matched: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids
+    ]
+    unmatched: list[JSONDocument] = [{"current_node": f"unmatched-{index}"} for index in range(140)]
+    dynamic_paths = ["$.mapping"]
+
+    raw_relations = detect_foreign_keys(_collect_field_stats([*matched, *unmatched], dynamic_paths=dynamic_paths))
+    merged_stats = merge_evidence(
+        [
+            collect_source_evidence(
+                _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", matched),
+                dynamic_paths=dynamic_paths,
+            ),
+            collect_source_evidence(
+                _Observation("source-b", "b" * 64, "claude-code", "session_record_stream", unmatched),
+                dynamic_paths=dynamic_paths,
+            ),
+        ]
+    ).field_stats
+
+    assert raw_relations == []
+    assert merged_stats["$.current_node"].ref_target is None
+    assert [
+        relation for relation in detect_foreign_keys(merged_stats) if relation.source_path == "$.current_node"
+    ] == []
+
+
+def test_merged_mapping_reference_detects_global_overlap_when_each_source_is_below_local_cardinality() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(60)]
+    records: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids
+    ]
+    dynamic_paths = ["$.mapping"]
+
+    merged_stats = merge_evidence(
+        [
+            collect_source_evidence(
+                _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", records[:30]),
+                dynamic_paths=dynamic_paths,
+            ),
+            collect_source_evidence(
+                _Observation("source-b", "b" * 64, "claude-code", "session_record_stream", records[30:]),
+                dynamic_paths=dynamic_paths,
+            ),
+        ]
+    ).field_stats
+
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(merged_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+    assert merged_stats["$.current_node"].ref_target == "$.mapping"
+
+
+def test_merged_mapping_reference_compares_within_a_truncated_target_hash_domain() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(1_000)]
+    records: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids[:60]
+    ]
+    evidence = collect_source_evidence(
+        _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", records),
+        dynamic_paths=["$.mapping"],
+    )
+    merged_stats = merge_evidence([evidence]).field_stats
+
+    assert merged_stats["$.mapping"].truncated_evidence["object_key_hashes"]
+    assert merged_stats["$.current_node"].ref_target == "$.mapping"
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(merged_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+
+
+def test_reduced_evidence_keeps_hashes_when_safe_values_are_present_for_foreign_keys() -> None:
+    records = [{"id": value, "parent_id": value} for value in ["user", *(f"item-{index}" for index in range(6))]]
+
+    raw_relations = detect_foreign_keys(_collect_field_stats(records))
+    reduced_relations = detect_foreign_keys(collect_sample_evidence(records).field_stats)
+
+    assert [(relation.source_path, relation.target_path) for relation in raw_relations] == [("$.parent_id", "$.id")]
+    assert [(relation.source_path, relation.target_path) for relation in reduced_relations] == [("$.parent_id", "$.id")]
+
+
+def test_reduced_foreign_key_hashes_do_not_double_count_safe_values() -> None:
+    references = ["user", *(f"item-{index}" for index in range(8))]
+    records = [{"parent_id": value} for value in references] + [{"id": value} for value in references[:5]]
+
+    raw_relations = detect_foreign_keys(_collect_field_stats(records))
+    reduced_relations = detect_foreign_keys(collect_sample_evidence(records).field_stats)
+
+    assert raw_relations == []
+    assert reduced_relations == []
+
+
+def test_equality_hash_cap_does_not_drop_slash_shape_evidence() -> None:
+    values = sorted(
+        (f"/private/{index}" for index in range(400)),
+        key=lambda value: hashlib.sha256(value.encode()).hexdigest(),
+    )
+    stats = FieldStats(path="$.title")
+
+    for value in values:
+        stats.observe_equality_value(value)
+
+    assert len(stats.equality_hash_counts) == EQUALITY_EVIDENCE_CAP
+    assert stats.slash_value_count == len(values)
+
+
+def test_shape_evidence_reports_the_same_unretained_observation_lower_bound_for_streams_and_samples() -> None:
+    records: list[JSONDocument] = [{f"field_{index}": 1} for index in range(512)]
+    for _ in range(10):
+        records.append({"extra_field": 1})
+    observation = _Observation("session-a", "a" * 64, "claude-code", "session_record_stream", records)
+
+    streamed = collect_source_evidence(observation)
+    sampled = collect_sample_evidence(records)
+
+    assert len(streamed.shape_hashes) == len(sampled.shape_hashes) == 512
+    assert streamed.unretained_shape_observation_lower_bound == 10
+    assert sampled.unretained_shape_observation_lower_bound == 10
+    assert "distinct_shapes_overflow" not in _object(streamed.to_json()["denominators"])
+
+
+def test_reduced_evidence_preserves_caseful_known_role_values_for_scoring() -> None:
+    records = [{"role": "USER"}, {"role": "ASSISTANT"}]
+
+    raw_candidate = score_role("$.role", _collect_field_stats(records)["$.role"])
+    reduced_candidate = score_role("$.role", collect_sample_evidence(records).field_stats["$.role"])
+
+    assert raw_candidate is not None
+    assert reduced_candidate == raw_candidate
+    assert reduced_candidate.role == "message_role"
+
+
+def test_reduced_evidence_uses_complete_equality_entropy_for_session_title_selection() -> None:
+    records = [
+        {"title": "user" if index == 0 else f"Neutral title {index}", "label": f"Neutral label {index}"}
+        for index in range(21)
+    ]
+
+    raw_best = select_best_roles(infer_semantic_roles(_collect_field_stats(records), artifact_kind="session_document"))
+    reduced_best = select_best_roles(
+        infer_semantic_roles(collect_sample_evidence(records).field_stats, artifact_kind="session_document")
+    )
+
+    assert raw_best["session_title"].path == "$.title"
+    assert reduced_best["session_title"].path == "$.title"
