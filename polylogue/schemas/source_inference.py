@@ -7,9 +7,7 @@ evidence in its private cache, and reports every terminal disposition.
 
 from __future__ import annotations
 
-import ast
 import hashlib
-import inspect
 import os
 import re
 import stat
@@ -31,7 +29,7 @@ from polylogue.schemas.observation import extract_schema_units_from_payload, res
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
-from polylogue.sources.origin_specs import recognize_source_class
+from polylogue.sources.origin_specs import _fingerprint_sources, recognize_source_class
 from polylogue.sources.source_walk import _iter_source_entries
 
 SourceOutcome = Literal[
@@ -266,22 +264,6 @@ def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
         return True
     except OSError:
         return False
-
-
-def _candidate_native_identity(candidate: _SourceCandidate) -> str:
-    """Scope one-record exports by their declared native session identity."""
-    try:
-        byte_count = candidate.path.stat().st_size
-        payloads = _iter_file_payloads(candidate.path, byte_count=byte_count)
-        first = next(payloads, None)
-        second = next(payloads, None)
-        if first is not None and second is None:
-            native = _native_source_id(Provider.from_string(candidate.provider), first, "")
-            if native:
-                return native
-    except (OSError, JSONDecodeError):
-        pass
-    return candidate.logical_source_id
 
 
 def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
@@ -556,7 +538,11 @@ def _collect_candidate(
         byte_count=byte_count,
     )
     if candidate.path.suffix.lower() == ".zip":
-        return _collect_zip_candidate(candidate, revision, dynamic_paths_by_element=dynamic_paths_by_element)
+        return _collect_zip_candidate(
+            candidate,
+            revision,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+        )
     try:
         contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
             candidate,
@@ -694,25 +680,9 @@ def _bounded_collected_candidates(
             pending.append(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
 
 
-def _recipe_source(function: object) -> str:
-    """Fingerprint executable reducer code without comment-only cache churn."""
-    source = inspect.getsource(function)
-    return ast.dump(ast.parse(source), annotate_fields=False, include_attributes=False)
-
-
 def _source_recipe_fingerprint() -> str:
-    from polylogue.schemas.generation.dynamic_keys import dynamic_object_paths
-    from polylogue.schemas.generation.evidence import collect_source_evidence
-
-    return hash_payload(
-        {
-            "version": _RECIPE_VERSION,
-            "collector": _recipe_source(_collect_payload_evidence),
-            "observation": _recipe_source(extract_schema_units_from_payload),
-            "reducer": _recipe_source(collect_source_evidence),
-            "emitter": _recipe_source(dynamic_object_paths),
-        }
-    )
+    """Bind cache rows to the source reducer's complete import closure."""
+    return _fingerprint_sources(("polylogue/schemas/source_inference.py",), namespace="schema-source-evidence")
 
 
 def _serialize_contributions(contributions: Iterable[_SourceContribution]) -> dict[str, object]:
@@ -803,11 +773,13 @@ def _cache_key(
     revision_sha256: str,
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
+    recipe_fingerprint: str,
 ) -> str:
     return hash_payload(
         {
-            "recipe": _source_recipe_fingerprint(),
+            "recipe": recipe_fingerprint,
             "subject": candidate.provider,
+            "source_context": hash_payload({"logical_source_id": candidate.logical_source_id}),
             "revision_sha256": revision_sha256,
             "dynamic_paths": (
                 {kind: list(paths) for kind, paths in sorted(dynamic_paths_by_element.items())}
@@ -856,6 +828,7 @@ def infer_sources(
 
     report("inventory", force=True)
     collect_started = time.monotonic_ns()
+    recipe_fingerprint = _source_recipe_fingerprint()
     preliminary: list[tuple[_SourceCandidate, str, int, tuple[_SourceContribution, ...], tuple[str, ...], bool]] = []
     with SourceContributionCache(cache_path) as cache:
         misses: list[tuple[_SourceCandidate, str, int]] = []
@@ -868,7 +841,9 @@ def infer_sources(
             except OSError:
                 terminal_counts["decode_failed"] += 1
                 continue
-            cached = cache.get(_cache_key(candidate, digest, dynamic_paths_by_element=None))
+            cached = cache.get(
+                _cache_key(candidate, digest, dynamic_paths_by_element=None, recipe_fingerprint=recipe_fingerprint)
+            )
             if cached is None:
                 misses.append((candidate, digest, byte_count))
                 continue
@@ -902,7 +877,10 @@ def infer_sources(
                 cache.put(
                     CachedContribution(
                         cache_key=_cache_key(
-                            item.candidate, item.revision.revision_sha256, dynamic_paths_by_element=None
+                            item.candidate,
+                            item.revision.revision_sha256,
+                            dynamic_paths_by_element=None,
+                            recipe_fingerprint=recipe_fingerprint,
                         ),
                         evidence=_serialize_contributions(item.contributions),
                         input_bytes=item.terminal.byte_count,
@@ -957,7 +935,14 @@ def infer_sources(
         final: list[tuple[_SourceCandidate, str, int, tuple[_SourceContribution, ...], tuple[str, ...], bool]] = []
         final_misses: list[tuple[_SourceCandidate, str, int]] = []
         for candidate, digest, byte_count, _rows, versions, unrecognized in preliminary:
-            cached = cache.get(_cache_key(candidate, digest, dynamic_paths_by_element=dynamic_paths_by_element))
+            cached = cache.get(
+                _cache_key(
+                    candidate,
+                    digest,
+                    dynamic_paths_by_element=dynamic_paths_by_element,
+                    recipe_fingerprint=recipe_fingerprint,
+                )
+            )
             if cached is None:
                 final_misses.append((candidate, digest, byte_count))
                 continue
@@ -985,6 +970,7 @@ def infer_sources(
                             item.candidate,
                             item.revision.revision_sha256,
                             dynamic_paths_by_element=dynamic_paths_by_element,
+                            recipe_fingerprint=recipe_fingerprint,
                         ),
                         evidence=_serialize_contributions(item.contributions),
                         input_bytes=item.terminal.byte_count,
