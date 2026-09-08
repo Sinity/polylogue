@@ -328,8 +328,9 @@ class _ContributionSpool:
     neither the worker result nor the coordinator retains every session.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, partition: str = "") -> None:
         self.path = path
+        self.partition = partition
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(path)
         self._connection.execute("PRAGMA journal_mode=WAL")
@@ -337,22 +338,25 @@ class _ContributionSpool:
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS contribution_metadata (
-                source_id TEXT PRIMARY KEY,
+                partition TEXT NOT NULL,
+                source_id TEXT NOT NULL,
                 revision_sha256 TEXT NOT NULL,
                 record_count INTEGER NOT NULL,
                 update_kind INTEGER,
-                update_text TEXT
+                update_text TEXT,
+                PRIMARY KEY (partition, source_id)
             ) STRICT
             """
         )
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS contribution_evidence (
+                partition TEXT NOT NULL,
                 source_id TEXT NOT NULL,
                 element_kind TEXT NOT NULL,
                 payload_json TEXT NOT NULL,
-                PRIMARY KEY (source_id, element_kind),
-                FOREIGN KEY (source_id) REFERENCES contribution_metadata(source_id)
+                PRIMARY KEY (partition, source_id, element_kind),
+                FOREIGN KEY (partition, source_id) REFERENCES contribution_metadata(partition, source_id)
             ) STRICT
             """
         )
@@ -375,16 +379,18 @@ class _ContributionSpool:
 
         with self._connection:
             existing = self._connection.execute(
-                "SELECT record_count FROM contribution_metadata WHERE source_id = ?", (source_id,)
+                "SELECT record_count FROM contribution_metadata WHERE partition = ? AND source_id = ?",
+                (self.partition, source_id),
             ).fetchone()
             if existing is None:
                 self._connection.execute(
                     """
                     INSERT INTO contribution_metadata
-                        (source_id, revision_sha256, record_count, update_kind, update_text)
-                    VALUES (?, ?, ?, ?, ?)
+                        (partition, source_id, revision_sha256, record_count, update_kind, update_text)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     """,
                     (
+                        self.partition,
                         source_id,
                         revision_sha256,
                         record_count,
@@ -394,21 +400,21 @@ class _ContributionSpool:
                 )
             else:
                 self._connection.execute(
-                    "UPDATE contribution_metadata SET record_count = record_count + ? WHERE source_id = ?",
-                    (record_count, source_id),
+                    "UPDATE contribution_metadata SET record_count = record_count + ? WHERE partition = ? AND source_id = ?",
+                    (record_count, self.partition, source_id),
                 )
                 if declared_updated_at is not None:
                     self._connection.execute(
                         """
                         UPDATE contribution_metadata
                         SET update_kind = ?, update_text = ?
-                        WHERE source_id = ? AND (update_kind IS NULL OR (update_kind, update_text) < (?, ?))
+                        WHERE partition = ? AND source_id = ? AND (update_kind IS NULL OR (update_kind, update_text) < (?, ?))
                         """,
-                        (*declared_updated_at, source_id, *declared_updated_at),
+                        (*declared_updated_at, self.partition, source_id, *declared_updated_at),
                     )
             row = self._connection.execute(
-                "SELECT payload_json FROM contribution_evidence WHERE source_id = ? AND element_kind = ?",
-                (source_id, element_kind),
+                "SELECT payload_json FROM contribution_evidence WHERE partition = ? AND source_id = ? AND element_kind = ?",
+                (self.partition, source_id, element_kind),
             ).fetchone()
             accumulator = SchemaEvidenceAccumulator()
             if row is not None:
@@ -418,32 +424,36 @@ class _ContributionSpool:
             payload = accumulator.finish().to_json()
             self._connection.execute(
                 """
-                INSERT INTO contribution_evidence (source_id, element_kind, payload_json)
-                VALUES (?, ?, ?)
-                ON CONFLICT(source_id, element_kind) DO UPDATE SET payload_json = excluded.payload_json
+                INSERT INTO contribution_evidence (partition, source_id, element_kind, payload_json)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(partition, source_id, element_kind) DO UPDATE SET payload_json = excluded.payload_json
                 """,
-                (source_id, element_kind, json.dumps(payload, sort_keys=True, separators=(",", ":"))),
+                (self.partition, source_id, element_kind, json.dumps(payload, sort_keys=True, separators=(",", ":"))),
             )
 
     def has_contributions(self) -> bool:
         return self._connection.execute("SELECT 1 FROM contribution_evidence LIMIT 1").fetchone() is not None
 
     def contributions(self) -> Iterator[_SourceContribution]:
-        for source_id, revision, records, update_kind, update_text in self._connection.execute(
+        for partition, source_id, revision, records, update_kind, update_text in self._connection.execute(
             """
-            SELECT source_id, revision_sha256, record_count, update_kind, update_text
+            SELECT partition, source_id, revision_sha256, record_count, update_kind, update_text
             FROM contribution_metadata
-            WHERE EXISTS (SELECT 1 FROM contribution_evidence WHERE contribution_evidence.source_id = contribution_metadata.source_id)
-            ORDER BY source_id
+            WHERE EXISTS (
+                SELECT 1 FROM contribution_evidence
+                WHERE contribution_evidence.partition = contribution_metadata.partition
+                  AND contribution_evidence.source_id = contribution_metadata.source_id
+            )
+            ORDER BY partition, source_id
             """
         ):
             elements: dict[str, JSONDocument] = {}
             for element_kind, payload in self._connection.execute(
                 """
                 SELECT element_kind, payload_json FROM contribution_evidence
-                WHERE source_id = ? ORDER BY element_kind
+                WHERE partition = ? AND source_id = ? ORDER BY element_kind
                 """,
-                (source_id,),
+                (partition, source_id),
             ):
                 value = json.loads(payload)
                 if not isinstance(value, dict):
@@ -764,12 +774,14 @@ def _native_source_id(provider: Provider, payload: JSONValue, fallback: str, *, 
         session_id = payload.get("sessionId")
         if isinstance(session_id, str) and session_id:
             return f"claude-code:{session_id}"
-    if provider is Provider.CODEX and payload.get("type") == "session_meta":
-        session_payload = payload.get("payload")
-        if isinstance(session_payload, dict):
-            session_id = session_payload.get("id")
-            if isinstance(session_id, str) and session_id:
-                return f"codex:{session_id}"
+    if provider is Provider.CODEX:
+        from polylogue.sources.parsers.codex import _session_meta_record
+
+        session_payload = _session_meta_record(cast(dict[str, object], payload))
+        if session_payload is not None:
+            codex_session_id = session_payload.get("id")
+            if isinstance(codex_session_id, str) and codex_session_id:
+                return f"codex:{codex_session_id}"
     if provider is Provider.CHATGPT:
         session_id = payload.get("conversation_id") or payload.get("id") or payload.get("uuid")
         if isinstance(session_id, str) and session_id:
@@ -804,6 +816,7 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
         Provider.CHATGPT: ("update_time",),
         Provider.CLAUDE_AI: ("updated_at", "updatedAt"),
         Provider.CLAUDE_CODE: ("timestamp",),
+        Provider.CODEX: ("timestamp",),
     }.get(provider, DOCUMENT_UPDATE_FIELDS.get(provider, ()))
     for key in keys:
         value = payload.get(key)
@@ -827,6 +840,7 @@ def _collect_payload_evidence(
     include_statistics: bool = True,
     chunk_record_limit: int = _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT,
     spool_path: Path | None = None,
+    spool_partition: str = "",
     replay_payloads: Callable[[], Iterable[JSONValue | _SizedPayload]] | None = None,
 ) -> tuple[tuple[_SourceContribution, ...], int, tuple[str, ...], bool]:
     """Reduce each native source revision without retaining decoded records."""
@@ -887,7 +901,7 @@ def _collect_payload_evidence(
     pending_record_count = 0
     pending_byte_count = 0
     total_records = 0
-    spool = _ContributionSpool(spool_path) if spool_path is not None else None
+    spool = _ContributionSpool(spool_path, spool_partition) if spool_path is not None else None
 
     def spill(source_key: tuple[str, str]) -> None:
         if spool is None:
@@ -1181,7 +1195,7 @@ def _collect_zip_candidate(
         with zipfile.ZipFile(candidate.path) as archive:
             validator = ZipEntryValidator(candidate.provider, cursor_state=None, zip_path=candidate.path)
             members = validator.filter_entries(archive.infolist(), allowed_suffixes=(".json", ".jsonl", ".ndjson"))
-            for member in sorted(members, key=lambda item: item.filename):
+            for member_index, member in enumerate(sorted(members, key=lambda item: item.filename)):
                 member_path = Path(member.filename)
                 with open_bounded_zip_entry(archive, member) as member_handle:
                     digest_builder = hashlib.sha256()
@@ -1210,6 +1224,7 @@ def _collect_zip_candidate(
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                                 include_statistics=include_statistics,
                                 spool_path=spool_path,
+                                spool_partition=str(member_index),
                             )
                     else:
                         rows, member_records, versions, unrecognized = _collect_payload_evidence(
@@ -1223,6 +1238,7 @@ def _collect_zip_candidate(
                             dynamic_paths_by_element=dynamic_paths_by_element,
                             include_statistics=include_statistics,
                             spool_path=spool_path,
+                            spool_partition=str(member_index),
                         )
                 except (SourceInferenceError, ZipBombError, OSError) as exc:
                     return _CollectedCandidate(
@@ -1297,7 +1313,7 @@ def _bounded_collected_candidates(
 
 
 def _source_recipe_fingerprint() -> str:
-    """Bind cache rows to the source reducer's complete import closure."""
+    """Fingerprint the source reducer's implementation for provenance."""
     return _fingerprint_sources(("polylogue/schemas/source_inference.py",), namespace="schema-source-evidence")
 
 
@@ -1438,6 +1454,15 @@ def _cache_key(
     )
 
 
+def _contract_revision(contract: JSONDocument, key: str) -> int:
+    revision = contract.get(key, 1)
+    return revision if isinstance(revision, int) and not isinstance(revision, bool) else 1
+
+
+def _old_codex_path_fallback(candidate: _SourceCandidate, descriptor: _ContributionDescriptor) -> bool:
+    return descriptor.logical_source_id == hash_payload({"source": candidate.logical_source_id})
+
+
 def _cached_contribution(
     cache: SourceContributionCache,
     candidate: _SourceCandidate,
@@ -1480,11 +1505,30 @@ def _cached_contribution(
     for cached, previous_contract in matches:
         if not contracts_match_except_key_limit(previous_contract, current_contract):
             continue
+        if (
+            candidate.provider == Provider.CODEX.value
+            and _contract_revision(previous_contract, "identity_revision") < 2
+            and _contract_revision(current_contract, "identity_revision") >= 2
+            and (candidate.path.suffix.lower() == ".zip" or _old_codex_path_fallback(candidate, descriptor))
+        ):
+            continue
+        if (
+            candidate.path.suffix.lower() == ".zip"
+            and _contract_revision(previous_contract, "zip_member_revision") < 2
+            and _contract_revision(current_contract, "zip_member_revision") >= 2
+            and descriptor.record_count > 1
+        ):
+            continue
         rows = tuple(_cached_contributions(cached.evidence))
         if len(rows) != 1 or rows[0].logical_source_id != descriptor.logical_source_id:
             raise SourceInferenceError("cached source contribution does not match its manifest")
         contribution = rows[0]
         if contribution.record_count != descriptor.record_count:
+            if (
+                _contract_revision(previous_contract, "zip_member_revision") < 2
+                and _contract_revision(current_contract, "zip_member_revision") >= 2
+            ):
+                continue
             raise SourceInferenceError("cached source contribution has the wrong record count")
         if phase == "structure":
             if previous_contract != current_contract:
@@ -1494,18 +1538,19 @@ def _cached_contribution(
                     continue
                 previous_limit = previous_policy.get("cardinality_limit")
                 current_limit = current_policy.get("cardinality_limit")
-                if (
-                    not isinstance(previous_limit, int)
-                    or not isinstance(current_limit, int)
-                    or current_limit < previous_limit
-                ):
-                    continue
-                if any(
-                    has_collapsed_names(payload.get("current_structure"))
-                    or has_collapsed_names(payload.get("historical_structure"))
-                    for payload in contribution.evidence_by_element.values()
-                ):
-                    continue
+                if previous_limit != current_limit:
+                    if (
+                        not isinstance(previous_limit, int)
+                        or not isinstance(current_limit, int)
+                        or current_limit < previous_limit
+                    ):
+                        continue
+                    if any(
+                        has_collapsed_names(payload.get("current_structure"))
+                        or has_collapsed_names(payload.get("historical_structure"))
+                        for payload in contribution.evidence_by_element.values()
+                    ):
+                        continue
             return contribution
         assert preliminary is not None and dynamic_paths_by_element is not None
         if contribution.evidence_by_element.keys() != preliminary.evidence_by_element.keys():
@@ -1535,6 +1580,109 @@ def _cached_contribution(
         else:
             return replace(contribution, evidence_by_element=upgraded)
     return None
+
+
+_DESCRIPTOR_METADATA_NAMESPACE = "source-evidence-descriptor-metadata"
+_DESCRIPTOR_METADATA_REVISION = 1
+
+
+def _descriptor_metadata_cache_key(candidate: _SourceCandidate, physical_digest: str) -> str:
+    return hash_payload(
+        {
+            "namespace": _DESCRIPTOR_METADATA_NAMESPACE,
+            "metadata_revision": _DESCRIPTOR_METADATA_REVISION,
+            "physical_digest": physical_digest,
+            "candidate_context": hash_payload(
+                {
+                    "provider": candidate.provider,
+                    "logical_source_id": candidate.logical_source_id,
+                    "path": str(candidate.path),
+                }
+            ),
+        }
+    )
+
+
+def _descriptor_identity(descriptor: _ContributionDescriptor) -> tuple[str, str, int]:
+    return descriptor.logical_source_id, descriptor.revision_sha256, descriptor.record_count
+
+
+def _descriptor_metadata_is_complete(cached: CachedContribution) -> bool:
+    return (
+        cached.metadata.get("namespace") == _DESCRIPTOR_METADATA_NAMESPACE
+        and cached.metadata.get("metadata_revision") == _DESCRIPTOR_METADATA_REVISION
+        and cached.metadata.get("completed") is True
+    )
+
+
+def _refreshed_codex_descriptor(
+    cache: SourceContributionCache,
+    descriptor: _CandidateDescriptor,
+) -> _CandidateDescriptor:
+    """Recover missing Codex ordering metadata without repeating statistics reduction."""
+    key = _descriptor_metadata_cache_key(descriptor.candidate, descriptor.revision_sha256)
+    cached = cache.get(key)
+    persist_refreshed = False
+    if cached is not None and _descriptor_metadata_is_complete(cached):
+        refreshed = _cached_descriptors(cached.evidence)
+    else:
+        with tempfile.TemporaryDirectory(prefix="polylogue-source-metadata-") as spool_directory:
+            collected = _collect_candidate(
+                descriptor.candidate,
+                dynamic_paths_by_element={},
+                include_statistics=False,
+                spool_path=Path(spool_directory) / "contributions.spool",
+            )
+            if (
+                collected.terminal.outcome != "included"
+                or collected.revision is None
+                or collected.revision.revision_sha256 != descriptor.revision_sha256
+            ):
+                raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
+            try:
+                refreshed_digest, _refreshed_byte_count = _stable_file_digest(descriptor.candidate.path)
+            except (OSError, SourceInferenceError):
+                refreshed_digest = None
+            if refreshed_digest != descriptor.revision_sha256:
+                raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
+            rows = (
+                _spooled_contributions(collected.spool_path)
+                if collected.spool_path is not None
+                else iter(collected.contributions)
+            )
+            refreshed = tuple(
+                _ContributionDescriptor(
+                    row.logical_source_id,
+                    row.revision_sha256,
+                    row.record_count,
+                    row.declared_updated_at,
+                )
+                for row in rows
+            )
+        persist_refreshed = True
+    if sorted(map(_descriptor_identity, refreshed)) != sorted(map(_descriptor_identity, descriptor.contributions)):
+        raise SourceInferenceError("Codex ordering metadata changed source, revision, or record count")
+    if persist_refreshed:
+        cache.put(
+            CachedContribution(
+                cache_key=key,
+                evidence=_serialize_descriptors(refreshed),
+                input_bytes=descriptor.byte_count,
+                record_count=sum(row.record_count for row in refreshed),
+                metadata={
+                    "namespace": _DESCRIPTOR_METADATA_NAMESPACE,
+                    "metadata_revision": _DESCRIPTOR_METADATA_REVISION,
+                    "completed": True,
+                },
+            )
+        )
+    updates = {_descriptor_identity(row): row.declared_updated_at for row in refreshed}
+    return replace(
+        descriptor,
+        contributions=tuple(
+            replace(row, declared_updated_at=updates[_descriptor_identity(row)]) for row in descriptor.contributions
+        ),
+    )
 
 
 def _put_contribution(
@@ -2007,9 +2155,11 @@ def infer_sources(
                                 contribution.declared_updated_at,
                             )
                         )
-                    if tuple(final_contribution_descriptors) != expected.contributions:
+                    if sorted(map(_descriptor_identity, final_contribution_descriptors)) != sorted(
+                        map(_descriptor_identity, expected.contributions)
+                    ):
                         raise SourceInferenceError("final source identities changed after the structure pass")
-                    final.append(expected)
+                    final.append(replace(expected, contributions=tuple(final_contribution_descriptors)))
                     cache_misses += 1
                     phase_misses["statistics"] += 1
 
@@ -2050,6 +2200,40 @@ def infer_sources(
                     if other != row
                 )
             ]
+            if (
+                maximal
+                and maximal[0][0].candidate.provider == Provider.CODEX.value
+                and len(maximal) > 1
+                and any(row[1].declared_updated_at is None for row in maximal)
+            ):
+                refreshed_descriptors = {
+                    descriptor: _refreshed_codex_descriptor(cache, descriptor)
+                    for descriptor in {row[0] for row in maximal if row[1].declared_updated_at is None}
+                }
+                rows = [
+                    (
+                        refreshed_descriptors.get(descriptor, descriptor),
+                        next(
+                            updated
+                            for updated in refreshed_descriptors.get(descriptor, descriptor).contributions
+                            if _descriptor_identity(updated) == _descriptor_identity(contribution)
+                        ),
+                    )
+                    for descriptor, contribution in rows
+                ]
+                maximal = [
+                    row
+                    for row in rows
+                    if not any(
+                        _is_strict_stream_prefix(
+                            row[0].candidate.path,
+                            other[0].candidate.path,
+                            memo=prefix_memo,
+                        )
+                        for other in rows
+                        if other != row
+                    )
+                ]
             selected = max(
                 maximal,
                 key=lambda row: (

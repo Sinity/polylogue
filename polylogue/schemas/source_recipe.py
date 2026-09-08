@@ -21,6 +21,8 @@ EvidencePhase = Literal["structure", "statistics"]
 @dataclass(frozen=True)
 class SourceEvidenceRecipe:
     admission_revision: int = 1
+    identity_revision: int = 2
+    zip_member_revision: int = 2
     structure_revision: int = 1
     statistics_revision: int = 1
 
@@ -28,6 +30,8 @@ class SourceEvidenceRecipe:
         return {
             "evidence_format": SCHEMA_EVIDENCE_VERSION,
             "admission_revision": self.admission_revision,
+            "identity_revision": self.identity_revision,
+            "zip_member_revision": self.zip_member_revision,
             "phase": phase,
             "reduction_revision": self.structure_revision if phase == "structure" else self.statistics_revision,
             "key_policy": key_policy_parameters(),
@@ -55,7 +59,21 @@ def contracts_match_except_key_limit(previous: JSONDocument, current: JSONDocume
             return contract
         return {**contract, "key_policy": {key: value for key, value in policy.items() if key != "cardinality_limit"}}
 
-    return without_limit(previous) == without_limit(current)
+    previous_without_limit = without_limit(previous)
+    current_without_limit = without_limit(current)
+    for revision_key in ("identity_revision", "zip_member_revision"):
+        previous_revision = previous_without_limit.get(revision_key, 1)
+        current_revision = current_without_limit.get(revision_key, 1)
+        if previous_revision == current_revision:
+            continue
+        if previous_revision == 1 and current_revision == 2:
+            previous_without_limit = {
+                key: value for key, value in previous_without_limit.items() if key != revision_key
+            }
+            current_without_limit = {key: value for key, value in current_without_limit.items() if key != revision_key}
+            continue
+        return False
+    return previous_without_limit == current_without_limit
 
 
 def has_collapsed_names(schema: JSONValue) -> bool:

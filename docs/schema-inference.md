@@ -29,7 +29,12 @@ sessions, including Claude Code subagents. Gemini CLI checkpoint streams retain
 raw headers, turns, and update records; complete checkpoints retain document
 granularity. Current revisions contribute value
 statistics; historical revisions retain structural evidence. Exact duplicates
-and repeated export captures do not add current source-record weight.
+and repeated export captures do not add current source-record weight. ZIP
+members remain separate until native-identity and revision deduplication.
+
+Loose JSONL revisions use strict byte-prefix selection before declared update
+times. ZIP revisions use declared update times. Missing or tied times use a
+deterministic hash order; they do not establish chronology.
 
 Subagents retain their own native source identity. Schema inference does not
 reconstruct parent links or subtract inherited transcript prefixes. Counts
@@ -51,7 +56,10 @@ the meaning of admitted identities, structures, or statistics changes. Newly
 supported inputs can reuse existing admitted contributions. Performance and
 presentation edits preserve these revisions. The implementation fingerprint is
 recorded separately for provenance; normalization parameters are part of each
-contract.
+contract. Identity and ZIP-member changes have separate revisions. Old
+contributions are retained only when their identity and record counts prove
+they are compatible. Missing Codex ordering metadata is recovered separately
+from field statistics.
 
 The run reports aggregate input bytes, record counts, terminal outcomes and
 reason codes, cache hits/misses by phase, computation contracts, and phase timings. A successful package write
