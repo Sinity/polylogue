@@ -183,6 +183,39 @@ def test_latest_nonprefix_revision_drives_fields_and_old_revision_only_adds_stru
     assert "$.retired_field" not in evidence.fields
 
 
+def test_source_route_folds_selected_contributions_before_returning(tmp_path: Path) -> None:
+    """Anti-vacuity: materializing one row per source grows coordinator retention with source count."""
+    root = tmp_path / "exports"
+    root.mkdir()
+    (root / "old.json").write_text(
+        json.dumps([_chatgpt_conversation("same", updated=1, extra="retired_field")]), encoding="utf-8"
+    )
+    (root / "latest.json").write_text(
+        json.dumps([_chatgpt_conversation("same", updated=2, extra="current_field")]), encoding="utf-8"
+    )
+    (root / "independent.json").write_text(
+        json.dumps([_chatgpt_conversation("independent", updated=1, extra="independent_field")]), encoding="utf-8"
+    )
+
+    result = infer_sources(
+        (SchemaSourceInput("chatgpt", root),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+
+    rows = result.evidence_by_element["session_document"]
+    assert len(rows) == 1
+    evidence = SchemaEvidence.from_json(rows[0])
+    assert evidence.current_source_count == 2
+    assert evidence.historical_source_count == 1
+    assert "$.current_field" in evidence.fields
+    assert "$.retired_field" not in evidence.fields
+
+    warm = infer_sources(
+        (SchemaSourceInput("chatgpt", root),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+    assert len(warm.evidence_by_element["session_document"]) == 1
+    assert warm.cache_hits == 6
+
+
 def test_zip_members_and_jsonl_header_share_the_declared_native_source(tmp_path: Path) -> None:
     """Anti-vacuity: routing non-header JSONL records by path inflates one session denominator."""
     import zipfile
