@@ -163,6 +163,7 @@ def test_identity_upgrade_replaces_legacy_codex_path_fallback_cache(
     with monkeypatch.context() as old_code:
         old_code.setattr(source, "SourceEvidenceRecipe", lambda: SourceEvidenceRecipe(identity_revision=1))
         old_code.setattr(source, "_native_source_id", old_native_source_id)
+        old_code.setattr(source, "_old_path_fallback", lambda *_args: False)
         old = run_codex(root, cache)
     upgraded = run_codex(root, cache)
     fresh = run_codex(root, tmp_path / "fresh.sqlite")
