@@ -38,7 +38,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Committed schema package root to write into (default: {DEFAULT_OUTPUT_DIR}).",
     )
-    parser.add_argument("--max-samples", type=int, default=None, help="Limit samples for generation.")
+    parser.add_argument(
+        "--max-samples", type=int, default=None, help="Archive-backed sample limit; incompatible with --source."
+    )
     parser.add_argument(
         "--full-corpus",
         action="store_true",
@@ -49,7 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-full-corpus",
         dest="full_corpus",
         action="store_false",
-        help="Generate from a capped sample window instead of the full corpus.",
+        help="Use an archive-backed sample window; incompatible with --source.",
     )
     parser.add_argument(
         "--privacy",
