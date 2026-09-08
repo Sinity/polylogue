@@ -19,7 +19,7 @@ def detect_string_lengths(stats: dict[str, FieldStats]) -> list[StringLengthProf
         stddev = length_stats["stddev"]
         if avg < 5 and stddev < 2:
             continue
-        if len(field_stats.string_lengths) < 3:
+        if field_stats.string_length_distribution.count < 3:
             continue
 
         results.append(
@@ -30,7 +30,7 @@ def detect_string_lengths(stats: dict[str, FieldStats]) -> list[StringLengthProf
                 avg_length=avg,
                 stddev=stddev,
                 evidence={
-                    "sample_count": len(field_stats.string_lengths),
+                    "sample_count": field_stats.string_length_distribution.count,
                     "multiline_rate": round(field_stats.newline_rate, 3),
                 },
             )

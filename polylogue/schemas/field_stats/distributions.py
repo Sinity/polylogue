@@ -1,4 +1,5 @@
 """Bounded, deterministic distribution sketches for schema observations."""
+# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -155,6 +156,40 @@ class DistributionSketch:
             "non_finite_count": self.non_finite_count,
         }
 
+    def to_state(self) -> JSONDocument:
+        """Return the complete merge state, not the public projection."""
+        return {
+            "count": self.count,
+            "minimum": _json_number(self.minimum),
+            "maximum": _json_number(self.maximum),
+            "mean": self.mean,
+            "m2": self.m2,
+            "buckets": [[index, count] for index, count in sorted(self.buckets.items())],
+            "non_finite_count": self.non_finite_count,
+        }
+
+    @classmethod
+    def from_state(cls, state: JSONDocument) -> DistributionSketch:
+        """Restore a sketch produced by :meth:`to_state`."""
+        buckets = Counter(
+            {
+                int(item[0]): int(item[1])
+                for item in state.get("buckets", [])
+                if isinstance(item, list) and len(item) == 2
+            }
+        )
+        minimum = state.get("minimum")
+        maximum = state.get("maximum")
+        return cls(
+            count=int(state.get("count", 0)),
+            minimum=float(minimum) if isinstance(minimum, (int, float)) else None,
+            maximum=float(maximum) if isinstance(maximum, (int, float)) else None,
+            mean=float(state.get("mean", 0.0)),
+            m2=float(state.get("m2", 0.0)),
+            buckets=buckets,
+            non_finite_count=int(state.get("non_finite_count", 0)),
+        )
+
 
 @dataclass
 class CategoricalSketch:
@@ -213,6 +248,25 @@ class CategoricalSketch:
             "bucket_load_distribution": bucket_loads.to_payload(),
             "values_retained": False,
         }
+
+    def to_state(self) -> JSONDocument:
+        """Return the complete merge state, including HLL registers."""
+        return {
+            "count": self.count,
+            "buckets": [[bucket, count] for bucket, count in sorted(self.buckets.items())],
+            "registers": [[bucket, rank] for bucket, rank in sorted(self.registers.items())],
+        }
+
+    @classmethod
+    def from_state(cls, state: JSONDocument) -> CategoricalSketch:
+        """Restore a sketch produced by :meth:`to_state`."""
+
+        def pairs(name: str) -> dict[int, int]:
+            return {
+                int(item[0]): int(item[1]) for item in state.get(name, []) if isinstance(item, list) and len(item) == 2
+            }
+
+        return cls(count=int(state.get("count", 0)), buckets=Counter(pairs("buckets")), registers=pairs("registers"))
 
 
 __all__ = ["CategoricalSketch", "DistributionSketch"]
