@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from pathlib import Path
 
 import pytest
 
-from polylogue.core.json import JSONDocument
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
-from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
+from polylogue.schemas.source_inference import (
+    SchemaSourceInput,
+    SourceObservation,
+    SourceRevision,
+    _collect_payload_evidence,
+    _SourceCandidate,
+    infer_sources,
+)
 
 
 def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path: Path) -> None:
@@ -239,6 +247,101 @@ def test_browser_capture_source_is_explicitly_excluded_with_aggregate_reason(tmp
     assert result.input_bytes == source.stat().st_size
     assert result.provenance()["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
     assert progress[-1]["completed_candidates"] == progress[-1]["total_candidates"] == 1
+
+
+def test_antigravity_non_json_inputs_are_counted_with_declared_terminal_reasons(tmp_path: Path) -> None:
+    """Anti-vacuity: suffix-only inventory used to hide declared Antigravity inputs."""
+    conversation = tmp_path / "conversations" / "session.pb"
+    conversation.parent.mkdir()
+    conversation.write_bytes(b"opaque-protobuf")
+    brain = tmp_path / "brain" / "notes.md"
+    brain.parent.mkdir()
+    brain.write_text("sidecar", encoding="utf-8")
+
+    result = infer_sources(
+        (SchemaSourceInput("antigravity", tmp_path),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+    )
+
+    assert result.evidence_by_element == {}
+    assert result.terminal_counts == {"intentionally_excluded": 1, "unsupported": 1}
+    assert result.terminal_reason_counts == {
+        "antigravity_markdown_sidecar": 1,
+        "antigravity_protobuf_adapter_unavailable": 1,
+    }
+    assert result.input_bytes == conversation.stat().st_size + brain.stat().st_size
+
+
+def test_source_chunking_matches_single_record_reduction_and_bounds_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: per-record merging makes a long source quadratic and hides chunk bounds."""
+    from polylogue.schemas.generation import evidence as evidence_module
+
+    candidate = _SourceCandidate("claude-code", tmp_path, tmp_path / "session.jsonl", "synthetic-source")
+    revision = SourceRevision("claude-code", candidate.path, candidate.logical_source_id, "a" * 64, 0)
+    payloads: tuple[JSONValue, ...] = tuple(
+        {
+            "type": "user" if index % 2 else "assistant",
+            "sessionId": "chunked-session",
+            "version": "1.2.3",
+            "message": {
+                "role": "user" if index % 3 else "assistant",
+                "content": f"record-{index}",
+                "metadata": {"even": index % 2 == 0} if index % 5 else {"multiple": index},
+            },
+        }
+        for index in range(67)
+    )
+    single, single_records, single_versions, single_unrecognized = _collect_payload_evidence(
+        candidate,
+        revision,
+        iter(payloads),
+        dynamic_paths_by_element={},
+        chunk_record_limit=1,
+    )
+    seen_chunk_sizes: list[int] = []
+    real_collect = evidence_module.collect_source_evidence
+
+    def collect_with_measurement(
+        observation: SourceObservation,
+        *,
+        dynamic_paths: Collection[str] = (),
+        is_current: bool | None = None,
+    ) -> SchemaEvidence:
+        records = tuple(observation.records)
+        seen_chunk_sizes.append(len(records))
+        return real_collect(
+            SourceObservation(
+                logical_source_id=observation.logical_source_id,
+                revision_sha256=observation.revision_sha256,
+                subject=observation.subject,
+                element_kind=observation.element_kind,
+                records=records,
+                is_current=observation.is_current,
+            ),
+            dynamic_paths=dynamic_paths,
+            is_current=is_current,
+        )
+
+    monkeypatch.setattr(evidence_module, "collect_source_evidence", collect_with_measurement)
+    chunked, chunked_records, chunked_versions, chunked_unrecognized = _collect_payload_evidence(
+        candidate,
+        revision,
+        iter(payloads),
+        dynamic_paths_by_element={},
+        chunk_record_limit=7,
+    )
+
+    assert chunked == single
+    assert (chunked_records, chunked_versions, chunked_unrecognized) == (
+        single_records,
+        single_versions,
+        single_unrecognized,
+    )
+    assert seen_chunk_sizes == [7] * 9 + [4]
+    assert max(seen_chunk_sizes) == 7
 
 
 def test_source_route_measures_full_multiline_values_before_reduced_evidence(tmp_path: Path) -> None:
