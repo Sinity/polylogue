@@ -31,6 +31,7 @@ def source_result(
     return SourceInferenceResult(
         evidence_by_element=elements,
         terminal_counts={"included": 1},
+        candidate_terminal_counts={"included": 1},
         terminal_reason_counts={},
         input_bytes=records * 100,
         record_count=records + 1,

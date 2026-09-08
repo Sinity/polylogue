@@ -75,7 +75,7 @@ def test_source_inference_replaces_copied_chat_revision_and_keeps_subagent(tmp_p
     }
     for name, payload in (
         ("original", {**common, "lastUpdated": "2026-01-01T00:01:00Z"}),
-        ("copy", {**common, "lastUpdated": "2026-01-01T00:02:00Z"}),
+        ("copy", {**common, "lastUpdated": "2026-01-01T00:01:00.100Z", "latest_copy": True}),
         ("child", {**common, "kind": "subagent", "lastUpdated": "2026-01-01T00:03:00Z"}),
     ):
         (source_root / f"{name}.json").write_text(json.dumps(payload))
@@ -86,3 +86,4 @@ def test_source_inference_replaces_copied_chat_revision_and_keeps_subagent(tmp_p
     evidence = SchemaEvidence.from_json(result.evidence_by_element["session_document"][0])
     assert evidence.current_source_count == 2
     assert evidence.historical_source_count == 1
+    assert "$.latest_copy" in evidence.fields

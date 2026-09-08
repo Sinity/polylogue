@@ -372,21 +372,26 @@ def test_zip_members_and_jsonl_header_share_the_declared_native_source(tmp_path:
             )
             + "\n",
         )
+    (tmp_path / "metadata.jsonl").write_text('{"type":"metadata"}\n', encoding="utf-8")
 
     result = infer_sources(
-        (SchemaSourceInput("codex", source),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+        (SchemaSourceInput("codex", tmp_path),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
     )
     evidence = merge_evidence(
         SchemaEvidence.from_json(item) for rows in result.evidence_by_element.values() for item in rows
     )
 
-    assert result.terminal_counts == {"included": 2}
+    assert result.terminal_counts == {"included": 2, "unsupported": 1}
     assert evidence.current_source_count >= 1
     assert result.producer_version_counts == {"1.2.3": 1}
     provenance = result.provenance()
-    assert provenance["source_terminal_outcomes"] == {"included": 2}
-    assert provenance["source_terminal_outcome_unit"] == "native_source_revision"
-    assert provenance["source_candidate_count"] == 1
+    assert provenance["source_terminal_outcomes"] == {"included": 2, "unsupported": 1}
+    assert provenance["source_terminal_outcome_units"] == {
+        "included": "native_source_revision",
+        "unsupported": "physical_candidate",
+    }
+    assert provenance["source_candidate_terminal_outcomes"] == {"included": 1, "unsupported": 1}
+    assert provenance["source_candidate_count"] == 2
     assert provenance["source_included_candidate_count"] == 1
     assert provenance["source_included_native_source_revision_count"] == 2
 

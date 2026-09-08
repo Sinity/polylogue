@@ -22,6 +22,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from datetime import timezone
 from functools import partial
 from itertools import islice
 from pathlib import Path
@@ -32,6 +33,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
@@ -119,6 +121,7 @@ class SourceInferenceResult:
 
     evidence_by_element: Mapping[str, tuple[JSONDocument, ...]]
     terminal_counts: dict[str, int]
+    candidate_terminal_counts: dict[str, int]
     terminal_reason_counts: dict[str, int]
     input_bytes: int
     record_count: int
@@ -144,7 +147,11 @@ class SourceInferenceResult:
             "source_cache_hits": self.cache_hits,
             "source_cache_misses": self.cache_misses,
             "source_terminal_outcomes": dict(sorted(self.terminal_counts.items())),
-            "source_terminal_outcome_unit": "native_source_revision",
+            "source_terminal_outcome_units": {
+                outcome: "native_source_revision" if outcome == "included" else "physical_candidate"
+                for outcome in sorted(self.terminal_counts)
+            },
+            "source_candidate_terminal_outcomes": dict(sorted(self.candidate_terminal_counts.items())),
             "source_terminal_reasons": dict(sorted(self.terminal_reason_counts.items())),
             "source_phase_timings_ms": dict(sorted(self.phase_timings_ms.items())),
             "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
@@ -788,10 +795,12 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
         value = payload.get(key)
         if isinstance(value, bool) or value is None:
             continue
-        if isinstance(value, (int, float)):
-            return 1, f"{value:030.9f}"
-        if isinstance(value, str) and value:
-            return 0, value
+        if isinstance(value, (int, float)) or isinstance(value, str) and value:
+            parsed = parse_timestamp(value)
+            if parsed is not None:
+                return 1, parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+            if isinstance(value, str):
+                return 0, value
     return None
 
 
@@ -1959,6 +1968,9 @@ def infer_sources(
     included_native_source_revision_count = len(unique)
     if included_native_source_revision_count:
         terminal_counts["included"] += included_native_source_revision_count
+    candidate_terminal_counts = Counter(terminal_counts)
+    if included_native_source_revision_count:
+        candidate_terminal_counts["included"] = included_candidate_count
     producer_version_counts: Counter[str] = Counter()
     producer_version_missing_sources = 0
     producer_version_conflicting_sources = 0
@@ -1982,6 +1994,7 @@ def infer_sources(
             kind: (accumulator.finish().to_json(),) for kind, accumulator in sorted(evidence_by_element.items())
         },
         terminal_counts=dict(sorted(terminal_counts.items())),
+        candidate_terminal_counts=dict(sorted(candidate_terminal_counts.items())),
         terminal_reason_counts=dict(sorted(terminal_reason_counts.items())),
         input_bytes=input_bytes,
         record_count=record_count,
