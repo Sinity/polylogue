@@ -8,11 +8,7 @@ from typing import TypeAlias
 
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.schemas.field_stats.stats import _collect_field_stats
-from polylogue.schemas.generation.dynamic_keys import (
-    dynamic_object_paths,
-    merge_observed_structure_schemas,
-    observed_structure_schema,
-)
+from polylogue.schemas.generation.evidence import SchemaEvidence, collect_sample_evidence
 from polylogue.schemas.generation.support import (
     GENSON_AVAILABLE,
     SchemaBuilder,
@@ -57,28 +53,44 @@ def _generate_cluster_schema(
     artifact_kind: str | None = None,
     observed_ats: Collection[str | None] | None = None,
 ) -> tuple[MutableSchemaPayload, SchemaReport | None]:
-    if not samples:
-        return {"type": "object", "description": "No samples available"}, None
-
     del full_corpus
-    schema = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in samples)
-    schema = collapse_dynamic_keys(schema)
-    schema = _remove_nested_required(schema)
-    if config.sample_granularity == "record":
-        schema.pop("required", None)
-
     conv_ids_for_stats: Collection[str | None] | None = (
         conv_ids if any(conv_id is not None for conv_id in conv_ids) else None
     )
     observed_ats_for_stats: Collection[str | None] | None = (
         observed_ats if observed_ats is not None and any(value is not None for value in observed_ats) else None
     )
-    field_stats = _collect_field_stats(
+    evidence = collect_sample_evidence(
         samples,
         session_ids=conv_ids_for_stats,
         observed_ats=observed_ats_for_stats,
-        dynamic_paths=dynamic_object_paths(schema),
     )
+    return emit_schema_from_evidence(
+        provider,
+        config,
+        evidence,
+        privacy_config=privacy_config,
+        artifact_kind=artifact_kind,
+    )
+
+
+def emit_schema_from_evidence(
+    provider: str,
+    config: ProviderConfig,
+    evidence: SchemaEvidence,
+    *,
+    privacy_config: SchemaPrivacyConfig | None,
+    artifact_kind: str | None = None,
+) -> tuple[MutableSchemaPayload, SchemaReport | None]:
+    """Emit the existing annotated schema contract from reduced evidence."""
+    if not evidence.current_record_count and not evidence.historical_record_count:
+        return {"type": "object", "description": "No samples available"}, None
+
+    schema = evidence.structure
+    schema = _remove_nested_required(schema)
+    if config.sample_granularity == "record":
+        schema.pop("required", None)
+    field_stats = evidence.field_stats
     pins = _load_rejected_pins(provider)
     schema = _annotate_semantic_and_relational(schema, field_stats, artifact_kind=artifact_kind, pins=pins)
     schema = _annotate_schema(
@@ -168,5 +180,6 @@ __all__ = [
     "SchemaInput",
     "_apply_schema_metadata",
     "_generate_cluster_schema",
+    "emit_schema_from_evidence",
     "generate_schema_from_samples",
 ]

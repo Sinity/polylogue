@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ ENUM_VALUE_CAP = 200
 REF_MATCH_THRESHOLD = 0.7
 LEGACY_SAMPLE_CAP = 2_000
 SESSION_EVIDENCE_CAP = 16
+EQUALITY_EVIDENCE_CAP = 256
+_SAFE_STRUCTURAL_VALUES = frozenset({"assistant", "developer", "function", "human", "model", "system", "tool", "user"})
 
 
 def _parse_record_timestamp(value: str | None) -> datetime | None:
@@ -81,6 +84,10 @@ class FieldStats:
     field_last_seen: str | None = None
     _last_encountered_document: int | None = field(default=None, repr=False)
     _last_non_null_document: int | None = field(default=None, repr=False)
+    equality_hash_counts: Counter[str] = field(default_factory=Counter)
+    equality_session_tokens: dict[str, set[str]] = field(default_factory=dict)
+    safe_observed_values: Counter[str] = field(default_factory=Counter)
+    slash_value_count: int = 0
 
     def __post_init__(self) -> None:
         """Backfill sketches for direct fixtures using legacy sample lists."""
@@ -143,6 +150,30 @@ class FieldStats:
             if sequence[index + 1] >= sequence[index]:
                 self.ordered_increasing_pair_count += 1
 
+    def observe_equality_value(self, value: str, *, session_id: str | None = None) -> None:
+        """Retain a bounded, private equality witness without retaining prose."""
+        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+        if digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
+            largest = max(self.equality_hash_counts)
+            if digest >= largest:
+                self.truncated_evidence["equality_hashes"] += 1
+                return
+            del self.equality_hash_counts[largest]
+            self.equality_session_tokens.pop(largest, None)
+            self.truncated_evidence["equality_hashes"] += 1
+        self.equality_hash_counts[digest] += 1
+        if session_id is not None:
+            token = hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+            tokens = self.equality_session_tokens.setdefault(digest, set())
+            if token in tokens or len(tokens) < SESSION_EVIDENCE_CAP:
+                tokens.add(token)
+            else:
+                self.truncated_evidence["equality_sessions"] += 1
+        if value in _SAFE_STRUCTURAL_VALUES:
+            self.safe_observed_values[value] += 1
+        if "/" in value:
+            self.slash_value_count += 1
+
     @property
     def frequency(self) -> float:
         return self.present_count / self.total_samples if self.total_samples else 0.0
@@ -178,6 +209,21 @@ class FieldStats:
         if not self.observed_values:
             return False
         return len(self.observed_values) <= ENUM_MAX_CARDINALITY
+
+    @property
+    def effective_distinct_count(self) -> int:
+        """Distinctness usable after raw values have been removed from evidence."""
+        return max(
+            len(self.observed_values), self.distinct_value_count, self.categorical_distribution.estimated_distinct
+        )
+
+    @property
+    def has_array_evidence(self) -> bool:
+        return bool(self.array_lengths or self.array_length_distribution.count)
+
+    @property
+    def has_object_fanout_evidence(self) -> bool:
+        return bool(self.object_key_counts or self.object_fanout_distribution.count)
 
     @property
     def string_length_stats(self) -> dict[str, float] | None:
@@ -219,11 +265,12 @@ class FieldStats:
 
     @property
     def approximate_entropy(self) -> float | None:
-        if not self.observed_values or self.value_count == 0:
+        values = self.observed_values or self.equality_hash_counts
+        if not values or self.value_count == 0:
             return None
-        total = sum(self.observed_values.values())
+        total = sum(values.values())
         entropy = 0.0
-        for count in self.observed_values.values():
+        for count in values.values():
             if count > 0:
                 probability = count / total
                 entropy -= probability * math.log2(probability)
@@ -233,6 +280,7 @@ class FieldStats:
 __all__ = [
     "ENUM_MAX_CARDINALITY",
     "ENUM_VALUE_CAP",
+    "EQUALITY_EVIDENCE_CAP",
     "FieldStats",
     "LEGACY_SAMPLE_CAP",
     "REF_MATCH_THRESHOLD",

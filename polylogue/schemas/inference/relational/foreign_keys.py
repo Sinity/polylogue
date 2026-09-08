@@ -8,6 +8,11 @@ from polylogue.schemas.inference.relational.models import ForeignKeyRelation
 _FK_MATCH_THRESHOLD = 0.6
 
 
+def _equality_values(field_stats: FieldStats) -> set[str]:
+    """Use raw values while collecting and bounded private hashes after reload."""
+    return set(field_stats.observed_values) or set(field_stats.equality_hash_counts)
+
+
 def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation]:
     """Detect fields whose values mostly match keys in some dict field."""
     results: list[ForeignKeyRelation] = []
@@ -24,7 +29,8 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
             )
 
     for path, field_stats in stats.items():
-        if not field_stats.observed_values or len(field_stats.observed_values) <= 5:
+        observed = _equality_values(field_stats)
+        if len(observed) <= 5:
             continue
 
         terminal = path.rsplit(".", 1)[-1].lower() if "." in path else path.lower()
@@ -42,16 +48,13 @@ def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation
         if field_stats.ref_target:
             continue
 
-        observed = set(field_stats.observed_values.keys())
         for other_path, other_stats in stats.items():
             if other_path == path:
                 continue
             other_terminal = other_path.rsplit(".", 1)[-1].lower() if "." in other_path else other_path.lower()
             if other_terminal not in {"id", "uuid", "key", "node_id"}:
                 continue
-            if not other_stats.observed_values:
-                continue
-            other_values = set(other_stats.observed_values.keys())
+            other_values = _equality_values(other_stats)
             if not other_values:
                 continue
 
