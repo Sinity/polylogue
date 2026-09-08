@@ -86,41 +86,16 @@ def generate_provider_schema_from_sources(
     privacy_config: SchemaPrivacyConfig | None,
     progress_callback: GenerationProgressCallback | None = None,
 ) -> GenerationResult:
-    """Generate a preview from declared source roots through reduced evidence."""
-    inputs = tuple(item for item in source_inputs if isinstance(item, SchemaSourceInput) and item.provider == provider)
-    if not inputs:
-        return GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
-    cache = cache_path or Path(".cache") / "schema-source-evidence.sqlite3"
-    if progress_callback is not None:
-        progress_callback("source_inventory", {"state": "started"})
-    source_result = infer_sources(inputs, cache_path=cache, max_workers=max_workers)
-    evidence_rows = source_result.evidence_by_element.get("session_document", ())
-    if not evidence_rows:
-        return GenerationResult(
-            provider=provider,
-            schema=None,
-            sample_count=0,
-            error="No session-document source evidence",
-            phase_receipt={"source": source_result.provenance()},
-        )
-    evidence = merge_evidence(SchemaEvidence.from_json(row) for row in evidence_rows)
-    schema, report = emit_schema_from_evidence(
+    """Preview the same package bundle used by source commit."""
+    return build_provider_bundle_from_sources(
         provider,
-        resolve_provider_config(provider),
-        evidence,
+        source_inputs=source_inputs,
+        cache_path=cache_path,
+        max_workers=max_workers,
         privacy_config=privacy_config,
-        artifact_kind="session_document",
-    )
-    if progress_callback is not None:
-        progress_callback("source_evidence", {"state": "completed", **source_result.provenance()})
-    return GenerationResult(
-        provider=provider,
-        schema=schema,
-        sample_count=evidence.current_record_count,
-        redaction_report=report,
-        artifact_counts={kind: len(rows) for kind, rows in source_result.evidence_by_element.items()},
-        phase_receipt={"source": source_result.provenance()},
-    )
+        prior_catalog=None,
+        progress_callback=progress_callback,
+    ).result
 
 
 def build_provider_bundle_from_sources(
@@ -131,26 +106,24 @@ def build_provider_bundle_from_sources(
     max_workers: int,
     privacy_config: SchemaPrivacyConfig | None,
     prior_catalog: SchemaPackageCatalog | None,
+    progress_callback: GenerationProgressCallback | None = None,
 ) -> _ProviderBundle:
-    """Build one stable multi-element package from declared source evidence."""
+    """Build a multi-element package with identity independent of statistics."""
     inputs = tuple(item for item in source_inputs if isinstance(item, SchemaSourceInput) and item.provider == provider)
     if not inputs:
         return _ProviderBundle(
             GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
         )
+    if progress_callback is not None:
+        progress_callback("source_inventory", {"state": "started"})
     source = infer_sources(
         inputs, cache_path=cache_path or Path(".cache/schema-source-evidence.sqlite3"), max_workers=max_workers
     )
-    emitted: dict[str, JSONDocument] = {}
-    count = 0
-    for kind, rows in source.evidence_by_element.items():
-        evidence = merge_evidence(SchemaEvidence.from_json(row) for row in rows)
-        schema, _report = emit_schema_from_evidence(
-            provider, resolve_provider_config(provider), evidence, privacy_config=privacy_config, artifact_kind=kind
-        )
-        emitted[kind] = schema
-        count += evidence.current_record_count
-    if not emitted:
+    evidence_by_kind = {
+        kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)
+        for kind, rows in source.evidence_by_element.items()
+    }
+    if not evidence_by_kind:
         return _ProviderBundle(
             GenerationResult(
                 provider=provider,
@@ -160,35 +133,66 @@ def build_provider_bundle_from_sources(
                 phase_receipt={"source": source.provenance()},
             )
         )
+    emitted: dict[str, JSONDocument] = {}
+    reports = {}
+    for kind, evidence in evidence_by_kind.items():
+        emitted[kind], reports[kind] = emit_schema_from_evidence(
+            provider, resolve_provider_config(provider), evidence, privacy_config=privacy_config, artifact_kind=kind
+        )
     anchor = "session_document" if "session_document" in emitted else sorted(emitted)[0]
-    family = hash_payload({"anchor": anchor, "schema": emitted[anchor]})
+    family = hash_payload({"anchor": anchor, "structure": evidence_by_kind[anchor].structure})
     version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
     now = datetime.now(tz=timezone.utc).isoformat()
-    elements = [SchemaElementManifest(kind, f"{kind}.schema.json.gz", count, 1) for kind in sorted(emitted)]
-    package = SchemaVersionPackage(provider, version, anchor, anchor, now, now, 0, count, family, elements=elements)
+    prior = next((item for item in prior_catalog.packages if item.version == version), None) if prior_catalog else None
+    first_seen = prior.first_seen if prior is not None else now
+    counts = {kind: evidence.current_record_count for kind, evidence in evidence_by_kind.items()}
+    elements = [
+        SchemaElementManifest(
+            element_kind=kind,
+            schema_file=f"{kind}.schema.json.gz",
+            sample_count=evidence.current_record_count,
+            artifact_count=evidence.current_source_count,
+            bundle_scope_count=evidence.current_source_count,
+            observed_artifact_count=evidence.current_source_count,
+            first_seen=first_seen,
+            last_seen=now,
+        )
+        for kind, evidence in sorted(evidence_by_kind.items())
+    ]
+    package = SchemaVersionPackage(
+        provider=provider,
+        version=version,
+        anchor_kind=anchor,
+        default_element_kind=anchor,
+        first_seen=first_seen,
+        last_seen=now,
+        bundle_scope_count=evidence_by_kind[anchor].current_source_count,
+        sample_count=counts[anchor],
+        anchor_profile_family_id=family,
+        elements=elements,
+    )
     catalog = SchemaPackageCatalog(
-        provider,
-        [package],
+        provider=provider,
+        packages=[package],
         latest_version=version,
         default_version=version,
         recommended_version=version,
         observation_outcomes=source.provenance(),
     )
-    manifest = ClusterManifest(
-        provider=provider,
-        artifact_counts={kind: len(rows) for kind, rows in source.evidence_by_element.items()},
-        default_version=version,
-    )
+    manifest = ClusterManifest(provider=provider, artifact_counts=counts, default_version=version)
     result = GenerationResult(
-        provider,
-        emitted[anchor],
-        count,
+        provider=provider,
+        schema=emitted[anchor],
+        sample_count=counts[anchor],
+        redaction_report=reports[anchor],
         versions=[version],
         default_version=version,
         package_count=1,
-        artifact_counts=manifest.artifact_counts,
+        artifact_counts=counts,
         phase_receipt={"source": source.provenance()},
     )
+    if progress_callback is not None:
+        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
     return _ProviderBundle(result, catalog=catalog, package_schemas={version: emitted}, manifest=manifest)
 
 
