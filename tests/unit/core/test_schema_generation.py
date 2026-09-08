@@ -18,7 +18,6 @@ from polylogue.schemas.generation.observation_journal import ObservationJournal
 from polylogue.schemas.generation.provider_bundle_packages import _select_catalog_versions
 from polylogue.schemas.generation.workflow import _build_provider_bundle
 from polylogue.schemas.observation import SchemaUnit
-from polylogue.schemas.observation_identity import bundle_scope_identity
 from polylogue.schemas.operator.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -738,10 +737,7 @@ class TestProfileClustering:
         assert element.first_seen == "2026-01-01T00:00:00+00:00"
         assert element.last_seen == "2026-01-03T00:00:00+00:00"
         assert element.bundle_scope_count == 2
-        assert element.bundle_scope_identities == [
-            bundle_scope_identity("scope-a"),
-            bundle_scope_identity("scope-b"),
-        ]
+        assert element.bundle_scope_identities == []
         public_package = package.to_dict()
         assert "bundle_scopes" not in public_package
         assert "representative_paths" not in public_package

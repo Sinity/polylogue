@@ -59,6 +59,7 @@ class SchemaElementManifest:
     profile_family_ids: list[str] = field(default_factory=list)
     profile_tokens: list[str] = field(default_factory=list)
     observed_artifact_count: int = 0
+    observation_status: str = "current"
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -76,6 +77,7 @@ class SchemaElementManifest:
                 "profile_family_ids": self.profile_family_ids,
                 "profile_tokens": self.profile_tokens,
                 "observed_artifact_count": self.observed_artifact_count,
+                "observation_status": self.observation_status,
             }
         )
 
@@ -95,6 +97,7 @@ class SchemaElementManifest:
             profile_family_ids=_string_list(data.get("profile_family_ids")),
             profile_tokens=_string_list(data.get("profile_tokens")),
             observed_artifact_count=_int_value(data.get("observed_artifact_count")),
+            observation_status=str(data.get("observation_status", "unspecified")),
         )
 
 
@@ -114,6 +117,7 @@ class SchemaVersionPackage:
     elements: list[SchemaElementManifest] = field(default_factory=list)
     orphan_adjunct_counts: dict[str, int] = field(default_factory=dict)
     workload_profile_file: str | None = None
+    observation_status: str = "current"
 
     def to_dict(self) -> JSONDocument:
         return json_document(
@@ -132,6 +136,7 @@ class SchemaVersionPackage:
                 "elements": [element.to_dict() for element in self.elements],
                 "orphan_adjunct_counts": self.orphan_adjunct_counts,
                 "workload_profile_file": self.workload_profile_file,
+                "observation_status": self.observation_status,
             }
         )
 
@@ -152,6 +157,7 @@ class SchemaVersionPackage:
             elements=[SchemaElementManifest.from_dict(item) for item in json_document_list(data.get("elements"))],
             orphan_adjunct_counts=_string_int_dict(data.get("orphan_adjunct_counts")),
             workload_profile_file=_string_or_none(data.get("workload_profile_file")),
+            observation_status=str(data.get("observation_status", "unspecified")),
         )
 
     def element(self, element_kind: str | None = None) -> SchemaElementManifest | None:
