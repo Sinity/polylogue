@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from polylogue.schemas.field_stats.stats import FieldStats
 from polylogue.schemas.inference.relational.models import ForeignKeyRelation
 
@@ -9,8 +11,13 @@ _FK_MATCH_THRESHOLD = 0.6
 
 
 def _equality_values(field_stats: FieldStats) -> set[str]:
-    """Combine raw/safe values with bounded private hashes across reloads."""
-    return set(field_stats.observed_values) | set(field_stats.equality_hash_counts)
+    """Return equality values in one private hash namespace across reloads."""
+    if field_stats.equality_hash_counts:
+        return set(field_stats.equality_hash_counts)
+    return {
+        hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
+        for value in field_stats.observed_values
+    }
 
 
 def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation]:

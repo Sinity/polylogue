@@ -276,6 +276,17 @@ def test_reduced_evidence_keeps_hashes_when_safe_values_are_present_for_foreign_
     assert [(relation.source_path, relation.target_path) for relation in reduced_relations] == [("$.parent_id", "$.id")]
 
 
+def test_reduced_foreign_key_hashes_do_not_double_count_safe_values() -> None:
+    references = ["user", *(f"item-{index}" for index in range(8))]
+    records = [{"parent_id": value} for value in references] + [{"id": value} for value in references[:5]]
+
+    raw_relations = detect_foreign_keys(_collect_field_stats(records))
+    reduced_relations = detect_foreign_keys(collect_sample_evidence(records).field_stats)
+
+    assert raw_relations == []
+    assert reduced_relations == []
+
+
 def test_equality_hash_cap_does_not_drop_slash_shape_evidence() -> None:
     values = sorted(
         (f"/private/{index}" for index in range(400)),
