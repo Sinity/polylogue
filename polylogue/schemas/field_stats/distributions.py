@@ -1,5 +1,4 @@
 """Bounded, deterministic distribution sketches for schema observations."""
-# mypy: ignore-errors
 
 from __future__ import annotations
 
@@ -16,6 +15,21 @@ _MAX_LOG_BUCKET = 512
 _DEFAULT_QUANTILES = (0.0, 0.5, 0.9, 0.95, 0.99, 1.0)
 _CATEGORICAL_BUCKETS = 256
 _HLL_PRECISION = 8
+
+
+def _state_int(value: JSONValue) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _state_float(value: JSONValue) -> float:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def _state_pairs(state: JSONDocument, name: str) -> dict[int, int]:
+    value = state.get(name)
+    if not isinstance(value, list):
+        return {}
+    return {_state_int(item[0]): _state_int(item[1]) for item in value if isinstance(item, list) and len(item) == 2}
 
 
 def _bucket_index(value: float) -> int:
@@ -171,23 +185,17 @@ class DistributionSketch:
     @classmethod
     def from_state(cls, state: JSONDocument) -> DistributionSketch:
         """Restore a sketch produced by :meth:`to_state`."""
-        buckets = Counter(
-            {
-                int(item[0]): int(item[1])
-                for item in state.get("buckets", [])
-                if isinstance(item, list) and len(item) == 2
-            }
-        )
+        buckets = Counter(_state_pairs(state, "buckets"))
         minimum = state.get("minimum")
         maximum = state.get("maximum")
         return cls(
-            count=int(state.get("count", 0)),
+            count=_state_int(state.get("count", 0)),
             minimum=float(minimum) if isinstance(minimum, (int, float)) else None,
             maximum=float(maximum) if isinstance(maximum, (int, float)) else None,
-            mean=float(state.get("mean", 0.0)),
-            m2=float(state.get("m2", 0.0)),
+            mean=_state_float(state.get("mean", 0.0)),
+            m2=_state_float(state.get("m2", 0.0)),
             buckets=buckets,
-            non_finite_count=int(state.get("non_finite_count", 0)),
+            non_finite_count=_state_int(state.get("non_finite_count", 0)),
         )
 
 
@@ -261,12 +269,11 @@ class CategoricalSketch:
     def from_state(cls, state: JSONDocument) -> CategoricalSketch:
         """Restore a sketch produced by :meth:`to_state`."""
 
-        def pairs(name: str) -> dict[int, int]:
-            return {
-                int(item[0]): int(item[1]) for item in state.get(name, []) if isinstance(item, list) and len(item) == 2
-            }
-
-        return cls(count=int(state.get("count", 0)), buckets=Counter(pairs("buckets")), registers=pairs("registers"))
+        return cls(
+            count=_state_int(state.get("count", 0)),
+            buckets=Counter(_state_pairs(state, "buckets")),
+            registers=_state_pairs(state, "registers"),
+        )
 
 
 __all__ = ["CategoricalSketch", "DistributionSketch"]
