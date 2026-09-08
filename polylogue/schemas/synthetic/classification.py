@@ -165,6 +165,7 @@ _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
         "x-polylogue-generated-at",
         "x-polylogue-generator",
         "x-polylogue-high-cardinality-keys",
+        "x-polylogue-observation-status",
         "x-polylogue-observed-artifact-count",
         "x-polylogue-package-profile-family-ids",
         "x-polylogue-package-version",
@@ -175,6 +176,7 @@ _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
         "x-polylogue-sample-count",
         "x-polylogue-sample-granularity",
         "x-polylogue-score",
+        "x-polylogue-statistics-status",
         "x-polylogue-version",
     }
 )

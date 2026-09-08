@@ -151,3 +151,36 @@ def test_family_label_cannot_be_reassigned(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="another structural family"):
         publish(registry, generation=2, family="family-b")
     assert schema(SchemaRegistry(storage_root=tmp_path))["x-polylogue-test-generation"] == 1
+
+
+def test_reappearing_field_replaces_historical_status() -> None:
+    original = {"type": "object", "properties": {"value": {"type": "string"}}}
+    absent = SchemaRegistry._merge_element_schema_with_existing(original, {"type": "object"})
+    reappeared = SchemaRegistry._merge_element_schema_with_existing(
+        absent,
+        {
+            "type": "object",
+            "properties": {
+                "value": {
+                    "type": "string",
+                    "x-polylogue-observed-distribution": {"documents": 1, "encountered_documents": 1},
+                }
+            },
+        },
+    )
+    properties = reappeared["properties"]
+    assert isinstance(properties, dict)
+    assert properties["value"].get("x-polylogue-observation-status") != "historical"
+    assert properties["value"].get("x-polylogue-frequency", 1) == 1
+
+
+def test_single_version_update_uses_fresh_catalog_for_default(tmp_path: Path) -> None:
+    writer = SchemaRegistry(storage_root=tmp_path)
+    publish(writer)
+    assert writer.get_package("synthetic-publication") is not None
+    other = SchemaRegistry(storage_root=tmp_path)
+    publish(other, version="v2", generation=2, family="family-b")
+    writer.write_schema_version("synthetic-publication", "v1", {"type": "object"})
+    catalog = SchemaRegistry(storage_root=tmp_path).load_package_catalog("synthetic-publication")
+    assert catalog is not None
+    assert catalog.latest_version == catalog.default_version == "v2"
