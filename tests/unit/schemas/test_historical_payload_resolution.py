@@ -210,3 +210,37 @@ def test_payload_validation_reuses_selection_verdicts(
 
     assert payload_validation.sample_results
     assert calls == 1
+
+
+@pytest.mark.parametrize("all_rejected", [False, True])
+def test_rejected_schema_probes_stop_at_first_invalid_sample(
+    schema_registry: SchemaRegistry, monkeypatch: pytest.MonkeyPatch, all_rejected: bool
+) -> None:
+    """Eager historical probes validate all 32 samples and fail these counts."""
+    from collections import Counter
+
+    if all_rejected:
+        schema_registry.write_schema_version("claude-code", "v3", _schema("array"), element_kind=_ELEMENT_KIND)
+    calls: Counter[str] = Counter()
+    original_validate = SchemaValidator.validate
+
+    def count_validate(
+        self: SchemaValidator, payload: object, *, include_drift: bool | None = None
+    ) -> ValidationResult:
+        calls[str(self.schema["$id"])] += 1
+        return original_validate(self, payload, include_drift=include_drift)
+
+    monkeypatch.setattr(SchemaValidator, "validate", count_validate)
+    message: object = 7 if all_rejected else {"type": "shutdown_request", "reason": "done"}
+    result = SchemaValidator.validate_payload("claude-code", [_payload(message) for _ in range(32)])
+
+    expected_version = "v3" if all_rejected else "v1"
+    prefix = "polylogue://schemas/claude-code/"
+    assert result.validator.schema["$id"] == f"{prefix}{expected_version}/{_ELEMENT_KIND}"
+    assert len(result.sample_results) == 32
+    assert all(verdict.is_valid is not all_rejected for _, verdict in result.sample_results)
+    expected_counts = {f"{prefix}v2/{_ELEMENT_KIND}": 1, f"{prefix}v1/{_ELEMENT_KIND}": 32}
+    if all_rejected:
+        expected_counts[f"{prefix}v1/{_ELEMENT_KIND}"] = 1
+        expected_counts[f"{prefix}v3/{_ELEMENT_KIND}"] = 32
+    assert dict(calls) == expected_counts
