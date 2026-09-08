@@ -174,9 +174,14 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     if generation.success:
         if registry_after is None:
             raise AssertionError("successful schema generation did not produce a persisted registry")
+        source_provenance = generation.phase_receipt.get("source") if request.source_inputs else None
+        source_digest = (
+            source_provenance.get("source_input_manifest_digest") if isinstance(source_provenance, dict) else None
+        )
         provider_handoff = build_schema_inference_receipt(
             registry_after,
             provider=provider_token,
+            input_manifest_digest=source_digest if isinstance(source_digest, str) else None,
         )
         handoff = existing_handoff.merged_with(provider_handoff) if existing_handoff is not None else provider_handoff
         write_schema_inference_receipt(handoff, handoff_path)
