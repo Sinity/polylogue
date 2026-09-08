@@ -78,6 +78,9 @@ class SchemaInferRequest:
     cluster_sample_limit: int = 500
     full_corpus: bool = False
     progress_callback: GenerationProgressCallback | None = None
+    source_inputs: tuple[object, ...] = ()
+    source_cache_path: Path | None = None
+    source_workers: int = 2
 
 
 @dataclass(frozen=True)
