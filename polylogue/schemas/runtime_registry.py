@@ -477,6 +477,10 @@ class SchemaRegistry:
             if path.is_dir() and (_catalog_path(path).is_file() or bool(self.list_committed_versions(path.name)))
         )
 
+    def read_committed_file(self, provider: str, relative_path: str) -> bytes | None:
+        """Read artifact bytes from the same snapshot as committed catalog queries."""
+        return self._snapshot(self._committed_provider_dir(provider)).get(relative_path)
+
     def load_committed_catalog(self, provider: str) -> SchemaPackageCatalog | None:
         payload = self._snapshot_json(self._committed_provider_dir(provider), "catalog.json")
         return SchemaPackageCatalog.from_dict(payload) if payload is not None else None
@@ -651,7 +655,10 @@ class SchemaRegistry:
         fresh_statistics = "x-polylogue-observed-distribution" in candidate
         for key, value in existing.items():
             if key.startswith("x-polylogue-") and key not in candidate:
-                if fresh_statistics and (key in _STATISTICAL_ANNOTATIONS or key == "x-polylogue-statistics-status"):
+                if fresh_statistics and (
+                    key in _STATISTICAL_ANNOTATIONS
+                    or key in {"x-polylogue-statistics-status", "x-polylogue-observation-status"}
+                ):
                     continue
                 result[key] = value
         for key, value in candidate.items():
@@ -720,84 +727,91 @@ class SchemaRegistry:
         cluster_manifest: Mapping[str, object] | None = None,
     ) -> None:
         """Replace a complete package set while preserving observed family structure."""
-        provider_token = _provider_token(provider)
-        self.clear_cache()
-        existing_catalog = self._load_local_catalog(provider_token)
-        prior_packages = {package.version: package for package in existing_catalog.packages} if existing_catalog else {}
-        prepared: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
-        for package in catalog.packages:
-            schemas = package_schemas.get(package.version)
-            if schemas is None:
-                raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
-            prior = prior_packages.get(package.version)
-            if (
-                prior is not None
-                and prior.anchor_profile_family_id
-                and package.anchor_profile_family_id
-                and (prior.anchor_kind, prior.anchor_profile_family_id)
-                != (package.anchor_kind, package.anchor_profile_family_id)
-            ):
-                raise ValueError(f"Schema version {package.version} already belongs to another structural family")
-            prior_schemas: ElementSchemaMap = {}
-            if prior is not None:
-                for element in prior.elements:
-                    if element.schema_file is not None:
-                        value = self._read_local_element_schema_file(provider_token, prior.version, element.schema_file)
-                        if value is None:
-                            raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
-                        prior_schemas[element.element_kind] = value
-            merged = {
-                kind: self._merge_element_schema_with_existing(prior_schemas.get(kind), value)
-                for kind, value in schemas.items()
-            }
-            elements = list(package.elements)
-            if prior is not None:
-                for element in prior.elements:
-                    if element.element_kind not in schemas:
-                        if element.element_kind in prior_schemas:
-                            merged[element.element_kind] = prior_schemas[element.element_kind]
-                        elements.append(dataclasses.replace(element, observation_status="historical"))
-            package = dataclasses.replace(package, elements=elements)
-            profile = package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
-            self._preflight_package_write(package, element_schemas=merged, workload_profile=profile)
-            prepared.append((package, merged, profile))
-
-        incoming_versions = {package.version for package, _, _ in prepared}
-        historical_packages = [
-            dataclasses.replace(package, observation_status="historical")
-            for version, package in prior_packages.items()
-            if version not in incoming_versions
-        ]
-        final_catalog = dataclasses.replace(
-            catalog,
-            packages=sorted(
-                [package for package, _, _ in prepared] + historical_packages,
-                key=lambda package: _version_sort_key(package.version),
-            ),
-        )
-        provider_dir = self._provider_dir(provider_token)
-        self.storage_root.mkdir(parents=True, exist_ok=True)
-        baseline = dict(self._snapshot(provider_dir))
-        with tempfile.TemporaryDirectory(prefix=f".{provider_token}.staging-", dir=self.storage_root) as temporary:
-            staging_root = Path(temporary)
-            staged_provider = staging_root / provider_token
-            if provider_dir.exists():
-                shutil.copytree(provider_dir, staged_provider)
-            else:
-                staged_provider.mkdir()
-            staged_registry = type(self)(storage_root=staging_root)
-            for package, schemas, profile in prepared:
-                staged_registry.write_package(package, element_schemas=schemas, workload_profile=profile)
-            for package in historical_packages:
-                manifest_path = staged_registry._package_manifest_path(provider_token, package.version)
-                manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
-            staged_registry.save_package_catalog(final_catalog)
-            if cluster_manifest is not None:
-                (staged_provider / "manifest.json").write_text(
-                    json.dumps(dict(cluster_manifest), indent=2, sort_keys=True), encoding="utf-8"
+        with self._cache_lock:
+            provider_token = _provider_token(provider)
+            self.clear_cache()
+            existing_catalog = self._load_local_catalog(provider_token)
+            prior_packages = (
+                {package.version: package for package in existing_catalog.packages} if existing_catalog else {}
+            )
+            prepared: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
+            for package in catalog.packages:
+                schemas = package_schemas.get(package.version)
+                if schemas is None:
+                    raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
+                prior = prior_packages.get(package.version)
+                if (
+                    prior is not None
+                    and prior.anchor_profile_family_id
+                    and package.anchor_profile_family_id
+                    and (prior.anchor_kind, prior.anchor_profile_family_id)
+                    != (package.anchor_kind, package.anchor_profile_family_id)
+                ):
+                    raise ValueError(f"Schema version {package.version} already belongs to another structural family")
+                prior_schemas: ElementSchemaMap = {}
+                if prior is not None:
+                    for element in prior.elements:
+                        if element.schema_file is not None:
+                            value = self._read_local_element_schema_file(
+                                provider_token, prior.version, element.schema_file
+                            )
+                            if value is None:
+                                raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
+                            prior_schemas[element.element_kind] = value
+                merged = {
+                    kind: self._merge_element_schema_with_existing(prior_schemas.get(kind), value)
+                    for kind, value in schemas.items()
+                }
+                elements = list(package.elements)
+                if prior is not None:
+                    for element in prior.elements:
+                        if element.element_kind not in schemas:
+                            if element.element_kind in prior_schemas:
+                                merged[element.element_kind] = prior_schemas[element.element_kind]
+                            elements.append(dataclasses.replace(element, observation_status="historical"))
+                package = dataclasses.replace(package, elements=elements)
+                profile = (
+                    package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
                 )
-            publish_provider_tree(staged_provider, provider_dir, expected_snapshot=baseline)
-        self.clear_cache()
+                self._preflight_package_write(package, element_schemas=merged, workload_profile=profile)
+                prepared.append((package, merged, profile))
+
+            incoming_versions = {package.version for package, _, _ in prepared}
+            historical_packages = [
+                dataclasses.replace(package, observation_status="historical")
+                for version, package in prior_packages.items()
+                if version not in incoming_versions
+            ]
+            final_catalog = dataclasses.replace(
+                catalog,
+                packages=sorted(
+                    [package for package, _, _ in prepared] + historical_packages,
+                    key=lambda package: _version_sort_key(package.version),
+                ),
+            )
+            provider_dir = self._provider_dir(provider_token)
+            self.storage_root.mkdir(parents=True, exist_ok=True)
+            baseline = dict(self._snapshot(provider_dir))
+            with tempfile.TemporaryDirectory(prefix=f".{provider_token}.staging-", dir=self.storage_root) as temporary:
+                staging_root = Path(temporary)
+                staged_provider = staging_root / provider_token
+                if provider_dir.exists():
+                    shutil.copytree(provider_dir, staged_provider)
+                else:
+                    staged_provider.mkdir()
+                staged_registry = type(self)(storage_root=staging_root)
+                for package, schemas, profile in prepared:
+                    staged_registry.write_package(package, element_schemas=schemas, workload_profile=profile)
+                for package in historical_packages:
+                    manifest_path = staged_registry._package_manifest_path(provider_token, package.version)
+                    manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
+                staged_registry.save_package_catalog(final_catalog)
+                if cluster_manifest is not None:
+                    (staged_provider / "manifest.json").write_text(
+                        json.dumps(dict(cluster_manifest), indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                publish_provider_tree(staged_provider, provider_dir, expected_snapshot=baseline)
+            self.clear_cache()
 
     def _single_element_package(
         self,
@@ -848,11 +862,13 @@ class SchemaRegistry:
         *,
         element_kind: str = "session_document",
     ) -> str:
-        provider_token = _provider_token(provider)
-        versions = self.list_versions(provider_token)
-        new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
-        self.write_schema_version(provider_token, new_version, schema, element_kind=element_kind)
-        return new_version
+        with self._cache_lock:
+            self.clear_cache()
+            provider_token = _provider_token(provider)
+            versions = self.list_versions(provider_token)
+            new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
+            self.write_schema_version(provider_token, new_version, schema, element_kind=element_kind)
+            return new_version
 
     def write_schema_version(
         self,
@@ -862,27 +878,31 @@ class SchemaRegistry:
         *,
         element_kind: str = "session_document",
     ) -> Path:
-        provider_token = _provider_token(provider)
-        package, schemas = self._single_element_package(
-            provider_token,
-            version=version,
-            schema=copy.deepcopy(dict(schema)),
-            element_kind=element_kind,
-        )
-        prior_catalog = self._load_local_catalog(provider_token)
-        versions = [item.version for item in prior_catalog.packages] if prior_catalog else []
-        latest_version = max([*versions, version], key=_version_sort_key)
-        catalog = SchemaPackageCatalog(
-            provider=provider_token,
-            packages=[package],
-            latest_version=latest_version,
-            default_version=latest_version,
-            recommended_version=latest_version,
-        )
-        self.replace_provider_packages(provider_token, catalog, {version: schemas})
-        return (
-            self._package_dir(provider_token, version) / "elements" / f"{package.default_element_kind}.schema.json.gz"
-        )
+        with self._cache_lock:
+            provider_token = _provider_token(provider)
+            package, schemas = self._single_element_package(
+                provider_token,
+                version=version,
+                schema=copy.deepcopy(dict(schema)),
+                element_kind=element_kind,
+            )
+            self.clear_cache()
+            prior_catalog = self._load_local_catalog(provider_token)
+            versions = [item.version for item in prior_catalog.packages] if prior_catalog else []
+            latest_version = max([*versions, version], key=_version_sort_key)
+            catalog = SchemaPackageCatalog(
+                provider=provider_token,
+                packages=[package],
+                latest_version=latest_version,
+                default_version=latest_version,
+                recommended_version=latest_version,
+            )
+            self.replace_provider_packages(provider_token, catalog, {version: schemas})
+            return (
+                self._package_dir(provider_token, version)
+                / "elements"
+                / f"{package.default_element_kind}.schema.json.gz"
+            )
 
     def _package_rank(self, catalog: SchemaPackageCatalog) -> dict[str, int]:
         return {package.version: index for index, package in enumerate(self._ranked_packages(catalog))}
