@@ -895,3 +895,32 @@ def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_pa
     )
     assert warm.cache_hits == 4
     assert warm_evidence.current_source_count == 2
+
+
+@pytest.mark.parametrize("source_key", ["src/private/config.py", r"src\private\config.py", "operator@example.invalid"])
+def test_source_schema_hides_keys_in_small_content_maps(tmp_path: Path, source_key: str) -> None:
+    """Anti-vacuity: retaining small map keys publishes source filenames and addresses."""
+    source = tmp_path / "session.jsonl"
+    records = [
+        {"type": "user", "sessionId": "synthetic", "message": {"role": "user", "content": "hello"}},
+        {
+            "type": "file-history-snapshot",
+            "messageId": "synthetic-message",
+            "snapshot": {"trackedFileBackups": {source_key: {"version": 1}}},
+        },
+    ]
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    result = generate_provider_schema_from_sources(
+        "claude-code",
+        source_inputs=(SchemaSourceInput("claude-code", source),),
+        cache_path=tmp_path / "cache.sqlite3",
+        max_workers=1,
+        privacy_config=None,
+    )
+    assert result.success
+    assert result.schema is not None
+    encoded = json.dumps(result.schema)
+    assert json.dumps(source_key)[1:-1] not in encoded
+    assert "trackedFileBackups" in encoded
+    assert "additionalProperties" in encoded
+    assert '"version"' in encoded

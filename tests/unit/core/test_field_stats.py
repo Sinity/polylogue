@@ -72,6 +72,12 @@ class TestIsDynamicKey:
             '<source path="/realm/project/polylogue">\nfragment</source>',
             "field\x00name",
             "x" * 129,
+            "src/private/config.py",
+            r"src\private\config.py",
+            "operator@example.invalid",
+            "text/html",
+            "application/vnd.ant.code",
+            "claude/phase_3",
         ],
     )
     def test_content_shaped_property_names_detected(self, key: str) -> None:
@@ -88,9 +94,6 @@ class TestIsDynamicKey:
             "abc",
             "my-field",
             "status_code",
-            "text/html",
-            "application/vnd.ant.code",
-            "claude/phase_3",
         ],
     )
     def test_static_keys_not_dynamic(self, key: str) -> None:
