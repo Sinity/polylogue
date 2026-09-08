@@ -28,7 +28,7 @@ def score_title(path: str, fs: FieldStats, all_stats: dict[str, FieldStats]) -> 
     elif avg_len > 200:
         return None
 
-    n_distinct = len(fs.observed_values)
+    n_distinct = fs.effective_distinct_count
     if n_distinct >= 5:
         score += 0.15
         evidence["distinct_values"] = n_distinct
@@ -72,9 +72,8 @@ def score_title(path: str, fs: FieldStats, all_stats: dict[str, FieldStats]) -> 
         score *= 0.6
         evidence["low_entropy"] = round(fs.approximate_entropy, 2)
 
-    if fs.observed_values:
-        slash_count = sum(1 for value in fs.observed_values if "/" in value)
-        slash_ratio = slash_count / len(fs.observed_values)
+    if fs.effective_distinct_count:
+        slash_ratio = fs.slash_value_count / fs.value_count if fs.value_count else 0.0
         if slash_ratio > 0.3:
             score *= 0.3
             evidence["slash_ratio"] = round(slash_ratio, 3)

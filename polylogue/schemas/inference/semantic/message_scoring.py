@@ -8,23 +8,23 @@ from polylogue.schemas.inference.semantic.models import KNOWN_ROLE_VALUES, Seman
 
 def score_container(path: str, fs: FieldStats, all_stats: dict[str, FieldStats]) -> SemanticCandidate | None:
     """Score as message_container: repeated arrays/maps of objects."""
-    if not fs.array_lengths and not fs.object_key_counts:
+    if not fs.has_array_evidence and not fs.has_object_fanout_evidence:
         return None
 
     evidence: dict[str, object] = {}
     score = 0.0
-    if fs.array_lengths:
+    if fs.has_array_evidence:
         avg_len = fs.avg_array_length
         if avg_len is not None and avg_len >= 2:
             score += min(0.3, avg_len / 30.0)
             evidence["avg_array_length"] = round(avg_len, 1)
-    if fs.object_key_counts:
+    if fs.has_object_fanout_evidence:
         avg_fanout = fs.avg_object_fanout
         if avg_fanout is not None and avg_fanout >= 3:
             score += min(0.3, avg_fanout / 30.0)
             evidence["avg_object_fanout"] = round(avg_fanout, 1)
 
-    child_prefix = f"{path}[*]" if fs.array_lengths else f"{path}.*"
+    child_prefix = f"{path}[*]" if fs.has_array_evidence else f"{path}.*"
     child_paths = [item for item in all_stats if item.startswith(child_prefix + ".")]
     if len(child_paths) >= 3:
         score += 0.2
@@ -51,7 +51,7 @@ def score_role(path: str, fs: FieldStats) -> SemanticCandidate | None:
 
     evidence: dict[str, object] = {}
     score = 0.0
-    n_distinct = len(fs.observed_values)
+    n_distinct = fs.effective_distinct_count
     if n_distinct > 15:
         return None
     evidence["distinct_values"] = n_distinct
@@ -119,7 +119,7 @@ def score_body(path: str, fs: FieldStats) -> SemanticCandidate | None:
             score += 0.05
         evidence["entropy"] = round(entropy, 2)
 
-    n_distinct = len(fs.observed_values)
+    n_distinct = fs.effective_distinct_count
     if n_distinct >= 20:
         score += 0.1
         evidence["distinct_values"] = n_distinct
