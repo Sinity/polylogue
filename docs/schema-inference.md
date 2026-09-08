@@ -22,7 +22,9 @@ archive-backed sampler. Selecting ordinary sources requires no archive rebuild.
 ## Inputs and reuse
 
 JSONL and NDJSON records are streamed. JSON export arrays and supported ZIP
-members are observed by logical session. Provider-native identifiers distinguish
+members are observed by logical session. Export evidence is spooled to private
+SQLite files with bounded active contributions. Single-object JSON documents
+above 32 MiB require a streaming adapter and are reported as unsupported. Provider-native identifiers distinguish
 sessions, including Claude Code subagents. Current revisions contribute value
 statistics; historical revisions retain structural evidence. Exact duplicates
 and repeated export captures do not add current source-record weight.
