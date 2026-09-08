@@ -23,8 +23,8 @@ EXPECTED_DEMO_SESSIONS = (
         "aistudio-drive",
         "demo-00",
         "Please inspect the attached fixture note.",
-        1706934576990,
-        1706934756990,
+        1706934696990,
+        1706934696990,
         4,
     ),
     (
@@ -32,7 +32,7 @@ EXPECTED_DEMO_SESSIONS = (
         "chatgpt-export",
         "dc13ca54-0bba-4298-a38f-09068c2ef2c5",
         "Debugging flaky async pipeline tests",
-        1714493799513,
+        1684642129965,
         1746826781690,
         3,
     ),
@@ -40,7 +40,7 @@ EXPECTED_DEMO_SESSIONS = (
         "claude-code-session:63705dcc-f3e5-4378-8118-8bc21e53bbb6",
         "claude-code-session",
         "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
-        "63705dcc-f3e5-4378-8118-8bc21e53bbb6",
+        "Can you help me debug this issue?",
         1730589115737,
         1730589655737,
         12,
@@ -50,14 +50,9 @@ EXPECTED_DEMO_SESSIONS = (
         "codex-session",
         "demo-00",
         "Could you review this code for potential issues?",
-        # This demo session's first record has no session_meta, so
-        # ParsedSession.created_at is None from the parser; the archive
-        # write path's pre-existing message-evidence fallback
-        # (_derive_session_timestamps_from_messages in
-        # storage/sqlite/archive_tiers/write.py) derives it from the
-        # earliest message's own timestamp instead of leaving it null.
-        1705985222161,
-        1705985522161,
+        # Session timestamps use the available message timestamp evidence.
+        1705985342161,
+        1705985342161,
         8,
     ),
 )
