@@ -802,8 +802,8 @@ class TestProfileClustering:
 class TestCliMain:
     """CLI entry point behavior."""
 
-    def test_cli_with_no_db(self, tmp_path: Path) -> None:
-        with pytest.raises(SystemExit, match="2"):
+    def test_cli_with_no_db(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        assert (
             cli_main(
                 [
                     "--provider",
@@ -814,3 +814,6 @@ class TestCliMain:
                     str(tmp_path / "missing.db"),
                 ]
             )
+            == 1
+        )
+        assert "No samples found" in capsys.readouterr().out
