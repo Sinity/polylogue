@@ -153,6 +153,10 @@ class FieldStats:
 
     def observe_equality_value(self, value: str, *, session_id: str | None = None) -> None:
         """Retain a bounded, private equality witness without retaining prose."""
+        if value.lower() in _SAFE_STRUCTURAL_VALUES:
+            self.safe_observed_values[value] += 1
+        if "/" in value:
+            self.slash_value_count += 1
         digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
         if digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
             largest = max(self.equality_hash_counts)
@@ -170,10 +174,6 @@ class FieldStats:
                 tokens.add(token)
             else:
                 self.truncated_evidence["equality_sessions"] += 1
-        if value in _SAFE_STRUCTURAL_VALUES:
-            self.safe_observed_values[value] += 1
-        if "/" in value:
-            self.slash_value_count += 1
 
     def observe_object_key(self, value: str) -> None:
         """Retain a bounded private witness for one object key."""
@@ -186,6 +186,18 @@ class FieldStats:
             del self.object_key_hash_counts[largest]
             self.truncated_evidence["object_key_hashes"] += 1
         self.object_key_hash_counts[digest] += 1
+
+    def object_key_overlap(self, target: FieldStats) -> tuple[int, int, int] | None:
+        """Return overlap counts using the target's retained hash domain."""
+        target_values = set(target.object_key_hash_counts)
+        source_values = set(self.equality_hash_counts)
+        if not target_values or not source_values:
+            return None
+        if target.truncated_evidence["object_key_hashes"]:
+            source_values = {value for value in source_values if value <= max(target_values)}
+        if not source_values:
+            return None
+        return len(source_values & target_values), len(source_values), len(target_values)
 
     @property
     def frequency(self) -> float:
