@@ -30,7 +30,7 @@ class _Observation:
     revision_sha256: str
     subject: str
     element_kind: str
-    records: Iterable[object]
+    records: Iterable[JSONValue]
     is_current: bool = True
 
 
