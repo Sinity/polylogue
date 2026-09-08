@@ -42,6 +42,9 @@ def source_result(
         producer_version_conflicting_sources=0,
         producer_version_unrecognized_sources=0,
         input_manifest_digest="a" * 64,
+        candidate_count=1,
+        included_candidate_count=1,
+        included_native_source_revision_count=1,
     )
 
 

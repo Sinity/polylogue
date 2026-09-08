@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import pickle
 import re
 import sqlite3
 import stat
@@ -17,21 +18,24 @@ import tempfile
 import time
 import zipfile
 from collections import Counter, OrderedDict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from functools import partial
+from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, Literal, cast
 from uuid import UUID
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
+from polylogue.schemas.source_document_identity import DOCUMENT_UPDATE_FIELDS, native_document_identity
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
 from polylogue.sources.origin_specs import _fingerprint_sources, artifact_suffixes_for_provider, recognize_source_class
@@ -126,6 +130,9 @@ class SourceInferenceResult:
     producer_version_conflicting_sources: int
     producer_version_unrecognized_sources: int
     input_manifest_digest: str
+    candidate_count: int
+    included_candidate_count: int
+    included_native_source_revision_count: int
 
     def provenance(self) -> JSONDocument:
         """Return aggregate-only source provenance safe for package metadata."""
@@ -137,6 +144,7 @@ class SourceInferenceResult:
             "source_cache_hits": self.cache_hits,
             "source_cache_misses": self.cache_misses,
             "source_terminal_outcomes": dict(sorted(self.terminal_counts.items())),
+            "source_terminal_outcome_unit": "native_source_revision",
             "source_terminal_reasons": dict(sorted(self.terminal_reason_counts.items())),
             "source_phase_timings_ms": dict(sorted(self.phase_timings_ms.items())),
             "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
@@ -144,6 +152,9 @@ class SourceInferenceResult:
             "producer_version_conflicting_sources": self.producer_version_conflicting_sources,
             "producer_version_unrecognized_sources": self.producer_version_unrecognized_sources,
             "source_input_manifest_digest": self.input_manifest_digest,
+            "source_candidate_count": self.candidate_count,
+            "source_included_candidate_count": self.included_candidate_count,
+            "source_included_native_source_revision_count": self.included_native_source_revision_count,
         }
 
 
@@ -172,6 +183,83 @@ class _SizedPayload:
 
     value: JSONValue
     byte_count: int
+
+
+class _PayloadReplay(Sequence[JSONValue]):
+    """Replay decoded source records from their source or a private spool."""
+
+    def __init__(
+        self,
+        payloads: Iterable[JSONValue | _SizedPayload] | None = None,
+        *,
+        replay_payloads: Callable[[], Iterable[JSONValue | _SizedPayload]] | None = None,
+    ) -> None:
+        self._replay_payloads = replay_payloads
+        self._spool = None
+        self._count = 0
+        if replay_payloads is not None:
+            return
+        if payloads is None:
+            raise ValueError("payloads are required when no replay factory is supplied")
+        self._spool = tempfile.TemporaryFile(mode="w+b")  # noqa: SIM115
+        try:
+            for payload in payloads:
+                pickle.dump(payload, self._spool, protocol=pickle.HIGHEST_PROTOCOL)
+                self._count += 1
+        except BaseException:
+            self.close()
+            raise
+
+    def __iter__(self) -> Iterator[JSONValue]:
+        yield from (_payload_value(payload) for payload in self._iter_payloads())
+
+    def __len__(self) -> int:
+        if self._replay_payloads is not None:
+            return sum(1 for _payload in self._replay_payloads())
+        return self._count
+
+    def __bool__(self) -> bool:
+        if self._replay_payloads is not None:
+            return next(iter(self._replay_payloads()), None) is not None
+        return self._count > 0
+
+    def __getitem__(self, index: int | slice) -> JSONValue | list[JSONValue]:
+        if isinstance(index, slice):
+            start = 0 if index.start is None else index.start
+            stop = index.stop
+            step = 1 if index.step is None else index.step
+            if start >= 0 and stop is not None and stop >= 0 and step > 0:
+                return list(islice(self, start, stop, step))
+        elif index >= 0:
+            try:
+                return next(islice(self, index, index + 1))
+            except StopIteration as error:
+                raise IndexError(index) from error
+        return list(self)[index]
+
+    def iter_payloads(self) -> Iterator[JSONValue | _SizedPayload]:
+        yield from self._iter_payloads()
+
+    def _iter_payloads(self) -> Iterator[JSONValue | _SizedPayload]:
+        if self._replay_payloads is not None:
+            yield from self._replay_payloads()
+            return
+        if self._spool is None:
+            raise AssertionError("payload replay has no source")
+        self._spool.seek(0)
+        while True:
+            try:
+                yield pickle.load(self._spool)
+            except EOFError:
+                return
+
+    def close(self) -> None:
+        if self._spool is not None:
+            self._spool.close()
+
+
+def _payload_value(payload: JSONValue | _SizedPayload) -> JSONValue:
+    return payload.value if isinstance(payload, _SizedPayload) else payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -638,7 +726,7 @@ def _iter_file_payloads(path: Path, *, byte_count: int) -> Iterator[JSONValue | 
     yield from _iter_document_payloads(lambda: path.open("rb"), str(path), byte_count=byte_count)
 
 
-def _native_source_id(provider: Provider, payload: JSONValue, fallback: str) -> str:
+def _native_source_id(provider: Provider, payload: JSONValue, fallback: str, *, source_path: Path) -> str:
     """Return the provider-native session identifier when the record declares one.
 
     The collector hashes this private token before retaining equality evidence.
@@ -665,7 +753,7 @@ def _native_source_id(provider: Provider, payload: JSONValue, fallback: str) -> 
         session_id = payload.get("uuid") or payload.get("id")
         if isinstance(session_id, str) and session_id:
             return f"claude-ai:{session_id}"
-    return fallback
+    return native_document_identity(provider, payload, source_path) or fallback
 
 
 def _claude_code_native_identity(declared: str, candidate: _SourceCandidate) -> str:
@@ -689,7 +777,7 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
         Provider.CHATGPT: ("update_time",),
         Provider.CLAUDE_AI: ("updated_at", "updatedAt"),
         Provider.CLAUDE_CODE: ("timestamp",),
-    }.get(provider, ())
+    }.get(provider, DOCUMENT_UPDATE_FIELDS.get(provider, ()))
     for key in keys:
         value = payload.get(key)
         if isinstance(value, bool) or value is None:
@@ -710,6 +798,7 @@ def _collect_payload_evidence(
     include_statistics: bool = True,
     chunk_record_limit: int = _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT,
     spool_path: Path | None = None,
+    replay_payloads: Callable[[], Iterable[JSONValue | _SizedPayload]] | None = None,
 ) -> tuple[tuple[_SourceContribution, ...], int, tuple[str, ...], bool]:
     """Reduce each native source revision without retaining decoded records."""
     from polylogue.schemas.generation.evidence import SchemaEvidenceAccumulator, collect_source_evidence
@@ -718,6 +807,29 @@ def _collect_payload_evidence(
         raise ValueError("chunk_record_limit must be positive")
     provider = Provider.from_string(candidate.provider)
     config = resolve_provider_config(provider)
+    payload_replay: _PayloadReplay | None = None
+    admitted_artifact_kind: str | None = None
+    initial_source_id = candidate.logical_source_id
+    if config.sample_granularity == "record":
+        payload_replay = _PayloadReplay(payloads, replay_payloads=replay_payloads)
+        try:
+            artifact = classify_artifact(payload_replay, provider=provider, source_path=candidate.path)
+        except BaseException:
+            payload_replay.close()
+            raise
+        if not artifact.schema_eligible:
+            payload_replay.close()
+            return (), 0, (), False
+        admitted_artifact_kind = artifact.cohort
+        for record in payload_replay:
+            declared = _native_source_id(provider, record, "", source_path=candidate.path)
+            if declared:
+                initial_source_id = (
+                    _claude_code_native_identity(declared, candidate) if provider is Provider.CLAUDE_CODE else declared
+                )
+                break
+        if replay_payloads is None:
+            payloads = payload_replay.iter_payloads()
     evidence_rows: dict[str, dict[str, SchemaEvidenceAccumulator]] = {}
     record_counts: Counter[str] = Counter()
     update_keys: dict[str, tuple[int, str] | None] = {}
@@ -816,7 +928,7 @@ def _collect_payload_evidence(
                 flush(oldest)
 
     try:
-        header_source_id = candidate.logical_source_id
+        header_source_id = initial_source_id
         header_update: tuple[int, str] | None = None
         for payload_index, sized_payload in enumerate(payloads):
             if isinstance(sized_payload, _SizedPayload):
@@ -828,7 +940,7 @@ def _collect_payload_evidence(
             versions, unrecognized = _declared_producer_versions(provider, (payload,))
             producer_versions.update(versions)
             producer_version_unrecognized = producer_version_unrecognized or unrecognized
-            declared = _native_source_id(provider, payload, "")
+            declared = _native_source_id(provider, payload, "", source_path=candidate.path)
             if declared and provider is Provider.CLAUDE_CODE:
                 declared = _claude_code_native_identity(declared, candidate)
             update = _declared_update_key(provider, payload)
@@ -849,6 +961,7 @@ def _collect_payload_evidence(
                 config=config,
                 full_corpus=True,
                 compact_values=False,
+                admitted_artifact_kind=admitted_artifact_kind,
             )
             for unit in units:
                 if spool is None:
@@ -861,6 +974,9 @@ def _collect_payload_evidence(
         if spool is not None:
             spool.close()
         raise
+    finally:
+        if payload_replay is not None:
+            payload_replay.close()
     try:
         if spool is not None:
             while active_rows:
@@ -963,6 +1079,7 @@ def _collect_candidate(
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             spool_path=spool_path,
+            replay_payloads=partial(_iter_file_payloads, candidate.path, byte_count=byte_count),
         )
     except SourceInferenceError as exc:
         reason = str(exc)
@@ -1088,6 +1205,7 @@ def _bounded_collected_candidates(
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool = True,
     spool_directory: Path | None = None,
+    on_wait: Callable[[], None] | None = None,
 ) -> Iterator[_CollectedCandidate]:
     """Drain completed source workers while keeping the submission window bounded."""
     iterator = iter(candidates)
@@ -1116,7 +1234,11 @@ def _bounded_collected_candidates(
         except StopIteration:
             break
     while pending:
-        ready, pending = wait(pending, return_when=FIRST_COMPLETED)
+        ready, pending = wait(pending, timeout=2, return_when=FIRST_COMPLETED)
+        if not ready:
+            if on_wait is not None:
+                on_wait()
+            continue
         for future in ready:
             yield future.result()
             with suppress(StopIteration):
@@ -1366,6 +1488,7 @@ def infer_sources(
     report("inventory", force=True)
     collect_started = time.monotonic_ns()
     recipe_fingerprint = _source_recipe_fingerprint()
+    hash_started = time.monotonic_ns()
     preliminary_by_element: dict[str, SchemaEvidenceAccumulator] = {}
     descriptors: list[_CandidateDescriptor] = []
 
@@ -1504,6 +1627,8 @@ def infer_sources(
                 records=preliminary_records,
                 input_bytes=sum(input_bytes_by_candidate.values()),
             )
+        hash_ms = (time.monotonic_ns() - hash_started) / 1_000_000
+        preliminary_started = time.monotonic_ns()
         with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
             spool_root = Path(spool_dir)
             with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
@@ -1514,6 +1639,11 @@ def infer_sources(
                     dynamic_paths_by_element={},
                     include_statistics=False,
                     spool_directory=spool_root,
+                    on_wait=lambda: report(
+                        "preliminary",
+                        records=preliminary_records,
+                        input_bytes=sum(input_bytes_by_candidate.values()),
+                    ),
                 ):
                     if item.terminal.outcome != "included" or item.revision is None:
                         terminal_counts[item.terminal.outcome] += 1
@@ -1578,6 +1708,8 @@ def infer_sources(
                         input_bytes=sum(input_bytes_by_candidate.values()),
                     )
 
+        preliminary_ms = (time.monotonic_ns() - preliminary_started) / 1_000_000
+
         descriptors.sort(
             key=lambda item: (
                 item.candidate.provider,
@@ -1597,6 +1729,7 @@ def infer_sources(
             input_bytes=sum(input_bytes_by_candidate.values()),
         )
 
+        statistics_started = time.monotonic_ns()
         final: list[_CandidateDescriptor] = []
         final_misses: list[_CandidateDescriptor] = []
         for descriptor in descriptors:
@@ -1652,6 +1785,11 @@ def infer_sources(
                     limit=max(1, max_workers) * 2,
                     dynamic_paths_by_element=dynamic_paths_by_element,
                     spool_directory=spool_root,
+                    on_wait=lambda: report(
+                        "statistics",
+                        records=preliminary_records,
+                        input_bytes=sum(input_bytes_by_candidate.values()),
+                    ),
                 ):
                     expected = expected_by_candidate[item.candidate]
                     if (
@@ -1715,6 +1853,8 @@ def infer_sources(
                     final.append(expected)
                     cache_misses += 1
 
+        statistics_ms = (time.monotonic_ns() - statistics_started) / 1_000_000
+        fold_started = time.monotonic_ns()
         final.sort(
             key=lambda item: (
                 item.candidate.provider,
@@ -1807,9 +1947,12 @@ def infer_sources(
             if selected_contributions:
                 raise SourceInferenceError("final source evidence no longer matches the structure pass")
 
+    fold_ms = (time.monotonic_ns() - fold_started) / 1_000_000
     collect_ms = (time.monotonic_ns() - collect_started) / 1_000_000
-    if unique:
-        terminal_counts["included"] += len(unique)
+    included_candidate_count = len(final)
+    included_native_source_revision_count = len(unique)
+    if included_native_source_revision_count:
+        terminal_counts["included"] += included_native_source_revision_count
     producer_version_counts: Counter[str] = Counter()
     producer_version_missing_sources = 0
     producer_version_conflicting_sources = 0
@@ -1838,7 +1981,14 @@ def infer_sources(
         record_count=record_count,
         cache_hits=cache_hits,
         cache_misses=cache_misses,
-        phase_timings_ms={"inventory": round(inventory_ms, 3), "collect": round(collect_ms, 3)},
+        phase_timings_ms={
+            "inventory": round(inventory_ms, 3),
+            "hash": round(hash_ms, 3),
+            "preliminary": round(preliminary_ms, 3),
+            "statistics": round(statistics_ms, 3),
+            "fold": round(fold_ms, 3),
+            "collect": round(collect_ms, 3),
+        },
         producer_version_counts=dict(sorted(producer_version_counts.items())),
         producer_version_missing_sources=producer_version_missing_sources,
         producer_version_conflicting_sources=producer_version_conflicting_sources,
@@ -1855,6 +2005,9 @@ def infer_sources(
                 ],
             }
         ),
+        candidate_count=len(candidates),
+        included_candidate_count=included_candidate_count,
+        included_native_source_revision_count=included_native_source_revision_count,
     )
 
 
