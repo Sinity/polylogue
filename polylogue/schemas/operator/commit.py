@@ -71,7 +71,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     provider_token = str(canonical_schema_provider(request.provider))
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
-    existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
+    if handoff_path.exists():
+        load_schema_inference_receipt(handoff_path)
     registry_before = SchemaRegistry(storage_root=output_dir)
     # The bundled registry is a read fallback, not the prior state of this
     # commit's output directory. Compare against local persisted packages only.
@@ -174,8 +175,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             provider=provider_token,
             input_manifest_digest=source_digest if isinstance(source_digest, str) else None,
         )
-        handoff = existing_handoff.merged_with(provider_handoff) if existing_handoff is not None else provider_handoff
-        write_schema_inference_receipt(handoff, handoff_path)
+        handoff = write_schema_inference_receipt(provider_handoff, handoff_path, merge=True)
 
     return SchemaCommitResult(
         provider=request.provider,

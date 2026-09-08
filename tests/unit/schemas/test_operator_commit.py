@@ -43,9 +43,10 @@ def _bundle(
     schema: dict[str, Any],
     sample_count: int,
     element_kind: str = "session_document",
+    provider: str = _PROVIDER,
 ) -> SimpleNamespace:
     package = SchemaVersionPackage(
-        provider=_PROVIDER,
+        provider=provider,
         version=version,
         anchor_kind=element_kind,
         default_element_kind=element_kind,
@@ -63,7 +64,7 @@ def _bundle(
         ],
     )
     result = GenerationResult(
-        provider=_PROVIDER,
+        provider=provider,
         sample_count=sample_count,
         schema=schema,
         error=None,
@@ -75,14 +76,14 @@ def _bundle(
     return SimpleNamespace(
         result=result,
         catalog=SchemaPackageCatalog(
-            provider=_PROVIDER,
+            provider=provider,
             packages=[package],
             latest_version=version,
             default_version=version,
             recommended_version=version,
         ),
         package_schemas={version: {element_kind: schema}},
-        manifest=ClusterManifest(provider=_PROVIDER, clusters=[], artifact_counts={}),
+        manifest=ClusterManifest(provider=provider, clusters=[], artifact_counts={}),
     )
 
 
@@ -93,6 +94,36 @@ def _read_element_schema(output_dir: Path, version: str, element_kind: str = "se
 
 
 class TestCommitProviderSchemaWritesRealFiles:
+    def test_provider_finishing_during_generation_remains_in_handoff(self, tmp_path: Path) -> None:
+        """A receipt loaded before generation must not erase a later provider commit."""
+        output_dir = tmp_path / "providers"
+
+        def build(provider: str, **_kwargs: object) -> SimpleNamespace:
+            if provider == "chatgpt":
+                second = commit_provider_schema(
+                    SchemaCommitRequest(
+                        provider="claude-ai",
+                        output_dir=output_dir,
+                        db_path=tmp_path / "archive" / "index.db",
+                        full_corpus=True,
+                    )
+                )
+                assert second.success
+            return _bundle(
+                provider=provider,
+                version="v1",
+                schema={"type": "object", "properties": {"id": {"type": "string"}}},
+                sample_count=1,
+            )
+
+        with patch("polylogue.schemas.generation.workflow._build_provider_bundle", side_effect=build):
+            first = commit_provider_schema(_request(output_dir))
+
+        assert first.success
+        handoff = load_schema_inference_receipt(output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME)
+        assert {item.provider for item in handoff.input_manifests} == {"chatgpt", "claude-ai"}
+        assert {item.provider for item in handoff.packages} == {"chatgpt", "claude-ai"}
+
     def test_new_provider_writes_catalog_and_element_files(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
         schema = {"type": "object", "properties": {"id": {"type": "string"}}}

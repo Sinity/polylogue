@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
 
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
+from polylogue.schemas.package_publication import provider_tree_lock
 from polylogue.schemas.packages import SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.synthetic.classification import classify_schema_constructs
@@ -480,11 +482,16 @@ def load_schema_inference_receipt(path: Path) -> SchemaInferenceReceipt:
     return SchemaInferenceReceipt.from_payload(cast(Mapping[str, object], payload))
 
 
-def write_schema_inference_receipt(receipt: SchemaInferenceReceipt, path: Path) -> None:
+def write_schema_inference_receipt(
+    receipt: SchemaInferenceReceipt, path: Path, *, merge: bool = False
+) -> SchemaInferenceReceipt:
+    """Publish a receipt, optionally merging provider updates under the publication lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(json.dumps(receipt.to_payload(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    with provider_tree_lock(path.parent, exclusive=True):
+        if merge and path.exists():
+            receipt = load_schema_inference_receipt(path).merged_with(receipt)
+        atomic_replace(path, (json.dumps(receipt.to_payload(), indent=2, sort_keys=True) + "\n").encode("utf-8"))
+    return receipt
 
 
 __all__ = [
