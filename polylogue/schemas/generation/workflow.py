@@ -10,13 +10,15 @@ from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
     write_archive_workload_profile,
 )
+from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
-from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
-from polylogue.schemas.observation import PROVIDERS
+from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence, generate_schema_from_samples
+from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import ElementSchemaMap
+from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
 
 
 def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
@@ -69,6 +71,52 @@ def generate_provider_schema(
         full_corpus=full_corpus,
         progress_callback=progress_callback,
     ).result
+
+
+def generate_provider_schema_from_sources(
+    provider: str,
+    *,
+    source_inputs: tuple[object, ...],
+    cache_path: Path | None,
+    max_workers: int,
+    privacy_config: SchemaPrivacyConfig | None,
+    progress_callback: GenerationProgressCallback | None = None,
+) -> GenerationResult:
+    """Generate a preview from declared source roots through reduced evidence."""
+    inputs = tuple(item for item in source_inputs if isinstance(item, SchemaSourceInput) and item.provider == provider)
+    if not inputs:
+        return GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
+    cache = cache_path or Path(".cache") / "schema-source-evidence.sqlite3"
+    if progress_callback is not None:
+        progress_callback("source_inventory", {"state": "started"})
+    source_result = infer_sources(inputs, cache_path=cache, max_workers=max_workers)
+    evidence_rows = source_result.evidence_by_element.get("session_document", ())
+    if not evidence_rows:
+        return GenerationResult(
+            provider=provider,
+            schema=None,
+            sample_count=0,
+            error="No session-document source evidence",
+            phase_receipt={"source": source_result.provenance()},
+        )
+    evidence = merge_evidence(SchemaEvidence.from_json(row) for row in evidence_rows)
+    schema, report = emit_schema_from_evidence(
+        provider,
+        resolve_provider_config(provider),
+        evidence,
+        privacy_config=privacy_config,
+        artifact_kind="session_document",
+    )
+    if progress_callback is not None:
+        progress_callback("source_evidence", {"state": "completed", **source_result.provenance()})
+    return GenerationResult(
+        provider=provider,
+        schema=schema,
+        sample_count=evidence.current_record_count,
+        redaction_report=report,
+        artifact_counts={kind: len(rows) for kind, rows in source_result.evidence_by_element.items()},
+        phase_receipt={"source": source_result.provenance()},
+    )
 
 
 def generate_all_schemas(

@@ -111,18 +111,28 @@ def _privacy_config(payload: Mapping[str, object] | None) -> PrivacyConfig | Non
 
 
 def infer_schema(request: SchemaInferRequest) -> SchemaInferResult:
-    from polylogue.schemas.generation.workflow import generate_provider_schema
+    from polylogue.schemas.generation.workflow import generate_provider_schema, generate_provider_schema_from_sources
     from polylogue.schemas.observation import PROVIDERS
     from polylogue.schemas.sampling import load_samples_from_db
 
-    result = generate_provider_schema(
-        request.provider,
-        db_path=request.db_path,
-        max_samples=request.max_samples,
-        privacy_config=_privacy_config(request.privacy_config),
-        full_corpus=request.full_corpus,
-        progress_callback=request.progress_callback,
-    )
+    if request.source_inputs:
+        result = generate_provider_schema_from_sources(
+            request.provider,
+            source_inputs=request.source_inputs,
+            cache_path=request.source_cache_path,
+            max_workers=request.source_workers,
+            privacy_config=_privacy_config(request.privacy_config),
+            progress_callback=request.progress_callback,
+        )
+    else:
+        result = generate_provider_schema(
+            request.provider,
+            db_path=request.db_path,
+            max_samples=request.max_samples,
+            privacy_config=_privacy_config(request.privacy_config),
+            full_corpus=request.full_corpus,
+            progress_callback=request.progress_callback,
+        )
     package_version = result.default_version or "default"
     registry = _typed_registry()
     if not request.cluster or not result.success:
