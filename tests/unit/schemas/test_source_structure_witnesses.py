@@ -22,7 +22,7 @@ from polylogue.schemas.source_inference import SchemaSourceInput
 
 
 def _gemini_cli_sources(root: Path) -> tuple[dict[str, object], list[dict[str, object]]]:
-    document = {
+    document: dict[str, object] = {
         "sessionId": "document-session",
         "projectHash": "synthetic-project",
         "kind": "main",
@@ -30,7 +30,7 @@ def _gemini_cli_sources(root: Path) -> tuple[dict[str, object], list[dict[str, o
         "lastUpdated": "2026-01-01T00:01:00Z",
         "messages": [{"id": "document-turn", "type": "user", "content": "original document body"}],
     }
-    records = [
+    records: list[dict[str, object]] = [
         {key: value for key, value in document.items() if key not in {"messages", "sessionId"}}
         | {"sessionId": "checkpoint-session"},
         {
