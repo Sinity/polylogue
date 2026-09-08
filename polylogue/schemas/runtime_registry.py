@@ -13,10 +13,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
+from polylogue.archive.artifact_taxonomy import classify_artifact
+from polylogue.archive.raw_payload import ReplayableRecordSamples
 from polylogue.archive.raw_payload.decode import JSONRecord
 from polylogue.core.enums import Provider
-from polylogue.core.json import json_document
+from polylogue.core.json import JSONValue, json_document
 from polylogue.core.provider_identity import canonical_schema_provider as _canonical_schema_provider
 from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
@@ -945,6 +948,14 @@ class SchemaRegistry:
         provider_token = _provider_token(provider)
         config = resolve_provider_config(provider_token)
         fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
+        admitted_artifact_kind = None
+        if provider_token == "gemini-cli" and isinstance(payload, (list, ReplayableRecordSamples)):
+            artifact = classify_artifact(
+                cast(JSONValue, payload), provider=Provider.GEMINI_CLI, source_path=source_path
+            )
+            if artifact.schema_eligible and artifact.cohort == "session_record_stream":
+                config = dataclasses.replace(config, sample_granularity="record", record_type_key="type")
+                admitted_artifact_kind = artifact.cohort
         units = extract_schema_units_from_payload(
             payload,
             source_name=Provider.from_string(provider_token),
@@ -953,6 +964,7 @@ class SchemaRegistry:
             observed_at=None,
             config=config,
             max_samples=_PROFILE_SAMPLE_LIMIT,
+            admitted_artifact_kind=admitted_artifact_kind,
         )
         return [
             _ObservedPayload(

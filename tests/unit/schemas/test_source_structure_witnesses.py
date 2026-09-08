@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.raw_payload import ReplayableRecordSamples
 from polylogue.schemas import runtime_registry, source_inference
 from polylogue.schemas.generation.dynamic_keys import observed_structure_schema, structure_schema_digest
 from polylogue.schemas.generation.models import _ProviderBundle
@@ -103,6 +104,15 @@ def test_source_witnesses_survive_cold_and_warm_package_publication(
     stream_element = next(element for element in package.elements if element.element_kind == "session_record_stream")
     assert stream_resolution.exact_structure_id in stream_witnesses
     assert stream_resolution.exact_structure_id in stream_element.exact_structure_ids
+
+    replayable = ReplayableRecordSamples("\n".join(json.dumps(record) for record in novel_records).encode())
+    replay_resolution = fresh_registry.resolve_payload("gemini-cli", replayable, source_path="checkpoint.jsonl")
+    assert replay_resolution == stream_resolution
+
+    malformed_resolution = fresh_registry.resolve_payload(
+        "gemini-cli", [*novel_records, {"unexpected": True}], source_path="checkpoint.jsonl"
+    )
+    assert malformed_resolution is None or malformed_resolution.reason != "exact_structure"
 
     monkeypatch.setattr(
         source_inference,
