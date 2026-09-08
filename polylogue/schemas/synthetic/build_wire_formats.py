@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import random
 import uuid
 from datetime import datetime, timezone
@@ -22,6 +23,42 @@ def _record_field(record: SyntheticRecord, field_name: str) -> SyntheticRecord:
     nested = _as_record(record.get(field_name))
     record[field_name] = nested
     return nested
+
+
+def normalize_browser_capture_attachments(data: JSONValue) -> None:
+    """Encode generated attachment strings at the browser-capture wire boundary."""
+    from polylogue.browser_capture.models import looks_like_browser_capture
+    from polylogue.sources.parsers.base_support import decode_attachment_base64
+
+    if not isinstance(data, dict) or not looks_like_browser_capture(data):
+        return
+    session = _as_record(data.get("session"))
+    owners = [session]
+    turns = session.get("turns")
+    if isinstance(turns, list):
+        owners.extend(turn for turn in turns if isinstance(turn, dict))
+    for owner in owners:
+        attachments = owner.get("attachments")
+        if not isinstance(attachments, list):
+            continue
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            carriers: list[tuple[SyntheticRecord, tuple[str, ...]]] = [
+                (attachment, ("content_base64", "inline_base64", "data"))
+            ]
+            metadata = attachment.get("provider_meta")
+            if isinstance(metadata, dict):
+                carriers.append((metadata, ("content_base64", "inline_base64")))
+            for carrier, keys in carriers:
+                for key in keys:
+                    value = carrier.get(key)
+                    if not isinstance(value, str):
+                        continue
+                    try:
+                        decode_attachment_base64(value, field_name=key)
+                    except ValueError:
+                        carrier[key] = base64.b64encode(value.encode("utf-8")).decode("ascii")
 
 
 class _WireFormatContext(Protocol):
@@ -200,31 +237,39 @@ def _ensure_wire_claude_code(
     index: int,
     theme: SessionTheme | None,
 ) -> None:
+    if self._active_record_bucket is None:
+        data["type"] = "user" if role == "tool" else role
     record_type = data.setdefault("type", role)
     if self._active_record_bucket is None or record_type in {"assistant", "user", "system"}:
         msg = _record_field(data, "message")
-        msg.setdefault("role", role)
+        msg["role"] = "user" if role == "tool" else role
         if "content" not in msg:
             msg["content"] = _claude_code_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
-        elif self._coverage_witness_mode:
-            _normalize_claude_code_coverage_content(msg, rng, role, index, theme)
+        else:
+            _normalize_claude_code_content(msg, rng, role, index, theme, flatten_nested=self._coverage_witness_mode)
     if "timestamp" not in data:
         data["timestamp"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _normalize_claude_code_coverage_content(
+def _normalize_claude_code_content(
     message: SyntheticRecord,
     rng: random.Random,
     role: str,
     index: int,
     theme: SessionTheme | None,
+    *,
+    flatten_nested: bool,
 ) -> None:
     """Keep coverage witnesses on block forms the Claude Code route emits."""
     content = message.get("content")
     if not isinstance(content, list):
         return
     for block in content:
-        if isinstance(block, dict) and isinstance(block.get("content"), list):
+        if isinstance(block, dict) and block.get("type") not in {"text", "thinking", "tool_use", "tool_result"}:
+            block["type"] = "text"
+            if not isinstance(block.get("text"), str) or not block["text"]:
+                block["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
+        if flatten_nested and isinstance(block, dict) and isinstance(block.get("content"), list):
             block["content"] = _text_for_role(rng, role, turn_index=index, theme=theme)
 
 
@@ -293,8 +338,21 @@ def _ensure_wire_codex(
 
     data["type"] = "message"
     data.setdefault("role", role)
-    if "content" not in data:
+    if not isinstance(data.get("content"), list) or not data["content"]:
         data["content"] = _codex_content_fallback(rng, role, index, theme)  # type: ignore[assignment]
+    content = data.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") not in {
+                "input_text",
+                "output_text",
+                "thinking",
+                "tool_use",
+                "tool_result",
+            }:
+                block["type"] = "input_text" if role == "user" else "output_text"
+                if not isinstance(block.get("text"), str) or not block["text"]:
+                    block["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
     data.setdefault("id", str(uuid.UUID(int=rng.getrandbits(128), version=4)))
     # Strip schema-generated payload envelope so the parser reads the
     # top-level role/content directly. Without this, _effective_role finds

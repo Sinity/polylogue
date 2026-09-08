@@ -7,7 +7,9 @@ cross-field consistency during synthetic data generation.
 
 from __future__ import annotations
 
+import gc
 import random
+import weakref
 
 import pytest
 
@@ -30,6 +32,26 @@ def _solver(schema: object) -> _RelationConstraintSolver:
 # ---------------------------------------------------------------------------
 # ForeignKeyGraph
 # ---------------------------------------------------------------------------
+
+
+def test_annotation_cache_releases_replaced_schema_lists() -> None:
+    """An unbounded strong-reference cache keeps the first discarded list alive."""
+
+    class AnnotationList(list[dict[str, object]]):
+        pass
+
+    discarded = []
+    for _ in range(64):
+        annotations = AnnotationList(
+            [
+                {"path": "$.name", "min": 17, "max": 17, "avg": 17, "stddev": 0},
+            ]
+        )
+        discarded.append(weakref.ref(annotations))
+        solver = _solver({"x-polylogue-string-lengths": annotations})
+        assert len(solver.generate_string_with_length("$.name", random.Random(0), "seed")) == 17
+    gc.collect()
+    assert discarded[0]() is None
 
 
 class TestForeignKeyGraph:

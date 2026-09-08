@@ -480,6 +480,9 @@ def _route_nonrepresentable_reasons(
     )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        if provider == "codex" and keyword == "type:null@$.properties.content":
+            reasons[keyword] = "Codex flat message shaping requires nonempty content for conversational evidence"
+            continue
         if (
             provider == "claude-code"
             and path == "$.properties.message.properties.content.items[*].properties.content"
@@ -1050,10 +1053,12 @@ def _normalise_evidence_text(value: str) -> str:
 
 def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the route-owned conversational nodes from one wire artifact."""
+    from polylogue.browser_capture.models import looks_like_browser_capture
+
     nodes: list[Mapping[str, JSONValue]] = []
     if isinstance(payload, dict):
         session = payload.get("session")
-        turns = session.get("turns") if isinstance(session, dict) else None
+        turns = session.get("turns") if isinstance(session, dict) and looks_like_browser_capture(payload) else None
         if isinstance(turns, list):
             nodes.extend(
                 turn
@@ -1108,7 +1113,7 @@ def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[s
                     nodes.append(record)
                 continue
             record_type = record.get("type")
-            if record_type == "message" and isinstance(record.get("id"), str):
+            if record_type == "message" and isinstance(record.get("content"), list):
                 nodes.append(record)
                 continue
             nested = record.get("payload")
@@ -1116,7 +1121,7 @@ def _parser_evidence_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[s
                 record_type == "response_item"
                 and isinstance(nested, dict)
                 and nested.get("type") == "message"
-                and isinstance(nested.get("id"), str)
+                and isinstance(nested.get("content"), list)
             ) or (
                 record_type == "event_msg"
                 and isinstance(nested, dict)
@@ -1217,10 +1222,12 @@ def _parser_artifact_message_semantic_witnesses(
 
 def _parser_artifact_expected_nodes(provider: str, payload: JSONValue) -> tuple[Mapping[str, JSONValue], ...]:
     """Return the parser-owned raw nodes used for message coverage."""
+    from polylogue.browser_capture.models import looks_like_browser_capture
+
     native_payload = payload.get("raw_provider_payload") if isinstance(payload, dict) else None
     if provider == "claude-ai" and isinstance(native_payload, (dict, list)):
         nodes = _parser_evidence_nodes(provider, native_payload)
-    elif isinstance(payload, dict):
+    elif isinstance(payload, dict) and looks_like_browser_capture(payload):
         session = payload.get("session")
         turns = session.get("turns") if isinstance(session, dict) else None
         if isinstance(turns, list):
@@ -1316,6 +1323,30 @@ def _parser_artifact_node_tool_witnesses(
     production semantic here instead of treating the intentional downgrade as
     a parser loss.
     """
+    if provider == "chatgpt":
+        message = node.get("message")
+        if not isinstance(message, Mapping):
+            return ()
+        content = message.get("content")
+        metadata = message.get("metadata")
+        metadata = metadata if isinstance(metadata, Mapping) else {}
+        recipient = message.get("recipient")
+        target = (
+            recipient if isinstance(recipient, str) and recipient and recipient != "all" else metadata.get("command")
+        )
+        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+        try:
+            decoded = json.loads(text)
+        except (ValueError, TypeError):
+            decoded = None
+        if (
+            isinstance(target, str)
+            and target
+            and (isinstance(decoded, dict) or metadata.get("args") not in (None, [], {}, ""))
+        ) or (isinstance(content, Mapping) and content.get("content_type") == "code"):
+            identity = message.get("id")
+            return ((BlockType.TOOL_USE, str(identity), None, None),) if identity is not None else ()
+        return ()
     if provider not in {"claude-ai", "claude-code", "codex"}:
         return ()
     if provider == "claude-code":
@@ -1369,12 +1400,38 @@ def _parser_artifact_node_message_type(
     from polylogue.archive.message.artifacts import classify_block_message_type, classify_text_message_type
 
     if provider == "claude-code":
-        return MessageType.CONTEXT if node.get("isMeta") else MessageType.MESSAGE
+        message = node.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        prose = (
+            content
+            if isinstance(content, str)
+            else "\n".join(
+                text
+                for item in content
+                if isinstance(item, Mapping) and item.get("type") == "text"
+                for text in (item.get("text"),)
+                if isinstance(text, str)
+            )
+            if isinstance(content, list)
+            else ""
+        )
+        if artifact_type := classify_text_message_type(prose):
+            return artifact_type
+        if node.get("isMeta"):
+            return MessageType.CONTEXT
+        origin = node.get("origin")
+        kind = origin.get("kind") if isinstance(origin, Mapping) else None
+        if isinstance(kind, str) and kind and kind != "human":
+            return MessageType.PROTOCOL
+        return MessageType.MESSAGE
     if provider == "codex":
         raw_role = node.get("role")
         return MessageType.CONTEXT if raw_role in {"system", "developer"} else MessageType.MESSAGE
-    if provider == "chatgpt" and _parser_artifact_node_role(provider, node) is Role.TOOL:
-        return MessageType.TOOL_RESULT
+    if provider == "chatgpt":
+        if _parser_artifact_node_role(provider, node) is Role.TOOL:
+            return MessageType.TOOL_RESULT
+        text = "\n".join(_parser_artifact_node_content_texts(provider, node))
+        return classify_text_message_type(text) or MessageType.MESSAGE
     block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     if block_message_type := classify_block_message_type(block_types):
         return block_message_type
@@ -1422,6 +1479,7 @@ def _parser_artifact_node_material_origin(
         and message_type is MessageType.MESSAGE
         and not node.get("isMeta")
         and not node.get("isCompactSummary")
+        and not node.get("isVisibleInTranscriptOnly")
         and node.get("toolUseResult") is None
         and not has_tool_result
     ):
@@ -1477,6 +1535,8 @@ def _parser_artifact_expected_tool_witnesses(
 
 def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fallback_id: str) -> str | None:
     """Return the one provider session identity asserted by this wire artifact."""
+    from polylogue.browser_capture.models import looks_like_browser_capture
+
     if isinstance(payload, Mapping):
         native_payload = payload.get("raw_provider_payload")
         if provider == "claude-ai" and isinstance(native_payload, Mapping):
@@ -1488,7 +1548,7 @@ def _parser_artifact_expected_session_id(provider: str, payload: JSONValue, fall
         captured_session_id = (
             captured_session.get("provider_session_id") if isinstance(captured_session, Mapping) else None
         )
-        if isinstance(captured_session_id, str) and captured_session_id:
+        if isinstance(captured_session_id, str) and captured_session_id and looks_like_browser_capture(payload):
             return captured_session_id
         if provider == "chatgpt":
             for field in ("id", "uuid", "conversation_id", "conversationId"):
@@ -1615,7 +1675,34 @@ def _parser_artifact_node_content_texts(provider: str, node: Mapping[str, JSONVa
         message = node.get("message")
         content = message.get("content") if isinstance(message, Mapping) else None
         parts = content.get("parts") if isinstance(content, Mapping) else None
-        values = _payload_string_values(parts) if isinstance(parts, list) else ()
+        values = (
+            tuple(
+                text
+                for part in parts
+                for text in (part.get("text") if isinstance(part, Mapping) else part,)
+                if isinstance(text, str) and text
+            )
+            if isinstance(parts, list)
+            else ()
+        )
+        if not values and isinstance(content, Mapping):
+            values = next(
+                (
+                    (value,)
+                    for key in ("text", "result", "output_str", "content")
+                    if isinstance(value := content.get(key), str) and value
+                ),
+                (),
+            )
+            thoughts = content.get("thoughts")
+            if not values and isinstance(thoughts, list):
+                values = tuple(
+                    text
+                    for thought in thoughts
+                    if isinstance(thought, Mapping)
+                    for text in (thought.get("content") or thought.get("summary"),)
+                    if isinstance(text, str) and text
+                )
     elif provider == "codex":
         content = node.get("content")
         content_values = (
