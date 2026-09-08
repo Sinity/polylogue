@@ -62,12 +62,12 @@ def _real_shaped_gemini_payload(*, message_text: str) -> dict[str, object]:
     }
 
 
-def test_gemini_catalog_elements_carry_real_identity_evidence() -> None:
-    """Both committed gemini packages must carry non-empty identity evidence.
+def test_gemini_catalog_elements_carry_a_real_matching_mechanism() -> None:
+    """Both committed gemini packages must carry matching evidence.
 
-    Before the polylogue-tu1f backfill, ``exact_structure_ids`` and
-    ``profile_tokens`` were empty lists on every element of every gemini
-    package -- the concrete, on-disk symptom of the unseen_shape defect.
+    A source-backed package can publish observed shape witnesses without a
+    profile aggregate. Every element still needs at least one way to match a
+    runtime observation.
     """
     registry = SchemaRegistry()
     catalog = registry.load_package_catalog("gemini")
@@ -76,11 +76,8 @@ def test_gemini_catalog_elements_carry_real_identity_evidence() -> None:
 
     for package in catalog.packages:
         for element in package.elements:
-            assert element.exact_structure_ids, (
-                f"gemini {package.version}/{element.element_kind} has no exact_structure_ids evidence"
-            )
-            assert element.profile_tokens, (
-                f"gemini {package.version}/{element.element_kind} has no profile_tokens evidence"
+            assert element.exact_structure_ids or element.profile_tokens, (
+                f"gemini {package.version}/{element.element_kind} has no matching evidence"
             )
 
 
