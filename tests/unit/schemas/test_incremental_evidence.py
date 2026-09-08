@@ -304,7 +304,7 @@ def test_equality_hash_cap_does_not_drop_slash_shape_evidence() -> None:
 
 
 def test_shape_evidence_reports_the_same_unretained_observation_lower_bound_for_streams_and_samples() -> None:
-    records = [{f"field_{index}": 1} for index in range(512)] + [{"extra_field": 1}] * 10
+    records: list[JSONDocument] = [{f"field_{index}": 1} for index in range(512)] + [{"extra_field": 1}] * 10
     observation = _Observation("session-a", "a" * 64, "claude-code", "session_record_stream", records)
 
     streamed = collect_source_evidence(observation)
