@@ -414,3 +414,11 @@ def test_generate_schema_from_samples_exposes_union_of_observed_top_level_fields
         assert "additionalProperties" in schema_node(schema)
     assert _schema_string(schema, "type") == "object"
     assert _schema_string(schema, "$schema") == "https://json-schema.org/draft/2020-12/schema"
+
+
+def test_sparse_record_variants_retain_wide_fixed_field_vocabulary() -> None:
+    """Collapsing at 128 fields erases a provider's accumulated record vocabulary."""
+    samples = [{"type": "event", f"optional_field_{index}": index} for index in range(192)]
+    schema = merge_observed_structure_schemas(observed_structure_schema(sample) for sample in samples)
+    assert set(schema_properties(schema)) == {"type", *(f"optional_field_{index}" for index in range(192))}
+    assert not schema.get("x-polylogue-dynamic-keys")

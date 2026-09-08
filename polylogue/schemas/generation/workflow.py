@@ -148,6 +148,8 @@ def build_provider_bundle_from_sources(
             provider, config, evidence, privacy_config=privacy_config, artifact_kind=kind
         )
     preferred_anchor = "session_record_stream" if config.sample_granularity == "record" else "session_document"
+    if provider == "claude-code" and "coordinator_session_stream" in emitted:
+        preferred_anchor = "coordinator_session_stream"
     anchor = (
         preferred_anchor
         if preferred_anchor in emitted
@@ -180,7 +182,7 @@ def build_provider_bundle_from_sources(
         first_seen=first_seen,
         last_seen=now,
         bundle_scope_count=evidence_by_kind[anchor].current_source_count,
-        sample_count=counts[anchor],
+        sample_count=sum(counts.values()),
         anchor_profile_family_id=family,
         elements=elements,
     )
@@ -196,7 +198,7 @@ def build_provider_bundle_from_sources(
     result = GenerationResult(
         provider=provider,
         schema=emitted[anchor],
-        sample_count=counts[anchor],
+        sample_count=sum(counts.values()),
         redaction_report=reports[anchor],
         versions=[version],
         default_version=version,

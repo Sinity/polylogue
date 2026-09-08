@@ -934,3 +934,51 @@ def test_source_schema_hides_keys_in_small_content_maps(tmp_path: Path, source_k
     assert "trackedFileBackups" in encoded
     assert "additionalProperties" in encoded
     assert '"version"' in encoded
+
+
+@pytest.mark.parametrize("generation", ["legacy", "envelope"])
+def test_codex_schema_retains_wire_records_without_claiming_parser_support(tmp_path: Path, generation: str) -> None:
+    """Requiring normalized semantics drops entire rollouts with tools or telemetry."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.codex import is_supported_session_stream
+
+    message: JSONDocument = {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "synthetic"}],
+    }
+    records: list[JSONValue]
+    if generation == "legacy":
+        records = [
+            {"id": "legacy", "timestamp": "2024-01-01T00:00:00Z"},
+            {"record_type": "state"},
+            message,
+            {"type": "reasoning", "id": "reason", "summary": [], "encrypted_content": "synthetic"},
+            {"type": "function_call", "call_id": "call", "name": "tool", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call", "output": "synthetic"},
+        ]
+    else:
+        records = [
+            {"type": "session_meta", "payload": {"id": "envelope"}},
+            {"type": "response_item", "payload": message},
+            {"type": "inter_agent_communication_metadata", "payload": {"trigger_turn": True}},
+            {"type": "token_usage_record", "payload": {"usage": {"input_tokens": 10}}},
+        ]
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records))
+    classification = classify_artifact(records, provider=Provider.CODEX, source_path=path)
+    assert classification.schema_eligible
+    assert not classification.parse_as_session
+    assert not is_supported_session_stream(records)
+    result = infer_sources((SchemaSourceInput("codex", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1)
+    assert result.terminal_counts == {"included": 1}
+    assert result.record_count == len(records)
+    assert sum(
+        SchemaEvidence.from_json(row).current_record_count
+        for rows in result.evidence_by_element.values()
+        for row in rows
+    ) == len(records)
+    assert not classify_artifact(
+        [*records, {"type": "invented_record"}], provider=Provider.CODEX, source_path=path
+    ).schema_eligible

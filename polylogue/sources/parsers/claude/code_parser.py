@@ -51,6 +51,7 @@ from .common import (
     _message_duration_ms,
     _message_model_effort,
     _message_model_name,
+    _message_stop_reason,
     extract_message_text,
     normalize_timestamp,
     reclassify_tool_result_envelope,
@@ -2245,13 +2246,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     msg_model = _message_model_name(message_payload) or _message_model_name(item)
     msg_effort = _message_model_effort(message_payload) or _message_model_effort(item)
     msg_duration_ms = _message_duration_ms(item)
-    # polylogue-2qx.4 / polylogue-cuxz.8: the provider's own terminal-state
-    # signal (608,608 occurrences on the wire) -- already read into the
-    # ``message_usage`` event payload below; also land it on the message
-    # row itself so it feeds ``terminal_state`` directly instead of only
-    # riding along in an event's JSON payload.
-    raw_stop_reason = message_payload.get("stop_reason")
-    msg_stop_reason = raw_stop_reason if isinstance(raw_stop_reason, str) and raw_stop_reason else None
+    msg_stop_reason = _message_stop_reason(message_payload)
     resolved_role = reclassify_tool_result_envelope(envelope_role, content_blocks)
     material_origin = classify_material_origin(
         role=resolved_role,
