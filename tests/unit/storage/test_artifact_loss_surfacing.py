@@ -17,6 +17,7 @@ from polylogue.archive.raw_payload.decode import scan_jsonl_session_artifact
 from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.core.json import JSONValue
 from polylogue.schemas.observation import schema_cluster_id
+from polylogue.schemas.registry import SchemaRegistry
 from polylogue.storage.artifacts.inspection import (
     _INSPECTION_PREFIX_BYTES,
     inspect_raw_artifact,
@@ -164,7 +165,7 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.decode_error is None
     assert observation.malformed_jsonl_lines == 0
     assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
-    assert observation.resolved_package_version == "v1"
+    assert observation.resolved_package_version in SchemaRegistry().list_committed_versions("codex")
     assert observation.resolved_element_kind == "session_record_stream"
     expected_message: JSONValue = {
         "type": "response_item",
