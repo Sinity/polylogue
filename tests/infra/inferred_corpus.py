@@ -54,13 +54,6 @@ UnsupportedCorpusReason: TypeAlias = Literal[
     "unsupported_json_schema_construct",
 ]
 PackageReceipt: TypeAlias = JSONDocument
-_WIRE_AUTHORITY_ONLY_REASONS = frozenset(
-    {
-        "wire_support_selection_unwitnessed",
-        "wire_support_receipt_incomplete",
-        "unsupported_wire_route",
-    }
-)
 
 
 @dataclass(frozen=True, order=True)
@@ -898,24 +891,23 @@ def _validate_inference_handoff(
             f"missing={sorted(expected_coverage - actual_coverage)!r}, "
             f"unexpected={sorted(actual_coverage - expected_coverage)!r}"
         )
-    entries_by_provider: dict[str, list[InferredCorpusManifestEntry]] = {}
-    for entry in manifest.entries:
-        entries_by_provider.setdefault(entry.key.provider, []).append(entry)
-    for coverage in receipt.coverage_decisions:
-        provider_entries = entries_by_provider.get(coverage.provider, [])
-        # The package receipt records schema inference authority.  Wire-route
-        # refusals are independently bound by the serialized WireSupportReceipt
-        # and must not rewrite a committed schema package decision.
-        schema_blocking_reasons = tuple(
-            entry.unsupported.reason
-            for entry in provider_entries
-            if entry.unsupported is not None and entry.unsupported.reason not in _WIRE_AUTHORITY_ONLY_REASONS
+    schema_reasons: dict[str, list[UnsupportedCorpusRecord | None]] = {}
+    for provider, _catalog, package, element in catalog_entries:
+        schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
+        schema_reasons.setdefault(provider, []).append(
+            _schema_unsupported_reason(
+                element=element,
+                schema=schema if isinstance(schema, dict) else None,
+                wire_format=PROVIDER_WIRE_FORMATS.get(provider),
+                construct_support=_schema_constructs(schema),
+            )
         )
-        if any(entry.spec is not None for entry in provider_entries):
+    for coverage in receipt.coverage_decisions:
+        # Schema coverage is independent of the synthetic wire route's availability.
+        reasons = schema_reasons.get(coverage.provider, [])
+        if any(reason is None for reason in reasons):
             expected_decision = "committed"
-        elif not schema_blocking_reasons:
-            expected_decision = "committed" if coverage.provider in PROVIDER_WIRE_FORMATS else "unsupported"
-        elif all(reason == "unsupported_json_schema_construct" for reason in schema_blocking_reasons):
+        elif reasons and all(reason.reason == "unsupported_json_schema_construct" for reason in reasons if reason):
             expected_decision = "nonrepresentable"
         else:
             expected_decision = "unsupported"
