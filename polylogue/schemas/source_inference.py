@@ -8,12 +8,15 @@ evidence in its private cache, and reports every terminal disposition.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
+import sqlite3
 import stat
+import tempfile
 import time
 import zipfile
-from collections import Counter
+from collections import Counter, OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import suppress
@@ -47,7 +50,9 @@ SourceOutcome = Literal[
 _RECIPE_VERSION = "source-evidence-v2"
 _MAX_UNSTREAMABLE_DOCUMENT_BYTES = 32 * 1024 * 1024
 _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT = 32
+_SOURCE_EVIDENCE_CHUNK_BYTE_LIMIT = 16 * 1024 * 1024
 _SOURCE_EVIDENCE_PENDING_RECORD_LIMIT = 128
+_SOURCE_EVIDENCE_ACTIVE_CONTRIBUTION_LIMIT = 16
 _DECLARED_PRODUCER_VERSION = re.compile(r"v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z][0-9A-Za-z.-]{0,63})?")
 
 
@@ -127,6 +132,8 @@ class SourceInferenceResult:
         return {
             "source_input_bytes": self.input_bytes,
             "source_record_count": self.record_count,
+            "source_statistics_population": "current_source_records",
+            "source_inherited_prefixes_subtracted": False,
             "source_cache_hits": self.cache_hits,
             "source_cache_misses": self.cache_misses,
             "source_terminal_outcomes": dict(sorted(self.terminal_counts.items())),
@@ -160,6 +167,14 @@ class _SourceContribution:
 
 
 @dataclass(frozen=True, slots=True)
+class _SizedPayload:
+    """One decoded JSONL record with its source line's already-known byte count."""
+
+    value: JSONValue
+    byte_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class _ContributionDescriptor:
     """Selection metadata retained between the structure and statistics passes."""
 
@@ -189,6 +204,156 @@ class _CollectedCandidate:
     contributions: tuple[_SourceContribution, ...] = ()
     producer_versions: tuple[str, ...] = ()
     producer_version_unrecognized: bool = False
+    spool_path: Path | None = None
+
+
+class _ContributionSpool:
+    """Private on-disk reducer for one physical export.
+
+    A large export can carry many independently selectable native sessions.
+    Keep their reduced evidence on disk while the worker scans the file, so
+    neither the worker result nor the coordinator retains every session.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._connection = sqlite3.connect(path)
+        self._connection.execute("PRAGMA journal_mode=WAL")
+        self._connection.execute("PRAGMA synchronous=OFF")
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contribution_metadata (
+                source_id TEXT PRIMARY KEY,
+                revision_sha256 TEXT NOT NULL,
+                record_count INTEGER NOT NULL,
+                update_kind INTEGER,
+                update_text TEXT
+            ) STRICT
+            """
+        )
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contribution_evidence (
+                source_id TEXT NOT NULL,
+                element_kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                PRIMARY KEY (source_id, element_kind),
+                FOREIGN KEY (source_id) REFERENCES contribution_metadata(source_id)
+            ) STRICT
+            """
+        )
+
+    def close(self) -> None:
+        self._connection.commit()
+        self._connection.close()
+
+    def add(
+        self,
+        *,
+        source_id: str,
+        revision_sha256: str,
+        element_kind: str,
+        evidence: SchemaEvidence,
+        record_count: int,
+        declared_updated_at: tuple[int, str] | None,
+    ) -> None:
+        from polylogue.schemas.generation.evidence import SchemaEvidenceAccumulator
+
+        with self._connection:
+            existing = self._connection.execute(
+                "SELECT record_count FROM contribution_metadata WHERE source_id = ?", (source_id,)
+            ).fetchone()
+            if existing is None:
+                self._connection.execute(
+                    """
+                    INSERT INTO contribution_metadata
+                        (source_id, revision_sha256, record_count, update_kind, update_text)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        revision_sha256,
+                        record_count,
+                        declared_updated_at[0] if declared_updated_at is not None else None,
+                        declared_updated_at[1] if declared_updated_at is not None else None,
+                    ),
+                )
+            else:
+                self._connection.execute(
+                    "UPDATE contribution_metadata SET record_count = record_count + ? WHERE source_id = ?",
+                    (record_count, source_id),
+                )
+                if declared_updated_at is not None:
+                    self._connection.execute(
+                        """
+                        UPDATE contribution_metadata
+                        SET update_kind = ?, update_text = ?
+                        WHERE source_id = ? AND (update_kind IS NULL OR (update_kind, update_text) < (?, ?))
+                        """,
+                        (*declared_updated_at, source_id, *declared_updated_at),
+                    )
+            row = self._connection.execute(
+                "SELECT payload_json FROM contribution_evidence WHERE source_id = ? AND element_kind = ?",
+                (source_id, element_kind),
+            ).fetchone()
+            accumulator = SchemaEvidenceAccumulator()
+            if row is not None:
+                accumulator.add(SchemaEvidence.from_json(cast(JSONDocument, json.loads(row[0]))))
+                evidence = replace(evidence, current_source_count=0)
+            accumulator.add(evidence)
+            payload = accumulator.finish().to_json()
+            self._connection.execute(
+                """
+                INSERT INTO contribution_evidence (source_id, element_kind, payload_json)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_id, element_kind) DO UPDATE SET payload_json = excluded.payload_json
+                """,
+                (source_id, element_kind, json.dumps(payload, sort_keys=True, separators=(",", ":"))),
+            )
+
+    def has_contributions(self) -> bool:
+        return self._connection.execute("SELECT 1 FROM contribution_evidence LIMIT 1").fetchone() is not None
+
+    def contributions(self) -> Iterator[_SourceContribution]:
+        for source_id, revision, records, update_kind, update_text in self._connection.execute(
+            """
+            SELECT source_id, revision_sha256, record_count, update_kind, update_text
+            FROM contribution_metadata
+            WHERE EXISTS (SELECT 1 FROM contribution_evidence WHERE contribution_evidence.source_id = contribution_metadata.source_id)
+            ORDER BY source_id
+            """
+        ):
+            elements: dict[str, JSONDocument] = {}
+            for element_kind, payload in self._connection.execute(
+                """
+                SELECT element_kind, payload_json FROM contribution_evidence
+                WHERE source_id = ? ORDER BY element_kind
+                """,
+                (source_id,),
+            ):
+                value = json.loads(payload)
+                if not isinstance(value, dict):
+                    raise SourceInferenceError("spooled source evidence is invalid")
+                elements[element_kind] = value
+            update = (update_kind, update_text) if update_kind is not None else None
+            yield _SourceContribution(source_id, revision, elements, records, update)
+
+
+def _spool_has_contributions(path: Path) -> bool:
+    spool = _ContributionSpool(path)
+    try:
+        return spool.has_contributions()
+    finally:
+        spool.close()
+
+
+def _spooled_contributions(path: Path) -> Iterator[_SourceContribution]:
+    spool = _ContributionSpool(path)
+    try:
+        yield from spool.contributions()
+    finally:
+        spool.close()
 
 
 _EXPLICIT_SCHEMA_SUBJECTS = frozenset({"browser-capture"})
@@ -326,6 +491,7 @@ def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
         "no_schema_units",
         "no_schema_zip_members",
         "partial_trailing_record",
+        "too_large_unstreamable_document",
         "unreadable_source",
     }:
         return terminal.reason
@@ -365,20 +531,48 @@ def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
         return False
 
 
+def _is_strict_stream_prefix(
+    shorter: Path,
+    longer: Path,
+    *,
+    memo: dict[tuple[Path, Path], bool],
+) -> bool:
+    """Compare only transcript streams, once per physical member pair."""
+    if shorter.suffix.lower() not in {".jsonl", ".ndjson"} or longer.suffix.lower() not in {".jsonl", ".ndjson"}:
+        return False
+    key = shorter, longer
+    if key not in memo:
+        memo[key] = _is_strict_file_prefix(shorter, longer)
+    return memo[key]
+
+
 def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
     """Decode JSONL record by record and fail closed on incomplete input."""
+    for item in _iter_sized_jsonl_payloads(handle):
+        yield item.value
+
+
+def _iter_sized_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[_SizedPayload]:
+    """Decode JSONL with physical line sizes for bounded source reduction."""
     for line_number, line in enumerate(handle, start=1):
         if not line.strip():
             continue
         if not line.endswith((b"\n", b"\r")):
-            raise SourceInferenceError("partial_trailing_record")
+            try:
+                value = loads(line)
+            except JSONDecodeError as exc:
+                raise SourceInferenceError("partial_trailing_record") from exc
+            if not is_json_value(value):
+                raise SourceInferenceError("non_json_value")
+            yield _SizedPayload(value, len(line))
+            continue
         try:
             value = loads(line)
         except JSONDecodeError as exc:
             raise SourceInferenceError(f"malformed_jsonl_record:{line_number}") from exc
         if not is_json_value(value):
             raise SourceInferenceError("non_json_value")
-        yield value
+        yield _SizedPayload(value, len(line))
 
 
 def _iter_document_payloads(
@@ -387,10 +581,31 @@ def _iter_document_payloads(
     *,
     byte_count: int,
 ) -> Iterator[JSONValue]:
-    """Stream top-level export arrays without materializing whole exports."""
+    """Stream export arrays without repeatedly walking one physical document."""
     import ijson
 
-    for prefix in ("item", "conversations.item", "sessions.item"):
+    prefixes: tuple[str, ...]
+    try:
+        with open_handle() as handle:
+            parser = ijson.parse(handle, use_float=True)
+            try:
+                _prefix, root_event, _value = next(parser)
+            except StopIteration:
+                raise SourceInferenceError(f"malformed_json:{path_name}") from None
+            if root_event == "start_array":
+                prefixes = ("item",)
+            elif root_event == "start_map":
+                prefixes = tuple(
+                    f"{value}.item"
+                    for prefix, event, value in parser
+                    if prefix == "" and event == "map_key" and value in {"conversations", "sessions"}
+                )
+            else:
+                prefixes = ()
+    except ijson.JSONError as exc:
+        raise SourceInferenceError(f"malformed_json:{path_name}") from exc
+
+    for prefix in prefixes:
         found = False
         try:
             with open_handle() as handle:
@@ -415,10 +630,10 @@ def _iter_document_payloads(
     yield value
 
 
-def _iter_file_payloads(path: Path, *, byte_count: int) -> Iterator[JSONValue]:
+def _iter_file_payloads(path: Path, *, byte_count: int) -> Iterator[JSONValue | _SizedPayload]:
     if path.suffix.lower() in {".jsonl", ".ndjson"}:
         with path.open("rb") as handle:
-            yield from _iter_jsonl_payloads(handle)
+            yield from _iter_sized_jsonl_payloads(handle)
         return
     yield from _iter_document_payloads(lambda: path.open("rb"), str(path), byte_count=byte_count)
 
@@ -489,11 +704,12 @@ def _declared_update_key(provider: Provider, payload: JSONValue) -> tuple[int, s
 def _collect_payload_evidence(
     candidate: _SourceCandidate,
     revision: SourceRevision,
-    payloads: Iterable[JSONValue],
+    payloads: Iterable[JSONValue | _SizedPayload],
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool = True,
     chunk_record_limit: int = _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT,
+    spool_path: Path | None = None,
 ) -> tuple[tuple[_SourceContribution, ...], int, tuple[str, ...], bool]:
     """Reduce each native source revision without retaining decoded records."""
     from polylogue.schemas.generation.evidence import SchemaEvidenceAccumulator, collect_source_evidence
@@ -508,13 +724,39 @@ def _collect_payload_evidence(
     producer_versions: set[str] = set()
     producer_version_unrecognized = False
     source_seen: set[tuple[str, str]] = set()
-    pending_records: dict[tuple[str, str], list[JSONValue]] = {}
+    active_rows: OrderedDict[tuple[str, str], tuple[SchemaEvidenceAccumulator, int]] = OrderedDict()
+    active_seen: set[tuple[str, str]] = set()
+    active_updates: dict[str, tuple[int, str]] = {}
+    pending_records: dict[tuple[str, str], list[tuple[JSONValue, tuple[int, str] | None, int]]] = {}
     pending_record_count = 0
+    pending_byte_count = 0
+    total_records = 0
+    spool = _ContributionSpool(spool_path) if spool_path is not None else None
+
+    def spill(source_key: tuple[str, str]) -> None:
+        if spool is None:
+            raise AssertionError("only spooled contributions can spill")
+        accumulator, records = active_rows.pop(source_key)
+        active_seen.discard(source_key)
+        source_id, element_kind = source_key
+        spool.add(
+            source_id=source_id,
+            revision_sha256=revision.revision_sha256,
+            element_kind=element_kind,
+            evidence=accumulator.finish(),
+            record_count=records,
+            declared_updated_at=active_updates.get(source_id),
+        )
+        if not any(key[0] == source_id for key in active_rows):
+            active_updates.pop(source_id, None)
 
     def flush(source_key: tuple[str, str]) -> None:
-        nonlocal pending_record_count
-        records = pending_records.pop(source_key)
-        pending_record_count -= len(records)
+        nonlocal pending_byte_count, pending_record_count
+        pending = pending_records.pop(source_key)
+        pending_record_count -= len(pending)
+        pending_byte_count -= sum(byte_count for _record, _update, byte_count in pending)
+        records = [record for record, _update, _byte_count in pending]
+        update = max((update for _record, update, _byte_count in pending if update is not None), default=None)
         source_id, element_kind = source_key
         contribution = collect_source_evidence(
             SourceObservation(
@@ -527,80 +769,131 @@ def _collect_payload_evidence(
             dynamic_paths=dynamic_paths_by_element.get(element_kind, ()),
             include_statistics=include_statistics,
         )
-        if source_key in source_seen:
-            contribution = replace(contribution, current_source_count=0)
+        if spool is None:
+            if source_key in source_seen:
+                contribution = replace(contribution, current_source_count=0)
+            else:
+                source_seen.add(source_key)
+            evidence_rows.setdefault(source_id, {}).setdefault(element_kind, SchemaEvidenceAccumulator()).add(
+                contribution
+            )
         else:
-            source_seen.add(source_key)
-        evidence_rows.setdefault(source_id, {}).setdefault(element_kind, SchemaEvidenceAccumulator()).add(contribution)
+            if update is not None:
+                prior_update = active_updates.get(source_id)
+                if prior_update is None or update > prior_update:
+                    active_updates[source_id] = update
+            if source_key in active_seen:
+                contribution = replace(contribution, current_source_count=0)
+            else:
+                active_seen.add(source_key)
+            accumulator, count = active_rows.pop(source_key, (SchemaEvidenceAccumulator(), 0))
+            accumulator.add(contribution)
+            active_rows[source_key] = accumulator, count + len(records)
+            while len(active_rows) > _SOURCE_EVIDENCE_ACTIVE_CONTRIBUTION_LIMIT:
+                spill(next(iter(active_rows)))
 
-    def append(source_id: str, element_kind: str, records: Iterable[JSONValue]) -> None:
-        nonlocal pending_record_count
+    def append(
+        source_id: str,
+        element_kind: str,
+        records: Iterable[JSONValue],
+        declared_updated_at: tuple[int, str] | None,
+        source_byte_count: int,
+    ) -> None:
+        nonlocal pending_byte_count, pending_record_count
         source_key = source_id, element_kind
-        pending = pending_records.setdefault(source_key, [])
         for record in records:
-            pending.append(record)
+            pending = pending_records.setdefault(source_key, [])
+            pending.append((record, declared_updated_at, source_byte_count))
             pending_record_count += 1
-            if len(pending) >= chunk_record_limit:
+            pending_byte_count += source_byte_count
+            if len(pending) >= chunk_record_limit or pending_byte_count >= _SOURCE_EVIDENCE_CHUNK_BYTE_LIMIT:
                 flush(source_key)
-                pending = pending_records.setdefault(source_key, [])
-            while pending_record_count >= _SOURCE_EVIDENCE_PENDING_RECORD_LIMIT:
+            while (
+                pending_record_count >= _SOURCE_EVIDENCE_PENDING_RECORD_LIMIT
+                or pending_byte_count >= _SOURCE_EVIDENCE_CHUNK_BYTE_LIMIT
+            ):
                 oldest = next(iter(pending_records))
                 flush(oldest)
-                if oldest == source_key:
-                    pending = pending_records.setdefault(source_key, [])
 
-    header_source_id = candidate.logical_source_id
-    for payload_index, payload in enumerate(payloads):
-        versions, unrecognized = _declared_producer_versions(provider, (payload,))
-        producer_versions.update(versions)
-        producer_version_unrecognized = producer_version_unrecognized or unrecognized
-        declared = _native_source_id(provider, payload, "")
-        if declared and provider is Provider.CLAUDE_CODE:
-            declared = _claude_code_native_identity(declared, candidate)
-        if declared:
-            header_source_id = declared
-        declared_source_id = hash_payload({"source": declared or header_source_id})
-        update = _declared_update_key(provider, payload)
-        prior_update = update_keys.get(declared_source_id)
-        if update is not None and (prior_update is None or update > prior_update):
-            update_keys[declared_source_id] = update
-        units = extract_schema_units_from_payload(
-            [payload] if config.sample_granularity == "record" else payload,
-            source_name=provider,
-            source_path=candidate.path,
-            raw_id=f"{revision.revision_sha256}:{payload_index}",
-            config=config,
-            full_corpus=True,
-            compact_values=False,
-        )
-        for unit in units:
-            record_counts[declared_source_id] += len(unit.schema_samples)
-            append(declared_source_id, unit.artifact_kind, unit.schema_samples)
-    while pending_records:
-        flush(next(iter(pending_records)))
-    contributions: list[_SourceContribution] = []
-    for source_id, rows in sorted(evidence_rows.items()):
-        payload_by_element: dict[str, JSONDocument] = {}
-        for element_kind, accumulator in sorted(rows.items()):
-            payload = accumulator.finish().to_json()
-            if not isinstance(payload, dict):
-                raise SourceInferenceError("source evidence must serialize to a JSON object")
-            payload_by_element[element_kind] = payload
-        contributions.append(
-            _SourceContribution(
-                logical_source_id=source_id,
-                revision_sha256=revision.revision_sha256,
-                evidence_by_element=payload_by_element,
-                record_count=record_counts[source_id],
-                declared_updated_at=update_keys.get(source_id),
+    try:
+        header_source_id = candidate.logical_source_id
+        header_update: tuple[int, str] | None = None
+        for payload_index, sized_payload in enumerate(payloads):
+            if isinstance(sized_payload, _SizedPayload):
+                payload = sized_payload.value
+                source_byte_count = sized_payload.byte_count
+            else:
+                payload = sized_payload
+                source_byte_count = 0
+            versions, unrecognized = _declared_producer_versions(provider, (payload,))
+            producer_versions.update(versions)
+            producer_version_unrecognized = producer_version_unrecognized or unrecognized
+            declared = _native_source_id(provider, payload, "")
+            if declared and provider is Provider.CLAUDE_CODE:
+                declared = _claude_code_native_identity(declared, candidate)
+            update = _declared_update_key(provider, payload)
+            if declared:
+                header_source_id = declared
+                header_update = update
+            declared_source_id = hash_payload({"source": declared or header_source_id})
+            effective_update = update if update is not None else (header_update if not declared else None)
+            if spool is None:
+                prior_update = update_keys.get(declared_source_id)
+                if update is not None and (prior_update is None or update > prior_update):
+                    update_keys[declared_source_id] = update
+            units = extract_schema_units_from_payload(
+                [payload] if config.sample_granularity == "record" else payload,
+                source_name=provider,
+                source_path=candidate.path,
+                raw_id=f"{revision.revision_sha256}:{payload_index}",
+                config=config,
+                full_corpus=True,
+                compact_values=False,
             )
+            for unit in units:
+                if spool is None:
+                    record_counts[declared_source_id] += len(unit.schema_samples)
+                total_records += len(unit.schema_samples)
+                append(declared_source_id, unit.artifact_kind, unit.schema_samples, effective_update, source_byte_count)
+        while pending_records:
+            flush(next(iter(pending_records)))
+    except BaseException:
+        if spool is not None:
+            spool.close()
+        raise
+    try:
+        if spool is not None:
+            while active_rows:
+                spill(next(iter(active_rows)))
+            spool.close()
+            return (), total_records, tuple(sorted(producer_versions)), producer_version_unrecognized
+        contributions: list[_SourceContribution] = []
+        for source_id, rows in sorted(evidence_rows.items()):
+            payload_by_element: dict[str, JSONDocument] = {}
+            for element_kind, accumulator in sorted(rows.items()):
+                payload = accumulator.finish().to_json()
+                if not isinstance(payload, dict):
+                    raise SourceInferenceError("source evidence must serialize to a JSON object")
+                payload_by_element[element_kind] = payload
+            contributions.append(
+                _SourceContribution(
+                    logical_source_id=source_id,
+                    revision_sha256=revision.revision_sha256,
+                    evidence_by_element=payload_by_element,
+                    record_count=record_counts[source_id],
+                    declared_updated_at=update_keys.get(source_id),
+                )
+            )
+        return (
+            tuple(contributions),
+            sum(record_counts.values()),
+            tuple(sorted(producer_versions)),
+            producer_version_unrecognized,
         )
-    return (
-        tuple(contributions),
-        sum(record_counts.values()),
-        tuple(sorted(producer_versions)),
-        producer_version_unrecognized,
-    )
+    except BaseException:
+        if spool is not None:
+            spool.close()
+        raise
 
 
 def _declared_producer_versions(provider: Provider, payloads: Iterable[JSONValue]) -> tuple[tuple[str, ...], bool]:
@@ -634,6 +927,7 @@ def _collect_candidate(
     dynamic_paths_by_element: dict[str, tuple[str, ...]] | None = None,
     *,
     include_statistics: bool = True,
+    spool_path: Path | None = None,
 ) -> _CollectedCandidate:
     """Read one member fully and construct one-pass evidence observations."""
     dynamic_paths_by_element = dynamic_paths_by_element or {}
@@ -659,6 +953,7 @@ def _collect_candidate(
             revision,
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
+            spool_path=spool_path,
         )
     try:
         contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
@@ -667,6 +962,7 @@ def _collect_candidate(
             _iter_file_payloads(candidate.path, byte_count=byte_count),
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
+            spool_path=spool_path,
         )
     except SourceInferenceError as exc:
         reason = str(exc)
@@ -684,7 +980,7 @@ def _collect_candidate(
         return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
     if after_digest != revision.revision_sha256:
         return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
-    if not contributions:
+    if not contributions and (spool_path is None or not _spool_has_contributions(spool_path)):
         return _CollectedCandidate(
             candidate, revision, SourceTerminal("unsupported", byte_count, reason="no_schema_units")
         )
@@ -695,6 +991,7 @@ def _collect_candidate(
         contributions,
         producer_versions,
         producer_version_unrecognized,
+        spool_path,
     )
 
 
@@ -704,6 +1001,7 @@ def _collect_zip_candidate(
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool,
+    spool_path: Path | None,
 ) -> _CollectedCandidate:
     """Reduce ZIP members as independent source revisions."""
     contributions: list[_SourceContribution] = []
@@ -740,9 +1038,10 @@ def _collect_zip_candidate(
                             rows, member_records, versions, unrecognized = _collect_payload_evidence(
                                 member_candidate,
                                 member_revision,
-                                _iter_jsonl_payloads(handle),
+                                _iter_sized_jsonl_payloads(handle),
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                                 include_statistics=include_statistics,
+                                spool_path=spool_path,
                             )
                     else:
                         rows, member_records, versions, unrecognized = _collect_payload_evidence(
@@ -755,6 +1054,7 @@ def _collect_zip_candidate(
                             ),
                             dynamic_paths_by_element=dynamic_paths_by_element,
                             include_statistics=include_statistics,
+                            spool_path=spool_path,
                         )
                 except (SourceInferenceError, ZipBombError, OSError) as exc:
                     return _CollectedCandidate(
@@ -767,7 +1067,7 @@ def _collect_zip_candidate(
                 producer_version_unrecognized = producer_version_unrecognized or unrecognized
     except (OSError, ZipBombError, zipfile.BadZipFile):
         return _CollectedCandidate(candidate, revision, SourceTerminal("decode_failed", reason="invalid_zip"))
-    if not contributions:
+    if not contributions and (spool_path is None or not _spool_has_contributions(spool_path)):
         return _CollectedCandidate(candidate, revision, SourceTerminal("unsupported", reason="no_schema_zip_members"))
     return _CollectedCandidate(
         candidate,
@@ -776,6 +1076,7 @@ def _collect_zip_candidate(
         tuple(contributions),
         tuple(sorted(producer_versions)),
         producer_version_unrecognized,
+        spool_path,
     )
 
 
@@ -786,20 +1087,32 @@ def _bounded_collected_candidates(
     limit: int,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool = True,
+    spool_directory: Path | None = None,
 ) -> Iterator[_CollectedCandidate]:
     """Drain completed source workers while keeping the submission window bounded."""
     iterator = iter(candidates)
     pending = set()
+    submitted = 0
+
+    def submit(candidate: _SourceCandidate) -> None:
+        nonlocal submitted
+        spool_path = None
+        if spool_directory is not None:
+            spool_path = spool_directory / f"{submitted:08d}-{hash_payload(candidate.logical_source_id)[:16]}.sqlite3"
+        submitted += 1
+        pending.add(
+            executor.submit(
+                _collect_candidate,
+                candidate,
+                dynamic_paths_by_element,
+                include_statistics=include_statistics,
+                spool_path=spool_path,
+            )
+        )
+
     for _ in range(limit):
         try:
-            pending.add(
-                executor.submit(
-                    _collect_candidate,
-                    next(iterator),
-                    dynamic_paths_by_element,
-                    include_statistics=include_statistics,
-                )
-            )
+            submit(next(iterator))
         except StopIteration:
             break
     while pending:
@@ -807,14 +1120,7 @@ def _bounded_collected_candidates(
         for future in ready:
             yield future.result()
             with suppress(StopIteration):
-                pending.add(
-                    executor.submit(
-                        _collect_candidate,
-                        next(iterator),
-                        dynamic_paths_by_element,
-                        include_statistics=include_statistics,
-                    )
-                )
+                submit(next(iterator))
 
 
 def _source_recipe_fingerprint() -> str:
@@ -874,6 +1180,53 @@ def _cached_contributions(payload: JSONDocument) -> Iterator[_SourceContribution
         yield _SourceContribution(source, revision, evidence_by_element, records, update_key)
 
 
+def _serialize_descriptors(contributions: Iterable[_ContributionDescriptor]) -> JSONDocument:
+    return {
+        "contributions": [
+            {
+                "source": item.logical_source_id,
+                "revision": item.revision_sha256,
+                "records": item.record_count,
+                "updated": list(item.declared_updated_at) if item.declared_updated_at is not None else None,
+            }
+            for item in sorted(contributions, key=lambda item: (item.logical_source_id, item.revision_sha256))
+        ]
+    }
+
+
+def _cached_descriptors(payload: JSONDocument) -> tuple[_ContributionDescriptor, ...]:
+    rows = payload.get("contributions")
+    if not isinstance(rows, list):
+        raise SourceInferenceError("cached source manifest has no contribution list")
+    descriptors: list[_ContributionDescriptor] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise SourceInferenceError("cached source manifest contribution is invalid")
+        source, revision, records, updated = (
+            row.get("source"),
+            row.get("revision"),
+            row.get("records"),
+            row.get("updated"),
+        )
+        if not isinstance(source, str) or not isinstance(revision, str):
+            raise SourceInferenceError("cached source manifest contribution is invalid")
+        if not isinstance(records, int) or isinstance(records, bool) or records < 0:
+            raise SourceInferenceError("cached source manifest record count is invalid")
+        update_key: tuple[int, str] | None = None
+        if updated is not None:
+            if not (
+                isinstance(updated, list)
+                and len(updated) == 2
+                and isinstance(updated[0], int)
+                and not isinstance(updated[0], bool)
+                and isinstance(updated[1], str)
+            ):
+                raise SourceInferenceError("cached source manifest update key is invalid")
+            update_key = updated[0], updated[1]
+        descriptors.append(_ContributionDescriptor(source, revision, records, update_key))
+    return tuple(descriptors)
+
+
 def _historical_payload(payload: JSONDocument) -> JSONDocument:
     evidence = SchemaEvidence.from_json(payload)
     return replace(
@@ -888,31 +1241,20 @@ def _historical_payload(payload: JSONDocument) -> JSONDocument:
     ).to_json()
 
 
-def _merge_evidence_by_element(payloads: Iterable[dict[str, JSONDocument]]) -> dict[str, SchemaEvidence]:
-    groups: dict[str, list[JSONDocument]] = {}
-    for source_payload in payloads:
-        for element_kind, payload in source_payload.items():
-            groups.setdefault(element_kind, []).append(payload)
-    from polylogue.schemas.generation.evidence import merge_evidence
-
-    return {
-        element_kind: merge_evidence(SchemaEvidence.from_json(payload) for payload in rows)
-        for element_kind, rows in sorted(groups.items())
-    }
-
-
 def _cache_key(
     candidate: _SourceCandidate,
     revision_sha256: str,
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
     recipe_fingerprint: str,
+    logical_source_id: str | None = None,
 ) -> str:
     return hash_payload(
         {
             "recipe": recipe_fingerprint,
             "subject": candidate.provider,
-            "source_context": hash_payload({"logical_source_id": candidate.logical_source_id}),
+            "entry": "contribution" if logical_source_id is not None else "manifest",
+            "source_context": hash_payload({"logical_source_id": logical_source_id or candidate.logical_source_id}),
             "revision_sha256": revision_sha256,
             "dynamic_paths": (
                 {kind: list(paths) for kind, paths in sorted(dynamic_paths_by_element.items())}
@@ -920,6 +1262,57 @@ def _cache_key(
                 else None
             ),
         }
+    )
+
+
+def _cached_contribution(
+    cache: SourceContributionCache,
+    candidate: _SourceCandidate,
+    descriptor: _ContributionDescriptor,
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
+    recipe_fingerprint: str,
+) -> _SourceContribution | None:
+    cached = cache.get(
+        _cache_key(
+            candidate,
+            descriptor.revision_sha256,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+            recipe_fingerprint=recipe_fingerprint,
+            logical_source_id=descriptor.logical_source_id,
+        )
+    )
+    if cached is None:
+        return None
+    rows = tuple(_cached_contributions(cached.evidence))
+    if len(rows) != 1 or rows[0].logical_source_id != descriptor.logical_source_id:
+        raise SourceInferenceError("cached source contribution does not match its manifest")
+    return rows[0]
+
+
+def _put_contribution(
+    cache: SourceContributionCache,
+    candidate: _SourceCandidate,
+    contribution: _SourceContribution,
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
+    recipe_fingerprint: str,
+    input_bytes: int,
+) -> None:
+    cache.put(
+        CachedContribution(
+            cache_key=_cache_key(
+                candidate,
+                contribution.revision_sha256,
+                dynamic_paths_by_element=dynamic_paths_by_element,
+                recipe_fingerprint=recipe_fingerprint,
+                logical_source_id=contribution.logical_source_id,
+            ),
+            evidence=_serialize_contributions((contribution,)),
+            input_bytes=input_bytes,
+            record_count=contribution.record_count,
+            metadata={},
+        )
     )
 
 
@@ -1011,6 +1404,51 @@ def infer_sources(
             )
         )
 
+    def add_preliminary_from_cache(
+        candidate: _SourceCandidate,
+        digest: str,
+        byte_count: int,
+        manifest: CachedContribution,
+        *,
+        dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
+    ) -> bool:
+        contribution_descriptors = _cached_descriptors(manifest.evidence)
+        if any(
+            _cached_contribution(
+                cache,
+                candidate,
+                contribution,
+                dynamic_paths_by_element=dynamic_paths_by_element,
+                recipe_fingerprint=recipe_fingerprint,
+            )
+            is None
+            for contribution in contribution_descriptors
+        ):
+            return False
+
+        def contributions() -> Iterator[_SourceContribution]:
+            for contribution in contribution_descriptors:
+                cached_contribution = _cached_contribution(
+                    cache,
+                    candidate,
+                    contribution,
+                    dynamic_paths_by_element=dynamic_paths_by_element,
+                    recipe_fingerprint=recipe_fingerprint,
+                )
+                if cached_contribution is None:
+                    raise SourceInferenceError("cached source contribution disappeared")
+                yield cached_contribution
+
+        add_preliminary(
+            candidate,
+            digest,
+            byte_count,
+            contributions(),
+            _cached_versions(manifest.metadata),
+            bool(manifest.metadata.get("producer_version_unrecognized")),
+        )
+        return True
+
     with SourceContributionCache(cache_path) as cache:
         misses: list[tuple[_SourceCandidate, str, int]] = []
         for candidate in candidates:
@@ -1047,20 +1485,18 @@ def infer_sources(
                 report("hash", input_bytes=sum(input_bytes_by_candidate.values()))
                 continue
             input_bytes_by_candidate[candidate] = byte_count
-            cached = cache.get(
+            manifest = cache.get(
                 _cache_key(candidate, digest, dynamic_paths_by_element=None, recipe_fingerprint=recipe_fingerprint)
             )
-            if cached is None:
-                misses.append((candidate, digest, byte_count))
-                continue
-            add_preliminary(
+            if manifest is None or not add_preliminary_from_cache(
                 candidate,
                 digest,
                 byte_count,
-                _cached_contributions(cached.evidence),
-                _cached_versions(cached.metadata),
-                bool(cached.metadata.get("producer_version_unrecognized")),
-            )
+                manifest,
+                dynamic_paths_by_element=None,
+            ):
+                misses.append((candidate, digest, byte_count))
+                continue
             cache_hits += 1
             completed += 1
             report(
@@ -1068,31 +1504,56 @@ def infer_sources(
                 records=preliminary_records,
                 input_bytes=sum(input_bytes_by_candidate.values()),
             )
-        with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-            for item in _bounded_collected_candidates(
-                executor,
-                (candidate for candidate, _digest, _bytes in misses),
-                limit=max(1, max_workers) * 2,
-                dynamic_paths_by_element={},
-                include_statistics=False,
-            ):
-                if item.terminal.outcome != "included" or item.revision is None:
-                    terminal_counts[item.terminal.outcome] += 1
-                    reason_code = _terminal_reason_code(item.terminal)
-                    if reason_code is not None:
-                        terminal_reason_counts[reason_code] += 1
-                    completed += 1
-                    report("collect", input_bytes=sum(input_bytes_by_candidate.values()))
-                    continue
-                cache.put(
-                    CachedContribution(
+        with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
+            spool_root = Path(spool_dir)
+            with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
+                for item in _bounded_collected_candidates(
+                    executor,
+                    (candidate for candidate, _digest, _bytes in misses),
+                    limit=max(1, max_workers) * 2,
+                    dynamic_paths_by_element={},
+                    include_statistics=False,
+                    spool_directory=spool_root,
+                ):
+                    if item.terminal.outcome != "included" or item.revision is None:
+                        terminal_counts[item.terminal.outcome] += 1
+                        reason_code = _terminal_reason_code(item.terminal)
+                        if reason_code is not None:
+                            terminal_reason_counts[reason_code] += 1
+                        completed += 1
+                        report("collect", input_bytes=sum(input_bytes_by_candidate.values()))
+                        continue
+                    spooled_rows = (
+                        _spooled_contributions(item.spool_path)
+                        if item.spool_path is not None
+                        else iter(item.contributions)
+                    )
+                    spooled_descriptors: list[_ContributionDescriptor] = []
+                    for contribution in spooled_rows:
+                        _put_contribution(
+                            cache,
+                            item.candidate,
+                            contribution,
+                            dynamic_paths_by_element=None,
+                            recipe_fingerprint=recipe_fingerprint,
+                            input_bytes=item.terminal.byte_count,
+                        )
+                        spooled_descriptors.append(
+                            _ContributionDescriptor(
+                                contribution.logical_source_id,
+                                contribution.revision_sha256,
+                                contribution.record_count,
+                                contribution.declared_updated_at,
+                            )
+                        )
+                    manifest = CachedContribution(
                         cache_key=_cache_key(
                             item.candidate,
                             item.revision.revision_sha256,
                             dynamic_paths_by_element=None,
                             recipe_fingerprint=recipe_fingerprint,
                         ),
-                        evidence=_serialize_contributions(item.contributions),
+                        evidence=_serialize_descriptors(spooled_descriptors),
                         input_bytes=item.terminal.byte_count,
                         record_count=item.terminal.record_count,
                         metadata={
@@ -1100,22 +1561,22 @@ def infer_sources(
                             "producer_version_unrecognized": item.producer_version_unrecognized,
                         },
                     )
-                )
-                add_preliminary(
-                    item.candidate,
-                    item.revision.revision_sha256,
-                    item.terminal.byte_count,
-                    item.contributions,
-                    item.producer_versions,
-                    item.producer_version_unrecognized,
-                )
-                cache_misses += 1
-                completed += 1
-                report(
-                    "collect",
-                    records=preliminary_records,
-                    input_bytes=sum(input_bytes_by_candidate.values()),
-                )
+                    cache.put(manifest)
+                    if not add_preliminary_from_cache(
+                        item.candidate,
+                        item.revision.revision_sha256,
+                        item.terminal.byte_count,
+                        manifest,
+                        dynamic_paths_by_element=None,
+                    ):
+                        raise SourceInferenceError("new source evidence did not reach the private cache")
+                    cache_misses += 1
+                    completed += 1
+                    report(
+                        "collect",
+                        records=preliminary_records,
+                        input_bytes=sum(input_bytes_by_candidate.values()),
+                    )
 
         descriptors.sort(
             key=lambda item: (
@@ -1153,7 +1614,7 @@ def infer_sources(
                     terminal_reason_counts[reason_code] += 1
                 input_bytes_by_candidate[candidate] = terminal.byte_count
                 continue
-            cached = cache.get(
+            manifest = cache.get(
                 _cache_key(
                     candidate,
                     descriptor.revision_sha256,
@@ -1161,56 +1622,98 @@ def infer_sources(
                     recipe_fingerprint=recipe_fingerprint,
                 )
             )
-            if cached is None:
+            if (
+                manifest is None
+                or _cached_descriptors(manifest.evidence) != descriptor.contributions
+                or any(
+                    _cached_contribution(
+                        cache,
+                        candidate,
+                        contribution,
+                        dynamic_paths_by_element=dynamic_paths_by_element,
+                        recipe_fingerprint=recipe_fingerprint,
+                    )
+                    is None
+                    for contribution in descriptor.contributions
+                )
+            ):
                 final_misses.append(descriptor)
                 continue
             final.append(descriptor)
             cache_hits += 1
 
         expected_by_candidate = {descriptor.candidate: descriptor for descriptor in final_misses}
-        with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-            for item in _bounded_collected_candidates(
-                executor,
-                (descriptor.candidate for descriptor in final_misses),
-                limit=max(1, max_workers) * 2,
-                dynamic_paths_by_element=dynamic_paths_by_element,
-            ):
-                expected = expected_by_candidate[item.candidate]
-                if (
-                    item.terminal.outcome != "included"
-                    or item.revision is None
-                    or item.revision.revision_sha256 != expected.revision_sha256
+        with tempfile.TemporaryDirectory(prefix="polylogue-source-evidence-") as spool_dir:
+            spool_root = Path(spool_dir)
+            with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
+                for item in _bounded_collected_candidates(
+                    executor,
+                    (descriptor.candidate for descriptor in final_misses),
+                    limit=max(1, max_workers) * 2,
+                    dynamic_paths_by_element=dynamic_paths_by_element,
+                    spool_directory=spool_root,
                 ):
-                    terminal = (
-                        item.terminal
-                        if item.terminal.outcome != "included"
-                        else SourceTerminal("changed_during_read", item.terminal.byte_count)
+                    expected = expected_by_candidate[item.candidate]
+                    if (
+                        item.terminal.outcome != "included"
+                        or item.revision is None
+                        or item.revision.revision_sha256 != expected.revision_sha256
+                    ):
+                        terminal = (
+                            item.terminal
+                            if item.terminal.outcome != "included"
+                            else SourceTerminal("changed_during_read", item.terminal.byte_count)
+                        )
+                        terminal_counts[terminal.outcome] += 1
+                        reason_code = _terminal_reason_code(terminal)
+                        if reason_code is not None:
+                            terminal_reason_counts[reason_code] += 1
+                        input_bytes_by_candidate[item.candidate] = terminal.byte_count
+                        continue
+                    spooled_rows = (
+                        _spooled_contributions(item.spool_path)
+                        if item.spool_path is not None
+                        else iter(item.contributions)
                     )
-                    terminal_counts[terminal.outcome] += 1
-                    reason_code = _terminal_reason_code(terminal)
-                    if reason_code is not None:
-                        terminal_reason_counts[reason_code] += 1
-                    input_bytes_by_candidate[item.candidate] = terminal.byte_count
-                    continue
-                cache.put(
-                    CachedContribution(
-                        cache_key=_cache_key(
+                    final_contribution_descriptors: list[_ContributionDescriptor] = []
+                    for contribution in spooled_rows:
+                        _put_contribution(
+                            cache,
                             item.candidate,
-                            item.revision.revision_sha256,
+                            contribution,
                             dynamic_paths_by_element=dynamic_paths_by_element,
                             recipe_fingerprint=recipe_fingerprint,
-                        ),
-                        evidence=_serialize_contributions(item.contributions),
-                        input_bytes=item.terminal.byte_count,
-                        record_count=item.terminal.record_count,
-                        metadata={
-                            "producer_versions": list(item.producer_versions),
-                            "producer_version_unrecognized": item.producer_version_unrecognized,
-                        },
+                            input_bytes=item.terminal.byte_count,
+                        )
+                        final_contribution_descriptors.append(
+                            _ContributionDescriptor(
+                                contribution.logical_source_id,
+                                contribution.revision_sha256,
+                                contribution.record_count,
+                                contribution.declared_updated_at,
+                            )
+                        )
+                    if tuple(final_contribution_descriptors) != expected.contributions:
+                        raise SourceInferenceError("final source identities changed after the structure pass")
+                    cache.put(
+                        CachedContribution(
+                            cache_key=_cache_key(
+                                item.candidate,
+                                item.revision.revision_sha256,
+                                dynamic_paths_by_element=dynamic_paths_by_element,
+                                recipe_fingerprint=recipe_fingerprint,
+                            ),
+                            evidence=_serialize_descriptors(final_contribution_descriptors),
+                            input_bytes=item.terminal.byte_count,
+                            record_count=item.terminal.record_count,
+                            metadata={
+                                "producer_versions": list(item.producer_versions),
+                                "producer_version_unrecognized": item.producer_version_unrecognized,
+                            },
+                        )
                     )
-                )
-                final.append(expected)
-                cache_misses += 1
+                    final.append(expected)
+                    cache_misses += 1
 
         final.sort(
             key=lambda item: (
@@ -1222,22 +1725,27 @@ def infer_sources(
         )
         unique: dict[tuple[str, str], tuple[_CandidateDescriptor, _ContributionDescriptor]] = {}
         for descriptor in final:
-            for contribution in descriptor.contributions:
-                key = contribution.logical_source_id, contribution.revision_sha256
+            for contribution_descriptor in descriptor.contributions:
+                key = contribution_descriptor.logical_source_id, contribution_descriptor.revision_sha256
                 prior = unique.get(key)
                 if prior is None or str(descriptor.candidate.path) < str(prior[0].candidate.path):
-                    unique[key] = descriptor, contribution
+                    unique[key] = descriptor, contribution_descriptor
         by_identity: dict[str, list[tuple[_CandidateDescriptor, _ContributionDescriptor]]] = {}
         for row in unique.values():
             by_identity.setdefault(row[1].logical_source_id, []).append(row)
         current_rows: list[tuple[_CandidateDescriptor, _ContributionDescriptor]] = []
         historical_rows: list[tuple[_CandidateDescriptor, _ContributionDescriptor]] = []
+        prefix_memo: dict[tuple[Path, Path], bool] = {}
         for rows in by_identity.values():
             maximal = [
                 row
                 for row in rows
                 if not any(
-                    _is_strict_file_prefix(row[0].candidate.path, other[0].candidate.path)
+                    _is_strict_stream_prefix(
+                        row[0].candidate.path,
+                        other[0].candidate.path,
+                        memo=prefix_memo,
+                    )
                     for other in rows
                     if other != row
                 )
@@ -1255,13 +1763,13 @@ def infer_sources(
             historical_rows.extend(row for row in rows if row != selected)
 
         selected_by_candidate: dict[_CandidateDescriptor, dict[tuple[str, str], bool]] = {}
-        for descriptor, contribution in current_rows:
+        for descriptor, contribution_descriptor in current_rows:
             selected_by_candidate.setdefault(descriptor, {})[
-                (contribution.logical_source_id, contribution.revision_sha256)
+                (contribution_descriptor.logical_source_id, contribution_descriptor.revision_sha256)
             ] = True
-        for descriptor, contribution in historical_rows:
+        for descriptor, contribution_descriptor in historical_rows:
             selected_by_candidate.setdefault(descriptor, {})[
-                (contribution.logical_source_id, contribution.revision_sha256)
+                (contribution_descriptor.logical_source_id, contribution_descriptor.revision_sha256)
             ] = False
 
         evidence_by_element: dict[str, SchemaEvidenceAccumulator] = {}
@@ -1274,18 +1782,17 @@ def infer_sources(
                 item.revision_sha256,
             ),
         ):
-            cached = cache.get(
-                _cache_key(
+            selected_contributions = selected_by_candidate[descriptor]
+            for contribution_descriptor in descriptor.contributions:
+                cached_contribution = _cached_contribution(
+                    cache,
                     descriptor.candidate,
-                    descriptor.revision_sha256,
+                    contribution_descriptor,
                     dynamic_paths_by_element=dynamic_paths_by_element,
                     recipe_fingerprint=recipe_fingerprint,
                 )
-            )
-            if cached is None:
-                raise SourceInferenceError("final source evidence disappeared from the private cache")
-            selected_contributions = selected_by_candidate[descriptor]
-            for cached_contribution in _cached_contributions(cached.evidence):
+                if cached_contribution is None:
+                    raise SourceInferenceError("final source evidence disappeared from the private cache")
                 current = selected_contributions.pop(
                     (cached_contribution.logical_source_id, cached_contribution.revision_sha256), None
                 )

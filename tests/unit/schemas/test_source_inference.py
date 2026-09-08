@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import tempfile
 from collections.abc import Collection, Mapping
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
+from polylogue.schemas import source_inference as source_inference_module
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
 from polylogue.schemas.source_inference import (
     SchemaSourceInput,
     SourceObservation,
     SourceRevision,
+    _collect_candidate,
     _collect_payload_evidence,
+    _SizedPayload,
     _SourceCandidate,
+    _spooled_contributions,
     infer_sources,
 )
 
@@ -81,6 +88,29 @@ def test_declared_json_array_accepts_fractional_values_and_one_file_source(tmp_p
 
     assert result.terminal_counts == {"included": 1}
     assert result.producer_version_counts == {"1.2.3": 1}
+
+
+def test_complete_jsonl_final_record_does_not_require_a_newline(tmp_path: Path) -> None:
+    """Anti-vacuity: a newline-only check rejects a complete transcript accepted by the native decoder."""
+    source = tmp_path / "session.jsonl"
+    source.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "sessionId": "unterminated-but-complete",
+                "message": {"role": "user", "content": "synthetic"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", source),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+    )
+
+    assert result.terminal_counts == {"included": 1}
 
 
 def test_identical_chatgpt_export_reacquisitions_count_one_native_source(tmp_path: Path) -> None:
@@ -161,6 +191,69 @@ def test_multi_session_export_keeps_independent_native_contributions(tmp_path: P
     assert evidence.current_source_count == 2
 
 
+def test_large_export_worker_spools_native_contributions_before_returning(tmp_path: Path) -> None:
+    """Anti-vacuity: returning every native contribution retains one reduced payload per export record."""
+    source = tmp_path / "conversations.json"
+    source.write_text(
+        json.dumps([_chatgpt_conversation(f"session-{index}", updated=float(index)) for index in range(96)]),
+        encoding="utf-8",
+    )
+    candidate = _SourceCandidate("chatgpt", source, source, "synthetic-export")
+    spool_path = tmp_path / "contributions.sqlite3"
+
+    collected = _collect_candidate(candidate, spool_path=spool_path)
+
+    assert collected.terminal.outcome == "included"
+    assert collected.contributions == ()
+    assert collected.spool_path == spool_path
+    assert len(tuple(_spooled_contributions(spool_path))) == 96
+
+    result = infer_sources(
+        (SchemaSourceInput("chatgpt", source),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+    assert result.terminal_counts == {"included": 96}
+    assert len(result.evidence_by_element["session_document"]) == 1
+
+
+def test_interrupted_export_never_publishes_a_complete_cache_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: a partial export cache hit would silently omit the interrupted native session."""
+    root = tmp_path / "exports"
+    root.mkdir()
+    for name in ("first", "second"):
+        (root / f"{name}.json").write_text(json.dumps([_chatgpt_conversation(name, updated=1)]), encoding="utf-8")
+    cache_path = tmp_path / "source-cache.sqlite3"
+    real_put = source_inference_module._put_contribution
+    real_temporary_directory = tempfile.TemporaryDirectory
+    created_spool_directories: list[Path] = []
+
+    def track_temporary_directory(*args: Any, **kwargs: Any) -> tempfile.TemporaryDirectory[str]:
+        directory = real_temporary_directory(*args, **kwargs)
+        created_spool_directories.append(Path(directory.name))
+        return directory
+
+    def interrupt_second(*args: Any, **kwargs: Any) -> None:
+        candidate = args[1]
+        assert isinstance(candidate, _SourceCandidate)
+        if candidate.path.name == "second.json":
+            raise RuntimeError("synthetic parent interruption")
+        real_put(*args, **kwargs)
+
+    monkeypatch.setattr(source_inference_module, "_put_contribution", interrupt_second)
+    monkeypatch.setattr(tempfile, "TemporaryDirectory", track_temporary_directory)
+    with pytest.raises(RuntimeError, match="synthetic parent interruption"):
+        infer_sources((SchemaSourceInput("chatgpt", root),), cache_path=cache_path, max_workers=1)
+    assert created_spool_directories and all(not path.exists() for path in created_spool_directories)
+
+    monkeypatch.setattr(source_inference_module, "_put_contribution", real_put)
+    result = infer_sources((SchemaSourceInput("chatgpt", root),), cache_path=cache_path, max_workers=1)
+
+    assert result.terminal_counts == {"included": 2}
+    assert result.cache_hits >= 1
+    assert result.cache_misses >= 1
+
+
 def test_latest_nonprefix_revision_drives_fields_and_old_revision_only_adds_structure(tmp_path: Path) -> None:
     """Anti-vacuity: merging old exports into current statistics makes retired fields look current."""
     root = tmp_path / "exports"
@@ -181,6 +274,44 @@ def test_latest_nonprefix_revision_drives_fields_and_old_revision_only_adds_stru
     assert evidence.historical_source_count == 1
     assert "$.current_field" in evidence.fields
     assert "$.retired_field" not in evidence.fields
+
+
+def test_longer_jsonl_transcript_supersedes_its_strict_prefix(tmp_path: Path) -> None:
+    """Anti-vacuity: restricting prefix checks to streams must retain transcript supersession."""
+    root = tmp_path / "transcripts"
+    root.mkdir()
+    old_line = json.dumps(
+        {"type": "user", "sessionId": "same", "message": {"role": "user", "content": "first"}},
+        separators=(",", ":"),
+    )
+    old = f"{old_line}\n"
+    for index in range(128):
+        extension = json.dumps(
+            {
+                "type": "assistant",
+                "sessionId": "same",
+                "message": {"role": "assistant", "content": "second"},
+                "stream_extension": index,
+            },
+            separators=(",", ":"),
+        )
+        longer = f"{old}{extension}\n"
+        if hashlib.sha256(old.encode()).hexdigest() > hashlib.sha256(longer.encode()).hexdigest():
+            break
+    else:
+        pytest.fail("could not produce a digest ordering that requires prefix selection")
+    (root / "old.jsonl").write_text(old, encoding="utf-8")
+    (root / "longer.jsonl").write_text(longer, encoding="utf-8")
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", root),), cache_path=tmp_path / "source-cache.sqlite3", max_workers=1
+    )
+    evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for item in result.evidence_by_element["session_record_stream"]
+    )
+
+    assert evidence.current_source_count == 1
+    assert "$.stream_extension" in evidence.fields
 
 
 def test_source_route_folds_selected_contributions_before_returning(tmp_path: Path) -> None:
@@ -249,7 +380,7 @@ def test_malformed_members_become_terminal_outcomes_without_aborting_inventory(t
     root = tmp_path / "sources"
     root.mkdir()
     (root / "valid.json").write_text(json.dumps([_chatgpt_conversation("valid", updated=1)]), encoding="utf-8")
-    (root / "partial.jsonl").write_text('{"id":"partial"}', encoding="utf-8")
+    (root / "partial.jsonl").write_text(json.dumps(_chatgpt_conversation("partial", updated=1))[:-1], encoding="utf-8")
     (root / "invalid.zip").write_bytes(b"not a zip")
 
     result = infer_sources(
@@ -456,6 +587,57 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
     assert_json_equivalent(single_schema, chunked_schema)
     assert seen_chunk_sizes == [7] * 9 + [4]
     assert max(seen_chunk_sizes) == 7
+
+
+def test_source_chunking_flushes_an_oversized_jsonl_record_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: a record-only chunk limit retains several oversized native JSONL lines together."""
+    from polylogue.schemas.generation import evidence as evidence_module
+
+    candidate = _SourceCandidate("claude-code", tmp_path, tmp_path / "session.jsonl", "synthetic-source")
+    revision = SourceRevision("claude-code", candidate.path, candidate.logical_source_id, "b" * 64, 0)
+    record: JSONValue = {
+        "type": "user",
+        "sessionId": "oversized-session",
+        "message": {"role": "user", "content": "synthetic"},
+    }
+    seen_chunk_sizes: list[int] = []
+    real_collect = evidence_module.collect_source_evidence
+
+    def collect_with_measurement(
+        observation: SourceObservation,
+        *,
+        dynamic_paths: Collection[str] = (),
+        is_current: bool | None = None,
+        include_statistics: bool = True,
+    ) -> SchemaEvidence:
+        records = tuple(observation.records)
+        seen_chunk_sizes.append(len(records))
+        return real_collect(
+            SourceObservation(
+                logical_source_id=observation.logical_source_id,
+                revision_sha256=observation.revision_sha256,
+                subject=observation.subject,
+                element_kind=observation.element_kind,
+                records=records,
+                is_current=observation.is_current,
+            ),
+            dynamic_paths=dynamic_paths,
+            is_current=is_current,
+            include_statistics=include_statistics,
+        )
+
+    monkeypatch.setattr(source_inference_module, "_SOURCE_EVIDENCE_CHUNK_BYTE_LIMIT", 32)
+    monkeypatch.setattr(evidence_module, "collect_source_evidence", collect_with_measurement)
+    _collect_payload_evidence(
+        candidate,
+        revision,
+        iter((_SizedPayload(record, 48), _SizedPayload(record, 48))),
+        dynamic_paths_by_element={},
+    )
+
+    assert seen_chunk_sizes == [1, 1]
 
 
 def test_source_route_measures_full_multiline_values_before_reduced_evidence(tmp_path: Path) -> None:
