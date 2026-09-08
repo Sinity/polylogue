@@ -222,15 +222,13 @@ def merge_field_stats(
 def _qualify_merged_ref_targets(stats_by_path: Mapping[str, FieldStats]) -> None:
     """Qualify mapping references from the aggregate bounded hash evidence."""
     for source_stats in stats_by_path.values():
-        source_values = set(source_stats.equality_hash_counts)
-        if len(source_values) <= 5:
+        if len(source_stats.equality_hash_counts) <= 5:
             continue
         candidates = [
             path
             for path, target_stats in stats_by_path.items()
-            if target_stats.object_key_hash_counts
-            and len(source_values & set(target_stats.object_key_hash_counts)) / len(source_values)
-            >= REF_MATCH_THRESHOLD
+            if (overlap := source_stats.object_key_overlap(target_stats)) is not None
+            and overlap[0] / overlap[1] >= REF_MATCH_THRESHOLD
         ]
         if candidates:
             source_stats.ref_target = min(candidates)

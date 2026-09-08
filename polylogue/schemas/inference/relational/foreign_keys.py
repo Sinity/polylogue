@@ -25,15 +25,16 @@ def _append_mapping_references(stats: dict[str, FieldStats], results: list[Forei
     """Detect references against bounded object-key witnesses after aggregation."""
     emitted: set[tuple[str, str]] = set()
     for source_path, source_stats in stats.items():
-        source_values = _equality_values(source_stats)
-        if len(source_values) <= 5:
+        if len(_equality_values(source_stats)) <= 5:
             continue
         for target_path, target_stats in stats.items():
-            target_values = set(target_stats.object_key_hash_counts)
-            if source_path == target_path or not target_values:
+            if source_path == target_path:
                 continue
-            overlap = len(source_values & target_values)
-            ratio = overlap / len(source_values)
+            overlap = source_stats.object_key_overlap(target_stats)
+            if overlap is None:
+                continue
+            overlap_count, source_count, target_count = overlap
+            ratio = overlap_count / source_count
             if ratio >= REF_MATCH_THRESHOLD:
                 results.append(
                     ForeignKeyRelation(
@@ -42,9 +43,9 @@ def _append_mapping_references(stats: dict[str, FieldStats], results: list[Forei
                         match_ratio=ratio,
                         evidence={
                             "source": "object_key_hash_overlap",
-                            "overlap_count": overlap,
-                            "source_count": len(source_values),
-                            "target_count": len(target_values),
+                            "overlap_count": overlap_count,
+                            "source_count": source_count,
+                            "target_count": target_count,
                         },
                     )
                 )

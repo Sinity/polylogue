@@ -187,6 +187,18 @@ class FieldStats:
             self.truncated_evidence["object_key_hashes"] += 1
         self.object_key_hash_counts[digest] += 1
 
+    def object_key_overlap(self, target: FieldStats) -> tuple[int, int, int] | None:
+        """Return overlap counts using the target's retained hash domain."""
+        target_values = set(target.object_key_hash_counts)
+        source_values = set(self.equality_hash_counts)
+        if not target_values or not source_values:
+            return None
+        if target.truncated_evidence["object_key_hashes"]:
+            source_values = {value for value in source_values if value <= max(target_values)}
+        if not source_values:
+            return None
+        return len(source_values & target_values), len(source_values), len(target_values)
+
     @property
     def frequency(self) -> float:
         return self.present_count / self.total_samples if self.total_samples else 0.0

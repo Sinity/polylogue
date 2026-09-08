@@ -320,6 +320,22 @@ def test_merged_mapping_reference_detects_global_overlap_when_each_source_is_bel
     assert merged_stats["$.current_node"].ref_target == "$.mapping"
 
 
+def test_merged_mapping_reference_compares_within_a_truncated_target_hash_domain() -> None:
+    node_ids = [f"node-{index:08x}" for index in range(1_000)]
+    records = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids[:60]]
+    evidence = collect_source_evidence(
+        _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", records),
+        dynamic_paths=["$.mapping"],
+    )
+    merged_stats = merge_evidence([evidence]).field_stats
+
+    assert merged_stats["$.mapping"].truncated_evidence["object_key_hashes"]
+    assert merged_stats["$.current_node"].ref_target == "$.mapping"
+    assert [(relation.source_path, relation.target_path) for relation in detect_foreign_keys(merged_stats)] == [
+        ("$.current_node", "$.mapping")
+    ]
+
+
 def test_reduced_evidence_keeps_hashes_when_safe_values_are_present_for_foreign_keys() -> None:
     records = [{"id": value, "parent_id": value} for value in ["user", *(f"item-{index}" for index in range(6))]]
 
