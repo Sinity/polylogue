@@ -484,8 +484,21 @@ def _classify_list(
             reason="Beads interaction-history artifact, not a session stream",
         )
 
+    if provider is Provider.GEMINI_CLI:
+        from polylogue.sources.parsers.local_agent import is_gemini_cli_checkpoint_stream
+
+        if is_gemini_cli_checkpoint_stream(payload):
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.SESSION_RECORD_STREAM,
+                parse_as_session=False,
+                schema_eligible=True,
+                default_priority=120,
+                reason="Gemini CLI checkpoint schema evidence",
+            )
+
     if provider is Provider.CODEX:
-        from polylogue.sources.parsers.codex import is_supported_session_stream
+        from polylogue.sources.parsers.codex import is_schema_session_stream, is_supported_session_stream
 
         if is_supported_session_stream(payload):
             subagent = is_subagent_path(source_path)
@@ -497,6 +510,16 @@ def _classify_list(
                 schema_eligible=True,
                 default_priority=90 if subagent else 120,
                 reason="parser-supported Codex session record stream",
+            )
+        if is_schema_session_stream(payload):
+            subagent = is_subagent_path(source_path)
+            return ArtifactClassification(
+                provider=provider,
+                kind=ArtifactKind.AGENT_TRANSCRIPT if subagent else ArtifactKind.SESSION_RECORD_STREAM,
+                parse_as_session=False,
+                schema_eligible=True,
+                default_priority=90 if subagent else 120,
+                reason="Codex schema evidence with records lacking normalized semantics",
             )
 
     # A Codex rollout can be truncated to repeated bare session headers while

@@ -1,0 +1,582 @@
+{
+  "coverage_decisions": [
+    {
+      "decision": "nonrepresentable",
+      "origin": "aistudio-drive",
+      "provider": "gemini",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "nonrepresentable",
+      "origin": "chatgpt-export",
+      "provider": "chatgpt",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "nonrepresentable",
+      "origin": "claude-ai-export",
+      "provider": "claude-ai",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "nonrepresentable",
+      "origin": "claude-code-session",
+      "provider": "claude-code",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "committed",
+      "origin": "codex-session",
+      "provider": "codex",
+      "reason": "persisted package/version/element hashes recorded"
+    },
+    {
+      "decision": "unsupported",
+      "origin": "gemini-cli-session",
+      "provider": "gemini-cli",
+      "reason": "provider has no executable persisted schema element"
+    },
+    {
+      "decision": "unsupported",
+      "origin": "hermes-session",
+      "provider": "hermes",
+      "reason": "provider has no executable persisted schema element"
+    }
+  ],
+  "input_manifests": [
+    {
+      "digest": "abca2298e0cf0dcc3b70b812d8205cee5197bae2518f777843ccae56f959bb71",
+      "provider": "chatgpt",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "b11dd29a64e3e68d9823cb49ab7b102ac96ca06b90fe6efafa0274b5c25b0a68",
+      "provider": "claude-ai",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "45a25dea6ecada8a3f143929601d827197ca71b29574eaa85286bd755dd07328",
+      "provider": "claude-code",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "3867497171b0dfa95958cdd87d5c16dd8b19cd3df2f41285e495d2d7349220ce",
+      "provider": "codex",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "c533fff1c64a9efbe5fc0b9081007c4bfc1e4d4b5524d6eb981057460c4d9614",
+      "provider": "gemini",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "3b2e572b3ae9064118826ab20532a27b6356bc84e57e35171b968c5a60b3069b",
+      "provider": "gemini-cli",
+      "unavailable_reason": null
+    },
+    {
+      "digest": "c8c3090905a219754f23db59a05435f80b5d7ab72934ea10ddfa9d0b54ae9d61",
+      "provider": "hermes",
+      "unavailable_reason": null
+    }
+  ],
+  "packages": [
+    {
+      "element_hashes": [
+        {
+          "content_hash": "ead07e6d17e9e9bfaa236dc70b47e8aa41694eebd80379181ce7f8b6ee887874",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "16bc88014361b640a1fa1070520f1ea24a3f8fb2c570ae35775d2cef8340dc5c",
+      "package_version": "v1",
+      "provider": "chatgpt",
+      "version_hash": "2bdc175470dc7bd684f558af92100140032117710401a6ff12a00de72781edf4"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "2adcefc9b66105aed1482ded1aa0ddbc5ecaea25f705d420cf32a45892f277a2",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "d12c9805512df46a15fdb84275f03fcf405a2cc27d4c0df9284470f9e47dde3e",
+      "package_version": "v2",
+      "provider": "chatgpt",
+      "version_hash": "fdbf3d78df47bea70ddf3b8c70e551a8419fdbace8d5cfe4912d86cf42d52759"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "f3c3d8d95a712c10916be93da673ac735cb211f508e6150d607594a9a608ca36",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "6a65f290904eae0994f0dabc9b85ef730204e94c2737f72593a6a29a6d22083c",
+      "package_version": "v3",
+      "provider": "chatgpt",
+      "version_hash": "eb7f5373c2985b846846bcbc9da00ba90bd9c6dfcd079b0bb921eed190e05f33"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "f4509ab3678a4acb5eeb7e9db2088332f10cac157edd56713d2580d0e9b0415f",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "b0ac9bfb37953a29958786c040e8283c0614f3213d9cae449e3cd043defc6f56",
+      "package_version": "v1",
+      "provider": "claude-ai",
+      "version_hash": "91c62bb4b676e0ebde63b87e8fa9c0162527f7314ea00a35ad2808d77af6f21d"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "3c4735f1e17111c99d2c5f518c6b6bf880e3ca2815d86b6020fd3ee78196af88",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "f4585fffd9865c38ab9302ba1b5ba0088fd2a5c5bab082d08775eb8cbc81fc3c",
+      "package_version": "v2",
+      "provider": "claude-ai",
+      "version_hash": "367d1583ceb5eef91a1f589048642479d596f40c6ca7d0ca620ec357a915ede0"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "4b1abcc4d7720c7dac6b4d04baf72529619dbb475d2d6df9d28351449f365692",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "7e9b806faf29a8ca25225bb5928a65e6effd0f0996de6c59e70d644987a8da8a",
+      "package_version": "v3",
+      "provider": "claude-ai",
+      "version_hash": "ed71968aa5e6620698edf4cc213af08d5944c9cb0759f8fa3487e1a96810c5eb"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "d0e74337e330f9f2b7eb8e63fd604ced3f3cfca86c1ea3b40689aec2051d0cec",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "b60e533d15098310d245af2d50c51f576d88a12a66342371f26bcb6c821bbd40",
+      "package_version": "v1",
+      "provider": "claude-code",
+      "version_hash": "4321971c28b5ee72929df43506071eddcb1c5df9f575e2494179a580643861bc"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "9c9a9645250f16f4168f8cc9539832203bfbeb566e6ea7a33908629e3d91c1f6",
+          "element_kind": "agent_transcript"
+        },
+        {
+          "content_hash": "edf0fa31f66b857d905f4a59c7da603017280d4ed61aed71866793816bdf248d",
+          "element_kind": "coordinator_session_stream"
+        },
+        {
+          "content_hash": "5577bcd059878b4f8f68683ee413842d76c071537e5ab5a89e80bca096fb47e8",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "201a1ae4e215ffc02bc6c8ff80454388183e43239cb744469e7d23781733cca7",
+      "package_version": "v2",
+      "provider": "claude-code",
+      "version_hash": "4b91d88621020fef3c6b9c385820d48a7fae40df14edcb97e3a4264f8fd32335"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "9b082eebce888e0dc8e453aad2d35da900fb321a747c042f7ddab440f5246cb5",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "54ae765b8355221247bdd3503d31a03cc15fcb8435dfa483ea3173e3ffed8034",
+      "package_version": "v1",
+      "provider": "codex",
+      "version_hash": "1b59a72f23acc4838950a9453b52efb493eccbbc99bc55b7cb6001c30572c992"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "8b2272a1fc679c4f00ef4a2133420d709d3c13bdf5c67486de4ecc1cc431bf88",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "07e95e72fe680a2ac5b663c317201123f784fbfcaa19055ed8ed865ff2b089b7",
+      "package_version": "v2",
+      "provider": "codex",
+      "version_hash": "3ee658944df30138a342cb2b5a9d37683d52dd1b3790b076e256882e9d4434b3"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "a15e1b1dce4401a70fe3d40c10e72f482c8168ebbc01eac9b81353c63ee785ac",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "428dbd57acd6a4cfdc0cf5b5e3f5d358febca6168a966fe8066fc41c8dba719d",
+      "package_version": "v1",
+      "provider": "gemini",
+      "version_hash": "29a486831d6b8c6cef3e0c922144d9accf51da7ef70b1432f6cb4a07368a97cd"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "444aacc30c7b8ed7c7e8cd61113a95d04a2b9682dda1ddd47c71a3719a2c4d13",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "f0478f55e37fc5846e2cb46ad21916457c54d5d3a0946520f65ddea3be45a63a",
+      "package_version": "v2",
+      "provider": "gemini",
+      "version_hash": "d67d5a217c30b007a075b0c5e70cd431d4517b84c05c2597b259729b0cbeff7f"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "cbc1fddad2a65ec040287e14a18205a333a4341c10e2065321bb1409d3928696",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "17149ae7de8fa23501ccf59243a1ee5a49caaab6029f303cf9ada8c6e984154b",
+      "package_version": "v3",
+      "provider": "gemini",
+      "version_hash": "d7d2b55ce4d5f1cfbc8d0b58038367439769631409b2cdd4a736e25f9d7e2752"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "36add298fd380f620df18e84d1748f5e219530a8a496ec3d0ccbab63f267f88b",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "9eb1d76fb894d67662502dbc3a54e9f5179dc91eb72a353b0934dcc2f5abd772",
+      "package_version": "v1",
+      "provider": "gemini-cli",
+      "version_hash": "bf8ad7015b920b9f93c946440d882f0aab253855f8cd838d4c22b54f85964b5f"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "26327bd9cd0814cee8b6211bf6b8ae69f92f637bdd591038d50f2f294c39f4e3",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "82bd016bce4e4a9c8ab4d9c1ede7f30a4b071886797a3891bd0cbcad5c190fb5",
+      "package_version": "v2",
+      "provider": "gemini-cli",
+      "version_hash": "d66196d979cc454651bd04138af5a17e40480aea708a16040710d798ee1025cf"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "5165d64ea68c22124ee2cf909298d92537f33075a82a6433e6e42243545ee8ef",
+          "element_kind": "session_document"
+        },
+        {
+          "content_hash": "daab0a31189812b49d4f40126e77a702319837a18929ad24ac20e48251e7b183",
+          "element_kind": "session_record_stream"
+        }
+      ],
+      "package_hash": "bb7e219a436483e43f325e3821ed0e78dd47778e4def05dde42a4e9d8e7e0f0f",
+      "package_version": "v3",
+      "provider": "gemini-cli",
+      "version_hash": "664f39ce74cb43999f10b2682c8dc053e7b89e991cff2df9c81d175a4836f1f0"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "7aef81f7ac41544dea397ba679929d2810ce9d1fc17e4a1059c25091b73e4aec",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "0e1d25d08a9fe98cbd7c71357f9a6d24b9239e7111ddc4bbd51bd356b5b8db3d",
+      "package_version": "v1",
+      "provider": "hermes",
+      "version_hash": "0bf7876b1472bb6aec54ed534184199bc0101b917cceed0b21d419154196e26a"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "87fcb7d1cece105a5a84972131c7a09298ac0b2c676e81cf2fd671eab27755ce",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "6ffee9a4c03f0355e92938fd72ad0c7dc8a774dccfd4f7e8b9dcfd14849e3011",
+      "package_version": "v2",
+      "provider": "hermes",
+      "version_hash": "e7ceea2d4d41235f30a5342058ca0253949603dc2d7bdf07e30658523dfc16aa"
+    },
+    {
+      "element_hashes": [
+        {
+          "content_hash": "b95c41091d3ed189382b48a0522471d9d184b1e61f03a612531d08be8bcd8869",
+          "element_kind": "session_document"
+        }
+      ],
+      "package_hash": "65dce6ddb4190be79003b007cb50a9306b2cd2b2b85ee90f369309da184f5c2c",
+      "package_version": "v3",
+      "provider": "hermes",
+      "version_hash": "38a7df88bf7d539995c7c735f9e280e12771b362a2e3af8cc7cee3034c6e106e"
+    }
+  ],
+  "receipt_digest": "4a9eca9268e2eb5c7bf1a7d27c45046ce27298d17824dcde00595f0bbcf40850",
+  "schema": "polylogue.schema-inference-handoff.v1",
+  "unsupported_decisions": [
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-range",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths",
+        "x-polylogue-time-deltas"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-range",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths",
+        "x-polylogue-time-deltas"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-format",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "chatgpt",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "claude-ai",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "claude-ai",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "claude-ai",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-range",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v1",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "agent_transcript",
+      "package_version": "v2",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "coordinator_session_stream",
+      "package_version": "v2",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-observed-distribution"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v2",
+      "provider": "claude-code",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-dynamic-keys",
+        "x-polylogue-foreign-keys",
+        "x-polylogue-mutually-exclusive",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-ref",
+        "x-polylogue-semantic-role",
+        "x-polylogue-string-lengths"
+      ],
+      "element_kind": "session_record_stream",
+      "package_version": "v2",
+      "provider": "codex",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-semantic-role"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "gemini",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "x-polylogue-observed-distribution",
+        "x-polylogue-semantic-role"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "gemini",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "nonrepresentable",
+      "details": [
+        "required",
+        "x-polylogue-observed-distribution",
+        "x-polylogue-semantic-role"
+      ],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "gemini",
+      "reason": "unsupported_json_schema_construct"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "gemini-cli",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "gemini-cli",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "gemini-cli",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_record_stream",
+      "package_version": "v3",
+      "provider": "gemini-cli",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v1",
+      "provider": "hermes",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v2",
+      "provider": "hermes",
+      "reason": "provider_without_wire_format"
+    },
+    {
+      "decision": "unsupported",
+      "details": [],
+      "element_kind": "session_document",
+      "package_version": "v3",
+      "provider": "hermes",
+      "reason": "provider_without_wire_format"
+    }
+  ]
+}

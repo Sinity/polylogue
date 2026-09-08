@@ -62,9 +62,11 @@
         "type:runSettings:object",
         "type:systemInstruction:object"
       ],
-      "observed_artifact_count": 13
+      "observed_artifact_count": 13,
+      "observation_status": "unspecified"
     }
   ],
   "orphan_adjunct_counts": {},
-  "workload_profile_file": null
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }

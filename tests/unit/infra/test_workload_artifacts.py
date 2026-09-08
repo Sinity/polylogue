@@ -811,16 +811,19 @@ def test_cleanup_removes_symlink_nodes_without_following_targets(tmp_path: Path)
     assert (outside / "keep").read_text(encoding="utf-8") == "keep"
 
 
-def test_obsolete_cleanup_advances_cursor_past_irrelevant_entries(tmp_path: Path) -> None:
+def test_obsolete_cleanup_skips_irrelevant_entries(tmp_path: Path) -> None:
     cache_root = tmp_path / "cache"
     staging_root = cache_root / ".staging"
     (staging_root / "irrelevant").mkdir(parents=True)
     (staging_root / "also-irrelevant").write_text("x", encoding="utf-8")
     (cache_root / ".locks").mkdir()
 
-    assert _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2) == ()
-    cursor = (cache_root / ".cleanup.cursor").read_text(encoding="utf-8").strip()
-    assert cursor in {"irrelevant", "also-irrelevant"}
+    stale = staging_root / "abandoned.build"
+    stale.mkdir()
+
+    assert _recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=1) == (stale.name,)
+    assert (staging_root / "irrelevant").is_dir()
+    assert (staging_root / "also-irrelevant").read_text(encoding="utf-8") == "x"
 
 
 def test_clone_rejects_hardlinked_leaf_and_cleans_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1099,9 +1102,9 @@ def test_seeded_archive_recovers_crash_left_staging_before_rebuild(tmp_path: Pat
     assert not stale.exists()
 
 
-def test_obsolete_staging_sweep_honors_budget_and_continues(
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("handoffs", [False, True])
+def test_recovery_sweep_honors_budget_and_continues(tmp_path: Path, handoffs: bool) -> None:
+    """Removing the candidate limit makes the first batch exceed two trees."""
     import tests.infra.workload_artifacts as artifacts
 
     cache_root = tmp_path / "cache"
@@ -1110,17 +1113,65 @@ def test_obsolete_staging_sweep_honors_budget_and_continues(
     staging_root.mkdir(parents=True)
     lock_root.mkdir()
     for index in range(5):
-        (staging_root / f"key-{index}.build").mkdir()
+        name = f".key-{index}.handoff" if handoffs else f"key-{index}.build"
+        (staging_root / name).mkdir()
 
     removed: list[str] = []
     for _ in range(12):
-        batch = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+        if handoffs:
+            batch = artifacts._recover_stale_handoffs(cache_root=cache_root, artifacts_root=staging_root, budget=2)
+        else:
+            batch = artifacts._recover_obsolete_staging(cache_root=cache_root, staging_root=staging_root, budget=2)
+        assert 0 < len(batch) <= 2
         removed.extend(batch)
         if not tuple(staging_root.iterdir()):
             break
 
     assert len(removed) == 5
     assert not tuple(staging_root.iterdir())
+
+
+def test_handoff_recovery_skips_published_artifacts_without_syncing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-entry journaling calls fsync; counting ordinary names hides the handoff."""
+    import contextlib
+
+    import tests.infra.workload_artifacts as artifacts
+
+    cache_root = tmp_path / "cache"
+    artifacts_root = cache_root / "artifacts"
+    artifacts_root.mkdir(parents=True)
+    (cache_root / ".locks").mkdir()
+    published = [artifacts_root / f"published-{index}" for index in range(300)]
+    for path in published:
+        path.mkdir()
+    stale = artifacts_root / ".abandoned.handoff"
+    stale.mkdir()
+    root_inode = artifacts_root.stat().st_ino
+    real_scandir = os.scandir
+
+    @contextlib.contextmanager
+    def published_first(fd: int) -> Any:
+        with real_scandir(fd) as entries:
+            yield iter(sorted(entries, key=lambda entry: entry.name.startswith(".")))
+
+    def scan(path: Any) -> Any:
+        if isinstance(path, int) and os.fstat(path).st_ino == root_inode:
+            return published_first(path)
+        return real_scandir(path)
+
+    def forbid_sync(fd: int) -> None:
+        raise AssertionError("cleanup synchronously wrote a scan journal")
+
+    monkeypatch.setattr(os, "scandir", scan)
+    monkeypatch.setattr(os, "fsync", forbid_sync)
+
+    assert artifacts._recover_stale_handoffs(cache_root=cache_root, artifacts_root=artifacts_root, budget=1) == (
+        stale.name,
+    )
+    assert all(path.is_dir() for path in published)
+    assert not stale.exists()
 
 
 def test_obsolete_staging_sweep_does_not_remove_an_active_key(
@@ -2547,12 +2598,17 @@ def test_law_built_template_publishes_and_clones_through_the_shared_route(tmp_pa
     clone that skipped the shared file-set authentication, makes these
     assertions red.
     """
+    import contextlib
+
     from tests.infra.archive_templates import clone_archive_template, finalize_archive_template
 
     template = tmp_path / "template"
     template.mkdir()
-    (template / "index.db").write_bytes(b"template-bytes")
+    with contextlib.closing(sqlite3.connect(template / "index.db")) as conn, conn:
+        conn.execute("CREATE TABLE entries (value TEXT)")
+        conn.execute("INSERT INTO entries VALUES ('template')")
     finalize_archive_template(template)
+    expected = (template / "index.db").read_bytes()
 
     adopted = ImmutableTreeArtifact.adopt(template, key="adopted")
     assert adopted.files == ()
@@ -2560,20 +2616,22 @@ def test_law_built_template_publishes_and_clones_through_the_shared_route(tmp_pa
 
     destination = tmp_path / "clone"
     assert clone_archive_template(template, destination) in {"reflink", "copy"}
-    assert (destination / "index.db").read_bytes() == b"template-bytes"
+    assert (destination / "index.db").read_bytes() == expected
     assert destination.joinpath("index.db").stat().st_mode & stat.S_IWUSR
     assert not template.joinpath("index.db").stat().st_mode & stat.S_IWUSR
 
 
-def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path) -> None:
+@pytest.mark.parametrize("offset", [0, 4096])
+def test_seal_fixture_tree_refuses_an_invalid_tier(tmp_path: Path, offset: int) -> None:
     """Sealing validates every tier; a corrupt one is refused, not published."""
+    import contextlib
+
     root = tmp_path / "tree"
     root.mkdir()
-    with sqlite3.connect(root / "source.db") as conn:
+    with contextlib.closing(sqlite3.connect(root / "source.db")) as conn, conn:
         conn.execute("CREATE TABLE entries (value TEXT)")
-    gc.collect()
     with open(root / "source.db", "r+b") as handle:
-        handle.seek(4096)
+        handle.seek(offset)
         handle.write(b"\x00" * 512)
 
     with pytest.raises(RuntimeError, match="invalid seeded archive tier"):

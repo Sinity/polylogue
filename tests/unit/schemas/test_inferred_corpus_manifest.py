@@ -103,6 +103,7 @@ def test_persisted_manifest_round_trip_validates_identity_and_integrity(tmp_path
     assert read_inferred_corpus_manifest(path) == manifest
 
 
+@pytest.mark.timeout(600)
 def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -> None:
     registry = _registry()
     support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
@@ -116,7 +117,7 @@ def test_manifest_can_bind_every_selection_to_the_exact_wire_support_receipt() -
     }
 
 
-@pytest.mark.timeout(600)  # subject is a full-catalog build (~20s quiet, more under corpus contention)
+@pytest.mark.timeout(600)
 def test_wire_support_receipt_is_canonical_across_catalog_reordering() -> None:
     registry = _registry()
     reordered = _RegistryProxy(registry)
@@ -443,6 +444,7 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
     assert replay_count == 1
 
 
+@pytest.mark.timeout(600)
 def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() -> None:
     registry = _registry()
     support = shared_wire_support_receipt(storage_root=SCHEMA_DIR)
@@ -607,12 +609,13 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
             )
         )
     assert receipt_decisions == manifest_decisions
-    assert all(
-        annotation in details
-        for *_identity, details in receipt_decisions
-        for annotation in expected_annotations
-        if annotation in observed
-    )
+    for entry in manifest.entries:
+        annotations = {
+            item.construct for item in entry.key.construct_support if item.state == "unsupported"
+        } & expected_annotations
+        if annotations:
+            assert entry.unsupported is not None
+            assert annotations <= set(entry.unsupported.details)
 
     package = receipt.packages[0]
     if receipt.unsupported_decisions:

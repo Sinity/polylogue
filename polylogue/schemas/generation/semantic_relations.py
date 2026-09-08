@@ -26,7 +26,6 @@ def _relation_payloads(
     JSONDocumentList,
     JSONDocumentList,
     JSONDocumentList,
-    JSONDocumentList,
 ]:
     return (
         [
@@ -36,16 +35,6 @@ def _relation_payloads(
                 "match_ratio": round(relation.match_ratio, 3),
             }
             for relation in relations.foreign_keys
-        ],
-        [
-            {
-                "field_a": relation.field_a,
-                "field_b": relation.field_b,
-                "min_delta": round(relation.min_delta, 1),
-                "max_delta": round(relation.max_delta, 1),
-                "avg_delta": round(relation.avg_delta, 1),
-            }
-            for relation in relations.time_deltas
         ],
         [
             {
@@ -121,7 +110,7 @@ def _attach_semantic_roles(
         role, confidence, evidence = role_by_path[path]
         schema["x-polylogue-semantic-role"] = role
         schema["x-polylogue-score"] = round(confidence, 3)
-        schema["x-polylogue-evidence"] = evidence
+        schema["x-polylogue-evidence"] = {key: value for key, value in evidence.items() if key != "range"}
 
     properties = _schema_node(schema.get("properties"))
     if properties is not None:
@@ -145,11 +134,9 @@ def _attach_semantic_roles(
 
 
 def _attach_relational_annotations(schema: JSONDocument, relations: RelationalAnnotations) -> None:
-    foreign_keys, time_deltas, mutual_exclusions, string_lengths = _relation_payloads(relations)
+    foreign_keys, mutual_exclusions, string_lengths = _relation_payloads(relations)
     if foreign_keys:
         schema["x-polylogue-foreign-keys"] = _json_value(foreign_keys)
-    if time_deltas:
-        schema["x-polylogue-time-deltas"] = _json_value(time_deltas)
     if mutual_exclusions:
         schema["x-polylogue-mutually-exclusive"] = _json_value(mutual_exclusions)
     if string_lengths:

@@ -425,6 +425,7 @@ class SchemaCommitResult:
             "narrowed": self.narrowed,
             "dry_run": self.dry_run,
             "sample_count": self.generation.sample_count,
+            "phase_receipt": self.generation.phase_receipt,
             "versions": [report.to_dict() for report in self.versions],
             "handoff": self.handoff.to_payload() if self.handoff is not None else None,
             "handoff_path": str(self.handoff_path) if self.handoff_path is not None else None,

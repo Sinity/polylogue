@@ -1,74 +1,10 @@
 {
   "artifact_counts": {
-    "session_document": 37
+    "session_document": 159
   },
-  "cluster_count": 1,
-  "clusters": [
-    {
-      "artifact_kind": "session_document",
-      "bundle_scope_count": 37,
-      "cluster_id": "f99c39ed0e5df7ea",
-      "confidence": 1.0,
-      "dominant_keys": [
-        "base_url",
-        "last_updated",
-        "message_count",
-        "messages",
-        "model",
-        "platform",
-        "session_id",
-        "session_start",
-        "system_prompt",
-        "tools"
-      ],
-      "exact_structure_ids": [
-        "1f07371f61076dba",
-        "b5b4a1b2fa6e9e49",
-        "d4869334f538c2bc",
-        "ffe2518ccd4fb36c"
-      ],
-      "first_seen": "2026-05-06T01:31:55.304373+00:00",
-      "last_seen": "2026-05-07T06:40:04.881242+00:00",
-      "profile_tokens": [
-        "anchor:messages",
-        "field:base_url",
-        "field:last_updated",
-        "field:message_count",
-        "field:messages",
-        "field:model",
-        "field:platform",
-        "field:session_id",
-        "field:session_start",
-        "field:system_prompt",
-        "field:tools",
-        "item:messages:content",
-        "item:messages:finish_reason",
-        "item:messages:reasoning",
-        "item:messages:reasoning_content",
-        "item:messages:role",
-        "item:messages:tool_call_id",
-        "item:messages:tool_calls",
-        "item:tools:function",
-        "item:tools:type",
-        "shape:messages:array",
-        "shape:tools:array",
-        "type:base_url:string",
-        "type:last_updated:string",
-        "type:message_count:number",
-        "type:messages:array",
-        "type:model:string",
-        "type:platform:string",
-        "type:session_id:string",
-        "type:session_start:string",
-        "type:system_prompt:string",
-        "type:tools:array"
-      ],
-      "promoted_package_version": "v1",
-      "provider": "hermes",
-      "sample_count": 37
-    }
-  ],
-  "default_version": "v1",
-  "generated_at": "2026-05-11T04:14:45.729400+00:00",
+  "cluster_count": 0,
+  "clusters": [],
+  "default_version": "v3",
+  "generated_at": "2026-09-08T09:01:02.756691+00:00",
   "provider": "hermes"
 }

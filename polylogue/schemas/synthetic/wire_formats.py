@@ -369,6 +369,9 @@ _STRUCTURAL_SCHEMA_KEYWORDS = frozenset(
 
 class _CoverageCorpus(Protocol):
     schema: SchemaRecord
+    wire_format: WireFormat
+    provider: str
+    package_version: str
     workload_profile: SchemaRecord | None
     _coverage_branch_choices: dict[str, int]
     _coverage_type_choices: dict[str, str]
@@ -455,6 +458,10 @@ def _route_nonrepresentable_reasons(
                 "$.properties.message.properties.content.anyOf[1].items[*].properties.content.anyOf[1]",
                 "Claude Code wire shaping preserves message content but its fallback emits scalar text and supported block forms, never nested array content/source blocks",
             ),
+            (
+                "$.properties.message.properties.content.items[*].properties.content.items[*]",
+                "Claude Code coverage shaping replaces nested array content with text",
+            ),
         )
     else:
         prefixes = ()
@@ -473,6 +480,13 @@ def _route_nonrepresentable_reasons(
     )
     for keyword in missing_keywords:
         path = keyword.split("@", 1)[1] if "@" in keyword else "$"
+        if (
+            provider == "claude-code"
+            and path == "$.properties.message.properties.content.items[*].properties.content"
+            and keyword.split("@", 1)[0] in {"type:array", "items"}
+        ):
+            reasons[keyword] = "Claude Code coverage shaping replaces nested array content with text"
+            continue
         if provider == "chatgpt" and package_version == "v1" and path.startswith(chatgpt_v1_media_prefix):
             reasons[keyword] = (
                 "ChatGPT v1 wire shaping discards only the export-only media branch at this exact package selection"
@@ -786,6 +800,38 @@ def generate_coverage_witnesses(
     original_null_paths = corpus._coverage_null_paths
     original_mode = corpus._coverage_witness_mode
     raw_items: list[bytes] = []
+    from polylogue.schemas.synthetic.runtime import SCHEMA_CONSTRUCT_HANDLERS
+
+    handlers = set(SCHEMA_CONSTRUCT_HANDLERS)
+    obligations: set[str] = set()
+    _collect_schema_obligations(original_schema, path="$", obligations=obligations)
+    required_handlers = {
+        keyword.removeprefix("type:")
+        for obligation in obligations
+        if (keyword := obligation.split("@", 1)[0]).startswith("type:") or keyword in {"anyOf", "oneOf"}
+    }
+    nonrepresentable = _route_nonrepresentable_reasons(
+        corpus.provider, obligations, package_version=corpus.package_version
+    )
+    exercised: set[str] = set()
+
+    def record_coverage(items: Sequence[bytes]) -> None:
+        for raw in items:
+            payloads = (
+                [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
+                if corpus.wire_format.encoding == "jsonl"
+                else [json.loads(raw)]
+            )
+            for payload in payloads:
+                _collect_payload_coverage(
+                    original_schema,
+                    payload,
+                    path="$",
+                    handlers=handlers,
+                    schema_keywords=obligations,
+                    exercised_keywords=exercised,
+                )
+
     try:
         corpus.schema = copy.deepcopy(original_schema)
         _force_coverage_frequencies(corpus.schema)
@@ -816,9 +862,13 @@ def generate_coverage_witnesses(
         corpus._coverage_branch_choices = {}
         corpus._coverage_type_choices = {}
         corpus._coverage_null_paths = set()
+        record_coverage(raw_items)
         for index in range(len(raw_items), max_witnesses):
+            if required_handlers - handlers or not obligations - exercised - nonrepresentable.keys():
+                break
             batch = corpus.generate_batch(count=1, messages_per_session=range(4, 5), seed=seed + index)
             raw_items.extend(batch.raw_items)
+            record_coverage(batch.raw_items)
     finally:
         corpus.schema = original_schema
         corpus.workload_profile = original_profile

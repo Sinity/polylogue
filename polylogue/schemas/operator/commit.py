@@ -50,6 +50,7 @@ from polylogue.schemas.operator.receipt import (
     load_schema_inference_receipt,
     write_schema_inference_receipt,
 )
+from polylogue.schemas.package_publication import provider_tree_lock
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
@@ -71,7 +72,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     provider_token = str(canonical_schema_provider(request.provider))
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
-    existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
+    if handoff_path.exists():
+        load_schema_inference_receipt(handoff_path)
     registry_before = SchemaRegistry(storage_root=output_dir)
     # The bundled registry is a read fallback, not the prior state of this
     # commit's output directory. Compare against local persisted packages only.
@@ -118,64 +120,66 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     handoff: SchemaInferenceReceipt | None = None
     registry_after: SchemaRegistry | None = None
     if generation.success:
-        if request.source_inputs:
-            if source_bundle is None:
-                raise AssertionError("source schema generation did not produce a bundle")
-            persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
-        registry_after = SchemaRegistry(storage_root=output_dir)
-        catalog_after = registry_after.load_package_catalog(provider_token)
-        if catalog_after is not None:
-            for package in catalog_after.packages:
-                element_kinds = tuple(element.element_kind for element in package.elements)
-                after_schemas = _element_schemas_by_kind(registry_after, provider_token, package.version, element_kinds)
-                prior_schemas = before_schemas.get(package.version, {})
-
-                version_narrowed: list[str] = []
-                version_added: list[str] = []
-                for element_kind, after_schema in after_schemas.items():
-                    prior_schema = prior_schemas.get(element_kind)
-                    version_narrowed.extend(
-                        f"{element_kind}{path or ':$root'}" for path in narrowed_paths(prior_schema, after_schema)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with provider_tree_lock(output_dir, exclusive=True):
+            if request.source_inputs:
+                if source_bundle is None:
+                    raise AssertionError("source schema generation did not produce a bundle")
+                persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
+            registry_after = SchemaRegistry(storage_root=output_dir)
+            catalog_after = registry_after.load_package_catalog(provider_token)
+            if catalog_after is not None:
+                for package in catalog_after.packages:
+                    element_kinds = tuple(element.element_kind for element in package.elements)
+                    after_schemas = _element_schemas_by_kind(
+                        registry_after, provider_token, package.version, element_kinds
                     )
-                    version_added.extend(
-                        f"{element_kind}{path or ':$root'}" for path in added_paths(prior_schema, after_schema)
+                    prior_schemas = before_schemas.get(package.version, {})
+
+                    version_narrowed: list[str] = []
+                    version_added: list[str] = []
+                    for element_kind, after_schema in after_schemas.items():
+                        prior_schema = prior_schemas.get(element_kind)
+                        version_narrowed.extend(
+                            f"{element_kind}{path or ':$root'}" for path in narrowed_paths(prior_schema, after_schema)
+                        )
+                        version_added.extend(
+                            f"{element_kind}{path or ':$root'}" for path in added_paths(prior_schema, after_schema)
+                        )
+
+                    if package.version not in before_versions:
+                        status = "new"
+                    elif not version_narrowed and not version_added:
+                        # Structurally identical to the prior commit -- ignore
+                        # incidental bookkeeping churn (e.g. a fresh
+                        # x-polylogue-registered-at timestamp) that isn't a real
+                        # type-level change.
+                        status = "unchanged"
+                    else:
+                        status = "changed"
+
+                    version_reports.append(
+                        SchemaVersionCommitReport(
+                            version=package.version,
+                            status=status,
+                            sample_count=package.sample_count,
+                            narrowed_paths=tuple(version_narrowed),
+                            added_paths=tuple(version_added),
+                        )
                     )
 
-                if package.version not in before_versions:
-                    status = "new"
-                elif not version_narrowed and not version_added:
-                    # Structurally identical to the prior commit -- ignore
-                    # incidental bookkeeping churn (e.g. a fresh
-                    # x-polylogue-registered-at timestamp) that isn't a real
-                    # type-level change.
-                    status = "unchanged"
-                else:
-                    status = "changed"
-
-                version_reports.append(
-                    SchemaVersionCommitReport(
-                        version=package.version,
-                        status=status,
-                        sample_count=package.sample_count,
-                        narrowed_paths=tuple(version_narrowed),
-                        added_paths=tuple(version_added),
-                    )
-                )
-
-    if generation.success:
-        if registry_after is None:
-            raise AssertionError("successful schema generation did not produce a persisted registry")
-        source_provenance = generation.phase_receipt.get("source") if request.source_inputs else None
-        source_digest = (
-            source_provenance.get("source_input_manifest_digest") if isinstance(source_provenance, dict) else None
-        )
-        provider_handoff = build_schema_inference_receipt(
-            registry_after,
-            provider=provider_token,
-            input_manifest_digest=source_digest if isinstance(source_digest, str) else None,
-        )
-        handoff = existing_handoff.merged_with(provider_handoff) if existing_handoff is not None else provider_handoff
-        write_schema_inference_receipt(handoff, handoff_path)
+            if registry_after is None:
+                raise AssertionError("successful schema generation did not produce a persisted registry")
+            source_provenance = generation.phase_receipt.get("source") if request.source_inputs else None
+            source_digest = (
+                source_provenance.get("source_input_manifest_digest") if isinstance(source_provenance, dict) else None
+            )
+            provider_handoff = build_schema_inference_receipt(
+                registry_after,
+                provider=provider_token,
+                input_manifest_digest=source_digest if isinstance(source_digest, str) else None,
+            )
+            handoff = write_schema_inference_receipt(provider_handoff, handoff_path, merge=True)
 
     return SchemaCommitResult(
         provider=request.provider,

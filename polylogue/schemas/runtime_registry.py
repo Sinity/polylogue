@@ -725,6 +725,7 @@ class SchemaRegistry:
         *,
         package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
         cluster_manifest: Mapping[str, object] | None = None,
+        redact_observed_numeric_values: bool = False,
     ) -> None:
         """Replace a complete package set while preserving observed family structure."""
         with self._cache_lock:
@@ -773,6 +774,15 @@ class SchemaRegistry:
                 profile = (
                     package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
                 )
+                if redact_observed_numeric_values:
+                    from polylogue.schemas.numeric_privacy import (
+                        redact_observed_numeric_schema,
+                        redact_observed_numeric_workload,
+                    )
+
+                    merged = {kind: redact_observed_numeric_schema(value) for kind, value in merged.items()}
+                    if profile is not None:
+                        profile = redact_observed_numeric_workload(profile)
                 self._preflight_package_write(package, element_schemas=merged, workload_profile=profile)
                 prepared.append((package, merged, profile))
 

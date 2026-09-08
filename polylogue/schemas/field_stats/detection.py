@@ -7,6 +7,8 @@ import re
 from collections.abc import Collection
 from functools import lru_cache
 
+from polylogue.core.json import JSONDocument
+
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -27,10 +29,22 @@ FORMAT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 _MAX_STRUCTURAL_KEY_LENGTH = 128
-_CONTENT_KEY_MARKERS = frozenset("?<>")
-_HIGH_CARDINALITY_KEY_THRESHOLD = 128
+_CONTENT_KEY_MARKERS = frozenset("?<>/\\@")
+_HIGH_CARDINALITY_KEY_THRESHOLD = 256
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
 _DYNAMIC_KEY_RATIO_THRESHOLD = 0.5
+
+
+def key_policy_parameters() -> JSONDocument:
+    """Persist the normalization parameters that affect reusable evidence."""
+    return {
+        "revision": 1,
+        "cardinality_limit": _HIGH_CARDINALITY_KEY_THRESHOLD,
+        "max_structural_key_length": _MAX_STRUCTURAL_KEY_LENGTH,
+        "content_markers": "".join(sorted(_CONTENT_KEY_MARKERS)),
+        "pathlike_ratio": _PATHLIKE_KEY_RATIO_THRESHOLD,
+        "dynamic_ratio": _DYNAMIC_KEY_RATIO_THRESHOLD,
+    }
 
 
 @lru_cache(maxsize=4096)
@@ -57,14 +71,7 @@ def _looks_pathlike_key(key: str) -> bool:
 
 
 def is_content_bearing_key(key: str) -> bool:
-    """True when a key is free text rather than a structural name.
-
-    Separated from :func:`is_dynamic_key` because the consequence differs. A
-    UUID or hex key is merely unhelpful as structure. A key carrying prose --
-    punctuation like ``?``/``<``/``>``, control characters, or simply longer
-    than any real field name -- is *content*, and emitting it into a schema
-    publishes that content verbatim.
-    """
+    """Treat prose, paths, and addresses as content, regardless of map size."""
     if len(key) > _MAX_STRUCTURAL_KEY_LENGTH:
         return True
     if any(ord(character) < 32 or ord(character) == 127 for character in key):
@@ -73,22 +80,7 @@ def is_content_bearing_key(key: str) -> bool:
 
 
 def should_collapse_observed_keys(keys: Collection[object]) -> bool:
-    """Return whether an observed map must be modeled as a dynamic-key map.
-
-    A single content-bearing key forces collapse, with no cardinality floor.
-    The floor used to be the only rule below the high-cardinality threshold,
-    and it let real conversation text reach a committed, PUBLIC schema: nine
-    user questions became ``properties`` names under
-    ``toolUseResult.annotations`` -- an annotations map keyed by the question
-    asked -- because nine is under the 24-key floor. ``is_dynamic_key`` would
-    have flagged every one of them on the ``?`` marker; this function simply
-    never asked it. Structure is inferred from map SHAPE, so a map keyed by
-    prose has exactly one honest schema: ``additionalProperties``.
-
-    Identifier-ish keys (UUID, hex, prefixed ids) stay ratio-gated. They are
-    not a disclosure risk, and collapsing a mostly-static map because one id
-    appeared would lose real structure.
-    """
+    """Collapse content-keyed maps at any size; ratio-gate identifier maps."""
     if not keys:
         return False
     if any(is_content_bearing_key(str(key)) for key in keys):

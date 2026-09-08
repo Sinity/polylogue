@@ -345,9 +345,11 @@
         "446d0a3b253a8475"
       ],
       "profile_tokens": [],
-      "observed_artifact_count": 316
+      "observed_artifact_count": 316,
+      "observation_status": "unspecified"
     }
   ],
   "orphan_adjunct_counts": {},
-  "workload_profile_file": null
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }

@@ -184,7 +184,12 @@ def test_annotations_drive_synthetic_numeric_and_array_distributions() -> None:
             "items": {"type": "array", "items": {"type": "integer"}},
         },
     }
-    annotated = annotate_schema(schema, _collect_field_stats(samples))
+    stats = _collect_field_stats(samples)
+    annotated = annotate_schema(schema, stats)
+    count_node = cast(JSONDocument, cast(JSONDocument, annotated["properties"])["count"])
+    distribution = cast(JSONDocument, count_node["x-polylogue-observed-distribution"])
+    # Explicitly supplied numeric distributions remain usable by synthetic consumers.
+    distribution["numeric"] = stats["$.count"].numeric_distribution.to_payload()
     corpus = SyntheticCorpus(
         annotated,
         WireFormat(encoding="json"),

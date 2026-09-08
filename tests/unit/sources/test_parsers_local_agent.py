@@ -13,7 +13,7 @@ from polylogue.archive.artifact_taxonomy import classify_artifact, classify_arti
 from polylogue.archive.artifact_taxonomy.models import ArtifactKind
 from polylogue.archive.raw_payload import build_raw_payload_envelope
 from polylogue.config import Source
-from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider
 from polylogue.core.json import JSONDocument
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import detect_provider, parse_payload
@@ -247,7 +247,7 @@ def test_gemini_cli_session_document_parses_through_dispatch() -> None:
     [session] = parse_payload("gemini-cli", payload, "fallback")
 
     assert session.source_name is Provider.GEMINI_CLI
-    assert session.provider_session_id == "gemini-session-1"
+    assert session.provider_session_id == "gemini-session-1:chat:2026-04-08T20:45:00.000Z"
     assert session.created_at == "2026-04-08T20:45:00.000Z"
     assert session.updated_at == "2026-04-08T20:47:00.000Z"
     assert session.title == "Parser work"
@@ -428,8 +428,8 @@ def test_gemini_cli_contentless_turn_tokens_reach_the_cost_rollup(workspace_env:
 
     assert [tuple(row) for row in rollup] == [("gemini-test", 19039, 782)]
     assert [row["source_message_id"] for row in usage_events] == [
-        "gemini-cli-session:gemini-session-7:n:u1",
-        "gemini-cli-session:gemini-session-7:n:g1",
+        f"gemini-cli-session:{session.provider_session_id}:n:u1",
+        f"gemini-cli-session:{session.provider_session_id}:n:g1",
     ]
     assert [row["last_input_tokens"] for row in usage_events] == [10, 19029]
 
@@ -1163,33 +1163,20 @@ def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: 
         hermes_state.parse_state_db(corrupted_path, profile_root=db_path.parent)
 
 
-def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(tmp_path: Path) -> None:
     """The live Hermes snapshot route must isolate SQLite work files from CAS paths."""
-    import polylogue.sources.sqlite_snapshot as sqlite_snapshot
+    from polylogue.sources.sqlite_export import read_export_header
 
     db_path = tmp_path / "state.db"
     blob_root = tmp_path / "blob"
     _write_hermes_state_db(db_path)
-    original_snapshot = sqlite_snapshot.snapshot_sqlite_database
-    staged_writer: sqlite3.Connection | None = None
-    staged_path: Path | None = None
-
-    def snapshot_with_live_wal(source: Path, destination: Path) -> None:
-        nonlocal staged_path, staged_writer
-        original_snapshot(source, destination)
-        staged_path = destination
-        staged_writer = sqlite3.connect(destination)
-        staged_writer.execute("PRAGMA journal_mode=WAL")
-        staged_writer.execute("PRAGMA wal_autocheckpoint=0")
-        staged_writer.execute("PRAGMA application_id=51966")
-        staged_writer.commit()
-        assert destination.with_name(f"{destination.name}-wal").exists()
-        assert destination.with_name(f"{destination.name}-shm").exists()
-
-    monkeypatch.setattr(sqlite_snapshot, "snapshot_sqlite_database", snapshot_with_live_wal)
+    writer = sqlite3.connect(db_path)
+    writer.execute("PRAGMA journal_mode=WAL")
+    writer.execute("PRAGMA wal_autocheckpoint=0")
+    writer.execute("PRAGMA application_id=51966")
+    writer.commit()
+    assert db_path.with_name("state.db-wal").exists()
+    assert db_path.with_name("state.db-shm").exists()
 
     try:
         rows = list(
@@ -1200,23 +1187,16 @@ def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(
             )
         )
     finally:
-        if staged_writer is not None:
-            staged_writer.close()
+        writer.close()
 
     raw = rows[0][0]
     assert raw is not None and raw.blob_hash is not None
     store = BlobStore(blob_root)
-    assert staged_path is not None
-    assert staged_path.parent == store.staging_root
-    assert not staged_path.exists()
-    assert not staged_path.with_name(f"{staged_path.name}-wal").exists()
-    assert not staged_path.with_name(f"{staged_path.name}-shm").exists()
-    assert store.staging_root.is_dir()
-    assert not tuple(store.staging_root.iterdir())
     entries = tuple(store.iter_namespace())
     assert [(entry.kind, entry.hash_hex) for entry in entries] == [("blob", raw.blob_hash)]
-    with store.open(raw.blob_hash) as retained:
-        assert retained.read(16) == b"SQLite format 3\x00"
+    header = read_export_header(store.blob_path(raw.blob_hash))
+    assert {"sessions", "messages"} <= set(header.tables)
+    assert not tuple(store.staging_root.iterdir())
     assert store.verify_all().passed is True
 
 
@@ -1428,9 +1408,14 @@ Checks passed.
     assert session.provider_session_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
     assert session.title == "Refactoring and Executing Plan"
     assert session.updated_at == "2026-03-05T04:21:34.468316671Z"
-    assert [message.role for message in session.messages] == ["user", "assistant"]
-    assert "pytest -q" in (session.messages[0].text or "")
-    assert session.messages[1].text == "Checks passed."
+    assert [message.role for message in session.messages] == ["user", "assistant", "assistant"]
+    assert session.messages[0].text == "Run the checks."
+    activity = session.messages[1]
+    assert activity.message_type is MessageType.TOOL_USE
+    assert [block.type for block in activity.blocks] == [BlockType.TOOL_USE]
+    assert activity.blocks[0].tool_name == "accepted_command"
+    assert activity.blocks[0].tool_input == {"command": "pytest -q"}
+    assert session.messages[2].text == "Checks passed."
     assert session.provider_session_id == "e85783e3-f047-49b8-9035-4029f58dd04a"
 
 

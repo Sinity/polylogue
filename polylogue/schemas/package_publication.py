@@ -5,21 +5,34 @@ from __future__ import annotations
 import ctypes
 import fcntl
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.durable_fs import sync_directory
 
+_held_locks = threading.local()
+
 
 @contextmanager
 def provider_tree_lock(root: Path, *, exclusive: bool = False) -> Iterator[None]:
     """Lock the stable parent inode while reading or replacing provider trees."""
+    key = (os.getpid(), root.resolve())
+    held: dict[tuple[int, Path], bool] = getattr(_held_locks, "roots", {})
+    _held_locks.roots = held
+    if key in held:
+        if exclusive and not held[key]:
+            raise RuntimeError("Cannot upgrade a shared provider-tree lock")
+        yield
+        return
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        held[key] = exclusive
         yield
     finally:
+        held.pop(key, None)
         os.close(descriptor)
 
 
