@@ -52,7 +52,7 @@ import sqlite3
 import stat
 import time
 from collections.abc import Iterator
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -147,6 +147,16 @@ class BlobGCResult:
             "older_than_s": self.older_than_s,
             "blocked_reason": self.blocked_reason,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyBlobUnlinkResult:
+    """Per-hash outcomes for an archive that predates GC member intents."""
+
+    deleted: frozenset[str] = frozenset()
+    retained: frozenset[str] = frozenset()
+    blocked: frozenset[str] = frozenset()
+    errors: tuple[str, ...] = ()
 
 
 # Minimum age in seconds for a blob to be eligible for deletion.
@@ -1041,6 +1051,92 @@ def unlink_unreferenced_blob_hashes_under_exclusion(
         return deleted, deleted_bytes, errors
 
 
+def unlink_unreferenced_blob_hashes_without_generation_ledger(
+    source_db_path: Path,
+    index_db_path: Path,
+    blob_root: Path,
+    blob_hashes: set[str],
+    *,
+    dry_run: bool = False,
+) -> LegacyBlobUnlinkResult:
+    """Recheck and unlink members when an old source tier lacks GC intents.
+
+    Older source tiers cannot record a recoverable GC generation. They still
+    require the canonical source and index liveness checks, publication
+    reservation check, publisher exclusion, and writer locks before an unlink.
+    """
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+    if not blob_hashes:
+        return LegacyBlobUnlinkResult()
+
+    candidates = frozenset(blob_hashes)
+    deleted: set[str] = set()
+    retained: set[str] = set()
+    blocked: set[str] = set()
+    errors: list[str] = []
+    touched: set[Path] = set()
+    tier_blockers = _reference_tier_blockers({"source": source_db_path, "index": index_db_path})
+    if tier_blockers:
+        return LegacyBlobUnlinkResult(blocked=candidates, errors=tier_blockers)
+
+    with ExitStack() as stack:
+        if not dry_run:
+            require_write_lease(f"blob GC({source_db_path})", archive_root=source_db_path.parent)
+            stack.enter_context(exclude_archive_blob_publishers(source_db_path))
+        mode = "ro" if dry_run else "rw"
+        source_conn = stack.enter_context(closing(sqlite3.connect(f"file:{source_db_path}?mode={mode}", uri=True)))
+        index_conn = stack.enter_context(closing(sqlite3.connect(f"file:{index_db_path}?mode={mode}", uri=True)))
+        if not dry_run:
+            source_conn.execute("BEGIN IMMEDIATE")
+            index_conn.execute("BEGIN IMMEDIATE")
+        preflight = inspect_blob_liveness(source_conn, "", index_conn=index_conn, require_index=True)
+        if preflight.state is LivenessState.BLOCKED:
+            return LegacyBlobUnlinkResult(blocked=candidates, errors=preflight.blockers)
+        legacy_hook_stage = prepare_match_stage(source_conn)
+        for blob_hash in sorted(candidates):
+            protection = _inspect_gc_protection(
+                source_conn,
+                index_conn=index_conn,
+                blob_hash=blob_hash,
+                legacy_hook_stage=legacy_hook_stage,
+                final_recheck=True,
+            )
+            if protection.blockers:
+                blocked.add(blob_hash)
+                errors.extend(protection.blockers)
+                continue
+            if protection.is_live:
+                retained.add(blob_hash)
+                continue
+            if dry_run:
+                deleted.add(blob_hash)
+                continue
+            path = blob_root / blob_hash[:2] / blob_hash[2:]
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                blocked.add(blob_hash)
+                errors.append(f"{blob_hash[:16]}: {exc}")
+                continue
+            deleted.add(blob_hash)
+            touched.add(path.parent)
+        if not dry_run:
+            source_conn.commit()
+            index_conn.commit()
+
+    for directory in sorted(touched):
+        _fsync_directory(directory)
+    return LegacyBlobUnlinkResult(
+        deleted=frozenset(deleted),
+        retained=frozenset(retained),
+        blocked=frozenset(blocked),
+        errors=tuple(dict.fromkeys(errors)),
+    )
+
+
 def run_blob_gc(
     db_path: str | Path,
     blob_dir: str | Path,
@@ -1620,6 +1716,7 @@ def census_orphaned_blob_refs(conn: sqlite3.Connection) -> OrphanedBlobRefCensus
 
 __all__ = [
     "BlobGCResult",
+    "LegacyBlobUnlinkResult",
     "MIN_AGE_S",
     "GCHistoryRow",
     "GCGenerationAdjudication",
@@ -1634,4 +1731,6 @@ __all__ = [
     "read_gc_history",
     "run_blob_gc",
     "run_blob_gc_report",
+    "unlink_unreferenced_blob_hashes_under_exclusion",
+    "unlink_unreferenced_blob_hashes_without_generation_ledger",
 ]
