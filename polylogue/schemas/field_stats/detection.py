@@ -7,6 +7,8 @@ import re
 from collections.abc import Collection
 from functools import lru_cache
 
+from polylogue.core.json import JSONDocument
+
 UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
@@ -31,6 +33,18 @@ _CONTENT_KEY_MARKERS = frozenset("?<>/\\@")
 _HIGH_CARDINALITY_KEY_THRESHOLD = 256
 _PATHLIKE_KEY_RATIO_THRESHOLD = 0.35
 _DYNAMIC_KEY_RATIO_THRESHOLD = 0.5
+
+
+def key_policy_parameters() -> JSONDocument:
+    """Persist the normalization parameters that affect reusable evidence."""
+    return {
+        "revision": 1,
+        "cardinality_limit": _HIGH_CARDINALITY_KEY_THRESHOLD,
+        "max_structural_key_length": _MAX_STRUCTURAL_KEY_LENGTH,
+        "content_markers": "".join(sorted(_CONTENT_KEY_MARKERS)),
+        "pathlike_ratio": _PATHLIKE_KEY_RATIO_THRESHOLD,
+        "dynamic_ratio": _DYNAMIC_KEY_RATIO_THRESHOLD,
+    }
 
 
 @lru_cache(maxsize=4096)

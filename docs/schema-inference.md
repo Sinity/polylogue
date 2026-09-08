@@ -33,14 +33,25 @@ Subagents retain their own native source identity. Schema inference does not
 reconstruct parent links or subtract inherited transcript prefixes. Counts
 describe records in the selected raw source revisions.
 
-The private SQLite cache stores reduced structural and statistical evidence.
-Its key binds source context, content hash, reduction code, and dynamic-key
-normalization. Unchanged inputs reuse evidence; changed inputs are read again.
-Completed members survive an interrupted run. The cache contains no transcript
+Incremental updates require the private SQLite cache, which retains reduced
+evidence per source revision. Public schemas carry aggregate statistics and
+provenance. Completed members survive an interrupted run.
+
+Structure and statistics have separate semantic contracts. Cache addresses bind
+source context, content hash, the phase contract, and key normalization. Changes
+to absent paths preserve a source's statistics. A higher key limit reuses
+structural summaries that retained their names; erased names require another
+source read. Changed inputs are read again. The cache contains no transcript
 bodies, but field names and reduced evidence still require private storage.
 
+Change the affected revision in `polylogue/schemas/source_recipe.py` when
+admission, identity, structure, or statistical meaning changes. Performance and
+presentation edits preserve these revisions. The implementation fingerprint is
+recorded separately for provenance; normalization parameters are part of each
+contract.
+
 The run reports aggregate input bytes, record counts, terminal outcomes and
-reason codes, cache hits/misses, and phase timings. A successful package write
+reason codes, cache hits/misses by phase, computation contracts, and phase timings. A successful package write
 means evidence was emitted; inspect terminal outcomes to determine input
 coverage. Unsupported sources, sidecars, malformed documents, changing files,
 and incomplete trailing records are reported separately. Browser envelopes
