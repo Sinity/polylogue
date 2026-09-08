@@ -237,6 +237,20 @@ def _stable_file_digest(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), before.st_size
 
 
+def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
+    """Compare revisions by bytes without retaining either source in memory."""
+    try:
+        if shorter.stat().st_size >= longer.stat().st_size:
+            return False
+        with shorter.open("rb") as left, longer.open("rb") as right:
+            while chunk := left.read(1024 * 1024):
+                if right.read(len(chunk)) != chunk:
+                    return False
+        return True
+    except OSError:
+        return False
+
+
 def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
     """Decode JSONL record by record and fail closed on incomplete input."""
     for line_number, line in enumerate(handle, start=1):
@@ -657,6 +671,16 @@ def infer_sources(
         candidate
         for _digest, candidate in sorted(selected_by_revision.items(), key=lambda item: item[1].logical_source_id)
     )
+    maximal: list[_SourceCandidate] = []
+    for candidate in candidates:
+        if any(
+            candidate.provider == other.provider and _is_strict_file_prefix(candidate.path, other.path)
+            for other in candidates
+            if other is not candidate
+        ):
+            continue
+        maximal.append(candidate)
+    candidates = tuple(maximal)
     inventory_ms = (time.monotonic_ns() - started) / 1_000_000
     terminal_counts: Counter[str] = Counter()
     input_bytes = 0
