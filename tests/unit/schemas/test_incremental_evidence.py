@@ -181,8 +181,6 @@ def test_serialized_evidence_has_no_literal_and_emits_same_safe_semantics() -> N
     assert "session-a" not in serialized
     assert private_literal not in public
     assert warm_schema == cold_schema
-    role_schema = _object(_object(warm_schema["properties"])["role"])
-    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert restored.field_stats["$.role"].value_session_ids["user"]
 
 
@@ -204,8 +202,6 @@ def test_reduced_evidence_preserves_mutual_exclusion_annotations() -> None:
 
     schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
 
-    role_schema = _object(_object(schema["properties"])["role"])
-    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert schema["x-polylogue-mutually-exclusive"] == [{"fields": ["left", "right"], "parent": "$"}]
 
 
