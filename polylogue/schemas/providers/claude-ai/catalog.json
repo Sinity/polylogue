@@ -1,37 +1,44 @@
 {
-  "default_version": "v2",
-  "generated_at": "2026-03-16T12:26:05.820998+00:00",
-  "latest_version": "v2",
+  "provider": "claude-ai",
+  "generated_at": "2026-09-08T09:02:57.580335+00:00",
+  "latest_version": "v3",
+  "default_version": "v3",
+  "recommended_version": "v3",
   "orphan_adjunct_counts": {},
   "packages": [
     {
+      "provider": "claude-ai",
+      "version": "v1",
       "anchor_kind": "session_document",
-      "anchor_profile_family_id": "",
-      "bundle_scope_count": 0,
       "default_element_kind": "session_document",
-      "elements": [
-        {
-          "artifact_count": 904,
-          "bundle_scope_count": 0,
-          "element_kind": "session_document",
-          "exact_structure_ids": [],
-          "first_seen": "2026-03-16T12:26:05.820998+00:00",
-          "last_seen": "2026-03-16T12:26:05.820998+00:00",
-          "observed_artifact_count": 904,
-          "profile_family_ids": [],
-          "profile_tokens": [],
-          "sample_count": 904,
-          "schema_file": "session_document.schema.json.gz",
-          "supported": true
-        }
-      ],
       "first_seen": "2026-03-16T12:26:05.820998+00:00",
       "last_seen": "2026-03-16T12:26:05.820998+00:00",
-      "orphan_adjunct_counts": {},
-      "profile_family_ids": [],
-      "provider": "claude-ai",
+      "bundle_scope_count": 0,
       "sample_count": 904,
-      "version": "v1"
+      "anchor_profile_family_id": "",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [],
+      "elements": [
+        {
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 904,
+          "artifact_count": 904,
+          "supported": true,
+          "first_seen": "2026-03-16T12:26:05.820998+00:00",
+          "last_seen": "2026-03-16T12:26:05.820998+00:00",
+          "bundle_scope_count": 0,
+          "bundle_scope_identities": [],
+          "exact_structure_ids": [],
+          "profile_family_ids": [],
+          "profile_tokens": [],
+          "observed_artifact_count": 904,
+          "observation_status": "unspecified"
+        }
+      ],
+      "orphan_adjunct_counts": {},
+      "workload_profile_file": null,
+      "observation_status": "historical"
     },
     {
       "provider": "claude-ai",
@@ -380,13 +387,124 @@
             "446d0a3b253a8475"
           ],
           "profile_tokens": [],
-          "observed_artifact_count": 316
+          "observed_artifact_count": 316,
+          "observation_status": "unspecified"
         }
       ],
       "orphan_adjunct_counts": {},
-      "workload_profile_file": null
+      "workload_profile_file": null,
+      "observation_status": "historical"
+    },
+    {
+      "provider": "claude-ai",
+      "version": "v3",
+      "anchor_kind": "session_document",
+      "default_element_kind": "session_document",
+      "first_seen": "2026-09-08T07:29:10.439262+00:00",
+      "last_seen": "2026-09-08T09:02:57.580284+00:00",
+      "bundle_scope_count": 1016,
+      "sample_count": 1016,
+      "anchor_profile_family_id": "5e6ed73824f53c74b6a686b7a5a7ee37912aac4106c7f5f0d904d16af93c1305",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [],
+      "elements": [
+        {
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 1016,
+          "artifact_count": 1016,
+          "supported": true,
+          "first_seen": "2026-09-08T07:29:10.439262+00:00",
+          "last_seen": "2026-09-08T09:02:57.580284+00:00",
+          "bundle_scope_count": 1016,
+          "bundle_scope_identities": [],
+          "exact_structure_ids": [],
+          "profile_family_ids": [],
+          "profile_tokens": [],
+          "observed_artifact_count": 1016,
+          "observation_status": "current"
+        }
+      ],
+      "orphan_adjunct_counts": {},
+      "workload_profile_file": null,
+      "observation_status": "current"
     }
   ],
-  "provider": "claude-ai",
-  "recommended_version": "v2"
+  "observation_outcomes": {
+    "source_input_bytes": 224163445,
+    "source_record_count": 1016,
+    "source_recipe": {
+      "structure": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "structure",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "statistics": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "statistics",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
+      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
+      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+    },
+    "source_cache_phase_hits": {
+      "statistics": 4,
+      "structure": 4
+    },
+    "source_cache_phase_misses": {},
+    "source_statistics_population": "current_source_records",
+    "source_inherited_prefixes_subtracted": false,
+    "source_cache_hits": 8,
+    "source_cache_misses": 0,
+    "source_terminal_outcomes": {
+      "included": 3877,
+      "too_large": 1
+    },
+    "source_terminal_outcome_units": {
+      "included": "native_source_revision",
+      "too_large": "physical_candidate"
+    },
+    "source_candidate_terminal_outcomes": {
+      "included": 4,
+      "too_large": 1
+    },
+    "source_terminal_reasons": {
+      "too_large_unstreamable_document": 1
+    },
+    "source_phase_timings_ms": {
+      "collect": 111632.71,
+      "fold": 36978.035,
+      "hash": 4746.596,
+      "inventory": 0.745,
+      "preliminary": 18618.852,
+      "statistics": 51281.589
+    },
+    "producer_version_counts": {},
+    "producer_version_missing_sources": 4,
+    "producer_version_conflicting_sources": 0,
+    "producer_version_unrecognized_sources": 0,
+    "source_input_manifest_digest": "b11dd29a64e3e68d9823cb49ab7b102ac96ca06b90fe6efafa0274b5c25b0a68",
+    "source_candidate_count": 5,
+    "source_included_candidate_count": 4,
+    "source_included_native_source_revision_count": 3877
+  }
 }

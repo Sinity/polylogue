@@ -1,0 +1,10 @@
+{
+  "artifact_counts": {
+    "session_record_stream": 7351896
+  },
+  "cluster_count": 0,
+  "clusters": [],
+  "default_version": "v2",
+  "generated_at": "2026-09-08T10:19:02.730230+00:00",
+  "provider": "codex"
+}

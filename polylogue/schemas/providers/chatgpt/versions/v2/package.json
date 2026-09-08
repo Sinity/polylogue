@@ -28,9 +28,11 @@
         "9cacbf4a33046b37"
       ],
       "profile_tokens": [],
-      "observed_artifact_count": 5
+      "observed_artifact_count": 5,
+      "observation_status": "unspecified"
     }
   ],
   "orphan_adjunct_counts": {},
-  "workload_profile_file": null
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }

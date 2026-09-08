@@ -56,9 +56,11 @@
         "7b9a519eb837690d"
       ],
       "profile_tokens": [],
-      "observed_artifact_count": 27
+      "observed_artifact_count": 27,
+      "observation_status": "unspecified"
     }
   ],
   "orphan_adjunct_counts": {},
-  "workload_profile_file": null
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }
