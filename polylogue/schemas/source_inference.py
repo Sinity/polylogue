@@ -15,7 +15,7 @@ import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from contextlib import suppress
 from dataclasses import dataclass, replace
 from functools import partial
@@ -31,7 +31,7 @@ from polylogue.schemas.observation import extract_schema_units_from_payload, res
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
-from polylogue.sources.origin_specs import _fingerprint_sources, recognize_source_class
+from polylogue.sources.origin_specs import _fingerprint_sources, artifact_suffixes_for_provider, recognize_source_class
 from polylogue.sources.source_walk import _iter_source_entries
 
 SourceOutcome = Literal[
@@ -46,6 +46,8 @@ SourceOutcome = Literal[
 
 _RECIPE_VERSION = "source-evidence-v2"
 _MAX_UNSTREAMABLE_DOCUMENT_BYTES = 32 * 1024 * 1024
+_SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT = 32
+_SOURCE_EVIDENCE_PENDING_RECORD_LIMIT = 128
 _DECLARED_PRODUCER_VERSION = re.compile(r"v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z][0-9A-Za-z.-]{0,63})?")
 
 
@@ -218,7 +220,10 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
         watcher_source = WatchSource(
             name=provider.value,
             root=root,
-            suffixes=(".json", ".jsonl", ".ndjson", ".zip", ".db", ".sqlite", ".sqlite3"),
+            suffixes=artifact_suffixes_for_provider(
+                provider,
+                defaults=(".json", ".jsonl", ".ndjson", ".zip", ".db", ".sqlite", ".sqlite3"),
+            ),
         )
         root_identity = _root_identity(root)
         paths = (root,) if root.is_file() else _iter_source_entries(root)
@@ -254,6 +259,10 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
     byte_count = _candidate_byte_count(candidate.path)
     if provider.value == "browser-capture":
         return SourceTerminal("unsupported", byte_count, reason="browser_capture_adapter_unavailable")
+    if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".pb":
+        return SourceTerminal("unsupported", byte_count, reason="antigravity_protobuf_adapter_unavailable")
+    if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".md":
+        return SourceTerminal("intentionally_excluded", byte_count, reason="antigravity_markdown_sidecar")
     recognition = recognize_source_class(provider, candidate.path)
     if recognition is not None and recognition.source_class != "session":
         return SourceTerminal(
@@ -271,6 +280,8 @@ def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
     if terminal.outcome == "included":
         return None
     if terminal.reason in {
+        "antigravity_markdown_sidecar",
+        "antigravity_protobuf_adapter_unavailable",
         "browser_capture_adapter_unavailable",
         "sqlite_value_inference_not_supported",
         "source_class_non_session",
@@ -445,10 +456,13 @@ def _collect_payload_evidence(
     payloads: Iterable[JSONValue],
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
+    chunk_record_limit: int = _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT,
 ) -> tuple[tuple[_SourceContribution, ...], int, tuple[str, ...], bool]:
     """Reduce each native source revision without retaining decoded records."""
     from polylogue.schemas.generation.evidence import collect_source_evidence, merge_evidence
 
+    if chunk_record_limit < 1:
+        raise ValueError("chunk_record_limit must be positive")
     provider = Provider.from_string(candidate.provider)
     config = resolve_provider_config(provider)
     evidence_rows: dict[str, dict[str, SchemaEvidence]] = {}
@@ -457,6 +471,48 @@ def _collect_payload_evidence(
     producer_versions: set[str] = set()
     producer_version_unrecognized = False
     source_seen: set[tuple[str, str]] = set()
+    pending_records: dict[tuple[str, str], list[JSONValue]] = {}
+    pending_record_count = 0
+
+    def flush(source_key: tuple[str, str]) -> None:
+        nonlocal pending_record_count
+        records = pending_records.pop(source_key)
+        pending_record_count -= len(records)
+        source_id, element_kind = source_key
+        contribution = collect_source_evidence(
+            SourceObservation(
+                logical_source_id=source_id,
+                revision_sha256=revision.revision_sha256,
+                subject=candidate.provider,
+                element_kind=element_kind,
+                records=records,
+            ),
+            dynamic_paths=dynamic_paths_by_element.get(element_kind, ()),
+        )
+        if source_key in source_seen:
+            contribution = replace(contribution, current_source_count=0)
+        else:
+            source_seen.add(source_key)
+        by_kind = evidence_rows.setdefault(source_id, {})
+        prior = by_kind.get(element_kind)
+        by_kind[element_kind] = contribution if prior is None else merge_evidence((prior, contribution))
+
+    def append(source_id: str, element_kind: str, records: Iterable[JSONValue]) -> None:
+        nonlocal pending_record_count
+        source_key = source_id, element_kind
+        pending = pending_records.setdefault(source_key, [])
+        for record in records:
+            pending.append(record)
+            pending_record_count += 1
+            if len(pending) >= chunk_record_limit:
+                flush(source_key)
+                pending = pending_records.setdefault(source_key, [])
+            while pending_record_count >= _SOURCE_EVIDENCE_PENDING_RECORD_LIMIT:
+                oldest = next(iter(pending_records))
+                flush(oldest)
+                if oldest == source_key:
+                    pending = pending_records.setdefault(source_key, [])
+
     header_source_id = candidate.logical_source_id
     for payload_index, payload in enumerate(payloads):
         versions, unrecognized = _declared_producer_versions(provider, (payload,))
@@ -482,25 +538,10 @@ def _collect_payload_evidence(
             compact_values=False,
         )
         for unit in units:
-            contribution = collect_source_evidence(
-                SourceObservation(
-                    logical_source_id=declared_source_id,
-                    revision_sha256=revision.revision_sha256,
-                    subject=candidate.provider,
-                    element_kind=unit.artifact_kind,
-                    records=unit.schema_samples,
-                ),
-                dynamic_paths=dynamic_paths_by_element.get(unit.artifact_kind, ()),
-            )
-            source_key = declared_source_id, unit.artifact_kind
-            if source_key in source_seen:
-                contribution = replace(contribution, current_source_count=0)
-            else:
-                source_seen.add(source_key)
-            by_kind = evidence_rows.setdefault(declared_source_id, {})
-            prior = by_kind.get(unit.artifact_kind)
-            by_kind[unit.artifact_kind] = contribution if prior is None else merge_evidence((prior, contribution))
             record_counts[declared_source_id] += len(unit.schema_samples)
+            append(declared_source_id, unit.artifact_kind, unit.schema_samples)
+    while pending_records:
+        flush(next(iter(pending_records)))
     contributions: list[_SourceContribution] = []
     for source_id, rows in sorted(evidence_rows.items()):
         payload_by_element: dict[str, JSONDocument] = {}
@@ -702,19 +743,20 @@ def _bounded_collected_candidates(
     limit: int,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
 ) -> Iterator[_CollectedCandidate]:
-    """Yield source-worker results in input order without an unbounded queue."""
+    """Drain completed source workers while keeping the submission window bounded."""
     iterator = iter(candidates)
-    pending = []
+    pending = set()
     for _ in range(limit):
         try:
-            pending.append(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
+            pending.add(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
         except StopIteration:
             break
     while pending:
-        future = pending.pop(0)
-        yield future.result()
-        with suppress(StopIteration):
-            pending.append(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
+        ready, pending = wait(pending, return_when=FIRST_COMPLETED)
+        for future in ready:
+            yield future.result()
+            with suppress(StopIteration):
+                pending.add(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
 
 
 def _source_recipe_fingerprint() -> str:
@@ -984,6 +1026,7 @@ def infer_sources(
                     ),
                     input_bytes=sum(row[2] for row in preliminary),
                 )
+        preliminary.sort(key=lambda row: (row[0].provider, row[0].logical_source_id, str(row[0].path), row[1]))
         from polylogue.schemas.generation.dynamic_keys import dynamic_object_paths
 
         all_preliminary = _merge_evidence_by_element(
@@ -1064,6 +1107,7 @@ def infer_sources(
                     )
                 )
                 cache_misses += 1
+    final.sort(key=lambda row: (row[0].provider, row[0].logical_source_id, str(row[0].path), row[1]))
     collect_ms = (time.monotonic_ns() - collect_started) / 1_000_000
     all_rows = [
         (candidate, contribution)
