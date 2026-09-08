@@ -81,7 +81,7 @@ def generate_provider_schema(
 def generate_provider_schema_from_sources(
     provider: str,
     *,
-    source_inputs: tuple[object, ...],
+    source_inputs: tuple[SchemaSourceInput, ...],
     cache_path: Path | None,
     max_workers: int,
     privacy_config: SchemaPrivacyConfig | None,
@@ -102,7 +102,7 @@ def generate_provider_schema_from_sources(
 def build_provider_bundle_from_sources(
     provider: str,
     *,
-    source_inputs: tuple[object, ...],
+    source_inputs: tuple[SchemaSourceInput, ...],
     cache_path: Path | None,
     max_workers: int,
     privacy_config: SchemaPrivacyConfig | None,
@@ -110,7 +110,7 @@ def build_provider_bundle_from_sources(
     progress_callback: GenerationProgressCallback | None = None,
 ) -> _ProviderBundle:
     """Build a multi-element package with identity independent of statistics."""
-    inputs = tuple(item for item in source_inputs if isinstance(item, SchemaSourceInput) and item.provider == provider)
+    inputs = tuple(item for item in source_inputs if item.provider == provider)
     if not inputs:
         return _ProviderBundle(
             GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
@@ -118,7 +118,10 @@ def build_provider_bundle_from_sources(
     if progress_callback is not None:
         progress_callback("source_inventory", {"state": "started"})
     source = infer_sources(
-        inputs, cache_path=cache_path or cache_home() / "schema-source-evidence.sqlite3", max_workers=max_workers
+        inputs,
+        cache_path=cache_path or cache_home() / "schema-source-evidence.sqlite3",
+        max_workers=max_workers,
+        progress=progress_callback,
     )
     evidence_by_kind = {
         kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)

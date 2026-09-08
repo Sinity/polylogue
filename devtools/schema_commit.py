@@ -18,6 +18,7 @@ from pathlib import Path
 
 from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
 from polylogue.config import get_config
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 from polylogue.schemas.source_inference import parse_schema_source_input
@@ -68,6 +69,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preview what a commit would change without writing to --output-dir.",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
+    parser.add_argument("--progress", action="store_true", help="Emit aggregate source progress to stderr.")
     return parser
 
 
@@ -90,6 +92,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {exc}", file=sys.stderr)
         return 1
 
+    def on_progress(phase: str, payload: JSONDocument) -> None:
+        print(f"schema-commit: {json.dumps({'phase': phase, **payload}, sort_keys=True)}", file=sys.stderr, flush=True)
+
     config = get_config()
     try:
         result = commit_provider_schema(
@@ -104,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
                 source_inputs=source_inputs,
                 source_cache_path=args.source_cache,
                 source_workers=args.source_workers,
+                progress_callback=on_progress if args.progress else None,
             )
         )
     except ValueError as exc:

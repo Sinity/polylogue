@@ -106,6 +106,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             max_workers=request.source_workers,
             privacy_config=privacy_config_from_payload(request.privacy_config),
             prior_catalog=SchemaRegistry(storage_root=output_dir).load_package_catalog(provider_token),
+            progress_callback=request.progress_callback,
         )
         generation_results = [source_bundle.result]
     else:
