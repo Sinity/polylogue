@@ -13,6 +13,7 @@ import pytest
 
 from devtools import cloud_sentinels
 from devtools.cloud_sentinels import CLOUD_SENTINELS, INDISTINGUISHABLE_SENTINELS, cloud_sentinel_declined
+from devtools.verify import _pytest_worker_args
 
 
 @pytest.fixture
@@ -35,12 +36,18 @@ def test_every_distinguishable_sentinel_is_declined_on_a_workstation() -> None:
 
 @pytest.mark.usefixtures("on_workstation")
 def test_an_indistinguishable_sentinel_is_never_declined() -> None:
-    """POLYLOGUE_FORCE_PLAIN=1 is what anyone wanting plain output writes, and
-    this repo's demo, proof and lab-scenario paths set exactly that deliberately.
-    Declining it by value would override them, so the leak stays open and
-    cosmetic rather than being closed incorrectly."""
     for name in INDISTINGUISHABLE_SENTINELS:
         assert not cloud_sentinel_declined(name, CLOUD_SENTINELS[name])
+
+
+@pytest.mark.usefixtures("on_workstation")
+def test_two_worker_override_is_honored(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: declining the ordinary two-worker request selects the corpus width."""
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "2")
+
+    args = _pytest_worker_args(maximum=8)
+
+    assert args[args.index("-n") + 1] == "2"
 
 
 @pytest.mark.usefixtures("in_sandbox")

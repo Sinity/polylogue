@@ -1,25 +1,6 @@
-"""The cloud-sandbox environment values, and where they may be honoured.
+"""Cloud-sandbox values shared with workstation sessions.
 
-`.claude/settings.json` carries an `env` block so a Claude Code Web / Codex Cloud
-sandbox has a writable archive, a small worker count and scratch paths that
-exist. Claude Code applies that block in EVERY session, including on this
-workstation, so each of those values leaks into local agent runs.
-
-They were fixed one at a time, and the shape of the fix is identical every time:
-recognise the exact cloud value and decline it where the workstation scratch
-mount proves this is not a sandbox. What differed was where each literal lived
-and how each site decided it was on a workstation -- three constants across three
-modules, and five separate `is_dir()` calls expressing one predicate. That is how
-the fifth leak stays open while four are closed: nothing enumerates the set, so
-nothing can say which are handled.
-
-This module is that enumeration. It holds the sentinels and the single predicate,
-so a new cloud value is declared in one place and honoured consistently, and so
-"which leaks are handled" is answerable by reading one file.
-
-The rule, stated once: a cloud sentinel is honoured only in a cloud sandbox. Any
-OTHER value of the same variable is a deliberate operator override and always
-wins -- the sentinel is recognised by its exact cloud value, never by its name.
+Ordinary two-worker requests must be honored on the workstation.
 """
 
 from __future__ import annotations
@@ -49,21 +30,8 @@ CLOUD_SENTINELS: Final[dict[str, str]] = {
 }
 
 
-#: Sentinels that CANNOT be declined, because their cloud value is
-#: indistinguishable from a deliberate one.
-#:
-#: `POLYLOGUE_FORCE_PLAIN=1` is the whole set. Every other sentinel has a
-#: distinguishing shape -- a specific path, "2", "ci" without POLYLOGUE_CI --
-#: but "1" is exactly what anyone wanting plain output would write, and this
-#: repository's own demo, proof and lab-scenario paths set precisely that on
-#: purpose. Declining it by value would override them.
-#:
-#: Listed rather than omitted so the enumeration stays complete against
-#: settings.json: this leak is open, its impact is cosmetic (interactive Rich
-#: output), and closing it needs lane separation -- cloud-only settings not
-#: living in a file both lanes read -- which is an operator decision, not a
-#: guard.
-INDISTINGUISHABLE_SENTINELS: Final[frozenset[str]] = frozenset({"POLYLOGUE_FORCE_PLAIN"})
+#: Sentinels whose values are also ordinary workstation requests.
+INDISTINGUISHABLE_SENTINELS: Final[frozenset[str]] = frozenset({"POLYLOGUE_FORCE_PLAIN", "POLYLOGUE_PYTEST_WORKERS"})
 
 
 def running_in_cloud_sandbox() -> bool:
