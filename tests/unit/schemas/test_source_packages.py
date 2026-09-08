@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,7 @@ def test_statistics_change_keeps_version_and_element_denominators(
 ) -> None:
     """Hashing emitted annotations reallocates v1 when only lengths/counts change."""
     current = source_result(records=2)
+    unchanged = copy.deepcopy(current.evidence_by_element)
     monkeypatch.setattr(workflow, "infer_sources", lambda *_args, **_kwargs: current)
     inputs = (SchemaSourceInput("claude-code", tmp_path),)
     first = workflow.build_provider_bundle_from_sources(
@@ -54,6 +56,15 @@ def test_statistics_change_keeps_version_and_element_denominators(
         prior_catalog=None,
     )
     assert first.catalog is not None
+    assert current.evidence_by_element == unchanged
+    workflow.generate_provider_schema_from_sources(
+        "claude-code",
+        source_inputs=inputs,
+        cache_path=None,
+        max_workers=1,
+        privacy_config=None,
+    )
+    assert current.evidence_by_element == unchanged
     current = source_result(records=5)
     second = workflow.build_provider_bundle_from_sources(
         "claude-code",
