@@ -30,6 +30,23 @@ _REVIEW_FIELDS = frozenset(
     }
 )
 _FORBIDDEN_PROVENANCE_FIELDS = frozenset({"bundle_scopes", "representative_paths"})
+# Fixed wire vocabulary can contain slashes without carrying source content.
+_PUBLIC_PROPERTY_NAMES = frozenset(
+    {
+        "image/jpeg",
+        "image/vnd.openai.fileservice.png",
+        "image/vnd.openai.fileservice2.png",
+        "text/html",
+        "text/latex",
+        "text/markdown",
+        "text/plain",
+        "openai/asyncStatus",
+        "openai/asyncTaskId",
+        "openai/widgetHideComposer",
+        "openai/widgetSessionId",
+        "openai/widgetStopModelResponse",
+    }
+)
 _SECRET_PATTERNS = {
     "anthropic_api_key": re.compile(r"\bsk-ant-[A-Za-z0-9_-]{20,}\b"),
     "github_token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
@@ -166,7 +183,11 @@ def _unsafe_profile_token(value: str) -> bool:
     if ":" not in value:
         return False
     token_kind, _, observed_name = value.rpartition(":")
-    return token_kind.startswith(("child:", "field:", "item:")) and is_dynamic_key(observed_name)
+    return token_kind.startswith(("child:", "field:", "item:")) and _unsafe_property_name(observed_name)
+
+
+def _unsafe_property_name(name: str) -> bool:
+    return name not in _PUBLIC_PROPERTY_NAMES and is_dynamic_key(name)
 
 
 def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[PromotionAuditFinding]:
@@ -199,7 +220,7 @@ def _walk_artifact(
                 property_path = f"{json_path}.properties[{name!r}]"
                 secret_findings = _secret_findings(artifact=artifact, json_path=property_path, value=name)
                 findings.extend(secret_findings)
-                if is_dynamic_key(name):
+                if _unsafe_property_name(name):
                     findings.append(
                         PromotionAuditFinding(
                             severity="blocker",

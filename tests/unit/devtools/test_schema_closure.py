@@ -24,11 +24,11 @@ IN_CLOSURE = (
     "polylogue/core/degraded.py",
     "polylogue/storage/sqlite/archive_tiers/write.py",
     "polylogue/storage/sqlite/connection_profile.py",
+    "polylogue/sources/live/watcher.py",
 )
 OUTSIDE_CLOSURE = (
     "polylogue/daemon/convergence.py",
     "polylogue/daemon/cli.py",
-    "polylogue/sources/live/watcher.py",
 )
 
 
