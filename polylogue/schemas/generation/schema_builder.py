@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timezone
 from typing import TypeAlias
@@ -86,7 +87,7 @@ def emit_schema_from_evidence(
     if not evidence.current_record_count and not evidence.historical_record_count:
         return {"type": "object", "description": "No samples available"}, None
 
-    schema = evidence.structure
+    schema = copy.deepcopy(evidence.structure)
     schema = _remove_nested_required(schema)
     if config.sample_granularity == "record":
         schema.pop("required", None)
