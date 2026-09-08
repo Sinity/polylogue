@@ -818,10 +818,14 @@ class TestSchemaAnnotations:
 
         annotations = _find_annotations(schema)
         observation_status = dict(annotations.get("x-polylogue-observation-status", []))
+        statistics_status = dict(annotations.get("x-polylogue-statistics-status", []))
         for path, frequency in annotations.get("x-polylogue-frequency", []):
             assert not isinstance(frequency, bool) and isinstance(frequency, (int, float))
             if observation_status.get(path) == "historical":
                 assert frequency == 0.0, f"{provider} {path}: historical field has current observations"
+                continue
+            if statistics_status.get(path) == "historical":
+                assert 0.0 <= float(frequency) <= 1.0, f"{provider} {path}: invalid historical frequency"
                 continue
             assert 0.0 < float(frequency) < 1.0, f"{provider} {path}: frequency {frequency} not in (0, 1)"
 
