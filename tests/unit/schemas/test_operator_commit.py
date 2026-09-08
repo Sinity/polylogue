@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import gzip
 import json
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
@@ -12,11 +15,13 @@ from unittest.mock import patch
 import pytest
 
 from polylogue.schemas.generation.models import GenerationResult
+from polylogue.schemas.operator import commit as commit_module
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
 from polylogue.schemas.operator.receipt import SCHEMA_INFERENCE_HANDOFF_FILENAME, load_schema_inference_receipt
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.source_inference import SchemaSourceInput
 from polylogue.schemas.tooling_models import ClusterManifest
 from tests.infra.inferred_corpus import compile_inferred_corpus_manifest
 
@@ -123,6 +128,63 @@ class TestCommitProviderSchemaWritesRealFiles:
         handoff = load_schema_inference_receipt(output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME)
         assert {item.provider for item in handoff.input_manifests} == {"chatgpt", "claude-ai"}
         assert {item.provider for item in handoff.packages} == {"chatgpt", "claude-ai"}
+
+    def test_same_provider_publication_keeps_receipt_with_tree(self, tmp_path: Path) -> None:
+        """Releasing the tree lock before the receipt lets an older receipt win."""
+        output_dir = tmp_path / "providers"
+        first_waiting = Event()
+        release_first = Event()
+        second_started = Event()
+        original_write = commit_module.write_schema_inference_receipt
+        writes = 0
+
+        def write(*args: Any, **kwargs: Any) -> Any:
+            nonlocal writes
+            writes += 1
+            if writes == 1:
+                first_waiting.set()
+                assert release_first.wait(5)
+            return original_write(*args, **kwargs)
+
+        def build(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+            count = 1 if kwargs["source_inputs"][0].root.name == "first" else 2
+            return _bundle(
+                version="v1",
+                schema={"type": "object", "properties": {"id": {"type": "string"}}},
+                sample_count=count,
+            )
+
+        first_request = replace(_request(output_dir), source_inputs=(SchemaSourceInput(_PROVIDER, tmp_path / "first"),))
+        second_request = replace(
+            _request(output_dir), source_inputs=(SchemaSourceInput(_PROVIDER, tmp_path / "second"),)
+        )
+
+        def second_commit() -> Any:
+            second_started.set()
+            return commit_provider_schema(second_request)
+
+        with (
+            patch.object(commit_module, "build_provider_bundle_from_sources", side_effect=build),
+            patch.object(commit_module, "write_schema_inference_receipt", side_effect=write),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            first = executor.submit(commit_provider_schema, first_request)
+            try:
+                assert first_waiting.wait(5)
+                second = executor.submit(second_commit)
+                assert second_started.wait(5)
+                with pytest.raises(TimeoutError):
+                    second.result(timeout=0.2)
+            finally:
+                release_first.set()
+            assert first.result(timeout=5).success
+            assert second.result(timeout=5).success
+
+        actual = load_schema_inference_receipt(output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME)
+        expected = commit_module.build_schema_inference_receipt(
+            SchemaRegistry(storage_root=output_dir), provider=_PROVIDER
+        )
+        assert actual.packages == expected.packages
 
     def test_new_provider_writes_catalog_and_element_files(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "providers"
