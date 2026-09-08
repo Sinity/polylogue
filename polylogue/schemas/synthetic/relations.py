@@ -92,6 +92,7 @@ class RelationConstraintSolver(RelationConstraintSolverRuntimeMixin):
         self.fk_graph = ForeignKeyGraph()
         self.time_deltas: list[TimeDeltaConstraint] = []
         self.mutual_exclusions: list[MutualExclusionGroup] = []
+        self.mutual_exclusions_by_parent: dict[str, tuple[MutualExclusionGroup, ...]] = {}
         self.string_lengths: dict[str, StringLengthConstraint] = {}
         self._time_delta_cls = TimeDeltaConstraint
         self._mutual_exclusion_cls = MutualExclusionGroup
