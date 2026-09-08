@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import subprocess
 import sys
 from dataclasses import replace
@@ -867,6 +868,30 @@ class TestSemanticSourceClosureMemo:
     member list is only safe while each fingerprint call still re-derives every
     member's content signature; these laws hold that line.
     """
+
+    def test_overlapping_large_closures_reuse_parsed_imports(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second large closure must reuse its shared members' parsed imports."""
+        import polylogue.sources.origin_specs as origin_specs_module
+
+        source_dir = tmp_path / "polylogue"
+        source_dir.mkdir()
+        paths = tuple(f"polylogue/module_{index}.py" for index in range(600))
+        for path in paths:
+            (tmp_path / path).write_text("value = 1\n", encoding="utf-8")
+        monkeypatch.setattr(origin_specs_module, "_SOURCE_ROOT", tmp_path)
+        origin_specs_module._semantic_source_closure.cache_clear()
+        origin_specs_module._local_import_paths.cache_clear()
+
+        first = origin_specs_module._semantic_source_paths(paths)
+        assert len(first) == len(paths)
+        monkeypatch.setattr(
+            ast,
+            "parse",
+            lambda *_args, **_kwargs: pytest.fail("shared import graph was parsed again"),
+        )
+        assert origin_specs_module._semantic_source_paths(tuple(reversed(paths))) == first
 
     def test_membership_is_walked_once_per_argument_set(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Anti-vacuity: drop the memo and the repeat calls re-stat every member."""
