@@ -319,6 +319,10 @@ def test_schema_promote_forwards_cluster_request(
 
     monkeypatch.setattr(schema_promote, "get_config", fake_get_config)
     monkeypatch.setattr(schema_promote, "promote_schema_cluster", fake_promote)
+    registry_root = tmp_path / "schemas"
+    registry_root.mkdir()
+    (registry_root / "schema.json").write_text('{"type": "object"}', encoding="utf-8")
+    monkeypatch.setattr(schema_promote, "_schema_registry_root", lambda: registry_root)
 
     assert (
         schema_promote.main(["--provider", "chatgpt", "--cluster", "cluster-1", "--with-samples", "--max-samples", "7"])

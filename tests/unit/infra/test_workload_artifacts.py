@@ -107,8 +107,9 @@ def test_seeded_archive_integrity_checks_the_durable_audit_tier(tmp_path: Path) 
         sqlite3.connect(tmp_path / name).close()
     (tmp_path / "audit.db").write_bytes(b"not sqlite")
 
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(RuntimeError, match=r"invalid seeded archive tier audit\.db") as error:
         _sqlite_integrity(tmp_path)
+    assert isinstance(error.value.__cause__, sqlite3.DatabaseError)
 
 
 def test_benchmark_profiles_are_semantic_mixed_origin_exact_message_projections() -> None:

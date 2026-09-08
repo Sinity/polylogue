@@ -15,6 +15,35 @@ def _write_gzip_json(path: Path, payload: object) -> None:
         json.dump(payload, stream)
 
 
+def test_public_protocol_property_names_pass_without_allowing_arbitrary_slashes(tmp_path: Path) -> None:
+    """Broad slash or namespace exemptions would admit the negative controls."""
+    public_names = {"text/plain", "image/vnd.openai.fileservice.png", "openai/asyncStatus"}
+    private_names = {
+        "team/notes",
+        "/home/example/notes",
+        "person@example.com",
+        "0f1e2d3c-4b5a-4968-8776-655443332211",
+        "openai/private-notes",
+        "text/plain/private-notes",
+    }
+    _write_gzip_json(
+        tmp_path / "session.schema.json.gz",
+        {
+            "type": "object",
+            "properties": {name: {"type": "string"} for name in sorted(public_names | private_names)},
+            "profile_tokens": [f"child:metadata:{name}" for name in sorted(public_names | private_names)],
+        },
+    )
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert {(item.category, item.value) for item in report.blockers} == {
+        *(("unsafe_property_name", name) for name in private_names),
+        *(("unsafe_structural_identifier", f"child:metadata:{name}") for name in private_names),
+    }
+    assert {item.value for item in report.review_items} == {f"child:metadata:{name}" for name in public_names}
+
+
 def test_promotion_audit_blocks_leak_channels_without_misclassifying_review_values(tmp_path: Path) -> None:
     _write_gzip_json(
         tmp_path / "provider" / "versions" / "v1" / "elements" / "session.schema.json.gz",
