@@ -216,6 +216,29 @@ def test_malformed_members_become_terminal_outcomes_without_aborting_inventory(t
     )
 
     assert result.terminal_counts == {"decode_failed": 1, "included": 1, "partial_trailing_record": 1}
+    assert result.terminal_reason_counts == {"invalid_zip": 1, "partial_trailing_record": 1}
+    assert str(root) not in json.dumps(result.provenance())
+
+
+def test_browser_capture_source_is_explicitly_excluded_with_aggregate_reason(tmp_path: Path) -> None:
+    """Anti-vacuity: without the guard, a capture envelope becomes generic schema evidence."""
+    source = tmp_path / "capture.json"
+    source.write_text(json.dumps({"polylogue_capture_kind": "browser_llm_session"}), encoding="utf-8")
+    progress: list[JSONDocument] = []
+
+    result = infer_sources(
+        (SchemaSourceInput("browser-capture", source),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+        progress=lambda _phase, payload: progress.append(payload),
+    )
+
+    assert result.evidence_by_element == {}
+    assert result.terminal_counts == {"unsupported": 1}
+    assert result.terminal_reason_counts == {"browser_capture_adapter_unavailable": 1}
+    assert result.input_bytes == source.stat().st_size
+    assert result.provenance()["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
+    assert progress[-1]["completed_candidates"] == progress[-1]["total_candidates"] == 1
 
 
 def test_source_route_measures_full_multiline_values_before_reduced_evidence(tmp_path: Path) -> None:
