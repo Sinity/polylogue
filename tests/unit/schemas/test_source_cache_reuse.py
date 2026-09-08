@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from zipfile import ZipFile
@@ -12,6 +13,7 @@ from zipfile import ZipFile
 import pytest
 
 from polylogue.core.enums import Provider
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONValue
 from polylogue.schemas import source_inference as source
 from polylogue.schemas.field_stats import detection
@@ -173,6 +175,80 @@ def test_modern_codex_identity_reuses_warm_cache(tmp_path: Path, local_workers: 
     warm = run_codex(root, cache)
     assert warm.cache_phase_hits == {"structure": 1, "statistics": 1}
     assert warm.evidence_by_element == cold.evidence_by_element
+
+
+def test_headerless_claude_code_recollects_legacy_path_fallback_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+) -> None:
+    """Anti-vacuity: a legacy path fallback must not supply current revision-keyed Claude Code evidence."""
+    root = tmp_path / "inputs"
+    root.mkdir()
+    source_file = root / "headerless.jsonl"
+    source_file.write_text(
+        json.dumps({"type": "user", "message": {"role": "user", "content": "synthetic"}}), encoding="utf-8"
+    )
+    cache_path = tmp_path / "cache.sqlite"
+    run(root, cache_path)
+    candidate = source.inventory_schema_sources((source.SchemaSourceInput("claude-code", root),))[0]
+    digest, byte_count = source._stable_file_digest(source_file)
+    recipe = SourceEvidenceRecipe()
+    manifest_key = source._cache_key(
+        candidate,
+        digest,
+        dynamic_paths_by_element=None,
+        recipe_fingerprint=recipe.fingerprint("structure"),
+    )
+    with source.SourceContributionCache(cache_path) as cache:
+        manifest = cache.get(manifest_key)
+        assert manifest is not None
+        descriptor = source._cached_descriptors(manifest.evidence)[0]
+        legacy_id = hash_payload({"source": candidate.logical_source_id})
+        legacy_descriptor = replace(descriptor, logical_source_id=legacy_id)
+        cache.put(replace(manifest, evidence=source._serialize_descriptors((legacy_descriptor,))))
+        contribution_key = source._cache_key(
+            candidate,
+            descriptor.revision_sha256,
+            dynamic_paths_by_element=None,
+            recipe_fingerprint=recipe.fingerprint("structure"),
+            logical_source_id=descriptor.logical_source_id,
+        )
+        contribution = cache.get(contribution_key)
+        assert contribution is not None
+        address = contribution.metadata.get("address")
+        assert isinstance(address, dict)
+        legacy_contribution = replace(
+            next(source._cached_contributions(contribution.evidence)), logical_source_id=legacy_id
+        )
+        cache.put(
+            source.CachedContribution(
+                cache_key=source._cache_key(
+                    candidate,
+                    descriptor.revision_sha256,
+                    dynamic_paths_by_element=None,
+                    recipe_fingerprint=recipe.fingerprint("structure"),
+                    logical_source_id=legacy_id,
+                ),
+                evidence=source._serialize_contributions((legacy_contribution,)),
+                input_bytes=byte_count,
+                record_count=legacy_contribution.record_count,
+                metadata={
+                    **contribution.metadata,
+                    "address": {
+                        **address,
+                        "source_context": hash_payload({"logical_source_id": legacy_id}),
+                    },
+                },
+            )
+        )
+
+    with monkeypatch.context() as bypass:
+        bypass.setattr(source, "_old_path_fallback", lambda *_args: False)
+        with pytest.raises(source.SourceInferenceError, match="final source identities changed"):
+            run(root, cache_path)
+    warm = run(root, cache_path)
+    fresh = run(root, tmp_path / "fresh.sqlite")
+    assert warm.cache_phase_misses == {"structure": 1}
+    assert warm.evidence_by_element == fresh.evidence_by_element
 
 
 def reject_source_recollection(*_args: object, **_kwargs: object) -> source._CollectedCandidate:

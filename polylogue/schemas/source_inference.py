@@ -766,8 +766,8 @@ def _native_source_id(provider: Provider, payload: JSONValue, fallback: str, *, 
     """Return the provider-native session identifier when the record declares one.
 
     The collector hashes this private token before retaining equality evidence.
-    A path-derived fallback is needed for source formats without a session key,
-    but it must never replace a declared native identity.
+    A content-derived fallback is needed for source formats without a session
+    key, but it must never replace a declared native identity.
     """
     if not isinstance(payload, dict):
         return fallback
@@ -1480,7 +1480,7 @@ def _contract_revision(contract: JSONDocument, key: str) -> int:
     return revision if isinstance(revision, int) and not isinstance(revision, bool) else 1
 
 
-def _old_codex_path_fallback(candidate: _SourceCandidate, descriptor: _ContributionDescriptor) -> bool:
+def _old_path_fallback(candidate: _SourceCandidate, descriptor: _ContributionDescriptor) -> bool:
     return descriptor.logical_source_id == hash_payload({"source": candidate.logical_source_id})
 
 
@@ -1526,9 +1526,9 @@ def _cached_contribution(
     for cached, previous_contract in matches:
         if not contracts_match_except_key_limit(previous_contract, current_contract):
             continue
-        if candidate.provider == Provider.CODEX.value and (
-            _old_codex_path_fallback(candidate, descriptor)
-            or (
+        if _old_path_fallback(candidate, descriptor) or (
+            candidate.provider == Provider.CODEX.value
+            and (
                 _contract_revision(previous_contract, "identity_revision") < 2
                 and _contract_revision(current_contract, "identity_revision") >= 2
                 and candidate.path.suffix.lower() == ".zip"
