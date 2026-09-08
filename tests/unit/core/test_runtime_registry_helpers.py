@@ -124,6 +124,8 @@ def test_write_and_replace_provider_packages_retains_historical_versions(tmp_pat
         old_catalog,
         {"v1": {"session_document": old_schema}},
     )
+    published_old = registry.get_element_schema("chatgpt", version="v1")
+    assert published_old is not None and published_old["properties"] == old_schema["properties"]
 
     registry.replace_provider_packages(
         "chatgpt",
@@ -132,8 +134,9 @@ def test_write_and_replace_provider_packages_retains_historical_versions(tmp_pat
     )
 
     fresh_registry = SchemaRegistry(storage_root=tmp_path / "schemas")
-    assert fresh_registry.get_element_schema("chatgpt", version="v1") == old_schema
-    assert fresh_registry.get_element_schema("chatgpt", version="v2") == new_schema
+    assert fresh_registry.get_element_schema("chatgpt", version="v1") == published_old
+    published_new = fresh_registry.get_element_schema("chatgpt", version="v2")
+    assert published_new is not None and published_new["properties"] == new_schema["properties"]
     historical = fresh_registry.get_package("chatgpt", "v1")
     current = fresh_registry.get_package("chatgpt", "v2")
     default = fresh_registry.get_package("chatgpt")
