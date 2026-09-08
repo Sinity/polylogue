@@ -104,8 +104,10 @@ def test_omitted_family_survives_without_blending_into_new_family(tmp_path: Path
     publish(registry)
     publish(registry, version="v2", generation=2, family="family-b")
     assert registry.list_versions("synthetic-publication") == ["v1", "v2"]
-    assert "field_1" in schema(registry, "v1")["properties"]
-    assert "field_1" not in schema(registry, "v2")["properties"]
+    first_properties = schema(registry, "v1")["properties"]
+    second_properties = schema(registry, "v2")["properties"]
+    assert isinstance(first_properties, dict) and "field_1" in first_properties
+    assert isinstance(second_properties, dict) and "field_1" not in second_properties
     assert registry.get_workload_profile("synthetic-publication", "v1") == {"generation": 1}
 
 
@@ -154,7 +156,7 @@ def test_family_label_cannot_be_reassigned(tmp_path: Path) -> None:
 
 
 def test_reappearing_field_replaces_historical_status() -> None:
-    original = {"type": "object", "properties": {"value": {"type": "string"}}}
+    original: JSONDocument = {"type": "object", "properties": {"value": {"type": "string"}}}
     absent = SchemaRegistry._merge_element_schema_with_existing(original, {"type": "object"})
     reappeared = SchemaRegistry._merge_element_schema_with_existing(
         absent,
@@ -170,8 +172,10 @@ def test_reappearing_field_replaces_historical_status() -> None:
     )
     properties = reappeared["properties"]
     assert isinstance(properties, dict)
-    assert properties["value"].get("x-polylogue-observation-status") != "historical"
-    assert properties["value"].get("x-polylogue-frequency", 1) == 1
+    value = properties["value"]
+    assert isinstance(value, dict)
+    assert value.get("x-polylogue-observation-status") != "historical"
+    assert value.get("x-polylogue-frequency", 1) == 1
 
 
 def test_single_version_update_uses_fresh_catalog_for_default(tmp_path: Path) -> None:
