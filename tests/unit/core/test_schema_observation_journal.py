@@ -453,8 +453,8 @@ def test_metadata_membership_passes_do_not_decode_sample_payloads(
             list(memberships)
 
 
-def test_journal_assigns_one_canonical_package_member_per_scope_structure(tmp_path: Path) -> None:
-    """One pathological scope must not become a Python-sized assembly batch."""
+def test_journal_preserves_distinct_observations_with_equal_shapes(tmp_path: Path) -> None:
+    """Structural deduplication would discard 508 distinct observed values."""
     with ObservationJournal.create(root=tmp_path / "journals") as journal:
         for index in range(512):
             unit_id = journal.append_unit(
@@ -484,9 +484,9 @@ def test_journal_assigns_one_canonical_package_member_per_scope_structure(tmp_pa
 
         assert journal.assign_canonical_package_families(frozenset({"session_document"})) == {}
         package = journal.memberships(package_family_id="anchor-family")
-        assert len(package) == 5
+        assert len(package) == 513
         assert package.scope_count() == 1
-        assert package.sample_count == 5
+        assert package.sample_count == 513
 
 
 def test_journal_rejects_archive_or_broad_permission_roots(tmp_path: Path) -> None:

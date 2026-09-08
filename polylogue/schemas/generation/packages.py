@@ -77,31 +77,11 @@ def _membership_scope_key(membership: _UnitMembership) -> str:
     )
 
 
-def _dedupe_bundle_memberships(memberships: Sequence[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
+def _group_bundle_memberships(memberships: Sequence[_UnitMembership]) -> dict[str, list[_UnitMembership]]:
     scoped: dict[str, list[_UnitMembership]] = {}
     for membership in memberships:
         scoped.setdefault(_membership_scope_key(membership), []).append(membership)
-
-    deduped: dict[str, list[_UnitMembership]] = {}
-    for scope, items in scoped.items():
-        items = sorted(
-            items,
-            key=lambda item: (
-                item.unit.observed_at or "",
-                item.unit.source_path or "",
-                item.profile_family_id,
-            ),
-        )
-        seen: set[tuple[str, str]] = set()
-        retained: list[_UnitMembership] = []
-        for membership in items:
-            dedupe_key = (membership.unit.artifact_kind, membership.unit.exact_structure_id)
-            if dedupe_key in seen:
-                continue
-            seen.add(dedupe_key)
-            retained.append(membership)
-        deduped[scope] = retained
-    return deduped
+    return scoped
 
 
 def _observe_package_membership(package: _PackageAccumulator, membership: _UnitMembership, *, scope: str) -> None:
@@ -149,7 +129,7 @@ def assemble_package_candidates(
     memberships: Sequence[_UnitMembership],
     clusters: dict[str, _ClusterAccumulator],
 ) -> PackageAssemblyResult:
-    scoped = _dedupe_bundle_memberships(memberships)
+    scoped = _group_bundle_memberships(memberships)
     packages: dict[str, _PackageAccumulator] = {}
     orphan_adjunct_counts: Counter[str] = Counter()
 

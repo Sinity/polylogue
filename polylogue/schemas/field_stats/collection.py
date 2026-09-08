@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from typing import TypeAlias
 
 from polylogue.schemas.field_stats.detection import (
@@ -66,10 +66,10 @@ def _increment_bounded(counter: dict[str, int], key: str, stats: FieldStats, evi
 
 
 def _collect_field_stats(
-    samples: Collection[SampleMapping],
+    samples: Iterable[SampleMapping],
     *,
-    session_ids: Collection[str | None] | None = None,
-    observed_ats: Collection[str | None] | None = None,
+    session_ids: Iterable[str | None] | None = None,
+    observed_ats: Iterable[str | None] | None = None,
     dynamic_paths: Collection[str] = (),
     max_depth: int = 15,
 ) -> FieldStatsByPath:
@@ -120,6 +120,7 @@ def _collect_field_stats(
             key_evidence = dict_key_sets[path]
             for key in value:
                 stats.object_key_distribution.observe(str(key))
+                stats.observe_object_key(str(key))
                 if key in key_evidence or len(key_evidence) < _DICT_KEY_EVIDENCE_CAP:
                     key_evidence.add(key)
                 else:
@@ -178,6 +179,7 @@ def _collect_field_stats(
 
         if isinstance(value, str):
             stats.categorical_distribution.observe(value)
+            stats.observe_equality_value(value, session_id=current_session_id)
             if len(stats.string_lengths) < string_length_cap:
                 stats.string_lengths.append(len(value))
             else:
@@ -239,12 +241,13 @@ def _collect_field_stats(
 
     session_id_iterator = iter(session_ids) if session_ids is not None else None
     observed_at_iterator = iter(observed_ats) if observed_ats is not None else None
+    total_samples = 0
     for idx, sample in enumerate(samples):
         current_session_id = next(session_id_iterator, None) if session_id_iterator is not None else None
         current_observed_at = next(observed_at_iterator, None) if observed_at_iterator is not None else None
         _walk(sample, "$", 0, idx)
+        total_samples = idx + 1
 
-    total_samples = len(samples)
     for stats in all_stats.values():
         stats.total_samples = total_samples
 

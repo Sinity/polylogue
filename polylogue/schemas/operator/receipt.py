@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, TypeAlias, cast
 
-from polylogue.core.hashing import hash_file, hash_payload
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
 from polylogue.schemas.operator.registry import RuntimeSchemaRegistryLike
@@ -99,6 +100,27 @@ class SchemaElementContentHash:
 
 
 @dataclass(frozen=True, order=True, slots=True)
+class SchemaInferenceInputManifest:
+    provider: str
+    digest: str | None
+    unavailable_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.provider:
+            raise ValueError("input manifest requires a provider")
+        if self.digest is None:
+            if not self.unavailable_reason:
+                raise ValueError("unavailable input manifest requires a reason")
+        else:
+            _require_digest(self.digest, field="input manifest digest")
+            if self.unavailable_reason is not None:
+                raise ValueError("bound input manifest cannot have an unavailable reason")
+
+    def to_payload(self) -> JSONDocument:
+        return {"provider": self.provider, "digest": self.digest, "unavailable_reason": self.unavailable_reason}
+
+
+@dataclass(frozen=True, order=True, slots=True)
 class SchemaPackageContentHash:
     """Exact persisted hashes for one package version and its elements."""
 
@@ -130,15 +152,16 @@ class SchemaPackageContentHash:
 
 @dataclass(frozen=True, slots=True)
 class SchemaInferenceReceipt:
-    """Immutable aggregate handoff from pristine gate to inferred corpus."""
+    """Immutable aggregate handoff from generation input to inferred corpus."""
 
-    gate_receipt_digest: str
+    input_manifests: tuple[SchemaInferenceInputManifest, ...]
     coverage_decisions: tuple[SchemaInferenceCoverageDecision, ...]
     packages: tuple[SchemaPackageContentHash, ...]
     unsupported_decisions: tuple[SchemaInferenceUnsupportedDecision, ...] = ()
 
     def __post_init__(self) -> None:
-        _require_digest(self.gate_receipt_digest, field="gate_receipt_digest")
+        if tuple(sorted(self.input_manifests)) != self.input_manifests:
+            raise ValueError("input manifests must be sorted")
         if tuple(sorted(self.coverage_decisions)) != self.coverage_decisions:
             raise ValueError("coverage decisions must be sorted")
         if tuple(sorted(self.packages)) != self.packages:
@@ -164,7 +187,7 @@ class SchemaInferenceReceipt:
     def _payload_without_digest(self) -> JSONDocument:
         return {
             "schema": SCHEMA_INFERENCE_HANDOFF_SCHEMA,
-            "gate_receipt_digest": self.gate_receipt_digest,
+            "input_manifests": [item.to_payload() for item in self.input_manifests],
             "coverage_decisions": [item.to_payload() for item in self.coverage_decisions],
             "packages": [item.to_payload() for item in self.packages],
             "unsupported_decisions": [item.to_payload() for item in self.unsupported_decisions],
@@ -174,8 +197,6 @@ class SchemaInferenceReceipt:
         return {**self._payload_without_digest(), "receipt_digest": self.receipt_digest}
 
     def merged_with(self, other: SchemaInferenceReceipt) -> SchemaInferenceReceipt:
-        if self.gate_receipt_digest != other.gate_receipt_digest:
-            raise ValueError("schema inference handoffs use different gate receipt digests")
         providers = {item.provider for item in other.coverage_decisions}
         coverage = tuple(
             sorted(
@@ -193,13 +214,18 @@ class SchemaInferenceReceipt:
                 + list(other.unsupported_decisions)
             )
         )
-        return SchemaInferenceReceipt(self.gate_receipt_digest, coverage, packages, unsupported)
+        manifests = tuple(
+            sorted(
+                [item for item in self.input_manifests if item.provider not in providers] + list(other.input_manifests)
+            )
+        )
+        return SchemaInferenceReceipt(manifests, coverage, packages, unsupported)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> SchemaInferenceReceipt:
         expected = {
             "schema",
-            "gate_receipt_digest",
+            "input_manifests",
             "coverage_decisions",
             "packages",
             "unsupported_decisions",
@@ -208,7 +234,9 @@ class SchemaInferenceReceipt:
         if set(payload) != expected or payload.get("schema") != SCHEMA_INFERENCE_HANDOFF_SCHEMA:
             raise ValueError("schema inference handoff fields or schema changed")
         receipt = cls(
-            gate_receipt_digest=_require_digest(payload.get("gate_receipt_digest"), field="gate_receipt_digest"),
+            input_manifests=tuple(
+                _input_manifest_from_payload(item) for item in _list_of_mappings(payload, "input_manifests")
+            ),
             coverage_decisions=tuple(
                 _coverage_from_payload(item) for item in _list_of_mappings(payload, "coverage_decisions")
             ),
@@ -267,6 +295,18 @@ def _element_from_payload(payload: Mapping[str, object]) -> SchemaElementContent
     )
 
 
+def _input_manifest_from_payload(payload: Mapping[str, object]) -> SchemaInferenceInputManifest:
+    if set(payload) != {"provider", "digest", "unavailable_reason"}:
+        raise ValueError("input manifest fields changed")
+    digest = payload.get("digest")
+    reason = payload.get("unavailable_reason")
+    if digest is not None and not isinstance(digest, str):
+        raise ValueError("input manifest digest must be a string or null")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError("input manifest unavailable_reason must be a string or null")
+    return SchemaInferenceInputManifest(str(payload.get("provider")), digest, reason)
+
+
 def _package_from_payload(payload: Mapping[str, object]) -> SchemaPackageContentHash:
     if set(payload) != {"provider", "package_version", "package_hash", "version_hash", "element_hashes"}:
         raise ValueError("package hash fields changed")
@@ -280,38 +320,34 @@ def _package_from_payload(payload: Mapping[str, object]) -> SchemaPackageContent
 
 
 class SchemaReceiptRegistry(RuntimeSchemaRegistryLike, Protocol):
-    """Filesystem-backed registry operations required to hash persisted files."""
+    """Committed-registry operations required to hash persisted files."""
 
-    @property
-    def storage_root(self) -> Path: ...
+    def read_committed_file(self, provider: str, relative_path: str) -> bytes | None: ...
 
 
 def _package_hashes_for_package(
     registry: SchemaReceiptRegistry, provider: str, package: SchemaVersionPackage
 ) -> SchemaPackageContentHash:
-    storage_root = registry.storage_root
     provider_token = str(canonical_schema_provider(provider))
-    package_dir = storage_root / provider_token / "versions" / package.version
-    package_path = package_dir / "package.json"
-    if not package_path.exists():
-        raise ValueError(f"persisted schema package is missing: {package_path}")
+    version_root = f"versions/{package.version}"
+
+    def committed_hash(relative_path: str) -> str:
+        content = registry.read_committed_file(provider_token, relative_path)
+        if content is None:
+            raise ValueError(f"committed schema artifact is missing: {provider_token}/{relative_path}")
+        return hashlib.sha256(content).hexdigest()
+
     element_hashes: list[SchemaElementContentHash] = []
-    package_hash = hash_file(package_path)
+    package_hash = committed_hash(f"{version_root}/package.json")
     version_files: list[dict[str, str]] = [{"path": "package.json", "hash": package_hash}]
     for element in sorted(package.elements, key=lambda item: item.element_kind):
         if element.schema_file is None:
             continue
-        path = package_dir / "elements" / element.schema_file
-        if not path.exists():
-            raise ValueError(f"persisted schema element is missing: {path}")
-        content_hash = hash_file(path)
+        content_hash = committed_hash(f"{version_root}/elements/{element.schema_file}")
         element_hashes.append(SchemaElementContentHash(element.element_kind, content_hash))
         version_files.append({"path": f"elements/{element.schema_file}", "hash": content_hash})
     if package.workload_profile_file is not None:
-        path = package_dir / package.workload_profile_file
-        if not path.exists():
-            raise ValueError(f"persisted schema workload profile is missing: {path}")
-        content_hash = hash_file(path)
+        content_hash = committed_hash(f"{version_root}/{package.workload_profile_file}")
         version_files.append({"path": package.workload_profile_file, "hash": content_hash})
     return SchemaPackageContentHash(
         provider=provider_token,
@@ -388,7 +424,7 @@ def _unsupported_for_package(
 
 
 def build_schema_inference_receipt(
-    registry: SchemaReceiptRegistry, *, provider: str, gate_receipt_digest: str
+    registry: SchemaReceiptRegistry, *, provider: str, input_manifest_digest: str | None = None
 ) -> SchemaInferenceReceipt:
     provider_token = str(canonical_schema_provider(provider))
     catalog = registry.load_package_catalog(provider_token)
@@ -426,7 +462,12 @@ def build_schema_inference_receipt(
         decision=coverage_decision,
         reason=coverage_reason,
     )
-    return SchemaInferenceReceipt(gate_receipt_digest, (coverage,), packages, unsupported)
+    manifest = SchemaInferenceInputManifest(
+        provider_token,
+        input_manifest_digest,
+        None if input_manifest_digest is not None else "input_manifest_unavailable",
+    )
+    return SchemaInferenceReceipt((manifest,), (coverage,), packages, unsupported)
 
 
 def load_schema_inference_receipt(path: Path) -> SchemaInferenceReceipt:
@@ -451,6 +492,7 @@ __all__ = [
     "SCHEMA_INFERENCE_HANDOFF_SCHEMA",
     "SchemaElementContentHash",
     "SchemaInferenceCoverageDecision",
+    "SchemaInferenceInputManifest",
     "SchemaInferenceReceipt",
     "SchemaInferenceUnsupportedDecision",
     "SchemaPackageContentHash",

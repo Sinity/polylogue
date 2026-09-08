@@ -258,8 +258,6 @@ def test_schema_generate_writes_aggregate_progress_receipt(
                 "--progress",
                 "--receipt",
                 str(receipt_path),
-                "--schema-inference-receipt",
-                str(tmp_path / "schema-inference-gate-receipt.json"),
             ]
         )
         == 0

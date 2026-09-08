@@ -19,12 +19,9 @@ from polylogue.cli.shared.schema_command_support import build_schema_privacy_con
 from polylogue.cli.shared.schema_rendering import render_schema_generate_result
 from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.schema_inference_gate import (
-    authorize_schema_generation,
-    resolve_schema_inference_archive_root,
-)
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema
+from polylogue.schemas.source_inference import parse_schema_source_input
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
@@ -90,14 +87,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Bypass all sample caps for full-corpus schema generation.",
     )
     parser.add_argument("--progress", action="store_true", help="Emit aggregate phase progress to stderr.")
+    parser.add_argument("--source", action="append", default=[], help="Declared source input as provider=path.")
+    parser.add_argument("--source-cache", type=Path, default=None, help="Private reduced-evidence SQLite cache.")
+    parser.add_argument("--source-workers", type=int, default=2, help="Bounded source evidence workers.")
     parser.add_argument(
         "--receipt", type=Path, default=None, help="Write an aggregate-only generation receipt as JSON."
-    )
-    parser.add_argument(
-        "--schema-inference-receipt",
-        type=Path,
-        required=True,
-        help="Fresh authoritative PASS receipt from devtools gate schema-inference-gate.",
     )
     return parser
 
@@ -119,19 +113,21 @@ def main(argv: list[str] | None = None) -> int:
             privacy=args.privacy,
             privacy_config_path=args.privacy_config,
         )
-        archive_root = resolve_schema_inference_archive_root(config, fallback_db_path=config.db_path)
-        with authorize_schema_generation(archive_root, args.schema_inference_receipt):
-            result = infer_schema(
-                SchemaInferRequest(
-                    provider=str(args.provider),
-                    db_path=config.db_path,
-                    max_samples=args.max_samples,
-                    privacy_config=privacy_config,
-                    cluster=bool(args.cluster),
-                    full_corpus=bool(args.full_corpus),
-                    progress_callback=on_progress if args.progress or args.receipt is not None else None,
-                )
+        source_inputs = tuple(parse_schema_source_input(value) for value in args.source)
+        result = infer_schema(
+            SchemaInferRequest(
+                provider=str(args.provider),
+                db_path=config.db_path,
+                max_samples=args.max_samples,
+                privacy_config=privacy_config,
+                cluster=bool(args.cluster),
+                full_corpus=bool(args.full_corpus),
+                progress_callback=on_progress if args.progress or args.receipt is not None else None,
+                source_inputs=source_inputs,
+                source_cache_path=args.source_cache,
+                source_workers=args.source_workers,
             )
+        )
     except ValueError as exc:
         print(f"schema-generate: {exc}", file=sys.stderr)
         return 1

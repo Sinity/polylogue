@@ -710,13 +710,7 @@ class ObservationJournal:
         )
 
     def assign_canonical_package_families(self, anchor_kinds: frozenset[str]) -> dict[str, int]:
-        """Assign one canonical unit per scope/kind/structure in SQLite.
-
-        Package assembly used to collect every unit in a scope into Python merely
-        to remove duplicate structural observations and choose a sole anchor.
-        The journal already owns the necessary identity columns, so retain that
-        relation here and expose only the resulting replay views.
-        """
+        """Assign every observation to its structural family and unique bundle anchor."""
         if not anchor_kinds:
             raise ValueError("Package assignment needs at least one anchor artifact kind")
         placeholders = ", ".join("?" for _ in anchor_kinds)
@@ -725,22 +719,9 @@ class ObservationJournal:
         self._connection.execute("UPDATE units SET package_family_id = NULL, package_selected = 0")
         self._connection.execute(
             f"""
-            WITH canonical AS (
-                SELECT
-                    unit_id,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
-                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
-                    ) AS row_number
-                FROM units
-                WHERE profile_family_id IS NOT NULL
-            )
             UPDATE units
             SET package_family_id = profile_family_id, package_selected = 1
-            WHERE unit_id IN (
-                SELECT unit_id FROM canonical
-                WHERE row_number = 1 AND artifact_kind IN ({placeholders})
-            )
+            WHERE profile_family_id IS NOT NULL AND artifact_kind IN ({placeholders})
             """,
             anchor_parameters,
         )
@@ -750,11 +731,7 @@ class ObservationJournal:
                 SELECT
                     unit_id,
                     artifact_kind,
-                    {scope_key} AS scope_key,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
-                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
-                    ) AS row_number
+                    {scope_key} AS scope_key
                 FROM units
                 WHERE profile_family_id IS NOT NULL
             ), scope_anchors AS (
@@ -774,8 +751,7 @@ class ObservationJournal:
             WHERE unit_id IN (
                 SELECT canonical.unit_id
                 FROM canonical JOIN scope_anchors USING(scope_key)
-                WHERE canonical.row_number = 1
-                  AND canonical.artifact_kind NOT IN ({placeholders})
+                WHERE canonical.artifact_kind NOT IN ({placeholders})
                   AND scope_anchors.family_count = 1
             )
             """,
@@ -786,11 +762,7 @@ class ObservationJournal:
             WITH canonical AS (
                 SELECT
                     artifact_kind,
-                    {scope_key} AS scope_key,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY {scope_key}, artifact_kind, exact_structure_id
-                        ORDER BY COALESCE(observed_at, ''), COALESCE(source_path, ''), unit_id
-                    ) AS row_number
+                    {scope_key} AS scope_key
                 FROM units
                 WHERE profile_family_id IS NOT NULL
             ), scope_anchors AS (
@@ -801,8 +773,7 @@ class ObservationJournal:
             )
             SELECT canonical.artifact_kind, COUNT(*) AS count
             FROM canonical LEFT JOIN scope_anchors USING(scope_key)
-            WHERE canonical.row_number = 1
-              AND canonical.artifact_kind NOT IN ({placeholders})
+            WHERE canonical.artifact_kind NOT IN ({placeholders})
               AND COALESCE(scope_anchors.family_count, 0) != 1
             GROUP BY canonical.artifact_kind
             """,

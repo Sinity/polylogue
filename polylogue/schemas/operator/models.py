@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TypeAlias, TypeGuard
+from typing import TYPE_CHECKING, TypeAlias, TypeGuard
 
 from polylogue.scenarios import CorpusScenario, CorpusSpec
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult
@@ -15,6 +15,9 @@ from polylogue.schemas.tooling_registry import ClusterManifest, SchemaDiff
 from polylogue.schemas.validation.models import ArtifactCoverageReport
 from polylogue.storage.artifacts.views import ArtifactCohortSummary
 from polylogue.storage.runtime import ArtifactObservationRecord
+
+if TYPE_CHECKING:
+    from polylogue.schemas.source_inference import SchemaSourceInput
 
 JSONPrimitive: TypeAlias = str | int | float | bool | None
 JSONValue: TypeAlias = JSONPrimitive | Sequence["JSONValue"] | Mapping[str, "JSONValue"]
@@ -78,6 +81,9 @@ class SchemaInferRequest:
     cluster_sample_limit: int = 500
     full_corpus: bool = False
     progress_callback: GenerationProgressCallback | None = None
+    source_inputs: tuple[SchemaSourceInput, ...] = ()
+    source_cache_path: Path | None = None
+    source_workers: int = 2
 
 
 @dataclass(frozen=True)
@@ -366,8 +372,10 @@ class SchemaCommitRequest:
     privacy_config: JSONDocument | None = None
     full_corpus: bool = True
     dry_run: bool = False
-    schema_inference_gate_receipt_path: Path | None = None
-    archive_root: Path | None = None
+    source_inputs: tuple[SchemaSourceInput, ...] = ()
+    source_cache_path: Path | None = None
+    source_workers: int = 2
+    progress_callback: GenerationProgressCallback | None = None
 
 
 @dataclass(frozen=True)

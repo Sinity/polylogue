@@ -9,10 +9,6 @@ from typing import Any, cast
 import pytest
 
 from polylogue.core.json import JSONDocument, JSONValue
-from polylogue.maintenance.schema_inference_gate import (
-    run_schema_inference_gate,
-    schema_inference_gate_receipt_digest,
-)
 from polylogue.schemas.operator.receipt import (
     SchemaInferenceUnsupportedDecision,
     build_schema_inference_receipt,
@@ -39,24 +35,10 @@ from tests.infra.inferred_corpus import (
     write_inferred_corpus_manifest,
 )
 from tests.infra.wire_support import shared_wire_generation, shared_wire_support_receipt
-from tests.unit.maintenance.test_schema_inference_gate import _seed_archive
 
 
 def _registry() -> SchemaRegistry:
     return SchemaRegistry(storage_root=SCHEMA_DIR)
-
-
-def _authoritative_gate(tmp_path: Path) -> tuple[Path, Path, str]:
-    archive_root = tmp_path / "archive"
-    receipt_path = tmp_path / "schema-inference-gate-receipt.json"
-    _seed_archive(archive_root)
-    result = run_schema_inference_gate(
-        archive_root,
-        receipt_path=receipt_path,
-        ground_truth_roots={"codex-session": (tmp_path / "archive-codex-ground-truth",)},
-    )
-    assert result.passed
-    return archive_root, receipt_path, schema_inference_gate_receipt_digest(result.payload)
 
 
 def _catalog_keys(registry: SchemaRegistry) -> set[CorpusManifestKey]:
@@ -195,9 +177,9 @@ def test_wire_support_receipt_rejects_conflicting_duplicate_identity_at_all_boun
 
 def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(tmp_path: Path) -> None:
     registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     package_receipts = [
-        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, input_manifest_digest=input_digest)
         for provider in registry.list_providers()
     ]
     package_receipt = package_receipts[0]
@@ -224,8 +206,6 @@ def test_all_provider_campaign_round_trip_preserves_unsupported_wire_authority(t
         path,
         campaign_mode=True,
         registry=registry,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     assert restored == manifest
     assert restored.wire_support_receipt == wire_support.to_dict()
@@ -235,10 +215,10 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
     base_registry = _registry()
     registry = _RegistryProxy(base_registry)
     registry.provider_order = ["codex"]
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     providers = tuple(registry.list_providers())
     package_receipts = [
-        build_schema_inference_receipt(cast(Any, registry), provider=provider, gate_receipt_digest=gate_digest)
+        build_schema_inference_receipt(cast(Any, registry), provider=provider, input_manifest_digest=input_digest)
         for provider in providers
     ]
     package_receipt = package_receipts[0]
@@ -252,8 +232,6 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     path = tmp_path / "all-provider-campaign.json"
     write_inferred_corpus_manifest(manifest, path)
@@ -265,17 +243,15 @@ def test_default_scope_campaign_rejects_a_new_provider_during_receipt_revalidati
             path,
             campaign_mode=True,
             registry=cast(Any, registry),
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 
 def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path: Path) -> None:
     base_registry = _registry()
     registry = _RegistryProxy(base_registry)
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
-        cast(Any, registry), provider="codex", gate_receipt_digest=gate_digest
+        cast(Any, registry), provider="codex", input_manifest_digest=input_digest
     )
     with shared_wire_generation():
         wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
@@ -286,8 +262,6 @@ def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     path = tmp_path / "codex-campaign.json"
     write_inferred_corpus_manifest(manifest, path)
@@ -299,8 +273,6 @@ def test_explicit_scope_campaign_does_not_re_census_unselected_provider(tmp_path
             path,
             campaign_mode=True,
             registry=cast(Any, registry),
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
         == manifest
     )
@@ -311,17 +283,17 @@ def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     providers = ("claude-ai", "codex")
     package_receipt = build_schema_inference_receipt(
         registry,
         provider=providers[0],
-        gate_receipt_digest=gate_digest,
+        input_manifest_digest=input_digest,
     ).merged_with(
         build_schema_inference_receipt(
             registry,
             provider=providers[1],
-            gate_receipt_digest=gate_digest,
+            input_manifest_digest=input_digest,
         )
     )
     monkeypatch.delitem(PROVIDER_WIRE_ROUTES, "codex")
@@ -337,8 +309,6 @@ def test_campaign_rejects_a_bound_receipt_with_a_missing_catalog_route(
             package_receipt=package_receipt.to_payload(),
             wire_support_receipt=wire_support,
             campaign_mode=True,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 
@@ -347,11 +317,11 @@ def test_campaign_indexes_persisted_wire_support_entries_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
         provider="codex",
-        gate_receipt_digest=gate_digest,
+        input_manifest_digest=input_digest,
     )
     with shared_wire_generation():
         wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
@@ -381,8 +351,6 @@ def test_campaign_indexes_persisted_wire_support_entries_once(
         package_receipt=package_receipt.to_payload(),
         wire_support_receipt=wire_support,
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
 
     assert index_calls == 1
@@ -391,11 +359,11 @@ def test_campaign_indexes_persisted_wire_support_entries_once(
 
 def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
         provider="codex",
-        gate_receipt_digest=gate_digest,
+        input_manifest_digest=input_digest,
     )
     with shared_wire_generation():
         wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
@@ -405,8 +373,6 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
         wire_support_receipt=wire_support,
         providers=("codex",),
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     path = tmp_path / "campaign.json"
     write_inferred_corpus_manifest(manifest, path)
@@ -426,8 +392,6 @@ def test_campaign_read_rejects_wire_route_drift(tmp_path: Path, monkeypatch: pyt
             path,
             campaign_mode=True,
             registry=registry,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 
@@ -436,11 +400,11 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     package_receipt = build_schema_inference_receipt(
         registry,
         provider="codex",
-        gate_receipt_digest=gate_digest,
+        input_manifest_digest=input_digest,
     )
     with shared_wire_generation():
         wire_support = build_wire_support_receipt(registry=registry, providers=("codex",))
@@ -450,8 +414,6 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
         wire_support_receipt=wire_support,
         providers=("codex",),
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     path = tmp_path / "campaign.json"
     write_inferred_corpus_manifest(manifest, path)
@@ -475,8 +437,6 @@ def test_path_campaign_handoff_replays_current_wire_route_once(
         path,
         campaign_mode=True,
         registry=registry,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
 
     assert handoff.specs == manifest.supported_specs
@@ -513,15 +473,13 @@ def test_manifest_refuses_a_selection_missing_from_bound_wire_support_receipt() 
 def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) -> None:
     registry = _registry()
     provider = "codex"
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
-    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+    input_digest = "a" * 64
+    receipt = build_schema_inference_receipt(registry, provider=provider, input_manifest_digest=input_digest)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
         package_receipt=receipt.to_payload(),
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
     path = tmp_path / "campaign.json"
 
@@ -542,8 +500,6 @@ def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) ->
             path,
             campaign_mode=True,
             registry=registry,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
     tampered_key = replace(supported.key, construct_support=())
@@ -562,8 +518,6 @@ def test_campaign_read_revalidates_live_schema_and_classifier(tmp_path: Path) ->
             tampered,
             campaign_mode=True,
             registry=registry,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 
@@ -578,27 +532,21 @@ def test_campaign_mode_rejects_catalog_only_manifest(tmp_path: Path) -> None:
         compile_inferred_corpus_manifest(registry=_registry(), campaign_mode=True)
 
 
-def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decisions(tmp_path: Path) -> None:
+def test_campaign_receipt_rejects_tampered_package_hashes(tmp_path: Path) -> None:
     registry = _registry()
     provider = "codex"
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
+    input_digest = "a" * 64
     receipt = build_schema_inference_receipt(
         registry,
         provider=provider,
-        gate_receipt_digest=gate_digest,
+        input_manifest_digest=input_digest,
     )
     compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
         package_receipt=receipt.to_payload(),
         campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
     )
-
-    tampered_gate = replace(receipt, gate_receipt_digest="b" * 64)
-    with pytest.raises(ValueError, match="different gate receipt digests"):
-        tampered_gate.merged_with(receipt)
 
     tampered_package = replace(
         receipt,
@@ -610,70 +558,14 @@ def test_campaign_receipt_rejects_tampered_gate_package_and_unsupported_decision
             providers=(provider,),
             package_receipt=tampered_package.to_payload(),
             campaign_mode=True,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
-        )
-
-
-def test_campaign_rejects_fabricated_gate_digest_even_when_shape_is_valid(tmp_path: Path) -> None:
-    registry = _registry()
-    archive_root, gate_receipt_path, _gate_digest = _authoritative_gate(tmp_path)
-    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest="a" * 64)
-
-    with pytest.raises(ValueError, match="does not match the authoritative PASS receipt"):
-        compile_inferred_corpus_manifest(
-            registry=registry,
-            providers=("codex",),
-            package_receipt=receipt.to_payload(),
-            campaign_mode=True,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
-        )
-
-
-def test_campaign_rejects_tampered_ground_truth_denominators_after_digest_recompute(tmp_path: Path) -> None:
-    registry = _registry()
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
-    receipt = build_schema_inference_receipt(registry, provider="codex", gate_receipt_digest=gate_digest)
-
-    valid_manifest = compile_inferred_corpus_manifest(
-        registry=registry,
-        providers=("codex",),
-        package_receipt=receipt.to_payload(),
-        campaign_mode=True,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
-    )
-    assert valid_manifest.receipt_state == "package_receipt_attached"
-
-    tampered_gate = json.loads(gate_receipt_path.read_text(encoding="utf-8"))
-    denominators = dict(tampered_gate["ground_truth_denominators"])
-    denominators["documents_known"] += 1
-    tampered_gate["ground_truth_denominators"] = denominators
-    gate_receipt_path.write_text(json.dumps(tampered_gate, sort_keys=True) + "\n", encoding="utf-8")
-    tampered_digest = schema_inference_gate_receipt_digest(tampered_gate)
-    tampered_receipt = build_schema_inference_receipt(
-        registry,
-        provider="codex",
-        gate_receipt_digest=tampered_digest,
-    )
-
-    with pytest.raises(ValueError, match="ground-truth denominators changed"):
-        compile_inferred_corpus_manifest(
-            registry=registry,
-            providers=("codex",),
-            package_receipt=tampered_receipt.to_payload(),
-            campaign_mode=True,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 
 def test_bundled_registry_relation_annotations_share_one_receipt_classification(tmp_path: Path) -> None:
     registry = _registry()
     provider = "chatgpt"
-    archive_root, gate_receipt_path, gate_digest = _authoritative_gate(tmp_path)
-    receipt = build_schema_inference_receipt(registry, provider=provider, gate_receipt_digest=gate_digest)
+    input_digest = "a" * 64
+    receipt = build_schema_inference_receipt(registry, provider=provider, input_manifest_digest=input_digest)
     manifest = compile_inferred_corpus_manifest(
         registry=registry,
         providers=(provider,),
@@ -744,8 +636,6 @@ def test_bundled_registry_relation_annotations_share_one_receipt_classification(
             providers=(provider,),
             package_receipt=tampered_unsupported.to_payload(),
             campaign_mode=True,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
 
 

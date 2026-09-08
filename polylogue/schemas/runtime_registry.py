@@ -6,6 +6,8 @@ import copy
 import dataclasses
 import gzip
 import json
+import shutil
+import tempfile
 import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +27,7 @@ from polylogue.schemas.observation import (
     profile_similarity,
     resolve_provider_config,
 )
+from polylogue.schemas.package_publication import publish_provider_tree, read_provider_snapshot
 from polylogue.schemas.packages import (
     SchemaElementManifest,
     SchemaPackageCatalog,
@@ -41,6 +44,16 @@ SchemaInputDocument = Mapping[str, object]
 PublicSchemaDocument = JSONRecord
 ElementSchemaMap = dict[str, PublicSchemaDocument]
 
+_STATISTICAL_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-observed-distribution",
+        "x-polylogue-frequency",
+        "x-polylogue-range",
+        "x-polylogue-array-lengths",
+        "x-polylogue-multiline",
+        "x-polylogue-values",
+    }
+)
 _PROFILE_SAMPLE_LIMIT = 64
 _RESOLUTION_PRIORITY: dict[SchemaResolutionReason, int] = {
     "exact_structure": 3,
@@ -268,20 +281,29 @@ class SchemaRegistry:
         self._catalog_cache: dict[str, SchemaPackageCatalog | None] = {}
         self._schema_cache: dict[SchemaCacheKey, PublicSchemaDocument | None] = {}
         self._workload_profile_cache: dict[WorkloadProfileCacheKey, PublicSchemaDocument | None] = {}
-        # Guards read-check/populate/clear of the three cache dicts above so a
-        # concurrent clear_cache() (e.g. from save_package_catalog()) cannot
-        # land between a reader's membership check and its dict access and
-        # raise KeyError. Construction of cache values (file reads, JSON
-        # parsing, object building) intentionally happens OUTSIDE the lock —
-        # only the dict access itself is serialized, so parallel parse
-        # threads never block on each other's schema-loading I/O, only on the
-        # cheap dict read/write. A redundant miss just re-does the (idempotent)
-        # load; the last writer's value wins the dict slot.
-        self._cache_lock = threading.Lock()
+        self._snapshots: dict[Path, dict[str, bytes]] = {}
+        self._cache_lock = threading.RLock()
+
+    def _snapshot(self, provider_dir: Path) -> dict[str, bytes]:
+        with self._cache_lock:
+            if provider_dir not in self._snapshots:
+                self._snapshots[provider_dir] = read_provider_snapshot(provider_dir)
+            return self._snapshots[provider_dir]
+
+    def _snapshot_json(self, provider_dir: Path, relative: str) -> PublicSchemaDocument | None:
+        payload = self._snapshot(provider_dir).get(relative)
+        if payload is None:
+            return None
+        decoded = gzip.decompress(payload) if relative.endswith(".gz") else payload
+        value = json.loads(decoded)
+        if not isinstance(value, dict):
+            raise ValueError(f"Expected JSON object in {relative}")
+        return {str(key): item for key, item in value.items()}
 
     def clear_cache(self) -> None:
         """Clear internal caches. Call after modifying schema packages."""
         with self._cache_lock:
+            self._snapshots.clear()
             self._catalog_cache.clear()
             self._schema_cache.clear()
             self._workload_profile_cache.clear()
@@ -325,55 +347,28 @@ class SchemaRegistry:
         return self._package_dir(provider, version) / "package.json"
 
     def _provider_dir_for_catalog(self, provider: str) -> Path | None:
-        for provider_dir in self._provider_search_roots(provider):
-            if _catalog_path(provider_dir).exists():
-                return provider_dir
-        return None
+        return next(
+            (root for root in self._provider_search_roots(provider) if "catalog.json" in self._snapshot(root)), None
+        )
 
     def _provider_dir_for_package(self, provider: str, version: str) -> Path | None:
-        for provider_dir in self._provider_search_roots(provider):
-            manifest_path = provider_dir / "versions" / version / "package.json"
-            if manifest_path.exists():
-                return provider_dir
-        return None
+        root = self._provider_dir_for_catalog(provider)
+        return root if root is not None and f"versions/{version}/package.json" in self._snapshot(root) else None
 
     def load_package_catalog(self, provider: str) -> SchemaPackageCatalog | None:
         provider_token = _provider_token(provider)
         with self._cache_lock:
-            if provider_token in self._catalog_cache:
-                return self._catalog_cache[provider_token]
-        provider_dir = self._provider_dir_for_catalog(provider_token)
-        catalog = (
-            SchemaPackageCatalog.from_dict(_read_json_dict(_catalog_path(provider_dir)))
-            if provider_dir is not None
-            else None
-        )
-        with self._cache_lock:
-            self._catalog_cache[provider_token] = catalog
-        return catalog
+            if provider_token not in self._catalog_cache:
+                root = self._provider_dir_for_catalog(provider_token)
+                payload = self._snapshot_json(root, "catalog.json") if root is not None else None
+                self._catalog_cache[provider_token] = (
+                    SchemaPackageCatalog.from_dict(payload) if payload is not None else None
+                )
+            return self._catalog_cache[provider_token]
 
     def _load_local_catalog(self, provider: str) -> SchemaPackageCatalog | None:
-        """Load the catalog written directly at this registry's own storage root.
-
-        Unlike ``load_package_catalog``, this never falls back to the bundled
-        ``SCHEMA_DIR`` package tree. Writers (``write_schema_version``,
-        ``register_schema``) that seed a catalog merge from
-        ``load_package_catalog`` instead of this method silently adopt every
-        *other* version the bundled provider ships -- including versions whose
-        backing element files were never copied to this registry's own
-        ``storage_root`` -- and can recompute ``default_version`` to point at
-        one of them. That is invisible until the bundled catalog gains a new
-        version the local one doesn't know about (as the provider schema
-        promotions that landed alongside this fix did), at which point a
-        registry built purely for local/isolated use (e.g. a test's
-        ``tmp_path``-scoped ``SchemaRegistry``) starts resolving reads through
-        the bundled package instead of the one it was just given.
-        """
-        provider_token = _provider_token(provider)
-        catalog_path = self._catalog_path(provider_token)
-        if not catalog_path.exists():
-            return None
-        return SchemaPackageCatalog.from_dict(_read_json_dict(catalog_path))
+        payload = self._snapshot_json(self._provider_dir(provider), "catalog.json")
+        return SchemaPackageCatalog.from_dict(payload) if payload is not None else None
 
     def save_package_catalog(self, catalog: SchemaPackageCatalog) -> Path:
         provider_token = _provider_token(catalog.provider)
@@ -405,10 +400,9 @@ class SchemaRegistry:
             if cache_key in self._schema_cache:
                 return self._schema_cache[cache_key]
 
-        schema = self._load_element_schema(provider_token, version=version, element_kind=element_kind)
-        with self._cache_lock:
+            schema = self._load_element_schema(provider_token, version=version, element_kind=element_kind)
             self._schema_cache[cache_key] = schema
-        return schema
+            return schema
 
     def _load_element_schema(
         self,
@@ -429,11 +423,7 @@ class SchemaRegistry:
         if provider_dir is None:
             return None
 
-        path = provider_dir / "versions" / package.version / "elements" / element.schema_file
-        if not path.exists():
-            return None
-
-        return _read_gzip_json_dict(path)
+        return self._snapshot_json(provider_dir, f"versions/{package.version}/elements/{element.schema_file}")
 
     def get_schema(self, provider: str, version: str = "default") -> PublicSchemaDocument | None:
         return self.get_element_schema(provider, version=version)
@@ -449,10 +439,9 @@ class SchemaRegistry:
         with self._cache_lock:
             if cache_key in self._workload_profile_cache:
                 return self._workload_profile_cache[cache_key]
-        profile = self._load_workload_profile(provider_token, version=version)
-        with self._cache_lock:
+            profile = self._load_workload_profile(provider_token, version=version)
             self._workload_profile_cache[cache_key] = profile
-        return profile
+            return profile
 
     def _load_workload_profile(self, provider_token: str, *, version: str) -> PublicSchemaDocument | None:
         package = self.get_package(provider_token, version=version)
@@ -461,10 +450,7 @@ class SchemaRegistry:
         provider_dir = self._provider_dir_for_package(provider_token, package.version)
         if provider_dir is None:
             return None
-        path = provider_dir / "versions" / package.version / package.workload_profile_file
-        if not path.exists():
-            return None
-        return _read_gzip_json_dict(path)
+        return self._snapshot_json(provider_dir, f"versions/{package.version}/{package.workload_profile_file}")
 
     def list_versions(self, provider: str) -> list[str]:
         provider_token = _provider_token(provider)
@@ -474,18 +460,11 @@ class SchemaRegistry:
         return sorted((package.version for package in catalog.packages), key=_version_sort_key)
 
     def list_committed_versions(self, provider: str) -> list[str]:
-        """List version directories present in this registry's own storage root.
-
-        Unlike :meth:`list_versions`, this intentionally does not consult a
-        catalog or fall back to the bundled schema tree. Audit callers need to
-        see package manifests and element artifacts that were committed
-        without a catalog or package manifest.
-        """
-        provider_dir = self._committed_provider_dir(provider)
-        versions_dir = provider_dir / "versions"
-        if not versions_dir.is_dir():
-            return []
-        return sorted((path.name for path in versions_dir.iterdir() if path.is_dir()), key=_version_sort_key)
+        snapshot = self._snapshot(self._committed_provider_dir(provider))
+        return sorted(
+            {path.split("/")[1] for path in snapshot if path.startswith("versions/") and path.count("/") >= 2},
+            key=_version_sort_key,
+        )
 
     def list_committed_providers(self) -> list[str]:
         """List provider directories in this registry's own committed tree."""
@@ -498,33 +477,28 @@ class SchemaRegistry:
             if path.is_dir() and (_catalog_path(path).is_file() or bool(self.list_committed_versions(path.name)))
         )
 
+    def read_committed_file(self, provider: str, relative_path: str) -> bytes | None:
+        """Read artifact bytes from the same snapshot as committed catalog queries."""
+        return self._snapshot(self._committed_provider_dir(provider)).get(relative_path)
+
     def load_committed_catalog(self, provider: str) -> SchemaPackageCatalog | None:
-        """Load only the catalog at this registry's own storage root."""
-        path = _catalog_path(self._committed_provider_dir(provider))
-        if not path.is_file():
-            return None
-        return SchemaPackageCatalog.from_dict(_read_json_dict(path))
+        payload = self._snapshot_json(self._committed_provider_dir(provider), "catalog.json")
+        return SchemaPackageCatalog.from_dict(payload) if payload is not None else None
 
     def load_committed_package(self, provider: str, version: str) -> SchemaVersionPackage | None:
-        """Load a package manifest without consulting a catalog or fallback root."""
-        path = self._committed_provider_dir(provider) / "versions" / version / "package.json"
-        if not path.is_file():
-            return None
-        return SchemaVersionPackage.from_dict(_read_json_dict(path))
+        payload = self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/package.json")
+        return SchemaVersionPackage.from_dict(payload) if payload is not None else None
 
     def list_committed_schema_files(self, provider: str, version: str) -> list[str]:
-        """List element schema artifacts in the literal committed package tree."""
-        elements_dir = self._committed_provider_dir(provider) / "versions" / version / "elements"
-        if not elements_dir.is_dir():
-            return []
-        return sorted(path.name for path in elements_dir.glob("*.schema.json.gz") if path.is_file())
+        prefix = f"versions/{version}/elements/"
+        return sorted(
+            path[len(prefix) :]
+            for path in self._snapshot(self._committed_provider_dir(provider))
+            if path.startswith(prefix) and path.endswith(".schema.json.gz")
+        )
 
     def load_committed_schema_file(self, provider: str, version: str, schema_file: str) -> PublicSchemaDocument | None:
-        """Load a schema artifact named by a committed package manifest."""
-        path = self._committed_provider_dir(provider) / "versions" / version / "elements" / schema_file
-        if not path.is_file():
-            return None
-        return _read_gzip_json_dict(path)
+        return self._snapshot_json(self._committed_provider_dir(provider), f"versions/{version}/elements/{schema_file}")
 
     def list_providers(self) -> list[str]:
         providers: set[str] = set()
@@ -575,9 +549,11 @@ class SchemaRegistry:
             )
             schema["x-polylogue-package-version"] = package.version
             schema["x-polylogue-element-kind"] = element.element_kind
-            schema["x-polylogue-registered-at"] = datetime.now(tz=timezone.utc).isoformat()
+            schema.pop("x-polylogue-registered-at", None)
             schema_path = elements_dir / element.schema_file
-            schema_path.write_bytes(gzip.compress(json.dumps(schema, indent=2).encode("utf-8")))
+            schema_path.write_bytes(
+                gzip.compress(json.dumps(schema, indent=2, sort_keys=True).encode("utf-8"), mtime=0)
+            )
 
         if package.workload_profile_file is not None:
             if workload_profile is None:
@@ -658,54 +634,11 @@ class SchemaRegistry:
         return self._read_local_element_schema_file(provider_token, package.version, element.schema_file)
 
     def _read_local_element_schema_file(
-        self,
-        provider_token: str,
-        package_version: str,
-        schema_file: str,
+        self, provider_token: str, package_version: str, schema_file: str
     ) -> PublicSchemaDocument | None:
-        """Read one element schema file given an already-resolved package/element.
-
-        Split out of ``_load_local_element_schema`` so a caller that already
-        holds the catalog and the resolved package/element (e.g.
-        ``_existing_provider_element_schemas``'s loop) reads the schema file
-        directly instead of re-loading and re-parsing the whole catalog JSON
-        per element/version.
-        """
-        path = self._provider_dir(provider_token) / "versions" / package_version / "elements" / schema_file
-        if not path.exists():
-            return None
-        return _read_gzip_json_dict(path)
-
-    def _existing_provider_element_schemas(self, provider_token: str) -> dict[str, PublicSchemaDocument]:
-        """Collect every element schema already committed for this provider, by element_kind.
-
-        Collected across *all* existing versions (not just ``default``) so a
-        full-corpus regeneration guarded by ``replace_provider_packages`` can
-        never narrow a leaf path or type union that any previously committed
-        version observed -- the same monotonic-merge guarantee
-        ``promote_cluster``/``_merge_with_promoted_schema`` already provide
-        for the other promotion surface (``tooling_registry.py``).
-        """
-        catalog = self._load_local_catalog(provider_token)
-        if catalog is None:
-            return {}
-        from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
-
-        merged_by_kind: dict[str, PublicSchemaDocument] = {}
-        for package in catalog.packages:
-            for element in package.elements:
-                if element.schema_file is None:
-                    continue
-                existing = self._read_local_element_schema_file(provider_token, package.version, element.schema_file)
-                if existing is None:
-                    continue
-                prior = merged_by_kind.get(element.element_kind)
-                merged_by_kind[element.element_kind] = (
-                    json_document(merge_observed_structure_schemas([json_document(prior), existing]))
-                    if prior is not None
-                    else existing
-                )
-        return merged_by_kind
+        return self._snapshot_json(
+            self._provider_dir(provider_token), f"versions/{package_version}/elements/{schema_file}"
+        )
 
     @staticmethod
     def _annotate_merged_schema_node(
@@ -714,29 +647,28 @@ class SchemaRegistry:
         existing: PublicSchemaDocument | None,
         candidate: PublicSchemaDocument | None,
     ) -> PublicSchemaDocument:
-        """Recursively reattach ``x-polylogue-*`` annotations onto a structurally merged node.
-
-        ``merge_observed_structure_schemas`` merges only structural keywords
-        (``type``/``properties``/``items``/``additionalProperties`` --
-        its own docstring says "without retaining property history"), so
-        every node of the merged tree comes back with no annotation overlay
-        at all, not just the root. This walks ``merged``/``existing``/
-        ``candidate`` in parallel by matching property name / items /
-        additionalProperties position, preferring the candidate's freshly
-        computed annotations at each node and falling back to the existing
-        package's annotations for that same node when the candidate didn't
-        recompute one (e.g. this run observed the field's type again but
-        didn't rerun semantic-role/format/frequency/distribution inference).
-        """
+        """Preserve qualitative annotations and distinguish current from historical statistics."""
         result: PublicSchemaDocument = dict(merged)
+        candidate_present = candidate is not None
         existing = existing or {}
         candidate = candidate or {}
+        fresh_statistics = "x-polylogue-observed-distribution" in candidate
         for key, value in existing.items():
             if key.startswith("x-polylogue-") and key not in candidate:
+                if fresh_statistics and (
+                    key in _STATISTICAL_ANNOTATIONS
+                    or key in {"x-polylogue-statistics-status", "x-polylogue-observation-status"}
+                ):
+                    continue
                 result[key] = value
         for key, value in candidate.items():
             if key.startswith("x-polylogue-"):
                 result[key] = value
+        if not fresh_statistics and any(key in existing for key in _STATISTICAL_ANNOTATIONS):
+            result["x-polylogue-statistics-status"] = "historical"
+        if not candidate_present:
+            result["x-polylogue-observation-status"] = "historical"
+            result["x-polylogue-frequency"] = 0.0
 
         merged_properties = json_document(merged.get("properties"))
         if merged_properties:
@@ -773,31 +705,12 @@ class SchemaRegistry:
         existing: PublicSchemaDocument | None,
         candidate: PublicSchemaDocument,
     ) -> PublicSchemaDocument:
-        """Union ``candidate`` with a previously committed element schema.
-
-        Same monotonic-merge contract as
-        ``SchemaRegistryToolingMixin._merge_with_promoted_schema``: a
-        provider package records what the provider has been *observed* to
-        emit across every corpus this registry has ever scanned, so a fresh
-        full-corpus regeneration may only ever broaden it, never replace it
-        outright. Without this, a thinner or differently-shaped sample
-        window (fewer sessions, a narrower clustering pass, a corpus subset)
-        silently drops fields and narrows type unions that an earlier run
-        legitimately observed -- measured on 2026-08-01: claude-code lost
-        722 of 944 typed leaf paths, codex narrowed ``timestamp`` from
-        ``["number", "string"]`` back to ``["string"]``, in a single
-        `devtools schema-generate` run with no merge against history.
-        """
+        """Preserve previously observed structure within one schema family."""
         if existing is None:
             return candidate
         from polylogue.schemas.generation.dynamic_keys import merge_observed_structure_schemas
 
         merged = json_document(merge_observed_structure_schemas([json_document(existing), candidate]))
-        # Structural merge owns type/properties/items/additionalProperties
-        # only; the x-polylogue-* annotation overlay is reattached node by
-        # node (not just at the document root) by
-        # _annotate_merged_schema_node, preferring the candidate's fresh
-        # annotations with the existing package's as fallback.
         merged = SchemaRegistry._annotate_merged_schema_node(merged, existing=existing, candidate=candidate)
         for key, value in candidate.items():
             if key in ("$schema", "title"):
@@ -811,89 +724,94 @@ class SchemaRegistry:
         package_schemas: Mapping[str, ElementSchemaMap],
         *,
         package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
+        cluster_manifest: Mapping[str, object] | None = None,
     ) -> None:
-        provider_token = _provider_token(provider)
-        existing_element_schemas = self._existing_provider_element_schemas(provider_token)
-        existing_catalog = self._load_local_catalog(provider_token)
-        existing_elements_by_version: dict[str, dict[str, SchemaElementManifest]] = {}
-        if existing_catalog is not None:
-            for existing_package in existing_catalog.packages:
-                existing_elements_by_version[existing_package.version] = {
-                    element.element_kind: element for element in existing_package.elements
+        """Replace a complete package set while preserving observed family structure."""
+        with self._cache_lock:
+            provider_token = _provider_token(provider)
+            self.clear_cache()
+            existing_catalog = self._load_local_catalog(provider_token)
+            prior_packages = (
+                {package.version: package for package in existing_catalog.packages} if existing_catalog else {}
+            )
+            prepared: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
+            for package in catalog.packages:
+                schemas = package_schemas.get(package.version)
+                if schemas is None:
+                    raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
+                prior = prior_packages.get(package.version)
+                if (
+                    prior is not None
+                    and prior.anchor_profile_family_id
+                    and package.anchor_profile_family_id
+                    and (prior.anchor_kind, prior.anchor_profile_family_id)
+                    != (package.anchor_kind, package.anchor_profile_family_id)
+                ):
+                    raise ValueError(f"Schema version {package.version} already belongs to another structural family")
+                prior_schemas: ElementSchemaMap = {}
+                if prior is not None:
+                    for element in prior.elements:
+                        if element.schema_file is not None:
+                            value = self._read_local_element_schema_file(
+                                provider_token, prior.version, element.schema_file
+                            )
+                            if value is None:
+                                raise ValueError(f"Existing package {provider_token}/{prior.version} is incomplete")
+                            prior_schemas[element.element_kind] = value
+                merged = {
+                    kind: self._merge_element_schema_with_existing(prior_schemas.get(kind), value)
+                    for kind, value in schemas.items()
                 }
-
-        prepared_packages: list[tuple[SchemaVersionPackage, ElementSchemaMap, Mapping[str, object] | None]] = []
-        for package in catalog.packages:
-            element_schemas = package_schemas.get(package.version)
-            if element_schemas is None:
-                raise ValueError(f"Package {provider_token}/{package.version} has no schema mapping")
-            merged_element_schemas: ElementSchemaMap = {
-                element_kind: self._merge_element_schema_with_existing(
-                    existing_element_schemas.get(element_kind), schema
+                elements = list(package.elements)
+                if prior is not None:
+                    for element in prior.elements:
+                        if element.element_kind not in schemas:
+                            if element.element_kind in prior_schemas:
+                                merged[element.element_kind] = prior_schemas[element.element_kind]
+                            elements.append(dataclasses.replace(element, observation_status="historical"))
+                package = dataclasses.replace(package, elements=elements)
+                profile = (
+                    package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
                 )
-                for element_kind, schema in element_schemas.items()
-            }
+                self._preflight_package_write(package, element_schemas=merged, workload_profile=profile)
+                prepared.append((package, merged, profile))
 
-            # A thinner regeneration window can observe zero samples for an
-            # element kind this same version previously committed, so that
-            # kind is absent from `element_schemas` entirely and the merge
-            # loop above never runs for it. Carry it forward unmerged
-            # (pass-through) instead of letting it vanish from the
-            # destructive versions/-tree rewrite below -- the same
-            # destructive-loss bug class ov5r fixed, narrower: whole missing
-            # element kinds rather than narrowed types within an observed
-            # kind. Scoped to kinds this SAME version previously carried
-            # (matching get_element_schema/package.element()'s per-version
-            # lookup) -- a kind that only ever lived on a version this
-            # regeneration dropped entirely is a separate, out-of-scope loss
-            # class (a whole retired version, not a kind within a version).
-            carried_elements = list(package.elements)
-            for element_kind, prior_manifest in existing_elements_by_version.get(package.version, {}).items():
-                if element_kind in element_schemas:
-                    continue
-                carried_schema = existing_element_schemas.get(element_kind)
-                if carried_schema is None:
-                    continue
-                merged_element_schemas[element_kind] = carried_schema
-                carried_elements.append(prior_manifest)
-            if len(carried_elements) != len(package.elements):
-                package = dataclasses.replace(package, elements=carried_elements)
-
-            workload_profile = (
-                package_workload_profiles.get(package.version) if package_workload_profiles is not None else None
+            incoming_versions = {package.version for package, _, _ in prepared}
+            historical_packages = [
+                dataclasses.replace(package, observation_status="historical")
+                for version, package in prior_packages.items()
+                if version not in incoming_versions
+            ]
+            final_catalog = dataclasses.replace(
+                catalog,
+                packages=sorted(
+                    [package for package, _, _ in prepared] + historical_packages,
+                    key=lambda package: _version_sort_key(package.version),
+                ),
             )
-            self._preflight_package_write(
-                package,
-                element_schemas=merged_element_schemas,
-                workload_profile=workload_profile,
-            )
-            prepared_packages.append((package, merged_element_schemas, workload_profile))
-
-        provider_dir = self._provider_dir(provider_token)
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        versions_dir = provider_dir / "versions"
-        if versions_dir.exists():
-            for path in versions_dir.rglob("*"):
-                if path.is_file():
-                    path.unlink()
-            for path in sorted(versions_dir.rglob("*"), reverse=True):
-                if path.is_dir():
-                    path.rmdir()
-        versions_dir.mkdir(parents=True, exist_ok=True)
-
-        for package, element_schemas, workload_profile in prepared_packages:
-            self.write_package(
-                package,
-                element_schemas=element_schemas,
-                workload_profile=workload_profile,
-            )
-        # Persist the (possibly element-carry-forward-augmented) packages,
-        # not the caller's original `catalog.packages` -- otherwise a carried
-        # forward element's schema file is written to disk but the saved
-        # manifest never lists it, so get_element_schema/package.element()
-        # still can't find it.
-        catalog = dataclasses.replace(catalog, packages=[package for package, _, _ in prepared_packages])
-        self.save_package_catalog(catalog)
+            provider_dir = self._provider_dir(provider_token)
+            self.storage_root.mkdir(parents=True, exist_ok=True)
+            baseline = dict(self._snapshot(provider_dir))
+            with tempfile.TemporaryDirectory(prefix=f".{provider_token}.staging-", dir=self.storage_root) as temporary:
+                staging_root = Path(temporary)
+                staged_provider = staging_root / provider_token
+                if provider_dir.exists():
+                    shutil.copytree(provider_dir, staged_provider)
+                else:
+                    staged_provider.mkdir()
+                staged_registry = type(self)(storage_root=staging_root)
+                for package, schemas, profile in prepared:
+                    staged_registry.write_package(package, element_schemas=schemas, workload_profile=profile)
+                for package in historical_packages:
+                    manifest_path = staged_registry._package_manifest_path(provider_token, package.version)
+                    manifest_path.write_text(json.dumps(package.to_dict(), indent=2), encoding="utf-8")
+                staged_registry.save_package_catalog(final_catalog)
+                if cluster_manifest is not None:
+                    (staged_provider / "manifest.json").write_text(
+                        json.dumps(dict(cluster_manifest), indent=2, sort_keys=True), encoding="utf-8"
+                    )
+                publish_provider_tree(staged_provider, provider_dir, expected_snapshot=baseline)
+            self.clear_cache()
 
     def _single_element_package(
         self,
@@ -944,11 +862,13 @@ class SchemaRegistry:
         *,
         element_kind: str = "session_document",
     ) -> str:
-        provider_token = _provider_token(provider)
-        versions = self.list_versions(provider_token)
-        new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
-        self.write_schema_version(provider_token, new_version, schema, element_kind=element_kind)
-        return new_version
+        with self._cache_lock:
+            self.clear_cache()
+            provider_token = _provider_token(provider)
+            versions = self.list_versions(provider_token)
+            new_version = f"v{int(versions[-1][1:]) + 1}" if versions else "v1"
+            self.write_schema_version(provider_token, new_version, schema, element_kind=element_kind)
+            return new_version
 
     def write_schema_version(
         self,
@@ -958,26 +878,31 @@ class SchemaRegistry:
         *,
         element_kind: str = "session_document",
     ) -> Path:
-        provider_token = _provider_token(provider)
-        package, schemas = self._single_element_package(
-            provider_token,
-            version=version,
-            schema=copy.deepcopy(dict(schema)),
-            element_kind=element_kind,
-        )
-        catalog = self._load_local_catalog(provider_token) or SchemaPackageCatalog(provider=provider_token)
-        existing_packages = [item for item in catalog.packages if item.version != version]
-        existing_packages.append(package)
-        existing_packages.sort(key=lambda item: _version_sort_key(item.version))
-        catalog.packages = existing_packages
-        catalog.latest_version = existing_packages[-1].version if existing_packages else version
-        catalog.default_version = catalog.latest_version
-        catalog.recommended_version = catalog.latest_version
-        self.write_package(package, element_schemas=schemas)
-        self.save_package_catalog(catalog)
-        return (
-            self._package_dir(provider_token, version) / "elements" / f"{package.default_element_kind}.schema.json.gz"
-        )
+        with self._cache_lock:
+            provider_token = _provider_token(provider)
+            package, schemas = self._single_element_package(
+                provider_token,
+                version=version,
+                schema=copy.deepcopy(dict(schema)),
+                element_kind=element_kind,
+            )
+            self.clear_cache()
+            prior_catalog = self._load_local_catalog(provider_token)
+            versions = [item.version for item in prior_catalog.packages] if prior_catalog else []
+            latest_version = max([*versions, version], key=_version_sort_key)
+            catalog = SchemaPackageCatalog(
+                provider=provider_token,
+                packages=[package],
+                latest_version=latest_version,
+                default_version=latest_version,
+                recommended_version=latest_version,
+            )
+            self.replace_provider_packages(provider_token, catalog, {version: schemas})
+            return (
+                self._package_dir(provider_token, version)
+                / "elements"
+                / f"{package.default_element_kind}.schema.json.gz"
+            )
 
     def _package_rank(self, catalog: SchemaPackageCatalog) -> dict[str, int]:
         return {package.version: index for index, package in enumerate(self._ranked_packages(catalog))}

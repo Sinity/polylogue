@@ -196,13 +196,6 @@ GATES: tuple[Gate, ...] = (
         label="gate schema-roundtrip",
     ),
     Gate(
-        "schema-inference-gate",
-        "Run the read-only schema-inference prerequisite and persist a PASS/FAIL receipt.",
-        "module",
-        ("devtools.schema_inference_gate",),
-        label="gate schema-inference-gate",
-    ),
-    Gate(
         "population-coverage",
         "Verify every origin, detector route, and artifact kind in the source inventory is declared and witnessed.",
         "module",

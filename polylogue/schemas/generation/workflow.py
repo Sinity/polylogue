@@ -2,21 +2,28 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
+from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument
+from polylogue.paths import cache_home
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
     write_archive_workload_profile,
 )
+from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
-from polylogue.schemas.generation.schema_builder import generate_schema_from_samples
-from polylogue.schemas.observation import PROVIDERS
+from polylogue.schemas.generation.provider_bundle_packages import allocate_package_versions
+from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence, generate_schema_from_samples
+from polylogue.schemas.observation import PROVIDERS, resolve_provider_config
+from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.privacy_config import SchemaPrivacyConfig
-from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
 from polylogue.schemas.runtime_registry import ElementSchemaMap
+from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
 
 
 def _package_schemas(bundle: _ProviderBundle) -> dict[str, ElementSchemaMap]:
@@ -43,8 +50,8 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
         bundle.catalog,
         _package_schemas(bundle),
         package_workload_profiles=_package_workload_profiles(bundle),
+        cluster_manifest=bundle.manifest.to_dict(),
     )
-    registry.save_cluster_manifest(bundle.manifest)
 
     for old_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
         old_path = output_dir / old_name
@@ -69,6 +76,128 @@ def generate_provider_schema(
         full_corpus=full_corpus,
         progress_callback=progress_callback,
     ).result
+
+
+def generate_provider_schema_from_sources(
+    provider: str,
+    *,
+    source_inputs: tuple[SchemaSourceInput, ...],
+    cache_path: Path | None,
+    max_workers: int,
+    privacy_config: SchemaPrivacyConfig | None,
+    progress_callback: GenerationProgressCallback | None = None,
+) -> GenerationResult:
+    """Preview the same package bundle used by source commit."""
+    return build_provider_bundle_from_sources(
+        provider,
+        source_inputs=source_inputs,
+        cache_path=cache_path,
+        max_workers=max_workers,
+        privacy_config=privacy_config,
+        prior_catalog=None,
+        progress_callback=progress_callback,
+    ).result
+
+
+def build_provider_bundle_from_sources(
+    provider: str,
+    *,
+    source_inputs: tuple[SchemaSourceInput, ...],
+    cache_path: Path | None,
+    max_workers: int,
+    privacy_config: SchemaPrivacyConfig | None,
+    prior_catalog: SchemaPackageCatalog | None,
+    progress_callback: GenerationProgressCallback | None = None,
+) -> _ProviderBundle:
+    """Build a multi-element package with identity independent of statistics."""
+    inputs = tuple(item for item in source_inputs if item.provider == provider)
+    if not inputs:
+        return _ProviderBundle(
+            GenerationResult(provider=provider, schema=None, sample_count=0, error="No declared source inputs")
+        )
+    if progress_callback is not None:
+        progress_callback("source_inventory", {"state": "started"})
+    source = infer_sources(
+        inputs,
+        cache_path=cache_path or cache_home() / "schema-source-evidence.sqlite3",
+        max_workers=max_workers,
+        progress=progress_callback,
+    )
+    evidence_by_kind = {
+        kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)
+        for kind, rows in source.evidence_by_element.items()
+    }
+    if not evidence_by_kind:
+        return _ProviderBundle(
+            GenerationResult(
+                provider=provider,
+                schema=None,
+                sample_count=0,
+                error="No source evidence",
+                phase_receipt={"source": source.provenance()},
+            )
+        )
+    emitted: dict[str, JSONDocument] = {}
+    reports = {}
+    for kind, evidence in evidence_by_kind.items():
+        emitted[kind], reports[kind] = emit_schema_from_evidence(
+            provider, resolve_provider_config(provider), evidence, privacy_config=privacy_config, artifact_kind=kind
+        )
+    anchor = "session_document" if "session_document" in emitted else sorted(emitted)[0]
+    family = hash_payload({"anchor": anchor, "structure": evidence_by_kind[anchor].structure})
+    version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
+    now = datetime.now(tz=timezone.utc).isoformat()
+    prior = next((item for item in prior_catalog.packages if item.version == version), None) if prior_catalog else None
+    first_seen = prior.first_seen if prior is not None else now
+    counts = {kind: evidence.current_record_count for kind, evidence in evidence_by_kind.items()}
+    elements = [
+        SchemaElementManifest(
+            element_kind=kind,
+            schema_file=f"{kind}.schema.json.gz",
+            sample_count=evidence.current_record_count,
+            artifact_count=evidence.current_source_count,
+            bundle_scope_count=evidence.current_source_count,
+            observed_artifact_count=evidence.current_source_count,
+            first_seen=first_seen,
+            last_seen=now,
+        )
+        for kind, evidence in sorted(evidence_by_kind.items())
+    ]
+    package = SchemaVersionPackage(
+        provider=provider,
+        version=version,
+        anchor_kind=anchor,
+        default_element_kind=anchor,
+        first_seen=first_seen,
+        last_seen=now,
+        bundle_scope_count=evidence_by_kind[anchor].current_source_count,
+        sample_count=counts[anchor],
+        anchor_profile_family_id=family,
+        elements=elements,
+    )
+    catalog = SchemaPackageCatalog(
+        provider=provider,
+        packages=[package],
+        latest_version=version,
+        default_version=version,
+        recommended_version=version,
+        observation_outcomes=source.provenance(),
+    )
+    manifest = ClusterManifest(provider=provider, artifact_counts=counts, default_version=version)
+    result = GenerationResult(
+        provider=provider,
+        schema=emitted[anchor],
+        sample_count=counts[anchor],
+        redaction_report=reports[anchor],
+        versions=[version],
+        default_version=version,
+        package_count=1,
+        artifact_counts=counts,
+        phase_receipt={"source": source.provenance()},
+    )
+    if progress_callback is not None:
+        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
+    return _ProviderBundle(result, catalog=catalog, package_schemas={version: emitted}, manifest=manifest)
 
 
 def generate_all_schemas(
