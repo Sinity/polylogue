@@ -94,17 +94,20 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             )
 
     if request.source_inputs:
-        from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
+        from polylogue.schemas.generation.workflow import (
+            build_provider_bundle_from_sources,
+            persist_generated_provider_bundle,
+        )
 
-        generation_results = [
-            generate_provider_schema_from_sources(
-                request.provider,
-                source_inputs=request.source_inputs,
-                cache_path=request.source_cache_path,
-                max_workers=request.source_workers,
-                privacy_config=privacy_config_from_payload(request.privacy_config),
-            )
-        ]
+        source_bundle = build_provider_bundle_from_sources(
+            request.provider,
+            source_inputs=request.source_inputs,
+            cache_path=request.source_cache_path,
+            max_workers=request.source_workers,
+            privacy_config=privacy_config_from_payload(request.privacy_config),
+            prior_catalog=SchemaRegistry(storage_root=output_dir).load_package_catalog(provider_token),
+        )
+        generation_results = [source_bundle.result]
     else:
         generation_results = generate_all_schemas(
             output_dir,
@@ -126,8 +129,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     handoff: SchemaInferenceReceipt | None = None
     registry_after: SchemaRegistry | None = None
     if generation.success:
-        if request.source_inputs and generation.schema is not None:
-            SchemaRegistry(storage_root=output_dir).register_schema(provider_token, generation.schema)
+        if request.source_inputs:
+            persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
         registry_after = SchemaRegistry(storage_root=output_dir)
         catalog_after = registry_after.load_package_catalog(provider_token)
         if catalog_after is not None:
