@@ -24,6 +24,7 @@ from polylogue.core.provider_identity import normalize_provider_token
 from polylogue.core.schema_subjects import SCHEMA_PACKAGE_DIRECTORIES, SCHEMA_SUBJECTS
 from polylogue.paths import data_home
 from polylogue.schemas.generation.dynamic_keys import (
+    is_source_structure_witness,
     legacy_structure_schema_digest,
     observed_structure_schema,
     retain_exact_structure_witnesses,
@@ -91,11 +92,6 @@ def _string_list(value: object) -> list[str]:
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str)]
-
-
-def _is_source_structure_witness(value: str) -> bool:
-    """Identify the full SHA-256 witnesses emitted from source evidence."""
-    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def _structure_witnesses(samples: Sequence[object]) -> tuple[tuple[str, ...], ...]:
@@ -766,8 +762,8 @@ class SchemaRegistry:
                 *_string_list(incoming_schema.get("x-polylogue-exact-structure-ids", [])),
             ]
             incoming_omitted_count = max(
-                element.omitted_current_structure_witness_count,
-                _int_value(incoming_schema.get("x-polylogue-omitted-current-structure-witness-count", 0)),
+                element.publication_omitted_structure_witness_count,
+                _int_value(incoming_schema.get("x-polylogue-publication-omitted-structure-witness-count", 0)),
             )
             prior_ids = [
                 *(previous_element.exact_structure_ids if previous_element is not None else ()),
@@ -775,18 +771,26 @@ class SchemaRegistry:
             ]
             retained = retain_exact_structure_witnesses(prior_ids, current_ids)
             omitted_count = incoming_omitted_count + retained.omitted_current_witness_count
+            evidence_loss = max(
+                element.source_evidence_unretained_shape_observation_lower_bound,
+                _int_value(
+                    incoming_schema.get("x-polylogue-source-evidence-unretained-shape-observation-lower-bound", 0)
+                ),
+            )
             has_witness_metadata = bool(current_ids or prior_ids)
             elements.append(
                 dataclasses.replace(
                     element,
                     exact_structure_ids=list(retained.exact_structure_ids),
-                    omitted_current_structure_witness_count=omitted_count,
+                    publication_omitted_structure_witness_count=omitted_count,
+                    source_evidence_unretained_shape_observation_lower_bound=evidence_loss,
                 )
             )
             if has_witness_metadata and kind in merged:
                 synchronized = dict(merged[kind])
                 synchronized["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
-                synchronized["x-polylogue-omitted-current-structure-witness-count"] = omitted_count
+                synchronized["x-polylogue-publication-omitted-structure-witness-count"] = omitted_count
+                synchronized["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] = evidence_loss
                 merged[kind] = synchronized
         return dataclasses.replace(package, elements=elements), merged
 
@@ -822,6 +826,15 @@ class SchemaRegistry:
                     != (package.anchor_kind, package.anchor_profile_family_id)
                 ):
                     raise ValueError(f"Schema version {package.version} already belongs to another structural family")
+                if prior is not None and prior.canonical_anchor_profile_family_id is not None:
+                    if package.canonical_anchor_profile_family_id not in (
+                        None,
+                        prior.canonical_anchor_profile_family_id,
+                    ):
+                        raise ValueError(f"Schema version {package.version} already has another canonical family")
+                    package = dataclasses.replace(
+                        package, canonical_anchor_profile_family_id=prior.canonical_anchor_profile_family_id
+                    )
                 prior_schemas: ElementSchemaMap = {}
                 if prior is not None:
                     for element in prior.elements:
@@ -878,6 +891,7 @@ class SchemaRegistry:
                     key=lambda package: _version_sort_key(package.version),
                 ),
             )
+            final_catalog.family_versions()
             provider_dir = self._provider_dir(provider_token)
             self.storage_root.mkdir(parents=True, exist_ok=True)
             baseline = dict(self._snapshot(provider_dir))
@@ -1054,7 +1068,7 @@ class SchemaRegistry:
         observed_profile_tokens = set(observation.profile_tokens)
         source_witnesses: tuple[tuple[str, ...], ...] = ()
         if any(
-            _is_source_structure_witness(structure_id)
+            is_source_structure_witness(structure_id)
             for package in packages
             if (element := package.element(observation.artifact_kind)) is not None
             for structure_id in element.exact_structure_ids

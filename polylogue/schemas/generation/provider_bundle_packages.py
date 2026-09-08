@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 from polylogue.core.enums import Provider
@@ -64,17 +64,18 @@ class ProviderCatalogArtifacts:
 def allocate_package_versions(
     prior_catalog: SchemaPackageCatalog | None,
     families: Sequence[tuple[str, str]],
+    *,
+    legacy_family_ids: Mapping[tuple[str, str], str] | None = None,
 ) -> list[str]:
     """Keep inferred family labels stable as new families arrive."""
     prior = prior_catalog.packages if prior_catalog is not None else []
-    by_family: dict[tuple[str, str], str] = {}
+    by_family = prior_catalog.family_versions() if prior_catalog is not None else {}
+    unmigrated = {
+        (package.anchor_kind, package.anchor_profile_family_id): package.version
+        for package in prior
+        if package.anchor_profile_family_id and package.canonical_anchor_profile_family_id is None
+    }
     used = {package.version for package in prior}
-    for package in prior:
-        if package.anchor_profile_family_id:
-            key = (package.anchor_kind, package.anchor_profile_family_id)
-            previous = by_family.setdefault(key, package.version)
-            if previous != package.version:
-                raise ValueError(f"Schema family has conflicting version labels: {previous}, {package.version}")
     next_number = (
         max(
             (int(version[1:]) for version in used if version.startswith("v") and version[1:].isdigit()),
@@ -86,6 +87,8 @@ def allocate_package_versions(
     for family in sorted(set(families)):
         if family in by_family:
             assigned[family] = by_family[family]
+        elif legacy_family_ids is not None and (family[0], legacy_family_ids.get(family, "")) in unmigrated:
+            assigned[family] = unmigrated[(family[0], legacy_family_ids[family])]
         else:
             while f"v{next_number}" in used:
                 next_number += 1
@@ -94,6 +97,8 @@ def allocate_package_versions(
             next_number += 1
     if len(set(families)) != len(families):
         raise ValueError("Schema generation produced duplicate family packages")
+    if len(set(assigned.values())) != len(assigned):
+        raise ValueError("Schema generation assigned multiple families to one version")
     return [assigned[family] for family in families]
 
 
