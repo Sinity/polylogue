@@ -152,6 +152,10 @@ class FieldStats:
 
     def observe_equality_value(self, value: str, *, session_id: str | None = None) -> None:
         """Retain a bounded, private equality witness without retaining prose."""
+        if value.lower() in _SAFE_STRUCTURAL_VALUES:
+            self.safe_observed_values[value] += 1
+        if "/" in value:
+            self.slash_value_count += 1
         digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).hexdigest()
         if digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
             largest = max(self.equality_hash_counts)
@@ -169,10 +173,6 @@ class FieldStats:
                 tokens.add(token)
             else:
                 self.truncated_evidence["equality_sessions"] += 1
-        if value in _SAFE_STRUCTURAL_VALUES:
-            self.safe_observed_values[value] += 1
-        if "/" in value:
-            self.slash_value_count += 1
 
     @property
     def frequency(self) -> float:

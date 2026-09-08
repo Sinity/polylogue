@@ -9,8 +9,8 @@ _FK_MATCH_THRESHOLD = 0.6
 
 
 def _equality_values(field_stats: FieldStats) -> set[str]:
-    """Use raw values while collecting and bounded private hashes after reload."""
-    return set(field_stats.observed_values) or set(field_stats.equality_hash_counts)
+    """Combine raw/safe values with bounded private hashes across reloads."""
+    return set(field_stats.observed_values) | set(field_stats.equality_hash_counts)
 
 
 def detect_foreign_keys(stats: dict[str, FieldStats]) -> list[ForeignKeyRelation]:

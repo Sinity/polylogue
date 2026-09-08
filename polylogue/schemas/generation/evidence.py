@@ -61,6 +61,24 @@ def _schema_digest(schema: JSONDocument) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def _observe_shape_hash(hashes: set[str], structure: JSONDocument) -> int:
+    """Retain one shape hash and return a lower-bound increment beyond the cap."""
+    digest = _schema_digest(structure)
+    if digest in hashes:
+        return 0
+    if len(hashes) < _SHAPE_HASH_CAP:
+        hashes.add(digest)
+        return 0
+    return 1
+
+
+def _bounded_shape_evidence(structures: Iterable[JSONDocument]) -> tuple[tuple[str, ...], int]:
+    """Retain shape hashes and a lower bound for observations beyond the cap."""
+    hashes: set[str] = set()
+    unretained_observations = sum(_observe_shape_hash(hashes, structure) for structure in structures)
+    return tuple(sorted(hashes)), unretained_observations
+
+
 @dataclass(frozen=True)
 class SchemaEvidence:
     """A serializable sufficient-statistics summary with no source records."""
@@ -74,7 +92,7 @@ class SchemaEvidence:
     historical_source_count: int
     historical_record_count: int
     shape_hashes: tuple[str, ...] = ()
-    shape_hash_overflow: int = 0
+    unretained_shape_observation_lower_bound: int = 0
 
     @property
     def field_stats(self) -> dict[str, FieldStats]:
@@ -98,7 +116,7 @@ class SchemaEvidence:
                 "historical_sources": self.historical_source_count,
                 "historical_records": self.historical_record_count,
                 "distinct_shapes": len(self.shape_hashes),
-                "distinct_shapes_overflow": self.shape_hash_overflow,
+                "unretained_shape_observation_lower_bound": self.unretained_shape_observation_lower_bound,
             },
             "shape_hashes": list(self.shape_hashes),
         }
@@ -131,7 +149,12 @@ class SchemaEvidence:
             historical_source_count=_state_int(denominators.get("historical_sources", 0)),
             historical_record_count=_state_int(denominators.get("historical_records", 0)),
             shape_hashes=tuple(sorted(value for value in shape_hashes if isinstance(value, str))[:_SHAPE_HASH_CAP]),
-            shape_hash_overflow=_state_int(denominators.get("distinct_shapes_overflow", 0)),
+            unretained_shape_observation_lower_bound=_state_int(
+                denominators.get(
+                    "unretained_shape_observation_lower_bound",
+                    denominators.get("distinct_shapes_overflow", 0),
+                )
+            ),
         )
 
 
@@ -149,21 +172,16 @@ def collect_source_evidence(
     """
     structure: JSONDocument = {}
     shape_hashes: set[str] = set()
-    shape_overflow = 0
+    unretained_shape_observation_lower_bound = 0
     record_count = 0
 
     def records_for_stats() -> Iterable[SchemaInput]:
-        nonlocal structure, shape_overflow, record_count
+        nonlocal structure, record_count, unretained_shape_observation_lower_bound
         for record in observation.records:
             record_count += 1
             record_structure = observed_structure_schema(record)
             structure = _merge_structure(structure, record_structure)
-            digest = _schema_digest(record_structure)
-            if digest not in shape_hashes:
-                if len(shape_hashes) < _SHAPE_HASH_CAP:
-                    shape_hashes.add(digest)
-                else:
-                    shape_overflow += 1
+            unretained_shape_observation_lower_bound += _observe_shape_hash(shape_hashes, record_structure)
             if isinstance(record, Mapping):
                 yield record
 
@@ -183,7 +201,7 @@ def collect_source_evidence(
         historical_source_count=int(not current),
         historical_record_count=record_count if not current else 0,
         shape_hashes=tuple(sorted(shape_hashes)),
-        shape_hash_overflow=shape_overflow,
+        unretained_shape_observation_lower_bound=unretained_shape_observation_lower_bound,
     )
 
 
@@ -226,7 +244,9 @@ def collect_sample_evidence(
         observed_ats=observed_ats,
         dynamic_paths=dynamic_object_paths(structure),
     )
-    hashes = sorted({_schema_digest(observed_structure_schema(sample)) for sample in samples})
+    hashes, unretained_shape_observation_lower_bound = _bounded_shape_evidence(
+        observed_structure_schema(sample) for sample in samples
+    )
     return SchemaEvidence(
         current_structure=raw_structure,
         historical_structure={},
@@ -236,8 +256,8 @@ def collect_sample_evidence(
         current_record_count=len(samples),
         historical_source_count=0,
         historical_record_count=0,
-        shape_hashes=tuple(hashes[:_SHAPE_HASH_CAP]),
-        shape_hash_overflow=max(0, len(hashes) - _SHAPE_HASH_CAP),
+        shape_hashes=hashes,
+        unretained_shape_observation_lower_bound=unretained_shape_observation_lower_bound,
     )
 
 
@@ -254,7 +274,9 @@ def merge_evidence(evidence: Iterable[SchemaEvidence]) -> SchemaEvidence:
     current_record_count = sum(item.current_record_count for item in ordered)
     fields = merge_field_stats((item.field_stats for item in ordered), total_samples=current_record_count)
     shape_hashes = sorted({digest for item in ordered for digest in item.shape_hashes})
-    overflow = sum(item.shape_hash_overflow for item in ordered) + max(0, len(shape_hashes) - _SHAPE_HASH_CAP)
+    unretained_shape_observation_lower_bound = sum(
+        item.unretained_shape_observation_lower_bound for item in ordered
+    ) + max(0, len(shape_hashes) - _SHAPE_HASH_CAP)
     return SchemaEvidence(
         current_structure=current_structure,
         historical_structure=historical_structure,
@@ -265,7 +287,7 @@ def merge_evidence(evidence: Iterable[SchemaEvidence]) -> SchemaEvidence:
         historical_source_count=sum(item.historical_source_count for item in ordered),
         historical_record_count=sum(item.historical_record_count for item in ordered),
         shape_hashes=tuple(shape_hashes[:_SHAPE_HASH_CAP]),
-        shape_hash_overflow=overflow,
+        unretained_shape_observation_lower_bound=unretained_shape_observation_lower_bound,
     )
 
 
