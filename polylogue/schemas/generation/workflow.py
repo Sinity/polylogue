@@ -13,6 +13,7 @@ from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
     write_archive_workload_profile,
 )
+from polylogue.schemas.generation.cluster_support import _artifact_priority
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
@@ -137,13 +138,19 @@ def build_provider_bundle_from_sources(
                 phase_receipt={"source": source.provenance()},
             )
         )
+    config = resolve_provider_config(provider)
     emitted: dict[str, JSONDocument] = {}
     reports = {}
     for kind, evidence in evidence_by_kind.items():
         emitted[kind], reports[kind] = emit_schema_from_evidence(
-            provider, resolve_provider_config(provider), evidence, privacy_config=privacy_config, artifact_kind=kind
+            provider, config, evidence, privacy_config=privacy_config, artifact_kind=kind
         )
-    anchor = "session_document" if "session_document" in emitted else sorted(emitted)[0]
+    preferred_anchor = "session_record_stream" if config.sample_granularity == "record" else "session_document"
+    anchor = (
+        preferred_anchor
+        if preferred_anchor in emitted
+        else max(emitted, key=lambda kind: (_artifact_priority(kind), kind))
+    )
     family = hash_payload({"anchor": anchor, "structure": evidence_by_kind[anchor].structure})
     version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
     now = datetime.now(tz=timezone.utc).isoformat()
