@@ -42,7 +42,7 @@ def _read_provider_tree(provider_dir: Path) -> dict[str, bytes]:
         relative = path.relative_to(provider_dir).as_posix()
         if path.is_dir():
             snapshot[f"{relative}/"] = b""
-        elif path.is_file() and (path.suffix == ".json" or path.name.endswith(".json.gz")):
+        elif path.is_file():
             snapshot[relative] = path.read_bytes()
     return snapshot
 
