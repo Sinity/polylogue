@@ -273,6 +273,51 @@ def test_antigravity_non_json_inputs_are_counted_with_declared_terminal_reasons(
     assert result.input_bytes == conversation.stat().st_size + brain.stat().st_size
 
 
+def test_changed_source_between_evidence_passes_is_excluded_while_stable_peer_survives(tmp_path: Path) -> None:
+    """Anti-vacuity: accepting first-pass evidence after a source rewrite mixes revisions."""
+    stable = tmp_path / "stable.jsonl"
+    changing = tmp_path / "changing.jsonl"
+
+    def write_source(path: Path, session_id: str, content: str) -> None:
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": session_id,
+                    "version": "1.2.3",
+                    "message": {"role": "user", "content": content},
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    write_source(stable, "stable", "stable source")
+    write_source(changing, "changing", "first revision")
+    mutated = False
+
+    def mutate_after_preliminary(phase: str, _payload: JSONDocument) -> None:
+        nonlocal mutated
+        if phase == "reduce" and not mutated:
+            write_source(changing, "changing", "second revision")
+            mutated = True
+
+    result = infer_sources(
+        (SchemaSourceInput("claude-code", tmp_path),),
+        cache_path=tmp_path / "source-cache.sqlite3",
+        max_workers=1,
+        progress=mutate_after_preliminary,
+    )
+    evidence = merge_evidence(
+        SchemaEvidence.from_json(item) for item in result.evidence_by_element["session_record_stream"]
+    )
+
+    assert mutated
+    assert result.terminal_counts == {"changed_during_read": 1, "included": 1}
+    assert result.terminal_reason_counts == {"changed_during_read": 1}
+    assert evidence.current_source_count == 1
+
+
 def test_source_chunking_matches_single_record_reduction_and_bounds_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
