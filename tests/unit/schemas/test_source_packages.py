@@ -33,6 +33,7 @@ def source_result(*, records: int) -> SourceInferenceResult:
         producer_version_counts={},
         producer_version_missing_sources=1,
         producer_version_conflicting_sources=0,
+        input_manifest_digest="a" * 64,
     )
 
 
