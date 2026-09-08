@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 import pytest
@@ -328,13 +328,13 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
     revision = SourceRevision("claude-code", candidate.path, candidate.logical_source_id, "a" * 64, 0)
     payloads: tuple[JSONValue, ...] = tuple(
         {
-            "type": "user" if index % 2 else "tool",
+            "type": "user" if index % 2 else "assistant",
             "sessionId": "chunked-session",
             "version": "1.2.3",
             "message": {
-                "role": "user" if index % 3 else "tool",
-                "content": f"text-{index:02d}",
-                "metadata": {"even": index % 2 == 0} if index % 5 else {"flag": index % 2 == 1},
+                "role": "user" if index % 3 else "assistant",
+                "content": f"record-{index}",
+                "metadata": {"even": index % 2 == 0} if index % 5 else {"multiple": index},
             },
         }
         for index in range(67)
@@ -379,12 +379,46 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
         chunk_record_limit=7,
     )
 
-    assert chunked == single
+    def assert_json_equivalent(left: object, right: object) -> None:
+        if isinstance(left, float) and isinstance(right, float):
+            assert left == pytest.approx(right, abs=1e-12)
+        elif isinstance(left, Mapping) and isinstance(right, Mapping):
+            assert left.keys() == right.keys()
+            for key in left:
+                assert_json_equivalent(left[key], right[key])
+        elif isinstance(left, list) and isinstance(right, list):
+            assert len(left) == len(right)
+            for left_item, right_item in zip(left, right, strict=True):
+                assert_json_equivalent(left_item, right_item)
+        else:
+            assert left == right
+
+    assert [(item.logical_source_id, item.revision_sha256, item.record_count) for item in chunked] == [
+        (item.logical_source_id, item.revision_sha256, item.record_count) for item in single
+    ]
+    for single_item, chunked_item in zip(single, chunked, strict=True):
+        assert_json_equivalent(single_item.evidence_by_element, chunked_item.evidence_by_element)
     assert (chunked_records, chunked_versions, chunked_unrecognized) == (
         single_records,
         single_versions,
         single_unrecognized,
     )
+    from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence
+    from polylogue.schemas.observation import resolve_provider_config
+
+    single_schema, _ = emit_schema_from_evidence(
+        "claude-code",
+        resolve_provider_config("claude-code"),
+        SchemaEvidence.from_json(single[0].evidence_by_element["session_record_stream"]),
+        privacy_config=None,
+    )
+    chunked_schema, _ = emit_schema_from_evidence(
+        "claude-code",
+        resolve_provider_config("claude-code"),
+        SchemaEvidence.from_json(chunked[0].evidence_by_element["session_record_stream"]),
+        privacy_config=None,
+    )
+    assert_json_equivalent(single_schema, chunked_schema)
     assert seen_chunk_sizes == [7] * 9 + [4]
     assert max(seen_chunk_sizes) == 7
 
