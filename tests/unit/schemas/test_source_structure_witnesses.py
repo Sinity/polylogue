@@ -563,3 +563,119 @@ def test_source_shape_loss_is_published_separately_from_package_budget(
     assert schema is not None
     assert schema["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] == 10
     assert schema["x-polylogue-publication-omitted-structure-witness-count"] == 0
+
+    old_structure = evidence.structure
+    evidence = collect_source_evidence(
+        SourceObservation(
+            "synthetic",
+            "b" * 64,
+            "gemini-cli",
+            "session_record_stream",
+            [{**{f"field_{index}": True for index in range(512)}, "extra_field": True}, {}],
+        ),
+        include_statistics=False,
+    )
+    assert evidence.structure == old_structure
+    assert evidence.unretained_shape_observation_lower_bound == 0
+    prior_package = catalog.packages[0]
+    catalog.packages[0] = replace(
+        prior_package,
+        elements=[
+            replace(
+                prior_package.elements[0],
+                publication_omitted_structure_witness_count=3,
+            )
+        ],
+    )
+    refreshed = build_provider_bundle_from_sources(
+        "gemini-cli",
+        source_inputs=inputs,
+        cache_path=tmp_path / "cache.sqlite3",
+        max_workers=1,
+        privacy_config=None,
+        prior_catalog=catalog,
+    )
+    assert refreshed.catalog is not None
+    package = refreshed.catalog.packages[0]
+    assert package.version == prior_package.version
+    assert package.elements[0].source_evidence_unretained_shape_observation_lower_bound == 10
+    assert package.elements[0].publication_omitted_structure_witness_count == 3
+    for _ in range(2):
+        persist_generated_provider_bundle(output, "gemini-cli", refreshed)
+    retained_catalog = SchemaRegistry(storage_root=output).load_package_catalog("gemini-cli")
+    assert retained_catalog is not None
+    assert retained_catalog.packages[0].elements[0].source_evidence_unretained_shape_observation_lower_bound == 10
+    assert retained_catalog.packages[0].elements[0].publication_omitted_structure_witness_count == 3
+
+
+@pytest.mark.parametrize("canonical_zero", [False, True])
+def test_legacy_omission_metadata_migrates_on_publication(tmp_path: Path, canonical_zero: bool) -> None:
+    """A parent-produced count survives migration; explicit canonical zero takes precedence."""
+    provider = "synthetic-counter-migration"
+    witnesses = [f"{index:064x}" for index in range(1_024)]
+    payload = _package(provider, "v1", witnesses).to_dict()
+    rows = payload["elements"]
+    assert isinstance(rows, list) and isinstance(rows[0], dict)
+    rows[0]["omitted_current_structure_witness_count"] = 7
+    if not canonical_zero:
+        rows[0].pop("publication_omitted_structure_witness_count")
+    package = SchemaVersionPackage.from_dict(payload)
+    expected = 0 if canonical_zero else 7
+    assert package.elements[0].publication_omitted_structure_witness_count == expected
+    schema = _source_schema(witnesses)
+    schema["x-polylogue-omitted-current-structure-witness-count"] = 7
+    if canonical_zero:
+        schema["x-polylogue-publication-omitted-structure-witness-count"] = 0
+    SchemaRegistry(storage_root=tmp_path).replace_provider_packages(
+        provider, _catalog(provider, [package]), {"v1": {"session_record_stream": schema}}
+    )
+    fresh = SchemaRegistry(storage_root=tmp_path)
+    catalog = fresh.load_package_catalog(provider)
+    assert catalog is not None
+    restored = catalog.packages[0].elements[0]
+    assert restored.publication_omitted_structure_witness_count == expected
+    assert "omitted_current_structure_witness_count" not in restored.to_dict()
+    published = fresh.get_element_schema(provider, version="v1", element_kind="session_record_stream")
+    assert published is not None
+    assert published["x-polylogue-publication-omitted-structure-witness-count"] == expected
+    assert "x-polylogue-omitted-current-structure-witness-count" not in published
+
+
+def test_refresh_preserves_loss_bounds_without_double_counting_overlap(tmp_path: Path) -> None:
+    """Copied historical bounds and retried rejected IDs must not inflate or erase known loss."""
+    provider = "synthetic-retained-coverage-loss"
+    saturated = [f"{index:064x}" for index in range(1_024)]
+    first = _package(provider, "v1", saturated)
+    first = replace(
+        first,
+        elements=[
+            replace(
+                first.elements[0],
+                publication_omitted_structure_witness_count=3,
+                source_evidence_unretained_shape_observation_lower_bound=10,
+            )
+        ],
+    )
+    registry = SchemaRegistry(storage_root=tmp_path)
+    registry.replace_provider_packages(
+        provider, _catalog(provider, [first]), {"v1": {"session_record_stream": _source_schema(saturated)}}
+    )
+    repeated_ids = [f"{index:064x}" for index in (2_000, 2_001)]
+    repeated = replace(first, elements=[replace(first.elements[0], exact_structure_ids=repeated_ids)])
+    for incoming in (repeated, repeated, _package(provider, "v1", saturated[:1])):
+        registry.replace_provider_packages(
+            provider,
+            _catalog(provider, [incoming]),
+            {"v1": {"session_record_stream": _source_schema(incoming.elements[0].exact_structure_ids)}},
+        )
+        fresh = SchemaRegistry(storage_root=tmp_path)
+        catalog = fresh.load_package_catalog(provider)
+        assert catalog is not None
+        element = catalog.packages[0].elements[0]
+        assert element.publication_omitted_structure_witness_count == 3
+        assert element.source_evidence_unretained_shape_observation_lower_bound == 10
+        assert element.exact_structure_ids == saturated
+        schema = fresh.get_element_schema(provider, version="v1", element_kind="session_record_stream")
+        assert schema is not None
+        assert schema["x-polylogue-publication-omitted-structure-witness-count"] == 3
+        assert schema["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] == 10

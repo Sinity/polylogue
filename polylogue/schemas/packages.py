@@ -56,6 +56,7 @@ class SchemaElementManifest:
     bundle_scope_count: int = 0
     bundle_scope_identities: list[str] = field(default_factory=list)
     exact_structure_ids: list[str] = field(default_factory=list)
+    # Historical loss lower bounds; overlapping refresh populations cannot be summed.
     publication_omitted_structure_witness_count: int = 0
     # Collection/reduction loss includes current and historical observations.
     source_evidence_unretained_shape_observation_lower_bound: int = 0
@@ -102,7 +103,9 @@ class SchemaElementManifest:
             bundle_scope_identities=_string_list(data.get("bundle_scope_identities")),
             exact_structure_ids=_string_list(data.get("exact_structure_ids")),
             publication_omitted_structure_witness_count=_int_value(
-                data.get("publication_omitted_structure_witness_count")
+                data.get(
+                    "publication_omitted_structure_witness_count", data.get("omitted_current_structure_witness_count")
+                )
             ),
             source_evidence_unretained_shape_observation_lower_bound=_int_value(
                 data.get("source_evidence_unretained_shape_observation_lower_bound")

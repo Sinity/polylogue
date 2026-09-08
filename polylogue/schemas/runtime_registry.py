@@ -94,6 +94,15 @@ def _string_list(value: object) -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _publication_omission_bound(schema: SchemaInputDocument) -> int:
+    return _int_value(
+        schema.get(
+            "x-polylogue-publication-omitted-structure-witness-count",
+            schema.get("x-polylogue-omitted-current-structure-witness-count", 0),
+        )
+    )
+
+
 def _structure_witnesses(samples: Sequence[object]) -> tuple[tuple[str, ...], ...]:
     """Return canonical and shipped-order aliases for every sampled record."""
 
@@ -763,21 +772,37 @@ class SchemaRegistry:
             ]
             incoming_omitted_count = max(
                 element.publication_omitted_structure_witness_count,
-                _int_value(incoming_schema.get("x-polylogue-publication-omitted-structure-witness-count", 0)),
+                _publication_omission_bound(incoming_schema),
             )
             prior_ids = [
                 *(previous_element.exact_structure_ids if previous_element is not None else ()),
                 *_string_list(previous_schema.get("x-polylogue-exact-structure-ids", [])),
             ]
             retained = retain_exact_structure_witnesses(prior_ids, current_ids)
-            omitted_count = incoming_omitted_count + retained.omitted_current_witness_count
+            omitted_count = max(
+                incoming_omitted_count,
+                retained.omitted_current_witness_count,
+                previous_element.publication_omitted_structure_witness_count if previous_element else 0,
+                _publication_omission_bound(previous_schema),
+            )
             evidence_loss = max(
                 element.source_evidence_unretained_shape_observation_lower_bound,
+                previous_element.source_evidence_unretained_shape_observation_lower_bound if previous_element else 0,
+                _int_value(
+                    previous_schema.get("x-polylogue-source-evidence-unretained-shape-observation-lower-bound", 0)
+                ),
                 _int_value(
                     incoming_schema.get("x-polylogue-source-evidence-unretained-shape-observation-lower-bound", 0)
                 ),
             )
-            has_witness_metadata = bool(current_ids or prior_ids)
+            has_witness_metadata = bool(
+                current_ids
+                or prior_ids
+                or omitted_count
+                or evidence_loss
+                or "x-polylogue-omitted-current-structure-witness-count" in incoming_schema
+                or "x-polylogue-omitted-current-structure-witness-count" in previous_schema
+            )
             elements.append(
                 dataclasses.replace(
                     element,
@@ -788,6 +813,7 @@ class SchemaRegistry:
             )
             if has_witness_metadata and kind in merged:
                 synchronized = dict(merged[kind])
+                synchronized.pop("x-polylogue-omitted-current-structure-witness-count", None)
                 synchronized["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
                 synchronized["x-polylogue-publication-omitted-structure-witness-count"] = omitted_count
                 synchronized["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] = evidence_loss

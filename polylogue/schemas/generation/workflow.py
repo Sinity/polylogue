@@ -179,39 +179,39 @@ def build_provider_bundle_from_sources(
     prior = next((item for item in prior_catalog.packages if item.version == version), None) if prior_catalog else None
     family = prior.anchor_profile_family_id if prior is not None else canonical_family
     first_seen = prior.first_seen if prior is not None else now
-    retained_witnesses = {}
-    for kind, evidence in evidence_by_kind.items():
+    elements: list[SchemaElementManifest] = []
+    for kind, evidence in sorted(evidence_by_kind.items()):
         prior_element = prior.element(kind) if prior is not None else None
         retained = retain_exact_structure_witnesses(
             prior_element.exact_structure_ids if prior_element is not None else (), evidence.shape_hashes
         )
-        retained_witnesses[kind] = retained
-        emitted[kind]["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
-        emitted[kind]["x-polylogue-publication-omitted-structure-witness-count"] = (
-            retained.omitted_current_witness_count
+        omission_bound = max(
+            retained.omitted_current_witness_count,
+            prior_element.publication_omitted_structure_witness_count if prior_element else 0,
         )
-        emitted[kind]["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] = (
-            evidence.unretained_shape_observation_lower_bound
+        source_loss_bound = max(
+            evidence.unretained_shape_observation_lower_bound,
+            prior_element.source_evidence_unretained_shape_observation_lower_bound if prior_element else 0,
+        )
+        emitted[kind]["x-polylogue-exact-structure-ids"] = list(retained.exact_structure_ids)
+        emitted[kind]["x-polylogue-publication-omitted-structure-witness-count"] = omission_bound
+        emitted[kind]["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] = source_loss_bound
+        elements.append(
+            SchemaElementManifest(
+                element_kind=kind,
+                schema_file=f"{kind}.schema.json.gz",
+                sample_count=evidence.current_record_count,
+                artifact_count=evidence.current_source_count,
+                bundle_scope_count=evidence.current_source_count,
+                observed_artifact_count=evidence.current_source_count,
+                first_seen=first_seen,
+                last_seen=now,
+                exact_structure_ids=list(retained.exact_structure_ids),
+                publication_omitted_structure_witness_count=omission_bound,
+                source_evidence_unretained_shape_observation_lower_bound=source_loss_bound,
+            )
         )
     counts = {kind: evidence.current_record_count for kind, evidence in evidence_by_kind.items()}
-    elements = [
-        SchemaElementManifest(
-            element_kind=kind,
-            schema_file=f"{kind}.schema.json.gz",
-            sample_count=evidence.current_record_count,
-            artifact_count=evidence.current_source_count,
-            bundle_scope_count=evidence.current_source_count,
-            observed_artifact_count=evidence.current_source_count,
-            first_seen=first_seen,
-            last_seen=now,
-            exact_structure_ids=list(retained_witnesses[kind].exact_structure_ids),
-            publication_omitted_structure_witness_count=retained_witnesses[kind].omitted_current_witness_count,
-            source_evidence_unretained_shape_observation_lower_bound=(
-                evidence.unretained_shape_observation_lower_bound
-            ),
-        )
-        for kind, evidence in sorted(evidence_by_kind.items())
-    ]
     package = SchemaVersionPackage(
         provider=provider,
         version=version,
