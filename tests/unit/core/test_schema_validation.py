@@ -19,7 +19,12 @@ from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.validation.corpus import verify_raw_corpus
 from polylogue.schemas.validation.requests import SchemaVerificationRequest
-from polylogue.schemas.validator import SchemaValidator, _normalize_empty_arrays, validate_provider_export
+from polylogue.schemas.validator import (
+    PayloadValidation,
+    SchemaValidator,
+    _normalize_empty_arrays,
+    validate_provider_export,
+)
 from polylogue.storage.blob_store import BlobStore
 
 pytestmark = pytest.mark.uses_real_clock(
@@ -713,9 +718,20 @@ def test_verify_raw_corpus_reports_valid_synthetic_chatgpt(
         def validate(self, _sample: object) -> ValidationResult:
             return ValidationResult(is_valid=True)
 
+    def validate_payload(_provider: str, payload: object, **_kwargs: object) -> PayloadValidation:
+        validator = _AlwaysValidValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample) for sample in samples),
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
+
     monkeypatch.setattr(
-        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
-        lambda *args, **kwargs: _AlwaysValidValidator(),
+        "polylogue.schemas.validation.corpus.SchemaValidator.validate_payload",
+        validate_payload,
     )
 
     raw = SyntheticCorpus.generate_for_spec(
@@ -766,11 +782,19 @@ def test_verify_raw_corpus_filters_and_parses_by_detected_provider(
 
     selected_providers: list[str] = []
 
-    def validator_for_payload(provider: str, *_args: object, **_kwargs: object) -> _AlwaysValidValidator:
+    def validate_payload(provider: str, payload: object, **_kwargs: object) -> PayloadValidation:
         selected_providers.append(provider)
-        return _AlwaysValidValidator()
+        validator = _AlwaysValidValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample) for sample in samples),
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
 
-    monkeypatch.setattr("polylogue.schemas.validation.corpus.SchemaValidator.for_payload", validator_for_payload)
+    monkeypatch.setattr("polylogue.schemas.validation.corpus.SchemaValidator.validate_payload", validate_payload)
     raw_id = _insert_raw_record(
         db_path=db_path,
         raw_id="raw-unknown-codex",
@@ -793,6 +817,49 @@ def test_verify_raw_corpus_filters_and_parses_by_detected_provider(
     assert report.total_records == 1
     assert report.providers["codex"].valid_records == 1
     assert selected_providers == ["codex"]
+
+
+def test_verify_raw_corpus_validates_each_requested_sample_once(
+    db_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The raw-corpus route must not validate samples again after schema selection."""
+    _insert_raw_record(
+        db_path=db_path,
+        raw_id="raw-codex-single-validation-pass",
+        source_name="codex",
+        source_path="/tmp/codex-session.jsonl",
+        raw_content=(
+            b'{"type":"session_meta","payload":{"id":"single-pass","timestamp":"2026-08-01T10:00:00Z"}}\n'
+            b'{"type":"response_item","payload":{"type":"message","id":"single-pass-user","role":"user",'
+            b'"timestamp":"2026-08-01T10:00:01Z","content":[{"type":"input_text","text":"one"}]}}\n'
+            b'{"type":"response_item","payload":{"type":"message","id":"single-pass-assistant","role":"assistant",'
+            b'"timestamp":"2026-08-01T10:00:02Z","content":[{"type":"output_text","text":"two"}]}}\n'
+        ),
+    )
+    validate_calls = 0
+    original_validate = SchemaValidator.validate
+
+    def count_validate(
+        validator: SchemaValidator,
+        data: object,
+        *,
+        include_drift: bool | None = None,
+    ) -> ValidationResult:
+        nonlocal validate_calls
+        validate_calls += 1
+        return original_validate(validator, data, include_drift=include_drift)
+
+    monkeypatch.setattr(SchemaValidator, "validate", count_validate)
+
+    report = verify_raw_corpus(
+        db_path=db_path,
+        request=SchemaVerificationRequest(providers=["codex"], max_samples=2),
+    )
+
+    assert report.providers["codex"].valid_records == 1
+    # A second pass over selected records violates this count.
+    assert validate_calls == 2
 
 
 def test_verify_raw_corpus_counts_missing_schema_as_skipped(db_path: Path) -> None:
@@ -999,9 +1066,20 @@ def test_verify_raw_corpus_honors_record_limit_and_offset(
         def validate(self, _sample: object) -> ValidationResult:
             return ValidationResult(is_valid=True)
 
+    def validate_payload(_provider: str, payload: object, **_kwargs: object) -> PayloadValidation:
+        validator = _AlwaysValidValidator()
+        samples = tuple(validator.validation_samples(payload))
+        return PayloadValidation(
+            validator=cast(SchemaValidator, validator),
+            samples=samples,
+            results=tuple(validator.validate(sample) for sample in samples),
+            schema_resolution=None,
+            schema_resolution_is_explicit=True,
+        )
+
     monkeypatch.setattr(
-        "polylogue.schemas.validation.corpus.SchemaValidator.for_payload",
-        lambda *args, **kwargs: _AlwaysValidValidator(),
+        "polylogue.schemas.validation.corpus.SchemaValidator.validate_payload",
+        validate_payload,
     )
 
     _insert_raw_record(

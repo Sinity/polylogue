@@ -348,31 +348,27 @@ def verify_raw_corpus(
                 _report_progress(request.progress_callback)
                 continue
 
-            validator: SchemaValidator
             try:
-                validator = SchemaValidator.for_payload(
+                payload_validation = SchemaValidator.validate_payload(
                     actual_provider,
                     payload,
                     source_path=source_path,
+                    max_samples=request.max_samples,
                 )
             except (FileNotFoundError, ImportError):
                 provider_stats.skipped_no_schema += 1
                 _report_progress(request.progress_callback)
                 continue
 
-            samples = validator.validation_samples(
-                payload,
-                max_samples=request.max_samples,
-            )
-            if not samples:
+            validation_results = payload_validation.sample_results
+            if not validation_results:
                 provider_stats.valid_records += 1
                 _report_progress(request.progress_callback)
                 continue
 
             invalid_found = False
             drift_found = False
-            for sample in samples:
-                result = validator.validate(sample)
+            for _sample, result in validation_results:
                 if not result.is_valid:
                     invalid_found = True
                 if result.has_drift:
