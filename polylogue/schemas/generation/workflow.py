@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDocument
+from polylogue.paths import cache_home
 from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
@@ -117,7 +118,7 @@ def build_provider_bundle_from_sources(
     if progress_callback is not None:
         progress_callback("source_inventory", {"state": "started"})
     source = infer_sources(
-        inputs, cache_path=cache_path or Path(".cache/schema-source-evidence.sqlite3"), max_workers=max_workers
+        inputs, cache_path=cache_path or cache_home() / "schema-source-evidence.sqlite3", max_workers=max_workers
     )
     evidence_by_kind = {
         kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)
