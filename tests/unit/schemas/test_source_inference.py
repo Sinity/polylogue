@@ -328,13 +328,13 @@ def test_source_chunking_matches_single_record_reduction_and_bounds_records(
     revision = SourceRevision("claude-code", candidate.path, candidate.logical_source_id, "a" * 64, 0)
     payloads: tuple[JSONValue, ...] = tuple(
         {
-            "type": "user" if index % 2 else "assistant",
+            "type": "user" if index % 2 else "tool",
             "sessionId": "chunked-session",
             "version": "1.2.3",
             "message": {
-                "role": "user" if index % 3 else "assistant",
-                "content": f"record-{index}",
-                "metadata": {"even": index % 2 == 0} if index % 5 else {"multiple": index},
+                "role": "user" if index % 3 else "tool",
+                "content": f"text-{index:02d}",
+                "metadata": {"even": index % 2 == 0} if index % 5 else {"flag": index % 2 == 1},
             },
         }
         for index in range(67)

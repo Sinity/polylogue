@@ -1173,7 +1173,8 @@ def infer_sources(
     for _candidate, contribution in historical_rows:
         for kind, payload in contribution.evidence_by_element.items():
             evidence_by_element.setdefault(kind, []).append(_historical_payload(payload))
-    terminal_counts["included"] += len(unique)
+    if unique:
+        terminal_counts["included"] += len(unique)
     producer_version_counts: Counter[str] = Counter()
     producer_version_missing_sources = 0
     producer_version_conflicting_sources = 0
