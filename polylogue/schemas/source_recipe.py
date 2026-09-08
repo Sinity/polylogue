@@ -23,7 +23,7 @@ class SourceEvidenceRecipe:
     admission_revision: int = 1
     identity_revision: int = 2
     zip_member_revision: int = 2
-    structure_revision: int = 1
+    structure_revision: int = 2
     statistics_revision: int = 1
 
     def contract(self, phase: EvidencePhase) -> JSONDocument:

@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections import deque
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 try:
     from genson import SchemaBuilder
@@ -20,12 +21,74 @@ from polylogue.schemas.field_stats.detection import is_dynamic_key, should_colla
 
 _STRUCTURAL_DEDUP_WINDOW = 1_024
 _COMPOSITE_KEYWORDS = ("anyOf", "oneOf", "allOf")
+_EXACT_STRUCTURE_WITNESS_CAP = 1_024
+
+
+@dataclass(frozen=True)
+class StructureWitnessRetention:
+    """The bounded, monotonic witness set published for one package element."""
+
+    exact_structure_ids: tuple[str, ...]
+    omitted_current_witness_count: int
+
+
+def canonicalize_structure_schema(schema: Mapping[str, object]) -> JSONDocument:
+    """Normalize schema-only unordered ``required`` arrays for structural IDs.
+
+    JSON Schema treats ``required`` as a set.  Its order is nevertheless
+    inherited from the source object's key order, including below array items
+    and dynamic-map value schemas.  Other arrays have schema-defined order and
+    must remain untouched.
+    """
+
+    def canonicalize(value: object, *, parent_key: str | None = None) -> JSONValue:
+        if isinstance(value, Mapping):
+            return {str(key): canonicalize(child, parent_key=str(key)) for key, child in value.items()}
+        if isinstance(value, list):
+            values = [canonicalize(item) for item in value]
+            if parent_key == "required" and all(isinstance(item, str) for item in values):
+                ordered_values: list[JSONValue] = []
+                ordered_values.extend(sorted(item for item in values if isinstance(item, str)))
+                return ordered_values
+            return values
+        if value is None or isinstance(value, str | int | float | bool):
+            return value
+        raise TypeError(f"Unsupported structural schema value: {type(value).__name__}")
+
+    return json_document(canonicalize(schema))
+
+
+def legacy_structure_schema_digest(schema: Mapping[str, object]) -> str:
+    """Return the order-sensitive digest used by already-published packages."""
+
+    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def structure_schema_digest(schema: Mapping[str, object]) -> str:
     """Return the stable SHA-256 witness for an observed structural schema."""
-    payload = json.dumps(schema, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return legacy_structure_schema_digest(canonicalize_structure_schema(schema))
+
+
+def retain_exact_structure_witnesses(
+    prior_witnesses: Iterable[str], current_witnesses: Iterable[str]
+) -> StructureWitnessRetention:
+    """Preserve published witnesses and deterministically bound new additions.
+
+    Source evidence itself retains 512 current witnesses.  A same-family
+    refresh can therefore carry the 512 old IDs and admit one 512-ID canonical
+    migration set before publication saturates at 1024.  A saturated prior set
+    remains authoritative instead of replacing historical exact matches.
+    """
+
+    prior = tuple(sorted(set(prior_witnesses)))
+    unseen_current = tuple(sorted(set(current_witnesses) - set(prior)))
+    capacity = max(0, _EXACT_STRUCTURE_WITNESS_CAP - len(prior))
+    admitted = unseen_current[:capacity]
+    return StructureWitnessRetention(
+        exact_structure_ids=tuple(sorted((*prior, *admitted))),
+        omitted_current_witness_count=len(unseen_current) - len(admitted),
+    )
 
 
 def merge_schemas(schemas: Iterable[JSONDocument]) -> JSONDocument:
@@ -304,9 +367,14 @@ def collapse_dynamic_keys(schema: JSONDocument) -> JSONDocument:
 __all__ = [
     "GENSON_AVAILABLE",
     "SchemaBuilder",
+    "StructureWitnessRetention",
+    "canonicalize_structure_schema",
     "collapse_dynamic_keys",
     "dynamic_object_paths",
+    "legacy_structure_schema_digest",
     "merge_schemas",
     "merge_observed_structure_schemas",
     "observed_structure_schema",
+    "retain_exact_structure_witnesses",
+    "structure_schema_digest",
 ]
