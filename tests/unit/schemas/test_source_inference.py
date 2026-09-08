@@ -7,7 +7,7 @@ import json
 import tempfile
 from collections.abc import Collection, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -413,7 +413,7 @@ def test_record_source_uses_codex_whole_stream_admission(tmp_path: Path) -> None
     candidate = _SourceCandidate("codex", tmp_path, path, "synthetic-codex")
     revision = SourceRevision("codex", path, candidate.logical_source_id, "a" * 64, 0)
 
-    assert classify_artifact(records, provider=Provider.CODEX, source_path=path).schema_eligible
+    assert classify_artifact(cast(JSONValue, records), provider=Provider.CODEX, source_path=path).schema_eligible
     contributions, record_count, _versions, _unrecognized = _collect_payload_evidence(
         candidate,
         revision,
@@ -433,7 +433,9 @@ def test_record_source_uses_codex_whole_stream_admission(tmp_path: Path) -> None
             "content": [{"type": "input_text", "text": "legacy"}],
         },
     )
-    assert not classify_artifact(mixed_generation, provider=Provider.CODEX, source_path=path).schema_eligible
+    assert not classify_artifact(
+        cast(JSONValue, mixed_generation), provider=Provider.CODEX, source_path=path
+    ).schema_eligible
     refused, refused_count, _versions, _unrecognized = _collect_payload_evidence(
         candidate,
         revision,
@@ -468,7 +470,7 @@ def test_record_source_keeps_claude_snapshot_after_stream_admission(tmp_path: Pa
     candidate = _SourceCandidate("claude-code", path.parent, path, "synthetic-claude")
     revision = SourceRevision("claude-code", path, candidate.logical_source_id, "b" * 64, 0)
 
-    assert classify_artifact(records, provider=Provider.CLAUDE_CODE, source_path=path).schema_eligible
+    assert classify_artifact(cast(JSONValue, records), provider=Provider.CLAUDE_CODE, source_path=path).schema_eligible
     assert not classify_artifact([records[0]], provider=Provider.CLAUDE_CODE, source_path=path).schema_eligible
     contributions, record_count, _versions, _unrecognized = _collect_payload_evidence(
         candidate,

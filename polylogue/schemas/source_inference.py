@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from itertools import islice
 from pathlib import Path
-from typing import BinaryIO, Literal, cast
+from typing import BinaryIO, Literal, cast, overload
 from uuid import UUID
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
@@ -223,7 +223,13 @@ class _PayloadReplay(Sequence[JSONValue]):
             return next(iter(self._replay_payloads()), None) is not None
         return self._count > 0
 
-    def __getitem__(self, index: int | slice) -> JSONValue | list[JSONValue]:
+    @overload
+    def __getitem__(self, index: int, /) -> JSONValue: ...
+
+    @overload
+    def __getitem__(self, index: slice[int | None, int | None, int | None], /) -> Sequence[JSONValue]: ...
+
+    def __getitem__(self, index: int | slice[int | None, int | None, int | None]) -> JSONValue | Sequence[JSONValue]:
         if isinstance(index, slice):
             start = 0 if index.start is None else index.start
             stop = index.stop
@@ -813,7 +819,7 @@ def _collect_payload_evidence(
     if config.sample_granularity == "record":
         payload_replay = _PayloadReplay(payloads, replay_payloads=replay_payloads)
         try:
-            artifact = classify_artifact(payload_replay, provider=provider, source_path=candidate.path)
+            artifact = classify_artifact(cast(JSONValue, payload_replay), provider=provider, source_path=candidate.path)
         except BaseException:
             payload_replay.close()
             raise
