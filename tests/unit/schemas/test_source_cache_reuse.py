@@ -179,8 +179,9 @@ def reject_source_recollection(*_args: object, **_kwargs: object) -> source._Col
     pytest.fail("warm evidence must not recollect source records")
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_workers: None, legacy: bool
 ) -> None:
     """Timestamp-free old rows must not use byte hashes to choose a stale export.
 
@@ -191,10 +192,10 @@ def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it
     root.mkdir()
     for nonce in range(1_000):
         older = write_codex(
-            root, "older", "shared", "2026-01-01T00:00:00Z", nonce=f"older-{nonce}", marker="older_only"
+            root, "older", "shared", "2026-01-01T00:00:00Z", nonce=f"older-{nonce}", marker="older_only", legacy=legacy
         )
         newer = write_codex(
-            root, "newer", "shared", "2026-02-01T00:00:00Z", nonce=f"newer-{nonce}", marker="newer_only"
+            root, "newer", "shared", "2026-02-01T00:00:00Z", nonce=f"newer-{nonce}", marker="newer_only", legacy=legacy
         )
         if sha256(older.read_bytes()).hexdigest() > sha256(newer.read_bytes()).hexdigest():
             break
@@ -215,7 +216,15 @@ def test_codex_metadata_refresh_orders_reserialized_legacy_exports_and_reuses_it
     ) -> source._CandidateDescriptor:
         nonlocal refreshes
         refreshes += 1
-        return original_refresh(metadata_cache, descriptor)
+        with monkeypatch.context() as metadata_scan:
+
+            def reject_evidence_reduction(*_args: object, **_kwargs: object) -> None:
+                pytest.fail("ordering recovery must not reduce schema evidence")
+
+            metadata_scan.setattr(
+                "polylogue.schemas.generation.evidence.collect_source_evidence", reject_evidence_reduction
+            )
+            return original_refresh(metadata_cache, descriptor)
 
     monkeypatch.setattr(source, "_refreshed_codex_descriptor", count_refresh)
     refreshed = run_codex(root, cache)
@@ -317,12 +326,14 @@ def test_codex_metadata_refresh_refuses_a_changed_source(
         dynamic_paths_by_element: dict[str, tuple[str, ...]] | None = None,
         *,
         include_statistics: bool = True,
+        metadata_only: bool = False,
         spool_path: Path | None = None,
     ) -> source._CollectedCandidate:
         collected = original_collect(
             candidate,
             dynamic_paths_by_element,
             include_statistics=include_statistics,
+            metadata_only=metadata_only,
             spool_path=spool_path,
         )
         if candidate.path == changed:

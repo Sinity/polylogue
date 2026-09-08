@@ -838,6 +838,7 @@ def _collect_payload_evidence(
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool = True,
+    metadata_only: bool = False,
     chunk_record_limit: int = _SOURCE_EVIDENCE_CHUNK_RECORD_LIMIT,
     spool_path: Path | None = None,
     spool_partition: str = "",
@@ -846,6 +847,8 @@ def _collect_payload_evidence(
     """Reduce each native source revision without retaining decoded records."""
     from polylogue.schemas.generation.evidence import SchemaEvidenceAccumulator, collect_source_evidence
 
+    if metadata_only and (include_statistics or spool_path is not None):
+        raise ValueError("metadata collection requires unspooled, statistics-free input")
     if chunk_record_limit < 1:
         raise ValueError("chunk_record_limit must be positive")
     provider = Provider.from_string(candidate.provider)
@@ -1032,7 +1035,8 @@ def _collect_payload_evidence(
                 if spool is None:
                     record_counts[declared_source_id] += len(samples)
                 total_records += len(samples)
-                append(declared_source_id, artifact_kind, samples, effective_update, source_byte_count)
+                if not metadata_only:
+                    append(declared_source_id, artifact_kind, samples, effective_update, source_byte_count)
         while pending_records:
             flush(next(iter(pending_records)))
     except BaseException:
@@ -1049,7 +1053,10 @@ def _collect_payload_evidence(
             spool.close()
             return (), total_records, tuple(sorted(producer_versions)), producer_version_unrecognized
         contributions: list[_SourceContribution] = []
-        for source_id, rows in sorted(evidence_rows.items()):
+        for source_id in sorted(record_counts if metadata_only else evidence_rows):
+            if not record_counts[source_id]:
+                continue
+            rows = evidence_rows.get(source_id, {})
             payload_by_element: dict[str, JSONDocument] = {}
             for element_kind, accumulator in sorted(rows.items()):
                 payload = accumulator.finish().to_json()
@@ -1108,6 +1115,7 @@ def _collect_candidate(
     dynamic_paths_by_element: dict[str, tuple[str, ...]] | None = None,
     *,
     include_statistics: bool = True,
+    metadata_only: bool = False,
     spool_path: Path | None = None,
 ) -> _CollectedCandidate:
     """Read one member fully and construct one-pass evidence observations."""
@@ -1134,6 +1142,7 @@ def _collect_candidate(
             revision,
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
+            metadata_only=metadata_only,
             spool_path=spool_path,
         )
     try:
@@ -1143,6 +1152,7 @@ def _collect_candidate(
             _iter_file_payloads(candidate.path, byte_count=byte_count),
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
+            metadata_only=metadata_only,
             spool_path=spool_path,
             replay_payloads=partial(_iter_file_payloads, candidate.path, byte_count=byte_count),
         )
@@ -1183,6 +1193,7 @@ def _collect_zip_candidate(
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool,
+    metadata_only: bool,
     spool_path: Path | None,
 ) -> _CollectedCandidate:
     """Reduce ZIP members as independent source revisions."""
@@ -1223,6 +1234,7 @@ def _collect_zip_candidate(
                                 _iter_sized_jsonl_payloads(handle),
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                                 include_statistics=include_statistics,
+                                metadata_only=metadata_only,
                                 spool_path=spool_path,
                                 spool_partition=str(member_index),
                             )
@@ -1237,6 +1249,7 @@ def _collect_zip_candidate(
                             ),
                             dynamic_paths_by_element=dynamic_paths_by_element,
                             include_statistics=include_statistics,
+                            metadata_only=metadata_only,
                             spool_path=spool_path,
                             spool_partition=str(member_index),
                         )
@@ -1626,39 +1639,33 @@ def _refreshed_codex_descriptor(
     if cached is not None and _descriptor_metadata_is_complete(cached):
         refreshed = _cached_descriptors(cached.evidence)
     else:
-        with tempfile.TemporaryDirectory(prefix="polylogue-source-metadata-") as spool_directory:
-            collected = _collect_candidate(
-                descriptor.candidate,
-                dynamic_paths_by_element={},
-                include_statistics=False,
-                spool_path=Path(spool_directory) / "contributions.spool",
+        collected = _collect_candidate(
+            descriptor.candidate,
+            dynamic_paths_by_element={},
+            include_statistics=False,
+            metadata_only=True,
+        )
+        if (
+            collected.terminal.outcome != "included"
+            or collected.revision is None
+            or collected.revision.revision_sha256 != descriptor.revision_sha256
+        ):
+            raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
+        try:
+            refreshed_digest, _refreshed_byte_count = _stable_file_digest(descriptor.candidate.path)
+        except (OSError, SourceInferenceError):
+            refreshed_digest = None
+        if refreshed_digest != descriptor.revision_sha256:
+            raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
+        refreshed = tuple(
+            _ContributionDescriptor(
+                row.logical_source_id,
+                row.revision_sha256,
+                row.record_count,
+                row.declared_updated_at,
             )
-            if (
-                collected.terminal.outcome != "included"
-                or collected.revision is None
-                or collected.revision.revision_sha256 != descriptor.revision_sha256
-            ):
-                raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
-            try:
-                refreshed_digest, _refreshed_byte_count = _stable_file_digest(descriptor.candidate.path)
-            except (OSError, SourceInferenceError):
-                refreshed_digest = None
-            if refreshed_digest != descriptor.revision_sha256:
-                raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
-            rows = (
-                _spooled_contributions(collected.spool_path)
-                if collected.spool_path is not None
-                else iter(collected.contributions)
-            )
-            refreshed = tuple(
-                _ContributionDescriptor(
-                    row.logical_source_id,
-                    row.revision_sha256,
-                    row.record_count,
-                    row.declared_updated_at,
-                )
-                for row in rows
-            )
+            for row in collected.contributions
+        )
         persist_refreshed = True
     if sorted(map(_descriptor_identity, refreshed)) != sorted(map(_descriptor_identity, descriptor.contributions)):
         raise SourceInferenceError("Codex ordering metadata changed source, revision, or record count")
@@ -2186,7 +2193,21 @@ def infer_sources(
         current_rows: list[tuple[_CandidateDescriptor, _ContributionDescriptor]] = []
         historical_rows: list[tuple[_CandidateDescriptor, _ContributionDescriptor]] = []
         prefix_memo: dict[tuple[Path, Path], bool] = {}
-        for rows in by_identity.values():
+        selection_input_bytes = sum(input_bytes_by_candidate.values())
+        report(
+            "revision_selection",
+            force=True,
+            records=preliminary_records,
+            input_bytes=selection_input_bytes,
+            extra={"total_identities": len(by_identity)},
+        )
+        for completed_identities, rows in enumerate(by_identity.values()):
+            report(
+                "revision_selection",
+                records=preliminary_records,
+                input_bytes=selection_input_bytes,
+                extra={"completed_identities": completed_identities, "total_identities": len(by_identity)},
+            )
             maximal = [
                 row
                 for row in rows
@@ -2206,10 +2227,23 @@ def infer_sources(
                 and len(maximal) > 1
                 and any(row[1].declared_updated_at is None for row in maximal)
             ):
-                refreshed_descriptors = {
-                    descriptor: _refreshed_codex_descriptor(cache, descriptor)
-                    for descriptor in {row[0] for row in maximal if row[1].declared_updated_at is None}
-                }
+                missing_metadata = {row[0] for row in maximal if row[1].declared_updated_at is None}
+                refreshed_descriptors: dict[_CandidateDescriptor, _CandidateDescriptor] = {}
+                for descriptor in sorted(missing_metadata, key=lambda item: str(item.candidate.path)):
+                    report(
+                        "ordering_metadata",
+                        records=preliminary_records,
+                        input_bytes=selection_input_bytes,
+                        force=True,
+                        extra={
+                            "completed_identities": completed_identities,
+                            "total_identities": len(by_identity),
+                            "completed_candidates_in_identity": len(refreshed_descriptors),
+                            "total_candidates_in_identity": len(missing_metadata),
+                            "candidate_input_bytes": descriptor.byte_count,
+                        },
+                    )
+                    refreshed_descriptors[descriptor] = _refreshed_codex_descriptor(cache, descriptor)
                 rows = [
                     (
                         refreshed_descriptors.get(descriptor, descriptor),
@@ -2256,6 +2290,8 @@ def infer_sources(
                 (contribution_descriptor.logical_source_id, contribution_descriptor.revision_sha256)
             ] = False
 
+        selection_ms = (time.monotonic_ns() - fold_started) / 1_000_000
+        fold_started = time.monotonic_ns()
         evidence_by_element: dict[str, SchemaEvidenceAccumulator] = {}
         folded_contributions = 0
         for descriptor in sorted(
@@ -2342,6 +2378,7 @@ def infer_sources(
             "hash": round(hash_ms, 3),
             "preliminary": round(preliminary_ms, 3),
             "statistics": round(statistics_ms, 3),
+            "revision_selection": round(selection_ms, 3),
             "fold": round(fold_ms, 3),
             "collect": round(collect_ms, 3),
         },

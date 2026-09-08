@@ -801,19 +801,23 @@ def test_progress_reports_source_aggregate_phases_without_source_paths(tmp_path:
     )
     events: list[tuple[str, JSONDocument]] = []
 
-    infer_sources(
+    result = infer_sources(
         (SchemaSourceInput("claude-code", source),),
         cache_path=tmp_path / "source-cache.sqlite3",
         max_workers=1,
         progress=lambda phase, payload: events.append((phase, payload)),
     )
 
-    assert {phase for phase, _payload in events} >= {"inventory", "reduce"}
+    assert {phase for phase, _payload in events} >= {"inventory", "reduce", "revision_selection"}
     assert all(
         {"completed_candidates", "total_candidates", "input_bytes", "record_count"} <= payload.keys()
         for _, payload in events
     )
     assert all(str(source) not in json.dumps(payload) for _, payload in events)
+    selection = next(payload for phase, payload in events if phase == "revision_selection")
+    assert selection["record_count"] == 1
+    assert selection["input_bytes"] == source.stat().st_size
+    assert result.phase_timings_ms["revision_selection"] >= 0
 
 
 def test_reduced_cache_rows_survive_later_interruption_and_are_private(tmp_path: Path) -> None:
