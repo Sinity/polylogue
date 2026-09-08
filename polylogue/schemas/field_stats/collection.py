@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Collection, Iterable, Mapping
 from functools import lru_cache
@@ -94,6 +95,8 @@ def _collect_field_stats(
     string_length_cap = 2000
 
     current_session_id: str | None = None
+    current_session_token: str | None = None
+    token_session_id: str | None = None
     current_observed_at: str | None = None
 
     @lru_cache(maxsize=4_096)
@@ -101,6 +104,7 @@ def _collect_field_stats(
         return should_collapse_observed_keys(keys)
 
     def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
+        nonlocal current_session_token, token_session_id
         if depth > max_depth:
             return
 
@@ -126,8 +130,9 @@ def _collect_field_stats(
                 dict_key_sets[path] = set()
             key_evidence = dict_key_sets[path]
             for key in keys:
-                stats.object_key_distribution.observe(key)
-                stats.observe_object_key(key)
+                key_digest = hashlib.sha256(key.encode("utf-8", errors="surrogatepass")).digest()
+                stats.object_key_distribution.observe(key, digest=key_digest)
+                stats.observe_object_key(key, digest=key_digest)
                 if key in key_evidence or len(key_evidence) < _DICT_KEY_EVIDENCE_CAP:
                     key_evidence.add(key)
                 else:
@@ -186,8 +191,21 @@ def _collect_field_stats(
             return
 
         if isinstance(value, str):
-            stats.categorical_distribution.observe(value)
-            stats.observe_equality_value(value, session_id=current_session_id)
+            value_digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
+            stats.categorical_distribution.observe(value, digest=value_digest)
+            if current_session_id != token_session_id:
+                token_session_id = current_session_id
+                current_session_token = (
+                    hashlib.sha256(current_session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+                    if current_session_id is not None
+                    else None
+                )
+            stats.observe_equality_value(
+                value,
+                session_id=current_session_id,
+                digest=value_digest,
+                session_token=current_session_token,
+            )
             if len(stats.string_lengths) < string_length_cap:
                 stats.string_lengths.append(len(value))
             else:
