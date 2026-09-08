@@ -18,7 +18,12 @@ from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator import commit as commit_module
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
-from polylogue.schemas.operator.receipt import SCHEMA_INFERENCE_HANDOFF_FILENAME, load_schema_inference_receipt
+from polylogue.schemas.operator.receipt import (
+    SCHEMA_INFERENCE_HANDOFF_FILENAME,
+    build_schema_inference_receipt,
+    load_schema_inference_receipt,
+    write_schema_inference_receipt,
+)
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.source_inference import SchemaSourceInput
@@ -135,7 +140,7 @@ class TestCommitProviderSchemaWritesRealFiles:
         first_waiting = Event()
         release_first = Event()
         second_started = Event()
-        original_write = commit_module.write_schema_inference_receipt
+        original_write = write_schema_inference_receipt
         writes = 0
 
         def write(*args: Any, **kwargs: Any) -> Any:
@@ -181,9 +186,7 @@ class TestCommitProviderSchemaWritesRealFiles:
             assert second.result(timeout=5).success
 
         actual = load_schema_inference_receipt(output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME)
-        expected = commit_module.build_schema_inference_receipt(
-            SchemaRegistry(storage_root=output_dir), provider=_PROVIDER
-        )
+        expected = build_schema_inference_receipt(SchemaRegistry(storage_root=output_dir), provider=_PROVIDER)
         assert actual.packages == expected.packages
 
     def test_new_provider_writes_catalog_and_element_files(self, tmp_path: Path) -> None:
