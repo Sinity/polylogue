@@ -198,6 +198,29 @@ def test_serialized_evidence_has_no_literal_and_emits_same_safe_semantics() -> N
     assert restored.field_stats["$.role"].value_session_ids["user"]
 
 
+def test_live_evidence_matches_round_trip_without_raw_enum_or_relation_changes() -> None:
+    private_literal = "brief"
+    records = [{"label": private_literal, "id": f"node-{index}", "parent_id": f"node-{index}"} for index in range(6)]
+    evidence = collect_sample_evidence(
+        records,
+        session_ids=[f"session-{index}" for index in range(6)],
+    )
+    restored = SchemaEvidence.from_json(evidence.to_json())
+    config = ProviderConfig(
+        name=Provider.CLAUDE_CODE,
+        description="Claude Code",
+        sample_granularity="record",
+        record_type_key="type",
+    )
+
+    live_schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
+    restored_schema, _ = emit_schema_from_evidence("claude-code", config, restored, privacy_config=None)
+
+    assert private_literal not in json.dumps(live_schema, sort_keys=True)
+    assert live_schema == restored_schema
+    assert detect_foreign_keys(evidence.field_stats) == detect_foreign_keys(restored.field_stats)
+
+
 def test_reduced_evidence_preserves_mutual_exclusion_annotations() -> None:
     observation = _Observation(
         "session-a",
