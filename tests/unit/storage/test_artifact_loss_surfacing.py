@@ -165,7 +165,8 @@ def test_codex_stream_recovers_when_first_record_exceeds_inspection_prefix(blob_
     assert observation.decode_error is None
     assert observation.malformed_jsonl_lines == 0
     assert observation.support_status is ArtifactSupportStatus.SUPPORTED_PARSEABLE
-    assert observation.resolved_package_version in SchemaRegistry().list_committed_versions("codex")
+    assert observation.resolved_package_version is not None
+    assert SchemaRegistry().get_package("codex", observation.resolved_package_version) is not None
     assert observation.resolved_element_kind == "session_record_stream"
     expected_message: JSONValue = {
         "type": "response_item",
