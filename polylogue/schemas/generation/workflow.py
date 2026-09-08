@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from polylogue.schemas.generation.archive_workload_profile import (
     build_archive_workload_profile,
     write_archive_workload_profile,
 )
+from polylogue.schemas.generation.cluster_support import _artifact_priority
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.models import GenerationProgressCallback, GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle import _build_provider_bundle
@@ -51,6 +53,7 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
         _package_schemas(bundle),
         package_workload_profiles=_package_workload_profiles(bundle),
         cluster_manifest=bundle.manifest.to_dict(),
+        redact_observed_numeric_values=True,
     )
 
     for old_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
@@ -123,6 +126,8 @@ def build_provider_bundle_from_sources(
         max_workers=max_workers,
         progress=progress_callback,
     )
+    if progress_callback is not None:
+        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
     evidence_by_kind = {
         kind: merge_evidence(SchemaEvidence.from_json(row) for row in rows)
         for kind, rows in source.evidence_by_element.items()
@@ -137,13 +142,27 @@ def build_provider_bundle_from_sources(
                 phase_receipt={"source": source.provenance()},
             )
         )
+    config = resolve_provider_config(provider)
     emitted: dict[str, JSONDocument] = {}
     reports = {}
     for kind, evidence in evidence_by_kind.items():
-        emitted[kind], reports[kind] = emit_schema_from_evidence(
-            provider, resolve_provider_config(provider), evidence, privacy_config=privacy_config, artifact_kind=kind
+        element_config = (
+            replace(config, sample_granularity="record", record_type_key="type")
+            if kind == "session_record_stream"
+            else config
         )
-    anchor = "session_document" if "session_document" in emitted else sorted(emitted)[0]
+        emitted[kind], reports[kind] = emit_schema_from_evidence(
+            provider, element_config, evidence, privacy_config=privacy_config, artifact_kind=kind
+        )
+        emitted[kind]["x-polylogue-sample-granularity"] = element_config.sample_granularity
+    preferred_anchor = "session_record_stream" if config.sample_granularity == "record" else "session_document"
+    if provider == "claude-code" and "coordinator_session_stream" in emitted:
+        preferred_anchor = "coordinator_session_stream"
+    anchor = (
+        preferred_anchor
+        if preferred_anchor in emitted
+        else max(emitted, key=lambda kind: (_artifact_priority(kind), kind))
+    )
     family = hash_payload({"anchor": anchor, "structure": evidence_by_kind[anchor].structure})
     version = allocate_package_versions(prior_catalog, [(anchor, family)])[0]
     now = datetime.now(tz=timezone.utc).isoformat()
@@ -171,7 +190,7 @@ def build_provider_bundle_from_sources(
         first_seen=first_seen,
         last_seen=now,
         bundle_scope_count=evidence_by_kind[anchor].current_source_count,
-        sample_count=counts[anchor],
+        sample_count=sum(counts.values()),
         anchor_profile_family_id=family,
         elements=elements,
     )
@@ -187,7 +206,7 @@ def build_provider_bundle_from_sources(
     result = GenerationResult(
         provider=provider,
         schema=emitted[anchor],
-        sample_count=counts[anchor],
+        sample_count=sum(counts.values()),
         redaction_report=reports[anchor],
         versions=[version],
         default_version=version,
@@ -195,8 +214,6 @@ def build_provider_bundle_from_sources(
         artifact_counts=counts,
         phase_receipt={"source": source.provenance()},
     )
-    if progress_callback is not None:
-        progress_callback("source_evidence", {"state": "completed", **source.provenance()})
     return _ProviderBundle(result, catalog=catalog, package_schemas={version: emitted}, manifest=manifest)
 
 

@@ -310,7 +310,9 @@ polylogue ops doctor --schemas           # provider-schema conformance over raw 
 ```
 
 The `devtools gate schema-roundtrip` command verifies committed provider
-schema packages reload and roundtrip cleanly through typed models.
+schema packages reload and roundtrip cleanly through typed models. See
+[Provider schema inference](schema-inference.md) for ordinary-source inputs,
+incremental evidence, and package versions.
 
 ---
 

@@ -25,7 +25,9 @@ from polylogue.schemas.generation.evidence import (
     merge_evidence,
 )
 from polylogue.schemas.generation.schema_builder import emit_schema_from_evidence
+from polylogue.schemas.generation.workload_profiles import _field_profiles
 from polylogue.schemas.inference.relational.foreign_keys import detect_foreign_keys
+from polylogue.schemas.inference.relational.time import detect_time_deltas
 from polylogue.schemas.inference.semantic.message_scoring import score_role
 from polylogue.schemas.inference.semantic.runtime import infer_semantic_roles, select_best_roles
 from polylogue.schemas.observation import ProviderConfig
@@ -196,6 +198,29 @@ def test_serialized_evidence_has_no_literal_and_emits_same_safe_semantics() -> N
     assert private_literal not in public
     assert warm_schema == cold_schema
     assert restored.field_stats["$.role"].value_session_ids["user"]
+
+
+def test_live_evidence_matches_round_trip_without_raw_enum_or_relation_changes() -> None:
+    private_literal = "brief"
+    records = [{"label": private_literal, "id": f"node-{index}", "parent_id": f"node-{index}"} for index in range(6)]
+    evidence = collect_sample_evidence(
+        records,
+        session_ids=[f"session-{index}" for index in range(6)],
+    )
+    restored = SchemaEvidence.from_json(evidence.to_json())
+    config = ProviderConfig(
+        name=Provider.CLAUDE_CODE,
+        description="Claude Code",
+        sample_granularity="record",
+        record_type_key="type",
+    )
+
+    live_schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
+    restored_schema, _ = emit_schema_from_evidence("claude-code", config, restored, privacy_config=None)
+
+    assert private_literal not in json.dumps(live_schema, sort_keys=True)
+    assert live_schema == restored_schema
+    assert detect_foreign_keys(evidence.field_stats) == detect_foreign_keys(restored.field_stats)
 
 
 def test_reduced_evidence_preserves_mutual_exclusion_annotations() -> None:
@@ -448,3 +473,62 @@ def test_reduced_evidence_uses_complete_equality_entropy_for_session_title_selec
 
     assert raw_best["session_title"].path == "$.title"
     assert reduced_best["session_title"].path == "$.title"
+
+
+def test_public_numeric_annotations_exclude_magnitudes_and_preserve_private_evidence() -> None:
+    """Coordinates, IDs, and unknown numeric content must not leak through distribution annotations."""
+    config = ProviderConfig(name=Provider.CLAUDE_CODE, description="Synthetic", sample_granularity="record")
+    summaries = []
+    for number in (12.3456789, 67.8912345):
+        evidence = collect_sample_evidence(
+            [{"latitude": number, "user_id": number, "arbitrary": number, "text": "synthetic", "items": [1, 2]}]
+        )
+        private = evidence.to_json()
+        assert evidence.field_stats["$.latitude"].numeric_distribution.minimum == number
+        schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
+        assert evidence.to_json() == private
+        properties = _object(schema["properties"])
+        summary = _object(_object(properties["latitude"])["x-polylogue-observed-distribution"])
+        assert summary["numeric"] == {"count": 1, "non_finite_count": 0}
+        summaries.append(summary["numeric"])
+        for name in ("latitude", "user_id", "arbitrary"):
+            node = _object(properties[name])
+            assert "x-polylogue-range" not in node
+            assert _object(node["x-polylogue-observed-distribution"])["numeric"] == summary["numeric"]
+        text_distribution = _object(_object(properties["text"])["x-polylogue-observed-distribution"])
+        assert "string_length" in text_distribution
+        items_distribution = _object(_object(properties["items"])["x-polylogue-observed-distribution"])
+        assert "array_length" in items_distribution
+        profile = _field_profiles(schema)
+        assert profile["$.latitude"]["numeric"] == summary["numeric"]
+        assert str(number) not in json.dumps({"schema": schema, "profile": profile})
+    assert summaries[0] == summaries[1]
+
+
+def test_public_timestamp_annotations_exclude_ranges_and_empirical_deltas() -> None:
+    """Timestamp role diagnostics and relations cannot reintroduce private numeric magnitudes."""
+    evidence = collect_sample_evidence(
+        [{"created_at": 1_700_000_000 + index, "updated_at": 1_700_000_500 + index} for index in range(4)]
+    )
+    assert detect_time_deltas(evidence.field_stats)
+    # Legacy reduced fields can carry numeric bounds without format counters.
+    for field in evidence.field_stats.values():
+        field.detected_formats.clear()
+    candidates = infer_semantic_roles(evidence.field_stats)
+    assert any("range" in candidate.evidence for candidate in candidates)
+    config = ProviderConfig(name=Provider.CLAUDE_CODE, description="Synthetic", sample_granularity="record")
+    schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
+    assert "x-polylogue-time-deltas" not in schema
+    for node in _object(schema["properties"]).values():
+        child = _object(node)
+        assert "x-polylogue-range" not in child
+        assert "range" not in _object(child.get("x-polylogue-evidence", {}))
+
+
+def test_schema_frequency_preserves_rare_observations() -> None:
+    """Rounding to three decimal places misrepresents observed fields as absent."""
+    from polylogue.schemas.generation.field_annotations import annotate_schema
+
+    stats = FieldStats(path="$.rare", total_samples=3_000_000, document_encountered_count=5)
+    schema = annotate_schema({"type": "string"}, {"$.rare": stats}, "$.rare")
+    assert schema["x-polylogue-frequency"] == 5 / 3_000_000

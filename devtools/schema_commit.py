@@ -39,7 +39,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Committed schema package root to write into (default: {DEFAULT_OUTPUT_DIR}).",
     )
-    parser.add_argument("--max-samples", type=int, default=None, help="Limit samples for generation.")
+    parser.add_argument(
+        "--max-samples", type=int, default=None, help="Archive-backed sample limit; incompatible with --source."
+    )
     parser.add_argument(
         "--full-corpus",
         action="store_true",
@@ -50,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-full-corpus",
         dest="full_corpus",
         action="store_false",
-        help="Generate from a capped sample window instead of the full corpus.",
+        help="Use an archive-backed sample window; incompatible with --source.",
     )
     parser.add_argument(
         "--privacy",
@@ -123,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     if not result.success:
         error = result.generation.error or "Schema generation failed"
         if args.json:
-            print(json.dumps({"provider": result.provider, "success": False, "error": error}, sort_keys=True))
+            print(json.dumps({**result.to_dict(), "error": error}, sort_keys=True))
         else:
             print(f"schema-commit: {error}", file=sys.stderr)
         return 1

@@ -212,11 +212,11 @@ class CategoricalSketch:
     buckets: Counter[int] = field(default_factory=Counter)
     registers: dict[int, int] = field(default_factory=dict)
 
-    def observe(self, value: str, *, count: int = 1) -> None:
+    def observe(self, value: str, *, count: int = 1, digest: bytes | None = None) -> None:
         if count <= 0:
             return
-        digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
-        hashed = int.from_bytes(digest[:8], "big")
+        value_digest = digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
+        hashed = int.from_bytes(value_digest[:8], "big")
         bucket = hashed & (_CATEGORICAL_BUCKETS - 1)
         self.count += count
         self.buckets[bucket] += count

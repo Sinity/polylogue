@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from itertools import repeat
@@ -28,7 +29,8 @@ SCHEMA_EVIDENCE_VERSION = 1
 _SHAPE_HASH_CAP = 512
 
 SchemaInput = Mapping[str, object]
-FieldStateByPath = dict[str, JSONDocument]
+FieldState = FieldStats | JSONDocument
+FieldStateByPath = dict[str, FieldState]
 
 
 def _state_int(value: JSONValue) -> int:
@@ -84,6 +86,28 @@ def _bounded_shape_evidence(structures: Iterable[JSONDocument]) -> tuple[tuple[s
     return tuple(sorted(hashes)), unretained_observations
 
 
+def _reduce_field_stats_in_place(stats_by_path: Mapping[str, FieldStats]) -> None:
+    """Discard raw collector state once only reduced evidence may leave the collector."""
+    for stats in stats_by_path.values():
+        stats.observed_values = Counter(stats.safe_observed_values)
+        stats.value_session_ids = {
+            value: set(stats.equality_session_tokens.get(hashlib.sha256(value.encode("utf-8")).hexdigest(), set()))
+            for value in stats.safe_observed_values
+        }
+        stats.values_per_session = {}
+        stats.string_lengths = []
+        stats.newline_counts = []
+        stats.numeric_values = []
+        stats.array_lengths = []
+        stats.object_key_counts = []
+        stats._ordered_samples = []
+        stats.documents_present = set()
+        stats.distinct_value_count = 0
+        stats.overflow_value_count = 0
+        stats._last_encountered_document = None
+        stats._last_non_null_document = None
+
+
 @dataclass(frozen=True)
 class SchemaEvidence:
     """A serializable sufficient-statistics summary with no source records."""
@@ -101,7 +125,10 @@ class SchemaEvidence:
 
     @property
     def field_stats(self) -> dict[str, FieldStats]:
-        return {path: deserialize_field_stats(state) for path, state in self.fields.items()}
+        return {
+            path: state if isinstance(state, FieldStats) else deserialize_field_stats(state)
+            for path, state in sorted(self.fields.items())
+        }
 
     @property
     def structure(self) -> JSONDocument:
@@ -113,7 +140,10 @@ class SchemaEvidence:
             "version": SCHEMA_EVIDENCE_VERSION,
             "current_structure": self.current_structure,
             "historical_structure": self.historical_structure,
-            "fields": {path: self.fields[path] for path in sorted(self.fields)},
+            "fields": {
+                path: serialize_field_stats(field) if isinstance(field, FieldStats) else field
+                for path, field in sorted(self.fields.items())
+            },
             "normalization_paths": list(self.normalization_paths),
             "denominators": {
                 "current_sources": self.current_source_count,
@@ -207,10 +237,12 @@ def collect_source_evidence(
         for _record in records_for_stats():
             pass
     current = observation.is_current if is_current is None else is_current
+    _reduce_field_stats_in_place(stats)
+    fields: FieldStateByPath = dict(stats) if current else {}
     return SchemaEvidence(
         current_structure=structure if current else {},
         historical_structure={} if current else structure,
-        fields={path: serialize_field_stats(field) for path, field in sorted(stats.items())} if current else {},
+        fields=fields,
         normalization_paths=tuple(sorted(dynamic_paths)),
         current_source_count=int(current),
         current_record_count=record_count if current else 0,
@@ -260,13 +292,15 @@ def collect_sample_evidence(
         observed_ats=observed_ats,
         dynamic_paths=dynamic_object_paths(structure),
     )
+    _reduce_field_stats_in_place(stats)
     hashes, unretained_shape_observation_lower_bound = _bounded_shape_evidence(
         observed_structure_schema(sample) for sample in samples
     )
+    fields: FieldStateByPath = dict(stats)
     return SchemaEvidence(
         current_structure=raw_structure,
         historical_structure={},
-        fields={path: serialize_field_stats(field) for path, field in sorted(stats.items())},
+        fields=fields,
         normalization_paths=tuple(sorted(dynamic_object_paths(structure))),
         current_source_count=len(samples),
         current_record_count=len(samples),

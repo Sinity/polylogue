@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -27,11 +25,6 @@ from polylogue.schemas.operator.models import (
 @dataclass(frozen=True)
 class _ConfigStub:
     db_path: Path
-
-
-@contextmanager
-def _allow_schema_generation(*_args: object, **_kwargs: object) -> Iterator[dict[str, object]]:
-    yield {}
 
 
 def test_schema_audit_returns_success_for_passing_report(
@@ -188,7 +181,6 @@ def test_schema_generate_forwards_generation_request(
 
     monkeypatch.setattr(schema_generate, "get_config", fake_get_config)
     monkeypatch.setattr(schema_generate, "infer_schema", fake_infer)
-    monkeypatch.setattr(schema_generate, "authorize_schema_generation", _allow_schema_generation)
 
     assert (
         schema_generate.main(
@@ -197,8 +189,6 @@ def test_schema_generate_forwards_generation_request(
                 "chatgpt",
                 "--max-samples",
                 "2",
-                "--schema-inference-receipt",
-                str(tmp_path / "receipt.json"),
             ]
         )
         == 0
@@ -248,7 +238,6 @@ def test_schema_generate_writes_aggregate_progress_receipt(
     receipt_path = tmp_path / "receipt.json"
     monkeypatch.setattr(schema_generate, "get_config", fake_get_config)
     monkeypatch.setattr(schema_generate, "infer_schema", fake_infer)
-    monkeypatch.setattr(schema_generate, "authorize_schema_generation", _allow_schema_generation)
 
     assert (
         schema_generate.main(
@@ -302,20 +291,9 @@ def test_schema_generate_cluster_without_manifest_fails(
 
     monkeypatch.setattr(schema_generate, "get_config", fake_get_config)
     monkeypatch.setattr(schema_generate, "infer_schema", fake_infer)
-    monkeypatch.setattr(schema_generate, "authorize_schema_generation", _allow_schema_generation)
 
-    assert (
-        schema_generate.main(
-            ["--provider", "chatgpt", "--cluster", "--schema-inference-receipt", str(tmp_path / "receipt.json")]
-        )
-        == 1
-    )
+    assert schema_generate.main(["--provider", "chatgpt", "--cluster"]) == 1
     assert "No samples found for clustering" in capsys.readouterr().err
-
-
-def test_schema_generate_direct_command_bypass_refuses_without_authoritative_receipt() -> None:
-    with pytest.raises(SystemExit):
-        schema_generate.main(["--provider", "chatgpt"])
 
 
 def test_schema_promote_forwards_cluster_request(

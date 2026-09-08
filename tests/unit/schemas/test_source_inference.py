@@ -396,6 +396,72 @@ def test_zip_members_and_jsonl_header_share_the_declared_native_source(tmp_path:
     assert provenance["source_included_native_source_revision_count"] == 2
 
 
+@pytest.mark.parametrize("with_spool", [False, True])
+def test_zip_changed_after_member_collection_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_spool: bool
+) -> None:
+    """A ZIP must still have its original bytes after member reduction.
+
+    Anti-vacuity: returning directly from the ZIP collector admits the stale
+    contribution and can cache it under a revision that no longer exists.
+    """
+    import zipfile
+
+    archive = tmp_path / "source.zip"
+    replacement = tmp_path / "replacement.zip"
+    records = "\n".join(
+        (
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": "stable-session",
+                    "version": "1.0.0",
+                    "message": {"role": "user", "content": "synthetic"},
+                }
+            ),
+            "",
+        )
+    )
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("session.jsonl", records)
+    with zipfile.ZipFile(replacement, "w") as zip_file:
+        zip_file.writestr("session.jsonl", records + "\n")
+    candidate = _SourceCandidate("claude-code", tmp_path, archive, "synthetic-zip")
+    spool_path = tmp_path / "contributions.sqlite" if with_spool else None
+
+    stable = _collect_candidate(candidate, spool_path=spool_path)
+    assert stable.terminal.outcome == "included"
+
+    original_collect_zip = source_inference_module._collect_zip_candidate
+
+    def replace_after_collection(
+        collected_candidate: _SourceCandidate,
+        revision: SourceRevision,
+        *,
+        dynamic_paths_by_element: dict[str, tuple[str, ...]],
+        include_statistics: bool,
+        metadata_only: bool,
+        spool_path: Path | None,
+    ) -> source_inference_module._CollectedCandidate:
+        collected = original_collect_zip(
+            collected_candidate,
+            revision,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+            include_statistics=include_statistics,
+            metadata_only=metadata_only,
+            spool_path=spool_path,
+        )
+        archive.write_bytes(replacement.read_bytes())
+        return collected
+
+    monkeypatch.setattr(source_inference_module, "_collect_zip_candidate", replace_after_collection)
+    changed = _collect_candidate(candidate, spool_path=spool_path)
+
+    assert changed.terminal.outcome == "changed_during_read"
+    assert changed.contributions == ()
+    assert changed.spool_path is None
+
+
 def test_record_source_uses_codex_whole_stream_admission(tmp_path: Path) -> None:
     """Anti-vacuity: classifying each line drops valid non-message Codex records."""
     from polylogue.archive.artifact_taxonomy import classify_artifact
@@ -801,19 +867,23 @@ def test_progress_reports_source_aggregate_phases_without_source_paths(tmp_path:
     )
     events: list[tuple[str, JSONDocument]] = []
 
-    infer_sources(
+    result = infer_sources(
         (SchemaSourceInput("claude-code", source),),
         cache_path=tmp_path / "source-cache.sqlite3",
         max_workers=1,
         progress=lambda phase, payload: events.append((phase, payload)),
     )
 
-    assert {phase for phase, _payload in events} >= {"inventory", "reduce"}
+    assert {phase for phase, _payload in events} >= {"inventory", "reduce", "revision_selection"}
     assert all(
         {"completed_candidates", "total_candidates", "input_bytes", "record_count"} <= payload.keys()
         for _, payload in events
     )
     assert all(str(source) not in json.dumps(payload) for _, payload in events)
+    selection = next(payload for phase, payload in events if phase == "revision_selection")
+    assert selection["record_count"] == 1
+    assert selection["input_bytes"] == source.stat().st_size
+    assert result.phase_timings_ms["revision_selection"] >= 0
 
 
 def test_reduced_cache_rows_survive_later_interruption_and_are_private(tmp_path: Path) -> None:
@@ -895,3 +965,184 @@ def test_claude_subagent_files_with_one_parent_session_remain_independent(tmp_pa
     )
     assert warm.cache_hits == 4
     assert warm_evidence.current_source_count == 2
+
+
+@pytest.mark.parametrize(
+    "source_key",
+    [
+        "src/private/config.py",
+        r"src\private\config.py",
+        "operator@example.invalid",
+        "private-plan.md",
+        ".env",
+        "README",
+    ],
+)
+def test_source_schema_hides_keys_in_small_content_maps(tmp_path: Path, source_key: str) -> None:
+    """Anti-vacuity: retaining small map keys publishes source filenames and addresses."""
+    source = tmp_path / "session.jsonl"
+    records = [
+        {"type": "user", "sessionId": "synthetic", "message": {"role": "user", "content": "hello"}},
+        {
+            "type": "file-history-snapshot",
+            "messageId": "synthetic-message",
+            "snapshot": {"trackedFileBackups": {source_key: {"version": 1}}},
+        },
+    ]
+    source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
+    result = generate_provider_schema_from_sources(
+        "claude-code",
+        source_inputs=(SchemaSourceInput("claude-code", source),),
+        cache_path=tmp_path / "cache.sqlite3",
+        max_workers=1,
+        privacy_config=None,
+    )
+    assert result.success
+    assert result.schema is not None
+    encoded = json.dumps(result.schema)
+    assert json.dumps(source_key)[1:-1] not in encoded
+    assert "trackedFileBackups" in encoded
+    assert "additionalProperties" in encoded
+    assert '"version"' in encoded
+
+
+@pytest.mark.parametrize("generation", ["legacy", "envelope"])
+def test_codex_schema_retains_wire_records_without_claiming_parser_support(tmp_path: Path, generation: str) -> None:
+    """Requiring normalized semantics drops entire rollouts with tools or telemetry."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+    from polylogue.sources.parsers.codex import is_supported_session_stream
+
+    message: JSONDocument = {
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": "synthetic"}],
+    }
+    records: list[JSONValue]
+    if generation == "legacy":
+        records = [
+            {"id": "legacy", "timestamp": "2024-01-01T00:00:00Z"},
+            {"record_type": "state"},
+            message,
+            {"type": "reasoning", "id": "reason", "summary": [], "encrypted_content": "synthetic"},
+            {"type": "function_call", "call_id": "call", "name": "tool", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call", "output": "synthetic"},
+        ]
+    else:
+        records = [
+            {"type": "session_meta", "payload": {"id": "envelope"}},
+            {"type": "response_item", "payload": message},
+            {"type": "inter_agent_communication_metadata", "payload": {"trigger_turn": True}},
+            {"type": "token_usage_record", "payload": {"usage": {"input_tokens": 10}}},
+        ]
+    path = tmp_path / "rollout.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records))
+    classification = classify_artifact(records, provider=Provider.CODEX, source_path=path)
+    assert classification.schema_eligible
+    assert not classification.parse_as_session
+    assert not is_supported_session_stream(records)
+    result = infer_sources((SchemaSourceInput("codex", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1)
+    assert result.terminal_counts == {"included": 1}
+    assert result.record_count == len(records)
+    assert sum(
+        SchemaEvidence.from_json(row).current_record_count
+        for rows in result.evidence_by_element.values()
+        for row in rows
+    ) == len(records)
+    assert not classify_artifact(
+        [*records, {"type": "invented_record"}], provider=Provider.CODEX, source_path=path
+    ).schema_eligible
+
+
+@pytest.mark.parametrize("turns", [False, True])
+@pytest.mark.parametrize("document_suffix", [".json", ".jsonl"])
+def test_gemini_checkpoint_stream_preserves_raw_records_and_document_cache(
+    tmp_path: Path, turns: bool, document_suffix: str
+) -> None:
+    """Checkpoint records must be observed without document reconstruction or losing cached documents."""
+    from polylogue.archive.artifact_taxonomy import classify_artifact
+    from polylogue.core.enums import Provider
+    from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources
+
+    root = tmp_path / "sources"
+    root.mkdir()
+    document: JSONDocument = {
+        "sessionId": "document-session",
+        "projectHash": "synthetic-project",
+        "kind": "main",
+        "startTime": "2026-01-01T00:00:00Z",
+        "lastUpdated": "2026-01-01T00:01:00Z",
+        "messages": [{"id": "document-turn", "type": "user", "content": "synthetic"}],
+    }
+    (root / f"document{document_suffix}").write_text(json.dumps(document))
+    inputs = (SchemaSourceInput("gemini-cli", root),)
+    cache = tmp_path / "cache.sqlite"
+    infer_sources(inputs, cache_path=cache, max_workers=1)
+    records: list[JSONValue] = [
+        {key: value for key, value in document.items() if key not in {"messages", "sessionId"}}
+        | {"sessionId": "checkpoint-session"}
+    ]
+    if turns:
+        records.extend(
+            [
+                {"id": "checkpoint-turn", "timestamp": "2026-01-01T00:00:01Z", "type": "user", "content": "synthetic"},
+                {"$set": {"lastUpdated": "2026-01-01T00:02:00Z"}},
+            ]
+        )
+    path = root / "checkpoint.jsonl"
+    path.write_text("\n".join(json.dumps(record) for record in records))
+    candidate = _SourceCandidate("gemini-cli", root, path, "synthetic-source")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    contributions, *_ = _collect_payload_evidence(
+        candidate,
+        SourceRevision("gemini-cli", path, "synthetic-source", digest, path.stat().st_size),
+        records,
+        dynamic_paths_by_element={},
+    )
+    assert len(contributions) == 1
+    assert contributions[0].declared_updated_at == (
+        1,
+        "2026-01-01T00:02:00.000000+00:00" if turns else "2026-01-01T00:01:00.000000+00:00",
+    )
+    artifact = classify_artifact(records, provider=Provider.GEMINI_CLI, source_path=path)
+    assert artifact.schema_eligible and not artifact.parse_as_session
+    upgraded = infer_sources(inputs, cache_path=cache, max_workers=1)
+    fresh = infer_sources(inputs, cache_path=tmp_path / "fresh.sqlite", max_workers=1)
+    assert upgraded.cache_phase_hits == {"structure": 1, "statistics": 1}
+    assert upgraded.evidence_by_element == fresh.evidence_by_element
+    stream = merge_evidence(
+        SchemaEvidence.from_json(item) for item in upgraded.evidence_by_element["session_record_stream"]
+    )
+    assert stream.current_source_count == 1
+    assert stream.current_record_count == len(records)
+    properties = stream.structure.get("properties")
+    assert isinstance(properties, dict)
+    assert "messages" not in properties
+    if turns:
+        assert "$set" in properties
+    bundle = build_provider_bundle_from_sources(
+        "gemini-cli",
+        source_inputs=inputs,
+        cache_path=cache,
+        max_workers=1,
+        privacy_config=None,
+        prior_catalog=None,
+    )
+    assert bundle.result.sample_count == 1 + len(records)
+    assert bundle.result.schema is not None
+    assert bundle.result.schema["x-polylogue-sample-granularity"] == "document"
+    stream_schema = next(iter(bundle.package_schemas.values()))["session_record_stream"]
+    assert stream_schema["x-polylogue-sample-granularity"] == "record"
+
+
+@pytest.mark.parametrize("invalid", [{"unrelated": True}, {"$set": "invalid"}])
+def test_gemini_checkpoint_rejects_unrecognized_records(tmp_path: Path, invalid: JSONDocument) -> None:
+    """A valid header must not admit arbitrary trailing data as a session record."""
+    path = tmp_path / "checkpoint.jsonl"
+    header = {"sessionId": "synthetic-session", "projectHash": "synthetic-project", "kind": "main"}
+    path.write_text("\n".join(json.dumps(record) for record in (header, invalid)))
+    result = infer_sources(
+        (SchemaSourceInput("gemini-cli", path),), cache_path=tmp_path / "cache.sqlite", max_workers=1
+    )
+    assert not result.evidence_by_element
+    assert result.terminal_reason_counts == {"no_schema_units": 1}
