@@ -108,6 +108,7 @@ class SourceInferenceResult:
 
     evidence_by_element: Mapping[str, tuple[JSONDocument, ...]]
     terminal_counts: dict[str, int]
+    terminal_reason_counts: dict[str, int]
     input_bytes: int
     record_count: int
     cache_hits: int
@@ -127,6 +128,7 @@ class SourceInferenceResult:
             "source_cache_hits": self.cache_hits,
             "source_cache_misses": self.cache_misses,
             "source_terminal_outcomes": dict(sorted(self.terminal_counts.items())),
+            "source_terminal_reasons": dict(sorted(self.terminal_reason_counts.items())),
             "source_phase_timings_ms": dict(sorted(self.phase_timings_ms.items())),
             "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
             "producer_version_missing_sources": self.producer_version_missing_sources,
@@ -237,6 +239,54 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
                 )
             )
     return tuple(sorted(candidates, key=lambda item: (item.provider, item.logical_source_id, str(item.path))))
+
+
+def _candidate_byte_count(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
+    """Refuse source classes that lack a source-evidence adapter before reading bytes."""
+    provider = Provider.from_string(candidate.provider)
+    byte_count = _candidate_byte_count(candidate.path)
+    if provider.value == "browser-capture":
+        return SourceTerminal("unsupported", byte_count, reason="browser_capture_adapter_unavailable")
+    recognition = recognize_source_class(provider, candidate.path)
+    if recognition is not None and recognition.source_class != "session":
+        return SourceTerminal(
+            "intentionally_excluded" if recognition.source_class == "non_session" else "unsupported",
+            byte_count,
+            reason=f"source_class_{recognition.source_class}",
+        )
+    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
+        return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
+    return None
+
+
+def _terminal_reason_code(terminal: SourceTerminal) -> str | None:
+    """Return a stable aggregate code without retaining parser or path text."""
+    if terminal.outcome == "included":
+        return None
+    if terminal.reason in {
+        "browser_capture_adapter_unavailable",
+        "sqlite_value_inference_not_supported",
+        "source_class_non_session",
+        "source_class_unsupported",
+        "invalid_zip",
+        "no_schema_units",
+        "no_schema_zip_members",
+        "partial_trailing_record",
+        "unreadable_source",
+    }:
+        return terminal.reason
+    if terminal.reason is not None and terminal.reason.startswith("malformed_jsonl_record:"):
+        return "malformed_jsonl_record"
+    if terminal.reason is not None and terminal.reason.startswith("malformed_json:"):
+        return "malformed_json"
+    return terminal.outcome
 
 
 def _stable_file_digest(path: Path) -> tuple[str, int]:
@@ -508,23 +558,9 @@ def _collect_candidate(
 ) -> _CollectedCandidate:
     """Read one member fully and construct one-pass evidence observations."""
     dynamic_paths_by_element = dynamic_paths_by_element or {}
-    provider = Provider.from_string(candidate.provider)
-    recognition = recognize_source_class(provider, candidate.path)
-    if recognition is not None and recognition.source_class != "session":
-        return _CollectedCandidate(
-            candidate,
-            None,
-            SourceTerminal(
-                "intentionally_excluded" if recognition.source_class == "non_session" else "unsupported",
-                reason=recognition.reason,
-            ),
-        )
-    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
-        return _CollectedCandidate(
-            candidate,
-            None,
-            SourceTerminal("unsupported", reason="sqlite_value_inference_not_supported"),
-        )
+    preflight = _preflight_terminal(candidate)
+    if preflight is not None:
+        return _CollectedCandidate(candidate, None, preflight)
     try:
         digest, byte_count = _stable_file_digest(candidate.path)
     except SourceInferenceError:
@@ -806,6 +842,8 @@ def infer_sources(
     candidates = inventory_schema_sources(inputs)
     inventory_ms = (time.monotonic_ns() - started) / 1_000_000
     terminal_counts: Counter[str] = Counter()
+    terminal_reason_counts: Counter[str] = Counter()
+    input_bytes_by_candidate: dict[_SourceCandidate, int] = {}
     cache_hits = 0
     cache_misses = 0
     completed = 0
@@ -837,14 +875,39 @@ def infer_sources(
     with SourceContributionCache(cache_path) as cache:
         misses: list[tuple[_SourceCandidate, str, int]] = []
         for candidate in candidates:
+            preflight = _preflight_terminal(candidate)
+            if preflight is not None:
+                terminal_counts[preflight.outcome] += 1
+                reason_code = _terminal_reason_code(preflight)
+                if reason_code is not None:
+                    terminal_reason_counts[reason_code] += 1
+                input_bytes_by_candidate[candidate] = preflight.byte_count
+                completed += 1
+                report("inventory", input_bytes=sum(input_bytes_by_candidate.values()))
+                continue
             try:
                 digest, byte_count = _stable_file_digest(candidate.path)
             except SourceInferenceError:
-                terminal_counts["changed_during_read"] += 1
+                terminal = SourceTerminal("changed_during_read", _candidate_byte_count(candidate.path))
+                terminal_counts[terminal.outcome] += 1
+                reason_code = _terminal_reason_code(terminal)
+                if reason_code is not None:
+                    terminal_reason_counts[reason_code] += 1
+                input_bytes_by_candidate[candidate] = terminal.byte_count
+                completed += 1
+                report("hash", input_bytes=sum(input_bytes_by_candidate.values()))
                 continue
             except OSError:
-                terminal_counts["decode_failed"] += 1
+                terminal = SourceTerminal("decode_failed", reason="unreadable_source")
+                terminal_counts[terminal.outcome] += 1
+                reason_code = _terminal_reason_code(terminal)
+                if reason_code is not None:
+                    terminal_reason_counts[reason_code] += 1
+                input_bytes_by_candidate[candidate] = terminal.byte_count
+                completed += 1
+                report("hash", input_bytes=sum(input_bytes_by_candidate.values()))
                 continue
+            input_bytes_by_candidate[candidate] = byte_count
             cached = cache.get(
                 _cache_key(candidate, digest, dynamic_paths_by_element=None, recipe_fingerprint=recipe_fingerprint)
             )
@@ -877,6 +940,11 @@ def infer_sources(
             ):
                 if item.terminal.outcome != "included" or item.revision is None:
                     terminal_counts[item.terminal.outcome] += 1
+                    reason_code = _terminal_reason_code(item.terminal)
+                    if reason_code is not None:
+                        terminal_reason_counts[reason_code] += 1
+                    completed += 1
+                    report("collect", input_bytes=sum(input_bytes_by_candidate.values()))
                     continue
                 cache.put(
                     CachedContribution(
@@ -1051,17 +1119,13 @@ def infer_sources(
         producer_version_missing_sources += int(not versions)
         producer_version_conflicting_sources += int(len(versions) > 1)
         producer_version_unrecognized_sources += int(unrecognized)
-    input_bytes = sum(
-        {
-            (candidate.logical_source_id, digest): byte_count
-            for candidate, digest, byte_count, _rows, _versions, _unrecognized in final
-        }.values()
-    )
+    input_bytes = sum(input_bytes_by_candidate.values())
     record_count = sum(contribution.record_count for _candidate, contribution in current_rows)
     report("reduce", force=True, records=record_count, input_bytes=input_bytes)
     return SourceInferenceResult(
         evidence_by_element={kind: tuple(rows) for kind, rows in sorted(evidence_by_element.items())},
         terminal_counts=dict(sorted(terminal_counts.items())),
+        terminal_reason_counts=dict(sorted(terminal_reason_counts.items())),
         input_bytes=input_bytes,
         record_count=record_count,
         cache_hits=cache_hits,
