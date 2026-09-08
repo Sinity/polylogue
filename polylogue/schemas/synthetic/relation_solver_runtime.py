@@ -186,6 +186,7 @@ class RelationConstraintSolverRuntimeMixin:
     fk_graph: ForeignKeyGraph
     time_deltas: list[TimeDeltaConstraint]
     mutual_exclusions: list[MutualExclusionGroup]
+    mutual_exclusions_by_parent: dict[str, tuple[MutualExclusionGroup, ...]]
     string_lengths: dict[str, StringLengthConstraint]
     _time_delta_cls: type[TimeDeltaConstraint]
     _mutual_exclusion_cls: type[MutualExclusionGroup]
@@ -209,13 +210,17 @@ class RelationConstraintSolverRuntimeMixin:
             )
 
     def _parse_mutual_exclusions(self, schema: SchemaRecord) -> None:
+        groups_by_parent: dict[str, list[MutualExclusionGroup]] = {}
         for annotation in _mutual_exclusion_annotations(schema):
-            self.mutual_exclusions.append(
-                self._mutual_exclusion_cls(
-                    parent_path=annotation.parent,
-                    field_names=frozenset(annotation.fields),
-                )
+            group = self._mutual_exclusion_cls(
+                parent_path=annotation.parent,
+                field_names=frozenset(annotation.fields),
             )
+            self.mutual_exclusions.append(group)
+            groups_by_parent.setdefault(group.parent_path, []).append(group)
+        self.mutual_exclusions_by_parent = {
+            parent_path: tuple(groups) for parent_path, groups in groups_by_parent.items()
+        }
 
     def _parse_string_lengths(self, schema: SchemaRecord) -> None:
         for annotation in _string_length_annotations(schema):
@@ -255,9 +260,7 @@ class RelationConstraintSolverRuntimeMixin:
         rng: random.Random,
     ) -> set[str]:
         result = set(field_names)
-        for group in self.mutual_exclusions:
-            if group.parent_path != parent_path:
-                continue
+        for group in self.mutual_exclusions_by_parent.get(parent_path, ()):
             overlap = result & group.field_names
             if len(overlap) > 1:
                 keeper = rng.choice(sorted(overlap))

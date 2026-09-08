@@ -8,12 +8,15 @@ cross-field consistency during synthetic data generation.
 from __future__ import annotations
 
 import gc
+import json
 import random
 import weakref
 
 import pytest
 
+from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.build_records import _coerce_schema
+from polylogue.schemas.synthetic.models import SchemaRecord
 from polylogue.schemas.synthetic.relations import (
     ForeignKeyGraph,
     MutualExclusionGroup,
@@ -23,6 +26,7 @@ from polylogue.schemas.synthetic.relations import (
 from polylogue.schemas.synthetic.relations import (
     RelationConstraintSolver as _RelationConstraintSolver,
 )
+from polylogue.schemas.synthetic.wire_formats import WireFormat
 
 
 def _solver(schema: object) -> _RelationConstraintSolver:
@@ -394,6 +398,79 @@ class TestRelationConstraintSolverMutualExclusion:
         candidates = {"x", "y", "z"}
         filtered = solver.filter_mutually_exclusive("$", candidates, rng)
         assert filtered == candidates
+
+    def test_generation_skips_unrelated_exclusion_groups_without_changing_seeded_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Generation looks up only the groups for its current object path."""
+
+        class _UnrelatedParentProbe:
+            comparisons = 0
+
+            def __ne__(self, _other: object) -> bool:
+                self.comparisons += 1
+                return True
+
+        root_groups = [
+            {"parent": "$", "fields": ["left", "middle"]},
+            {"parent": "$", "fields": ["right", "tail"]},
+        ]
+        compact_schema = {
+            "type": "object",
+            "properties": {
+                "left": {"type": "string"},
+                "middle": {"type": "string"},
+                "right": {"type": "string"},
+                "tail": {"type": "string"},
+                "nested": {"type": "object", "properties": {"value": {"type": "string"}}},
+            },
+            "x-polylogue-mutually-exclusive": root_groups,
+        }
+        unrelated_groups = [{"parent": f"$.unrelated_{index}", "fields": ["first", "second"]} for index in range(64)]
+        expanded_schema = {
+            **compact_schema,
+            "x-polylogue-mutually-exclusive": [
+                *root_groups,
+                *unrelated_groups,
+            ],
+        }
+        solver = _solver(expanded_schema)
+        assert solver.mutual_exclusions_by_parent["$"] == tuple(solver.mutual_exclusions[: len(root_groups)])
+
+        def generate(schema: object) -> bytes:
+            return SyntheticCorpus(_coerce_schema(schema), WireFormat(encoding="json"), "test").generate(
+                count=1,
+                messages_per_session=range(1, 2),
+                seed=17,
+            )[0]
+
+        compact_output = generate(compact_schema)
+        assert generate(expanded_schema) == compact_output
+
+        probes: list[_UnrelatedParentProbe] = []
+        original_init = _RelationConstraintSolver.__init__
+
+        def instrumented_init(
+            solver: _RelationConstraintSolver,
+            schema: SchemaRecord,
+            *,
+            max_string_length: int | None = None,
+        ) -> None:
+            original_init(solver, schema, max_string_length=max_string_length)
+            unrelated_group = next(group for group in solver.mutual_exclusions if group.parent_path == "$.unrelated_0")
+            probe = _UnrelatedParentProbe()
+            unrelated_group.parent_path = probe  # type: ignore[assignment]
+            probes.append(probe)
+
+        monkeypatch.setattr(_RelationConstraintSolver, "__init__", instrumented_init)
+
+        generated = json.loads(generate(expanded_schema))
+
+        assert len(set(generated) & {"left", "middle"}) == 1
+        assert len(set(generated) & {"right", "tail"}) == 1
+        assert probes
+        assert all(probe.comparisons == 0 for probe in probes)
 
     @pytest.mark.parametrize("seed", range(20))
     def test_never_co_populates_exclusive_fields(self, seed: int) -> None:

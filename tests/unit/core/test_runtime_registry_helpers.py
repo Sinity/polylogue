@@ -111,28 +111,34 @@ def test_resolved_package_version_prefers_default_latest_and_recommended() -> No
     assert _resolved_package_version(catalog, "v9") == "v9"
 
 
-def test_write_and_replace_provider_packages_remove_stale_versions(tmp_path: Path) -> None:
+def test_write_and_replace_provider_packages_retains_historical_versions(tmp_path: Path) -> None:
     registry = SchemaRegistry(storage_root=tmp_path / "schemas")
     old_catalog = _catalog(_package("v1"))
     new_catalog = _catalog(_package("v2"))
+    old_schema = {"type": "object", "properties": {"legacy": {"type": "string"}}}
+    new_schema = {"type": "object", "properties": {"current": {"type": "integer"}}}
 
     registry.replace_provider_packages(
         "chatgpt",
         old_catalog,
-        {"v1": {"session_document": {"type": "object"}}},
+        {"v1": {"session_document": old_schema}},
     )
-    old_manifest = registry._package_manifest_path("chatgpt", "v1")
-    assert old_manifest.exists()
 
     registry.replace_provider_packages(
         "chatgpt",
         new_catalog,
-        {"v2": {"session_document": {"type": "object"}}},
+        {"v2": {"session_document": new_schema}},
     )
 
-    assert not old_manifest.exists()
-    assert registry._package_manifest_path("chatgpt", "v2").exists()
-    assert "chatgpt" in registry.list_providers()
+    fresh_registry = SchemaRegistry(storage_root=tmp_path / "schemas")
+    assert fresh_registry.get_element_schema("chatgpt", version="v1") == old_schema
+    assert fresh_registry.get_element_schema("chatgpt", version="v2") == new_schema
+    historical = fresh_registry.get_package("chatgpt", "v1")
+    current = fresh_registry.get_package("chatgpt", "v2")
+    default = fresh_registry.get_package("chatgpt")
+    assert historical is not None and historical.observation_status == "historical"
+    assert current is not None and current.observation_status == "current"
+    assert default is not None and default.version == "v2"
 
 
 def test_replace_provider_packages_preflights_every_package_before_deleting_versions(tmp_path: Path) -> None:
