@@ -63,7 +63,7 @@ class SchemaSourceInput:
     root: Path
 
     def __post_init__(self) -> None:
-        Provider.from_string(self.provider)
+        _canonical_schema_provider(self.provider)
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,25 +169,38 @@ class _CollectedCandidate:
     producer_version_unrecognized: bool = False
 
 
+_EXPLICIT_SCHEMA_SUBJECTS = frozenset({"browser-capture"})
+
+
+def _canonical_schema_provider(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in _EXPLICIT_SCHEMA_SUBJECTS:
+        return normalized
+    return Provider.from_string(normalized).value
+
+
 def parse_schema_source_input(value: str) -> SchemaSourceInput:
     """Parse the explicit ``provider=path`` command argument."""
     provider, separator, path_text = value.partition("=")
     if not separator or not provider or not path_text:
         raise ValueError("schema source inputs must use provider=path")
-    return SchemaSourceInput(provider=Provider.from_string(provider).value, root=Path(path_text).expanduser())
+    return SchemaSourceInput(provider=_canonical_schema_provider(provider), root=Path(path_text).expanduser())
 
 
 def default_schema_source_inputs(*, provider: str) -> tuple[SchemaSourceInput, ...]:
     """Adapt executable watcher declarations without inventing path defaults."""
-    provider_token = Provider.from_string(provider)
+    subject = _canonical_schema_provider(provider)
     rows: list[SchemaSourceInput] = []
     for source in default_sources():
+        if source.name == subject:
+            rows.append(SchemaSourceInput(provider=subject, root=source.root))
+            continue
         try:
-            source_provider = Provider.from_string(source.name)
+            source_provider = _canonical_schema_provider(source.name)
         except ValueError:
             continue
-        if source_provider is provider_token:
-            rows.append(SchemaSourceInput(provider=provider_token.value, root=source.root))
+        if source_provider == subject:
+            rows.append(SchemaSourceInput(provider=subject, root=source.root))
     return tuple(rows)
 
 
@@ -203,7 +216,7 @@ def _canonical_inputs(inputs: Iterable[SchemaSourceInput]) -> tuple[SchemaSource
     """Keep one spelling per physical root/provider pair."""
     canonical: dict[tuple[str, str], SchemaSourceInput] = {}
     for source_input in inputs:
-        provider = Provider.from_string(source_input.provider).value
+        provider = _canonical_schema_provider(source_input.provider)
         key = provider, _root_identity(source_input.root)
         existing = canonical.get(key)
         if existing is None or str(source_input.root) < str(existing.root):
@@ -215,13 +228,14 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
     """Enumerate every admitted source candidate through watcher semantics."""
     candidates: list[_SourceCandidate] = []
     for source_input in _canonical_inputs(inputs):
-        provider = Provider.from_string(source_input.provider)
+        provider = _canonical_schema_provider(source_input.provider)
+        provider_token = Provider.from_string(provider)
         root = source_input.root
         watcher_source = WatchSource(
-            name=provider.value,
+            name=provider,
             root=root,
             suffixes=artifact_suffixes_for_provider(
-                provider,
+                provider_token,
                 defaults=(".json", ".jsonl", ".ndjson", ".zip", ".db", ".sqlite", ".sqlite3"),
             ),
         )
@@ -237,10 +251,10 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
             relative = Path(path.name) if root.is_file() else path.relative_to(root)
             candidates.append(
                 _SourceCandidate(
-                    provider=provider.value,
+                    provider=provider,
                     root=root,
                     path=path,
-                    logical_source_id=f"{provider.value}:{root_identity}:{relative.as_posix()}",
+                    logical_source_id=f"{provider}:{root_identity}:{relative.as_posix()}",
                 )
             )
     return tuple(sorted(candidates, key=lambda item: (item.provider, item.logical_source_id, str(item.path))))
@@ -255,10 +269,10 @@ def _candidate_byte_count(path: Path) -> int:
 
 def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
     """Refuse source classes that lack a source-evidence adapter before reading bytes."""
-    provider = Provider.from_string(candidate.provider)
     byte_count = _candidate_byte_count(candidate.path)
-    if provider.value == "browser-capture":
+    if candidate.provider == "browser-capture":
         return SourceTerminal("unsupported", byte_count, reason="browser_capture_adapter_unavailable")
+    provider = Provider.from_string(candidate.provider)
     if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".pb":
         return SourceTerminal("unsupported", byte_count, reason="antigravity_protobuf_adapter_unavailable")
     if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".md":
