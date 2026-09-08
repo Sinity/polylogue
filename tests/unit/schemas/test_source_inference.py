@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
 from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
 from polylogue.schemas.source_inference import SchemaSourceInput, infer_sources
@@ -41,7 +42,9 @@ def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path:
     assert result.sample_count > 0
     assert result.schema is not None
     assert result.schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
-    assert result.phase_receipt["source"]["source_terminal_outcomes"] == {"included": 1}
+    source_receipt = result.phase_receipt.get("source")
+    assert isinstance(source_receipt, dict)
+    assert source_receipt["source_terminal_outcomes"] == {"included": 1}
 
 
 def test_declared_json_array_accepts_fractional_values_and_one_file_source(tmp_path: Path) -> None:
@@ -261,7 +264,7 @@ def test_progress_reports_source_aggregate_phases_without_source_paths(tmp_path:
         + "\n",
         encoding="utf-8",
     )
-    events: list[tuple[str, dict[str, object]]] = []
+    events: list[tuple[str, JSONDocument]] = []
 
     infer_sources(
         (SchemaSourceInput("claude-code", source),),

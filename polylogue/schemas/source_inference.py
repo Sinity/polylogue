@@ -18,13 +18,15 @@ from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal, cast
 from uuid import UUID
 
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
+from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
@@ -83,7 +85,7 @@ class SourceTerminal:
     reason: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class SourceObservation:
     """A one-pass unit of source records for the evidence collector.
 
@@ -104,7 +106,7 @@ class SourceObservation:
 class SourceInferenceResult:
     """Reduced evidence and aggregate, public-safe run provenance."""
 
-    evidence_by_element: dict[str, tuple[dict[str, object], ...]]
+    evidence_by_element: dict[str, tuple[JSONDocument, ...]]
     terminal_counts: dict[str, int]
     input_bytes: int
     record_count: int
@@ -117,7 +119,7 @@ class SourceInferenceResult:
     producer_version_unrecognized_sources: int
     input_manifest_digest: str
 
-    def provenance(self) -> dict[str, object]:
+    def provenance(self) -> JSONDocument:
         """Return aggregate-only source provenance safe for package metadata."""
         return {
             "source_input_bytes": self.input_bytes,
@@ -148,7 +150,7 @@ class _SourceContribution:
 
     logical_source_id: str
     revision_sha256: str
-    evidence_by_element: dict[str, dict[str, object]]
+    evidence_by_element: dict[str, JSONDocument]
     record_count: int
     declared_updated_at: tuple[int, str] | None
 
@@ -283,7 +285,7 @@ def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
 
 
 def _iter_document_payloads(
-    open_handle: object,
+    open_handle: Callable[[], BinaryIO],
     path_name: str,
     *,
     byte_count: int,
@@ -399,7 +401,7 @@ def _collect_payload_evidence(
 
     provider = Provider.from_string(candidate.provider)
     config = resolve_provider_config(provider)
-    evidence_rows: dict[str, dict[str, object]] = {}
+    evidence_rows: dict[str, dict[str, SchemaEvidence]] = {}
     record_counts: Counter[str] = Counter()
     update_keys: dict[str, tuple[int, str] | None] = {}
     producer_versions: set[str] = set()
@@ -417,9 +419,8 @@ def _collect_payload_evidence(
             header_source_id = declared
         declared_source_id = hash_payload({"source": declared or header_source_id})
         update = _declared_update_key(provider, payload)
-        if update is not None and (
-            update_keys.get(declared_source_id) is None or update > update_keys[declared_source_id]
-        ):
+        prior_update = update_keys.get(declared_source_id)
+        if update is not None and (prior_update is None or update > prior_update):
             update_keys[declared_source_id] = update
         units = extract_schema_units_from_payload(
             [payload] if config.sample_granularity == "record" else payload,
@@ -452,7 +453,7 @@ def _collect_payload_evidence(
             record_counts[declared_source_id] += len(unit.schema_samples)
     contributions: list[_SourceContribution] = []
     for source_id, rows in sorted(evidence_rows.items()):
-        payload_by_element: dict[str, dict[str, object]] = {}
+        payload_by_element: dict[str, JSONDocument] = {}
         for element_kind, row in sorted(rows.items()):
             payload = row.to_json()
             if not isinstance(payload, dict):
@@ -629,7 +630,7 @@ def _collect_zip_candidate(
                             member_candidate,
                             member_revision,
                             _iter_document_payloads(
-                                lambda member=member: open_bounded_zip_entry(archive, member),
+                                partial(open_bounded_zip_entry, archive, member),
                                 member.filename,
                                 byte_count=member.file_size,
                             ),
@@ -685,13 +686,13 @@ def _source_recipe_fingerprint() -> str:
     return _fingerprint_sources(("polylogue/schemas/source_inference.py",), namespace="schema-source-evidence")
 
 
-def _serialize_contributions(contributions: Iterable[_SourceContribution]) -> dict[str, object]:
+def _serialize_contributions(contributions: Iterable[_SourceContribution]) -> JSONDocument:
     return {
         "contributions": [
             {
                 "source": item.logical_source_id,
                 "revision": item.revision_sha256,
-                "elements": item.evidence_by_element,
+                "elements": cast(JSONValue, item.evidence_by_element),
                 "records": item.record_count,
                 "updated": list(item.declared_updated_at) if item.declared_updated_at is not None else None,
             }
@@ -700,7 +701,7 @@ def _serialize_contributions(contributions: Iterable[_SourceContribution]) -> di
     }
 
 
-def _cached_contributions(payload: dict[str, object]) -> tuple[_SourceContribution, ...]:
+def _cached_contributions(payload: JSONDocument) -> tuple[_SourceContribution, ...]:
     rows = payload.get("contributions")
     if not isinstance(rows, list):
         raise SourceInferenceError("cached source evidence has no contribution list")
@@ -719,9 +720,9 @@ def _cached_contributions(payload: dict[str, object]) -> tuple[_SourceContributi
             raise SourceInferenceError("cached source contribution is invalid")
         if not isinstance(records, int) or isinstance(records, bool) or records < 0:
             raise SourceInferenceError("cached source contribution record count is invalid")
-        evidence_by_element: dict[str, dict[str, object]] = {}
+        evidence_by_element: dict[str, JSONDocument] = {}
         for kind, evidence in elements.items():
-            if not isinstance(kind, str) or not isinstance(evidence, dict):
+            if not isinstance(evidence, dict):
                 raise SourceInferenceError("cached source contribution element is invalid")
             evidence_by_element[kind] = evidence
         update_key: tuple[int, str] | None = None
@@ -739,9 +740,7 @@ def _cached_contributions(payload: dict[str, object]) -> tuple[_SourceContributi
     return tuple(result)
 
 
-def _historical_payload(payload: dict[str, object]) -> dict[str, object]:
-    from polylogue.schemas.generation.evidence import SchemaEvidence
-
+def _historical_payload(payload: JSONDocument) -> JSONDocument:
     evidence = SchemaEvidence.from_json(payload)
     return replace(
         evidence,
@@ -755,12 +754,12 @@ def _historical_payload(payload: dict[str, object]) -> dict[str, object]:
     ).to_json()
 
 
-def _merge_evidence_by_element(payloads: Iterable[dict[str, dict[str, object]]]) -> dict[str, object]:
-    groups: dict[str, list[dict[str, object]]] = {}
+def _merge_evidence_by_element(payloads: Iterable[dict[str, JSONDocument]]) -> dict[str, SchemaEvidence]:
+    groups: dict[str, list[JSONDocument]] = {}
     for source_payload in payloads:
         for element_kind, payload in source_payload.items():
             groups.setdefault(element_kind, []).append(payload)
-    from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
+    from polylogue.schemas.generation.evidence import merge_evidence
 
     return {
         element_kind: merge_evidence(SchemaEvidence.from_json(payload) for payload in rows)
@@ -788,6 +787,11 @@ def _cache_key(
             ),
         }
     )
+
+
+def _cached_versions(metadata: JSONDocument) -> tuple[str, ...]:
+    values = metadata.get("producer_versions")
+    return tuple(value for value in values if isinstance(value, str)) if isinstance(values, list) else ()
 
 
 def infer_sources(
@@ -853,7 +857,7 @@ def infer_sources(
                     digest,
                     byte_count,
                     _cached_contributions(cached.evidence),
-                    tuple(value for value in cached.metadata.get("producer_versions", []) if isinstance(value, str)),
+                    _cached_versions(cached.metadata),
                     bool(cached.metadata.get("producer_version_unrecognized")),
                 )
             )
@@ -1026,7 +1030,7 @@ def infer_sources(
         )
         current_rows.append(selected)
         historical_rows.extend(row for row in rows if row != selected)
-    evidence_by_element: dict[str, list[dict[str, object]]] = {}
+    evidence_by_element: dict[str, list[JSONDocument]] = {}
     for _candidate, contribution in current_rows:
         for kind, payload in contribution.evidence_by_element.items():
             evidence_by_element.setdefault(kind, []).append(payload)

@@ -36,7 +36,11 @@ from pathlib import Path
 
 from polylogue.core.json import JSONDocument
 from polylogue.schemas.generation.models import GenerationResult
-from polylogue.schemas.generation.workflow import generate_all_schemas
+from polylogue.schemas.generation.workflow import (
+    build_provider_bundle_from_sources,
+    generate_all_schemas,
+    persist_generated_provider_bundle,
+)
 from polylogue.schemas.operator.inference import privacy_config_from_payload
 from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitResult, SchemaVersionCommitReport
 from polylogue.schemas.operator.receipt import (
@@ -81,12 +85,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                 registry_before, provider_token, package.version, element_kinds
             )
 
+    source_bundle = None
     if request.source_inputs:
-        from polylogue.schemas.generation.workflow import (
-            build_provider_bundle_from_sources,
-            persist_generated_provider_bundle,
-        )
-
         source_bundle = build_provider_bundle_from_sources(
             request.provider,
             source_inputs=request.source_inputs,
@@ -119,6 +119,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     registry_after: SchemaRegistry | None = None
     if generation.success:
         if request.source_inputs:
+            if source_bundle is None:
+                raise AssertionError("source schema generation did not produce a bundle")
             persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
         registry_after = SchemaRegistry(storage_root=output_dir)
         catalog_after = registry_after.load_package_catalog(provider_token)
