@@ -106,7 +106,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         ),
         action_path=("read",),
         output_kind="human",
-        stdout_contains=("The module structure looks good", "Inspecting generated workload record"),
+        stdout_contains=("Inspecting generated workload record", "AssertionError: generated fixture mismatch"),
         required_affordance_ids=("read",),
     ),
     ExecutableWorkflowGoldenPath(
@@ -125,7 +125,7 @@ EXECUTABLE_WORKFLOW_GOLDEN_PATHS: tuple[ExecutableWorkflowGoldenPath, ...] = (
         ),
         action_path=("read",),
         output_kind="human",
-        stdout_contains=("context: 1 segment(s)", "The module structure looks good"),
+        stdout_contains=("context: 1 segment(s)", "Inspecting generated workload record"),
         required_affordance_ids=("read",),
     ),
     ExecutableWorkflowGoldenPath(
