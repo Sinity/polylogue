@@ -93,14 +93,27 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                 registry_before, provider_token, package.version, element_kinds
             )
 
-    generation_results = generate_all_schemas(
-        output_dir,
-        db_path=archive_location.active_index_path,
-        providers=[request.provider],
-        max_samples=request.max_samples,
-        privacy_config=privacy_config_from_payload(request.privacy_config),
-        full_corpus=request.full_corpus,
-    )
+    if request.source_inputs:
+        from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
+
+        generation_results = [
+            generate_provider_schema_from_sources(
+                request.provider,
+                source_inputs=request.source_inputs,
+                cache_path=request.source_cache_path,
+                max_workers=request.source_workers,
+                privacy_config=privacy_config_from_payload(request.privacy_config),
+            )
+        ]
+    else:
+        generation_results = generate_all_schemas(
+            output_dir,
+            db_path=archive_location.active_index_path,
+            providers=[request.provider],
+            max_samples=request.max_samples,
+            privacy_config=privacy_config_from_payload(request.privacy_config),
+            full_corpus=request.full_corpus,
+        )
     generation = (
         generation_results[0]
         if generation_results
@@ -113,6 +126,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     handoff: SchemaInferenceReceipt | None = None
     registry_after: SchemaRegistry | None = None
     if generation.success:
+        if request.source_inputs and generation.schema is not None:
+            SchemaRegistry(storage_root=output_dir).register_schema(provider_token, generation.schema)
         registry_after = SchemaRegistry(storage_root=output_dir)
         catalog_after = registry_after.load_package_catalog(provider_token)
         if catalog_after is not None:
