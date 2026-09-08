@@ -27,6 +27,7 @@ class CachedContribution:
     evidence: JSONDocument
     input_bytes: int
     record_count: int
+    metadata: JSONDocument
 
 
 class SourceContributionCache:
@@ -53,10 +54,16 @@ class SourceContributionCache:
                 schema_version INTEGER NOT NULL,
                 evidence_json TEXT NOT NULL,
                 input_bytes INTEGER NOT NULL CHECK (input_bytes >= 0),
-                record_count INTEGER NOT NULL CHECK (record_count >= 0)
+                record_count INTEGER NOT NULL CHECK (record_count >= 0),
+                metadata_json TEXT NOT NULL DEFAULT '{}'
             ) STRICT
             """
         )
+        columns = {row[1] for row in self._connection.execute("PRAGMA table_info(source_evidence_contributions)")}
+        if "metadata_json" not in columns:
+            self._connection.execute(
+                "ALTER TABLE source_evidence_contributions ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
         return self
 
     def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
@@ -71,7 +78,7 @@ class SourceContributionCache:
     def get(self, cache_key: str) -> CachedContribution | None:
         row = self._connection.execute(
             """
-            SELECT evidence_json, input_bytes, record_count
+            SELECT evidence_json, input_bytes, record_count, metadata_json
             FROM source_evidence_contributions
             WHERE cache_key = ? AND schema_version = ?
             """,
@@ -81,24 +88,27 @@ class SourceContributionCache:
             return None
         try:
             evidence = json.loads(row[0])
+            metadata = json.loads(row[3])
         except (TypeError, json.JSONDecodeError) as exc:
             raise SourceContributionCacheError("cached source evidence is not valid JSON") from exc
-        if not isinstance(evidence, dict):
+        if not isinstance(evidence, dict) or not isinstance(metadata, dict):
             raise SourceContributionCacheError("cached source evidence must be a JSON object")
-        return CachedContribution(cache_key, evidence, int(row[1]), int(row[2]))
+        return CachedContribution(cache_key, evidence, int(row[1]), int(row[2]), metadata)
 
     def put(self, contribution: CachedContribution) -> None:
         payload = json.dumps(contribution.evidence, sort_keys=True, separators=(",", ":"))
+        metadata = json.dumps(contribution.metadata, sort_keys=True, separators=(",", ":"))
         self._connection.execute(
             """
             INSERT INTO source_evidence_contributions
-                (cache_key, schema_version, evidence_json, input_bytes, record_count)
-            VALUES (?, ?, ?, ?, ?)
+                (cache_key, schema_version, evidence_json, input_bytes, record_count, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 schema_version = excluded.schema_version,
                 evidence_json = excluded.evidence_json,
                 input_bytes = excluded.input_bytes,
-                record_count = excluded.record_count
+                record_count = excluded.record_count,
+                metadata_json = excluded.metadata_json
             """,
             (
                 contribution.cache_key,
@@ -106,6 +116,7 @@ class SourceContributionCache:
                 payload,
                 contribution.input_bytes,
                 contribution.record_count,
+                metadata,
             ),
         )
 

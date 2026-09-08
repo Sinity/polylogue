@@ -57,12 +57,6 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
     parser.add_argument(
-        "--schema-inference-gate-receipt",
-        type=Path,
-        required=True,
-        help="Accepted PASS receipt from devtools gate schema-inference-gate.",
-    )
-    parser.add_argument(
         "--dry-run",
         "--check",
         dest="dry_run",
@@ -93,13 +87,11 @@ def main(argv: list[str] | None = None) -> int:
             SchemaCommitRequest(
                 provider=str(args.provider),
                 output_dir=output_dir,
-                archive_root=config.archive_root,
                 db_path=config.db_path,
                 max_samples=args.max_samples,
                 privacy_config=privacy_config,
                 full_corpus=bool(args.full_corpus),
                 dry_run=bool(args.dry_run),
-                schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
             )
         )
     except ValueError as exc:
@@ -124,7 +116,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {result.provider} -- {mode}")
         print(f"  sample_count={result.generation.sample_count}")
         if result.handoff is not None:
-            print(f"  handoff_digest={result.handoff.receipt_digest}")
+            input_manifest = result.handoff.input_manifests[0]
+            print(f"  input_manifest_digest={input_manifest.digest or input_manifest.unavailable_reason}")
             if result.handoff_path is not None:
                 print(f"  handoff_path={result.handoff_path}")
         for version_report in result.versions:

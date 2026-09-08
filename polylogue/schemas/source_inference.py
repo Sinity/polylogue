@@ -25,6 +25,7 @@ from polylogue.core.hashing import hash_payload
 from polylogue.core.json import JSONDecodeError, JSONValue, is_json_value, loads
 from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
+from polylogue.sources.decoder_zip import ZipBombError, ZipEntryValidator, open_bounded_zip_entry
 from polylogue.sources.live.watcher import WatchSource, default_sources
 from polylogue.sources.origin_specs import recognize_source_class
 from polylogue.sources.source_walk import _iter_source_entries
@@ -36,9 +37,11 @@ SourceOutcome = Literal[
     "decode_failed",
     "changed_during_read",
     "partial_trailing_record",
+    "too_large",
 ]
 
 _RECIPE_VERSION = "source-evidence-v1"
+_MAX_UNSTREAMABLE_DOCUMENT_BYTES = 32 * 1024 * 1024
 
 
 class SourceInferenceError(RuntimeError):
@@ -98,13 +101,16 @@ class SourceObservation:
 class SourceInferenceResult:
     """Reduced evidence and aggregate, public-safe run provenance."""
 
-    evidence_payloads: tuple[dict[str, object], ...]
+    evidence_by_element: dict[str, tuple[dict[str, object], ...]]
     terminal_counts: dict[str, int]
     input_bytes: int
     record_count: int
     cache_hits: int
     cache_misses: int
     phase_timings_ms: dict[str, float]
+    producer_version_counts: dict[str, int]
+    producer_version_missing_sources: int
+    producer_version_conflicting_sources: int
 
     def provenance(self) -> dict[str, object]:
         """Return aggregate-only source provenance safe for package metadata."""
@@ -115,6 +121,9 @@ class SourceInferenceResult:
             "source_cache_misses": self.cache_misses,
             "source_terminal_outcomes": dict(sorted(self.terminal_counts.items())),
             "source_phase_timings_ms": dict(sorted(self.phase_timings_ms.items())),
+            "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
+            "producer_version_missing_sources": self.producer_version_missing_sources,
+            "producer_version_conflicting_sources": self.producer_version_conflicting_sources,
         }
 
 
@@ -131,7 +140,8 @@ class _CollectedCandidate:
     candidate: _SourceCandidate
     revision: SourceRevision | None
     terminal: SourceTerminal
-    evidence_payload: dict[str, object] | None = None
+    evidence_by_element: dict[str, dict[str, object]] | None = None
+    producer_versions: tuple[str, ...] = ()
 
 
 def parse_schema_source_input(value: str) -> SchemaSourceInput:
@@ -210,56 +220,125 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
     return tuple(sorted(candidates, key=lambda item: (item.provider, item.logical_source_id, str(item.path))))
 
 
-def _read_stable_bytes(path: Path) -> tuple[bytes, str, int]:
+def _stable_file_digest(path: Path) -> tuple[str, int]:
+    """Hash a member without buffering its source text in memory."""
     before = path.stat()
-    data = path.read_bytes()
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
     after = path.stat()
     before_identity = before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns
     after_identity = after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns
-    if before_identity != after_identity or len(data) != before.st_size:
+    if before_identity != after_identity:
         raise SourceInferenceError("changed_during_read")
-    return data, hashlib.sha256(data).hexdigest(), len(data)
+    return digest.hexdigest(), before.st_size
 
 
-def _records_from_jsonl(data: bytes) -> tuple[tuple[JSONValue, ...], SourceTerminal | None]:
-    records: list[JSONValue] = []
-    lines = data.splitlines(keepends=True)
-    for index, line in enumerate(lines):
+def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
+    """Decode JSONL record by record and fail closed on incomplete input."""
+    for line_number, line in enumerate(handle, start=1):
         if not line.strip():
             continue
-        if not line.endswith((b"\n", b"\r")) and index == len(lines) - 1:
-            return (), SourceTerminal("partial_trailing_record", reason="trailing_jsonl_record_not_terminated")
+        if not line.endswith((b"\n", b"\r")):
+            raise SourceInferenceError("partial_trailing_record")
         try:
             value = loads(line)
-        except JSONDecodeError:
-            return (), SourceTerminal("decode_failed", reason="malformed_jsonl_record")
+        except JSONDecodeError as exc:
+            raise SourceInferenceError(f"malformed_jsonl_record:{line_number}") from exc
         if not is_json_value(value):
-            return (), SourceTerminal("decode_failed", reason="non_json_value")
-        records.append(value)
-    return tuple(records), None
+            raise SourceInferenceError("non_json_value")
+        yield value
 
 
-def _payloads_from_member_bytes(path: Path, data: bytes) -> tuple[tuple[JSONValue, ...], SourceTerminal | None]:
-    suffix = path.suffix.lower()
-    if suffix in {".jsonl", ".ndjson"}:
-        return _records_from_jsonl(data)
-    try:
-        payload = loads(data)
-    except JSONDecodeError:
-        return (), SourceTerminal("decode_failed", reason="malformed_json")
-    if not is_json_value(payload):
-        return (), SourceTerminal("decode_failed", reason="non_json_value")
-    return (payload,), None
+def _iter_document_payloads(
+    open_handle: object,
+    path_name: str,
+    *,
+    byte_count: int,
+) -> Iterator[JSONValue]:
+    """Stream top-level export arrays without materializing whole exports."""
+    import ijson
+
+    for prefix in ("item", "conversations.item", "sessions.item"):
+        found = False
+        try:
+            with open_handle() as handle:
+                for value in ijson.items(handle, prefix):
+                    found = True
+                    if not is_json_value(value):
+                        raise SourceInferenceError("non_json_value")
+                    yield value
+        except ijson.JSONError as exc:
+            raise SourceInferenceError(f"malformed_json:{path_name}") from exc
+        if found:
+            return
+    if byte_count > _MAX_UNSTREAMABLE_DOCUMENT_BYTES:
+        raise SourceInferenceError("too_large_unstreamable_document")
+    with open_handle() as handle:
+        try:
+            value = loads(handle.read())
+        except JSONDecodeError as exc:
+            raise SourceInferenceError(f"malformed_json:{path_name}") from exc
+    if not is_json_value(value):
+        raise SourceInferenceError("non_json_value")
+    yield value
 
 
-def _observations_for_payloads(
+def _iter_file_payloads(path: Path, *, byte_count: int) -> Iterator[JSONValue]:
+    if path.suffix.lower() in {".jsonl", ".ndjson"}:
+        with path.open("rb") as handle:
+            yield from _iter_jsonl_payloads(handle)
+        return
+    yield from _iter_document_payloads(lambda: path.open("rb"), str(path), byte_count=byte_count)
+
+
+def _native_source_id(provider: Provider, payload: JSONValue, fallback: str) -> str:
+    """Return the provider-native session identifier when the record declares one.
+
+    The collector hashes this private token before retaining equality evidence.
+    A path-derived fallback is needed for source formats without a session key,
+    but it must never replace a declared native identity.
+    """
+    if not isinstance(payload, dict):
+        return fallback
+    if provider is Provider.CLAUDE_CODE:
+        session_id = payload.get("sessionId")
+        if isinstance(session_id, str) and session_id:
+            return f"claude-code:{session_id}"
+    if provider is Provider.CODEX and payload.get("type") == "session_meta":
+        session_payload = payload.get("payload")
+        if isinstance(session_payload, dict):
+            session_id = session_payload.get("id")
+            if isinstance(session_id, str) and session_id:
+                return f"codex:{session_id}"
+    return fallback
+
+
+def _collect_payload_evidence(
     candidate: _SourceCandidate,
     revision: SourceRevision,
     payloads: Iterable[JSONValue],
-) -> tuple[SourceObservation, ...]:
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]],
+) -> tuple[dict[str, dict[str, object]], int, tuple[str, ...]]:
+    """Reduce payloads as they stream, retaining no decoded source records."""
+    from polylogue.schemas.generation.evidence import collect_source_evidence, merge_evidence
+
     config = resolve_provider_config(Provider.from_string(candidate.provider))
-    observations: list[SourceObservation] = []
+    evidence_rows: dict[str, list[object]] = {}
+    record_count = 0
+    producer_versions: set[str] = set()
+    logical_source_id = candidate.logical_source_id
     for payload_index, payload in enumerate(payloads):
+        producer_versions.update(_declared_producer_versions(Provider.from_string(candidate.provider), (payload,)))
+        declared_source_id = _native_source_id(
+            Provider.from_string(candidate.provider),
+            payload,
+            f"{candidate.logical_source_id}:{payload_index}",
+        )
+        if declared_source_id != f"{candidate.logical_source_id}:{payload_index}":
+            logical_source_id = declared_source_id
         units = extract_schema_units_from_payload(
             payload,
             source_name=Provider.from_string(candidate.provider),
@@ -268,21 +347,54 @@ def _observations_for_payloads(
             config=config,
             full_corpus=True,
         )
-        for unit_index, unit in enumerate(units):
-            observations.append(
-                SourceObservation(
-                    logical_source_id=f"{candidate.logical_source_id}:{payload_index}:{unit_index}",
-                    revision_sha256=revision.revision_sha256,
-                    subject=candidate.provider,
-                    element_kind=unit.artifact_kind,
-                    records=unit.schema_samples,
+        for unit in units:
+            evidence_rows.setdefault(unit.artifact_kind, []).append(
+                collect_source_evidence(
+                    SourceObservation(
+                        logical_source_id=logical_source_id,
+                        revision_sha256=revision.revision_sha256,
+                        subject=candidate.provider,
+                        element_kind=unit.artifact_kind,
+                        records=unit.schema_samples,
+                    ),
+                    dynamic_paths=dynamic_paths_by_element.get(unit.artifact_kind, ()),
                 )
             )
-    return tuple(observations)
+            record_count += len(unit.schema_samples)
+    payloads: dict[str, dict[str, object]] = {}
+    for element_kind, rows in sorted(evidence_rows.items()):
+        payload = merge_evidence(rows).to_json()
+        if not isinstance(payload, dict):
+            raise SourceInferenceError("source evidence must serialize to a JSON object")
+        payloads[element_kind] = payload
+    return payloads, record_count, tuple(sorted(producer_versions))
 
 
-def _collect_candidate(candidate: _SourceCandidate) -> _CollectedCandidate:
+def _declared_producer_versions(provider: Provider, payloads: Iterable[JSONValue]) -> tuple[str, ...]:
+    """Extract only provider-declared release evidence, never generic keys."""
+    versions: set[str] = set()
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        if provider is Provider.CLAUDE_CODE:
+            version = payload.get("version")
+            if isinstance(version, str) and version:
+                versions.add(version)
+        elif provider is Provider.CODEX and payload.get("type") == "session_meta":
+            session_payload = payload.get("payload")
+            if isinstance(session_payload, dict):
+                version = session_payload.get("cli_version")
+                if isinstance(version, str) and version:
+                    versions.add(version)
+    return tuple(sorted(versions))
+
+
+def _collect_candidate(
+    candidate: _SourceCandidate,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]] | None = None,
+) -> _CollectedCandidate:
     """Read one member fully and construct one-pass evidence observations."""
+    dynamic_paths_by_element = dynamic_paths_by_element or {}
     provider = Provider.from_string(candidate.provider)
     recognition = recognize_source_class(provider, candidate.path)
     if recognition is not None and recognition.source_class != "session":
@@ -301,7 +413,7 @@ def _collect_candidate(candidate: _SourceCandidate) -> _CollectedCandidate:
             SourceTerminal("unsupported", reason="sqlite_value_inference_not_supported"),
         )
     try:
-        data, digest, byte_count = _read_stable_bytes(candidate.path)
+        digest, byte_count = _stable_file_digest(candidate.path)
     except SourceInferenceError:
         return _CollectedCandidate(candidate, None, SourceTerminal("changed_during_read"))
     except OSError:
@@ -314,88 +426,142 @@ def _collect_candidate(candidate: _SourceCandidate) -> _CollectedCandidate:
         byte_count=byte_count,
     )
     if candidate.path.suffix.lower() == ".zip":
-        return _collect_zip_candidate(candidate, revision, data)
-    payloads, terminal = _payloads_from_member_bytes(candidate.path, data)
-    if terminal is not None:
-        return _CollectedCandidate(candidate, revision, terminal)
-    observations = _observations_for_payloads(candidate, revision, payloads)
-    if not observations:
+        return _collect_zip_candidate(candidate, revision, dynamic_paths_by_element=dynamic_paths_by_element)
+    try:
+        evidence_by_element, record_count, producer_versions = _collect_payload_evidence(
+            candidate,
+            revision,
+            _iter_file_payloads(candidate.path, byte_count=byte_count),
+            dynamic_paths_by_element=dynamic_paths_by_element,
+        )
+    except SourceInferenceError as exc:
+        reason = str(exc)
+        outcome: SourceOutcome = (
+            "partial_trailing_record"
+            if reason == "partial_trailing_record"
+            else "too_large"
+            if reason.startswith("too_large")
+            else "decode_failed"
+        )
+        return _CollectedCandidate(candidate, revision, SourceTerminal(outcome, byte_count, reason=reason))
+    if not evidence_by_element:
         return _CollectedCandidate(
             candidate, revision, SourceTerminal("unsupported", byte_count, reason="no_schema_units")
         )
-    record_count = sum(len(observation.records) for observation in observations)  # type: ignore[arg-type]
     return _CollectedCandidate(
         candidate,
         revision,
         SourceTerminal("included", byte_count, record_count),
-        _collect_evidence_payload(observations),
+        evidence_by_element,
+        producer_versions,
     )
 
 
-def _collect_zip_candidate(candidate: _SourceCandidate, revision: SourceRevision, data: bytes) -> _CollectedCandidate:
+def _collect_zip_candidate(
+    candidate: _SourceCandidate,
+    revision: SourceRevision,
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]],
+) -> _CollectedCandidate:
     """Stream supported archive members without extracting them to a source root."""
-    del data  # zipfile reopens the verified path; stable read is checked again per member bytes.
-    observations: list[SourceObservation] = []
+    evidence_payloads: dict[str, list[dict[str, object]]] = {}
     byte_count = 0
     record_count = 0
+    producer_versions: set[str] = set()
     try:
         with zipfile.ZipFile(candidate.path) as archive:
-            members = [member for member in archive.infolist() if not member.is_dir()]
+            validator = ZipEntryValidator(candidate.provider, cursor_state=None, zip_path=candidate.path)
+            members = validator.filter_entries(archive.infolist(), allowed_suffixes=(".json", ".jsonl", ".ndjson"))
             for member in sorted(members, key=lambda item: item.filename):
                 member_path = Path(member.filename)
-                if member_path.suffix.lower() not in {".json", ".jsonl", ".ndjson"}:
-                    continue
-                member_data = archive.read(member)
-                member_digest = hashlib.sha256(member_data).hexdigest()
+                with open_bounded_zip_entry(archive, member) as member_handle:
+                    member_digest_builder = hashlib.sha256()
+                    for chunk in iter(lambda: member_handle.read(1024 * 1024), b""):
+                        member_digest_builder.update(chunk)
+                member_digest = member_digest_builder.hexdigest()
                 member_revision = SourceRevision(
                     provider=revision.provider,
                     path=candidate.path,
                     logical_source_id=f"{candidate.logical_source_id}:zip:{member.filename}",
                     revision_sha256=member_digest,
-                    byte_count=len(member_data),
+                    byte_count=member.file_size,
                 )
-                payloads, terminal = _payloads_from_member_bytes(member_path, member_data)
-                if terminal is not None:
-                    continue
                 member_candidate = _SourceCandidate(
                     provider=candidate.provider,
                     root=candidate.root,
                     path=member_path,
                     logical_source_id=member_revision.logical_source_id,
                 )
-                member_observations = _observations_for_payloads(member_candidate, member_revision, payloads)
-                observations.extend(member_observations)
-                byte_count += len(member_data)
-                record_count += sum(len(observation.records) for observation in member_observations)  # type: ignore[arg-type]
-    except (OSError, zipfile.BadZipFile):
+                try:
+                    if member_path.suffix.lower() in {".jsonl", ".ndjson"}:
+                        with open_bounded_zip_entry(archive, member) as member_handle:
+                            payloads, member_records, member_versions = _collect_payload_evidence(
+                                member_candidate,
+                                member_revision,
+                                _iter_jsonl_payloads(member_handle),
+                                dynamic_paths_by_element=dynamic_paths_by_element,
+                            )
+                    else:
+                        payloads, member_records, member_versions = _collect_payload_evidence(
+                            member_candidate,
+                            member_revision,
+                            _iter_document_payloads(
+                                lambda member=member: open_bounded_zip_entry(archive, member),
+                                member.filename,
+                                byte_count=member.file_size,
+                            ),
+                            dynamic_paths_by_element=dynamic_paths_by_element,
+                        )
+                except (SourceInferenceError, ZipBombError, OSError) as exc:
+                    return _CollectedCandidate(
+                        candidate,
+                        revision,
+                        SourceTerminal("decode_failed", byte_count, reason=str(exc)),
+                    )
+                producer_versions.update(member_versions)
+                if not payloads:
+                    continue
+                for element_kind, payload in payloads.items():
+                    evidence_payloads.setdefault(element_kind, []).append(payload)
+                byte_count += member.file_size
+                record_count += member_records
+    except (OSError, ZipBombError, zipfile.BadZipFile):
         return _CollectedCandidate(candidate, revision, SourceTerminal("decode_failed", reason="invalid_zip"))
-    if not observations:
+    if not evidence_payloads:
         return _CollectedCandidate(candidate, revision, SourceTerminal("unsupported", reason="no_schema_zip_members"))
+    from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
+
+    evidence_by_element: dict[str, dict[str, object]] = {}
+    for element_kind, payloads in sorted(evidence_payloads.items()):
+        evidence_payload = merge_evidence(SchemaEvidence.from_json(payload) for payload in payloads).to_json()
+        if not isinstance(evidence_payload, dict):
+            raise SourceInferenceError("source evidence must serialize to a JSON object")
+        evidence_by_element[element_kind] = evidence_payload
     return _CollectedCandidate(
         candidate,
         revision,
         SourceTerminal("included", byte_count, record_count),
-        _collect_evidence_payload(tuple(observations)),
+        evidence_by_element,
+        tuple(sorted(producer_versions)),
     )
 
 
-def _collect_evidence_payload(observations: tuple[SourceObservation, ...]) -> dict[str, object]:
-    """Run the statistics-owned collector inside the bounded source worker."""
-    from polylogue.schemas.generation.evidence import collect_source_evidence, merge_evidence
-
-    evidence = merge_evidence(collect_source_evidence(observation) for observation in observations)
-    payload = evidence.to_json()
-    if not isinstance(payload, dict):
-        raise SourceInferenceError("source evidence must serialize to a JSON object")
-    return payload
-
-
-def _cache_key(candidate: _SourceCandidate, revision_sha256: str) -> str:
+def _cache_key(
+    candidate: _SourceCandidate,
+    revision_sha256: str,
+    *,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]] | None,
+) -> str:
     return hash_payload(
         {
             "recipe": _RECIPE_VERSION,
             "subject": candidate.provider,
             "revision_sha256": revision_sha256,
+            "dynamic_paths": (
+                {kind: list(paths) for kind, paths in sorted(dynamic_paths_by_element.items())}
+                if dynamic_paths_by_element is not None
+                else None
+            ),
         }
     )
 
@@ -405,20 +571,49 @@ def _bounded_collected_candidates(
     candidates: Iterable[_SourceCandidate],
     *,
     limit: int,
+    dynamic_paths_by_element: dict[str, tuple[str, ...]],
 ) -> Iterator[_CollectedCandidate]:
     """Yield source-worker results in input order without an unbounded queue."""
     iterator = iter(candidates)
     pending = []
     for _ in range(limit):
         try:
-            pending.append(executor.submit(_collect_candidate, next(iterator)))
+            pending.append(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
         except StopIteration:
             break
     while pending:
         future = pending.pop(0)
         yield future.result()
         with suppress(StopIteration):
-            pending.append(executor.submit(_collect_candidate, next(iterator)))
+            pending.append(executor.submit(_collect_candidate, next(iterator), dynamic_paths_by_element))
+
+
+def _evidence_payloads_by_element(payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    elements = payload.get("elements")
+    if not isinstance(elements, dict):
+        raise SourceInferenceError("cached source evidence has no element partition")
+    result: dict[str, dict[str, object]] = {}
+    for element_kind, evidence in elements.items():
+        if not isinstance(element_kind, str) or not isinstance(evidence, dict):
+            raise SourceInferenceError("cached source evidence element is invalid")
+        result[element_kind] = evidence
+    return result
+
+
+def _merge_evidence_by_element(
+    payloads: Iterable[dict[str, dict[str, object]]],
+) -> dict[str, object]:
+    """Merge only comparable artifact kinds; session and adjunct evidence stay apart."""
+    groups: dict[str, list[dict[str, object]]] = {}
+    for source_payload in payloads:
+        for element_kind, payload in source_payload.items():
+            groups.setdefault(element_kind, []).append(payload)
+    from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
+
+    return {
+        element_kind: merge_evidence(SchemaEvidence.from_json(payload) for payload in rows)
+        for element_kind, rows in sorted(groups.items())
+    }
 
 
 def infer_sources(
@@ -437,66 +632,148 @@ def infer_sources(
     candidates = inventory_schema_sources(inputs)
     inventory_ms = (time.monotonic_ns() - started) / 1_000_000
     terminal_counts: Counter[str] = Counter()
-    evidence_payloads: list[dict[str, object]] = []
     input_bytes = 0
     record_count = 0
     cache_hits = 0
     cache_misses = 0
+    producer_version_counts: Counter[str] = Counter()
+    producer_version_missing_sources = 0
+    producer_version_conflicting_sources = 0
     collect_started = time.monotonic_ns()
 
-    # Hashing establishes immutable input identity before cache selection.
-    # Cache hits bypass decode and field statistics; misses run those CPU steps
-    # in bounded workers.  The coordinator alone owns SQLite transactions.
-    misses: list[_SourceCandidate] = []
+    # A first reduced-evidence pass determines global dynamic-key paths.  Its
+    # cache rows let a warm run derive exactly the same normalization policy
+    # without reopening source payloads.  Changed members are read a second
+    # time only when that policy is known, so field denominators never merge
+    # values collected under incompatible normalization.
+    preliminary_payloads: list[dict[str, dict[str, object]]] = []
+    revisions: dict[_SourceCandidate, tuple[str, int]] = {}
     with SourceContributionCache(cache_path) as cache:
+        preliminary_misses: list[_SourceCandidate] = []
         for candidate in candidates:
             try:
-                _data, revision_sha256, byte_count = _read_stable_bytes(candidate.path)
+                revision_sha256, byte_count = _stable_file_digest(candidate.path)
             except SourceInferenceError:
                 terminal_counts["changed_during_read"] += 1
                 continue
             except OSError:
                 terminal_counts["decode_failed"] += 1
                 continue
-            cached = cache.get(_cache_key(candidate, revision_sha256))
+            cached = cache.get(_cache_key(candidate, revision_sha256, dynamic_paths_by_element=None))
             if cached is None:
-                misses.append(candidate)
+                preliminary_misses.append(candidate)
                 continue
-            evidence_payloads.append(cached.evidence)
+            cached_payloads = _evidence_payloads_by_element(cached.evidence)
+            preliminary_payloads.append(cached_payloads)
+            revisions[candidate] = revision_sha256, byte_count
             terminal_counts["included"] += 1
             input_bytes += byte_count
             record_count += cached.record_count
             cache_hits += 1
+            versions = cached.metadata.get("producer_versions", [])
+            if isinstance(versions, list) and all(isinstance(version, str) for version in versions):
+                producer_version_counts.update(versions)
+                producer_version_missing_sources += int(not versions)
+                producer_version_conflicting_sources += int(len(versions) > 1)
 
         with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
-            collected = _bounded_collected_candidates(executor, misses, limit=max(1, max_workers) * 2)
-            for item in collected:
+            for item in _bounded_collected_candidates(
+                executor,
+                preliminary_misses,
+                limit=max(1, max_workers) * 2,
+                dynamic_paths_by_element={},
+            ):
                 terminal_counts[item.terminal.outcome] += 1
                 input_bytes += item.terminal.byte_count
                 record_count += item.terminal.record_count
                 if item.terminal.outcome != "included":
                     continue
-                if item.revision is None or item.evidence_payload is None:
-                    raise SourceInferenceError("included source candidate has no evidence payload")
+                if item.revision is None or item.evidence_by_element is None:
+                    raise SourceInferenceError("included source candidate has no preliminary evidence")
+                revisions[item.candidate] = item.revision.revision_sha256, item.terminal.byte_count
                 cache.put(
                     CachedContribution(
-                        cache_key=_cache_key(item.candidate, item.revision.revision_sha256),
-                        evidence=item.evidence_payload,
+                        cache_key=_cache_key(
+                            item.candidate, item.revision.revision_sha256, dynamic_paths_by_element=None
+                        ),
+                        evidence={"elements": item.evidence_by_element},
                         input_bytes=item.terminal.byte_count,
                         record_count=item.terminal.record_count,
+                        metadata={"producer_versions": list(item.producer_versions)},
                     )
                 )
-                evidence_payloads.append(item.evidence_payload)
+                preliminary_payloads.append(item.evidence_by_element)
+                cache_misses += 1
+                producer_version_counts.update(item.producer_versions)
+                producer_version_missing_sources += int(not item.producer_versions)
+                producer_version_conflicting_sources += int(len(item.producer_versions) > 1)
+
+        from polylogue.schemas.generation.dynamic_keys import dynamic_object_paths
+
+        preliminary = _merge_evidence_by_element(preliminary_payloads)
+        dynamic_paths_by_element = {
+            element_kind: tuple(sorted(dynamic_object_paths(evidence.structure)))
+            for element_kind, evidence in preliminary.items()
+        }
+        evidence_by_element: dict[str, list[dict[str, object]]] = {}
+        final_misses: list[_SourceCandidate] = []
+        for candidate, (revision_sha256, _byte_count) in sorted(
+            revisions.items(), key=lambda item: item[0].logical_source_id
+        ):
+            cached = cache.get(
+                _cache_key(candidate, revision_sha256, dynamic_paths_by_element=dynamic_paths_by_element)
+            )
+            if cached is None:
+                final_misses.append(candidate)
+            else:
+                for element_kind, payload in _evidence_payloads_by_element(cached.evidence).items():
+                    evidence_by_element.setdefault(element_kind, []).append(payload)
+                cache_hits += 1
+
+        with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            for item in _bounded_collected_candidates(
+                executor,
+                final_misses,
+                limit=max(1, max_workers) * 2,
+                dynamic_paths_by_element=dynamic_paths_by_element,
+            ):
+                if item.terminal.outcome != "included":
+                    raise SourceInferenceError(
+                        f"source changed or failed during final evidence pass: {item.terminal.outcome}"
+                    )
+                if item.revision is None or item.evidence_by_element is None:
+                    raise SourceInferenceError("included source candidate has no final evidence")
+                initial_revision = revisions.get(item.candidate)
+                if initial_revision is None or initial_revision[0] != item.revision.revision_sha256:
+                    raise SourceInferenceError("source revision changed between evidence passes")
+                cache.put(
+                    CachedContribution(
+                        cache_key=_cache_key(
+                            item.candidate,
+                            item.revision.revision_sha256,
+                            dynamic_paths_by_element=dynamic_paths_by_element,
+                        ),
+                        evidence={"elements": item.evidence_by_element},
+                        input_bytes=item.terminal.byte_count,
+                        record_count=item.terminal.record_count,
+                        metadata={"producer_versions": list(item.producer_versions)},
+                    )
+                )
+                for element_kind, payload in item.evidence_by_element.items():
+                    evidence_by_element.setdefault(element_kind, []).append(payload)
                 cache_misses += 1
     collect_ms = (time.monotonic_ns() - collect_started) / 1_000_000
     return SourceInferenceResult(
-        evidence_payloads=tuple(evidence_payloads),
+        evidence_by_element={kind: tuple(payloads) for kind, payloads in sorted(evidence_by_element.items())},
         terminal_counts=dict(sorted(terminal_counts.items())),
         input_bytes=input_bytes,
         record_count=record_count,
         cache_hits=cache_hits,
         cache_misses=cache_misses,
         phase_timings_ms={"inventory": round(inventory_ms, 3), "collect": round(collect_ms, 3)},
+        producer_version_counts=dict(sorted(producer_version_counts.items())),
+        producer_version_missing_sources=producer_version_missing_sources,
+        producer_version_conflicting_sources=producer_version_conflicting_sources,
     )
 
 

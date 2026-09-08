@@ -30,17 +30,11 @@ supersedes the other.
 
 from __future__ import annotations
 
-import json
 import shutil
 import tempfile
-from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.schema_inference_gate import (
-    validate_schema_inference_gate_receipt,
-)
 from polylogue.paths import archive_root as default_archive_root
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import generate_all_schemas
@@ -67,24 +61,6 @@ def _element_schemas_by_kind(
     }
 
 
-def _accepted_gate_receipt_digest(path: Path | None, *, archive_root: Path) -> str:
-    if path is None:
-        raise ValueError("schema commit requires an accepted schema-inference gate receipt path")
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"unable to read schema-inference gate receipt {path}: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError("schema-inference gate receipt must be a JSON object")
-    return cast(
-        str,
-        validate_schema_inference_gate_receipt(
-            cast(Mapping[str, object], payload),
-            archive_root=archive_root,
-        ),
-    )
-
-
 def _target_archive_location(request: SchemaCommitRequest) -> ArchiveLocation:
     configured_root = request.archive_root or default_archive_root()
     location = ArchiveLocation.resolve(configured_root)
@@ -103,15 +79,6 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
     existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
     archive_location = _target_archive_location(request)
-    gate_receipt_digest = _accepted_gate_receipt_digest(
-        request.schema_inference_gate_receipt_path,
-        archive_root=archive_location.configured_root,
-    )
-    if existing_handoff is not None and existing_handoff.gate_receipt_digest != gate_receipt_digest:
-        raise ValueError(
-            "existing schema inference handoff was produced from a different gate receipt; "
-            "regenerate the handoff from the accepted gate before committing"
-        )
 
     registry_before = SchemaRegistry(storage_root=output_dir)
     # The bundled registry is a read fallback, not the prior state of this
@@ -192,7 +159,6 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         provider_handoff = build_schema_inference_receipt(
             registry_after,
             provider=provider_token,
-            gate_receipt_digest=gate_receipt_digest,
         )
         handoff = existing_handoff.merged_with(provider_handoff) if existing_handoff is not None else provider_handoff
         write_schema_inference_receipt(handoff, handoff_path)
