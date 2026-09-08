@@ -16,7 +16,6 @@ from pathlib import Path
 from typing import cast
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.raw_payload import ReplayableRecordSamples
 from polylogue.archive.raw_payload.decode import JSONRecord
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue, json_document
@@ -949,7 +948,7 @@ class SchemaRegistry:
         config = resolve_provider_config(provider_token)
         fallback_bundle_scope = derive_bundle_scope(provider_token, source_path)
         admitted_artifact_kind = None
-        if provider_token == "gemini-cli" and isinstance(payload, (list, ReplayableRecordSamples)):
+        if provider_token == "gemini-cli" and isinstance(payload, list):
             artifact = classify_artifact(
                 cast(JSONValue, payload), provider=Provider.GEMINI_CLI, source_path=source_path
             )

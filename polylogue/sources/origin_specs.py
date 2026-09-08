@@ -219,7 +219,7 @@ def _module_path(base: Path) -> Path | None:
     return package_init.resolve() if package_init.is_file() else None
 
 
-@lru_cache(maxsize=512)
+@lru_cache(maxsize=2048)
 def _local_import_paths(signature: tuple[str, str, int]) -> tuple[str, ...]:
     """Return local Python dependencies of one parser-semantic source file."""
     path = Path(signature[0])
