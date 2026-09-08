@@ -71,7 +71,7 @@ def _distribution_from_state(
     value = state.get(name)
     if not isinstance(value, dict):
         return kind()
-    return kind.from_state(value)  # type: ignore[union-attr, no-any-return]
+    return kind.from_state(value)
 
 
 def _string_tokens(values: Iterable[str]) -> list[JSONValue]:

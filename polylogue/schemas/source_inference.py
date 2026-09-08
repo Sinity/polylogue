@@ -14,7 +14,7 @@ import stat
 import time
 import zipfile
 from collections import Counter
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass, replace
@@ -85,7 +85,7 @@ class SourceTerminal:
     reason: str | None = None
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class SourceObservation:
     """A one-pass unit of source records for the evidence collector.
 
@@ -106,7 +106,7 @@ class SourceObservation:
 class SourceInferenceResult:
     """Reduced evidence and aggregate, public-safe run provenance."""
 
-    evidence_by_element: dict[str, tuple[JSONDocument, ...]]
+    evidence_by_element: Mapping[str, tuple[JSONDocument, ...]]
     terminal_counts: dict[str, int]
     input_bytes: int
     record_count: int

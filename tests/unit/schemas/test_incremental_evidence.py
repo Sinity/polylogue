@@ -80,7 +80,7 @@ def test_historical_shape_is_retained_without_historical_workload_weight() -> No
 
 
 def test_identical_records_in_independent_sessions_remain_two_observations() -> None:
-    records = ({"message": "same text"},)
+    records: tuple[JSONValue, ...] = ({"message": "same text"},)
     first = _Observation("session-a", "a" * 64, "claude-code", "session_record_stream", records)
     second = _Observation("session-b", "b" * 64, "claude-code", "session_record_stream", records)
 
@@ -123,7 +123,9 @@ def test_ninth_array_record_and_deep_field_survive_reduced_evidence() -> None:
     nested: dict[str, JSONValue] = {"tail": "present"}
     for index in range(9):
         nested = {f"level_{index}": nested}
-    records = ({"items": [{"head": index} for index in range(8)] + [nested]},)
+    items: list[JSONValue] = [{"head": index} for index in range(8)]
+    items.append(nested)
+    records: tuple[JSONValue, ...] = ({"items": items},)
     observation = _Observation("session-a", "a" * 64, "claude-code", "session_record_stream", records)
 
     evidence = collect_evidence([observation])

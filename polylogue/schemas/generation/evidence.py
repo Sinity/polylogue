@@ -33,12 +33,23 @@ def _state_int(value: JSONValue) -> int:
 class SourceObservation(Protocol):
     """The reduced collector contract supplied by source inference."""
 
-    logical_source_id: str
-    revision_sha256: str
-    subject: str
-    element_kind: str
-    records: Iterable[JSONValue]
-    is_current: bool
+    @property
+    def logical_source_id(self) -> str: ...
+
+    @property
+    def revision_sha256(self) -> str: ...
+
+    @property
+    def subject(self) -> str: ...
+
+    @property
+    def element_kind(self) -> str: ...
+
+    @property
+    def records(self) -> Iterable[JSONValue]: ...
+
+    @property
+    def is_current(self) -> bool: ...
 
 
 def _merge_structure(left: JSONDocument, right: JSONDocument) -> JSONDocument:
