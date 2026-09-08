@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -679,3 +680,92 @@ def test_refresh_preserves_loss_bounds_without_double_counting_overlap(tmp_path:
         assert schema is not None
         assert schema["x-polylogue-publication-omitted-structure-witness-count"] == 3
         assert schema["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] == 10
+
+
+def test_historical_package_refresh_canonicalizes_legacy_witness_metadata(tmp_path: Path) -> None:
+    """Refreshing v2 must migrate retained v1 metadata in its schema and manifest."""
+    provider = "synthetic-historical-witness-metadata"
+    witnesses = [f"{index:064x}" for index in range(1_025)]
+    element = replace(
+        _package(provider, "v1", witnesses, family="legacy").elements[0],
+        sample_count=77,
+        artifact_count=11,
+        first_seen="2026-01-01T00:00:00Z",
+        last_seen="2026-01-02T00:00:00Z",
+        bundle_scope_count=9,
+        publication_omitted_structure_witness_count=7,
+        source_evidence_unretained_shape_observation_lower_bound=13,
+        profile_family_ids=["legacy-profile"],
+        profile_tokens=["legacy-token"],
+    )
+    v1 = replace(
+        _package(provider, "v1", witnesses, family="legacy"),
+        first_seen="2026-01-01T00:00:00Z",
+        last_seen="2026-01-02T00:00:00Z",
+        bundle_scope_count=9,
+        sample_count=77,
+        profile_family_ids=["legacy-profile"],
+        elements=[element],
+        workload_profile_file="workload-profile.json.gz",
+    )
+    v1_schema = _source_schema(witnesses)
+    v1_schema["properties"] = {"retained": {"type": "string", "x-polylogue-frequency": 0.5}}
+    registry = SchemaRegistry(storage_root=tmp_path)
+    registry.replace_provider_packages(
+        provider,
+        _catalog(provider, [v1]),
+        {"v1": {"session_record_stream": v1_schema}},
+        package_workload_profiles={"v1": {"profile": "legacy"}},
+    )
+
+    schema_path = tmp_path / provider / "versions" / "v1" / "elements" / "session_record_stream.schema.json.gz"
+    persisted = json.loads(gzip.decompress(schema_path.read_bytes()))
+    persisted["x-polylogue-exact-structure-ids"] = witnesses
+    persisted.pop("x-polylogue-publication-omitted-structure-witness-count")
+    persisted["x-polylogue-omitted-current-structure-witness-count"] = 7
+    schema_path.write_bytes(gzip.compress(json.dumps(persisted).encode("utf-8"), mtime=0))
+    for metadata_path in (
+        tmp_path / provider / "versions" / "v1" / "package.json",
+        tmp_path / provider / "catalog.json",
+    ):
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        packages = metadata["packages"] if metadata_path.name == "catalog.json" else [metadata]
+        historical_metadata = packages[0]
+        historical_element = historical_metadata["elements"][0]
+        historical_element["exact_structure_ids"] = witnesses
+        historical_element.pop("publication_omitted_structure_witness_count")
+        historical_element["omitted_current_structure_witness_count"] = 7
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    v2 = _package(provider, "v2", [f"{2_000:064x}"], family="current")
+    registry.replace_provider_packages(
+        provider,
+        _catalog(provider, [v2]),
+        {"v2": {"session_record_stream": _source_schema(v2.elements[0].exact_structure_ids)}},
+    )
+
+    restarted = SchemaRegistry(storage_root=tmp_path)
+    catalog = restarted.load_package_catalog(provider)
+    assert catalog is not None
+    historical = catalog.package("v1")
+    assert historical is not None
+    historical_element = historical.element("session_record_stream")
+    assert historical.observation_status == "historical"
+    assert historical_element is not None
+    assert historical_element.exact_structure_ids == witnesses
+    assert historical_element.publication_omitted_structure_witness_count == 7
+    assert historical_element.source_evidence_unretained_shape_observation_lower_bound == 13
+    assert historical_element.sample_count == 77
+    assert historical_element.artifact_count == 11
+    assert historical_element.first_seen == "2026-01-01T00:00:00Z"
+    assert historical_element.last_seen == "2026-01-02T00:00:00Z"
+    assert historical_element.profile_family_ids == ["legacy-profile"]
+    assert historical_element.profile_tokens == ["legacy-token"]
+    assert restarted.get_workload_profile(provider, "v1") == {"profile": "legacy"}
+    published = restarted.get_element_schema(provider, version="v1", element_kind="session_record_stream")
+    assert published is not None
+    assert published["properties"] == {"retained": {"type": "string", "x-polylogue-frequency": 0.5}}
+    assert published["x-polylogue-exact-structure-ids"] == witnesses
+    assert published["x-polylogue-publication-omitted-structure-witness-count"] == 7
+    assert published["x-polylogue-source-evidence-unretained-shape-observation-lower-bound"] == 13
+    assert "x-polylogue-omitted-current-structure-witness-count" not in published

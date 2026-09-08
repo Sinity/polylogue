@@ -118,6 +118,23 @@ def test_omitted_family_survives_without_blending_into_new_family(tmp_path: Path
     assert registry.get_workload_profile("synthetic-publication", "v1") == {"generation": 1}
 
 
+def test_missing_historical_schema_refuses_publication_atomically(tmp_path: Path) -> None:
+    """A retained package without a schema cannot publish a catalog that names it."""
+    registry = SchemaRegistry(storage_root=tmp_path)
+    publish(registry)
+    schema_path = (
+        tmp_path / "synthetic-publication" / "versions" / "v1" / "elements" / "session_document.schema.json.gz"
+    )
+    schema_path.unlink()
+    before = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+    with pytest.raises(ValueError, match="Existing package synthetic-publication/v1 is incomplete"):
+        publish(registry, version="v2", generation=2, family="family-b")
+
+    after = {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+    assert after == before
+
+
 def test_new_earlier_family_does_not_renumber_existing_versions() -> None:
     """Ordinal labels shift v1 when an earlier structural family arrives."""
     prior = SchemaPackageCatalog(
