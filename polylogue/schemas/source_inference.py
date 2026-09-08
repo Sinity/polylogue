@@ -1137,7 +1137,7 @@ def _collect_candidate(
         byte_count=byte_count,
     )
     if candidate.path.suffix.lower() == ".zip":
-        return _collect_zip_candidate(
+        collected = _collect_zip_candidate(
             candidate,
             revision,
             dynamic_paths_by_element=dynamic_paths_by_element,
@@ -1145,6 +1145,13 @@ def _collect_candidate(
             metadata_only=metadata_only,
             spool_path=spool_path,
         )
+        try:
+            after_digest, _after_bytes = _stable_file_digest(candidate.path)
+        except (OSError, SourceInferenceError):
+            return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
+        if after_digest != revision.revision_sha256:
+            return _CollectedCandidate(candidate, revision, SourceTerminal("changed_during_read", byte_count))
+        return collected
     try:
         contributions, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
             candidate,

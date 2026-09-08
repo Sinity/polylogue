@@ -396,6 +396,72 @@ def test_zip_members_and_jsonl_header_share_the_declared_native_source(tmp_path:
     assert provenance["source_included_native_source_revision_count"] == 2
 
 
+@pytest.mark.parametrize("with_spool", [False, True])
+def test_zip_changed_after_member_collection_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_spool: bool
+) -> None:
+    """A ZIP must still have its original bytes after member reduction.
+
+    Anti-vacuity: returning directly from the ZIP collector admits the stale
+    contribution and can cache it under a revision that no longer exists.
+    """
+    import zipfile
+
+    archive = tmp_path / "source.zip"
+    replacement = tmp_path / "replacement.zip"
+    records = "\n".join(
+        (
+            json.dumps(
+                {
+                    "type": "user",
+                    "sessionId": "stable-session",
+                    "version": "1.0.0",
+                    "message": {"role": "user", "content": "synthetic"},
+                }
+            ),
+            "",
+        )
+    )
+    with zipfile.ZipFile(archive, "w") as zip_file:
+        zip_file.writestr("session.jsonl", records)
+    with zipfile.ZipFile(replacement, "w") as zip_file:
+        zip_file.writestr("session.jsonl", records + "\n")
+    candidate = _SourceCandidate("claude-code", tmp_path, archive, "synthetic-zip")
+    spool_path = tmp_path / "contributions.sqlite" if with_spool else None
+
+    stable = _collect_candidate(candidate, spool_path=spool_path)
+    assert stable.terminal.outcome == "included"
+
+    original_collect_zip = source_inference_module._collect_zip_candidate
+
+    def replace_after_collection(
+        collected_candidate: _SourceCandidate,
+        revision: SourceRevision,
+        *,
+        dynamic_paths_by_element: dict[str, tuple[str, ...]],
+        include_statistics: bool,
+        metadata_only: bool,
+        spool_path: Path | None,
+    ) -> source_inference_module._CollectedCandidate:
+        collected = original_collect_zip(
+            collected_candidate,
+            revision,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+            include_statistics=include_statistics,
+            metadata_only=metadata_only,
+            spool_path=spool_path,
+        )
+        archive.write_bytes(replacement.read_bytes())
+        return collected
+
+    monkeypatch.setattr(source_inference_module, "_collect_zip_candidate", replace_after_collection)
+    changed = _collect_candidate(candidate, spool_path=spool_path)
+
+    assert changed.terminal.outcome == "changed_during_read"
+    assert changed.contributions == ()
+    assert changed.spool_path is None
+
+
 def test_record_source_uses_codex_whole_stream_admission(tmp_path: Path) -> None:
     """Anti-vacuity: classifying each line drops valid non-message Codex records."""
     from polylogue.archive.artifact_taxonomy import classify_artifact
