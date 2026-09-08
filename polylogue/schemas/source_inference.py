@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import time
 import zipfile
@@ -42,6 +43,7 @@ SourceOutcome = Literal[
 
 _RECIPE_VERSION = "source-evidence-v1"
 _MAX_UNSTREAMABLE_DOCUMENT_BYTES = 32 * 1024 * 1024
+_DECLARED_PRODUCER_VERSION = re.compile(r"v?\d+\.\d+(?:\.\d+)?(?:[-+][0-9A-Za-z][0-9A-Za-z.-]{0,63})?")
 
 
 class SourceInferenceError(RuntimeError):
@@ -111,6 +113,7 @@ class SourceInferenceResult:
     producer_version_counts: dict[str, int]
     producer_version_missing_sources: int
     producer_version_conflicting_sources: int
+    producer_version_unrecognized_sources: int
     input_manifest_digest: str
 
     def provenance(self) -> dict[str, object]:
@@ -125,6 +128,7 @@ class SourceInferenceResult:
             "producer_version_counts": dict(sorted(self.producer_version_counts.items())),
             "producer_version_missing_sources": self.producer_version_missing_sources,
             "producer_version_conflicting_sources": self.producer_version_conflicting_sources,
+            "producer_version_unrecognized_sources": self.producer_version_unrecognized_sources,
             "source_input_manifest_digest": self.input_manifest_digest,
         }
 
@@ -144,6 +148,7 @@ class _CollectedCandidate:
     terminal: SourceTerminal
     evidence_by_element: dict[str, dict[str, object]] | None = None
     producer_versions: tuple[str, ...] = ()
+    producer_version_unrecognized: bool = False
 
 
 def parse_schema_source_input(value: str) -> SchemaSourceInput:
@@ -200,17 +205,15 @@ def inventory_schema_sources(inputs: Iterable[SchemaSourceInput]) -> tuple[_Sour
             suffixes=(".json", ".jsonl", ".ndjson", ".zip", ".db", ".sqlite", ".sqlite3"),
         )
         root_identity = _root_identity(root)
-        for path in _iter_source_entries(root):
+        paths = (root,) if root.is_file() else _iter_source_entries(root)
+        for path in paths:
             try:
                 mode = os.stat(path, follow_symlinks=False).st_mode
             except OSError:
                 continue
             if not stat.S_ISREG(mode) or not watcher_source.accepts(path):
                 continue
-            try:
-                relative = path.relative_to(root)
-            except ValueError:
-                continue
+            relative = Path(path.name) if root.is_file() else path.relative_to(root)
             candidates.append(
                 _SourceCandidate(
                     provider=provider.value,
@@ -252,18 +255,16 @@ def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
 
 
 def _candidate_native_identity(candidate: _SourceCandidate) -> str:
-    """Read only JSONL record headers to scope revision selection by session."""
-    if candidate.path.suffix.lower() not in {".jsonl", ".ndjson"}:
-        return candidate.logical_source_id
+    """Scope one-record exports by their declared native session identity."""
     try:
-        with candidate.path.open("rb") as handle:
-            for _index, line in zip(range(32), handle, strict=False):
-                if not line.strip() or len(line) > 1024 * 1024:
-                    continue
-                value = loads(line)
-                native = _native_source_id(Provider.from_string(candidate.provider), value, "")
-                if native:
-                    return native
+        byte_count = candidate.path.stat().st_size
+        payloads = _iter_file_payloads(candidate.path, byte_count=byte_count)
+        first = next(payloads, None)
+        second = next(payloads, None)
+        if first is not None and second is None:
+            native = _native_source_id(Provider.from_string(candidate.provider), first, "")
+            if native:
+                return native
     except (OSError, JSONDecodeError):
         pass
     return candidate.logical_source_id
@@ -298,7 +299,7 @@ def _iter_document_payloads(
         found = False
         try:
             with open_handle() as handle:
-                for value in ijson.items(handle, prefix):
+                for value in ijson.items(handle, prefix, use_float=True):
                     found = True
                     if not is_json_value(value):
                         raise SourceInferenceError("non_json_value")
@@ -346,6 +347,14 @@ def _native_source_id(provider: Provider, payload: JSONValue, fallback: str) -> 
             session_id = session_payload.get("id")
             if isinstance(session_id, str) and session_id:
                 return f"codex:{session_id}"
+    if provider is Provider.CHATGPT:
+        session_id = payload.get("conversation_id") or payload.get("id") or payload.get("uuid")
+        if isinstance(session_id, str) and session_id:
+            return f"chatgpt:{session_id}"
+    if provider is Provider.CLAUDE_AI:
+        session_id = payload.get("uuid") or payload.get("id")
+        if isinstance(session_id, str) and session_id:
+            return f"claude-ai:{session_id}"
     return fallback
 
 
@@ -355,7 +364,7 @@ def _collect_payload_evidence(
     payloads: Iterable[JSONValue],
     *,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
-) -> tuple[dict[str, dict[str, object]], int, tuple[str, ...]]:
+) -> tuple[dict[str, dict[str, object]], int, tuple[str, ...], bool]:
     """Reduce payloads as they stream, retaining no decoded source records."""
     from polylogue.schemas.generation.evidence import collect_source_evidence, merge_evidence
 
@@ -363,16 +372,17 @@ def _collect_payload_evidence(
     evidence_rows: dict[str, object] = {}
     record_count = 0
     producer_versions: set[str] = set()
-    logical_source_id = candidate.logical_source_id
+    producer_version_unrecognized = False
+    seen_sources_by_element: dict[str, set[str]] = {}
     for payload_index, payload in enumerate(payloads):
-        producer_versions.update(_declared_producer_versions(Provider.from_string(candidate.provider), (payload,)))
+        versions, unrecognized = _declared_producer_versions(Provider.from_string(candidate.provider), (payload,))
+        producer_versions.update(versions)
+        producer_version_unrecognized = producer_version_unrecognized or unrecognized
         declared_source_id = _native_source_id(
             Provider.from_string(candidate.provider),
             payload,
-            f"{candidate.logical_source_id}:{payload_index}",
+            candidate.logical_source_id,
         )
-        if declared_source_id != f"{candidate.logical_source_id}:{payload_index}":
-            logical_source_id = declared_source_id
         units = extract_schema_units_from_payload(
             payload,
             source_name=Provider.from_string(candidate.provider),
@@ -384,7 +394,7 @@ def _collect_payload_evidence(
         for unit in units:
             contribution = collect_source_evidence(
                 SourceObservation(
-                    logical_source_id=logical_source_id,
+                    logical_source_id=declared_source_id,
                     revision_sha256=revision.revision_sha256,
                     subject=candidate.provider,
                     element_kind=unit.artifact_kind,
@@ -392,6 +402,11 @@ def _collect_payload_evidence(
                 ),
                 dynamic_paths=dynamic_paths_by_element.get(unit.artifact_kind, ()),
             )
+            seen_sources = seen_sources_by_element.setdefault(unit.artifact_kind, set())
+            if declared_source_id in seen_sources:
+                contribution = replace(contribution, current_source_count=0)
+            else:
+                seen_sources.add(declared_source_id)
             prior = evidence_rows.get(unit.artifact_kind)
             evidence_rows[unit.artifact_kind] = contribution if prior is None else merge_evidence((prior, contribution))
             record_count += len(unit.schema_samples)
@@ -401,26 +416,33 @@ def _collect_payload_evidence(
         if not isinstance(payload, dict):
             raise SourceInferenceError("source evidence must serialize to a JSON object")
         payloads[element_kind] = payload
-    return payloads, record_count, tuple(sorted(producer_versions))
+    return payloads, record_count, tuple(sorted(producer_versions)), producer_version_unrecognized
 
 
-def _declared_producer_versions(provider: Provider, payloads: Iterable[JSONValue]) -> tuple[str, ...]:
+def _declared_producer_versions(provider: Provider, payloads: Iterable[JSONValue]) -> tuple[tuple[str, ...], bool]:
     """Extract only provider-declared release evidence, never generic keys."""
     versions: set[str] = set()
+    unrecognized = False
     for payload in payloads:
         if not isinstance(payload, dict):
             continue
         if provider is Provider.CLAUDE_CODE:
             version = payload.get("version")
             if isinstance(version, str) and version:
-                versions.add(version)
+                if _DECLARED_PRODUCER_VERSION.fullmatch(version):
+                    versions.add(version)
+                else:
+                    unrecognized = True
         elif provider is Provider.CODEX and payload.get("type") == "session_meta":
             session_payload = payload.get("payload")
             if isinstance(session_payload, dict):
                 version = session_payload.get("cli_version")
                 if isinstance(version, str) and version:
-                    versions.add(version)
-    return tuple(sorted(versions))
+                    if _DECLARED_PRODUCER_VERSION.fullmatch(version):
+                        versions.add(version)
+                    else:
+                        unrecognized = True
+    return tuple(sorted(versions)), unrecognized
 
 
 def _collect_candidate(
@@ -462,7 +484,7 @@ def _collect_candidate(
     if candidate.path.suffix.lower() == ".zip":
         return _collect_zip_candidate(candidate, revision, dynamic_paths_by_element=dynamic_paths_by_element)
     try:
-        evidence_by_element, record_count, producer_versions = _collect_payload_evidence(
+        evidence_by_element, record_count, producer_versions, producer_version_unrecognized = _collect_payload_evidence(
             candidate,
             revision,
             _iter_file_payloads(candidate.path, byte_count=byte_count),
@@ -494,6 +516,7 @@ def _collect_candidate(
         SourceTerminal("included", byte_count, record_count),
         evidence_by_element,
         producer_versions,
+        producer_version_unrecognized,
     )
 
 
@@ -508,6 +531,7 @@ def _collect_zip_candidate(
     byte_count = 0
     record_count = 0
     producer_versions: set[str] = set()
+    producer_version_unrecognized = False
     try:
         with zipfile.ZipFile(candidate.path) as archive:
             validator = ZipEntryValidator(candidate.provider, cursor_state=None, zip_path=candidate.path)
@@ -535,14 +559,14 @@ def _collect_zip_candidate(
                 try:
                     if member_path.suffix.lower() in {".jsonl", ".ndjson"}:
                         with open_bounded_zip_entry(archive, member) as member_handle:
-                            payloads, member_records, member_versions = _collect_payload_evidence(
+                            payloads, member_records, member_versions, member_unrecognized = _collect_payload_evidence(
                                 member_candidate,
                                 member_revision,
                                 _iter_jsonl_payloads(member_handle),
                                 dynamic_paths_by_element=dynamic_paths_by_element,
                             )
                     else:
-                        payloads, member_records, member_versions = _collect_payload_evidence(
+                        payloads, member_records, member_versions, member_unrecognized = _collect_payload_evidence(
                             member_candidate,
                             member_revision,
                             _iter_document_payloads(
@@ -559,6 +583,7 @@ def _collect_zip_candidate(
                         SourceTerminal("decode_failed", byte_count, reason=str(exc)),
                     )
                 producer_versions.update(member_versions)
+                producer_version_unrecognized = producer_version_unrecognized or member_unrecognized
                 if not payloads:
                     continue
                 for element_kind, payload in payloads.items():
@@ -583,6 +608,7 @@ def _collect_zip_candidate(
         SourceTerminal("included", byte_count, record_count),
         evidence_by_element,
         tuple(sorted(producer_versions)),
+        producer_version_unrecognized,
     )
 
 
@@ -711,6 +737,7 @@ def infer_sources(
     producer_version_counts: Counter[str] = Counter()
     producer_version_missing_sources = 0
     producer_version_conflicting_sources = 0
+    producer_version_unrecognized_sources = 0
     collect_started = time.monotonic_ns()
 
     # A first reduced-evidence pass determines global dynamic-key paths.  Its
@@ -747,6 +774,7 @@ def infer_sources(
                 producer_version_counts.update(versions)
                 producer_version_missing_sources += int(not versions)
                 producer_version_conflicting_sources += int(len(versions) > 1)
+                producer_version_unrecognized_sources += int(bool(cached.metadata.get("producer_version_unrecognized")))
 
         with ProcessPoolExecutor(max_workers=max(1, max_workers)) as executor:
             for item in _bounded_collected_candidates(
@@ -771,7 +799,10 @@ def infer_sources(
                         evidence={"elements": item.evidence_by_element},
                         input_bytes=item.terminal.byte_count,
                         record_count=item.terminal.record_count,
-                        metadata={"producer_versions": list(item.producer_versions)},
+                        metadata={
+                            "producer_versions": list(item.producer_versions),
+                            "producer_version_unrecognized": item.producer_version_unrecognized,
+                        },
                     )
                 )
                 preliminary_payloads.append(item.evidence_by_element)
@@ -779,6 +810,7 @@ def infer_sources(
                 producer_version_counts.update(item.producer_versions)
                 producer_version_missing_sources += int(not item.producer_versions)
                 producer_version_conflicting_sources += int(len(item.producer_versions) > 1)
+                producer_version_unrecognized_sources += int(item.producer_version_unrecognized)
 
         from polylogue.schemas.generation.dynamic_keys import dynamic_object_paths
 
@@ -828,7 +860,10 @@ def infer_sources(
                         evidence={"elements": item.evidence_by_element},
                         input_bytes=item.terminal.byte_count,
                         record_count=item.terminal.record_count,
-                        metadata={"producer_versions": list(item.producer_versions)},
+                        metadata={
+                            "producer_versions": list(item.producer_versions),
+                            "producer_version_unrecognized": item.producer_version_unrecognized,
+                        },
                     )
                 )
                 for element_kind, payload in item.evidence_by_element.items():
@@ -846,6 +881,7 @@ def infer_sources(
         producer_version_counts=dict(sorted(producer_version_counts.items())),
         producer_version_missing_sources=producer_version_missing_sources,
         producer_version_conflicting_sources=producer_version_conflicting_sources,
+        producer_version_unrecognized_sources=producer_version_unrecognized_sources,
         input_manifest_digest=hash_payload(
             {
                 "recipe": _RECIPE_VERSION,
