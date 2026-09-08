@@ -1165,6 +1165,8 @@ def test_hermes_state_db_source_iterator_snapshots_wal_before_parsing(tmp_path: 
 
 def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(tmp_path: Path) -> None:
     """The live Hermes snapshot route must isolate SQLite work files from CAS paths."""
+    from polylogue.sources.sqlite_export import read_export_header
+
     db_path = tmp_path / "state.db"
     blob_root = tmp_path / "blob"
     _write_hermes_state_db(db_path)
@@ -1192,8 +1194,9 @@ def test_hermes_snapshot_parse_route_keeps_live_wal_sidecars_out_of_namespace(tm
     store = BlobStore(blob_root)
     entries = tuple(store.iter_namespace())
     assert [(entry.kind, entry.hash_hex) for entry in entries] == [("blob", raw.blob_hash)]
-    with store.open(raw.blob_hash) as retained:
-        assert retained.read(16) == b"SQLite format 3\x00"
+    header = read_export_header(store.blob_path(raw.blob_hash))
+    assert {"sessions", "messages"} <= set(header.tables)
+    assert not tuple(store.staging_root.iterdir())
     assert store.verify_all().passed is True
 
 
