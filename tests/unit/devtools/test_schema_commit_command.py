@@ -204,3 +204,42 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
     )
 
     assert schema_commit.main(["--provider", "chatgpt"]) == 1
+
+
+@pytest.mark.parametrize("digest", ["a" * 64, None])
+def test_plain_output_uses_requested_provider_input_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], digest: str | None
+) -> None:
+    """Anti-vacuity: selecting the first merged manifest prints another provider's digest."""
+    handoff = SchemaInferenceReceipt(
+        input_manifests=(
+            SchemaInferenceInputManifest(provider="claude-ai", digest="b" * 64),
+            SchemaInferenceInputManifest(
+                provider="codex",
+                digest=digest,
+                unavailable_reason="input_manifest_unavailable" if digest is None else None,
+            ),
+        ),
+        coverage_decisions=(),
+        packages=(),
+    )
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
+    monkeypatch.setattr(
+        schema_commit,
+        "commit_provider_schema",
+        lambda request: SchemaCommitResult(
+            provider=request.provider,
+            generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=1),
+            versions=(),
+            dry_run=False,
+            handoff=handoff,
+        ),
+    )
+    assert schema_commit.main(["--provider", "codex"]) == 0
+    output = capsys.readouterr().out
+    assert f"input_manifest_digest={digest or 'input_manifest_unavailable'}" in output
+    assert "b" * 64 not in output
