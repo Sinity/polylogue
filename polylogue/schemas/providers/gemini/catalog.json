@@ -1,6 +1,6 @@
 {
   "provider": "gemini",
-  "generated_at": "2026-09-08T09:00:35.640704+00:00",
+  "generated_at": "2026-09-08T18:46:54.516277+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -152,7 +152,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:00:35.640671+00:00",
-      "last_seen": "2026-09-08T09:00:35.640671+00:00",
+      "last_seen": "2026-09-08T18:46:54.516245+00:00",
       "bundle_scope_count": 12,
       "sample_count": 12,
       "anchor_profile_family_id": "42934922ee9bfd50d3e52d41a83daf580cc4dc2b3ba515982500a84167da49fe",
@@ -166,10 +166,23 @@
           "artifact_count": 12,
           "supported": true,
           "first_seen": "2026-09-08T09:00:35.640671+00:00",
-          "last_seen": "2026-09-08T09:00:35.640671+00:00",
+          "last_seen": "2026-09-08T18:46:54.516245+00:00",
           "bundle_scope_count": 12,
           "bundle_scope_identities": [],
-          "exact_structure_ids": [],
+          "exact_structure_ids": [
+            "09e75a57e18f696a603d821e2182e1bc283095c36394eb92e8ac871b679d54f6",
+            "1598ced848636515bb24f4dd8c502fd1b85cbebf3b4ce27dec0943c2264b1718",
+            "189fceda6ea66d681defe6abd1e6f7c3723e533cf5bcad9417b41bde462b8c94",
+            "2a02fe10f878a144823a5f29da963a90521037199b5f81a62633e0071d8e78ed",
+            "393097659efd6d59a7ee660ce0f6dcaa8ed79bd11f976c812faac986d444a7b0",
+            "46c6e41a04050a8e6f67f7cf4b0e6c121ca7a3615a01d27a67f13678cf6a12c5",
+            "5f8d1cca76f10b6107bd4e13f0fddb108ed6f1c266fec85e61e37371232feff0",
+            "6dbd6c03e9978722e63a5b89997c436f1ac90e76abb8acc1d7c2c590f027f8f6",
+            "8140e3c7570610dc94d85f9080b97200f4021b17c32c2480ab5a92f6f5b0b12e",
+            "9bb418d7b408f7b2d67849a48c41a877279b4b6f8538a5307cfbfae4f0cdfb08",
+            "e54c8833a5256d0cc975888c9ab90d5f5d890b412ce5ed21378838b5e5681196",
+            "e7477628eab1fde25cd64134c8315b7a57625b362d92b0853a872fbee9b020cc"
+          ],
           "profile_family_ids": [],
           "profile_tokens": [],
           "observed_artifact_count": 12,
@@ -188,6 +201,8 @@
       "structure": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "structure",
         "reduction_revision": 1,
         "key_policy": {
@@ -202,6 +217,8 @@
       "statistics": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "statistics",
         "reduction_revision": 1,
         "key_policy": {
@@ -213,19 +230,22 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
-      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
-      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+      "structure_fingerprint": "29e59f8c29a1d8c7944b4ec4e81dde8ba80ceeca153cb75ef40bef5ce14057ff",
+      "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
+      "implementation_fingerprint": "2f3203cd609392aef647d8754715a0fa6990597283d1c58e95c88fb37896ab9b"
     },
     "source_cache_phase_hits": {
-      "statistics": 2,
-      "structure": 2
+      "statistics": 1,
+      "structure": 1
     },
-    "source_cache_phase_misses": {},
+    "source_cache_phase_misses": {
+      "statistics": 1,
+      "structure": 1
+    },
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 4,
-    "source_cache_misses": 0,
+    "source_cache_hits": 2,
+    "source_cache_misses": 2,
     "source_terminal_outcomes": {
       "included": 12
     },
@@ -237,18 +257,19 @@
     },
     "source_terminal_reasons": {},
     "source_phase_timings_ms": {
-      "collect": 209.501,
-      "fold": 116.96,
-      "hash": 45.507,
-      "inventory": 3.379,
-      "preliminary": 9.447,
-      "statistics": 36.618
+      "collect": 35702.077,
+      "fold": 169.987,
+      "hash": 3460.744,
+      "inventory": 24.285,
+      "preliminary": 14220.505,
+      "revision_selection": 0.13,
+      "statistics": 17847.782
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 2,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "c533fff1c64a9efbe5fc0b9081007c4bfc1e4d4b5524d6eb981057460c4d9614",
+    "source_input_manifest_digest": "a0612e6e9f9a00682a0220ba4df9f3eaf6c8c3c4e32a6946ebe3db816f063662",
     "source_candidate_count": 2,
     "source_included_candidate_count": 2,
     "source_included_native_source_revision_count": 12

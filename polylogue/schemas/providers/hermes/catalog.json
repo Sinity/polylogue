@@ -1,6 +1,6 @@
 {
   "provider": "hermes",
-  "generated_at": "2026-09-08T09:01:02.756682+00:00",
+  "generated_at": "2026-09-08T18:47:54.421662+00:00",
   "latest_version": "v3",
   "default_version": "v3",
   "recommended_version": "v3",
@@ -131,7 +131,7 @@
       "anchor_kind": "session_document",
       "default_element_kind": "session_document",
       "first_seen": "2026-09-08T09:01:02.756636+00:00",
-      "last_seen": "2026-09-08T09:01:02.756636+00:00",
+      "last_seen": "2026-09-08T18:47:54.421615+00:00",
       "bundle_scope_count": 159,
       "sample_count": 159,
       "anchor_profile_family_id": "f3428d40859c52e141d1ca642fd98b72e8f1583af2f4338399128d250c7ca4d6",
@@ -145,10 +145,39 @@
           "artifact_count": 159,
           "supported": true,
           "first_seen": "2026-09-08T09:01:02.756636+00:00",
-          "last_seen": "2026-09-08T09:01:02.756636+00:00",
+          "last_seen": "2026-09-08T18:47:54.421615+00:00",
           "bundle_scope_count": 159,
           "bundle_scope_identities": [],
-          "exact_structure_ids": [],
+          "exact_structure_ids": [
+            "00576144d7f70b830473b6c1a2128e6990acee7a7e0895c17a4a12c9159d6939",
+            "029ac347be0ea6694e28404ed3970f6a518ec23a0f22429fdf853d7f80da3122",
+            "0ac2a4c22ee1c7fe034bf56d04e4c2839164368fbb7e6bc86a40d9f95e0563e6",
+            "10f70a3765535802442b1ef3418194ca27194a53b6e10553fb9d3fe957b1f625",
+            "1a6e37aa72e1481190072c888872ded1e20b018665c036bc2c2648be942f38c4",
+            "1ba4416dba39e2d6fd70d2ad2bed44a5049dfcce12468b440c8274fc541518d7",
+            "1db4c8b6c6b73ddf7611dc2ca7b598e27bf948e5b6bbafbd7fa89df0e6124d23",
+            "1dd3fadff29f83690b7ed4cd0ac37e982693756354c242e4512bb9e9a9f282c2",
+            "2de46735f3f39456ef9796436e1c371c69057b3f57b1315b1266a7c597f23c71",
+            "3164ba56acc61e39c32001f16d99a5e8c31a7a4df00abdd6b6de9ce23ad03f65",
+            "3884addef88f6445c11dba3b165e0045ca9a0fbdce6af9b51e9912d633c6a9ce",
+            "54b281fb137ee8557a6150ce671c5ea0531eef69cad59d2525fd14dcdb5d3d37",
+            "6ed9660aba1b28931b8596cf807b6183df2307ca9c701721b17e63e355ae63c9",
+            "719d271e1791afc76c885c1726d9f3706d80ab4a8f7984c2f06d77e2b2a12489",
+            "7c6211a8fa6259b4ea49f83b4b8cdd2094c6230bad362b11399919c5050d3427",
+            "83124f03280cf267dae35c823f6c15f9327bebf536812a0e85edc5559fab06c6",
+            "959482100a410092e2215a9f3a58be9edbdef948cfbb9f28c7942f9e688b1068",
+            "9793d33116207355334cb5fd578294697c28228390d733f981060a5fd6b363ac",
+            "9b3232f00b3e970cf40501c91d27f37a3b492348e00b66081257060a867d042c",
+            "a4d5849cdee3ebeac6d7675db2b234d18dd7cb7c575c2ee38c092ec92b29a238",
+            "c788ae0429dd7ea4176a56041fdccb4a5a8b61f96582742a7db73f71431cfa1b",
+            "cd78f417fe3e112a776ce86e8b69d022f5055d00246bc5a9a4a7c5271b6bdfd0",
+            "dcbc6f995d03dfeccdebf35438f4b85475a257502a6a655eafe991972bdc4b84",
+            "e4f4e9e1ec0ff24472d5ef79ab535b387208fbe57c07f05c3d333d52ad2f0c41",
+            "e65b24c753a1398f90008883ade569bb8d9fa21e5beb787e631ac4b75fe1f3ff",
+            "ea0c7ea082bf3ce6ddc4a7f73fb1e54287db97327a5df89c07cf80f1b0722515",
+            "ef6794646ff145b05be8a9016cfa2323b3476bb4dd611ae5ec2af094c6c4c55d",
+            "f520d02fdfa7556b612021dbfbc4720910f12f60471fa5fe50fe9b554fa44936"
+          ],
           "profile_family_ids": [],
           "profile_tokens": [],
           "observed_artifact_count": 159,
@@ -167,6 +196,8 @@
       "structure": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "structure",
         "reduction_revision": 1,
         "key_policy": {
@@ -181,6 +212,8 @@
       "statistics": {
         "evidence_format": 1,
         "admission_revision": 1,
+        "identity_revision": 2,
+        "zip_member_revision": 2,
         "phase": "statistics",
         "reduction_revision": 1,
         "key_policy": {
@@ -192,21 +225,19 @@
           "dynamic_ratio": 0.5
         }
       },
-      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
-      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
-      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+      "structure_fingerprint": "29e59f8c29a1d8c7944b4ec4e81dde8ba80ceeca153cb75ef40bef5ce14057ff",
+      "statistics_fingerprint": "2f654e303b3fbbc1969de6e0e7be77ac35826cc81aa62242acdca155572011af",
+      "implementation_fingerprint": "2f3203cd609392aef647d8754715a0fa6990597283d1c58e95c88fb37896ab9b"
     },
     "source_cache_phase_hits": {
       "statistics": 169,
-      "structure": 67
+      "structure": 169
     },
-    "source_cache_phase_misses": {
-      "structure": 102
-    },
+    "source_cache_phase_misses": {},
     "source_statistics_population": "current_source_records",
     "source_inherited_prefixes_subtracted": false,
-    "source_cache_hits": 236,
-    "source_cache_misses": 102,
+    "source_cache_hits": 338,
+    "source_cache_misses": 0,
     "source_terminal_outcomes": {
       "included": 169,
       "unsupported": 9
@@ -224,18 +255,19 @@
       "sqlite_value_inference_not_supported": 2
     },
     "source_phase_timings_ms": {
-      "collect": 20568.986,
-      "fold": 8213.765,
-      "hash": 1100.431,
-      "inventory": 41.9,
-      "preliminary": 8133.189,
-      "statistics": 3106.916
+      "collect": 19848.26,
+      "fold": 8204.47,
+      "hash": 2041.569,
+      "inventory": 22.385,
+      "preliminary": 7.691,
+      "revision_selection": 1.269,
+      "statistics": 9579.451
     },
     "producer_version_counts": {},
     "producer_version_missing_sources": 169,
     "producer_version_conflicting_sources": 0,
     "producer_version_unrecognized_sources": 0,
-    "source_input_manifest_digest": "c8c3090905a219754f23db59a05435f80b5d7ab72934ea10ddfa9d0b54ae9d61",
+    "source_input_manifest_digest": "6428ce09b99a07e5a478d5cbec744c76df71bebf5f9ff5307049a26f4179d00a",
     "source_candidate_count": 178,
     "source_included_candidate_count": 169,
     "source_included_native_source_revision_count": 169
