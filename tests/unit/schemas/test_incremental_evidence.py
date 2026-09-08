@@ -10,6 +10,12 @@ from dataclasses import dataclass
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats.collection import _collect_field_stats
+from polylogue.schemas.field_stats.evidence import (
+    finalize_field_stats,
+    merge_field_stats,
+    merge_field_stats_into,
+    serialize_field_stats,
+)
 from polylogue.schemas.field_stats.models import EQUALITY_EVIDENCE_CAP, FieldStats
 from polylogue.schemas.generation.evidence import (
     SchemaEvidence,
@@ -233,6 +239,32 @@ def test_merge_order_and_one_pass_source_collection_are_deterministic() -> None:
     )
 
 
+def test_streaming_field_stats_fold_matches_batch_merge_after_finalization() -> None:
+    first = collect_source_evidence(
+        _Observation(
+            "session-a", "a" * 64, "claude-code", "session_record_stream", ({"mapping": {"a": {}}, "ref": "a"},)
+        ),
+        dynamic_paths=["$.mapping"],
+    )
+    second = collect_source_evidence(
+        _Observation(
+            "session-b", "b" * 64, "claude-code", "session_record_stream", ({"mapping": {"b": {}}, "ref": "b"},)
+        ),
+        dynamic_paths=["$.mapping"],
+    )
+    summaries = [first.field_stats, second.field_stats]
+
+    expected = merge_field_stats(summaries, total_samples=2)
+    streamed: dict[str, FieldStats] = {}
+    for summary in summaries:
+        merge_field_stats_into(streamed, summary)
+    finalize_field_stats(streamed, total_samples=2)
+
+    assert {path: serialize_field_stats(stats) for path, stats in streamed.items()} == {
+        path: serialize_field_stats(stats) for path, stats in expected.items()
+    }
+
+
 def test_equality_evidence_stays_bounded_during_source_reduction() -> None:
     contributions = [
         collect_source_evidence(
@@ -271,8 +303,10 @@ def test_reduced_evidence_retains_detected_mapping_reference() -> None:
 
 def test_merged_mapping_reference_uses_global_overlap_not_a_source_local_conclusion() -> None:
     node_ids = [f"node-{index:08x}" for index in range(60)]
-    matched = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids]
-    unmatched = [{"current_node": f"unmatched-{index}"} for index in range(140)]
+    matched: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids
+    ]
+    unmatched: list[JSONDocument] = [{"current_node": f"unmatched-{index}"} for index in range(140)]
     dynamic_paths = ["$.mapping"]
 
     raw_relations = detect_foreign_keys(_collect_field_stats([*matched, *unmatched], dynamic_paths=dynamic_paths))
@@ -298,7 +332,9 @@ def test_merged_mapping_reference_uses_global_overlap_not_a_source_local_conclus
 
 def test_merged_mapping_reference_detects_global_overlap_when_each_source_is_below_local_cardinality() -> None:
     node_ids = [f"node-{index:08x}" for index in range(60)]
-    records = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids]
+    records: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids
+    ]
     dynamic_paths = ["$.mapping"]
 
     merged_stats = merge_evidence(
@@ -322,7 +358,9 @@ def test_merged_mapping_reference_detects_global_overlap_when_each_source_is_bel
 
 def test_merged_mapping_reference_compares_within_a_truncated_target_hash_domain() -> None:
     node_ids = [f"node-{index:08x}" for index in range(1_000)]
-    records = [{"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids[:60]]
+    records: list[JSONDocument] = [
+        {"mapping": {node_id: {} for node_id in node_ids}, "current_node": node_id} for node_id in node_ids[:60]
+    ]
     evidence = collect_source_evidence(
         _Observation("source-a", "a" * 64, "claude-code", "session_record_stream", records),
         dynamic_paths=["$.mapping"],

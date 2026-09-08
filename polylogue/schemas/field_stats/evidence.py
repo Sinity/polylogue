@@ -207,16 +207,26 @@ def merge_field_stats(
     """Merge current source summaries in caller-supplied deterministic order."""
     merged: dict[str, FieldStats] = {}
     for source_stats in stats_by_source:
-        for path, source in sorted(source_stats.items()):
-            target = merged.setdefault(path, FieldStats(path=path))
-            _merge_one(target, source)
-            _bound_equality_evidence(target)
-    for stats in merged.values():
+        merge_field_stats_into(merged, source_stats)
+    finalize_field_stats(merged, total_samples=total_samples)
+    return merged
+
+
+def merge_field_stats_into(target: dict[str, FieldStats], source: Mapping[str, FieldStats]) -> None:
+    """Fold one source summary into an existing aggregate without finalizing it."""
+    for path, source_stats in sorted(source.items()):
+        target_stats = target.setdefault(path, FieldStats(path=path))
+        _merge_one(target_stats, source_stats)
+        _bound_equality_evidence(target_stats)
+
+
+def finalize_field_stats(target: Mapping[str, FieldStats], *, total_samples: int | None = None) -> None:
+    """Apply global denominators and relation qualification after all source folds."""
+    for stats in target.values():
         if total_samples is not None:
             stats.total_samples = total_samples
         stats.observed_values = Counter(stats.safe_observed_values)
-    _qualify_merged_ref_targets(merged)
-    return merged
+    _qualify_merged_ref_targets(target)
 
 
 def _qualify_merged_ref_targets(stats_by_path: Mapping[str, FieldStats]) -> None:
@@ -324,4 +334,11 @@ def _bound_equality_evidence(stats: FieldStats) -> None:
             stats.truncated_evidence["enum_session_ids"] += 1
 
 
-__all__ = ["FIELD_EVIDENCE_VERSION", "deserialize_field_stats", "merge_field_stats", "serialize_field_stats"]
+__all__ = [
+    "FIELD_EVIDENCE_VERSION",
+    "deserialize_field_stats",
+    "finalize_field_stats",
+    "merge_field_stats",
+    "merge_field_stats_into",
+    "serialize_field_stats",
+]
