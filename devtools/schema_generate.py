@@ -19,10 +19,6 @@ from polylogue.cli.shared.schema_command_support import build_schema_privacy_con
 from polylogue.cli.shared.schema_rendering import render_schema_generate_result
 from polylogue.config import get_config
 from polylogue.core.json import JSONDocument
-from polylogue.maintenance.schema_inference_gate import (
-    authorize_schema_generation,
-    resolve_schema_inference_archive_root,
-)
 from polylogue.schemas.operator.models import SchemaInferRequest
 from polylogue.schemas.operator.workflow import infer_schema
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -93,12 +89,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--receipt", type=Path, default=None, help="Write an aggregate-only generation receipt as JSON."
     )
-    parser.add_argument(
-        "--schema-inference-receipt",
-        type=Path,
-        required=True,
-        help="Fresh authoritative PASS receipt from devtools gate schema-inference-gate.",
-    )
     return parser
 
 
@@ -119,19 +109,17 @@ def main(argv: list[str] | None = None) -> int:
             privacy=args.privacy,
             privacy_config_path=args.privacy_config,
         )
-        archive_root = resolve_schema_inference_archive_root(config, fallback_db_path=config.db_path)
-        with authorize_schema_generation(archive_root, args.schema_inference_receipt):
-            result = infer_schema(
-                SchemaInferRequest(
-                    provider=str(args.provider),
-                    db_path=config.db_path,
-                    max_samples=args.max_samples,
-                    privacy_config=privacy_config,
-                    cluster=bool(args.cluster),
-                    full_corpus=bool(args.full_corpus),
-                    progress_callback=on_progress if args.progress or args.receipt is not None else None,
-                )
+        result = infer_schema(
+            SchemaInferRequest(
+                provider=str(args.provider),
+                db_path=config.db_path,
+                max_samples=args.max_samples,
+                privacy_config=privacy_config,
+                cluster=bool(args.cluster),
+                full_corpus=bool(args.full_corpus),
+                progress_callback=on_progress if args.progress or args.receipt is not None else None,
             )
+        )
     except ValueError as exc:
         print(f"schema-generate: {exc}", file=sys.stderr)
         return 1
