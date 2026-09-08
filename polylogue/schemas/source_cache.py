@@ -44,9 +44,11 @@ class SourceContributionCache:
 
     def __enter__(self) -> SourceContributionCache:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = sqlite3.connect(self.path)
+        self._connection = sqlite3.connect(self.path, timeout=30)
+        self._connection.execute("PRAGMA busy_timeout=30000")
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
+        self.path.chmod(0o600)
         self._connection.execute(
             """
             CREATE TABLE IF NOT EXISTS source_evidence_contributions (
@@ -98,8 +100,9 @@ class SourceContributionCache:
     def put(self, contribution: CachedContribution) -> None:
         payload = json.dumps(contribution.evidence, sort_keys=True, separators=(",", ":"))
         metadata = json.dumps(contribution.metadata, sort_keys=True, separators=(",", ":"))
-        self._connection.execute(
-            """
+        with self._connection:
+            self._connection.execute(
+                """
             INSERT INTO source_evidence_contributions
                 (cache_key, schema_version, evidence_json, input_bytes, record_count, metadata_json)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -110,15 +113,15 @@ class SourceContributionCache:
                 record_count = excluded.record_count,
                 metadata_json = excluded.metadata_json
             """,
-            (
-                contribution.cache_key,
-                self._SCHEMA_VERSION,
-                payload,
-                contribution.input_bytes,
-                contribution.record_count,
-                metadata,
-            ),
-        )
+                (
+                    contribution.cache_key,
+                    self._SCHEMA_VERSION,
+                    payload,
+                    contribution.input_bytes,
+                    contribution.record_count,
+                    metadata,
+                ),
+            )
 
 
 __all__ = [
