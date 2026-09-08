@@ -35,7 +35,6 @@ import tempfile
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument
-from polylogue.paths import archive_root as default_archive_root
 from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.generation.workflow import generate_all_schemas
 from polylogue.schemas.operator.inference import privacy_config_from_payload
@@ -50,7 +49,6 @@ from polylogue.schemas.operator.receipt import (
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
-from polylogue.storage.archive_identity import ArchiveLocation
 
 
 def _element_schemas_by_kind(
@@ -61,25 +59,11 @@ def _element_schemas_by_kind(
     }
 
 
-def _target_archive_location(request: SchemaCommitRequest) -> ArchiveLocation:
-    configured_root = request.archive_root or default_archive_root()
-    location = ArchiveLocation.resolve(configured_root)
-    expected_db_path = location.active_index_path.resolve(strict=False)
-    if request.db_path is not None and request.db_path.resolve(strict=False) != expected_db_path:
-        raise ValueError(
-            "schema commit db_path must identify the active index of the configured archive; "
-            f"expected={expected_db_path}, actual={request.db_path.resolve(strict=False)}"
-        )
-    return location
-
-
 def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommitResult:
     provider_token = str(canonical_schema_provider(request.provider))
     output_dir = output_dir.absolute()
     handoff_path = output_dir / SCHEMA_INFERENCE_HANDOFF_FILENAME
     existing_handoff = load_schema_inference_receipt(handoff_path) if handoff_path.exists() else None
-    archive_location = _target_archive_location(request)
-
     registry_before = SchemaRegistry(storage_root=output_dir)
     # The bundled registry is a read fallback, not the prior state of this
     # commit's output directory. Compare against local persisted packages only.
@@ -112,7 +96,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
     else:
         generation_results = generate_all_schemas(
             output_dir,
-            db_path=archive_location.active_index_path,
+            db_path=request.db_path,
             providers=[request.provider],
             max_samples=request.max_samples,
             privacy_config=privacy_config_from_payload(request.privacy_config),
