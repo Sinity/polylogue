@@ -8,8 +8,6 @@ covered end-to-end in ``tests/unit/schemas/test_operator_commit.py``.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,11 +18,12 @@ from polylogue.schemas.generation.models import GenerationResult
 from polylogue.schemas.operator.models import SchemaCommitRequest, SchemaCommitResult, SchemaVersionCommitReport
 from polylogue.schemas.operator.receipt import (
     SchemaInferenceCoverageDecision,
+    SchemaInferenceInputManifest,
     SchemaInferenceReceipt,
 )
 
 _HANDOFF = SchemaInferenceReceipt(
-    gate_receipt_digest="a" * 64,
+    input_manifests=(SchemaInferenceInputManifest(provider="codex", digest="a" * 64),),
     coverage_decisions=(
         SchemaInferenceCoverageDecision(origin="codex-session", provider="codex", decision="committed", reason=None),
     ),
@@ -36,11 +35,6 @@ _HANDOFF = SchemaInferenceReceipt(
 class _ConfigStub:
     archive_root: Path
     db_path: Path
-
-
-@contextmanager
-def _allow_schema_generation(*_args: object, **_kwargs: object) -> Iterator[dict[str, object]]:
-    yield {}
 
 
 def test_schema_commit_forwards_request_and_defaults_output_dir(
@@ -62,10 +56,7 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
 
     monkeypatch.setattr(schema_commit, "get_config", fake_get_config)
     monkeypatch.setattr(schema_commit, "commit_provider_schema", fake_commit)
-    assert (
-        schema_commit.main(["--provider", "chatgpt", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")])
-        == 0
-    )
+    assert schema_commit.main(["--provider", "chatgpt"]) == 0
 
     assert len(captured) == 1
     request = captured[0]
@@ -74,7 +65,6 @@ def test_schema_commit_forwards_request_and_defaults_output_dir(
     assert request.db_path == tmp_path / "archive.db"
     assert request.full_corpus is True
     assert request.dry_run is False
-    assert request.schema_inference_gate_receipt_path == tmp_path / "gate.json"
 
 
 def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -107,8 +97,6 @@ def test_schema_commit_honors_output_dir_and_dry_run_overrides(monkeypatch: pyte
                 str(custom_output),
                 "--dry-run",
                 "--no-full-corpus",
-                "--schema-inference-gate-receipt",
-                str(tmp_path / "gate.json"),
             ]
         )
         == 0
@@ -144,12 +132,7 @@ def test_schema_commit_json_output_reports_success(
         ),
     )
 
-    assert (
-        schema_commit.main(
-            ["--provider", "chatgpt", "--json", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")]
-        )
-        == 0
-    )
+    assert schema_commit.main(["--provider", "chatgpt", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["provider"] == "chatgpt"
@@ -158,7 +141,7 @@ def test_schema_commit_json_output_reports_success(
     assert payload["sample_count"] == 42
     assert payload["versions"][0]["status"] == "changed"
     assert payload["versions"][0]["added_paths"] == ["session_document.new"]
-    assert payload["handoff"]["gate_receipt_digest"] == "a" * 64
+    assert payload["handoff"]["input_manifests"][0]["digest"] == "a" * 64
     assert payload["handoff_path"] == str(tmp_path / "handoff.json")
 
 
@@ -187,8 +170,6 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
                 "--provider",
                 "broken-provider",
                 "--json",
-                "--schema-inference-gate-receipt",
-                str(tmp_path / "gate.json"),
             ]
         )
         == 1
@@ -196,6 +177,47 @@ def test_schema_commit_exits_nonzero_on_generation_failure(
     payload = json.loads(capsys.readouterr().out)
     assert payload["success"] is False
     assert payload["error"] == "No samples"
+
+
+def test_unsupported_sources_keep_coverage_in_failure_output(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A no-evidence refusal must still explain every excluded input."""
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
+    source = tmp_path / "capture.json"
+    source.write_text('{"polylogue_capture_kind":"session"}', encoding="utf-8")
+
+    code = schema_commit.main(
+        [
+            "--provider",
+            "browser-capture",
+            "--source",
+            f"browser-capture={source}",
+            "--source-cache",
+            str(tmp_path / "evidence.sqlite"),
+            "--output-dir",
+            str(tmp_path / "packages"),
+            "--json",
+            "--progress",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 1
+    assert payload["success"] is False
+    provenance = payload["phase_receipt"]["source"]
+    assert provenance["source_terminal_reasons"] == {"browser_capture_adapter_unavailable": 1}
+    assert provenance["source_input_bytes"] == source.stat().st_size
+    events = [json.loads(line.removeprefix("schema-commit: ")) for line in captured.err.splitlines()]
+    completed = [event for event in events if event["phase"] == "source_evidence"]
+    assert len(completed) == 1
+    assert completed[0]["state"] == "completed"
+    assert completed[0]["source_terminal_reasons"] == provenance["source_terminal_reasons"]
 
 
 def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -222,7 +244,43 @@ def test_schema_commit_exits_nonzero_when_narrowed(monkeypatch: pytest.MonkeyPat
         ),
     )
 
-    assert (
-        schema_commit.main(["--provider", "chatgpt", "--schema-inference-gate-receipt", str(tmp_path / "gate.json")])
-        == 1
+    assert schema_commit.main(["--provider", "chatgpt"]) == 1
+
+
+@pytest.mark.parametrize("digest", ["a" * 64, None])
+def test_plain_output_uses_requested_provider_input_manifest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], digest: str | None
+) -> None:
+    """Anti-vacuity: selecting the first merged manifest prints another provider's digest."""
+    handoff = SchemaInferenceReceipt(
+        input_manifests=(
+            SchemaInferenceInputManifest(provider="claude-ai", digest="b" * 64),
+            SchemaInferenceInputManifest(
+                provider="codex",
+                digest=digest,
+                unavailable_reason="input_manifest_unavailable" if digest is None else None,
+            ),
+        ),
+        coverage_decisions=(),
+        packages=(),
     )
+    monkeypatch.setattr(
+        schema_commit,
+        "get_config",
+        lambda: _ConfigStub(archive_root=tmp_path / "archive", db_path=tmp_path / "archive.db"),
+    )
+    monkeypatch.setattr(
+        schema_commit,
+        "commit_provider_schema",
+        lambda request: SchemaCommitResult(
+            provider=request.provider,
+            generation=GenerationResult(provider=request.provider, schema={"type": "object"}, sample_count=1),
+            versions=(),
+            dry_run=False,
+            handoff=handoff,
+        ),
+    )
+    assert schema_commit.main(["--provider", "codex"]) == 0
+    output = capsys.readouterr().out
+    assert f"input_manifest_digest={digest or 'input_manifest_unavailable'}" in output
+    assert "b" * 64 not in output

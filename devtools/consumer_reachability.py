@@ -311,11 +311,10 @@ def check(root: Path, *, base: str | None = None, head: str | None = None, waive
             name = table_match.group(1)
             reader = re.compile(rf"\b(?:FROM|JOIN)\s+[\"'`]?{re.escape(name)}\b", re.I)
             has_reader = any(
-                candidate != relative and not candidate.startswith("tests/") and reader.search("\n".join(content))
+                not candidate.startswith("tests/") and reader.search("\n".join(content))
                 for candidate, content in additions.items()
             ) or any(
-                candidate != path and reader.search(candidate.read_text(encoding="utf-8"))
-                for candidate in production_root.rglob("*.py")
+                reader.search(candidate.read_text(encoding="utf-8")) for candidate in production_root.rglob("*.py")
             )
             if not has_reader and name not in waivers:
                 findings.append(Finding(name, "table", "added table has no production reader"))

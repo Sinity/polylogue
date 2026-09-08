@@ -1763,6 +1763,11 @@ def _sqlite_integrity(root: Path) -> None:
                 if not read_only:
                     conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                     _journal_mode_delete_with_retry(conn, name=name)
+        except sqlite3.DatabaseError as exc:
+            code = getattr(exc, "sqlite_errorcode", None)
+            if isinstance(code, int) and code & 0xFF in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}:
+                raise RuntimeError(f"invalid seeded archive tier {name}") from exc
+            raise
         finally:
             os.close(db_fd)
         checked.append(name)
@@ -2005,75 +2010,26 @@ def _bounded_scan_last_name(directory: Path, *, cursor: str, budget: int) -> str
         os.close(directory_fd)
 
 
-_MAX_CLEANUP_SEEN_BYTES = 1 << 20
-
-
-def _cleanup_identity(name: str, info: os.stat_result) -> str:
-    return f"{name}\0{info.st_dev}:{info.st_ino}:{info.st_ctime_ns}:{info.st_size}"
-
-
-def _seen_cleanup_identity(path: Path, identity: str, *, budget: int) -> tuple[bool, int]:
-    if budget <= 0:
-        return False, 0
-    try:
-        fd = _open_no_follow(path, os.O_RDONLY)
-    except FileNotFoundError:
-        return False, 0
-    scanned = 0
-    try:
-        with os.fdopen(fd, "r", encoding="utf-8", closefd=True) as handle:
-            for line in handle:
-                scanned += 1
-                if line.rstrip("\n") == identity:
-                    return True, scanned
-                if scanned >= budget:
-                    break
-        return False, scanned
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(fd)
-        raise
-
-
-def _mark_cleanup_identity(path: Path, identity: str) -> None:
-    fd = _open_no_follow(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    try:
-        if os.fstat(fd).st_size >= _MAX_CLEANUP_SEEN_BYTES:
-            os.ftruncate(fd, 0)
-        with os.fdopen(fd, "a", encoding="utf-8", closefd=True) as handle:
-            handle.write(identity + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.close(fd)
-        raise
-
-
 def _recover_obsolete_staging(
     *,
     cache_root: Path,
     staging_root: Path,
     budget: int = _OBSOLETE_STAGING_SCAN_BUDGET,
 ) -> tuple[str, ...]:
-    """Boundedly sweep abandoned keys with a persistent continuation cursor.
+    """Reclaim at most ``budget`` abandoned trees under authenticated locks.
 
-    The cache-wide cleanup lock serializes cursor updates.  Each candidate is
-    still authenticated by a non-blocking per-key flock before removal, so an
-    active builder is never touched.  A bounded batch plus cursor prevents a
-    large obsolete cache from turning one build into an unbounded cleanup pass;
-    subsequent builders continue from the last inspected name. Lock files are
-    retained because unlinking one can create two independent locks.
+    Directory names may be scanned to find candidates. Removing completed
+    candidates lets later calls continue without a persistent scan journal.
+    Lock files remain because unlinking one can create independent locks.
     """
     if budget <= 0:
         return ()
     locks_root = cache_root / ".locks"
     cleanup_lock = cache_root / ".cleanup.lock"
-    cursor_path = cache_root / ".cleanup.cursor"
     # A replaced lock is ambiguous: unlinking it can strand the owner holding
     # the old inode and let a second cleaner enter.  Refuse the cleanup pass;
-    # never repair suspicious lock/cursor paths by deletion.
-    if _is_symlink_node(cleanup_lock) or _is_symlink_node(cursor_path):
+    # never repair a suspicious lock path by deletion.
+    if _is_symlink_node(cleanup_lock):
         return ()
     removed: list[str] = []
     try:
@@ -2085,29 +2041,20 @@ def _recover_obsolete_staging(
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
-        cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
-        seen_path = cache_root / ".cleanup.seen"
-        if _is_symlink_node(seen_path):
-            return ()
         staging_fd = _open_pinned_dir(staging_root)
         inspected = 0
-        last_seen = ""
         try:
             with os.scandir(staging_fd) as entries:
                 for entry in entries:
+                    if inspected >= budget:
+                        break
+                    if "." not in entry.name:
+                        continue
                     info = entry.stat(follow_symlinks=False)
-                    identity = _cleanup_identity(entry.name, info)
-                    # Journal lookup is independently bounded; node
-                    # selection retains its own bounded batch.
-                    seen, _journal_work = _seen_cleanup_identity(seen_path, identity, budget=max(1, budget - inspected))
-                    if seen:
+                    if not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
                         continue
                     inspected += 1
-                    last_seen = entry.name
                     candidate = staging_root / entry.name
-                    if "." not in entry.name or not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
-                        _mark_cleanup_identity(seen_path, identity)
-                        continue
                     artifact_name = entry.name.split(".", 1)[0]
                     lock_path = locks_root / f"{artifact_name}.lock"
                     if _is_symlink_node(lock_path):
@@ -2119,15 +2066,12 @@ def _recover_obsolete_staging(
                                 _assert_lock_identity(handle.fileno(), lock_path)
                                 _remove_tree(candidate)
                                 removed.append(entry.name)
-                                _mark_cleanup_identity(seen_path, identity)
                             finally:
                                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
                         break
         finally:
             os.close(staging_fd)
-        if last_seen and last_seen != cursor:
-            _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
 
     return tuple(removed)
@@ -2144,8 +2088,7 @@ def _recover_stale_handoffs(
         return ()
     locks_root = cache_root / ".locks"
     cleanup_lock = cache_root / ".cleanup.lock"
-    cursor_path = cache_root / ".handoff.cursor"
-    if _is_symlink_node(cleanup_lock) or _is_symlink_node(cursor_path):
+    if _is_symlink_node(cleanup_lock):
         return ()
     removed: list[str] = []
     try:
@@ -2157,37 +2100,26 @@ def _recover_stale_handoffs(
         return ()
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as cleanup_handle:
         _assert_lock_identity(cleanup_handle.fileno(), cleanup_lock)
-        cursor = _read_private_text(cursor_path).strip() if _safe_exists(cursor_path) else ""
-        seen_path = cache_root / ".handoff.seen"
-        if _is_symlink_node(seen_path):
-            return ()
         artifacts_fd = _open_pinned_dir(artifacts_root)
         inspected = 0
-        last_seen = ""
         try:
             with os.scandir(artifacts_fd) as entries:
                 for entry in entries:
+                    if inspected >= budget:
+                        break
+                    if not entry.name.startswith(".") or not entry.name.endswith(".handoff"):
+                        continue
                     info = entry.stat(follow_symlinks=False)
-                    identity = _cleanup_identity(entry.name, info)
-                    # Journal lookup is independently bounded; node
-                    # selection retains its own bounded batch.
-                    seen, _journal_work = _seen_cleanup_identity(seen_path, identity, budget=max(1, budget - inspected))
-                    if seen:
+                    if not (stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode)):
                         continue
                     inspected += 1
-                    last_seen = entry.name
                     candidate = artifacts_root / entry.name
                     if stat.S_ISLNK(info.st_mode):
                         _remove_tree(candidate)
                         removed.append(entry.name)
-                        _mark_cleanup_identity(seen_path, identity)
-                        continue
-                    if not stat.S_ISDIR(info.st_mode):
-                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     parts = entry.name.removeprefix(".").split(".", 1)
                     if len(parts) != 2:
-                        _mark_cleanup_identity(seen_path, identity)
                         continue
                     lock_path = locks_root / f"{parts[0]}.lock"
                     if _is_symlink_node(lock_path):
@@ -2199,15 +2131,12 @@ def _recover_stale_handoffs(
                                 _assert_lock_identity(handle.fileno(), lock_path)
                                 _remove_tree(candidate)
                                 removed.append(entry.name)
-                                _mark_cleanup_identity(seen_path, identity)
                             finally:
                                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                     except OSError:
                         break
         finally:
             os.close(artifacts_fd)
-        if last_seen and last_seen != cursor:
-            _write_private_text(cursor_path, last_seen + "\n")
         fcntl.flock(cleanup_handle.fileno(), fcntl.LOCK_UN)
 
     return tuple(removed)

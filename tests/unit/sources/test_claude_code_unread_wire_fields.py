@@ -658,3 +658,26 @@ def test_capability_attribution_absent_emits_no_event() -> None:
         "sess-no-attribution",
     )
     assert [e for e in parsed.session_events if e.event_type == "claude_capability_attribution"] == []
+
+
+def test_unknown_stop_reason_remains_evidence_without_entering_constrained_column() -> None:
+    """An unrecognized provider token must not make the archive writer reject the session."""
+    parsed = parse_code(
+        [
+            {
+                "type": "assistant",
+                "uuid": "unknown-stop",
+                "sessionId": "stop-session",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "synthetic"}],
+                    "stop_reason": "new_provider_reason",
+                    "usage": {"input_tokens": 1},
+                },
+            }
+        ],
+        "stop-session",
+    )
+    assert len(parsed.messages) == 1
+    assert parsed.messages[0].stop_reason is None
+    assert any(event.payload.get("stop_reason") == "new_provider_reason" for event in parsed.session_events)

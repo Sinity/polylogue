@@ -1,9 +1,9 @@
 {
   "provider": "gemini",
-  "generated_at": "2026-03-16T12:26:09.197335+00:00",
-  "latest_version": "v2",
-  "default_version": "v2",
-  "recommended_version": "v2",
+  "generated_at": "2026-09-08T09:00:35.640704+00:00",
+  "latest_version": "v3",
+  "default_version": "v3",
+  "recommended_version": "v3",
   "orphan_adjunct_counts": {},
   "packages": [
     {
@@ -66,11 +66,13 @@
             "type:runSettings:object",
             "type:systemInstruction:object"
           ],
-          "observed_artifact_count": 0
+          "observed_artifact_count": 0,
+          "observation_status": "unspecified"
         }
       ],
       "orphan_adjunct_counts": {},
-      "workload_profile_file": null
+      "workload_profile_file": null,
+      "observation_status": "historical"
     },
     {
       "provider": "gemini",
@@ -136,11 +138,119 @@
             "type:runSettings:object",
             "type:systemInstruction:object"
           ],
-          "observed_artifact_count": 13
+          "observed_artifact_count": 13,
+          "observation_status": "unspecified"
         }
       ],
       "orphan_adjunct_counts": {},
-      "workload_profile_file": null
+      "workload_profile_file": null,
+      "observation_status": "historical"
+    },
+    {
+      "provider": "gemini",
+      "version": "v3",
+      "anchor_kind": "session_document",
+      "default_element_kind": "session_document",
+      "first_seen": "2026-09-08T09:00:35.640671+00:00",
+      "last_seen": "2026-09-08T09:00:35.640671+00:00",
+      "bundle_scope_count": 12,
+      "sample_count": 12,
+      "anchor_profile_family_id": "42934922ee9bfd50d3e52d41a83daf580cc4dc2b3ba515982500a84167da49fe",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [],
+      "elements": [
+        {
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 12,
+          "artifact_count": 12,
+          "supported": true,
+          "first_seen": "2026-09-08T09:00:35.640671+00:00",
+          "last_seen": "2026-09-08T09:00:35.640671+00:00",
+          "bundle_scope_count": 12,
+          "bundle_scope_identities": [],
+          "exact_structure_ids": [],
+          "profile_family_ids": [],
+          "profile_tokens": [],
+          "observed_artifact_count": 12,
+          "observation_status": "current"
+        }
+      ],
+      "orphan_adjunct_counts": {},
+      "workload_profile_file": null,
+      "observation_status": "current"
     }
-  ]
+  ],
+  "observation_outcomes": {
+    "source_input_bytes": 2768812,
+    "source_record_count": 12,
+    "source_recipe": {
+      "structure": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "structure",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "statistics": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "statistics",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
+      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
+      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+    },
+    "source_cache_phase_hits": {
+      "statistics": 2,
+      "structure": 2
+    },
+    "source_cache_phase_misses": {},
+    "source_statistics_population": "current_source_records",
+    "source_inherited_prefixes_subtracted": false,
+    "source_cache_hits": 4,
+    "source_cache_misses": 0,
+    "source_terminal_outcomes": {
+      "included": 12
+    },
+    "source_terminal_outcome_units": {
+      "included": "native_source_revision"
+    },
+    "source_candidate_terminal_outcomes": {
+      "included": 2
+    },
+    "source_terminal_reasons": {},
+    "source_phase_timings_ms": {
+      "collect": 209.501,
+      "fold": 116.96,
+      "hash": 45.507,
+      "inventory": 3.379,
+      "preliminary": 9.447,
+      "statistics": 36.618
+    },
+    "producer_version_counts": {},
+    "producer_version_missing_sources": 2,
+    "producer_version_conflicting_sources": 0,
+    "producer_version_unrecognized_sources": 0,
+    "source_input_manifest_digest": "c533fff1c64a9efbe5fc0b9081007c4bfc1e4d4b5524d6eb981057460c4d9614",
+    "source_candidate_count": 2,
+    "source_included_candidate_count": 2,
+    "source_included_native_source_revision_count": 12
+  }
 }

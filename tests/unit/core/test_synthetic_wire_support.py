@@ -937,6 +937,20 @@ def test_construct_handler_removal_changes_coverage_receipt(monkeypatch: pytest.
     )
 
 
+def test_missing_handler_stops_random_witnesses_without_waiving_coverage(monkeypatch: pytest.MonkeyPatch) -> None:
+    schema: SchemaRecord = {"type": "object", "properties": {"values": {"type": "array", "items": {"type": "string"}}}}
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
+    monkeypatch.delitem(SCHEMA_CONSTRUCT_HANDLERS, "array")
+
+    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
+    payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
+    coverage = wire_formats.construct_coverage(schema, payloads)
+
+    assert len(raw_items) < 8
+    assert "type:array@$.properties.values" in coverage.missing_keywords
+    assert not coverage.complete
+
+
 def test_string_payload_cannot_satisfy_integer_coverage() -> None:
     coverage = wire_formats.construct_coverage(
         {"type": "integer"},
@@ -995,11 +1009,14 @@ def test_coverage_witnesses_select_nested_array_union_branches() -> None:
     }
     corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="json"), "test")
 
-    payloads = [json.loads(raw) for raw in wire_formats.generate_coverage_witnesses(corpus, seed=31)]
+    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31)
+    payloads = [json.loads(raw) for raw in raw_items]
 
     assert {type(payload["choice"]) for payload in payloads} >= {int, str}
     assert {type(payload["items"][0]) for payload in payloads} >= {int, str}
     assert {type(payload["typed_choice"]) for payload in payloads} >= {dict, str}
+    assert wire_formats.construct_coverage(schema, payloads).complete
+    assert len(raw_items) < 128
 
 
 def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
@@ -1016,6 +1033,43 @@ def test_coverage_witnesses_keep_nested_union_choices_independent() -> None:
     assert any(isinstance(payload, str) for payload in payloads)
     assert 0 in payloads
     assert True in payloads
+
+
+def test_claude_nested_array_content_is_explicitly_unrepresentable() -> None:
+    """The wire normalizer removes nested arrays; extra witnesses cannot recover them."""
+    schema: SchemaRecord = {
+        "type": "object",
+        "properties": {
+            "message": {
+                "type": "object",
+                "properties": {
+                    "content": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {
+                                    "type": ["string", "array"],
+                                    "items": {"type": "object", "properties": {"text": {"type": "string"}}},
+                                }
+                            },
+                        },
+                    }
+                },
+            }
+        },
+    }
+    corpus = SyntheticCorpus(schema, wire_formats.WireFormat(encoding="jsonl"), "claude-code")
+    raw_items = wire_formats.generate_coverage_witnesses(corpus, seed=31, max_witnesses=8)
+    payloads = [json.loads(line) for raw in raw_items for line in raw.splitlines()]
+    coverage = wire_formats.construct_coverage(schema, payloads)
+    assert coverage.missing_keywords
+    omitted_role = "type:string@$.properties.message.properties.role"
+    reasons = wire_formats._route_nonrepresentable_reasons(
+        "claude-code", (*coverage.missing_keywords, omitted_role), package_version="v2"
+    )
+    assert set(reasons) == set(coverage.missing_keywords)
+    assert len(raw_items) < 8
 
 
 def test_receipt_generation_and_validation_use_injected_registry_schema(

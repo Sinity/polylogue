@@ -1,0 +1,34 @@
+{
+  "provider": "hermes",
+  "version": "v3",
+  "anchor_kind": "session_document",
+  "default_element_kind": "session_document",
+  "first_seen": "2026-09-08T09:01:02.756636+00:00",
+  "last_seen": "2026-09-08T09:01:02.756636+00:00",
+  "bundle_scope_count": 159,
+  "sample_count": 159,
+  "anchor_profile_family_id": "f3428d40859c52e141d1ca642fd98b72e8f1583af2f4338399128d250c7ca4d6",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [],
+  "elements": [
+    {
+      "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 159,
+      "artifact_count": 159,
+      "supported": true,
+      "first_seen": "2026-09-08T09:01:02.756636+00:00",
+      "last_seen": "2026-09-08T09:01:02.756636+00:00",
+      "bundle_scope_count": 159,
+      "bundle_scope_identities": [],
+      "exact_structure_ids": [],
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "observed_artifact_count": 159,
+      "observation_status": "current"
+    }
+  ],
+  "orphan_adjunct_counts": {},
+  "workload_profile_file": null,
+  "observation_status": "current"
+}

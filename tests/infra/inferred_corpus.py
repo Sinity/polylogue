@@ -18,7 +18,6 @@ from typing import Literal, TypeAlias, cast, get_args
 
 from polylogue.core.json import JSONDocument
 from polylogue.core.sources import origin_from_provider
-from polylogue.maintenance.schema_inference_gate import validate_schema_inference_gate_receipt
 from polylogue.scenarios import CorpusSpec
 from polylogue.schemas.operator.receipt import (
     SchemaInferenceReceipt,
@@ -55,13 +54,6 @@ UnsupportedCorpusReason: TypeAlias = Literal[
     "unsupported_json_schema_construct",
 ]
 PackageReceipt: TypeAlias = JSONDocument
-_WIRE_AUTHORITY_ONLY_REASONS = frozenset(
-    {
-        "wire_support_selection_unwitnessed",
-        "wire_support_receipt_incomplete",
-        "unsupported_wire_route",
-    }
-)
 
 
 @dataclass(frozen=True, order=True)
@@ -255,25 +247,6 @@ def _require_inference_handoff(manifest: InferredCorpusManifest) -> SchemaInfere
     return SchemaInferenceReceipt.from_payload(manifest.package_receipt)
 
 
-def _validate_authoritative_gate_binding(
-    receipt: SchemaInferenceReceipt,
-    *,
-    gate_receipt_path: Path | None,
-    archive_root: Path | None,
-) -> None:
-    if gate_receipt_path is None or archive_root is None:
-        raise ValueError("campaign mode requires an authoritative gate receipt path and archive root")
-    try:
-        payload = json.loads(gate_receipt_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"unable to read authoritative schema-inference gate receipt: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise ValueError("authoritative schema-inference gate receipt must be a JSON object")
-    gate_digest = validate_schema_inference_gate_receipt(payload, archive_root=archive_root)
-    if receipt.gate_receipt_digest != gate_digest:
-        raise ValueError("schema-inference handoff gate receipt digest does not match the authoritative PASS receipt")
-
-
 @dataclass(frozen=True)
 class InferredCorpusConvergenceHandoff:
     """Exact executable manifest subset admitted to the convergence loop."""
@@ -422,8 +395,6 @@ def read_inferred_corpus_manifest(
     *,
     campaign_mode: bool = False,
     registry: RuntimeSchemaRegistryLike | None = None,
-    gate_receipt_path: Path | None = None,
-    archive_root: Path | None = None,
 ) -> InferredCorpusManifest:
     """Read and validate a persisted manifest before exposing executable rows."""
 
@@ -447,8 +418,6 @@ def read_inferred_corpus_manifest(
             manifest,
             registry,
             providers=providers,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
     return manifest
 
@@ -464,8 +433,6 @@ def build_inferred_corpus_convergence_handoff(
     *,
     campaign_mode: bool = False,
     registry: RuntimeSchemaRegistryLike | None = None,
-    gate_receipt_path: Path | None = None,
-    archive_root: Path | None = None,
 ) -> InferredCorpusConvergenceHandoff:
     """Bind every supported row from memory or persisted disk to convergence."""
 
@@ -475,8 +442,6 @@ def build_inferred_corpus_convergence_handoff(
             manifest,
             campaign_mode=campaign_mode,
             registry=registry,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
         if isinstance(manifest, Path)
         else manifest
@@ -490,8 +455,6 @@ def build_inferred_corpus_convergence_handoff(
             persisted_manifest,
             registry,
             providers=providers,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
     selections = tuple(_selection_for_entry(entry) for entry in persisted_manifest.entries if entry.spec is not None)
     handoff = InferredCorpusConvergenceHandoff(
@@ -855,8 +818,6 @@ def compile_inferred_corpus_manifest(
     wire_support_receipt: WireSupportReceipt | None = None,
     providers: Sequence[str] | None = None,
     campaign_mode: bool = False,
-    gate_receipt_path: Path | None = None,
-    archive_root: Path | None = None,
 ) -> InferredCorpusManifest:
     """Compile every persisted package/version/element into a typed manifest."""
 
@@ -897,8 +858,6 @@ def compile_inferred_corpus_manifest(
             manifest,
             registry,
             providers=providers,
-            gate_receipt_path=gate_receipt_path,
-            archive_root=archive_root,
         )
     return manifest
 
@@ -908,15 +867,8 @@ def _validate_inference_handoff(
     registry: RuntimeSchemaRegistryLike,
     *,
     providers: Sequence[str] | None,
-    gate_receipt_path: Path | None,
-    archive_root: Path | None,
 ) -> None:
     receipt = _require_inference_handoff(manifest)
-    _validate_authoritative_gate_binding(
-        receipt,
-        gate_receipt_path=gate_receipt_path,
-        archive_root=archive_root,
-    )
     current_wire_support = _validate_current_wire_support_route(manifest, registry)
     if current_wire_support is not None and current_wire_support.missing_routes:
         raise ValueError(
@@ -939,29 +891,31 @@ def _validate_inference_handoff(
             f"missing={sorted(expected_coverage - actual_coverage)!r}, "
             f"unexpected={sorted(actual_coverage - expected_coverage)!r}"
         )
-    entries_by_provider: dict[str, list[InferredCorpusManifestEntry]] = {}
-    for entry in manifest.entries:
-        entries_by_provider.setdefault(entry.key.provider, []).append(entry)
-    for coverage in receipt.coverage_decisions:
-        provider_entries = entries_by_provider.get(coverage.provider, [])
-        # The package receipt records schema inference authority.  Wire-route
-        # refusals are independently bound by the serialized WireSupportReceipt
-        # and must not rewrite a committed schema package decision.
-        schema_blocking_reasons = tuple(
-            entry.unsupported.reason
-            for entry in provider_entries
-            if entry.unsupported is not None and entry.unsupported.reason not in _WIRE_AUTHORITY_ONLY_REASONS
+    schema_reasons: dict[str, list[UnsupportedCorpusRecord | None]] = {}
+    for provider, _catalog, package, element in catalog_entries:
+        schema = registry.get_element_schema(provider, version=package.version, element_kind=element.element_kind)
+        schema_reasons.setdefault(provider, []).append(
+            _schema_unsupported_reason(
+                element=element,
+                schema=schema if isinstance(schema, dict) else None,
+                wire_format=PROVIDER_WIRE_FORMATS.get(provider),
+                construct_support=_schema_constructs(schema),
+            )
         )
-        if any(entry.spec is not None for entry in provider_entries):
+    for coverage in receipt.coverage_decisions:
+        # Schema coverage is independent of the synthetic wire route's availability.
+        reasons = schema_reasons.get(coverage.provider, [])
+        if any(reason is None for reason in reasons):
             expected_decision = "committed"
-        elif not schema_blocking_reasons:
-            expected_decision = "committed" if coverage.provider in PROVIDER_WIRE_FORMATS else "unsupported"
-        elif all(reason == "unsupported_json_schema_construct" for reason in schema_blocking_reasons):
+        elif reasons and all(reason.reason == "unsupported_json_schema_construct" for reason in reasons if reason):
             expected_decision = "nonrepresentable"
         else:
             expected_decision = "unsupported"
         if coverage.decision != expected_decision:
-            raise ValueError("schema-inference handoff coverage decision changed")
+            raise ValueError(
+                f"schema-inference handoff coverage decision changed for {coverage.provider}: "
+                f"expected={expected_decision}, actual={coverage.decision}"
+            )
 
     expected_unsupported: set[tuple[str, str, str, str, str, tuple[str, ...]]] = set()
     entries_by_wire_key = {

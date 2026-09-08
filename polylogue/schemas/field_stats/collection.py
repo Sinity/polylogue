@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
-from collections.abc import Collection, Mapping
+from collections.abc import Collection, Iterable, Mapping
+from functools import lru_cache
 from typing import TypeAlias
 
 from polylogue.schemas.field_stats.detection import (
@@ -66,10 +68,10 @@ def _increment_bounded(counter: dict[str, int], key: str, stats: FieldStats, evi
 
 
 def _collect_field_stats(
-    samples: Collection[SampleMapping],
+    samples: Iterable[SampleMapping],
     *,
-    session_ids: Collection[str | None] | None = None,
-    observed_ats: Collection[str | None] | None = None,
+    session_ids: Iterable[str | None] | None = None,
+    observed_ats: Iterable[str | None] | None = None,
     dynamic_paths: Collection[str] = (),
     max_depth: int = 15,
 ) -> FieldStatsByPath:
@@ -93,9 +95,16 @@ def _collect_field_stats(
     string_length_cap = 2000
 
     current_session_id: str | None = None
+    current_session_token: str | None = None
+    token_session_id: str | None = None
     current_observed_at: str | None = None
 
+    @lru_cache(maxsize=4_096)
+    def _collapse_key_tuple(keys: tuple[str, ...]) -> bool:
+        return should_collapse_observed_keys(keys)
+
     def _walk(value: object, path: str, depth: int, sample_idx: int) -> None:
+        nonlocal current_session_token, token_session_id
         if depth > max_depth:
             return
 
@@ -115,11 +124,15 @@ def _collect_field_stats(
         stats.value_count += 1
 
         if isinstance(value, Mapping):
+            items = tuple((str(key), item) for key, item in value.items())
+            keys = tuple(key for key, _item in items)
             if path not in dict_key_sets:
                 dict_key_sets[path] = set()
             key_evidence = dict_key_sets[path]
-            for key in value:
-                stats.object_key_distribution.observe(str(key))
+            for key in keys:
+                key_digest = hashlib.sha256(key.encode("utf-8", errors="surrogatepass")).digest()
+                stats.object_key_distribution.observe(key, digest=key_digest)
+                stats.observe_object_key(key, digest=key_digest)
                 if key in key_evidence or len(key_evidence) < _DICT_KEY_EVIDENCE_CAP:
                     key_evidence.add(key)
                 else:
@@ -127,8 +140,10 @@ def _collect_field_stats(
             _append_bounded(stats.object_key_counts, len(value), stats, "object_fanout_samples")
             stats.object_fanout_distribution.observe(len(value))
 
-            collapse_all = path in dynamic_paths or should_collapse_observed_keys(value.keys())
-            sibling_names = {str(key) for key in value if not collapse_all and not is_dynamic_key(str(key))}
+            collapse_all = path in dynamic_paths or (
+                _collapse_key_tuple(keys) if len(keys) <= 64 else should_collapse_observed_keys(keys)
+            )
+            sibling_names = {key for key in keys if not collapse_all and not is_dynamic_key(key)}
             for child_name in sibling_names:
                 child_stats = _ensure_stats(f"{path}.{child_name}")
                 for other_name in sibling_names:
@@ -141,9 +156,8 @@ def _collect_field_stats(
                             "co_occurring_fields",
                         )
 
-            for key, item in value.items():
-                key_text = str(key)
-                child_path = f"{path}.*" if collapse_all or is_dynamic_key(key_text) else f"{path}.{key_text}"
+            for key, item in items:
+                child_path = f"{path}.*" if collapse_all or is_dynamic_key(key) else f"{path}.{key}"
                 _walk(item, child_path, depth + 1, sample_idx)
             return
 
@@ -177,7 +191,21 @@ def _collect_field_stats(
             return
 
         if isinstance(value, str):
-            stats.categorical_distribution.observe(value)
+            value_digest = hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()
+            stats.categorical_distribution.observe(value, digest=value_digest)
+            if current_session_id != token_session_id:
+                token_session_id = current_session_id
+                current_session_token = (
+                    hashlib.sha256(current_session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+                    if current_session_id is not None
+                    else None
+                )
+            stats.observe_equality_value(
+                value,
+                session_id=current_session_id,
+                digest=value_digest,
+                session_token=current_session_token,
+            )
             if len(stats.string_lengths) < string_length_cap:
                 stats.string_lengths.append(len(value))
             else:
@@ -239,12 +267,13 @@ def _collect_field_stats(
 
     session_id_iterator = iter(session_ids) if session_ids is not None else None
     observed_at_iterator = iter(observed_ats) if observed_ats is not None else None
+    total_samples = 0
     for idx, sample in enumerate(samples):
         current_session_id = next(session_id_iterator, None) if session_id_iterator is not None else None
         current_observed_at = next(observed_at_iterator, None) if observed_at_iterator is not None else None
         _walk(sample, "$", 0, idx)
+        total_samples = idx + 1
 
-    total_samples = len(samples)
     for stats in all_stats.values():
         stats.total_samples = total_samples
 

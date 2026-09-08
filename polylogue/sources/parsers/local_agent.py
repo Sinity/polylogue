@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, BranchType, Provider
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument, JSONValue, json_document
 from polylogue.core.timestamps import format_timestamp
 from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
@@ -126,6 +126,27 @@ def looks_like_gemini_cli(payload: JSONDocument) -> bool:
     if isinstance(payload.get("messages"), list):
         return "startTime" in payload or "lastUpdated" in payload or payload.get("kind") in _GEMINI_CLI_KIND_VALUES
     return isinstance(payload.get("projectHash"), str) and payload.get("kind") in _GEMINI_CLI_KIND_VALUES
+
+
+def is_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> bool:
+    """Recognize raw checkpoint headers, turns, and incremental field updates."""
+    records = iter(payload)
+    header = next(records, None)
+    if not isinstance(header, dict) or "messages" in header or not looks_like_gemini_cli(header):
+        return False
+    for record in records:
+        if not isinstance(record, dict):
+            return False
+        if set(record) == {"$set"} and isinstance(record["$set"], dict):
+            continue
+        if not (
+            isinstance(record.get("id"), str)
+            and isinstance(record.get("type"), str)
+            and isinstance(record.get("timestamp"), str)
+            and "content" in record
+        ):
+            return False
+    return True
 
 
 def looks_like_hermes(payload: JSONDocument) -> bool:

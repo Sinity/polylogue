@@ -1,0 +1,34 @@
+{
+  "provider": "claude-ai",
+  "version": "v3",
+  "anchor_kind": "session_document",
+  "default_element_kind": "session_document",
+  "first_seen": "2026-09-08T07:29:10.439262+00:00",
+  "last_seen": "2026-09-08T09:02:57.580284+00:00",
+  "bundle_scope_count": 1016,
+  "sample_count": 1016,
+  "anchor_profile_family_id": "5e6ed73824f53c74b6a686b7a5a7ee37912aac4106c7f5f0d904d16af93c1305",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [],
+  "elements": [
+    {
+      "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 1016,
+      "artifact_count": 1016,
+      "supported": true,
+      "first_seen": "2026-09-08T07:29:10.439262+00:00",
+      "last_seen": "2026-09-08T09:02:57.580284+00:00",
+      "bundle_scope_count": 1016,
+      "bundle_scope_identities": [],
+      "exact_structure_ids": [],
+      "profile_family_ids": [],
+      "profile_tokens": [],
+      "observed_artifact_count": 1016,
+      "observation_status": "current"
+    }
+  ],
+  "orphan_adjunct_counts": {},
+  "workload_profile_file": null,
+  "observation_status": "current"
+}

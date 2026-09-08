@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections import Counter
 from dataclasses import dataclass, field
@@ -14,6 +15,8 @@ ENUM_VALUE_CAP = 200
 REF_MATCH_THRESHOLD = 0.7
 LEGACY_SAMPLE_CAP = 2_000
 SESSION_EVIDENCE_CAP = 16
+EQUALITY_EVIDENCE_CAP = 256
+_SAFE_STRUCTURAL_VALUES = frozenset({"assistant", "developer", "function", "human", "model", "system", "tool", "user"})
 
 
 def _parse_record_timestamp(value: str | None) -> datetime | None:
@@ -81,6 +84,11 @@ class FieldStats:
     field_last_seen: str | None = None
     _last_encountered_document: int | None = field(default=None, repr=False)
     _last_non_null_document: int | None = field(default=None, repr=False)
+    equality_hash_counts: Counter[str] = field(default_factory=Counter)
+    object_key_hash_counts: Counter[str] = field(default_factory=Counter)
+    equality_session_tokens: dict[str, set[str]] = field(default_factory=dict)
+    safe_observed_values: Counter[str] = field(default_factory=Counter)
+    slash_value_count: int = 0
 
     def __post_init__(self) -> None:
         """Backfill sketches for direct fixtures using legacy sample lists."""
@@ -143,6 +151,64 @@ class FieldStats:
             if sequence[index + 1] >= sequence[index]:
                 self.ordered_increasing_pair_count += 1
 
+    def observe_equality_value(
+        self,
+        value: str,
+        *,
+        session_id: str | None = None,
+        digest: bytes | None = None,
+        session_token: str | None = None,
+    ) -> None:
+        """Retain a bounded, private equality witness without retaining prose."""
+        if value.lower() in _SAFE_STRUCTURAL_VALUES:
+            self.safe_observed_values[value] += 1
+        if "/" in value:
+            self.slash_value_count += 1
+        value_digest = (digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()).hex()
+        if value_digest not in self.equality_hash_counts and len(self.equality_hash_counts) >= EQUALITY_EVIDENCE_CAP:
+            largest = max(self.equality_hash_counts)
+            if value_digest >= largest:
+                self.truncated_evidence["equality_hashes"] += 1
+                return
+            del self.equality_hash_counts[largest]
+            self.equality_session_tokens.pop(largest, None)
+            self.truncated_evidence["equality_hashes"] += 1
+        self.equality_hash_counts[value_digest] += 1
+        if session_id is not None:
+            token = session_token or hashlib.sha256(session_id.encode("utf-8", errors="surrogatepass")).hexdigest()
+            tokens = self.equality_session_tokens.setdefault(value_digest, set())
+            if token in tokens or len(tokens) < SESSION_EVIDENCE_CAP:
+                tokens.add(token)
+            else:
+                self.truncated_evidence["equality_sessions"] += 1
+
+    def observe_object_key(self, value: str, *, digest: bytes | None = None) -> None:
+        """Retain a bounded private witness for one object key."""
+        value_digest = (digest or hashlib.sha256(value.encode("utf-8", errors="surrogatepass")).digest()).hex()
+        if (
+            value_digest not in self.object_key_hash_counts
+            and len(self.object_key_hash_counts) >= EQUALITY_EVIDENCE_CAP
+        ):
+            largest = max(self.object_key_hash_counts)
+            if value_digest >= largest:
+                self.truncated_evidence["object_key_hashes"] += 1
+                return
+            del self.object_key_hash_counts[largest]
+            self.truncated_evidence["object_key_hashes"] += 1
+        self.object_key_hash_counts[value_digest] += 1
+
+    def object_key_overlap(self, target: FieldStats) -> tuple[int, int, int] | None:
+        """Return overlap counts using the target's retained hash domain."""
+        target_values = set(target.object_key_hash_counts)
+        source_values = set(self.equality_hash_counts)
+        if not target_values or not source_values:
+            return None
+        if target.truncated_evidence["object_key_hashes"]:
+            source_values = {value for value in source_values if value <= max(target_values)}
+        if not source_values:
+            return None
+        return len(source_values & target_values), len(source_values), len(target_values)
+
     @property
     def frequency(self) -> float:
         return self.present_count / self.total_samples if self.total_samples else 0.0
@@ -178,6 +244,21 @@ class FieldStats:
         if not self.observed_values:
             return False
         return len(self.observed_values) <= ENUM_MAX_CARDINALITY
+
+    @property
+    def effective_distinct_count(self) -> int:
+        """Distinctness usable after raw values have been removed from evidence."""
+        return max(
+            len(self.observed_values), self.distinct_value_count, self.categorical_distribution.estimated_distinct
+        )
+
+    @property
+    def has_array_evidence(self) -> bool:
+        return bool(self.array_lengths or self.array_length_distribution.count)
+
+    @property
+    def has_object_fanout_evidence(self) -> bool:
+        return bool(self.object_key_counts or self.object_fanout_distribution.count)
 
     @property
     def string_length_stats(self) -> dict[str, float] | None:
@@ -219,11 +300,12 @@ class FieldStats:
 
     @property
     def approximate_entropy(self) -> float | None:
-        if not self.observed_values or self.value_count == 0:
+        values = self.equality_hash_counts or self.observed_values
+        if not values or self.value_count == 0:
             return None
-        total = sum(self.observed_values.values())
+        total = sum(values.values())
         entropy = 0.0
-        for count in self.observed_values.values():
+        for count in values.values():
             if count > 0:
                 probability = count / total
                 entropy -= probability * math.log2(probability)
@@ -233,6 +315,7 @@ class FieldStats:
 __all__ = [
     "ENUM_MAX_CARDINALITY",
     "ENUM_VALUE_CAP",
+    "EQUALITY_EVIDENCE_CAP",
     "FieldStats",
     "LEGACY_SAMPLE_CAP",
     "REF_MATCH_THRESHOLD",

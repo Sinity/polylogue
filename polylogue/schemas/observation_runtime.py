@@ -107,19 +107,21 @@ def _extract_record_observation(
     *,
     context: _ObservationContext,
     config: ProviderConfig,
+    compact_values: bool,
+    admitted_artifact_kind: str | None,
 ) -> _ObservedSchemaUnit | None:
-    artifact_kind = _eligible_artifact_kind(normalized_payload, context=context)
+    artifact_kind = admitted_artifact_kind or _eligible_artifact_kind(normalized_payload, context=context)
     if artifact_kind is None:
         return None
 
-    samples = _compact_schema_samples(
-        extract_payload_samples(
-            normalized_payload,
-            sample_granularity="record",
-            max_samples=context.effective_max_samples,
-            record_type_key=config.record_type_key,
-        )
+    samples = extract_payload_samples(
+        normalized_payload,
+        sample_granularity="record",
+        max_samples=context.effective_max_samples,
+        record_type_key=config.record_type_key,
     )
+    if compact_values:
+        samples = _compact_schema_samples(samples)
     if not samples:
         return None
 
@@ -139,14 +141,14 @@ def _extract_document_observations(
     normalized_payload: JSONValue,
     *,
     context: _ObservationContext,
-    values_compacted: bool,
+    compact_values: bool,
 ) -> list[_ObservedSchemaUnit]:
     extracted_documents = extract_payload_samples(
         normalized_payload,
         sample_granularity="document",
         max_samples=context.effective_max_samples,
     )
-    documents = extracted_documents if values_compacted else _compact_schema_samples(extracted_documents)
+    documents = _compact_schema_samples(extracted_documents) if compact_values else extracted_documents
     units: list[_ObservedSchemaUnit] = []
     for sample in documents:
         artifact_kind = _eligible_artifact_kind(sample, context=context)
@@ -175,8 +177,15 @@ def extract_schema_units_from_payload(
     max_samples: int | None = None,
     values_compacted: bool = False,
     full_corpus: bool = False,
+    compact_values: bool = True,
+    admitted_artifact_kind: str | None = None,
 ) -> list[SchemaUnit]:
-    """Extract clusterable schema units from one decoded payload."""
+    """Extract clusterable schema units from one decoded payload.
+
+    ``admitted_artifact_kind`` carries a prior whole-stream classification for
+    record-granularity callers. Individual records cannot re-establish a
+    stream classifier's admission contract.
+    """
     if not isinstance(payload, ReplayableRecordSamples) and not is_json_value(payload):
         return []
     normalized_payload = cast(JSONValue, payload)
@@ -195,6 +204,8 @@ def extract_schema_units_from_payload(
             normalized_payload,
             context=context,
             config=config,
+            compact_values=compact_values,
+            admitted_artifact_kind=admitted_artifact_kind,
         )
         if observed is None:
             return []
@@ -205,7 +216,7 @@ def extract_schema_units_from_payload(
         for observed in _extract_document_observations(
             normalized_payload,
             context=context,
-            values_compacted=values_compacted,
+            compact_values=compact_values and not values_compacted,
         )
     ]
 

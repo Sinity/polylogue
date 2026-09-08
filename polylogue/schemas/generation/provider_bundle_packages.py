@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, json_document
@@ -62,6 +61,42 @@ class ProviderCatalogArtifacts:
     manifest: ClusterManifest
 
 
+def allocate_package_versions(
+    prior_catalog: SchemaPackageCatalog | None,
+    families: Sequence[tuple[str, str]],
+) -> list[str]:
+    """Keep inferred family labels stable as new families arrive."""
+    prior = prior_catalog.packages if prior_catalog is not None else []
+    by_family: dict[tuple[str, str], str] = {}
+    used = {package.version for package in prior}
+    for package in prior:
+        if package.anchor_profile_family_id:
+            key = (package.anchor_kind, package.anchor_profile_family_id)
+            previous = by_family.setdefault(key, package.version)
+            if previous != package.version:
+                raise ValueError(f"Schema family has conflicting version labels: {previous}, {package.version}")
+    next_number = (
+        max(
+            (int(version[1:]) for version in used if version.startswith("v") and version[1:].isdigit()),
+            default=0,
+        )
+        + 1
+    )
+    assigned: dict[tuple[str, str], str] = {}
+    for family in sorted(set(families)):
+        if family in by_family:
+            assigned[family] = by_family[family]
+        else:
+            while f"v{next_number}" in used:
+                next_number += 1
+            assigned[family] = f"v{next_number}"
+            used.add(assigned[family])
+            next_number += 1
+    if len(set(families)) != len(families):
+        raise ValueError("Schema generation produced duplicate family packages")
+    return [assigned[family] for family in families]
+
+
 def _coverage_rank(package: SchemaVersionPackage) -> tuple[int, int, str, str]:
     """Rank fallback fitness without letting one long transcript dominate."""
     return (
@@ -79,10 +114,11 @@ def _select_catalog_versions(
     if not packages:
         return None, None, None, {}
 
-    latest = packages[-1]
+    latest = max(packages, key=lambda package: (package.first_seen, package.anchor_profile_family_id, package.version))
     recommended = max(packages, key=_coverage_rank)
     rationale = json_document(
         {
+            "version_semantics": "inferred_structural_family",
             "latest": {
                 "version": latest.version,
                 "strategy": "latest_first_observed_family",
@@ -152,6 +188,7 @@ def build_provider_catalog_artifacts(
     privacy_config: SchemaPrivacyConfig | None,
     observation_outcomes: JSONDocument,
     journal: ObservationJournal | None = None,
+    prior_catalog: SchemaPackageCatalog | None = None,
 ) -> ProviderCatalogArtifacts:
     """Build package schemas, catalog metadata, and manifest for a provider."""
     total_units = max(sum(acc.sample_count for acc in clusters.values()), 1)
@@ -161,8 +198,10 @@ def build_provider_catalog_artifacts(
     catalog_packages: list[SchemaVersionPackage] = []
     cluster_to_package_version: dict[str, str] = {}
 
-    for index, package_acc in enumerate(packages, start=1):
-        version = f"v{index}"
+    versions = allocate_package_versions(
+        prior_catalog, [(package.anchor_kind, package.anchor_family_id) for package in packages]
+    )
+    for package_acc, version in zip(packages, versions, strict=True):
         package_schemas[version] = {}
         package_reports[version] = {}
 
@@ -234,7 +273,7 @@ def build_provider_catalog_artifacts(
                     first_seen=element_first_seen or "",
                     last_seen=element_last_seen or "",
                     bundle_scope_count=len(element_bundle_scope_identities),
-                    bundle_scope_identities=element_bundle_scope_identities,
+                    bundle_scope_identities=[],
                     exact_structure_ids=exact_structure_ids,
                     profile_family_ids=profile_family_ids,
                     profile_tokens=_element_profile_tokens(kind_metadata),
@@ -247,12 +286,12 @@ def build_provider_catalog_artifacts(
             version=version,
             anchor_kind=package_acc.anchor_kind,
             default_element_kind=package_acc.anchor_kind,
-            first_seen=package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
-            last_seen=package_acc.last_seen or package_acc.first_seen or datetime.now(tz=timezone.utc).isoformat(),
+            first_seen=package_acc.first_seen or "",
+            last_seen=package_acc.last_seen or package_acc.first_seen or "",
             bundle_scope_count=_package_bundle_scope_count(package_acc),
             sample_count=total_package_samples,
             anchor_profile_family_id=package_acc.anchor_family_id,
-            bundle_scope_identities=_package_scope_identities(package_acc),
+            bundle_scope_identities=[],
             profile_family_ids=package_profile_family_ids,
             elements=elements,
             workload_profile_file="workload-profile.json.gz",
@@ -372,6 +411,7 @@ def build_success_provider_bundle(
 
 __all__ = [
     "ProviderCatalogArtifacts",
+    "allocate_package_versions",
     "build_provider_catalog_artifacts",
     "build_success_provider_bundle",
 ]

@@ -1,22 +1,34 @@
 {
+  "provider": "hermes",
+  "version": "v1",
   "anchor_kind": "session_document",
-  "anchor_profile_family_id": "f99c39ed0e5df7ea",
-  "bundle_scope_count": 37,
   "default_element_kind": "session_document",
+  "first_seen": "2026-05-06T01:31:55.304373+00:00",
+  "last_seen": "2026-05-07T06:40:04.881242+00:00",
+  "bundle_scope_count": 37,
+  "sample_count": 37,
+  "anchor_profile_family_id": "f99c39ed0e5df7ea",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [
+    "f99c39ed0e5df7ea"
+  ],
   "elements": [
     {
-      "artifact_count": 37,
-      "bundle_scope_count": 37,
       "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 37,
+      "artifact_count": 37,
+      "supported": true,
+      "first_seen": "2026-05-06T01:31:55.304373+00:00",
+      "last_seen": "2026-05-07T06:40:04.881242+00:00",
+      "bundle_scope_count": 37,
+      "bundle_scope_identities": [],
       "exact_structure_ids": [
         "1f07371f61076dba",
         "b5b4a1b2fa6e9e49",
         "d4869334f538c2bc",
         "ffe2518ccd4fb36c"
       ],
-      "first_seen": "2026-05-06T01:31:55.304373+00:00",
-      "last_seen": "2026-05-07T06:40:04.881242+00:00",
-      "observed_artifact_count": 37,
       "profile_family_ids": [
         "f99c39ed0e5df7ea"
       ],
@@ -54,18 +66,11 @@
         "type:system_prompt:string",
         "type:tools:array"
       ],
-      "sample_count": 37,
-      "schema_file": "session_document.schema.json.gz",
-      "supported": true
+      "observed_artifact_count": 37,
+      "observation_status": "unspecified"
     }
   ],
-  "first_seen": "2026-05-06T01:31:55.304373+00:00",
-  "last_seen": "2026-05-07T06:40:04.881242+00:00",
   "orphan_adjunct_counts": {},
-  "profile_family_ids": [
-    "f99c39ed0e5df7ea"
-  ],
-  "provider": "hermes",
-  "sample_count": 37,
-  "version": "v1"
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }

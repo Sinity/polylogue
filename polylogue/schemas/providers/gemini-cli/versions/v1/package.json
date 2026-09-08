@@ -1,13 +1,28 @@
 {
+  "provider": "gemini-cli",
+  "version": "v1",
   "anchor_kind": "session_document",
-  "anchor_profile_family_id": "2ea47ff433ce1026",
-  "bundle_scope_count": 27,
   "default_element_kind": "session_document",
+  "first_seen": "2026-03-14T18:46:59.588045+00:00",
+  "last_seen": "2026-04-27T23:38:16.789546+00:00",
+  "bundle_scope_count": 27,
+  "sample_count": 27,
+  "anchor_profile_family_id": "2ea47ff433ce1026",
+  "bundle_scope_identities": [],
+  "profile_family_ids": [
+    "2ea47ff433ce1026"
+  ],
   "elements": [
     {
-      "artifact_count": 27,
-      "bundle_scope_count": 27,
       "element_kind": "session_document",
+      "schema_file": "session_document.schema.json.gz",
+      "sample_count": 27,
+      "artifact_count": 27,
+      "supported": true,
+      "first_seen": "2026-03-14T18:46:59.588045+00:00",
+      "last_seen": "2026-04-27T23:38:16.789546+00:00",
+      "bundle_scope_count": 27,
+      "bundle_scope_identities": [],
       "exact_structure_ids": [
         "11de1e7d7ab16df7",
         "19ffaf0e7d802e80",
@@ -37,9 +52,6 @@
         "e03a0fabe84c6b28",
         "e5dcb5856d38ede9"
       ],
-      "first_seen": "2026-03-14T18:46:59.588045+00:00",
-      "last_seen": "2026-04-27T23:38:16.789546+00:00",
-      "observed_artifact_count": 27,
       "profile_family_ids": [
         "2ea47ff433ce1026"
       ],
@@ -67,18 +79,11 @@
         "type:sessionId:string",
         "type:startTime:string"
       ],
-      "sample_count": 27,
-      "schema_file": "session_document.schema.json.gz",
-      "supported": true
+      "observed_artifact_count": 27,
+      "observation_status": "unspecified"
     }
   ],
-  "first_seen": "2026-03-14T18:46:59.588045+00:00",
-  "last_seen": "2026-04-27T23:38:16.789546+00:00",
   "orphan_adjunct_counts": {},
-  "profile_family_ids": [
-    "2ea47ff433ce1026"
-  ],
-  "provider": "gemini-cli",
-  "sample_count": 27,
-  "version": "v1"
+  "workload_profile_file": null,
+  "observation_status": "historical"
 }

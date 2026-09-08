@@ -1,28 +1,42 @@
 {
-  "default_version": "v2",
-  "generated_at": "2026-05-11T04:14:45.729364+00:00",
-  "latest_version": "v2",
+  "provider": "hermes",
+  "generated_at": "2026-09-08T09:01:02.756682+00:00",
+  "latest_version": "v3",
+  "default_version": "v3",
+  "recommended_version": "v3",
   "orphan_adjunct_counts": {},
   "packages": [
     {
+      "provider": "hermes",
+      "version": "v1",
       "anchor_kind": "session_document",
-      "anchor_profile_family_id": "f99c39ed0e5df7ea",
-      "bundle_scope_count": 37,
       "default_element_kind": "session_document",
+      "first_seen": "2026-05-06T01:31:55.304373+00:00",
+      "last_seen": "2026-05-07T06:40:04.881242+00:00",
+      "bundle_scope_count": 37,
+      "sample_count": 37,
+      "anchor_profile_family_id": "f99c39ed0e5df7ea",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [
+        "f99c39ed0e5df7ea"
+      ],
       "elements": [
         {
-          "artifact_count": 37,
-          "bundle_scope_count": 37,
           "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 37,
+          "artifact_count": 37,
+          "supported": true,
+          "first_seen": "2026-05-06T01:31:55.304373+00:00",
+          "last_seen": "2026-05-07T06:40:04.881242+00:00",
+          "bundle_scope_count": 37,
+          "bundle_scope_identities": [],
           "exact_structure_ids": [
             "1f07371f61076dba",
             "b5b4a1b2fa6e9e49",
             "d4869334f538c2bc",
             "ffe2518ccd4fb36c"
           ],
-          "first_seen": "2026-05-06T01:31:55.304373+00:00",
-          "last_seen": "2026-05-07T06:40:04.881242+00:00",
-          "observed_artifact_count": 37,
           "profile_family_ids": [
             "f99c39ed0e5df7ea"
           ],
@@ -60,20 +74,13 @@
             "type:system_prompt:string",
             "type:tools:array"
           ],
-          "sample_count": 37,
-          "schema_file": "session_document.schema.json.gz",
-          "supported": true
+          "observed_artifact_count": 37,
+          "observation_status": "unspecified"
         }
       ],
-      "first_seen": "2026-05-06T01:31:55.304373+00:00",
-      "last_seen": "2026-05-07T06:40:04.881242+00:00",
       "orphan_adjunct_counts": {},
-      "profile_family_ids": [
-        "f99c39ed0e5df7ea"
-      ],
-      "provider": "hermes",
-      "sample_count": 37,
-      "version": "v1"
+      "workload_profile_file": null,
+      "observation_status": "historical"
     },
     {
       "provider": "hermes",
@@ -110,13 +117,127 @@
             "72ba47c6afd9b8d4"
           ],
           "profile_tokens": [],
-          "observed_artifact_count": 54
+          "observed_artifact_count": 54,
+          "observation_status": "unspecified"
         }
       ],
       "orphan_adjunct_counts": {},
-      "workload_profile_file": null
+      "workload_profile_file": null,
+      "observation_status": "historical"
+    },
+    {
+      "provider": "hermes",
+      "version": "v3",
+      "anchor_kind": "session_document",
+      "default_element_kind": "session_document",
+      "first_seen": "2026-09-08T09:01:02.756636+00:00",
+      "last_seen": "2026-09-08T09:01:02.756636+00:00",
+      "bundle_scope_count": 159,
+      "sample_count": 159,
+      "anchor_profile_family_id": "f3428d40859c52e141d1ca642fd98b72e8f1583af2f4338399128d250c7ca4d6",
+      "bundle_scope_identities": [],
+      "profile_family_ids": [],
+      "elements": [
+        {
+          "element_kind": "session_document",
+          "schema_file": "session_document.schema.json.gz",
+          "sample_count": 159,
+          "artifact_count": 159,
+          "supported": true,
+          "first_seen": "2026-09-08T09:01:02.756636+00:00",
+          "last_seen": "2026-09-08T09:01:02.756636+00:00",
+          "bundle_scope_count": 159,
+          "bundle_scope_identities": [],
+          "exact_structure_ids": [],
+          "profile_family_ids": [],
+          "profile_tokens": [],
+          "observed_artifact_count": 159,
+          "observation_status": "current"
+        }
+      ],
+      "orphan_adjunct_counts": {},
+      "workload_profile_file": null,
+      "observation_status": "current"
     }
   ],
-  "provider": "hermes",
-  "recommended_version": "v2"
+  "observation_outcomes": {
+    "source_input_bytes": 254777498,
+    "source_record_count": 159,
+    "source_recipe": {
+      "structure": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "structure",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "statistics": {
+        "evidence_format": 1,
+        "admission_revision": 1,
+        "phase": "statistics",
+        "reduction_revision": 1,
+        "key_policy": {
+          "revision": 1,
+          "cardinality_limit": 256,
+          "max_structural_key_length": 128,
+          "content_markers": "/<>?@\\",
+          "pathlike_ratio": 0.35,
+          "dynamic_ratio": 0.5
+        }
+      },
+      "structure_fingerprint": "b2f62b4821a70535450424addb08b5cb2e79042ad6a71e46cf338dc0c86b563e",
+      "statistics_fingerprint": "6a3220d625790eeb5f9770878194831b597e84b42beb7d11d7af5696dfac9a44",
+      "implementation_fingerprint": "147de6aea88ac9210b785ab16a7df9fa6d953f42d4e0bfe50582fe97c66beea4"
+    },
+    "source_cache_phase_hits": {
+      "statistics": 169,
+      "structure": 67
+    },
+    "source_cache_phase_misses": {
+      "structure": 102
+    },
+    "source_statistics_population": "current_source_records",
+    "source_inherited_prefixes_subtracted": false,
+    "source_cache_hits": 236,
+    "source_cache_misses": 102,
+    "source_terminal_outcomes": {
+      "included": 169,
+      "unsupported": 9
+    },
+    "source_terminal_outcome_units": {
+      "included": "native_source_revision",
+      "unsupported": "physical_candidate"
+    },
+    "source_candidate_terminal_outcomes": {
+      "included": 169,
+      "unsupported": 9
+    },
+    "source_terminal_reasons": {
+      "source_class_unsupported": 7,
+      "sqlite_value_inference_not_supported": 2
+    },
+    "source_phase_timings_ms": {
+      "collect": 20568.986,
+      "fold": 8213.765,
+      "hash": 1100.431,
+      "inventory": 41.9,
+      "preliminary": 8133.189,
+      "statistics": 3106.916
+    },
+    "producer_version_counts": {},
+    "producer_version_missing_sources": 169,
+    "producer_version_conflicting_sources": 0,
+    "producer_version_unrecognized_sources": 0,
+    "source_input_manifest_digest": "c8c3090905a219754f23db59a05435f80b5d7ab72934ea10ddfa9d0b54ae9d61",
+    "source_candidate_count": 178,
+    "source_included_candidate_count": 169,
+    "source_included_native_source_revision_count": 169
+  }
 }

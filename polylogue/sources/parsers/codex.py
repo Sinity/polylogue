@@ -2876,8 +2876,17 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
 
     This is stricter than :func:`looks_like`, which only needs one record to
     identify the parser. Artifact classification uses this full-stream
-    contract before it lets a Codex JSONL payload reach schema inference.
+    contract for parser admission.
     """
+    return _session_stream_supported(payload, for_schema=False)
+
+
+def is_schema_session_stream(payload: Sequence[object]) -> bool:
+    """Include known wire records whose normalized semantics remain unknown."""
+    return _session_stream_supported(payload, for_schema=True)
+
+
+def _session_stream_supported(payload: Sequence[object], *, for_schema: bool) -> bool:
     has_session_header = False
     has_message = False
     has_envelope_record = False
@@ -2890,14 +2899,23 @@ def is_supported_session_stream(payload: Sequence[object]) -> bool:
         "turn_context",
         "world_state",
     }
+    if for_schema:
+        supported_envelope_types.update({"inter_agent_communication_metadata", "token_usage_record"})
+    schema_direct_types = {"reasoning", "function_call", "function_call_output"} if for_schema else set()
 
     for index, item in enumerate(payload, start=1):
-        if not _is_plausibly_codex_record(item):
+        schema_direct = isinstance(item, dict) and item.get("type") in schema_direct_types
+        if not schema_direct and not _is_plausibly_codex_record(item):
             return False
         record = _dict_record(item)
         if record is None or _validate_record(record, index=index, context="session stream") is None:
             return False
         record_type = _record_type(record)
+        if schema_direct:
+            if _is_envelope(record):
+                return False
+            has_direct_record = True
+            continue
         if record_type in supported_envelope_types:
             # ``session_meta`` is the shared header for both the envelope
             # stream and the legacy direct-message stream. It must not make a

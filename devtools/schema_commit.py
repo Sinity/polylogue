@@ -18,8 +18,11 @@ from pathlib import Path
 
 from polylogue.cli.shared.schema_command_support import build_schema_privacy_config
 from polylogue.config import get_config
+from polylogue.core.json import JSONDocument
 from polylogue.schemas.operator.commit import commit_provider_schema
 from polylogue.schemas.operator.models import SchemaCommitRequest
+from polylogue.schemas.runtime_registry import canonical_schema_provider
+from polylogue.schemas.source_inference import parse_schema_source_input
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "polylogue" / "schemas" / "providers"
@@ -36,7 +39,9 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"Committed schema package root to write into (default: {DEFAULT_OUTPUT_DIR}).",
     )
-    parser.add_argument("--max-samples", type=int, default=None, help="Limit samples for generation.")
+    parser.add_argument(
+        "--max-samples", type=int, default=None, help="Archive-backed sample limit; incompatible with --source."
+    )
     parser.add_argument(
         "--full-corpus",
         action="store_true",
@@ -47,7 +52,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-full-corpus",
         dest="full_corpus",
         action="store_false",
-        help="Generate from a capped sample window instead of the full corpus.",
+        help="Use an archive-backed sample window; incompatible with --source.",
     )
     parser.add_argument(
         "--privacy",
@@ -56,12 +61,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Privacy preset level. Defaults to standard.",
     )
     parser.add_argument("--privacy-config", type=Path, default=None, help="Path to TOML privacy config overrides.")
-    parser.add_argument(
-        "--schema-inference-gate-receipt",
-        type=Path,
-        required=True,
-        help="Accepted PASS receipt from devtools gate schema-inference-gate.",
-    )
+    parser.add_argument("--source", action="append", default=[], help="Declared source input as provider=path.")
+    parser.add_argument("--source-cache", type=Path, default=None, help="Private reduced-evidence SQLite cache.")
+    parser.add_argument("--source-workers", type=int, default=2, help="Bounded source evidence workers.")
     parser.add_argument(
         "--dry-run",
         "--check",
@@ -70,6 +72,7 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Preview what a commit would change without writing to --output-dir.",
     )
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
+    parser.add_argument("--progress", action="store_true", help="Emit aggregate source progress to stderr.")
     return parser
 
 
@@ -86,6 +89,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {exc}", file=sys.stderr)
         return 1
     output_dir = args.output_dir if args.output_dir is not None else DEFAULT_OUTPUT_DIR
+    try:
+        source_inputs = tuple(parse_schema_source_input(value) for value in args.source)
+    except ValueError as exc:
+        print(f"schema-commit: {exc}", file=sys.stderr)
+        return 1
+
+    def on_progress(phase: str, payload: JSONDocument) -> None:
+        print(f"schema-commit: {json.dumps({'phase': phase, **payload}, sort_keys=True)}", file=sys.stderr, flush=True)
 
     config = get_config()
     try:
@@ -93,13 +104,15 @@ def main(argv: list[str] | None = None) -> int:
             SchemaCommitRequest(
                 provider=str(args.provider),
                 output_dir=output_dir,
-                archive_root=config.archive_root,
                 db_path=config.db_path,
                 max_samples=args.max_samples,
                 privacy_config=privacy_config,
                 full_corpus=bool(args.full_corpus),
                 dry_run=bool(args.dry_run),
-                schema_inference_gate_receipt_path=args.schema_inference_gate_receipt,
+                source_inputs=source_inputs,
+                source_cache_path=args.source_cache,
+                source_workers=args.source_workers,
+                progress_callback=on_progress if args.progress else None,
             )
         )
     except ValueError as exc:
@@ -112,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
     if not result.success:
         error = result.generation.error or "Schema generation failed"
         if args.json:
-            print(json.dumps({"provider": result.provider, "success": False, "error": error}, sort_keys=True))
+            print(json.dumps({**result.to_dict(), "error": error}, sort_keys=True))
         else:
             print(f"schema-commit: {error}", file=sys.stderr)
         return 1
@@ -124,7 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"schema-commit: {result.provider} -- {mode}")
         print(f"  sample_count={result.generation.sample_count}")
         if result.handoff is not None:
-            print(f"  handoff_digest={result.handoff.receipt_digest}")
+            provider_token = str(canonical_schema_provider(result.provider))
+            input_manifest = next(item for item in result.handoff.input_manifests if item.provider == provider_token)
+            print(f"  input_manifest_digest={input_manifest.digest or input_manifest.unavailable_reason}")
             if result.handoff_path is not None:
                 print(f"  handoff_path={result.handoff_path}")
         for version_report in result.versions:
