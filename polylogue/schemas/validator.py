@@ -327,24 +327,27 @@ class SchemaValidator:
     ) -> PayloadValidation:
         """Select a schema and validate each payload sample for one operation."""
         selected: PayloadValidation | None = None
-        probed: dict[int, PayloadValidation] = {}
+        initial_probe: tuple[SchemaValidator, tuple[ValidationSample, ...], list[ValidationResult]] | None = None
 
         def schema_accepts(schema: JSONDocument) -> bool:
-            nonlocal selected
+            nonlocal selected, initial_probe
             probe = cls(schema, strict=strict, provider=_canonical_provider(provider))
             samples = tuple(probe.validation_samples(payload, max_samples=max_samples))
-            results = tuple(probe.validate(sample, include_drift=True) for sample in samples)
-            candidate = PayloadValidation(
+            results: list[ValidationResult] = []
+            if initial_probe is None:
+                initial_probe = probe, samples, results
+            for sample in samples:
+                result = probe.validate(sample, include_drift=True)
+                results.append(result)
+                if not result.is_valid:
+                    return False
+            selected = PayloadValidation(
                 validator=probe,
                 samples=samples,
-                results=results,
+                results=tuple(results),
                 schema_resolution=schema_resolution,
                 schema_resolution_is_explicit=schema_resolution_is_explicit,
             )
-            probed[id(schema)] = candidate
-            if samples and not all(result.is_valid for result in results):
-                return False
-            selected = candidate
             return True
 
         canonical, schema, base_key = resolve_payload_schema(
@@ -356,7 +359,20 @@ class SchemaValidator:
             registry_cls=SchemaRegistry,
             schema_accepts=schema_accepts,
         )
-        candidate = selected or probed.get(id(schema))
+        candidate = selected
+        if candidate is None and initial_probe is not None:
+            probe, initial_samples, initial_results = initial_probe
+            initial_results.extend(
+                probe.validate(initial_samples[index], include_drift=True)
+                for index in range(len(initial_results), len(initial_samples))
+            )
+            candidate = PayloadValidation(
+                validator=probe,
+                samples=initial_samples,
+                results=tuple(initial_results),
+                schema_resolution=schema_resolution,
+                schema_resolution_is_explicit=schema_resolution_is_explicit,
+            )
         if candidate is not None:
             if schema_resolution is not None:
                 return replace(
