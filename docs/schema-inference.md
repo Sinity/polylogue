@@ -25,7 +25,11 @@ JSONL and NDJSON records are streamed. JSON export arrays and supported ZIP
 members are observed by logical session. Provider-native identifiers distinguish
 sessions, including Claude Code subagents. Current revisions contribute value
 statistics; historical revisions retain structural evidence. Exact duplicates
-and repeated export captures do not add current workload weight.
+and repeated export captures do not add current source-record weight.
+
+Subagents retain their own native source identity. Schema inference does not
+reconstruct parent links or subtract inherited transcript prefixes. Counts
+describe records in the selected raw source revisions.
 
 The private SQLite cache stores reduced structural and statistical evidence.
 Its key binds source context, content hash, reduction code, and dynamic-key
@@ -46,12 +50,13 @@ their own observation routes.
 Package `vN` identifies an observed structural family. It is allocated from the
 anchor element's structure; changing only statistics preserves that version.
 Producer release numbers are separate metadata, read only from declared provider
-fields. Missing, conflicting, and unrecognized release evidence is counted.
+fields. Missing and unrecognized releases are counted. The conflicting-release
+count denotes files containing multiple declared releases.
 
 Counts, extrema, string lengths, newlines, array lengths, and object widths are
 measured before value compaction. Quantiles use bounded histograms; cardinality
 and categorical summaries use bounded sketches. Their annotations identify
-estimates and saturation. Historical shape counts and current workload counts
+estimates and saturation. Historical shape counts and current source-record counts
 have separate denominators.
 
 Publication uses the configured privacy rules for values and dynamic keys.
