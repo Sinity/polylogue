@@ -1050,6 +1050,19 @@ def infer_sources(
         final: list[tuple[_SourceCandidate, str, int, tuple[_SourceContribution, ...], tuple[str, ...], bool]] = []
         final_misses: list[tuple[_SourceCandidate, str, int]] = []
         for candidate, digest, byte_count, _rows, versions, unrecognized in preliminary:
+            try:
+                final_digest, final_byte_count = _stable_file_digest(candidate.path)
+            except (OSError, SourceInferenceError):
+                final_digest = None
+                final_byte_count = _candidate_byte_count(candidate.path)
+            if final_digest != digest:
+                terminal = SourceTerminal("changed_during_read", final_byte_count)
+                terminal_counts[terminal.outcome] += 1
+                reason_code = _terminal_reason_code(terminal)
+                if reason_code is not None:
+                    terminal_reason_counts[reason_code] += 1
+                input_bytes_by_candidate[candidate] = terminal.byte_count
+                continue
             cached = cache.get(
                 _cache_key(
                     candidate,
@@ -1073,12 +1086,23 @@ def infer_sources(
                 dynamic_paths_by_element=dynamic_paths_by_element,
             ):
                 if item.terminal.outcome != "included" or item.revision is None:
-                    raise SourceInferenceError(f"source failed during final evidence pass: {item.terminal.outcome}")
+                    terminal_counts[item.terminal.outcome] += 1
+                    reason_code = _terminal_reason_code(item.terminal)
+                    if reason_code is not None:
+                        terminal_reason_counts[reason_code] += 1
+                    input_bytes_by_candidate[item.candidate] = item.terminal.byte_count
+                    continue
                 expected = next(
                     (digest for candidate, digest, _bytes in final_misses if candidate == item.candidate), None
                 )
                 if expected != item.revision.revision_sha256:
-                    raise SourceInferenceError("source revision changed between evidence passes")
+                    terminal = SourceTerminal("changed_during_read", item.terminal.byte_count)
+                    terminal_counts[terminal.outcome] += 1
+                    reason_code = _terminal_reason_code(terminal)
+                    if reason_code is not None:
+                        terminal_reason_counts[reason_code] += 1
+                    input_bytes_by_candidate[item.candidate] = terminal.byte_count
+                    continue
                 cache.put(
                     CachedContribution(
                         cache_key=_cache_key(
