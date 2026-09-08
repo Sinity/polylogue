@@ -86,3 +86,8 @@ have separate denominators.
 Publication uses the configured privacy rules for values and dynamic keys.
 Review generated packages before committing them; input paths and transcript
 text do not belong in public schema metadata.
+
+Generated package updates retain numeric observation counts and structural size
+distributions. Observed numeric magnitudes, timestamp ranges, and empirical time
+deltas remain in private evidence. Untouched historical versions retain their
+existing annotations.

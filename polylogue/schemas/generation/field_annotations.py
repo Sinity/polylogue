@@ -67,12 +67,14 @@ def _observed_distribution_payload(field_stats: FieldStats) -> JSONDocument:
         "type_counts": dict(sorted(field_stats.type_counts.items())),
     }
     distributions = {
-        "numeric": field_stats.numeric_distribution,
         "string_length": field_stats.string_length_distribution,
         "newline_count": field_stats.newline_distribution,
         "array_length": field_stats.array_length_distribution,
         "object_fanout": field_stats.object_fanout_distribution,
     }
+    numeric = field_stats.numeric_distribution
+    if numeric.count or numeric.non_finite_count:
+        payload["numeric"] = {"count": numeric.count, "non_finite_count": numeric.non_finite_count}
     for name, distribution in distributions.items():
         if distribution.count or distribution.non_finite_count:
             payload[name] = distribution.to_payload()
@@ -172,9 +174,6 @@ def annotate_schema(
             )
             if enum_values:
                 schema_node["x-polylogue-values"] = enum_values
-
-        if field_stats.num_min is not None and field_stats.num_max is not None:
-            schema_node["x-polylogue-range"] = [field_stats.num_min, field_stats.num_max]
 
         if field_stats.array_length_distribution.count:
             minimum = field_stats.array_length_distribution.minimum

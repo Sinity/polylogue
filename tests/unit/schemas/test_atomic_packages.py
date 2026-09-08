@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from polylogue.core.json import JSONDocument
+from polylogue.schemas.generation.models import GenerationResult, _ProviderBundle
 from polylogue.schemas.generation.provider_bundle_packages import allocate_package_versions
+from polylogue.schemas.generation.workflow import persist_generated_provider_bundle
+from polylogue.schemas.generation.workload_profiles import workload_profile_identity
+from polylogue.schemas.numeric_privacy import redact_observed_numeric_schema
 from polylogue.schemas.packages import SchemaElementManifest, SchemaPackageCatalog, SchemaVersionPackage
-from polylogue.schemas.registry import SchemaRegistry
+from polylogue.schemas.registry import ClusterManifest, SchemaRegistry
 
 
 def package(version: str = "v1", family: str = "family-a", kind: str = "session_document") -> SchemaVersionPackage:
@@ -188,3 +194,94 @@ def test_single_version_update_uses_fresh_catalog_for_default(tmp_path: Path) ->
     catalog = SchemaRegistry(storage_root=tmp_path).load_package_catalog("synthetic-publication")
     assert catalog is not None
     assert catalog.latest_version == catalog.default_version == "v2"
+
+
+def test_generated_publication_redacts_numeric_history_after_merge(tmp_path: Path) -> None:
+    """Old fields and omitted elements must retain structure without restoring private numbers."""
+    registry = SchemaRegistry(storage_root=tmp_path)
+    publish(registry, version="v2", generation=2, family="other-family")
+    historical = schema(registry, "v2")
+    numeric: JSONDocument = {
+        "type": "number",
+        "minimum": 0,
+        "x-polylogue-range": [12.345, 67.89],
+        "x-polylogue-evidence": {"range": [12.345, 67.89], "frequency": 1.0},
+        "x-polylogue-observed-distribution": {
+            "numeric": {"count": 2, "non_finite_count": 0, "min": 12.345, "max": 67.89, "mean": 40.1175},
+        },
+    }
+    old_schema: JSONDocument = {"type": "object", "properties": {"retired": numeric}}
+    old_schema["x-polylogue-time-deltas"] = [{"min_delta": 12.345, "max_delta": 67.89}]
+    old_package = package()
+    old_package.elements.append(SchemaElementManifest("retired_element", "retired.schema.json.gz", 1, 1))
+    profile: JSONDocument = {
+        "elements": {
+            "session_document": {"field_profiles": {"$.retired": numeric["x-polylogue-observed-distribution"]}}
+        },
+    }
+    profile["profile_id"] = workload_profile_identity(profile)
+    registry.replace_provider_packages(
+        old_package.provider,
+        SchemaPackageCatalog(provider=old_package.provider, packages=[old_package], default_version="v1"),
+        {"v1": {"session_document": old_schema, "retired_element": old_schema}},
+        package_workload_profiles={"v1": profile},
+    )
+    ordinary = schema(SchemaRegistry(storage_root=tmp_path), "v1")
+    ordinary_properties = ordinary["properties"]
+    assert isinstance(ordinary_properties, dict)
+    ordinary_retired = ordinary_properties["retired"]
+    assert isinstance(ordinary_retired, dict)
+    assert "x-polylogue-range" in ordinary_retired
+    current: JSONDocument = {"type": "object", "properties": {"current": {"type": "string"}}}
+    incoming = replace(old_package, elements=old_package.elements[:1])
+    bundle = _ProviderBundle(
+        result=GenerationResult(provider=old_package.provider, schema=current, sample_count=1),
+        catalog=SchemaPackageCatalog(provider=old_package.provider, packages=[incoming], default_version="v1"),
+        package_schemas={"v1": {"session_document": current}},
+        package_workload_profiles={"v1": profile},
+        manifest=ClusterManifest(provider=old_package.provider, default_version="v1"),
+    )
+    original_profile = copy.deepcopy(profile)
+    persist_generated_provider_bundle(tmp_path, old_package.provider, bundle)
+    fresh = SchemaRegistry(storage_root=tmp_path)
+    assert schema(fresh, "v2") == historical
+    for kind in ("session_document", "retired_element"):
+        persisted = fresh.get_element_schema(old_package.provider, version="v1", element_kind=kind)
+        assert persisted is not None
+        properties = persisted["properties"]
+        assert isinstance(properties, dict)
+        retired = properties["retired"]
+        assert isinstance(retired, dict)
+        assert retired["type"] == "number" and retired["minimum"] == 0
+        assert "x-polylogue-range" not in retired
+        role_evidence = retired["x-polylogue-evidence"]
+        assert isinstance(role_evidence, dict) and "range" not in role_evidence
+        numeric_distribution = retired["x-polylogue-observed-distribution"]
+        assert isinstance(numeric_distribution, dict)
+        assert numeric_distribution["numeric"] == {"count": 2, "non_finite_count": 0}
+        assert "x-polylogue-time-deltas" not in persisted
+    stored_profile = fresh.get_workload_profile(old_package.provider, "v1")
+    assert stored_profile is not None
+    assert stored_profile["profile_id"] == workload_profile_identity(stored_profile)
+    assert stored_profile != original_profile
+    assert profile == original_profile
+    assert "12.345" not in str(stored_profile)
+
+
+def test_numeric_publication_projection_is_idempotent_and_preserves_constraints() -> None:
+    """Projection must visit schema variants without treating schema property names as annotations."""
+    source: JSONDocument = {
+        "type": "object",
+        "properties": {
+            "x-polylogue-range": {"type": "number", "minimum": 5, "maximum": 9},
+            "value": {"anyOf": [{"type": "number", "x-polylogue-range": [6, 8]}, {"type": "null"}]},
+        },
+    }
+    original = copy.deepcopy(source)
+    projected = redact_observed_numeric_schema(source)
+    assert source == original
+    assert redact_observed_numeric_schema(projected) == projected
+    properties = projected["properties"]
+    assert isinstance(properties, dict)
+    assert properties["x-polylogue-range"] == {"type": "number", "minimum": 5, "maximum": 9}
+    assert properties["value"] == {"anyOf": [{"type": "number"}, {"type": "null"}]}

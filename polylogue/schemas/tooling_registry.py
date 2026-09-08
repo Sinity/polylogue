@@ -75,6 +75,7 @@ class SchemaRegistryToolingMixin:
             *,
             package_workload_profiles: Mapping[str, Mapping[str, object]] | None = None,
             cluster_manifest: Mapping[str, object] | None = None,
+            redact_observed_numeric_values: bool = False,
         ) -> None: ...
 
         def _catalog_path(self, provider: str) -> Path: ...

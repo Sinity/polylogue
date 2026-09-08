@@ -53,6 +53,7 @@ def persist_generated_provider_bundle(output_dir: Path, provider: str, bundle: _
         _package_schemas(bundle),
         package_workload_profiles=_package_workload_profiles(bundle),
         cluster_manifest=bundle.manifest.to_dict(),
+        redact_observed_numeric_values=True,
     )
 
     for old_name in (f"{provider}.schema.json.gz", f"{provider}.schema.json"):
