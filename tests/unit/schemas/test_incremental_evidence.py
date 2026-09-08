@@ -7,7 +7,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue
+from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats.models import EQUALITY_EVIDENCE_CAP
 from polylogue.schemas.generation.evidence import (
     SchemaEvidence,
@@ -27,6 +27,11 @@ class _Observation:
     element_kind: str
     records: Iterable[JSONValue]
     is_current: bool = True
+
+
+def _object(value: JSONValue) -> JSONDocument:
+    assert isinstance(value, dict)
+    return value
 
 
 def test_evidence_measures_original_long_strings_before_compaction() -> None:
@@ -71,7 +76,7 @@ def test_historical_shape_is_retained_without_historical_workload_weight() -> No
     assert "$.retained_only_historically" not in evidence.field_stats
     assert evidence.current_record_count == 1
     assert evidence.historical_record_count == 1
-    assert "retained_only_historically" in evidence.structure["properties"]
+    assert "retained_only_historically" in _object(evidence.structure["properties"])
 
 
 def test_identical_records_in_independent_sessions_remain_two_observations() -> None:
@@ -111,7 +116,7 @@ def test_current_head_replaces_old_statistics_while_old_shape_stays_historical()
     assert evidence.current_source_count == 1
     assert evidence.field_stats["$.current_length"].string_length_distribution.maximum == 40
     assert "$.old_length" not in evidence.field_stats
-    assert "old_length" in evidence.structure["properties"]
+    assert "old_length" in _object(evidence.structure["properties"])
 
 
 def test_ninth_array_record_and_deep_field_survive_reduced_evidence() -> None:
@@ -123,8 +128,8 @@ def test_ninth_array_record_and_deep_field_survive_reduced_evidence() -> None:
 
     evidence = collect_evidence([observation])
     schema = evidence.structure
-    item_schema = schema["properties"]["items"]["items"]
-    assert "level_8" in item_schema["properties"]
+    item_schema = _object(_object(_object(schema["properties"])["items"])["items"])
+    assert "level_8" in _object(item_schema["properties"])
     assert any(path.endswith(".tail") for path in evidence.field_stats)
 
 
@@ -176,7 +181,8 @@ def test_serialized_evidence_has_no_literal_and_emits_same_safe_semantics() -> N
     assert "session-a" not in serialized
     assert private_literal not in public
     assert warm_schema == cold_schema
-    assert warm_schema["properties"]["role"]["x-polylogue-semantic-role"] == "message_role"
+    role_schema = _object(_object(warm_schema["properties"])["role"])
+    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert restored.field_stats["$.role"].value_session_ids["user"]
 
 
@@ -198,7 +204,8 @@ def test_reduced_evidence_preserves_mutual_exclusion_annotations() -> None:
 
     schema, _ = emit_schema_from_evidence("claude-code", config, evidence, privacy_config=None)
 
-    assert schema["properties"]["role"]["x-polylogue-semantic-role"] == "message_role"
+    role_schema = _object(_object(schema["properties"])["role"])
+    assert role_schema["x-polylogue-semantic-role"] == "message_role"
     assert schema["x-polylogue-mutually-exclusive"] == [{"fields": ["left", "right"], "parent": "$"}]
 
 

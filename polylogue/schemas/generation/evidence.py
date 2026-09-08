@@ -26,6 +26,10 @@ SchemaInput = Mapping[str, object]
 FieldStateByPath = dict[str, JSONDocument]
 
 
+def _state_int(value: JSONValue) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 class SourceObservation(Protocol):
     """The reduced collector contract supplied by source inference."""
 
@@ -109,18 +113,14 @@ class SchemaEvidence:
         return cls(
             current_structure=json_document(current_structure),
             historical_structure=json_document(historical_structure),
-            fields={
-                path: json_document(state)
-                for path, state in fields.items()
-                if isinstance(path, str) and isinstance(state, dict)
-            },
-            normalization_paths=tuple(sorted(normalization)),
-            current_source_count=int(denominators.get("current_sources", 0)),
-            current_record_count=int(denominators.get("current_records", 0)),
-            historical_source_count=int(denominators.get("historical_sources", 0)),
-            historical_record_count=int(denominators.get("historical_records", 0)),
-            shape_hashes=tuple(sorted(shape_hashes)[:_SHAPE_HASH_CAP]),
-            shape_hash_overflow=int(denominators.get("distinct_shapes_overflow", 0)),
+            fields={path: json_document(state) for path, state in fields.items() if isinstance(state, dict)},
+            normalization_paths=tuple(sorted(path for path in normalization if isinstance(path, str))),
+            current_source_count=_state_int(denominators.get("current_sources", 0)),
+            current_record_count=_state_int(denominators.get("current_records", 0)),
+            historical_source_count=_state_int(denominators.get("historical_sources", 0)),
+            historical_record_count=_state_int(denominators.get("historical_records", 0)),
+            shape_hashes=tuple(sorted(value for value in shape_hashes if isinstance(value, str))[:_SHAPE_HASH_CAP]),
+            shape_hash_overflow=_state_int(denominators.get("distinct_shapes_overflow", 0)),
         )
 
 

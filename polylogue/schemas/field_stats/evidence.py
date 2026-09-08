@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from collections import Counter
 from collections.abc import Iterable, Mapping
+from typing import overload
 
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.schemas.field_stats.distributions import CategoricalSketch, DistributionSketch
@@ -24,7 +25,11 @@ def _counter_from_state(value: object) -> Counter[str]:
         {
             item[0]: int(item[1])
             for item in value
-            if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], int)
+            if isinstance(item, list)
+            and len(item) == 2
+            and isinstance(item[0], str)
+            and isinstance(item[1], int)
+            and not isinstance(item[1], bool)
         }
     )
 
@@ -42,6 +47,22 @@ def _distribution_state(stats: FieldStats) -> JSONDocument:
     }
 
 
+def _state_int(value: JSONValue) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _state_string(value: JSONValue) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+@overload
+def _distribution_from_state(state: object, name: str, kind: type[DistributionSketch]) -> DistributionSketch: ...
+
+
+@overload
+def _distribution_from_state(state: object, name: str, kind: type[CategoricalSketch]) -> CategoricalSketch: ...
+
+
 def _distribution_from_state(
     state: object, name: str, kind: type[DistributionSketch] | type[CategoricalSketch]
 ) -> DistributionSketch | CategoricalSketch:
@@ -51,6 +72,10 @@ def _distribution_from_state(
     if not isinstance(value, dict):
         return kind()
     return kind.from_state(value)  # type: ignore[union-attr, no-any-return]
+
+
+def _string_tokens(values: Iterable[str]) -> list[JSONValue]:
+    return list(values)
 
 
 def serialize_field_stats(stats: FieldStats) -> JSONDocument:
@@ -63,7 +88,7 @@ def serialize_field_stats(stats: FieldStats) -> JSONDocument:
     safe_sessions: list[JSONValue] = []
     for value in sorted(stats.safe_observed_values):
         value_digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
-        safe_sessions.append([value, sorted(stats.equality_session_tokens.get(value_digest, set()))])
+        safe_sessions.append([value, _string_tokens(sorted(stats.equality_session_tokens.get(value_digest, set())))])
     return {
         "version": FIELD_EVIDENCE_VERSION,
         "path": stats.path,
@@ -88,7 +113,7 @@ def serialize_field_stats(stats: FieldStats) -> JSONDocument:
         "truncated": _counter_state(stats.truncated_evidence),
         "equality_hashes": _counter_state(stats.equality_hash_counts),
         "equality_sessions": [
-            [digest, sorted(tokens)] for digest, tokens in sorted(stats.equality_session_tokens.items())
+            [digest, _string_tokens(sorted(tokens))] for digest, tokens in sorted(stats.equality_session_tokens.items())
         ],
         "safe_values": _counter_state(stats.safe_observed_values),
         "safe_value_sessions": safe_sessions,
@@ -120,19 +145,19 @@ def deserialize_field_stats(state: JSONDocument) -> FieldStats:
         co_occurring_fields=_counter_from_state(state.get("co_occurring_fields")),
         truncated_evidence=_counter_from_state(state.get("truncated")),
         equality_hash_counts=_counter_from_state(state.get("equality_hashes")),
-        total_samples=int(counts.get("total_samples", 0)),
-        present_count=int(counts.get("present", 0)),
-        value_count=int(counts.get("value", 0)),
-        null_count=int(counts.get("null", 0)),
-        document_encountered_count=int(counts.get("encountered_documents", 0)),
-        document_non_null_count=int(counts.get("non_null_documents", 0)),
-        is_multiline=int(counts.get("multiline", 0)),
-        ordered_pair_count=int(counts.get("ordered_pairs", 0)),
-        ordered_increasing_pair_count=int(counts.get("ordered_increasing_pairs", 0)),
-        max_depth_seen=int(counts.get("max_depth", 0)),
-        slash_value_count=int(counts.get("slash_values", 0)),
-        field_first_seen=state.get("first_seen") if isinstance(state.get("first_seen"), str) else None,
-        field_last_seen=state.get("last_seen") if isinstance(state.get("last_seen"), str) else None,
+        total_samples=_state_int(counts.get("total_samples", 0)),
+        present_count=_state_int(counts.get("present", 0)),
+        value_count=_state_int(counts.get("value", 0)),
+        null_count=_state_int(counts.get("null", 0)),
+        document_encountered_count=_state_int(counts.get("encountered_documents", 0)),
+        document_non_null_count=_state_int(counts.get("non_null_documents", 0)),
+        is_multiline=_state_int(counts.get("multiline", 0)),
+        ordered_pair_count=_state_int(counts.get("ordered_pairs", 0)),
+        ordered_increasing_pair_count=_state_int(counts.get("ordered_increasing_pairs", 0)),
+        max_depth_seen=_state_int(counts.get("max_depth", 0)),
+        slash_value_count=_state_int(counts.get("slash_values", 0)),
+        field_first_seen=_state_string(state.get("first_seen", None)),
+        field_last_seen=_state_string(state.get("last_seen", None)),
         string_length_distribution=_distribution_from_state(distributions, "string_length", DistributionSketch),
         newline_distribution=_distribution_from_state(distributions, "newline", DistributionSketch),
         numeric_distribution=_distribution_from_state(distributions, "numeric", DistributionSketch),
